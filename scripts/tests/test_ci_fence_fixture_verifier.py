@@ -31,6 +31,7 @@ def evidence():
         "sudo_status": "disabled_verified",
         "container_status": "disabled_verified",
         "critical_findings": [],
+        "ruleset_hash": "c" * 64,
         "resident_health": {"status": "healthy", "resident_pid": 42},
         "findings": [
             {
@@ -89,7 +90,7 @@ def test_a_new_matching_row_also_requires_counter_advancement(verifier):
         verifier.VerificationError, match="fence_rejection_counter_missing"
     ):
         verifier.assert_new_rejection(before, after, "udp", 53)
-    before["counters"]["total_violations"] = 0
+    before["counters"].update(total_violations=0, sampled_violations=0)
     verifier.assert_new_rejection(before, after, "udp", 53)
 
 
@@ -114,21 +115,8 @@ def verifier_fixture(
 ):
     verifier = importlib.import_module("scripts.ci_fence_fixture_verifier")
     peer = importlib.import_module("scripts.ci_network_fixture")
-    health = {"status": "healthy", "resident_pid": 42}
-    report = {
-        "mode": "block",
-        "status": "protected_host_block",
-        "readiness_status": "ready",
-        "protection_available": True,
-        "network_verification_status": "verified",
-        "sudo_status": "disabled_verified",
-        "container_status": "disabled_verified",
-        "critical_findings": [],
-        "resident_health": health,
-        "findings": [],
-        "counters": {"total_violations": 0, "sampled_violations": 0},
-    }
-    ready = {"status": "ready", "resident_health": health}
+    report = report_snapshot(total=0, sampled=0)
+    ready = startup_ready(report)
     ports = {"excluded": ("tcp", 19443), "address": ("tcp", 443), "dns": ("udp", 53)}
 
     def row(protocol, port):
@@ -182,10 +170,12 @@ def verifier_fixture(
     )
     monkeypatch.setattr(verifier, "_peer_module", lambda: peer)
     monkeypatch.setattr(
-        verifier, "_documents", lambda *_a: (copy.deepcopy(report), ready, {})
+        verifier,
+        "_documents",
+        lambda *_a: (copy.deepcopy(report), ready, {}, json.dumps(ready).encode()),
     )
 
-    def validate(_n, _r, value, readiness, _d, unit):
+    def validate(_n, _r, value, readiness, _d, unit, *, initial=True):
         verifier.assert_report(value, readiness)
         if "ActiveState=active" not in unit:
             raise verifier.VerificationError("resident_exited")
@@ -272,7 +262,7 @@ def test_current_unit_is_checked_again_after_checksum_probe(monkeypatch):
     verifier, _probes = verifier_fixture(monkeypatch)
     inactive = [False]
 
-    def validation(_n, _r, value, readiness, _d, unit):
+    def validation(_n, _r, value, readiness, _d, unit, *, initial=True):
         verifier.assert_report(value, readiness)
         if inactive[0]:
             raise verifier.VerificationError("resident_exited_after_integrity")
@@ -348,7 +338,7 @@ def test_malformed_findings_and_missing_new_matching_row_are_denied(verifier):
     with pytest.raises(
         verifier.VerificationError, match="fence_rejection_missing:tcp:443"
     ):
-        verifier.assert_new_rejection({"findings": []}, {"findings": []}, "tcp", 443)
+        verifier.assert_new_rejection(report_snapshot(), report_snapshot(), "tcp", 443)
     with pytest.raises(verifier.VerificationError, match="dns_refusal_invalid"):
         verifier.assert_dns_refused(b"", b"")
 
@@ -471,7 +461,12 @@ def test_upstream_adapter_calls_exact_full_validators_and_rejects_bad_or_unbound
     verifier.validate_upstream(
         Path("/node24"), Path("/action"), report, ready, {}, "active"
     )
-    assert calls[0][0] == ("-e", verifier.VALIDATE, "/action/lib.cts")
+    assert calls[0][0] == (
+        "-e",
+        verifier.VALIDATE,
+        "/action/lib.cts",
+        "/action/post.cts",
+    )
     assert all(
         name in verifier.VALIDATE
         for name in (
@@ -542,7 +537,7 @@ def test_documents_load_only_exact_fixed_paths(verifier, monkeypatch):
         "read_protected",
         lambda path, limit: (seen.append((path.name, limit)), b"{}")[1],
     )
-    assert verifier._documents(Path("/run/fence/exact")) == [{}, {}, {}]
+    assert verifier._documents(Path("/run/fence/exact")) == ({}, {}, {}, b"{}")
     assert seen == [
         (name, 512 * 1024) for name in ("report.json", "ready.json", "dns-report.json")
     ]
@@ -596,3 +591,372 @@ def test_invocation_and_cli_fail_closed_without_setup_mutation(
     )
     assert verifier.main(["--fixture-id", "a" * 16, "--invocation", "fixed"]) == 1
     assert json.loads(capsys.readouterr().err)["code"] == "fence_not_protected"
+
+
+def report_snapshot(*, total=9, sampled=4, epoch="c"):
+    value = evidence()
+    value.update(
+        runtime_evidence_schema_version=5,
+        platform_profile_id="github_hosted_workflow_bootstrap_v5",
+        profile_realization_id="github_hosted_workflow_bootstrap_dns_provenance_v5",
+        allow_github_artifacts=False,
+        policy_hash_schema_version=9,
+        policy_hash="a" * 64,
+        base_ruleset_hash="b" * 64,
+        ruleset_hash=epoch * 64,
+    )
+    value["resident_health"]["workers"] = [
+        {"name": name, "status": "running"}
+        for name in ["host_tcp_dns", "host_udp_dns", "process_attribution"]
+    ]
+    value["findings"] = []
+    value["counters"] = {"total_violations": total, "sampled_violations": sampled}
+    return value
+
+
+def startup_ready(report):
+    keys = (
+        "runtime_evidence_schema_version",
+        "platform_profile_id",
+        "profile_realization_id",
+        "allow_github_artifacts",
+        "policy_hash_schema_version",
+        "policy_hash",
+        "base_ruleset_hash",
+        "ruleset_hash",
+        "protection_available",
+        "resident_health",
+    )
+    return {
+        **{key: copy.deepcopy(report[key]) for key in keys},
+        "status": report["readiness_status"],
+    }
+
+
+def new_target(report, protocol="tcp", port=19443):
+    report["findings"].append(
+        {
+            "classification": "rejected",
+            "remote_address": "192.0.2.2",
+            "protocol": protocol,
+            "remote_port": port,
+        }
+    )
+    return report
+
+
+def test_legitimate_native_counter_epoch_accepts_a_new_target(verifier):
+    before = report_snapshot()
+    after = new_target(report_snapshot(total=0, sampled=5, epoch="d"))
+    verifier.assert_new_rejection(before, after, "tcp", 19443)
+
+
+def test_native_sampled_catchup_does_not_require_extra_kernel_counter_growth(verifier):
+    before = report_snapshot()
+    after = new_target(report_snapshot(total=9, sampled=5))
+    verifier.assert_new_rejection(before, after, "tcp", 19443)
+
+
+def test_initial_ready_binds_the_same_raw_read_and_later_bytes_never_change(verifier):
+    report = report_snapshot()
+    ready = startup_ready(report)
+    raw = json.dumps(ready).encode()
+    state = verifier.EvidenceState()
+    state.accept(report, ready, raw)
+    assert state.ready_bytes == raw
+    later = report_snapshot(total=0, sampled=5, epoch="d")
+    later["resident_health"]["verification_sequence"] = 10
+    state.accept(later, ready, raw)
+    with pytest.raises(
+        verifier.VerificationError, match="fence_startup_readiness_changed"
+    ):
+        state.accept(later, ready, raw + b" ")
+
+
+def test_every_adjacent_observation_checks_counters_before_target_polling(verifier):
+    state = verifier.EvidenceState()
+    initial = report_snapshot()
+    ready = startup_ready(initial)
+    raw = json.dumps(ready).encode()
+    state.accept(initial, ready, raw)
+    state.accept(report_snapshot(total=11, sampled=6), ready, raw)
+    with pytest.raises(
+        verifier.VerificationError, match="fence_sampled_counter_regressed"
+    ):
+        state.accept(report_snapshot(total=12, sampled=5), ready, raw)
+
+
+@pytest.mark.parametrize("counter", [True, -1, 1.5, 2**53])
+def test_invalid_native_counter_types_are_fatal_even_without_a_target(
+    verifier, counter
+):
+    before = report_snapshot()
+    after = report_snapshot(sampled=counter)
+    with pytest.raises(verifier.VerificationError, match="fence_counters_invalid"):
+        verifier.assert_new_rejection(before, after, "tcp", 19443)
+
+
+def test_a_b_a_counter_epochs_use_adjacent_observations_not_probe_endpoints(verifier):
+    before = report_snapshot(total=9, sampled=4, epoch="a")
+    ready = startup_ready(before)
+    raw = json.dumps(ready).encode()
+    state = verifier.EvidenceState()
+    state.accept(before, ready, raw)
+    state.accept(report_snapshot(total=0, sampled=4, epoch="b"), ready, raw)
+    after = new_target(report_snapshot(total=1, sampled=5, epoch="a"))
+    state.accept(after, ready, raw)
+    verifier.assert_new_rejection(before, after, "tcp", 19443)
+
+
+def test_native_failure_diagnostic_is_staged_bounded_and_never_dumps_input(
+    verifier, monkeypatch, capsys
+):
+    marker = "private-sentinel-never-log"
+    report = report_snapshot()
+    report["untrusted_extra"] = marker
+    ready = startup_ready(report)
+    monkeypatch.setattr(verifier, "require_node24", lambda _node: None)
+    monkeypatch.setattr(verifier, "action_files", lambda _root: {})
+    record = {
+        "stage": "startup_ready",
+        "reason": "Fence resident health evidence is stale or has an invalid timestamp",
+        "native_code": marker,
+        "extra": marker,
+        "projections": [
+            {
+                "document": "startup_ready",
+                "health": {
+                    "reported_resident_status": "healthy",
+                    "verification_sequence": 9,
+                    "heartbeat_age_ms": 60000,
+                    "critical_findings": 0,
+                    "critical_codes": [marker],
+                    "critical_findings_truncated": False,
+                    "untrusted": marker,
+                },
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        verifier,
+        "_node",
+        lambda *_a, **_kw: SimpleNamespace(
+            returncode=1, stdout=json.dumps(record).encode(), stderr=marker.encode()
+        ),
+    )
+    with pytest.raises(
+        verifier.VerificationError, match="^upstream_fence_validation_failed$"
+    ):
+        verifier.validate_upstream(
+            Path("/node24"), Path("/action"), report, ready, {}, marker
+        )
+    output = capsys.readouterr().err
+    assert marker not in output
+    diagnostic = json.loads(output)
+    assert diagnostic["stage"] == "startup_ready"
+    assert diagnostic["reason"] == record["reason"]
+    assert diagnostic["native_code"] is None
+    assert diagnostic["unverified_health"][0]["heartbeat_age_ms"] == 60000
+    assert len(output.encode()) < 8192
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "runtime_evidence_schema_version",
+        "platform_profile_id",
+        "profile_realization_id",
+        "allow_github_artifacts",
+        "policy_hash_schema_version",
+        "policy_hash",
+        "base_ruleset_hash",
+        "protection_available",
+        "readiness_status",
+    ],
+)
+def test_current_report_must_keep_every_native_startup_identity_binding(
+    verifier, field
+):
+    first = report_snapshot()
+    ready = startup_ready(first)
+    raw = json.dumps(ready).encode()
+    state = verifier.EvidenceState()
+    state.accept(first, ready, raw)
+    changed = report_snapshot()
+    changed[field] = "changed"
+    with pytest.raises(
+        verifier.VerificationError, match="fence_startup_identity_changed"
+    ):
+        state.accept(changed, ready, raw)
+
+
+@pytest.mark.parametrize("change", ["pid", "workers"])
+def test_original_resident_and_worker_binding_cannot_change(verifier, change):
+    first = report_snapshot()
+    ready = startup_ready(first)
+    raw = json.dumps(ready).encode()
+    state = verifier.EvidenceState()
+    state.accept(first, ready, raw)
+    changed = report_snapshot()
+    if change == "pid":
+        changed["resident_health"]["resident_pid"] += 1
+    else:
+        changed["resident_health"]["workers"].pop()
+    with pytest.raises(
+        verifier.VerificationError, match="fence_startup_resident_changed"
+    ):
+        state.accept(changed, ready, raw)
+
+
+def test_adjacent_same_epoch_rollback_is_fatal_and_cannot_replace_last_accepted_report(
+    verifier,
+):
+    first = report_snapshot()
+    ready = startup_ready(first)
+    raw = json.dumps(ready).encode()
+    state = verifier.EvidenceState()
+    state.accept(first, ready, raw)
+    with pytest.raises(
+        verifier.VerificationError, match="fence_total_counter_regressed"
+    ):
+        state.accept(report_snapshot(total=8, sampled=5), ready, raw)
+    assert state.previous is first
+    with pytest.raises(verifier.VerificationError, match="fence_counter_epoch_invalid"):
+        verifier.counter_values({**first, "mode": "audit"})
+    with pytest.raises(verifier.VerificationError, match="fence_counter_epoch_invalid"):
+        verifier.counter_values({**first, "ruleset_hash": "bad"})
+
+
+def test_valid_absence_is_the_only_pending_target_condition(verifier):
+    first = report_snapshot()
+    unrelated_growth = report_snapshot(total=10, sampled=5)
+    with pytest.raises(verifier.RejectionPending, match="fence_rejection_missing"):
+        verifier.assert_new_rejection(first, unrelated_growth, "tcp", 19443)
+    target_without_sample = new_target(report_snapshot(total=10, sampled=4))
+    with pytest.raises(
+        verifier.VerificationError, match="fence_rejection_counter_missing"
+    ) as failure:
+        verifier.assert_new_rejection(first, target_without_sample, "tcp", 19443)
+    assert not isinstance(failure.value, verifier.RejectionPending)
+
+
+def test_same_raw_startup_buffer_is_bound_only_after_initial_native_validation(
+    verifier, monkeypatch
+):
+    first = report_snapshot()
+    ready = startup_ready(first)
+    raw = json.dumps(ready).encode()
+    current = [first, ready, {}, raw]
+    state = verifier.EvidenceState()
+    reads, validations = [], []
+    monkeypatch.setattr(
+        verifier, "_documents", lambda _path: (reads.append(True), tuple(current))[1]
+    )
+    monkeypatch.setattr(
+        verifier.subprocess,
+        "run",
+        lambda *_a, **_kw: SimpleNamespace(stdout=b"current-unit"),
+    )
+
+    def native(*_args, initial):
+        validations.append(initial)
+        current[3] = raw + b" "
+
+    monkeypatch.setattr(verifier, "validate_upstream", native)
+    verifier.validated_documents(
+        Path("/node"), Path("/root"), Path("/runtime"), "fixed", state
+    )
+    assert state.ready_bytes == raw and len(reads) == 1
+    with pytest.raises(
+        verifier.VerificationError, match="fence_startup_readiness_changed"
+    ):
+        verifier.validated_documents(
+            Path("/node"), Path("/root"), Path("/runtime"), "fixed", state
+        )
+    assert validations == [True]
+    current[3] = raw
+    verifier.validated_documents(
+        Path("/node"), Path("/root"), Path("/runtime"), "fixed", state
+    )
+    assert validations == [True, False]
+    fresh = verifier.EvidenceState()
+
+    def denied(*_args, **_kwargs):
+        raise verifier.VerificationError("native_rejected")
+
+    monkeypatch.setattr(verifier, "validate_upstream", denied)
+    with pytest.raises(verifier.VerificationError, match="native_rejected"):
+        verifier.validated_documents(
+            Path("/node"), Path("/root"), Path("/runtime"), "fixed", fresh
+        )
+    assert fresh.ready_bytes is None and fresh.previous is None
+
+
+def test_rollback_between_probe_brackets_is_fatal_before_later_effects(monkeypatch):
+    verifier, probes = verifier_fixture(monkeypatch)
+    original = verifier._documents
+    observations = [0]
+
+    def documents(path):
+        report, ready, dns, raw = original(path)
+        observations[0] += 1
+        if observations[0] == 2:
+            report["counters"].update(total_violations=10, sampled_violations=5)
+        return report, ready, dns, raw
+
+    monkeypatch.setattr(verifier, "_documents", documents)
+    with pytest.raises(
+        verifier.VerificationError, match="fence_sampled_counter_regressed"
+    ):
+        verifier.verify("a" * 16, "fence-synthetic", Path("/actual-node24"))
+    assert probes == ["allowed", "excluded"]
+
+
+@pytest.mark.parametrize(
+    "output", [b"not json", b"\xff", b"[]", b'{"stage":[],"reason":{}}']
+)
+def test_unexpected_native_failures_are_opaque_and_do_not_replace_the_original_failure(
+    verifier, output
+):
+    marker = b"private-sentinel-never-log"
+    result = SimpleNamespace(stdout=output, stderr=marker)
+    record = verifier.native_diagnostic(result, marker)
+    assert (
+        record["stage"] == "unknown" and record["reason"] == "unrecognized_native_error"
+    )
+    assert marker.decode() not in json.dumps(record)
+
+
+def test_unverified_projection_rejects_free_form_values_and_remains_bounded(verifier):
+    marker = "private-sentinel-never-log"
+    rows = [
+        {"document": marker, "health": {}},
+        {"document": "report", "health": None},
+        {
+            "document": "dns",
+            "health": {
+                "reported_resident_status": marker,
+                "verification_sequence": True,
+                "heartbeat_age_ms": 2**53,
+                "critical_findings": 65,
+                "critical_findings_truncated": marker,
+                "critical_codes": [marker],
+            },
+        },
+    ]
+    record = verifier.native_diagnostic(
+        SimpleNamespace(
+            stdout=json.dumps({"projections": rows * 100}).encode(), stderr=b""
+        ),
+        b"{}",
+    )
+    assert len(record["unverified_health"]) == 1
+    assert marker not in json.dumps(record)
+    assert record["unverified_health"][0] == {
+        "document": "dns",
+        "reported_resident_status": "unavailable",
+        "verification_sequence": None,
+        "heartbeat_age_ms": None,
+        "critical_findings": None,
+        "critical_findings_truncated": None,
+    }
