@@ -30,7 +30,6 @@ from orchestrator.typesafe_routing.questions import (
 )
 from orchestrator.typesafe_routing.runner import (
     await_decision,
-    cancel_routing,
     start_routing,
 )
 
@@ -53,6 +52,7 @@ from .contract import (
     ProviderSeam,
     ToolSeam,
     assert_credential_free,
+    cancel_and_wait,
 )
 
 _HARNESS_ID = "typesafe_jev_latest"
@@ -77,6 +77,7 @@ class TypeSafeRoutingHarness(LifecycleSeam, ToolSeam, ProviderSeam, AccountingSe
     model: str = TYPESAFE_MODEL
     budget_seconds: float = TURN_BUDGET_SECONDS
     attempt_timeout_ms: int = ATTEMPT_TIMEOUT_MS
+    cancel_timeout_seconds: float = 5
 
     @property
     def identity(self) -> HarnessIdentity:
@@ -232,6 +233,7 @@ class TypeSafeRoutingHarness(LifecycleSeam, ToolSeam, ProviderSeam, AccountingSe
             request=request,
             task=task,
             started_monotonic=self.clock(),
+            runner_state=getattr(task, "astral_routing_progress", None),
         )
 
     async def await_result(self, execution: HarnessExecution) -> HarnessResult:
@@ -248,30 +250,37 @@ class TypeSafeRoutingHarness(LifecycleSeam, ToolSeam, ProviderSeam, AccountingSe
                 return self._terminal_result(
                     execution,
                     HarnessOutcome.CANCELLED,
-                    attempts=0,
+                    attempts=self._attempts(execution),
                     credential_outcome=None,
                     detail={"runner_outcome": "cancelled"},
                     decision=None,
                 )
             raise
+        if not task.done():
+            await cancel_and_wait(task, timeout_seconds=self.cancel_timeout_seconds)
         return self._map_routing_outcome(execution, routing_outcome)
 
     async def cancel(self, execution: HarnessExecution) -> HarnessResult:
         task = execution.task
-        if not task.done():
-            cancel_routing(task)
-        if not task.done():
-            await asyncio.wait({task})
+        await cancel_and_wait(task, timeout_seconds=self.cancel_timeout_seconds)
         if task.cancelled():
             return self._terminal_result(
                 execution,
                 HarnessOutcome.CANCELLED,
-                attempts=0,
+                attempts=self._attempts(execution),
                 credential_outcome=None,
                 detail={"runner_outcome": "cancelled"},
                 decision=None,
             )
         return await self.await_result(execution)
+
+    @staticmethod
+    def _attempts(execution, fallback=0):
+        return (
+            execution.runner_state.attempts
+            if execution.runner_state is not None
+            else fallback
+        )
 
     def _map_routing_outcome(
         self, execution: HarnessExecution, routing_outcome: Any
@@ -288,7 +297,7 @@ class TypeSafeRoutingHarness(LifecycleSeam, ToolSeam, ProviderSeam, AccountingSe
         return self._terminal_result(
             execution,
             outcome,
-            attempts=routing_outcome.attempts,
+            attempts=self._attempts(execution, routing_outcome.attempts),
             credential_outcome=routing_outcome.credential_outcome,
             detail={"runner_outcome": runner_outcome.value},
             decision=routing_outcome.decision,

@@ -11,6 +11,13 @@ from dataclasses import dataclass
 import time
 from typing import Any, Awaitable, Callable, Mapping, Optional, Tuple
 
+from llm_config.invocation import (
+    InvocationContractError,
+    InvocationResult,
+    InvocationState,
+    invoke_accounted,
+    usage_tokens,
+)
 from llm_config.local_endpoint import classify_endpoint
 from llm_config.providers import CUSTOM_PROVIDER_KEY, all_presets, resolve_base_url
 
@@ -33,6 +40,7 @@ from .contract import (
     ProviderSeam,
     ToolSeam,
     assert_credential_free,
+    cancel_and_wait,
 )
 
 _HARNESS_ID = "standard_openai_compatible"
@@ -43,25 +51,20 @@ _ADAPTER_VERSION = "1.0.0"
 
 _TRANSPORT_KEYS = frozenset({"invoke"})
 
-ModelInvoke = Callable[[], Awaitable[Tuple[Optional[Any], Optional[Any]]]]
+ModelInvoke = Callable[
+    [], Awaitable[InvocationResult | Tuple[Optional[Any], Optional[Any]]]
+]
 
 
 def _usage_tokens(usage: Optional[Any]) -> Optional[int]:
-    if usage is None:
-        return None
-    if isinstance(usage, Mapping):
-        value = usage.get("total_tokens")
-    else:
-        value = getattr(usage, "total_tokens", None)
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value
+    return usage_tokens(usage)
 
 
 @dataclass
 class StandardLLMHarness(LifecycleSeam, ToolSeam, ProviderSeam, AccountingSeam):
     invoke: Optional[ModelInvoke] = None
     clock: Callable[[], float] = time.monotonic
+    cancel_timeout_seconds: float = 5
 
     @property
     def identity(self) -> HarnessIdentity:
@@ -161,6 +164,7 @@ class StandardLLMHarness(LifecycleSeam, ToolSeam, ProviderSeam, AccountingSeam):
         detail: Optional[Mapping[str, str]] = None,
         credential: Optional[str] = None,
         total_tokens: Optional[int] = None,
+        usage_complete: bool = False,
     ) -> HarnessAccounting:
         elapsed_ms = max(0, int((self.clock() - started_monotonic) * 1000))
         bounded_detail = dict(detail or {})
@@ -174,69 +178,57 @@ class StandardLLMHarness(LifecycleSeam, ToolSeam, ProviderSeam, AccountingSeam):
             surface_tools=surface.tool_count,
             total_tokens=total_tokens,
             detail=bounded_detail,
+            usage_complete=usage_complete,
         )
 
     async def start(self, request: HarnessTurnRequest) -> HarnessExecution:
         invoke = self._invoke_for(request)
-        task = asyncio.ensure_future(invoke())
+        state = InvocationState()
+        task = asyncio.ensure_future(invoke_accounted(invoke, state))
         return HarnessExecution(
             identity=self.identity,
             request=request,
             task=task,
             started_monotonic=self.clock(),
+            runner_state=state,
         )
 
     async def await_result(self, execution: HarnessExecution) -> HarnessResult:
-        task = execution.task
         try:
-            message, usage = await task
+            result = await execution.task
         except asyncio.CancelledError:
-            if task.cancelled() and asyncio.current_task().cancelling() == 0:
-                return self._terminal_result(
-                    execution,
-                    HarnessOutcome.CANCELLED,
-                    attempts=0,
-                    detail={"runner_outcome": "cancelled"},
-                )
-            raise
-        except Exception as error:
-            return self._terminal_result(
-                execution,
-                HarnessOutcome.FAILED,
-                attempts=1,
-                detail={"runner_outcome": "failed"},
-                error_class=type(error).__name__,
-            )
-        if message is None:
-            return self._terminal_result(
-                execution,
-                HarnessOutcome.DENIED,
-                attempts=1,
-                credential_outcome="unavailable",
-                detail={"runner_outcome": "denied_no_credentials"},
-            )
+            if execution.task.cancelled() and asyncio.current_task().cancelling() == 0:
+                result = execution.runner_state.result("cancelled")
+            else:
+                raise
+        except InvocationContractError:
+            raise HarnessContractError(
+                "standard-LLM invocation requires an accounted runner result"
+            ) from None
+        outcome = HarnessOutcome(result.outcome)
+        reason = (
+            "denied_no_credentials"
+            if result.credential_outcome == "unavailable"
+            else result.outcome
+        )
         return self._terminal_result(
             execution,
-            HarnessOutcome.SUCCEEDED,
-            attempts=1,
-            detail={"runner_outcome": "succeeded"},
-            total_tokens=_usage_tokens(usage),
-            decision=(message, usage),
+            outcome,
+            attempts=result.attempts,
+            detail={"runner_outcome": reason},
+            credential_outcome=result.credential_outcome,
+            total_tokens=result.total_tokens,
+            usage_complete=result.usage_complete,
+            decision=(result.message, result.usage)
+            if outcome is HarnessOutcome.SUCCEEDED
+            else None,
+            error_class=result.error_class,
         )
 
     async def cancel(self, execution: HarnessExecution) -> HarnessResult:
-        task = execution.task
-        if not task.done():
-            task.cancel()
-        if not task.done():
-            await asyncio.wait({task})
-        if task.cancelled():
-            return self._terminal_result(
-                execution,
-                HarnessOutcome.CANCELLED,
-                attempts=0,
-                detail={"runner_outcome": "cancelled"},
-            )
+        await cancel_and_wait(
+            execution.task, timeout_seconds=self.cancel_timeout_seconds
+        )
         return await self.await_result(execution)
 
     def _terminal_result(
@@ -248,6 +240,7 @@ class StandardLLMHarness(LifecycleSeam, ToolSeam, ProviderSeam, AccountingSeam):
         detail: Mapping[str, str],
         credential_outcome: Optional[str] = None,
         total_tokens: Optional[int] = None,
+        usage_complete: bool = False,
         decision: Optional[Any] = None,
         error_class: Optional[str] = None,
     ) -> HarnessResult:
@@ -260,6 +253,7 @@ class StandardLLMHarness(LifecycleSeam, ToolSeam, ProviderSeam, AccountingSeam):
             credential_outcome=credential_outcome,
             detail=detail,
             total_tokens=total_tokens,
+            usage_complete=usage_complete,
         )
         return HarnessResult(
             outcome=outcome,

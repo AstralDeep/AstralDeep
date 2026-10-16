@@ -44,8 +44,7 @@ class HarnessCatalog:
             validate_catalog_deployment(deployment)
             if deployment.identity.harness_id in seen:
                 raise HarnessContractError(
-                    f"duplicate harness deployment: "
-                    f"{deployment.identity.harness_id!r}"
+                    f"duplicate harness deployment: {deployment.identity.harness_id!r}"
                 )
             seen.add(deployment.identity.harness_id)
             defaults += 1 if deployment.default else 0

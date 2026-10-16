@@ -7,6 +7,7 @@ selection.py gates profile rollout, and conformance.py verifies adapters.
 from __future__ import annotations
 
 import asyncio
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 import re
@@ -29,6 +30,29 @@ class HarnessContractError(ValueError):
     pass
 
 
+class HarnessCancellationPending(HarnessContractError):
+    pass
+
+
+async def cancel_and_wait(task, *, timeout_seconds):
+    if (
+        type(timeout_seconds) not in (int, float)
+        or not math.isfinite(timeout_seconds)
+        or not 0 <= timeout_seconds <= 30
+    ):
+        raise HarnessContractError(
+            "cancellation budget must be between zero and thirty seconds"
+        )
+    if not task.done() and task.cancelling() == 0:
+        task.cancel()
+    if not task.done():
+        done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
+        if not done:
+            raise HarnessCancellationPending(
+                "runner is still running after cancellation budget"
+            )
+
+
 class HarnessOutcome(str, Enum):
     SUCCEEDED = "succeeded"
     FALLBACK = "fallback"
@@ -48,8 +72,7 @@ class HarnessIdentity:
     def __post_init__(self) -> None:
         if not _BOUNDED_ID_RE.fullmatch(self.harness_id):
             raise HarnessContractError(
-                "harness_id must be bounded lowercase snake_case: "
-                f"{self.harness_id!r}"
+                f"harness_id must be bounded lowercase snake_case: {self.harness_id!r}"
             )
         if not _BOUNDED_ID_RE.fullmatch(self.profile):
             raise HarnessContractError(
@@ -148,9 +171,7 @@ class HarnessTurnRequest:
 
     def __post_init__(self) -> None:
         if not self.user_id or len(self.user_id) > MAX_USER_ID_CHARS:
-            raise HarnessContractError(
-                f"user_id must be 1..{MAX_USER_ID_CHARS} chars"
-            )
+            raise HarnessContractError(f"user_id must be 1..{MAX_USER_ID_CHARS} chars")
         if self.transport is not None and not isinstance(self.transport, Mapping):
             raise HarnessContractError("transport must be a mapping when supplied")
 
@@ -161,6 +182,7 @@ class HarnessExecution:
     request: HarnessTurnRequest
     task: "asyncio.Task[Any]"
     started_monotonic: float
+    runner_state: Any = field(default=None, repr=False)
 
     @property
     def running(self) -> bool:
@@ -177,14 +199,19 @@ class HarnessAccounting:
     surface_tools: int = 0
     total_tokens: Optional[int] = None
     detail: Mapping[str, str] = field(default_factory=dict)
+    usage_complete: bool = False
 
     def __post_init__(self) -> None:
-        if self.attempts < 0:
+        if type(self.attempts) is not int or self.attempts < 0:
             raise HarnessContractError("accounting attempts must not be negative")
-        if self.elapsed_ms < 0:
+        if type(self.elapsed_ms) is not int or self.elapsed_ms < 0:
             raise HarnessContractError("accounting elapsed_ms must not be negative")
-        if self.total_tokens is not None and self.total_tokens < 0:
+        if self.total_tokens is not None and (
+            type(self.total_tokens) is not int or self.total_tokens < 0
+        ):
             raise HarnessContractError("accounting total_tokens must not be negative")
+        if type(self.usage_complete) is not bool:
+            raise HarnessContractError("accounting usage_complete must be boolean")
         assert_credential_free(self.detail)
 
 
@@ -297,6 +324,7 @@ __all__ = (
     "AccountingSeam",
     "HarnessAccounting",
     "HarnessAgentOption",
+    "HarnessCancellationPending",
     "HarnessContractError",
     "HarnessDeployment",
     "HarnessExecution",

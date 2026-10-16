@@ -16,6 +16,8 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from llm_config.invocation import InvocationResult  # noqa: E402
+
 from orchestrator.harness import (  # noqa: E402
     HARNESS_CONTRACT_VERSION,
     AccountingSeam,
@@ -104,8 +106,11 @@ def _typesafe_harness(**overrides: Any) -> TypeSafeRoutingHarness:
 
 def _typesafe_transport(script: str) -> dict[str, Any]:
     if script == "success":
-        return {"client": FakeTypeSafeClient(default=high_confidence(AGENT_ID, TOOL_NAME))}
+        return {
+            "client": FakeTypeSafeClient(default=high_confidence(AGENT_ID, TOOL_NAME))
+        }
     if script == "slow":
+
         async def _block(seconds: float) -> None:
             del seconds
             await asyncio.Event().wait()
@@ -138,9 +143,7 @@ async def _run_typesafe(
     script: str, harness: TypeSafeRoutingHarness | None = None, **request_overrides: Any
 ):
     harness = harness or _typesafe_harness()
-    request = _turn_request(
-        transport=_typesafe_transport(script), **request_overrides
-    )
+    request = _turn_request(transport=_typesafe_transport(script), **request_overrides)
     execution = await harness.start(request)
     return await harness.await_result(execution), execution, harness
 
@@ -280,7 +283,9 @@ class TestAccounting:
 
     def test_assert_credential_free_rejects_request_credential_echo(self) -> None:
         with pytest.raises(HarnessContractError):
-            assert_credential_free({"note": f"used {CREDENTIAL}"}, credential=CREDENTIAL)
+            assert_credential_free(
+                {"note": f"used {CREDENTIAL}"}, credential=CREDENTIAL
+            )
 
     def test_assert_credential_free_rejects_plain_credential_echo(self) -> None:
         plain = "plain-conformance-credential-value"
@@ -300,17 +305,37 @@ class TestDeploymentValidation:
         harness = StandardLLMHarness()
         identity = harness.identity
         with pytest.raises(HarnessContractError, match="lifecycle"):
-            HarnessDeployment(identity=identity, lifecycle=None, tools=harness,
-                              provider=harness, accounting=harness)
+            HarnessDeployment(
+                identity=identity,
+                lifecycle=None,
+                tools=harness,
+                provider=harness,
+                accounting=harness,
+            )
         with pytest.raises(HarnessContractError, match="tools"):
-            HarnessDeployment(identity=identity, lifecycle=harness, tools=None,
-                              provider=harness, accounting=harness)
+            HarnessDeployment(
+                identity=identity,
+                lifecycle=harness,
+                tools=None,
+                provider=harness,
+                accounting=harness,
+            )
         with pytest.raises(HarnessContractError, match="provider"):
-            HarnessDeployment(identity=identity, lifecycle=harness, tools=harness,
-                              provider=None, accounting=harness)
+            HarnessDeployment(
+                identity=identity,
+                lifecycle=harness,
+                tools=harness,
+                provider=None,
+                accounting=harness,
+            )
         with pytest.raises(HarnessContractError, match="accounting"):
-            HarnessDeployment(identity=identity, lifecycle=harness, tools=harness,
-                              provider=harness, accounting=None)
+            HarnessDeployment(
+                identity=identity,
+                lifecycle=harness,
+                tools=harness,
+                provider=harness,
+                accounting=None,
+            )
 
     def test_deployment_rejects_seam_missing_members(self) -> None:
         class IncompleteLifecycle:
@@ -403,9 +428,7 @@ class TestProfileSelection:
     def test_selection_unavailable_without_qualified_rollout(self) -> None:
         catalog = default_catalog()
         with pytest.raises(HarnessSelectionUnavailable, match="qualified"):
-            catalog.select(
-                "typesafe_jev_latest", flags=Flags(**{ROLLOUT_FLAG: True})
-            )
+            catalog.select("typesafe_jev_latest", flags=Flags(**{ROLLOUT_FLAG: True}))
 
     def test_selection_available_with_flag_and_rollout_record(self) -> None:
         catalog = HarnessCatalog(
@@ -536,7 +559,8 @@ class TestTypeSafeAdapter:
 
     async def test_flag_disabled_preserves_existing_skip(self) -> None:
         result, _execution, _harness = await _run_typesafe(
-            "success", harness=_typesafe_harness(flags=Flags(**{"typesafe_routing": False}))
+            "success",
+            harness=_typesafe_harness(flags=Flags(**{"typesafe_routing": False})),
         )
         assert result.outcome is HarnessOutcome.SKIPPED
         assert result.skip_reason == "skipped_disabled"
@@ -654,9 +678,7 @@ class TestTypeSafeAdapter:
                 HarnessAgentOption(AGENT_ID, "Agent", "x" * 500),
                 HarnessAgentOption("idle-agent", "Idle", "no tools"),
             ),
-            tools=(
-                HarnessToolOption(TOOL_NAME, AGENT_ID, "y" * 500),
-            ),
+            tools=(HarnessToolOption(TOOL_NAME, AGENT_ID, "y" * 500),),
         )
         surface = harness.surface(request)
         assert surface.agent_count == 1
@@ -668,9 +690,7 @@ class TestTypeSafeAdapter:
     async def test_surface_message_bound_applies_to_dispatch(self) -> None:
         harness = _typesafe_harness()
         fake = FakeTypeSafeClient(default=high_confidence(AGENT_ID, TOOL_NAME))
-        request = _turn_request(
-            message="m" * 5000, transport={"client": fake}
-        )
+        request = _turn_request(message="m" * 5000, transport={"client": fake})
         execution = await harness.start(request)
         await harness.await_result(execution)
         sent_state = fake.calls[0].state
@@ -714,7 +734,9 @@ class TestTypeSafeAdapter:
 class TestStandardAdapter:
     async def test_success_maps_usage_accounting(self) -> None:
         async def _invoke():
-            return "completion", {"total_tokens": 11}
+            return InvocationResult(
+                "succeeded", 1, "completion", {"total_tokens": 11}, 11, True
+            )
 
         harness = StandardLLMHarness()
         request = _turn_request(transport={"invoke": _invoke})
@@ -740,7 +762,7 @@ class TestStandardAdapter:
 
     async def test_denied_when_invocation_reports_no_credentials(self) -> None:
         async def _deny():
-            return None, None
+            return InvocationResult("denied", 0, credential_outcome="unavailable")
 
         harness = StandardLLMHarness()
         request = _turn_request(transport={"invoke": _deny})
@@ -753,7 +775,7 @@ class TestStandardAdapter:
 
     async def test_failure_records_error_class_without_message(self) -> None:
         async def _fail():
-            raise ValueError("secret user content should not be recorded")
+            return InvocationResult("failed", 1, error_class="ValueError")
 
         harness = StandardLLMHarness()
         request = _turn_request(transport={"invoke": _fail})
@@ -771,7 +793,7 @@ class TestStandardAdapter:
 
     async def test_transport_rejects_unknown_keys(self) -> None:
         async def _invoke():
-            return "m", None
+            return InvocationResult("succeeded", 1, "m")
 
         harness = StandardLLMHarness(invoke=_invoke)
         with pytest.raises(HarnessContractError, match="unknown standard-LLM"):
@@ -782,7 +804,7 @@ class TestStandardAdapter:
 
         async def _invoke():
             calls.append(1)
-            return "m", None
+            return InvocationResult("succeeded", 1, "m")
 
         harness = StandardLLMHarness(invoke=_invoke)
         execution = await harness.start(_turn_request())
@@ -833,7 +855,7 @@ class TestStandardAdapter:
 
     async def test_cancel_after_completion_returns_real_outcome(self) -> None:
         async def _invoke():
-            return "m", None
+            return InvocationResult("succeeded", 1, "m")
 
         harness = StandardLLMHarness()
         request = _turn_request(transport={"invoke": _invoke})
@@ -879,7 +901,7 @@ class TestStandardAdapter:
 
     async def test_accounting_records_surface_sizes(self) -> None:
         async def _invoke():
-            return "m", None
+            return InvocationResult("succeeded", 1, "m")
 
         harness = StandardLLMHarness()
         request = _turn_request(transport={"invoke": _invoke})

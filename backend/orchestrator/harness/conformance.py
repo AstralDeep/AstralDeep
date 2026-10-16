@@ -10,6 +10,8 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional, Tuple
 
+from llm_config.invocation import InvocationResult
+
 from .contract import (
     MAX_SURFACE_DESCRIPTION_CHARS,
     HarnessAgentOption,
@@ -66,12 +68,16 @@ def _typesafe_request(script: str) -> HarnessTurnRequest:
     transport: dict[str, Any] = {"circuit": UserCircuit()}
     api_key: Optional[str] = CREDENTIAL
     if script == "success":
-        transport["client"] = FakeTypeSafeClient(default=high_confidence(AGENT_ID, TOOL_NAME))
+        transport["client"] = FakeTypeSafeClient(
+            default=high_confidence(AGENT_ID, TOOL_NAME)
+        )
     elif script == "denied":
         api_key = None
     elif script == "slow":
         transport["client"] = FakeTypeSafeClient(
-            default=high_confidence(AGENT_ID, TOOL_NAME), latency=0.05, sleep=_block_forever
+            default=high_confidence(AGENT_ID, TOOL_NAME),
+            latency=0.05,
+            sleep=_block_forever,
         )
     elif script == "transient_failure":
         transport["client"] = FakeTypeSafeClient(
@@ -100,16 +106,20 @@ def _standard_request(script: str) -> HarnessTurnRequest:
     agents, tools = _base_options()
 
     async def _succeed():
-        return "conformance completion", {"total_tokens": 7}
+        return InvocationResult(
+            "succeeded", 1, "conformance completion", {"total_tokens": 7}, 7, True
+        )
 
     async def _deny():
-        return None, None
+        return InvocationResult("denied", 0, credential_outcome="unavailable")
 
     async def _transient():
-        raise TimeoutError("scripted transient provider timeout")
+        return InvocationResult("failed", 3, error_class="TimeoutError")
 
     async def _auth_failure():
-        raise PermissionError("scripted credential rejection")
+        return InvocationResult(
+            "failed", 1, credential_outcome="rejected", error_class="PermissionError"
+        )
 
     async def _slow():
         await asyncio.Event().wait()
@@ -122,7 +132,9 @@ def _standard_request(script: str) -> HarnessTurnRequest:
         "auth_failure": _auth_failure,
     }
     if script not in scripts:
-        raise HarnessContractError(f"unknown standard-LLM conformance script: {script!r}")
+        raise HarnessContractError(
+            f"unknown standard-LLM conformance script: {script!r}"
+        )
     return HarnessTurnRequest(
         user_id=USER,
         message=MESSAGE,
@@ -298,9 +310,7 @@ async def _scenario_tool_surface_bounded(deployment: HarnessDeployment) -> None:
                 "the tool seam must never widen the authorized agent set"
             )
             assert len(option.description) <= MAX_SURFACE_DESCRIPTION_CHARS
-    empty = deployment.tools.surface(
-        HarnessTurnRequest(user_id=USER, message=MESSAGE)
-    )
+    empty = deployment.tools.surface(HarnessTurnRequest(user_id=USER, message=MESSAGE))
     assert empty.tool_count == 0 and empty.agent_count == 0, (
         "an optionless turn must produce an empty surface"
     )
