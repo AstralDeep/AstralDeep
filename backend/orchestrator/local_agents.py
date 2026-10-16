@@ -37,6 +37,10 @@ _FHIR_AGENT_DIRS = (
     "fhir",
 )
 
+_CRESCO_AGENT_DIRS = (
+    "cresco",
+)
+
 FIRST_PARTY_PUBLIC_AGENT_IDS = (
     "connectors-1",
     "dice-roller-1",
@@ -51,6 +55,7 @@ FIRST_PARTY_PUBLIC_AGENT_IDS = (
     "computer-use-1",
     "gaiakeep-1",
     "fhir-1",
+    "cresco-1",
     "evidence-1",
 )
 
@@ -158,6 +163,17 @@ async def register_built_ins(orch) -> List[str]:
             dirs.append("gaiakeep")
     except Exception:
         logger.debug("GaiaKeep flag check failed; agent remains disabled", exc_info=True)
+    try:
+        from shared.feature_flags import flags
+        if flags.is_enabled("cresco"):
+            root = _agents_root()
+            for name in _CRESCO_AGENT_DIRS:
+                d = os.path.join(root, name)
+                if (name not in dirs and os.path.isdir(d)
+                        and os.path.exists(os.path.join(d, f"{name}_agent.py"))):
+                    dirs.append(name)
+    except Exception:  # noqa: BLE001
+        logger.debug("Cresco flag check failed; agent remains disabled", exc_info=True)
     try:
         from shared.feature_flags import flags
         if flags.is_enabled("fhir"):
