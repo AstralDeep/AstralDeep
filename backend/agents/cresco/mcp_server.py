@@ -168,6 +168,12 @@ class MCPServer:
             response = self._fault_response("", name, public, exc.state, exc.detail,
                                             retryable=exc.retryable, user_id=user_id)
             return {"_error": response.error}
+        except Exception:
+            response = self._fault_response(
+                "", name, public, "protocol", "unexpected_handler_failure",
+                retryable=False, user_id=user_id,
+            )
+            return {"_error": response.error}
         import os
 
         secrets = tuple(secret for secret in [os.getenv("CRESCO_SERVICE_KEY", "")] if secret)

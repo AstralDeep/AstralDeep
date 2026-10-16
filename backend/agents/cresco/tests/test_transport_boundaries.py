@@ -37,6 +37,31 @@ def test_fingerprint_never_disables_certificate_validation():
     assert context.check_hostname
 
 
+@pytest.mark.parametrize("pinned", [False, True])
+def test_failed_connection_construction_closes_the_owned_tls_socket(
+    staged_fabric, bridge_env, monkeypatch, pinned,
+):
+    from agents.cresco import wsapi_client
+
+    monkeypatch.setenv("CRESCO_TLS_FINGERPRINT", staged_fabric.fingerprint if pinned else "")
+    real_connect = wsapi_client.connect
+    owned = []
+
+    def refuse_construction(sock, *_arguments, **_keywords):
+        owned.append(sock)
+        raise ssl.SSLError("synthetic connection construction refusal")
+
+    def opening_failure(*arguments, **keywords):
+        return real_connect(*arguments, **keywords, create_connection=refuse_construction)
+
+    monkeypatch.setattr(wsapi_client, "connect", opening_failure)
+    with pytest.raises(FabricFault) as refused:
+        WsapiClient(FabricConfig.from_env())._connect()
+    assert refused.value.state == "tls"
+    assert len(owned) == 1 and owned[0].fileno() == -1
+    assert staged_fabric.upgrade_credentials == [] and staged_fabric.requests == []
+
+
 def test_bulk_expansion_is_refused_before_json_materialization():
     encoded = base64.b64encode(gzip.compress(json.dumps({"text": "x" * 4_194_304}).encode())).decode()
     with pytest.raises(ValueError):
