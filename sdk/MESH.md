@@ -68,6 +68,8 @@ or save them in reports. An Ed25519 public JWK has exactly `kty=OKP`,
 | `POST /api/mesh/invitations` | Owner IAM or proof-bound member with `mesh:confirm`; `label`, `device_key`, `scopes`, optional `ttl_seconds` | Public invitation and one-time payload |
 | `POST /api/mesh/invitations/{id}/confirm` | Owner IAM plus matching server custody, or another current confirming member | Confirmed, attenuated invitation |
 | `POST /api/mesh/invitations/{id}/reject` | Owner IAM or current confirming member | Rejected invitation and canceled challenge |
+| `POST /api/mesh/invitations/{id}/remove` | Owner IAM | Removed invitation; a live confirmed grant is canceled first; pending invitations must be rejected instead |
+| `POST /api/mesh/members/{id}/label` | Owner IAM; `label` (1-64 characters) | Renamed active member; revocation epochs and member tokens are unchanged |
 | `POST /api/mesh/enrollment/redeem` | `payload`, Ed25519 `signature` over the decoded invitation challenge, optional `agent_id` | `token_type=DPoP`, short-lived `access_token`, public member |
 | `POST /api/mesh/nonce` | `owner_id`, `member_id` | Single-use nonce, valid for 60 seconds; bounded issuance |
 | `POST /api/mesh/session` | `owner_id`, `member_id`, `nonce`, `proof`, optional `agent_id` | New proof-bound member token; the previous token is invalidated |
@@ -128,8 +130,9 @@ its key. Revoked devices cannot refresh. Owner logout, replacement of the
 custodied session, hard expiry, or an unavailable IAM refresh refuses new
 sessions; current dispatch also refuses dead custody. There is no offline IAM
 fallback or durable owner bearer on a device. Existing web/native human clients
-retain their ordinary owner IAM flows; this API contribution adds no shared UI
-or primitive contract.
+retain their ordinary owner IAM flows. Their Mesh devices surface manages
+invitations and member access; SDK member tool transport remains separate from
+native owner management.
 
 The nonce and proof construction follows [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449.html).
 User authority uses the existing [Keycloak RFC 8693 token exchange](https://www.keycloak.org/securing-apps/token-exchange).
@@ -164,3 +167,38 @@ Local deterministic tests use real PostgreSQL and signed synthetic Keycloak
 responses at only the external HTTP boundary. A local pass does not establish
 live Keycloak staging or exact-head hosted qualification; retain those receipts
 separately before merging.
+
+The shared Mesh devices surface composes owner management controls for creation,
+confirmation, rejection, rename, revocation, and invitation removal. These writes
+require a current selected server session and the ordinary authenticated socket
+dispatcher. A bare owner bearer does not invent session custody. The one-time
+creation payload and QR presentation are ephemeral and bound to that owner session.
+The joining device keeps its private key; the server accepts only its public JWK.
+
+To join through the shared clients, sign in on the new device and open Mesh
+devices. Leave the optional other-device public identity empty when creating
+the request on that device. It generates and retains its own Ed25519 key before
+submitting only the public identity. Confirm the displayed fingerprint and
+request on another signed-in owner device, then return the one-time link to the
+original joining device and choose Complete enrollment. Alternatively, the
+joining device can copy its public identity for another owner device to create
+the request. Copying an owner device's private key is never part of enrollment.
+
+The server serves `/enroll` and scrubs the one-time URL fragment before loading
+the enrollment controls. The link is valid only for the configured server and
+original key. Browser custody uses an account-scoped nonextractable WebCrypto
+key in IndexedDB. Windows custody uses current-user DPAPI; Apple and Android use
+their platform-protected local stores. Clients prove the exact decoded challenge
+and verify the returned active member through a separate cookie-free DPoP `/me`
+request before saving its public member ID. Member access tokens remain in memory
+and are discarded after verification. Account changes, connection retirement,
+wrong keys, missing custody, rejected grants and verification failures refuse
+success. A consumed grant whose final verification cannot finish must be checked
+in Mesh devices and revoked/reissued when necessary; do not report it as enrolled.
+
+The pinned Plane credential-list facade returns at most 1,000 rows. A saturated
+owner/namespace read therefore fails closed with `mesh_inventory_incomplete`
+(HTTP 503), before enrollment or session admission can conclude an identity is
+unused. Revoked history counts toward that bound. Inventory rendering also refuses
+partial results. A future complete owner-scoped facade is required to support
+larger histories; increasing this limit in Deep would not prove completeness.

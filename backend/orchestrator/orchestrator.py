@@ -52,6 +52,11 @@ from orchestrator.credential_manager import CredentialManager
 from orchestrator.delegation import DelegationService
 from orchestrator.tool_security import ToolSecurityAnalyzer
 from orchestrator.compaction import compact_messages, estimate_overhead_tokens
+from llm_config.tool_continuation import (
+    is_gemini_continuation_profile,
+    merge_continuation_signature,
+    validate_continuation_wire,
+)
 from orchestrator import evidence_context
 from orchestrator import context_engineering
 from orchestrator import datamarking
@@ -5536,6 +5541,7 @@ class Orchestrator:
             import httpx
             from a2a.client import A2ACardResolver
             from shared.a2a_bridge import a2a_card_to_custom
+            from shared.a2a_codec import A2ANegotiationError, resolve_request_interface
             from orchestrator.agent_peer_auth import agent_auth_headers
 
             # Timeout required: a hostile card endpoint could hang this
@@ -5545,6 +5551,15 @@ class Orchestrator:
                 resolver = A2ACardResolver(http_client, base_url)
                 a2a_card = await resolver.get_agent_card()
 
+            try:
+                resolve_request_interface(a2a_card, base_url)
+            except A2ANegotiationError as exc:
+                logger.warning(
+                    "A2A agent at %s advertises no dispatchable interface; "
+                    "refusing registration: %s", base_url, exc,
+                )
+                return
+
             custom_card = a2a_card_to_custom(a2a_card)
             agent_id = custom_card.agent_id
 
@@ -5552,13 +5567,15 @@ class Orchestrator:
                 logger.debug(f"A2A agent {agent_id} already connected")
                 return
 
-            self.a2a_clients[agent_id] = base_url
-            self.a2a_agent_cards[agent_id] = a2a_card
-            self.agent_urls[agent_id] = base_url
-
             register_msg = RegisterAgent(agent_card=custom_card,
                                          api_key=os.getenv("AGENT_API_KEY") or None)
             await self.register_agent(None, register_msg)
+            if self.agent_cards.get(agent_id) is not custom_card:
+                return
+
+            self.a2a_clients[agent_id] = base_url
+            self.a2a_agent_cards[agent_id] = a2a_card
+            self.agent_urls[agent_id] = base_url
 
             logger.info(f"External agent discovered via A2A (WebSocket unavailable): {agent_id} at {base_url}")
 
@@ -5569,6 +5586,7 @@ class Orchestrator:
         try:
             import httpx
             from a2a.client import A2ACardResolver
+            from shared.a2a_codec import A2ANegotiationError, resolve_request_interface
             from orchestrator.agent_peer_auth import agent_auth_headers
 
             a2a_url = f"{base_url}/a2a"
@@ -5577,6 +5595,13 @@ class Orchestrator:
                                          timeout=5.0) as http_client:
                 resolver = A2ACardResolver(http_client, a2a_url)
                 a2a_card = await resolver.get_agent_card()
+
+            try:
+                resolve_request_interface(a2a_card, base_url)
+            except A2ANegotiationError as exc:
+                logger.debug(
+                    "A2A backup client for %s skipped: %s", agent_id, exc)
+                return
 
             self.a2a_clients[agent_id] = base_url
             self.a2a_agent_cards[agent_id] = a2a_card
@@ -12220,8 +12245,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     def _adapt_conversation_snapshot(self, websocket, snapshot: Dict[str, Any], *, cache: bool = True):
         from orchestrator.canvas_consolidation import consolidate_canvas
-        from rote.adapter import ComponentAdapter
-        from rote.capabilities import DeviceType
 
         canonical_canvas = snapshot["canvas"]["components"]
         presentation_canvas = consolidate_canvas(canonical_canvas)
@@ -12234,8 +12257,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         adapted_canvas = self.rote.adapt(websocket, canonical_canvas, cache=cache)
         profile = self.rote.get_profile(websocket)
         if presentation_canvas != canonical_canvas:
-            adapted_canvas = (presentation_canvas if profile.device_type == DeviceType.BROWSER
-                              else ComponentAdapter.adapt(presentation_canvas, profile))
+            adapted_canvas = self.rote.adapt(websocket, presentation_canvas, cache=False)
         snapshot["canvas"]["components"] = adapted_canvas
         target = "native" if _is_native_device(profile) else "web"
         return augment_conversation_snapshot_for_target(
@@ -15878,6 +15900,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 feature=feature,
             )
             return None, None
+        if is_gemini_continuation_profile(getattr(resolved, "base_url", None)):
+            validate_continuation_wire(messages)
         call_model = resolved.model
         effort = reasoning_effort if reasoning_effort is not None else getattr(
             self, "llm_reasoning_effort", None)
@@ -15971,7 +15995,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             )
                         else:
                             response = await self._call_llm_streamed(
-                                websocket, client, kwargs, stream_chat_id)
+                                websocket, client, kwargs, stream_chat_id,
+                                context_base_url=getattr(resolved, "base_url", None),
+                            )
                     except Exception as _stream_exc:
                         stream_error = self._safe_llm_error_metadata(_stream_exc)
                         logger.warning(
@@ -16234,6 +16260,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         queue: asyncio.Queue = asyncio.Queue()
         from threading import Event
         abandoned = Event()
+        preserve_continuation = is_gemini_continuation_profile(context_base_url)
 
         def _pump():
             from types import SimpleNamespace
@@ -16302,7 +16329,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     for tc in delta.tool_calls:
                         idx = getattr(tc, "index", 0) or 0
                         acc = tool_calls_acc.setdefault(
-                            idx, {"id": None, "name": "", "arguments": ""})
+                            idx, {"id": None, "name": "", "arguments": "",
+                                  "signature": None})
                         if getattr(tc, "id", None):
                             acc["id"] = tc.id
                         fn = getattr(tc, "function", None)
@@ -16311,6 +16339,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 acc["name"] += fn.name
                             if getattr(fn, "arguments", None):
                                 acc["arguments"] += fn.arguments
+                        if preserve_continuation:
+                            frag = getattr(tc, "extra_content", None)
+                            if frag is not None:
+                                acc["signature"] = merge_continuation_signature(
+                                    acc["signature"], frag)
                 d_content = getattr(delta, "content", None)
                 if d_content:
                     content_parts.append(d_content)
@@ -16374,20 +16407,27 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             try:
                 from openai.types.chat.chat_completion_message_tool_call import (
                     ChatCompletionMessageToolCall, Function)
-                tool_calls = [
-                    ChatCompletionMessageToolCall(
+                tool_calls = []
+                for i, acc in enumerate(ordered):
+                    call = ChatCompletionMessageToolCall(
                         id=acc["id"] or f"call_{i}", type="function",
                         function=Function(name=acc["name"], arguments=acc["arguments"]))
-                    for i, acc in enumerate(ordered)
-                ]
+                    if acc.get("signature") is not None:
+                        call.extra_content = {
+                            "google": {"thought_signature": acc["signature"]}}
+                    tool_calls.append(call)
             except Exception:
-                tool_calls = [
-                    SimpleNamespace(
-                        id=acc["id"] or f"call_{i}", type="function",
-                        function=SimpleNamespace(name=acc["name"],
-                                                 arguments=acc["arguments"]))
-                    for i, acc in enumerate(ordered)
-                ]
+                tool_calls = []
+                for i, acc in enumerate(ordered):
+                    fields = {
+                        "id": acc["id"] or f"call_{i}", "type": "function",
+                        "function": SimpleNamespace(name=acc["name"],
+                                                    arguments=acc["arguments"]),
+                    }
+                    if acc.get("signature") is not None:
+                        fields["extra_content"] = {
+                            "google": {"thought_signature": acc["signature"]}}
+                    tool_calls.append(SimpleNamespace(**fields))
         try:
             from openai.types.chat import ChatCompletionMessage
             return ChatCompletionMessage(
@@ -23297,7 +23337,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(export_router)
         app.include_router(share_router)
         app.include_router(auth_router)
+        from orchestrator.mesh_web import mesh_web_router
         app.include_router(mesh_router)
+        app.include_router(mesh_web_router)
         app.include_router(web_auth_router)
         if flags.is_enabled("kiosk_login"):
             from orchestrator.web_auth import kiosk_router

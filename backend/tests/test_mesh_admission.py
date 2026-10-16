@@ -6,10 +6,12 @@ failure inputs while the ordinary dispatcher and Plane fences remain enforced.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+import uuid
 
 import pytest
 from jose import jwt
@@ -677,6 +679,130 @@ async def test_member_session_prepared_before_revoke_or_epoch_change_cannot_mint
             mesh.service.mint(transaction, prepared, original)
 
 
+async def test_member_session_cannot_mint_while_identity_is_ambiguous(mesh):
+    client, _ = mesh.enroll()
+    member_id = client.device.member_id
+    original = mesh.store.get_member(mesh.owner, member_id)
+    shadow_id = "shadow-" + uuid.uuid4().hex[:16]
+    with mesh.store._transaction() as transaction:
+        mesh_record, _, _ = mesh.store._current_member(
+            transaction, mesh.owner, member_id
+        )
+        activated = mesh.store._membership.activate_member(
+            transaction,
+            owner_id=mesh.owner,
+            mesh_id=mesh_record.mesh_id,
+            member_id=shadow_id,
+            member_kind="device",
+            display_label="Shadow clone",
+            expected_mesh_version=mesh_record.record_version,
+            expected_member_version=0,
+        )
+        mesh.store._membership.bind_public_identity(
+            transaction,
+            owner_id=mesh.owner,
+            mesh_id=mesh_record.mesh_id,
+            member_id=shadow_id,
+            identity_id=shadow_id,
+            algorithm="Ed25519",
+            public_key=json.dumps(
+                original["device_key"], sort_keys=True, separators=(",", ":")
+            ),
+            key_fingerprint=hashlib.sha256(
+                me._b64url_decode(original["device_key"]["x"])
+            ).hexdigest(),
+            activated_epoch=activated.membership_epoch,
+        )
+        mesh.store._put(
+            mesh.owner,
+            me.MEMBER_NAMESPACE,
+            shadow_id,
+            {
+                **original,
+                "member_id": shadow_id,
+                "membership_epoch": activated.membership_epoch,
+                "invite_id": "shadow-invite",
+                "label": "Shadow clone",
+            },
+        )
+    current = mesh.store.get_member(mesh.owner, member_id)
+    prepared = await mesh.service.prepare_iam(mesh.owner, current, "reader")
+    with pytest.raises(ma.MeshAdmissionError):
+        with mesh.store._transaction() as transaction:
+            mesh.service.mint(transaction, prepared, current)
+    mesh.store.revoke_member(mesh.owner, shadow_id)
+    current = mesh.store.get_member(mesh.owner, member_id)
+    prepared = await mesh.service.prepare_iam(mesh.owner, current, "reader")
+    with mesh.store._transaction() as transaction:
+        minted = mesh.service.mint(transaction, prepared, current)
+    assert minted["member"]["member_id"] == member_id
+
+
+def test_duplicate_device_key_invitation_is_conflict_over_rest(mesh):
+    client, _ = mesh.enroll()
+    response = mesh.client.post(
+        "/api/mesh/invitations",
+        headers=mesh.owner_headers,
+        json={
+            "label": "Duplicate clone",
+            "device_key": client.device.public_key,
+            "scopes": ["tools:read"],
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "mesh_identity_ambiguous"
+    members = mesh.client.get(
+        "/api/mesh/members", headers=mesh.owner_headers
+    ).json()["members"]
+    assert len(members) == 1
+
+
+def test_duplicate_key_redeem_denial_is_audited_and_leaves_member_unbound(mesh):
+    device = mesh.sdk.MeshDevice.generate()
+    _, first = mesh.invitation(device, scopes=["tools:read"])
+    _, second = mesh.invitation(device, scopes=["tools:read"])
+    for invitation in (first, second):
+        confirmed = mesh.client.post(
+            "/api/mesh/invitations/"
+            + invitation["invitation"]["invite_id"]
+            + "/confirm",
+            headers=mesh.owner_headers,
+        )
+        assert confirmed.status_code == 200, confirmed.text
+    first_client = mesh.sdk.MeshClient("https://mesh.invalid", device, client=mesh.client)
+    first_client.redeem(first["payload"], agent_id="reader")
+    denial = mesh.client.post(
+        "/api/mesh/enrollment/redeem",
+        json=device.redemption(second["payload"], agent_id="reader"),
+    )
+    assert denial.status_code == 409
+    assert denial.json()["detail"] == "mesh_identity_ambiguous"
+    members = mesh.client.get(
+        "/api/mesh/members", headers=mesh.owner_headers
+    ).json()["members"]
+    assert [member["status"] for member in members] == ["active"]
+    failures = mesh.audit.list_for_user(
+        mesh.owner,
+        limit=50,
+        event_classes=["agent_lifecycle"],
+        outcomes=["failure"],
+    )[0]
+    redeem_denials = [
+        event
+        for event in failures
+        if event.action_type == "mesh.member.redeem"
+        and event.inputs_meta.get("reason") == "mesh_identity_ambiguous"
+    ]
+    assert len(redeem_denials) == 1
+    assert redeem_denials[0].inputs_meta["invite_id"] == second["invitation"][
+        "invite_id"
+    ]
+    mesh.store.revoke_member(mesh.owner, first_client.device.member_id)
+    recovered = mesh.sdk.MeshClient("https://mesh.invalid", device, client=mesh.client)
+    recovered.redeem(second["payload"], agent_id="reader")
+    assert recovered.request("GET", "/api/mesh/me")["member"]["status"] == "active"
+
+
 def _dispatcher(mesh, monkeypatch):
     from audit import hooks
     from audit.recorder import Recorder
@@ -889,3 +1015,46 @@ async def test_physical_and_delegation_owner_fence_survives_direct_internal_call
     )
     assert result.error["code"] == ma.MeshAdmissionError.code
     invoke.assert_not_awaited()
+
+
+def test_missing_production_signing_key_refuses_audits_and_rolls_back_redemption(mesh, monkeypatch):
+    device, invitation = mesh.invitation(scopes=["tools:read"])
+    invite_id = invitation["invitation"]["invite_id"]
+    confirmed = mesh.client.post(
+        f"/api/mesh/invitations/{invite_id}/confirm", headers=mesh.owner_headers
+    )
+    assert confirmed.status_code == 200
+    before = mesh.store._get(mesh.owner, me.INVITATION_NAMESPACE, invite_id)
+    with mesh.runtime.transaction() as transaction:
+        neutral_before = mesh.runtime.repositories.mesh_enrollment.list_members(
+            transaction, owner_id=mesh.owner, mesh_id=me.mesh_id_for_owner(mesh.owner)
+        )
+    monkeypatch.setenv("ASTRAL_ENV", "production")
+    monkeypatch.delenv("DELEGATION_CHILD_SIGNING_KEY")
+    monkeypatch.delenv("MEMORY_HMAC_KEY")
+    response = mesh.client.post(
+        "/api/mesh/enrollment/redeem",
+        json=device.redemption(invitation["payload"], agent_id="reader"),
+    )
+    assert response.status_code == 503
+    assert response.json() == {"detail": ma.MeshIAMUnavailable.code}
+    assert mesh.store.list_members(mesh.owner) == []
+    assert mesh.store._list(mesh.owner, ma.SESSION_NAMESPACE) == []
+    assert mesh.store._get(mesh.owner, me.INVITATION_NAMESPACE, invite_id) == before
+    with mesh.runtime.transaction() as transaction:
+        assert mesh.runtime.repositories.mesh_enrollment.list_members(
+            transaction, owner_id=mesh.owner, mesh_id=me.mesh_id_for_owner(mesh.owner)
+        ) == neutral_before
+    events = mesh.audit.list_for_user(mesh.owner, limit=50)[0]
+    redemption = [event for event in events if event.action_type == "mesh.member.redeem"]
+    assert len(redemption) == 1
+    assert redemption[0].outcome == "failure"
+    assert redemption[0].inputs_meta["reason"] == ma.MeshIAMUnavailable.code
+    monkeypatch.setenv("DELEGATION_CHILD_SIGNING_KEY", uuid.uuid4().hex)
+    recovered = mesh.client.post(
+        "/api/mesh/enrollment/redeem",
+        json=device.redemption(invitation["payload"], agent_id="reader"),
+    )
+    assert recovered.status_code == 200
+    assert recovered.json()["member"]["status"] == "active"
+    assert ma.verify_member_token(recovered.json()["access_token"])["sub"] == mesh.owner

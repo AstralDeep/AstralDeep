@@ -69,15 +69,79 @@ PHI_VALUE_PATTERNS: Tuple[Tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bMRN[\s:#-]*\d{4,}\b", re.IGNORECASE), "[REDACTED:mrn]"),
 )
 
+SECRET_FIELD_PATTERNS: Tuple[str, ...] = (
+    "api_key",
+    "secret",
+    "token",
+    "password",
+    "private_key",
+    "access_token",
+    "bearer",
+)
+
+SECRET_FIELD_REGEX: re.Pattern[str] = re.compile(
+    r"(?:^|[_.-])(?:api[_.-]?key|password|passwd|pwd|private[_.-]?key|access[_.-]?token|refresh[_.-]?token|auth[_.-]?token|client[_.-]?secret|app[_.-]?secret|bearer(?:[_.-]?token)?)(?:$|[_.-])"
+    r"|^(?:secret|token|api_key|apikey|password|passwd|pwd)$",
+    re.IGNORECASE,
+)
+
+SECRET_EXCLUDED_KEYS: frozenset[str] = frozenset({
+    "token_count",
+    "tokens_count",
+    "token_counts",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "tokens_used",
+    "token_usage",
+    "max_tokens",
+    "secretion",
+    "secretions",
+    "secretin",
+    "secretase",
+    "secreting",
+    "secretory",
+})
+
+SECRET_VALUE_PATTERNS: Tuple[Tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bsk-[a-zA-Z0-9_\-]{20,}\b"), "[REDACTED:api_key]"),
+    (
+        re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{36,}|github_pat_[A-Za-z0-9_]{50,90})\b"),
+        "[REDACTED:token]",
+    ),
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "[REDACTED:aws_key]"),
+    (
+        re.compile(r"\beyJ[a-zA-Z0-9_\-]{10,}\.eyJ[a-zA-Z0-9_\-]{10,}\.[a-zA-Z0-9_\-]{10,}\b"),
+        "[REDACTED:jwt]",
+    ),
+    (
+        re.compile(r"-----BEGIN (?:[A-Z ]+)?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z ]+)?PRIVATE KEY-----"),
+        "[REDACTED:private_key]",
+    ),
+    (re.compile(r"(?i)\bBearer\s+[a-zA-Z0-9_.\-]{25,}\b"), "[REDACTED:bearer_token]"),
+)
+
+
 
 def _matches_phi_field_key(key: str) -> bool:
     lowered = key.lower()
     return any(p in lowered for p in PHI_FIELD_PATTERNS)
 
 
+def _matches_secret_field_key(key: str) -> bool:
+    lowered = key.strip().lower()
+    if lowered in SECRET_EXCLUDED_KEYS:
+        return False
+    if any(suffix in lowered for suffix in ("_count", "tokens_used", "token_usage", "prompt_tokens", "completion_tokens")):
+        return False
+    if "secretion" in lowered or "secretin" in lowered or "secretase" in lowered:
+        return False
+    return bool(SECRET_FIELD_REGEX.search(lowered))
+
+
 def _redact_string(s: str) -> Tuple[str, bool]:
     changed = False
-    for pattern, replacement in PHI_VALUE_PATTERNS:
+    for pattern, replacement in PHI_VALUE_PATTERNS + SECRET_VALUE_PATTERNS:
         new_s = pattern.sub(replacement, s)
         if new_s != s:
             changed = True
@@ -85,14 +149,14 @@ def _redact_string(s: str) -> Tuple[str, bool]:
     return s, changed
 
 
-def _mask_value(value: Any) -> Any:
+def _mask_value(value: Any, marker: str = "[REDACTED:phi]") -> Any:
     if value is None:
         return None
     if isinstance(value, dict):
-        return {k: "[REDACTED:phi]" for k in value}
+        return {k: marker for k in value}
     if isinstance(value, list):
-        return ["[REDACTED:phi]" for _ in value]
-    return "[REDACTED:phi]"
+        return [marker for _ in value]
+    return marker
 
 
 def _redact_walk(value: Any, redacted: list) -> Any:
@@ -100,7 +164,10 @@ def _redact_walk(value: Any, redacted: list) -> Any:
         result = {}
         for k, v in value.items():
             if _matches_phi_field_key(k):
-                result[k] = _mask_value(v)
+                result[k] = _mask_value(v, "[REDACTED:phi]")
+                redacted[0] = True
+            elif _matches_secret_field_key(k):
+                result[k] = _mask_value(v, "[REDACTED:secret]")
                 redacted[0] = True
             else:
                 result[k] = _redact_walk(v, redacted)
@@ -145,7 +212,8 @@ def redact(value: Any, *, kind: str = "args") -> Tuple[Optional[str], bool]:
     # Never raises: caller must not crash or leak via traceback
     except Exception as exc:  # pragma: no cover
         logger.error(
-            "phi_redactor.redaction_failed",
-            extra={"kind": kind, "error": str(exc)},
+            "phi_redactor.redaction_failed: %s",
+            type(exc).__name__,
+            extra={"kind": kind, "error": type(exc).__name__},
         )
         return "[redaction failed]", False

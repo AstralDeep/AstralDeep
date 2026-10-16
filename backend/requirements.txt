@@ -29,6 +29,7 @@ python-pptx>=0.6.23
 odfpy>=1.4.1
 striprtf>=0.0.26
 Pillow>=10.0.0
+qrcode==8.2
 pdf2image>=1.17.0
 defusedxml>=0.7.1
 python-magic>=0.4.27; sys_platform != "win32"

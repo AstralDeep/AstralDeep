@@ -30,6 +30,7 @@ HOST_SURFACES = frozenset(
         "guidance",
         "llm",
         "llm_system",
+        "mesh",
         "my_computers",
         "personalization",
         "pulse",

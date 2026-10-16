@@ -227,6 +227,45 @@ def test_owner_invitation_and_confirmation_use_existing_http_iam_client():
             client.confirm("../foreign")
 
 
+def test_owner_reject_remove_rename_and_roster_reads():
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if request.url.path == "/api/mesh/members":
+            return httpx.Response(200, json={"members": [{"member_id": "m1"}]})
+        if request.url.path == "/api/mesh/invitations":
+            return httpx.Response(200, json={"invitations": []})
+        return httpx.Response(200, json={"result": "ok"})
+
+    with httpx.Client(
+        transport=httpx.MockTransport(respond),
+        headers={"Authorization": "Bearer owner"},
+    ) as http:
+        client = mesh.MeshClient(
+            "https://host", mesh.MeshDevice.generate(), client=http
+        )
+        assert client.reject("abc123") == {"result": "ok"}
+        assert requests[-1].url.path == "/api/mesh/invitations/abc123/reject"
+        assert client.remove_invitation("abc123") == {"result": "ok"}
+        assert requests[-1].url.path == "/api/mesh/invitations/abc123/remove"
+        assert client.rename_member("abc123", "Renamed") == {"result": "ok"}
+        assert requests[-1].url.path == "/api/mesh/members/abc123/label"
+        assert json.loads(requests[-1].content) == {"label": "Renamed"}
+        assert client.members() == [{"member_id": "m1"}]
+        assert client.invitations() == []
+        for call in ("../foreign", "abc 123", "", None):
+            with pytest.raises(ValueError):
+                client.reject(call)
+            with pytest.raises(ValueError):
+                client.remove_invitation(call)
+            with pytest.raises(ValueError):
+                client.rename_member(call, "Whatever")
+        for label in ("", "   ", "x" * 65, None):
+            with pytest.raises(ValueError):
+                client.rename_member("abc123", label)
+
+
 def test_missing_member_session_invalid_paths_tools_and_unbound_server_response():
     client = mesh.MeshClient("https://host", mesh.MeshDevice.generate())
     try:
