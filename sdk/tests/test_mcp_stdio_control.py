@@ -213,3 +213,148 @@ def test_error_output_backpressure_does_not_starve_pending_cancellation(fake_ser
         incoming.close()
         outgoing.close()
         bridge.close()
+
+
+def test_input_failure_reaches_the_serving_caller(fake_server):
+    bridge = Bridge.connect(fake_server.base_url, fake_server.state.valid_token)
+
+    class FailedInput(io.StringIO):
+        def readline(self, size=-1):
+            raise OSError("synthetic input closed")
+
+    try:
+        with pytest.raises(OSError, match="synthetic input closed"):
+            bridge.serve_stdio(FailedInput(), io.StringIO())
+        assert not fake_server.state.requests
+    finally:
+        bridge.close()
+
+
+def test_blocked_output_overflow_stops_admission_without_buffering_or_effects(fake_server, monkeypatch):
+    monkeypatch.setitem(Bridge.serve_stdio.__globals__, "_MAX_PENDING_OUTPUTS", 3)
+    bridge = Bridge.connect(fake_server.base_url, fake_server.state.valid_token)
+    writing = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    payload = "not json\n" * 10
+
+    class OrderedErrors(io.StringIO):
+        def readline(self, size=-1):
+            if self.tell() == len("not json\n"):
+                assert writing.wait(timeout=10)
+            return super().readline(size)
+
+    class BlockedOutput(io.StringIO):
+        def write(self, value):
+            writing.set()
+            try:
+                assert release.wait(timeout=10)
+                return super().write(value)
+            finally:
+                finished.set()
+
+    incoming = OrderedErrors(payload)
+    outgoing = BlockedOutput()
+    try:
+        with pytest.raises(RuntimeError, match="stdio output capacity exhausted"):
+            bridge.serve_stdio(incoming, outgoing)
+        assert incoming.tell() < len(payload)
+        assert not fake_server.state.requests
+    finally:
+        release.set()
+        assert finished.wait(timeout=10)
+        bridge.close()
+
+
+def test_input_failure_prevents_a_dequeued_submission_from_starting(fake_server, monkeypatch):
+    import queue
+
+    bridge = Bridge.connect(fake_server.base_url, fake_server.state.valid_token)
+    reader_thread = []
+    dequeued = threading.Event()
+    original_get = queue.Queue.get
+    payload = _tool_request(1, "astral_submit_operation", {
+        "idempotency_key": "failed-input", "name": "Queued", "instructions": "Synthetic instructions",
+    })
+
+    class FailedAfterRequest(io.StringIO):
+        def readline(self, size=-1):
+            if self.tell():
+                assert dequeued.wait(timeout=10)
+                raise OSError("synthetic input failed after admission")
+            reader_thread.append(threading.current_thread())
+            return super().readline(size)
+
+    def wait_for_input_failure(pending, *args, **kwargs):
+        item = original_get(pending, *args, **kwargs)
+        if isinstance(item, dict) and item.get("method") == "tools/call":
+            dequeued.set()
+            reader_thread[0].join(timeout=10)
+            assert not reader_thread[0].is_alive()
+        return item
+
+    monkeypatch.setattr(queue.Queue, "get", wait_for_input_failure)
+    try:
+        with pytest.raises(OSError, match="synthetic input failed after admission"):
+            bridge.serve_stdio(FailedAfterRequest(payload), io.StringIO())
+        assert not fake_server.state.operations
+        assert not fake_server.state.requests
+    finally:
+        bridge.close()
+
+
+def test_eof_drains_an_exactly_full_output_queue_without_overflow(fake_server, monkeypatch):
+    monkeypatch.setitem(Bridge.serve_stdio.__globals__, "_MAX_PENDING_OUTPUTS", 1)
+    bridge = Bridge.connect(fake_server.base_url, fake_server.state.valid_token)
+    writing, release, eof, shutdown = (threading.Event() for _ in range(4))
+    failures = []
+    original_wait = threading.Event.wait
+    server_threads = []
+
+    class OrderedErrors(io.StringIO):
+        def readline(self, size=-1):
+            if self.tell() == len("not json\n"):
+                assert writing.wait(timeout=10)
+            result = super().readline(size)
+            if not result:
+                eof.set()
+            return result
+
+    class BlockedOutput(io.StringIO):
+        def write(self, value):
+            writing.set()
+            assert release.wait(timeout=10)
+            return super().write(value)
+
+    def observe_shutdown_wait(event, timeout=None):
+        if threading.current_thread() is server_threads[0] and timeout is None and eof.is_set():
+            shutdown.set()
+        return original_wait(event, timeout)
+
+    monkeypatch.setattr(threading.Event, "wait", observe_shutdown_wait)
+    incoming, outgoing = OrderedErrors("not json\n" * 2), BlockedOutput()
+
+    def serve():
+        try:
+            bridge.serve_stdio(incoming, outgoing)
+        except Exception as exc:
+            failures.append(exc)
+        finally:
+            shutdown.set()
+
+    server = threading.Thread(target=serve, daemon=True)
+    server_threads.append(server)
+    try:
+        server.start()
+        assert shutdown.wait(timeout=10)
+        release.set()
+        server.join(timeout=10)
+        assert not server.is_alive()
+        assert not failures
+        assert [json.loads(line)["error"]["code"] for line in outgoing.getvalue().splitlines()] == [
+            -32700, -32700,
+        ]
+    finally:
+        release.set()
+        server.join(timeout=10)
+        bridge.close()

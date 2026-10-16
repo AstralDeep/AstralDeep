@@ -1,7 +1,7 @@
 """Bridge exposes Astral's Work tools to a local MCP host over stdio JSON-RPC through
-one AstralClient; serve_stdio() needs only httpx, while serve_with_official_sdk()
-lazily imports the optional mcp package. Both serving paths speak the declared
-MCP 2026-07-28 wire shape through astral_sdk.mcp_protocol.
+one AstralClient, with bounded independent input/output and cancellation before queued
+effects. Both serving paths use astral_sdk.mcp_protocol; the official serving path
+lazily imports the optional mcp package.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ from astral_sdk.mcp_protocol import (
 logger = logging.getLogger("astral_sdk.mcp_bridge")
 
 _MAX_PENDING_REQUESTS = 256
+_MAX_PENDING_OUTPUTS = 512
 _MAX_LINE_CHARS = 1048576
 
 
@@ -61,6 +62,10 @@ class _RequestTracker:
             self._outstanding.discard(request_id)
             self._cancelled.discard(request_id)
             return cancelled
+
+    def is_cancelled(self, request_id: Any) -> bool:
+        with self._lock:
+            return request_id in self._cancelled
 
 
 class _IntakeGate:
@@ -180,27 +185,63 @@ class Bridge:
         if out_stream is None:
             out_stream = sys.stdout
 
-        write_lock = threading.Lock()
-
-        def _write(message: dict[str, Any]) -> None:
-            with write_lock:
-                out_stream.write(json.dumps(message) + "\n")
-                out_stream.flush()
-
         lines: queue.Queue[Any] = queue.Queue(maxsize=_MAX_PENDING_REQUESTS + 1)
+        output: queue.Queue[Any] = queue.Queue(maxsize=_MAX_PENDING_OUTPUTS)
         self._stdio_queue = lines
         gate = _IntakeGate(_MAX_PENDING_REQUESTS)
         tracker = _RequestTracker()
+        stopped = threading.Event()
+        input_done = threading.Event()
+        dispatch_done = threading.Event()
+        output_done = threading.Event()
+        failures: list[Exception] = []
+        failure_lock = threading.Lock()
+
+        def _fail(exc: Exception) -> None:
+            with failure_lock:
+                if not failures:
+                    failures.append(exc)
+                stopped.set()
+
+        def _write(message: dict[str, Any]) -> None:
+            if stopped.is_set():
+                return
+            try:
+                output.put_nowait(message)
+            except queue.Full:
+                _fail(RuntimeError("stdio output capacity exhausted"))
+
+        def _write_output() -> None:
+            try:
+                while not stopped.is_set():
+                    try:
+                        message = output.get(timeout=0.05)
+                    except queue.Empty:
+                        if dispatch_done.is_set():
+                            return
+                        continue
+                    out_stream.write(json.dumps(message) + "\n")
+                    out_stream.flush()
+            except Exception as exc:
+                _fail(exc)
+            finally:
+                output_done.set()
 
         def _read_lines() -> None:
             try:
-                for raw in in_stream:
-                    line = raw.strip()
-                    if not line:
-                        continue
-                    if len(line) > _MAX_LINE_CHARS:
+                while not stopped.is_set():
+                    raw = in_stream.readline(_MAX_LINE_CHARS + 3)
+                    if not raw:
+                        return
+                    body = raw.removesuffix("\n").removesuffix("\r")
+                    if len(body) > _MAX_LINE_CHARS:
+                        while raw and not raw.endswith("\n") and not stopped.is_set():
+                            raw = in_stream.readline(_MAX_LINE_CHARS + 3)
                         _write(error_response(
                             None, ProtocolError(INVALID_REQUEST, "frame exceeds the maximum line size")))
+                        continue
+                    line = body.strip()
+                    if not line:
                         continue
                     try:
                         message = json.loads(line)
@@ -222,32 +263,54 @@ class Bridge:
                     if gate.admit():
                         if valid_request_id(request_id):
                             tracker.register(request_id)
-                        lines.put(message)
+                        lines.put_nowait(message)
                     else:
                         _write(error_response(
                             request_id if valid_request_id(request_id) else None,
                             ProtocolError(INTERNAL_ERROR, "too many pending requests; retry after earlier requests complete"),
                         ))
+            except Exception as exc:
+                _fail(exc)
             finally:
-                lines.put(None)
+                input_done.set()
 
+        writer = threading.Thread(target=_write_output, daemon=True)
         reader = threading.Thread(target=_read_lines, daemon=True)
+        writer.start()
         reader.start()
 
-        while True:
-            item = lines.get()
-            if item is None:
-                break
-            request = item
-            gate.release()
-            request_id = request.get("id") if isinstance(request, dict) else None
-            response = self.handle(request)
-            if valid_request_id(request_id) and tracker.finish(request_id):
-                continue
-            if response is not None:
-                _write(response)
-
-        reader.join(timeout=5.0)
+        try:
+            while not stopped.is_set():
+                try:
+                    request = lines.get(timeout=0.05)
+                except queue.Empty:
+                    if input_done.is_set():
+                        break
+                    continue
+                if stopped.is_set():
+                    break
+                gate.release()
+                request_id = request.get("id")
+                tracked = valid_request_id(request_id)
+                if tracked and tracker.is_cancelled(request_id):
+                    tracker.finish(request_id)
+                    continue
+                response = self.handle(request)
+                if tracked and tracker.finish(request_id):
+                    continue
+                if response is not None:
+                    _write(response)
+            dispatch_done.set()
+            if not stopped.is_set():
+                output_done.wait()
+        finally:
+            stopped.set()
+            if input_done.is_set():
+                reader.join()
+            if output_done.is_set():
+                writer.join()
+        if failures:
+            raise failures[0]
 
     def _official_server(self) -> Any:
         import mcp_types as types
