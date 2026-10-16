@@ -103,6 +103,10 @@ class WorkResumeService(WorkControlService):
                 updated = _owned_operation(tx, repository, owner, identity)
                 if result.applied:
                     self.audit.append(tx, owner_id=owner, command="resume", record=updated.assignment)
+                    from orchestrator.work_subscriptions import reconcile_completion_wait
+
+                    if reconcile_completion_wait(self.assignments, tx, repository, updated.assignment):
+                        updated = _owned_operation(tx, repository, owner, identity)
                 composition.new_admission()
                 preflight.assert_key(prepared)
                 preflight.assert_policy(tx, runtime=self.store.plane_runtime,

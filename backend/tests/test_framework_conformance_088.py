@@ -140,7 +140,12 @@ class _UvicornThread(threading.Thread):
 
 
 @pytest.fixture
-def credentials(runtime):
+def credentials(runtime, monkeypatch):
+    def credential_clock():
+        with runtime.transaction() as tx:
+            return tx.fetch_one("SELECT clock_timestamp() AS now")["now"]
+
+    monkeypatch.setattr("orchestrator.framework_credentials._now", credential_clock)
     return FrameworkCredentialService(plane_runtime=runtime, audit=AuditRepository(plane_runtime=runtime))
 
 
@@ -241,6 +246,35 @@ def _run_sdk(base_url: str, token: str, *args: str,
 
 def _stderr_json(result: subprocess.CompletedProcess) -> dict[str, Any]:
     return json.loads(result.stderr)
+
+
+def test_subscription_http_read_rechecks_revocation_after_bearer_resolution(
+    live_server, credentials, session, monkeypatch,
+):
+    import httpx
+    from tests.test_mcp_endpoint_064 import _request
+
+    store, owner, sid = session
+    token = _issue_token(credentials, store, owner, sid)
+    original = credentials.resolve_bearer
+    resolved = []
+
+    def revoke_after_resolution(value):
+        caller = original(value)
+        assert caller is not None
+        resolved.append(caller.credential_id)
+        credentials.revoke(owner_id=owner, credential_id=caller.credential_id)
+        return caller
+
+    monkeypatch.setattr(credentials, "resolve_bearer", revoke_after_resolution)
+    name = "astral_list_operation_completion_subscriptions"
+    body, headers = _request("tools/call", {"name": name, "arguments": {}}, token=token,
+                             headers={"Mcp-Name": name})
+    response = httpx.post(live_server + "/mcp", json=body, headers=headers)
+    assert response.status_code == 200 and len(resolved) == 1
+    result = response.json()["result"]
+    assert result["isError"] is True
+    assert "subscriptions" not in result.get("structuredContent", {})
 
 
 def test_operation_field_set_matches_the_checked_in_contract():
