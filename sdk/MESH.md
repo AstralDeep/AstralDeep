@@ -74,6 +74,9 @@ or save them in reports. An Ed25519 public JWK has exactly `kty=OKP`,
 | `POST /api/mesh/nonce` | `owner_id`, `member_id` | Single-use nonce, valid for 60 seconds; bounded issuance |
 | `POST /api/mesh/session` | `owner_id`, `member_id`, `nonce`, `proof`, optional `agent_id` | New proof-bound member token; the previous token is invalidated |
 | `GET /api/mesh/me`, `/members`, `/invitations` | Member proof headers; owner IAM may read the owner roster and invitations | Public records; invitation reads require confirmation authority |
+| `POST /api/mesh/presence` | Member proof headers; `endpoint` (bare `wss`/`https` origin; `ws`/`http` only in development), optional `capabilities` (at most 8 lowercase labels) | Presence observation bound to the current member identity and audited; resolved self target |
+| `GET /api/mesh/presence` | Member proof headers | The member's own resolved target with honest `online`/`offline`/`unavailable` presence |
+| `GET /api/mesh/topology` | Owner IAM | Owner-scoped resolved targets for active members; stale, replaced, ambiguous and revoked identities are never usable endpoints, and the response carries no dispatch authority |
 | `POST /api/mesh/members/{id}/revoke` | Owner IAM | Atomically revoked neutral and host member records |
 | `POST /api/mesh/tools/{agent_id}/{tool}` | Member proof headers and `{"arguments": {...}}` | Ordinary audited dispatcher response |
 
