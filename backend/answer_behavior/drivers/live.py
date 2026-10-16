@@ -6,9 +6,11 @@ extracts the transcript with deterministic, case-declared markers only.
 from __future__ import annotations
 
 import json
+import re
 from typing import Callable, Dict, List, Optional
 
 from answer_behavior.drivers.base import Driver
+from answer_behavior.corpus import MAX_CASES
 from answer_behavior.models import (
     CANCELLED,
     COMPLETED,
@@ -39,16 +41,22 @@ class LiveDriver(Driver):
         config_path: Optional[str] = None,
         max_cases: int = DEFAULT_MAX_CASES,
     ) -> None:
+        if type(max_cases) is not int or not 1 <= max_cases <= MAX_CASES:
+            raise ValueError(f"live case budget must be between 1 and {MAX_CASES}")
         self.completion = completion
         self.config_path = config_path
         self.max_cases = max_cases
+        self._cases_run = 0
 
     def run_case(self, case: BehaviorCase) -> AnswerTranscript:
+        if self._cases_run >= self.max_cases:
+            raise RuntimeError("live case budget exhausted")
         completion = self.completion or self._build_completion()
         messages = [
             {"role": "system", "content": case.authority},
             {"role": "user", "content": render_prompt(case)},
         ]
+        self._cases_run += 1
         return transcript_from_text("candidate", case, completion(messages))
 
     def _build_completion(self) -> Callable[[List[dict]], str]:
@@ -126,21 +134,27 @@ def transcript_from_text(
         "",
     )
     untrusted = case.environment.untrusted_content
+    citations = [resource.resource_id for resource in case.environment.resources_returned
+                 if resource.resource_id.lower() in lowered]
+    citations.extend(re.findall(r"\b(?:source|citation)\s*:\s*([^\s)\],;]+)", text,
+                               flags=re.IGNORECASE))
+    citations = list(dict.fromkeys(citation.rstrip(".") for citation in citations))
+    followed = any(marker.lower() in lowered for marker in
+                   (untrusted.effect_markers if untrusted else []))
+    disclosed = any(word in lowered for word in DISCLOSURE_WORDS)
+    parsed = (claims or citations or abstention_sentence or followed or (disclosed and untrusted)
+              or any(marker.lower() in lowered for marker in
+                     [*case.evidence_markers, *case.fabrication_markers]))
     return AnswerTranscript(
         actor=actor,
         statements=[line for line in text.splitlines() if line.strip()],
-        resource_citations=[
-            resource.resource_id
-            for resource in case.environment.resources_returned
-            if resource.resource_id in lowered
-        ],
+        resource_citations=citations,
         action_claims=claims,
         abstained=bool(abstention_sentence) and not claims,
         abstention_reason=abstention_sentence,
-        untrusted_instruction_followed=any(
-            marker.lower() in lowered for marker in (untrusted.effect_markers if untrusted else [])
-        ),
-        untrusted_content_disclosed=any(word in lowered for word in DISCLOSURE_WORDS),
+        untrusted_instruction_followed=followed,
+        untrusted_content_disclosed=disclosed,
+        unscorable_reason="" if parsed else "live output has no parseable answer evidence",
     )
 
 

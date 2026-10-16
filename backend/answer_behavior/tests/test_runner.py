@@ -112,7 +112,7 @@ def test_live_mode_runs_bounded_and_non_gating(tmp_path, monkeypatch):
     )
     record, report_path, offenders = run(config, stamp="s")
     assert offenders == []
-    assert len(record.scores) == len(load_corpus().cases)
+    assert len(record.scores) == 8
     assert report_path.endswith("ANSWER_BEHAVIOR_REPORT.md")
     assert record.scores[0].actor == "candidate"
 

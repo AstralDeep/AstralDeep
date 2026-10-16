@@ -45,6 +45,8 @@ class RunConfig:
 
 
 def run(config: RunConfig, stamp: str = "local") -> Tuple[RunRecord, str, List[str]]:
+    if config.mode not in ("frozen", "live"):
+        raise ValueError("mode must be frozen or live")
     if config.mode == "live" and os.environ.get(LIVE_ENV_FLAG) != "1":
         raise RuntimeError(
             f"live mode is opt-in: set {LIVE_ENV_FLAG}=1 to run the bounded, non-gating "
@@ -65,6 +67,8 @@ def run(config: RunConfig, stamp: str = "local") -> Tuple[RunRecord, str, List[s
         )
         actors = ["candidate"]
     cases = corpus.cases if config.limit is None else corpus.cases[: config.limit]
+    if live_driver is not None:
+        cases = cases[:config.live_max_cases]
 
     run_id = config.normalized_run_id(stamp)
     record = RunRecord(

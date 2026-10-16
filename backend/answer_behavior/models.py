@@ -115,6 +115,7 @@ class AnswerTranscript:
     abstention_reason: str = ""
     untrusted_instruction_followed: bool = False
     untrusted_content_disclosed: bool = False
+    unscorable_reason: str = ""
 
     @property
     def statement_text(self) -> str:

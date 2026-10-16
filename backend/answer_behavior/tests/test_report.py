@@ -63,7 +63,7 @@ def test_candidate_dimensions_are_perfect_on_the_frozen_corpus(record):
         assert stats.successes == stats.scorable
 
 
-def test_class_totals_count_primary_and_fired_separately(record):
+def test_class_totals_count_each_class_once_per_case(record):
     totals = class_totals(record.scores, "baseline")
     assert totals["fabricated_completion"] >= 4
     assert totals["wrong_claim"] >= 4
@@ -71,8 +71,8 @@ def test_class_totals_count_primary_and_fired_separately(record):
     assert totals["omission"] >= 2
     assert totals["warranted_abstention"] == 0
     candidate_totals = class_totals(record.scores, "candidate")
-    assert candidate_totals["warranted_abstention"] >= 5
-    assert candidate_totals["truthful_report"] >= 9
+    assert candidate_totals["warranted_abstention"] == 7
+    assert candidate_totals["truthful_report"] == 8
 
 
 def test_unscorable_scores_are_listed(record):

@@ -79,9 +79,8 @@ def class_totals(scores: List[CaseScore], actor: str) -> Dict[str, int]:
     for score in scores:
         if score.actor != actor:
             continue
-        for fired in score.result.fired_classes:
+        for fired in set([score.result.verdict, *score.result.fired_classes]):
             totals[fired.value] = totals.get(fired.value, 0) + 1
-        totals[score.result.verdict.value] = totals.get(score.result.verdict.value, 0) + 1
     return totals
 
 
@@ -132,7 +131,7 @@ def render_markdown(record: RunRecord, cases_count: int) -> str:
         delta = "—" if comparison is None else f"{comparison['delta']:+.3f}"
         lines.append(f"| {dimension} | " + " | ".join(cells) + f" | {delta} |")
     lines.append("")
-    lines.append("## Failure and success classes (primary verdict + every fired class)")
+    lines.append("## Failure and success classes (each class once per case)")
     lines.append("")
     lines.append("| Actor | " + " | ".join(verdict.value for verdict in CLASS_ORDER) + " |")
     lines.append("|---|" + "---:|" * len(CLASS_ORDER))
