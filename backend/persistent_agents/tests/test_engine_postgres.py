@@ -294,6 +294,16 @@ def test_configured_model_after_pause_resume_reuses_source_and_replaces_only_uns
     asyncio.run(scenario())
 
 
+def force_retry_wake(runtime, identity):
+    with runtime.transaction() as tx:
+        due = tx.fetch_one("SELECT clock_timestamp() - interval '1 second' AS at")["at"]
+        tx.execute(
+            "UPDATE persistent_assignment SET next_wake_at=%s, "
+            "data=jsonb_set(jsonb_set(data,'{next_wake_at}',to_jsonb(%s::text)),"
+            "'{next_retry_at}',to_jsonb(%s::text)) WHERE id=%s",
+            (due, due.isoformat(), due.isoformat(), identity))
+
+
 def test_restart_reuses_completed_children_and_source_actions(engine):
     host, runner, store, identity = engine
     async def scenario():
@@ -317,7 +327,7 @@ def test_restart_reuses_completed_children_and_source_actions(engine):
         assert recovered.phase == "failed"
         assert (recovered.updated_at < recovered.next_wake_at
                 <= recovered.updated_at + timedelta(seconds=60))
-        await wait_for_database_time(store.plane_runtime, recovered.next_wake_at)
+        await asyncio.to_thread(force_retry_wake, store.plane_runtime, identity)
         host.before_join = None
         replacement = AssignmentRunner(host, runner.service, config=RunnerConfig(lease_seconds=5))
         await claim_and_run(replacement, store)
@@ -576,7 +586,7 @@ def test_restart_after_source_receipt_before_source_batch_never_repeats_read(eng
         assert recovered.phase == "failed"
         assert (recovered.updated_at < recovered.next_wake_at
                 <= recovered.updated_at + timedelta(seconds=60))
-        await wait_for_database_time(store.plane_runtime, recovered.next_wake_at)
+        await asyncio.to_thread(force_retry_wake, store.plane_runtime, identity)
         replacement = AssignmentRunner(host, runner.service, config=RunnerConfig(lease_seconds=5))
         await claim_and_run(replacement, store)
         finished = await current(store, identity)
