@@ -1,6 +1,7 @@
-"""AST-based (no import execution) guard asserting product runtime never imports
-security_benchmark or an external benchmark package; runs as a unit test and as
-`python -m security_benchmark.isolation_check` for CI.
+"""AST-based (no import execution) guard asserting product runtime never imports an
+eval-only harness package (security_benchmark, answer_behavior) or an external
+benchmark package; runs as a unit test and as `python -m
+security_benchmark.isolation_check` for CI.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ PRODUCT_ROOTS = ("orchestrator", "agents", "shared")
 
 FORBIDDEN_PREFIXES = (
     "security_benchmark",
+    "answer_behavior",
     "agentdojo",
     "agent_security_bench",
     "injecagent",
