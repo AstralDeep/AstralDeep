@@ -29,7 +29,10 @@ def _validated_signature(value: Any) -> Optional[str]:
         return None
     if not isinstance(value, str):
         raise ContinuationStateError("malformed_thought_signature")
-    encoded = value.encode("utf-8")
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ContinuationStateError("malformed_thought_signature") from None
     if not encoded or len(encoded) > MAX_THOUGHT_SIGNATURE_BYTES:
         raise ContinuationStateError("unbounded_thought_signature")
     return value

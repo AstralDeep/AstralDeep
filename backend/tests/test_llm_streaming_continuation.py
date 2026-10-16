@@ -408,8 +408,8 @@ async def test_stream_and_non_stream_produce_equivalent_outgoing_wire():
 
 
 @pytest.mark.parametrize(
-    "bad_signature", [42, "", "s" * (MAX_THOUGHT_SIGNATURE_BYTES + 1)],
-    ids=["non-string", "empty", "oversized"],
+    "bad_signature", [42, "", "s" * (MAX_THOUGHT_SIGNATURE_BYTES + 1), "\ud800", "opaque\udfff"],
+    ids=["non-string", "empty", "oversized", "lone-surrogate", "embedded-surrogate"],
 )
 async def test_unusable_stream_metadata_falls_back_to_non_stream(bad_signature):
     script = [

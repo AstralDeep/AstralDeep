@@ -296,3 +296,255 @@ def test_serve_stdio_defaults_to_the_live_streams(fake_server, monkeypatch):
         assert "tools" in parsed["result"]
     finally:
         bridge.close()
+
+
+def _gated_bridge(fake_server, monkeypatch):
+    import threading
+    from astral_sdk.errors import AstralHTTPError
+
+    release = threading.Event()
+    dequeued = threading.Event()
+
+    def gated_get_operation(operation_id, *args, **kwargs):
+        dequeued.set()
+        release.wait(timeout=30)
+        raise AstralHTTPError("work_not_found", code="work_not_found")
+
+    bridge = Bridge.connect(fake_server.base_url, fake_server.state.valid_token)
+    monkeypatch.setattr(bridge._client, "get_operation", gated_get_operation)
+    return bridge, release, dequeued
+
+
+def _feed_lines(bridge, script, release, dequeued):
+    import os
+    import threading
+    import time
+
+    read_fd, write_fd = os.pipe()
+    reader = io.TextIOWrapper(os.fdopen(read_fd, "rb", buffering=0), encoding="utf-8")
+    writer = io.TextIOWrapper(os.fdopen(write_fd, "wb", buffering=0), encoding="utf-8")
+
+    def _feed():
+        for chunk in script:
+            kind, payload = chunk
+            if kind == "WAIT_DEQUEUED":
+                assert dequeued.wait(timeout=10)
+                continue
+            writer.write(payload + "\n")
+            writer.flush()
+            time.sleep(0.005)
+        time.sleep(0.2)
+        release.set()
+        time.sleep(0.5)
+        writer.close()
+
+    feeder = threading.Thread(target=_feed, daemon=True)
+    feeder.start()
+    try:
+        out = io.StringIO()
+        bridge.serve_stdio(reader, out)
+        return [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+    finally:
+        bridge.close()
+        reader.close()
+
+
+def test_request_intake_is_bounded_while_dispatch_is_blocked(fake_server, monkeypatch):
+    bridge, release, dequeued = _gated_bridge(fake_server, monkeypatch)
+    script = [("RAW", json.dumps({"jsonrpc": "2.0", "id": 0, "method": "tools/call",
+                                 "params": {"_meta": META, "name": "astral_get_operation",
+                                            "arguments": {"operation_id": "op-1"}}})),
+              ("WAIT_DEQUEUED", None)]
+    script += [("RAW", json.dumps({"jsonrpc": "2.0", "id": index, "method": "tools/list",
+                                  "params": {"_meta": META}}))
+               for index in range(1, 301)]
+    responses = _feed_lines(bridge, script, release, dequeued)
+    overload = [response for response in responses if "error" in response]
+    answered = [response for response in responses if "result" in response]
+    assert {response["id"] for response in overload} == set(range(257, 301))
+    assert all(response["error"]["code"] == -32603 for response in overload)
+    assert len(answered) == 257
+    assert {response["id"] for response in answered} == {0, *range(1, 257)}
+    assert bridge._stdio_queue is not None
+    assert bridge._stdio_queue.maxsize <= 257
+
+
+def test_cancellation_is_processed_while_intake_is_exhausted(fake_server, monkeypatch):
+    bridge, release, dequeued = _gated_bridge(fake_server, monkeypatch)
+    script = [("RAW", json.dumps({"jsonrpc": "2.0", "id": 0, "method": "tools/call",
+                                 "params": {"_meta": META, "name": "astral_get_operation",
+                                            "arguments": {"operation_id": "op-1"}}})),
+              ("WAIT_DEQUEUED", None)]
+    script += [("RAW", json.dumps({"jsonrpc": "2.0", "id": index, "method": "tools/list",
+                                  "params": {"_meta": META}}))
+               for index in range(1, 258)]
+    script.append(("RAW", json.dumps({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                                      "params": {"requestId": 0}})))
+    responses = _feed_lines(bridge, script, release, dequeued)
+    answered_ids = {response["id"] for response in responses if "result" in response}
+    assert 0 not in answered_ids
+    assert answered_ids == set(range(1, 257))
+    overload = [response for response in responses if "error" in response]
+    assert {response["id"] for response in overload} == {257}
+
+
+def test_oversized_frame_is_rejected_and_the_loop_survives(fake_server):
+    bridge = Bridge.connect(fake_server.base_url, fake_server.state.valid_token)
+    try:
+        oversized = "x" * (2 ** 20 + 1)
+        followup = json.dumps({"jsonrpc": "2.0", "id": "after-oversize", "method": "tools/list",
+                               "params": {"_meta": META}})
+        in_stream = io.StringIO(oversized + "\n" + followup + "\n")
+        out_stream = io.StringIO()
+        bridge.serve_stdio(in_stream, out_stream)
+        lines = [json.loads(line) for line in out_stream.getvalue().splitlines() if line.strip()]
+        assert lines[0]["error"]["code"] == -32600
+        assert "frame exceeds the maximum line size" in lines[0]["error"]["message"]
+        assert lines[1]["id"] == "after-oversize"
+        assert lines[1]["result"]["resultType"] == "complete"
+    finally:
+        bridge.close()
+
+
+def test_rejected_and_oversized_records_do_not_buffer_in_the_reader_queue(fake_server, monkeypatch):
+    import os
+    import threading
+    import time
+
+    bridge, release, dequeued = _gated_bridge(fake_server, monkeypatch)
+
+    read_fd, write_fd = os.pipe()
+    reader = io.TextIOWrapper(os.fdopen(read_fd, "rb", buffering=0), encoding="utf-8")
+    writer = io.TextIOWrapper(os.fdopen(write_fd, "wb", buffering=0), encoding="utf-8")
+
+    oversized = "x" * (2 ** 20 + 1)
+
+    def _feed():
+        first = json.dumps({"jsonrpc": "2.0", "id": "blocker", "method": "tools/call",
+                            "params": {"_meta": META, "name": "astral_get_operation",
+                                       "arguments": {"operation_id": "op-block"}}})
+        writer.write(first + "\n")
+        writer.flush()
+        assert dequeued.wait(timeout=10)
+
+        for _ in range(256):
+            writer.write(json.dumps({"jsonrpc": "2.0", "id": f"q-{_}", "method": "tools/list",
+                                     "params": {"_meta": META}}) + "\n")
+        writer.flush()
+        time.sleep(0.1)
+
+        for _ in range(5000):
+            writer.write(oversized + "\n")
+            writer.write("not json\n")
+        writer.write(json.dumps({"jsonrpc": "2.0", "id": "overflow", "method": "tools/list",
+                                 "params": {"_meta": META}}) + "\n")
+        writer.flush()
+
+        time.sleep(0.3)
+        assert bridge._stdio_queue is not None
+        assert bridge._stdio_queue.qsize() <= 256
+        assert bridge._stdio_queue.maxsize <= 257
+
+        release.set()
+        time.sleep(0.5)
+        writer.close()
+
+    feeder = threading.Thread(target=_feed, daemon=True)
+    feeder.start()
+    try:
+        out = io.StringIO()
+        bridge.serve_stdio(reader, out)
+        responses = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+        assert len(responses) == 1 + 256 + 10001
+    finally:
+        bridge.close()
+        reader.close()
+
+
+def test_eof_never_blocks_when_queue_is_full(fake_server, monkeypatch):
+    bridge, release, dequeued = _gated_bridge(fake_server, monkeypatch)
+    script = [("RAW", json.dumps({"jsonrpc": "2.0", "id": 0, "method": "tools/call",
+                                 "params": {"_meta": META, "name": "astral_get_operation",
+                                            "arguments": {"operation_id": "op-1"}}})),
+              ("WAIT_DEQUEUED", None)]
+    script += [("RAW", json.dumps({"jsonrpc": "2.0", "id": index, "method": "tools/list",
+                                  "params": {"_meta": META}}))
+               for index in range(1, 257)]
+    responses = _feed_lines(bridge, script, release, dequeued)
+    answered = [r for r in responses if "result" in r]
+    assert len(answered) == 257
+
+
+def test_cancellation_latency_under_saturated_queue(fake_server, monkeypatch):
+    import os
+    import threading
+    import time
+
+    bridge, release, dequeued = _gated_bridge(fake_server, monkeypatch)
+
+    read_fd, write_fd = os.pipe()
+    reader = io.TextIOWrapper(os.fdopen(read_fd, "rb", buffering=0), encoding="utf-8")
+    writer = io.TextIOWrapper(os.fdopen(write_fd, "wb", buffering=0), encoding="utf-8")
+
+    def _feed():
+        writer.write(json.dumps({"jsonrpc": "2.0", "id": 0, "method": "tools/call",
+                                "params": {"_meta": META, "name": "astral_get_operation",
+                                           "arguments": {"operation_id": "op-1"}}}) + "\n")
+        writer.flush()
+        assert dequeued.wait(timeout=10)
+        for i in range(1, 257):
+            writer.write(json.dumps({"jsonrpc": "2.0", "id": i, "method": "tools/list",
+                                     "params": {"_meta": META}}) + "\n")
+        writer.flush()
+        time.sleep(0.05)
+        writer.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                                 "params": {"requestId": 0}}) + "\n")
+        writer.flush()
+        time.sleep(0.05)
+        release.set()
+        time.sleep(0.5)
+        writer.close()
+
+    feeder = threading.Thread(target=_feed, daemon=True)
+    feeder.start()
+    try:
+        out = io.StringIO()
+        bridge.serve_stdio(reader, out)
+        responses = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+        answered_ids = {r["id"] for r in responses if "result" in r}
+        assert 0 not in answered_ids
+        assert answered_ids == set(range(1, 257))
+    finally:
+        bridge.close()
+        reader.close()
+
+
+def test_missing_submit_fields_are_input_validation_errors(fake_server):
+    bridge = Bridge.connect(fake_server.base_url, fake_server.state.valid_token)
+    try:
+        request = {
+            "jsonrpc": "2.0", "id": "sub-1", "method": "tools/call",
+            "params": {"_meta": META, "name": "astral_submit_operation", "arguments": {}},
+        }
+        response = bridge.handle(request)
+        assert response["id"] == "sub-1"
+        assert response["result"]["isError"] is True
+        assert "missing required argument(s)" in response["result"]["content"][0]["text"]
+        assert "idempotency_key" in response["result"]["content"][0]["text"]
+        assert "-32603" not in json.dumps(response)
+    finally:
+        bridge.close()
+
+
+def test_request_tracker_lifecycle_transitions_are_isolated_per_finish():
+    from astral_sdk.mcp_bridge import _RequestTracker
+
+    tracker = _RequestTracker()
+    tracker.register(1)
+    tracker.register(2)
+    tracker.cancel(1)
+    assert tracker.finish(1) is True
+    assert tracker.finish(1) is False
+    assert tracker.finish(2) is False
+    tracker.register(1)
+    assert tracker.finish(1) is False
