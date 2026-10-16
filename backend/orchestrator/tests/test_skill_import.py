@@ -1,10 +1,5 @@
-"""Tests for orchestrator/skill_import.py (issue #334: instructions-only Agent Skill
-import into the governed owner catalog).
-
-Fully self-contained: no external packages (no astralplane, no pytest) and no
-network/filesystem side effects. The authoring facade is mocked; only the
-bounded-intake logic and its contract with ``facade.save`` are exercised.
-Deterministic and offline. Run with: python test_skill_import.py
+"""Exercises standalone skill intake, previews, and disabled facade save requests.
+The catalog integration suite separately covers real Plane persistence and caller authorization.
 """
 
 import asyncio
@@ -37,7 +32,6 @@ class _ExcInfo:
 
 @contextlib.contextmanager
 def raises(expected):
-    """Minimal stand-in for pytest.raises (no external dependency)."""
     info = _ExcInfo()
     try:
         yield info
@@ -57,8 +51,6 @@ def _skill(name="Demo Skill", description="Does a thing.", license_="MIT",
     return body
 
 
-# --- parsing: golden path ---------------------------------------------------
-
 def test_parse_minimal_skill():
     parsed = parse_agent_skill(_skill())
     assert parsed.name == "Demo Skill"
@@ -77,8 +69,6 @@ def test_parse_preserves_attribution_and_license():
     assert parsed.source_identity["license"] == "Apache-2.0"
     assert parsed.source_identity["upstream_format"] == "agent-skills"
 
-
-# --- parsing: bounded-intake violations -------------------------------------
 
 def test_parse_rejects_non_str_bytes_input():
     with raises(SkillImportError) as exc:
@@ -176,8 +166,6 @@ def test_parse_rejects_instructions_too_long():
     assert exc.value.code == "instructions_too_long"
 
 
-# --- parsing: untrusted / resource / injection detection --------------------
-
 def test_parse_flags_untrusted_allowed_tools_list():
     text = _skill(extra="allowed-tools:\n  - Read\n  - Write\n")
     parsed = parse_agent_skill(text)
@@ -210,8 +198,6 @@ def test_parse_flags_suspicious_instructions():
     parsed = parse_agent_skill(text)
     assert parsed.suspicious_instructions is True
 
-
-# --- preview ----------------------------------------------------------------
 
 def test_preview_permitted_license_can_import():
     preview = build_preview(parse_agent_skill(_skill(license_="MIT")))
@@ -259,8 +245,6 @@ def test_preview_surfaces_body_resource_links_as_unsupported():
     assert preview.unsupported["body_resource_links"] == ("https://example.com/guide",)
     assert any("NOT a complete import" in w for w in preview.warnings)
 
-
-# --- import (via facade.save) -----------------------------------------------
 
 def _facade():
     facade = MagicMock()
@@ -346,8 +330,6 @@ def test_import_skill_text_rejects_on_parse():
     assert exc.value.code == "no_frontmatter"
     facade.save.assert_not_awaited()
 
-
-# --- slugify parity ---------------------------------------------------------
 
 def test_slugify_parity_with_legacy():
     assert slugify("Demo Skill!") == "demo-skill"

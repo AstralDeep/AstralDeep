@@ -1,29 +1,5 @@
-"""Governed, instructions-only import of Anthropic Agent Skills (SKILL.md) into the
-Astral user skill catalog.
-
-This module implements GitHub issue AstralDeep/AstralDeep#334: a bounded,
-standards-aware intake that maps one SKILL.md instruction body through the existing
-skill catalog and settings surface.
-
-Security and scope boundaries (issue #334 acceptance checks):
-- Parses ONE explicitly supplied UTF-8 text. It NEVER scans arbitrary repositories
-  or home directories, NEVER follows symlinks outside the supplied file, NEVER
-  fetches referenced URLs, NEVER extracts archives, and NEVER executes content.
-- YAML frontmatter is bounded: hard byte cap, flat (no nested mapping keys; flat
-  lists permitted), no anchors/aliases, per-field length cap, and a capped body.
-- ``allowed-tools``, ``compatibility``, command metadata, embedded role claims and
-  prose are treated as UNTRUSTED. They never grant permissions, register
-  tools/connectors, install scripts/hooks, or create agents.
-- Resource-dependent or executable skills (``references``, ``scripts``, ``hooks`` …)
-  are reported as unsupported for instructions-only intake.
-- Source identity, attribution and license are preserved in the preview. Missing or
-  restrictive licenses are NOT assumed permissive; import requires explicit owner
-  permission.
-- Saving is performed ONLY through the existing current-human authoring facade
-  (``UserSkillFacade.save``). This module introduces no new catalog, schema, or
-  model-authored save bypass. Imports default DISABLED until the owner enables them.
-
-Deterministic and offline: depends only on the Python standard library.
+"""Parses supplied Agent Skill text into bounded instructions-only previews.
+The import helper submits disabled create requests to the existing user-skill catalog facade.
 """
 
 from __future__ import annotations
@@ -34,14 +10,12 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
-# Limits mirror orchestrator/user_skills.py (Astral current skill constraints).
 MAX_NAME_CHARS = 60
 MAX_INSTRUCTIONS_CHARS = 4000
 
-# Bounds for the bounded intake itself (issue #334 acceptance checks).
-DEFAULT_MAX_BYTES = 1 << 16                 # 65 536 bytes hard cap on supplied input
-DEFAULT_MAX_FIELD_CHARS = 4096              # per-frontmatter-field value length
-DEFAULT_MAX_YAML_DEPTH = 0                  # flat only: no nested mapping keys
+DEFAULT_MAX_BYTES = 1 << 16
+DEFAULT_MAX_FIELD_CHARS = 4096
+DEFAULT_MAX_YAML_DEPTH = 0
 DEFAULT_MAX_BODY_CHARS = MAX_INSTRUCTIONS_CHARS
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.S)
@@ -49,22 +23,17 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _URL_RE = re.compile(r"https?://\S+")
 _ANCHOR_ALIAS_RE = re.compile(r"(?:^|\s)[&*][A-Za-z_]")
 
-# Frontmatter keys that map onto Astral catalog fields.
 _MAPPED_KEYS = {"name", "description"}
-# Keys that are explicitly untrusted and must never grant effects.
 _UNTRUSTED_KEYS = {"allowed-tools", "allowed_tools", "compatibility"}
-# Keys that indicate resource-dependent or executable skills (out of scope here).
 _RESOURCE_OR_EXEC_KEYS = {
     "references", "scripts", "hooks", "source", "files", "attachments",
 }
-# Heuristic markers for possible prompt-injection / privilege-escalation attempts.
 _INJECTION_MARKERS = (
     "ignore previous instructions", "ignore all previous", "disregard",
     "you are now", "system prompt", "system:", "assume you are",
     "override", "bypass", "disable safety", "ignore your",
 )
-# Licenses treated as permissive for default import. Anything else (Proprietary,
-# GPL-family, or unknown) requires explicit owner permission.
+
 _PERMISSIVE_LICENSES = {
     "mit", "apache-2.0", "bsd-2-clause", "bsd-3-clause", "bsd-3", "isc",
     "unlicense", "cc0-1.0", "0bsd", "mit-0",
@@ -72,8 +41,6 @@ _PERMISSIVE_LICENSES = {
 
 
 class SkillImportError(ValueError):
-    """Bounded-intake error carrying a stable machine-readable ``code``."""
-
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
@@ -100,26 +67,19 @@ class ImportPreview:
     description: str
     instructions: str
     license: Optional[str]
-    license_status: str                 # 'permitted' | 'missing' | 'restrictive'
+    license_status: str
     supported: Dict[str, Any]
     unsupported: Dict[str, Any]
     warnings: Tuple[str, ...]
-    can_import: bool                    # False when owner permission is required
+    can_import: bool
 
 
 def slugify(name: str) -> str:
-    """Reproduce orchestrator/user_skills.slugify semantics for preview display."""
     slug = _SLUG_RE.sub("-", (name or "").strip().lower()).strip("-")
     return slug[:48] or "skill"
 
 
 def _count_depth(text: str) -> int:
-    """Maximum mapping indentation level (top-level keys are level 0).
-
-    Flat sequence items (``- value``) do NOT add mapping depth: a flat list such as
-    ``allowed-tools:`` followed by ``- Read`` is permitted, while a nested mapping
-    key (indented ``key:``) is rejected.
-    """
     depth = 0
     for raw in text.splitlines():
         stripped = raw.lstrip()
@@ -204,11 +164,6 @@ def parse_agent_skill(
     max_yaml_depth: int = DEFAULT_MAX_YAML_DEPTH,
     max_instructions_chars: int = DEFAULT_MAX_BODY_CHARS,
 ) -> ParsedSkill:
-    """Parse one explicitly supplied SKILL.md into a :class:`ParsedSkill`.
-
-    Raises :class:`SkillImportError` on any bounded-intake violation. Never performs
-    filesystem, network, archive, or execution side effects.
-    """
     limits = {
         "max_bytes": max_bytes,
         "max_field_chars": max_field_chars,
@@ -330,12 +285,6 @@ def _license_status(license_value: Optional[str]) -> str:
 
 
 def build_preview(parsed: ParsedSkill) -> ImportPreview:
-    """Build an explicit, human-owned preview of what would be imported.
-
-    Unsupported metadata and warnings are surfaced verbatim so the owner can decide
-    before saving a revision. ``can_import`` is False when owner permission is needed
-    (missing or restrictive license).
-    """
     license_status = _license_status(parsed.license)
 
     supported = {
@@ -352,7 +301,6 @@ def build_preview(parsed: ParsedSkill) -> ImportPreview:
     if parsed.body_resource_links:
         unsupported["body_resource_links"] = parsed.body_resource_links
     if parsed.raw_metadata:
-        # Anything not explicitly mapped/untrusted/resource is preserved but inert.
         preserved = {
             k: v
             for k, v in parsed.raw_metadata.items()
@@ -404,12 +352,6 @@ async def import_instructions_only(
     permit_nonpermissive: bool = False,
     command_id: Optional[str] = None,
 ) -> ImportPreview:
-    """Persist one parsed skill through the existing authoring facade.
-
-    The save is performed ONLY via ``facade.save`` (the current-human authoring
-    facade), with ``enabled=False`` (imports default disabled). Upstream exceptions
-    raised by the facade (reserved name, conflict, auth) propagate unchanged.
-    """
     preview = build_preview(parsed)
     if not preview.can_import and not permit_nonpermissive:
         raise SkillImportError(
@@ -452,11 +394,6 @@ async def import_skill_text(
     max_yaml_depth: int = DEFAULT_MAX_YAML_DEPTH,
     max_instructions_chars: int = DEFAULT_MAX_BODY_CHARS,
 ) -> ImportPreview:
-    """Parse, preview, and import a SKILL.md text in one call.
-
-    Raises :class:`SkillImportError` on any bounded-intake violation or when owner
-    permission is required for a non-permissive license.
-    """
     parsed = parse_agent_skill(
         text,
         max_bytes=max_bytes,
