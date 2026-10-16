@@ -36,6 +36,14 @@ def enabled() -> bool:
         return True
 
 
+def import_enabled() -> bool:
+    try:
+        from shared.feature_flags import flags
+        return bool(flags.is_enabled("skill_import")) and enabled()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 @dataclass(frozen=True)
 class Skill:
     slug: str

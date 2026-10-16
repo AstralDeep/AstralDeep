@@ -35,6 +35,7 @@ class FeatureFlags:
             "skill_packs": self._read("FF_SKILL_PACKS", True),
             "slash_commands": self._read("FF_SLASH_COMMANDS", True),
             "user_skills": self._read("FF_USER_SKILLS", True),
+            "skill_import": self._read("FF_SKILL_IMPORT", False),
             "recursive_delegation": self._read("FF_RECURSIVE_DELEGATION", False),
             "typesafe_routing": self._read("FF_TYPESAFE_ROUTING", True),
             "first_turn_contract": self._read("FF_FIRST_TURN_CONTRACT", True),
