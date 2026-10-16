@@ -7,6 +7,8 @@ backend/logs/
 # Covers the default backend/security_benchmark/_artifacts/ and any stray
 # mis-pathed copy (e.g. backend/backend/... from an accidental --out run).
 **/security_benchmark/_artifacts/
+# Answer-behavior diagnostic run artifacts - generated, never committed.
+**/answer_behavior/_artifacts/
 # Verification & build-verification bundles (screenshots, contact sheets,
 # PR bodies, review sheets) - generated for review, not needed in the repo.
 verification-*/
