@@ -7,14 +7,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import json
 import re
 import unicodedata
+from urllib.parse import unquote
 
 import yaml
 
 from orchestrator import user_skills as legacy
 
 MAX_SOURCE_BYTES = 64 * 1024
+MAX_INLINE_SOURCE_BYTES = 96 * 1024
 MAX_FRONTMATTER_CHARS = 16384
 MAX_YAML_NODES = 512
 MAX_YAML_ALIASES = 64
@@ -24,8 +27,11 @@ MAX_INSTRUCTIONS_CHARS = legacy.MAX_INSTRUCTIONS_CHARS
 MAX_UNSUPPORTED = 12
 MAX_UNSUPPORTED_CHARS = 120
 MAX_LICENSE_CHARS = 128
-MAX_DESCRIPTION_CHARS = 400
+MAX_DESCRIPTION_CHARS = 1024
 MAX_LISTED_RESOURCES = 5
+MAX_METADATA_FIELDS = 32
+MAX_METADATA_CHARS = 512
+MAX_ATTRIBUTION_CHARS = 256
 
 MAPPED_FIELDS = frozenset({"name", "description", "license", "allowed-tools", "metadata",
                            "compatibility"})
@@ -41,10 +47,14 @@ _PERMISSIVE_LICENSES = frozenset({
     "cc-by-sa-4.0",
 })
 
-_FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n)?(.*)\Z", re.DOTALL)
-_LINK_RE = re.compile(r"\]\(([^)\s]+)\)")
+_FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)(.*)\Z", re.DOTALL)
+_LINK_RE = re.compile(r"\]\(\s*<?([^)\s>]+)")
 _REFERENCE_RE = re.compile(r"^ {0,3}\[[^]\n]+\]:\s*<?([^\s>]+)>?", re.MULTILINE)
 _SCHEME_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9+.\-]*:")
+_BUNDLED_RE = re.compile(r"(?<![\w/])(?:scripts|references|assets)/[^\s`<>\])]+")
+_EXECUTABLE_FIELDS = frozenset({"scripts", "hooks", "references", "assets", "files",
+                                "attachments", "resources", "connectors"})
+_ATTRIBUTION_FIELDS = frozenset({"author", "copyright", "source", "url"})
 
 
 class SkillImportError(ValueError):
@@ -64,6 +74,7 @@ class SkillImportPreview:
     unsupported: tuple
     source_sha256: str
     source_bytes: int
+    attribution: tuple
 
 
 class _BoundedParseError(ValueError):
@@ -141,6 +152,10 @@ def _decode(raw):
     except UnicodeDecodeError:
         raise SkillImportError("The supplied skill file is not valid UTF-8.",
                                "skill_import_not_utf8") from None
+    if len(json.dumps(text, ensure_ascii=False).encode("utf-8")) > MAX_INLINE_SOURCE_BYTES:
+        raise SkillImportError("The supplied file contains too much escaped text for a "
+                               "bounded import confirmation. Edit it before importing.",
+                               "skill_import_too_large")
     return text.removeprefix("\ufeff")
 
 
@@ -192,6 +207,10 @@ def _mapped_name(fields):
         raise SkillImportError(f"The name is {len(name)} characters; Astral skill names are "
                                f"2-{MAX_NAME_CHARS} characters and are never truncated. Edit "
                                "the file and import again.")
+    if (name.startswith("-") or name.endswith("-") or "--" in name
+            or any(char != "-" and not (char.islower() or char.isdigit()) for char in name)):
+        raise SkillImportError("The name must use lowercase letters, numbers and single "
+                               "hyphens, without a leading or trailing hyphen.")
     return name
 
 
@@ -211,7 +230,9 @@ def _mapped_instructions(body):
 
 def _refuse_linked_resources(body):
     found = []
-    for target in _LINK_RE.findall(body) + _REFERENCE_RE.findall(body):
+    decoded = unquote(body)
+    for target in (_LINK_RE.findall(decoded) + _REFERENCE_RE.findall(decoded)
+                   + _BUNDLED_RE.findall(decoded)):
         scheme = _SCHEME_RE.match(target)
         if (scheme and scheme.group().lower() in {"http:", "https:", "mailto:"}) or target.startswith("#"):
             continue
@@ -230,9 +251,11 @@ def _refuse_linked_resources(body):
 
 def _mapped_description(fields):
     value = fields.get("description")
-    if value is None or type(value) is not str:
-        return ""
-    return value.strip()[:MAX_DESCRIPTION_CHARS]
+    if type(value) is not str or not 1 <= len(value.strip()) <= MAX_DESCRIPTION_CHARS:
+        raise SkillImportError(f"The required description must contain 1-{MAX_DESCRIPTION_CHARS} "
+                               "characters of text and is never truncated.")
+    _refuse_control_characters(value, "description", multiline=True)
+    return value.strip()
 
 
 def _mapped_license(fields):
@@ -241,13 +264,42 @@ def _mapped_license(fields):
         return "", True
     if type(value) is not str:
         return "", True
-    license_value = value.strip()[:MAX_LICENSE_CHARS]
+    if len(value.strip()) > MAX_LICENSE_CHARS:
+        raise SkillImportError(f"The license exceeds {MAX_LICENSE_CHARS} characters and "
+                               "is never truncated.")
+    _refuse_control_characters(value, "license", multiline=False)
+    license_value = value.strip()
     return license_value, license_value.lower() not in _PERMISSIVE_LICENSES
 
 
+def _validated_metadata(fields):
+    for key, limit in (("compatibility", 500), ("allowed-tools", MAX_METADATA_CHARS)):
+        if key in fields:
+            value = fields[key]
+            if type(value) is not str or not 1 <= len(value) <= limit:
+                raise SkillImportError(f"The {key} field must contain 1-{limit} characters of text.")
+            _refuse_control_characters(value, key, multiline=True)
+    metadata = fields.get("metadata", {})
+    if type(metadata) is not dict or len(metadata) > MAX_METADATA_FIELDS:
+        raise SkillImportError(f"Metadata must be a mapping with at most {MAX_METADATA_FIELDS} fields.")
+    attribution = []
+    for key, value in metadata.items():
+        if (type(key) is not str or type(value) is not str
+                or not 1 <= len(key) <= 80 or len(value) > MAX_METADATA_CHARS):
+            raise SkillImportError("Metadata must contain bounded text keys and text values.")
+        _refuse_control_characters(key, "metadata key", multiline=False)
+        _refuse_control_characters(value, "metadata value", multiline=True)
+        if key in _ATTRIBUTION_FIELDS:
+            if len(value) > MAX_ATTRIBUTION_CHARS:
+                raise SkillImportError(f"Attribution exceeds {MAX_ATTRIBUTION_CHARS} characters.")
+            attribution.append((key, value))
+    if fields.keys() & _EXECUTABLE_FIELDS:
+        raise SkillImportError("Declared resources, scripts, hooks and connectors are unsupported "
+                               "by instructions-only import.", "skill_import_unsupported")
+    return tuple(sorted(attribution))
+
+
 def _metadata_reports(value):
-    if type(value) is not dict:
-        return ["metadata: unsupported value is not imported"]
     reports = [f"metadata.{key}: extra metadata is not imported" for key in list(value)[:8]]
     if len(value) > 8:
         reports.append(f"metadata: {len(value) - 8} more entries are not imported")
@@ -286,6 +338,7 @@ def parse_skill_import(source):
     text = _decode(raw)
     frontmatter, body = _split_frontmatter(text)
     fields = _load_frontmatter(frontmatter)
+    attribution = _validated_metadata(fields)
     name = _mapped_name(fields)
     instructions = _mapped_instructions(body)
     _refuse_linked_resources(body)
@@ -297,7 +350,8 @@ def parse_skill_import(source):
         name=name, instructions=instructions, slug=legacy.slugify(name),
         description=description, license=license_value,
         license_requires_confirmation=needs_confirmation, unsupported=unsupported,
-        source_sha256=hashlib.sha256(raw).hexdigest(), source_bytes=len(raw))
+        source_sha256=hashlib.sha256(raw).hexdigest(), source_bytes=len(raw),
+        attribution=attribution)
 
 
 def audit_representation(preview):
@@ -310,4 +364,5 @@ def audit_representation(preview):
         "description_chars": len(preview.description),
         "instructions_chars": len(preview.instructions),
         "unsupported": list(preview.unsupported),
+        "attribution": dict(preview.attribution),
     }
