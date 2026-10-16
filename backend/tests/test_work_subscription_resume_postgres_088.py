@@ -171,7 +171,7 @@ async def test_owner_resume_preserves_wait_for_pending_subscription_source(api, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("key", ["owner:synthetic-event", "remote-job:synthetic-event", "completion:synthetic-event"])
-async def test_resume_does_not_resolve_other_event_namespaces(api, key):
+async def test_resume_preserves_unrelated_waits_and_refuses_missing_remote_sources(api, key):
     from persistent_agents.runtime_values import digest
     from tests.test_work_continuation_authority_088 import control
 
@@ -186,12 +186,17 @@ async def test_resume_does_not_resolve_other_event_namespaces(api, key):
             submission_digest=digest(["synthetic-unrelated-wait", key]), event_key=key,
             source_revision=7)
     waiting = control(api.runtime, current(api.runtime, target))
-    result = await service_for(api).resume(target.assignment_id, body(waiting),
-                                         caller=await caller(api, api.fixture[2]))
-    resumed = current(api.runtime, target)
-    assert result["applied"] is True and resumed.lifecycle == "active"
-    assert resumed.phase == "awaiting_event" and resumed.next_wake_at is None
-    assert resumed.operation["control"]["wait"] == waiting.operation["control"]["wait"]
+    authority = await caller(api, api.fixture[2])
+    if key.startswith("remote-job:"):
+        with pytest.raises(AssignmentError, match="work_completion_source_missing"):
+            await service_for(api).resume(target.assignment_id, body(waiting), caller=authority)
+        assert current(api.runtime, target) == waiting
+    else:
+        result = await service_for(api).resume(target.assignment_id, body(waiting), caller=authority)
+        resumed = current(api.runtime, target)
+        assert result["applied"] is True and resumed.lifecycle == "active"
+        assert resumed.phase == "awaiting_event" and resumed.next_wake_at is None
+        assert resumed.operation["control"]["wait"] == waiting.operation["control"]["wait"]
     rows, _ = api.service.audit.list_for_user(target.owner_id)
     assert not any(row.action_type == "work.completion_wake" for row in rows)
 

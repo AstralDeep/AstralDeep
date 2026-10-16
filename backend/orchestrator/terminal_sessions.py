@@ -1,8 +1,8 @@
-"""Owner-scoped interactive terminal sessions: each session is one sandboxed PTY child
-process inside the backend runtime, created and operated only by its authenticated owner
-through orchestrator/api.py's terminal router. Output is retained in a bounded ring so a
-CLI or panel can reconnect by byte offset; sessions expire through an idle/max-lifetime
-sweeper and every state transition is audited.
+"""Maintains owner-scoped, resource-limited PTY children for terminal_api.py.
+A bounded output ring supports reconnect and the lifecycle sweeper forwards events
+through audit_machine_event.
+The environment and resource limits do not isolate backend filesystem
+or network access.
 """
 
 from __future__ import annotations
