@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import os
 import stat
 import threading
+import uuid
 from uuid import uuid4
 
 from audit.repository import AuditRepository
@@ -24,6 +25,14 @@ from persistent_agents.models import AssignmentError
 
 class SkillCatalogError(AssignmentError):
     pass
+
+
+def _canonical_identity(value):
+    try:
+        parsed = uuid.UUID(value) if type(value) is str else None
+    except ValueError:
+        parsed = None
+    return parsed is not None and parsed.version == 4 and str(parsed) == value
 
 
 @dataclass(frozen=True, repr=False)
@@ -246,6 +255,45 @@ class UserSkillFacade:
                 raise SkillCatalogError('skill_conflict', 409)
         result = await self._transaction(caller, read, delivery_check=unchanged, read_only=True)
         return result[0]
+
+    async def read_revision(self, *, caller, skill_id, revision):
+        if not _canonical_identity(skill_id) or type(revision) is not int or revision < 1:
+            raise SkillCatalogError('skill_invalid', 422)
+        def read(tx):
+            head = self.repository.get(tx, owner_id=caller.owner_id, skill_id=skill_id)
+            if head is None or head.deleted_at is not None or not head.enabled:
+                raise SkillCatalogError('skill_not_found', 404)
+            if head.revision != revision:
+                raise SkillCatalogError('skill_conflict', 409)
+            skill = self._skill(tx, caller.owner_id, head)
+            self._audit_read(tx, caller, head, len(skill.instructions))
+            return head, skill
+        def unchanged(tx, captured):
+            if self.repository.get(tx, owner_id=caller.owner_id, skill_id=skill_id) != captured[0]:
+                raise SkillCatalogError('skill_conflict', 409)
+        head, skill = await self._transaction(caller, read, delivery_check=unchanged, read_only=True)
+        return skill, head
+
+    async def assert_revision(self, *, caller, skill_id, revision, expected):
+        if not _canonical_identity(skill_id) or type(revision) is not int or revision < 1:
+            raise SkillCatalogError('skill_invalid', 422)
+        def check(tx):
+            head = self.repository.get(tx, owner_id=caller.owner_id, skill_id=skill_id)
+            if head is None or head.deleted_at is not None or not head.enabled:
+                raise SkillCatalogError('skill_not_found', 404)
+            if head != expected or head.revision != revision:
+                raise SkillCatalogError('skill_conflict', 409)
+            return head
+        return await self._transaction(caller, check, read_only=True)
+
+    def _audit_read(self, tx, caller, head, body_chars):
+        now = datetime.now(timezone.utc)
+        event = AuditEventCreate(actor_user_id=caller.owner_id, auth_principal=caller.owner_id,
+            event_class='settings', action_type='user_skill_read',
+            description='Owner skill revision read on demand', correlation_id=head.skill_id,
+            outcome='success', outputs_meta={'skill_id': head.skill_id, 'revision': head.revision,
+                'body_chars': body_chars}, started_at=now, completed_at=now)
+        self._append_audit(tx, caller, event, read_only=True)
 
     def _append_audit(self, tx, caller, event, *, read_only=False):
         from orchestrator.work_submit import _sync
