@@ -11,7 +11,7 @@
     "astral-plane": {
       "repository": "https://github.com/AstralDeep/AstralPlane.git",
       "path": "components/AstralPlane",
-      "commit": "2ee7245c2832c4c640b0addc796d8f2d641d63e9",
+      "commit": "88cad2a0ff3baff39eaf2d12076aa62b06929f79",
       "contract_version": "astralplane.contract/v1"
     },
     "astral-primitives": {
