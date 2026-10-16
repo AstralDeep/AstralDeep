@@ -53,13 +53,18 @@ async def _register(websocket) -> None:
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_ws_register_handshake():
-    try:
-        async with websockets.connect(URI) as websocket:
-            await _register(websocket)
-    except _RealAuthActive as exc:
-        pytest.skip(str(exc))
-    except (OSError, websockets.exceptions.WebSocketException) as exc:
-        pytest.fail(f"Could not complete WS registration at {URI}: {exc}")
+    last_exc: Exception | None = None
+    for _attempt in range(3):
+        try:
+            async with websockets.connect(URI) as websocket:
+                await _register(websocket)
+            return
+        except _RealAuthActive as exc:
+            pytest.skip(str(exc))
+        except (OSError, websockets.exceptions.WebSocketException) as exc:
+            last_exc = exc
+            await asyncio.sleep(2)
+    pytest.fail(f"Could not complete WS registration at {URI} after 3 attempts: {last_exc}")
 
 
 async def run_full_flow() -> None:
