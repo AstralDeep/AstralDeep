@@ -54,7 +54,7 @@ SYNTHETIC_TOKEN = "synthetic-test-value"
 
 
 def test_public_client_boundary_is_bound_to_lets_v1_0_11() -> None:
-    assert LETS_RELEASE == "v1.0.12"
+    assert LETS_RELEASE == "v1.1.0"
 
 
 def _reference(name: str, *, size: int = 1) -> SecretFileReference:
@@ -284,14 +284,19 @@ def _boundary(
     return boundary, stub, factory
 
 
-def _problem(status: int, detail: str = "synthetic-sensitive-marker") -> ProblemDetails:
+def _problem(
+    status: int,
+    detail: str = "synthetic-sensitive-marker",
+    *,
+    code: str = "remote-test",
+) -> ProblemDetails:
     return ProblemDetails(
         type="urn:lets:problem:test",
         title="test",
         status=status,
         detail=detail,
         instance="/synthetic/private/path",
-        code="remote-test",
+        code=code,
         request_id="operation-a",
     )
 
@@ -716,6 +721,12 @@ def test_invalid_local_requests_are_stably_redacted() -> None:
         (ResourceNotFoundError(_problem(404)), "not_found", 404, False),
         (RequestConflictError(_problem(409)), "request_conflict", 409, False),
         (RemoteValidationError(_problem(422)), "remote_validation_failed", 422, False),
+        (
+            RemoteValidationError(_problem(502, code="invalid_response")),
+            "invalid_response",
+            None,
+            False,
+        ),
         (RemoteUnavailableError(_problem(503)), "remote_unavailable", 503, True),
         (LETSClientError(_problem(418)), "remote_failure", 418, False),
         (LETSClientError(_problem(500)), "remote_failure", 500, True),
@@ -724,7 +735,7 @@ def test_invalid_local_requests_are_stably_redacted() -> None:
 def test_typed_remote_errors_are_mapped_without_problem_detail(
     remote_error: LETSClientError,
     code: str,
-    status: int,
+    status: int | None,
     retryable: bool,
 ) -> None:
     boundary, _stub, _factory = _boundary({"issue_root": remote_error})
