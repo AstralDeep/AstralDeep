@@ -512,13 +512,14 @@ class AssignmentRunner:
         self.orch.work_admission.terminalize(executor.operation_fence,
             state=OperationState.COMPLETED, terminal_code=None, safe_summary=None,
             retry_after_ms=None, transaction=tx)
-        if completion.terminal_outcome in {"completed", "failed", "cancelled"}:
+        outcome = result.operation.get("terminal_outcome")
+        if result.lifecycle == "completed" and outcome in {"completed", "failed", "cancelled"}:
             from orchestrator.work_subscriptions import fire_completions
 
-            fire_completions(self.service, tx, repository, owner_id=current.owner_id,
-                             source_id=current.assignment_id,
+            fire_completions(self.service, tx, repository, owner_id=result.owner_id,
+                             source_id=result.assignment_id,
                              source_revision=result.state_version,
-                             outcome=completion.terminal_outcome)
+                             outcome=outcome)
         return result
 
     async def _finish_operation(self, executor, outcome):

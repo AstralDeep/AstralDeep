@@ -6,6 +6,7 @@ stop, and owner stop/delete paths with audited, redrivable fires.
 
 import asyncio
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -101,7 +102,7 @@ def _issue(work, *, scopes=_ALL_SCOPES):
     return caller
 
 
-def _operation(work, *, owner=None, sid=None):
+def _operation(work, *, owner=None, sid=None, limits=None, deadline_seconds=3600):
     store = work.store
     owner = owner or work.owner
     sid = sid or work.sid
@@ -119,12 +120,12 @@ def _operation(work, *, owner=None, sid=None):
             definition=AssignmentDefinition(
                 name="Synthetic completion work", instructions="Read one public source.",
                 source={}, allowed_tools=(), consented_scopes=(), offline_grant_id=None,
-                limits=_LIMITS),
+                limits=_LIMITS if limits is None else limits),
             operation=AssignmentOperationSpec(
                 "chat", AssignmentOperationAuthority(
                     owner, "interactive", "session_incarnation", state.credential.incarnation_id,
                     min(state.observed_at + timedelta(seconds=3600), hard_expiry)),
-                state.observed_at + timedelta(seconds=3600), "none"))
+                state.observed_at + timedelta(seconds=deadline_seconds), "none"))
 
 
 async def _read(work, record_or_id, owner=None):
@@ -506,6 +507,94 @@ async def test_runner_completion_fires_the_subscription_and_wakes_the_target(wor
     assert fires[0].outputs_meta["source_operation_id"] == source.assignment_id
     assert fires[0].outputs_meta["target_operation_id"] == target.assignment_id
     assert fires[0].outputs_meta["outcome"] == "completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["retryable", "exhausted", "deadline", "completed_default"])
+async def test_runner_uses_persisted_terminal_outcome_for_subscription_wakes(work, mode):
+    caller = _issue(work)
+    source = _operation(work, limits={**_LIMITS, "max_retries": 0 if mode == "exhausted" else 1},
+                        deadline_seconds=1800 if mode == "deadline" else 3600)
+    target = _operation(work)
+    await _subscribe(work, caller, source, target)
+    parked = (await _read(work, target)).assignment
+    runner = await _runner(work)
+    try:
+        executor = await _claim_source(work, runner, source)
+        if mode in {"exhausted", "retryable"}:
+            authority = await runner._operation_authority(executor.record)
+            result = await runner._hold_operation(executor, authority)
+        else:
+            before = (await _read(work, source)).assignment
+            completion = replace(_terminal_completion(before, mode), terminal_outcome=None)
+            if mode == "deadline":
+                completion = replace(completion, completed=False, phase="failed",
+                    wake_reason="assignment_failed", safe_error_code="assignment_failed",
+                    next_wake_at=datetime.fromisoformat(source.operation["deadline_at"])
+                    + timedelta(seconds=1))
+            result = await runner._finish_operation(executor, OneShotEpisodeResult(before, completion))
+    finally:
+        await runner.stop()
+    finished = (await _read(work, source)).assignment
+    after = (await _read(work, target)).assignment
+    wakes = await _audits(work, work.owner, "work.completion_wake")
+    assert result == finished
+    if mode == "retryable":
+        assert finished.lifecycle == "active" and finished.phase == "failed"
+        assert finished.next_wake_at is not None
+        assert finished.operation.get("terminal_outcome") is None
+        assert after == parked and wakes == []
+    else:
+        expected = "completed" if mode == "completed_default" else "failed"
+        assert finished.lifecycle == "completed"
+        assert finished.operation["terminal_outcome"] == expected
+        assert finished.next_wake_at is None
+        assert after.phase == "waiting" and after.operation["control"]["wait"] is None
+        assert after.wake_generation == parked.wake_generation + 1
+        assert after.operation["control"]["watermarks"][completion_event_key(source.assignment_id)] >= finished.state_version
+        assert len(wakes) == 1 and wakes[0].outputs_meta["outcome"] == expected
+        assert wakes[0].outputs_meta["event_revision"] == finished.state_version
+    assert work.audit.verify_chain(work.owner) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["wake", "audit"])
+async def test_derived_runner_failure_rolls_back_with_wake_and_recovers_once(work, monkeypatch, failure):
+    caller = _issue(work)
+    source = _operation(work, limits={**_LIMITS, "max_retries": 0})
+    target = _operation(work)
+    await _subscribe(work, caller, source, target)
+    parked = (await _read(work, target)).assignment
+    runner = await _runner(work)
+
+    def refuse(*args, **kwargs):
+        raise AssignmentError("work_control_unavailable", 503)
+
+    try:
+        executor = await _claim_source(work, runner, source)
+        authority = await runner._operation_authority(executor.record)
+        before = (await _read(work, source)).assignment
+        with monkeypatch.context() as failing:
+            failing.setattr(work.service.store.repository if failure == "wake" else work.audit,
+                            "accept_wake" if failure == "wake" else "insert_in_transaction", refuse)
+            with pytest.raises(AssignmentError, match="work_control_unavailable"):
+                await runner._hold_operation(executor, authority)
+        assert (await _read(work, source)).assignment == before
+        assert (await _read(work, target)).assignment == parked
+        assert await _audits(work, work.owner, "work.completion_wake") == []
+        result = await runner._hold_operation(executor, authority)
+        assert result.lifecycle == "completed" and result.operation["terminal_outcome"] == "failed"
+        assert (await _read(work, source)).assignment == result
+        resumed = (await _read(work, target)).assignment
+        assert resumed.phase == "waiting" and resumed.operation["control"]["wait"] is None
+        assert resumed.wake_generation == parked.wake_generation + 1
+        wakes = await _audits(work, work.owner, "work.completion_wake")
+        assert len(wakes) == 1 and wakes[0].outputs_meta["outcome"] == "failed"
+        assert await runner._hold_operation(executor, authority) is None
+        assert len(await _audits(work, work.owner, "work.completion_wake")) == 1
+        assert work.audit.verify_chain(work.owner) is None
+    finally:
+        await runner.stop()
 
 
 @pytest.mark.asyncio
