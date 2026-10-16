@@ -1,0 +1,71 @@
+"""The versioned harness contract package: contract.py defines the seams,
+typesafe_adapter.py and standard_llm_adapter.py bind the existing runners,
+selection.py gates profile rollout, and conformance.py verifies deployments.
+"""
+
+from .contract import (
+    HARNESS_CONTRACT_VERSION,
+    AccountingSeam,
+    HarnessAccounting,
+    HarnessCancellationPending,
+    HarnessAgentOption,
+    HarnessContractError,
+    HarnessDeployment,
+    HarnessExecution,
+    HarnessIdentity,
+    HarnessOutcome,
+    HarnessProviderFrame,
+    HarnessResult,
+    HarnessToolOption,
+    HarnessToolSurface,
+    HarnessTurnRequest,
+    LifecycleSeam,
+    ProviderSeam,
+    ToolSeam,
+    assert_credential_free,
+    empty_surface,
+    validate_deployment,
+)
+from .conformance import ConformanceReport, run_conformance
+from .selection import (
+    ROLLOUT_FLAG,
+    HarnessCatalog,
+    HarnessSelectionUnavailable,
+    default_catalog,
+)
+from .standard_llm_adapter import StandardLLMHarness, standard_deployment
+from .typesafe_adapter import TypeSafeRoutingHarness, typesafe_deployment
+
+__all__ = (
+    "HARNESS_CONTRACT_VERSION",
+    "ROLLOUT_FLAG",
+    "AccountingSeam",
+    "ConformanceReport",
+    "HarnessAccounting",
+    "HarnessCancellationPending",
+    "HarnessAgentOption",
+    "HarnessCatalog",
+    "HarnessContractError",
+    "HarnessDeployment",
+    "HarnessExecution",
+    "HarnessIdentity",
+    "HarnessOutcome",
+    "HarnessProviderFrame",
+    "HarnessResult",
+    "HarnessSelectionUnavailable",
+    "HarnessToolOption",
+    "HarnessToolSurface",
+    "HarnessTurnRequest",
+    "LifecycleSeam",
+    "ProviderSeam",
+    "StandardLLMHarness",
+    "ToolSeam",
+    "TypeSafeRoutingHarness",
+    "assert_credential_free",
+    "default_catalog",
+    "empty_surface",
+    "run_conformance",
+    "standard_deployment",
+    "typesafe_deployment",
+    "validate_deployment",
+)

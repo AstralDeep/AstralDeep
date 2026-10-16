@@ -2,7 +2,7 @@
 
 **Feature Branch**: `050-cresco-integration-decision`
 **Created**: 2026-07-06
-**Status**: Approved — implementation pending
+**Status**: Approved — bounded and reconciled by `specs/095-cresco-bridge-contract/` (2026-10-13); bridge implementation remains pending
 **Input**: User description: "create a new specification for attempting to integrate Cresco into the AstralDeep system … provide a final decision as to whether or not to implement Cresco. https://github.com/CrescoEdge/agent https://github.com/CrescoEdge/controller https://github.com/CrescoEdge/library"
 
 ## Overview
@@ -26,6 +26,15 @@ Findings are pinned to sources retrieved 2026-07-06; Cresco is under active deve
 - **Executor is the risk center.** The `executor` plugin "runs arbitrary shell commands by design — a remote execution surface," with authorization delegated to the broker/tenant layer only; the `cresco_service_key` is a single all-or-nothing fabric credential. Any LLM-facing wrapper concentrates the entire per-user safety case in AstralDeep's gates. (executor @ `8e9020e`.) It is enabled by default on a global node.
 - **Zero-new-dependency feasibility (proven live).** A single-node fabric was brought up from the released `agent-1.3-SNAPSHOT.jar` (JDK 21+) and driven end-to-end from Python twice: once with `pycrescolib` 1.3.0, and once with a raw client using **only the `websockets` library already in `backend/requirements.txt`** (`websockets>=12.0`) plus stdlib (`json`/`gzip`/`base64`/`ssl`), round-tripping `listregions`/`listagents`. Therefore the bridge needs **no new third-party libraries**. `pycrescolib` is deliberately not adopted: it would add `backoff` (absent from requirements) and disables TLS verification globally by default.
 - **What the bridge must supply on the AstralDeep side.** Cresco has no LLM layer, no per-user consent or per-tool permission model (principals are machines/tenants), no human-anchored delegation, no per-user tamper-evident audit chain. The bridge therefore inherits AstralDeep's existing gates — none of which need to be built: fail-closed `AGENT_API_KEY` registration (`orchestrator/auth.py::validate_agent_api_key`), per-tool scopes + `tool_permissions.is_tool_allowed`, `tool_security` hard flags, `agent_trust` safe-marking, RFC 8693 delegation (`orchestrator/delegation.py`), and the per-user hash-chained audit (`audit/repository.py::verify_chain`).
+
+## Reconciliation (2026-10-13, by spec 095)
+
+Issue #279 reconciled this spec against the merged GaiaKeep integration (spec 092) and Constitution v6.2.0. The evaluation record above is preserved; the following are retired or superseded, and the normative details are now bounded by [`specs/095-cresco-bridge-contract/contracts/bridge-contract.md`](../095-cresco-bridge-contract/contracts/bridge-contract.md):
+
+- **T003a's registry target is stale**: `backend/shared/database.py` (and its `_FIRST_PARTY_PUBLIC_AGENT_IDS`) no longer exists — AstralPlane composition removed it. The current registry is `backend/orchestrator/local_agents.py::FIRST_PARTY_PUBLIC_AGENT_IDS`.
+- **FR-002's absolute dependency posture is superseded** by Constitution v6.2.0 Principles V and VII: any supporting library (including `pycrescolib`) is permitted under Principle V when declared in the manifest. `pycrescolib` remains disqualified as the default client solely by its global TLS-verification-off default (research R4), which no constitution relaxes.
+- **`FF_CRESCO`'s only live consumer today is the GaiaKeep boundary gate** (`FF_GAIAKEEP` AND `FF_CRESCO`), a specialized Cresco-gated archival path over a caller-owned SSH tunnel — not this general bridge. GaiaKeep's existence does not satisfy or activate this spec.
+- **All implementation tasks (T001–T019) remain unchecked and are bounded** by the spec 095 contract; any future implementation MUST adopt that contract and re-verify the 2026-07-06 upstream source pins first.
 
 ## Clarifications
 

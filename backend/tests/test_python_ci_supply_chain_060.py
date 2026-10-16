@@ -54,6 +54,10 @@ REVIEWED_GAIA_SDK_FINGERPRINT = (
     "2bd6c67005dea8b0a95c2d87ec4c067a3f493305:"
     "backend/agents/gaiakeep/sdk-artifact.json:generic-api-key:22"
 )
+REVIEWED_HARNESS_CANARY_FINGERPRINT = (
+    "3f01f0eca9255bb779fa5ff3ff67ce93716d51f1:"
+    "backend/orchestrator/harness/conformance.py:typesafe-system-one-key:33"
+)
 WINDOWS_CANDIDATE = REPO_ROOT / ".github" / "workflows" / "build-windows-candidate.yml"
 WINDOWS_RELEASE_BRIDGE = REPO_ROOT / ".github" / "workflows" / "release-windows.yml"
 LOCK_INSTALL = (
@@ -206,12 +210,13 @@ def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     assert comments, "a baseline entry with no recorded reason is not reviewed"
     assert all(line.lstrip("#").strip() for line in comments)
     fingerprints = [line for line in lines if not line.startswith("#")]
-    assert len(fingerprints) == 25
+    assert len(fingerprints) == 26
     assert len(fingerprints) == len(set(fingerprints))
     assert REVIEWED_074_FINGERPRINTS <= set(fingerprints)
     assert REVIEWED_079_FINGERPRINT in fingerprints
     assert REVIEWED_089_FINGERPRINTS <= set(fingerprints)
     assert REVIEWED_GAIA_SDK_FINGERPRINT in fingerprints
+    assert REVIEWED_HARNESS_CANARY_FINGERPRINT in fingerprints
     assert all(
         re.fullmatch(
             r"[0-9a-f]{40}:[^:]+:"
@@ -243,6 +248,8 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
     expected_scripts = {
         "check_acceptance_mutations.py",
         "ci_review_diagnostics.py",
+        "ci_network_fixture.py",
+        "ci_fence_fixture_verifier.py",
         "apple_coverage_artifacts.py",
         "backend_web_service_materials.py",
         "backend_web_test_reporter.py",
@@ -282,6 +289,8 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         expected_scripts
     )
     expected_test_paths = {
+        "scripts/tests/test_ci_network_fixture.py",
+        "scripts/tests/test_ci_fence_fixture_verifier.py",
         "scripts/tests/test_ci_review_diagnostics.py",
         "scripts/tests/test_acceptance_mutations.py",
         "scripts/tests/test_acceptance_ci_contract.py",

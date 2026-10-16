@@ -52,6 +52,11 @@ from orchestrator.credential_manager import CredentialManager
 from orchestrator.delegation import DelegationService
 from orchestrator.tool_security import ToolSecurityAnalyzer
 from orchestrator.compaction import compact_messages, estimate_overhead_tokens
+from llm_config.tool_continuation import (
+    is_gemini_continuation_profile,
+    merge_continuation_signature,
+    validate_continuation_wire,
+)
 from orchestrator import evidence_context
 from orchestrator import context_engineering
 from orchestrator import datamarking
@@ -15842,7 +15847,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return cls._safe_llm_error_metadata(exc).upstream_error_class
 
     async def _context_model_call(self, websocket, chat_id, purpose, model, invoke, *, attempt_id=None, retry_of=None,
-                                  request=None, base_url=None, provider_capture=None):
+                                  request=None, base_url=None, provider_capture=None, account_invocation=True):
+        from llm_config.invocation import observe_provider
         service = evidence_context.get_context(self)
         if service is None and (provider_capture is not None
                                 or evidence_context.has_references((request or {}).get("messages", []))):
@@ -15850,7 +15856,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             raise EvidenceDenied()
         if service is None or (not evidence_context.enabled() and provider_capture is None
                                and not evidence_context.has_references((request or {}).get("messages", []))):
-            return await invoke()
+            return await observe_provider(invoke) if account_invocation else await invoke()
         owner = self._llm_context_user_id(websocket)
         conversation = chat_id or _NARRATIVE_STREAM_CHAT.get() or getattr(self, "_ws_active_chat", {}).get(id(websocket))
         if owner is None or conversation is None:
@@ -15860,7 +15866,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         async def physical():
             await guard()
-            return await invoke()
+            return await observe_provider(invoke) if account_invocation else await invoke()
 
         return await service.usage.model_call(
             owner, conversation, purpose, model, physical,
@@ -15872,6 +15878,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         reasoning_effort=None, allow_stream: bool = False,
                         stream_chat_id: Optional[str] = None,
                         tool_choice=None, evidence_transient=False):
+        from llm_config.invocation import runner_failed, runner_started, runner_unavailable
+        runner_started()
         actor_user_id, auth_principal = self._llm_audit_principals(websocket)
         from persistent_agents.dispatch_context import current_dispatch
         persistent_dispatch = current_dispatch()
@@ -15888,6 +15896,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             else:
                 client, source, resolved = await self._resolve_llm_client_for(websocket)
         except self._LLMUnavailable:
+            runner_unavailable()
             await self._record_llm_unconfigured(
                 self.audit_recorder,
                 actor_user_id=actor_user_id,
@@ -15895,6 +15904,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 feature=feature,
             )
             return None, None
+        if is_gemini_continuation_profile(getattr(resolved, "base_url", None)):
+            validate_continuation_wire(messages)
         call_model = resolved.model
         effort = reasoning_effort if reasoning_effort is not None else getattr(
             self, "llm_reasoning_effort", None)
@@ -15988,7 +15999,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             )
                         else:
                             response = await self._call_llm_streamed(
-                                websocket, client, kwargs, stream_chat_id)
+                                websocket, client, kwargs, stream_chat_id,
+                                context_base_url=getattr(resolved, "base_url", None),
+                            )
                     except Exception as _stream_exc:
                         stream_error = self._safe_llm_error_metadata(_stream_exc)
                         logger.warning(
@@ -16117,6 +16130,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
 
                 if not error.retryable or attempt == self.MAX_RETRIES:
+                    runner_failed(error.exception_class, credential_rejected=error.status_code == 401)
                     await self._record_llm_call(
                         self.audit_recorder,
                         actor_user_id=actor_user_id,
@@ -16251,14 +16265,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         queue: asyncio.Queue = asyncio.Queue()
         from threading import Event
         abandoned = Event()
+        preserve_continuation = is_gemini_continuation_profile(context_base_url)
 
         def _pump():
+            from llm_config.invocation import provider_reported_usage
             from types import SimpleNamespace
             reported_usage = None
             try:
                 for chunk in client.chat.completions.create(stream=True, **kwargs):
                     if getattr(chunk, "usage", None) is not None:
                         reported_usage = chunk.usage
+                        provider_reported_usage(reported_usage)
                     if not abandoned.is_set():
                         loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
                 if not abandoned.is_set():
@@ -16319,7 +16336,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     for tc in delta.tool_calls:
                         idx = getattr(tc, "index", 0) or 0
                         acc = tool_calls_acc.setdefault(
-                            idx, {"id": None, "name": "", "arguments": ""})
+                            idx, {"id": None, "name": "", "arguments": "",
+                                  "signature": None})
                         if getattr(tc, "id", None):
                             acc["id"] = tc.id
                         fn = getattr(tc, "function", None)
@@ -16328,6 +16346,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 acc["name"] += fn.name
                             if getattr(fn, "arguments", None):
                                 acc["arguments"] += fn.arguments
+                        if preserve_continuation:
+                            frag = getattr(tc, "extra_content", None)
+                            if frag is not None:
+                                acc["signature"] = merge_continuation_signature(
+                                    acc["signature"], frag)
                 d_content = getattr(delta, "content", None)
                 if d_content:
                     content_parts.append(d_content)
@@ -16391,20 +16414,27 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             try:
                 from openai.types.chat.chat_completion_message_tool_call import (
                     ChatCompletionMessageToolCall, Function)
-                tool_calls = [
-                    ChatCompletionMessageToolCall(
+                tool_calls = []
+                for i, acc in enumerate(ordered):
+                    call = ChatCompletionMessageToolCall(
                         id=acc["id"] or f"call_{i}", type="function",
                         function=Function(name=acc["name"], arguments=acc["arguments"]))
-                    for i, acc in enumerate(ordered)
-                ]
+                    if acc.get("signature") is not None:
+                        call.extra_content = {
+                            "google": {"thought_signature": acc["signature"]}}
+                    tool_calls.append(call)
             except Exception:
-                tool_calls = [
-                    SimpleNamespace(
-                        id=acc["id"] or f"call_{i}", type="function",
-                        function=SimpleNamespace(name=acc["name"],
-                                                 arguments=acc["arguments"]))
-                    for i, acc in enumerate(ordered)
-                ]
+                tool_calls = []
+                for i, acc in enumerate(ordered):
+                    fields = {
+                        "id": acc["id"] or f"call_{i}", "type": "function",
+                        "function": SimpleNamespace(name=acc["name"],
+                                                    arguments=acc["arguments"]),
+                    }
+                    if acc.get("signature") is not None:
+                        fields["extra_content"] = {
+                            "google": {"thought_signature": acc["signature"]}}
+                    tool_calls.append(SimpleNamespace(**fields))
         try:
             from openai.types.chat import ChatCompletionMessage
             return ChatCompletionMessage(
