@@ -167,6 +167,7 @@ class TerminalSessionManager:
     def __init__(self, *, clock: Optional[Callable[[], float]] = None,
                  spawn: Optional[Callable[[List[str], Dict[str, str], str, Tuple[int, int]], Tuple[int, Any, str]]] = None) -> None:
         self._sessions: Dict[str, TerminalSession] = {}
+        self._creating: Dict[str, int] = {}
         self._lock = threading.Lock()
         self._clock = clock or time.monotonic
         self._spawn = spawn or _spawn_shell
@@ -195,20 +196,32 @@ class TerminalSessionManager:
         rows = _bounded_dimension(rows, ROWS_RANGE, "terminal_rows_invalid")
         with self._lock:
             live = [s for s in self._sessions.values() if s.owner_id == owner_id and not s.closed]
-            if len(live) >= SESSIONS_PER_OWNER:
+            if len(live) + self._creating.get(owner_id, 0) >= SESSIONS_PER_OWNER:
                 raise TerminalError("terminal_session_limit_reached", 409)
-        cwd = _child_cwd()
+            self._creating[owner_id] = self._creating.get(owner_id, 0) + 1
+        session = None
+        cwd = None
         try:
-            master_fd, process, cwd = self._spawn(_shell_argv(command), _child_env(cwd), cwd, (cols, rows))
-        except OSError as exc:
-            shutil.rmtree(cwd, ignore_errors=True)
-            logger.warning("terminal_session.spawn_failed owner=%s error=%s", owner_id, exc)
-            raise TerminalError("terminal_spawn_failed", 503) from None
-        session = TerminalSession(str(uuid.uuid4()), owner_id, master_fd,
-                                  process, cwd, now=self._clock)
-        session.cols, session.rows = cols, rows
-        with self._lock:
-            self._sessions[session.session_id] = session
+            cwd = _child_cwd()
+            try:
+                master_fd, process, cwd = self._spawn(_shell_argv(command), _child_env(cwd), cwd, (cols, rows))
+            except OSError as exc:
+                logger.warning("terminal_session.spawn_failed owner=%s error=%s", owner_id, exc)
+                raise TerminalError("terminal_spawn_failed", 503) from None
+            session = TerminalSession(str(uuid.uuid4()), owner_id, master_fd,
+                                      process, cwd, now=self._clock)
+            session.cols, session.rows = cols, rows
+        finally:
+            with self._lock:
+                remaining = self._creating[owner_id] - 1
+                if remaining:
+                    self._creating[owner_id] = remaining
+                else:
+                    self._creating.pop(owner_id)
+                if session is not None:
+                    self._sessions[session.session_id] = session
+            if session is None and cwd is not None:
+                shutil.rmtree(cwd, ignore_errors=True)
         session.start_pump()
         self._ensure_sweeper()
         audit_machine_event(owner_id, "terminal_session_create",
