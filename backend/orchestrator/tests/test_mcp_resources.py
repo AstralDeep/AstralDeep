@@ -42,8 +42,6 @@ OWNER_ID = "owner-2f1c"
 WORK_ID = "3f8a1c2e-9b4d-4f7a-8c1e-2d5b6a7c8e9f"
 FOREIGN_ID = "7c2e4a1b-5d3f-4a8b-9e6c-1f2a3b4c5d6e"
 
-_EMPTY_PAGE = {"operations": [], "next_cursor": None, "page_full": False}
-
 
 def _caller(*, owner_id=OWNER_ID, scopes=("operations.read",)):
     return FrameworkCaller(
@@ -88,6 +86,7 @@ def _make_read(owner_id, assignment_id, *, title="Nightly digest",
         control_epoch=1,
         created_at=datetime(2026, 10, 15, 0, 0, tzinfo=UTC),
         updated_at=datetime(2026, 10, 15, 0, 5, tzinfo=UTC),
+        next_wake_at=None,
         definition=SimpleNamespace(name=title),
         operation={"kind": "chat", "deadline_at": None},
     )
@@ -554,3 +553,4 @@ class TestIntegration:
         )
         assert resp.status_code == 404
         body = json.loads(resp.body)
+        assert "error" in body
