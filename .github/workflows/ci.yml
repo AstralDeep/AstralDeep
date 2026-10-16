@@ -468,6 +468,8 @@ jobs:
           cache-dependency-path: tooling/python-ci/requirements.lock.txt
       - name: Install hash-locked CI-only Python tooling
         run: python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
+      - name: Qualify the owned local CI peer lifecycle
+        run: python scripts/ci_network_fixture.py qualify
       - name: Lint Deep-owned Python
         run: ruff check .
 
@@ -603,6 +605,8 @@ jobs:
             backend/tests/test_extract_release_artifact_060.py
             backend/tests/test_release_evidence_bootstrap.py
             scripts/tests/test_component_build_surfaces_074.py
+            scripts/tests/test_ci_network_fixture.py
+            scripts/tests/test_ci_fence_fixture_verifier.py
             scripts/tests/test_backend_web_auth.py
             scripts/tests/test_backend_web_evidence.py
             scripts/tests/test_backend_web_functional.py
