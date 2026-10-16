@@ -417,12 +417,20 @@ def _spawn_shell(argv: List[str], env: Dict[str, str], cwd: str,
                  size: Tuple[int, int]) -> Tuple[int, Any, str]:
     master_fd, slave_fd = os.openpty()
     _apply_winsize(master_fd, size)
-    preexec = make_preexec(build_limits())
+    limits_preexec = make_preexec(build_limits())
+
+    def _child_setup() -> None:
+        if limits_preexec is not None:
+            limits_preexec()
+        # Reset inherited ignored signals so the child remains interruptible.
+        for ignored in (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT):
+            signal.signal(ignored, signal.SIG_DFL)
+
     try:
         process = subprocess.Popen(
             argv, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
             start_new_session=True, close_fds=True, env=env, cwd=cwd,
-            preexec_fn=preexec)
+            preexec_fn=_child_setup)
     except OSError:
         os.close(master_fd)
         os.close(slave_fd)

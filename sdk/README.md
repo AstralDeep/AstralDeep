@@ -119,6 +119,36 @@ python -m astral_sdk cancel <operation_id> --expected-revision 2
 Every command prints one JSON document to stdout on success, or a JSON error
 object to stderr with a non-zero exit code.
 
+## Terminal sessions
+
+The operator CLI can also drive the server's governed interactive terminal
+sessions — the same `/api/terminals` REST surface the in-app terminal panel
+uses. Terminal sessions are owner-only: they require a current Keycloak owner
+access token, and framework credentials (`afk_…`) are refused locally with
+`terminal_owner_authentication_required` before any request is sent.
+
+```bash
+session=$(python -m astral_sdk terminal-create --cols 100 --rows 30 \
+    --base-url "$ASTRAL_BASE_URL" --token "$ASTRAL_TOKEN" | jq -r .session_id)
+python -m astral_sdk terminal-write "$session" --data "echo hello\n" \
+    --token "$ASTRAL_TOKEN"
+python -m astral_sdk terminal-read "$session" --offset 0 --token "$ASTRAL_TOKEN"
+python -m astral_sdk terminal-resize "$session" --cols 120 --rows 40 --token "$ASTRAL_TOKEN"
+python -m astral_sdk terminal-interrupt "$session" --token "$ASTRAL_TOKEN"
+python -m astral_sdk terminal-attach "$session" --token "$ASTRAL_TOKEN"   # stream until the session ends
+python -m astral_sdk terminal-close "$session" --token "$ASTRAL_TOKEN"
+python -m astral_sdk terminal-list --token "$ASTRAL_TOKEN"
+```
+
+`terminal-read` accepts `--offset` for reconnect-safe resumption: output is
+retained server-side in a bounded ring, and `next_offset` feeds the next read.
+`terminal-write` sends text, or raw bytes with a `base64:` prefix.
+
+The client methods (`create_terminal_session`, `write_terminal`,
+`read_terminal`, `stream_terminal`, `resize_terminal`, `interrupt_terminal`,
+`close_terminal`, `list_terminal_sessions`) exist on both `AstralClient` and
+`AsyncAstralClient` and speak the same REST surface.
+
 `emergency-status` and `emergency-stop` accept a framework credential with the
 corresponding read or control scope. `emergency-resume --expected-revision N`
 requires a current owner Keycloak access token obtained through the existing

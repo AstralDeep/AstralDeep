@@ -504,3 +504,28 @@ def test_termination_actions_end_the_complete_process_group(vector_id: str) -> N
     assert snapshot.process_tree_terminated is True
     assert process.process_tree_alive() is False
     _assert_complete_cleanup(snapshot)
+
+
+def test_bulk_quit_confirms_forced_kills_after_the_shared_deadline_expires() -> None:
+    supervisor = ProcessSupervisor(
+        limits=ProcessSupervisionLimits(termination_deadline_seconds=1.2)
+    )
+    children = []
+    for index in range(5):
+        children.append(_spawn_script(
+            supervisor,
+            f"sigint-ignorer-{index}",
+            "import signal, time\n"
+            "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+            "print('ready', flush=True)\n"
+            "time.sleep(30)\n",
+        ))
+    for process in children:
+        assert process.wait_for_line(
+            OutputStream.STDOUT, prefix=b"ready", timeout=5.0
+        )
+    snapshots = supervisor.terminate_all(reason=TerminationReason.QUIT)
+    assert len(snapshots) == 5
+    assert all(snapshot.process_tree_terminated for snapshot in snapshots)
+    assert all(snapshot.cleanup_error is None for snapshot in snapshots)
+    assert supervisor.snapshots()[0].process_tree_terminated is True

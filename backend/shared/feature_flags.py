@@ -52,6 +52,7 @@ class FeatureFlags:
             "fhir": self._read("FF_FHIR", False),
             "cresco": self._read("FF_CRESCO", False),
             "computer_use": self._read("FF_COMPUTER_USE", False),
+            "terminal_shell": self._read("FF_TERMINAL_SHELL", False),
             "mcp_server": self._read("FF_MCP_SERVER", False),
             "a2a_server": self._read("FF_A2A_SERVER", False),
             "conversational_voice": self._read(

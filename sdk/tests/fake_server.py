@@ -4,9 +4,11 @@ The in-memory state complements backend authority and PostgreSQL qualification.
 
 from __future__ import annotations
 
+import base64
 import json
 import threading
 import uuid
+from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
 
@@ -42,6 +44,8 @@ class FakeAstralState:
         self.stop_engaged: bool = False
         self.stop_revision: int = 0
         self.subscriptions: dict[tuple[str, str], dict[str, Any]] = {}
+        self.terminals: dict[str, dict[str, Any]] = {}
+        self.terminal_interrupts: list[str] = []
 
 
 def _operation_view(op: dict[str, Any]) -> dict[str, Any]:
@@ -74,6 +78,9 @@ class _Handler(BaseHTTPRequestHandler):
                         www_authenticate=challenge)
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path.startswith("/api/terminals"):
+            self._terminal_api("POST")
+            return
         if self.path.startswith("/api/emergency-stop/"):
             self._owner_emergency()
             return
@@ -122,7 +129,96 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"jsonrpc": "2.0", "id": request_id, "result": result})
 
     def do_GET(self) -> None:  # noqa: N802
+        if self.path.startswith("/api/terminals"):
+            self._terminal_api("GET")
+            return
         self._owner_emergency()
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._terminal_api("DELETE")
+
+    def _terminal_authorized(self) -> bool:
+        return self.headers.get("Authorization") == f"Bearer {self.state.owner_token}"
+
+    def _terminal_describe(self, session: dict[str, Any]) -> dict[str, Any]:
+        output = session["output"]
+        return {"session_id": session["session_id"], "cols": session["cols"],
+                "rows": session["rows"], "created_at_monotonic": session["created"],
+                "idle_seconds": 0.0, "ring_start": 0, "ring_end": len(output)}
+
+    def _terminal_api(self, method: str) -> None:
+        if not self._terminal_authorized():
+            self._send_json(401, {"error": "terminal_owner_authentication_required"})
+            return
+        path_only = self.path.split("?", 1)[0]
+        parts = [p for p in path_only.split("/") if p]
+        state = self.state
+        with state.lock:
+            if method == "POST" and len(parts) == 2:
+                length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(length)) if length else {}
+                session_id = str(uuid.uuid4())
+                session = {"session_id": session_id, "cols": body.get("cols", 80),
+                           "rows": body.get("rows", 24), "output": bytearray(),
+                           "closed": False, "created": 1.0}
+                state.terminals[session_id] = session
+                self._send_json(200, self._terminal_describe(session))
+                return
+            if method == "GET" and len(parts) == 2:
+                self._send_json(200, {"sessions": [
+                    self._terminal_describe(s) for s in state.terminals.values() if not s["closed"]]})
+                return
+            if len(parts) == 4:
+                session = state.terminals.get(parts[2])
+                if session is None:
+                    self._send_json(404, {"error": "terminal_session_not_found"})
+                    return
+                action = parts[3]
+                if session["closed"] and action != "output":
+                    self._send_json(409, {"error": "terminal_session_closed"})
+                    return
+                if action == "input" and method == "POST":
+                    length = int(self.headers.get("Content-Length", "0"))
+                    body = json.loads(self.rfile.read(length)) if length else {}
+                    if not body.get("data_b64"):
+                        self._send_json(422, {"error": "terminal_input_invalid"})
+                        return
+                    session["output"].extend(base64.b64decode(body["data_b64"]))
+                    self._send_json(200, self._terminal_describe(session))
+                    return
+                if action == "resize" and method == "POST":
+                    length = int(self.headers.get("Content-Length", "0"))
+                    body = json.loads(self.rfile.read(length)) if length else {}
+                    session["cols"], session["rows"] = body.get("cols", 80), body.get("rows", 24)
+                    self._send_json(200, self._terminal_describe(session))
+                    return
+                if action == "interrupt" and method == "POST":
+                    state.terminal_interrupts.append(session["session_id"])
+                    self._send_json(200, self._terminal_describe(session))
+                    return
+                if action == "output" and method == "GET":
+                    query = parse_qs(urlsplit(self.path).query)
+                    offset = int(query.get("offset", ["0"])[0])
+                    if offset < 0 or offset > len(session["output"]):
+                        offset = min(max(offset, 0), len(session["output"]))
+                    chunk = bytes(session["output"][offset:offset + 65536])
+                    self._send_json(200, {
+                        "session_id": session["session_id"], "offset": offset,
+                        "next_offset": offset + len(chunk),
+                        "data_b64": base64.b64encode(chunk).decode("ascii"),
+                        "bytes": len(chunk), "truncated": False, "eof": session["closed"],
+                        "session": None if session["closed"] else self._terminal_describe(session)})
+                    return
+            if method == "DELETE" and len(parts) == 3:
+                session = state.terminals.get(parts[2])
+                if session is None:
+                    self._send_json(404, {"error": "terminal_session_not_found"})
+                    return
+                session["closed"] = True
+                self._send_json(200, {"session_id": session["session_id"],
+                                      "closed": True, "reason": "owner_close"})
+                return
+        self._send_json(404, {"error": "not found"})
 
     def _owner_emergency(self) -> None:
         if self.headers.get("Authorization") != f"Bearer {self.state.owner_token}":
