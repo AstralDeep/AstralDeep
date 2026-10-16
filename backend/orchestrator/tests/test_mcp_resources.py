@@ -294,8 +294,12 @@ class TestResourceListing:
         ops.list = _list
         resources = asyncio.run(
             list_resources(_endpoint(ops), OWNER_ID, _claims(_caller())))
-        assert len(resources) == 1
+        # 1 valid UUID4 record × 2 resource kinds (status, artifacts) = 2 resources
+        assert len(resources) == 2
         assert all(WORK_ID in item["uri"] for item in resources)
+        uris = {item["uri"] for item in resources}
+        assert f"astral://work/{WORK_ID}/status" in uris
+        assert f"astral://work/{WORK_ID}/artifacts" in uris
 
     def test_unexpected_facade_payload_lists_nothing(self):
         resources = asyncio.run(list_resources(
