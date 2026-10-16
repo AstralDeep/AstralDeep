@@ -125,6 +125,97 @@ async def test_one_fixed_send_caches_only_bound_selection_and_accounts(research)
     assert (await current(op)).usage["spent"]["tokens"] == 120
 
 
+@pytest.mark.parametrize("scenario", ["success", "unusable", "parse-error", "egress"])
+async def test_fixed_background_runner_harness_matches_real_ledger_accounting(
+    research, monkeypatch, scenario
+):
+    from orchestrator.harness import HarnessOutcome, HarnessTurnRequest
+    from orchestrator.harness.standard_llm_adapter import StandardLLMHarness
+
+    op = research
+    original = op.executor.orch._call_llm
+    observed = []
+    if scenario == "unusable":
+        op.model_response["choices"][0]["message"]["content"] = "{}"
+    elif scenario == "parse-error":
+
+        def invalid_parse(*_args, **_kwargs):
+            raise ValueError("Synthetic parser failure")
+
+        monkeypatch.setattr(ResearchInput, "parse", invalid_parse)
+    elif scenario == "egress":
+        from shared.isolated_http import IsolatedHttpError
+
+        async def blocked(*_args, **_kwargs):
+            raise IsolatedHttpError("egress_blocked")
+
+        monkeypatch.setattr("shared.isolated_http.request", blocked)
+
+    async def accounted(*args, **kwargs):
+        raw = failure = None
+
+        async def invoke():
+            nonlocal raw, failure
+            try:
+                raw = await original(*args, **kwargs)
+                return raw
+            except BaseException as error:
+                failure = error
+                raise
+
+        harness = StandardLLMHarness(invoke=invoke)
+        execution = await harness.start(
+            HarnessTurnRequest(user_id=op.owner, message="Synthetic research")
+        )
+        result = await harness.await_result(execution)
+        observed.append(result)
+        if failure is not None:
+            raise failure
+        return raw
+
+    op.executor.orch._call_llm = accounted
+    if scenario == "success":
+        result = await select(op)
+        assert result["passage_ids"] == ["p001"]
+    else:
+        with pytest.raises((AssignmentError, DispatchDenied, ValueError)):
+            await select(op)
+    [captured] = observed
+    assert (
+        len(op.model_calls)
+        == captured.accounting.attempts
+        == (0 if scenario == "egress" else 1)
+    )
+    assert captured.outcome is (
+        HarnessOutcome.SUCCEEDED if scenario == "success" else HarnessOutcome.FAILED
+    )
+    if scenario == "egress":
+        assert (
+            captured.accounting.total_tokens is None
+            and captured.accounting.usage_complete
+        )
+        assert (await current(op)).usage["spent"]["tokens"] == 0
+    elif scenario != "parse-error":
+        assert (
+            captured.accounting.total_tokens
+            == (await current(op)).usage["spent"]["tokens"]
+            == 120
+        )
+        assert captured.accounting.usage_complete
+    else:
+        assert (
+            captured.accounting.total_tokens is None
+            and not captured.accounting.usage_complete
+        )
+        with op.runtime.transaction() as tx:
+            assert (
+                tx.fetch_one(
+                    "SELECT count(*) AS n FROM audit_events WHERE action_type='llm.call.persistent_assignment' AND outcome='failure'"
+                )["n"]
+                == 1
+            )
+
+
 async def test_revoke_committed_during_actual_config_lock_wait_prevents_send(
     research, monkeypatch
 ):

@@ -60,6 +60,7 @@ class FeatureFlags:
             "kiosk_login": self._read("FF_KIOSK_LOGIN", False),
             "rail_caption_variant": self._read("FF_RAIL_CAPTION_VARIANT", False),
             "framework_credentials": self._read("FF_FRAMEWORK_CREDENTIALS", False),
+            "harness_profile_selection": self._read("FF_HARNESS_PROFILE_SELECTION", False),
         }
 
     @staticmethod
