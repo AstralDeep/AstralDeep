@@ -208,6 +208,7 @@ async def _drive_start(monkeypatch, *, remote_compute: bool, gaiakeep: bool = Fa
         explicit_notes=SimpleNamespace(expiry_loop=_noop_loop),
         _track_startup_background_task=_discard_background,
         _jwks_warm_loop=_noop_loop,
+        _work_recovery_loop=_noop_loop,
         _personal_agent_watchdog_task=None,
         _personal_agent_watchdog_loop=_noop_loop,
         _remote_job_poll_task=None,

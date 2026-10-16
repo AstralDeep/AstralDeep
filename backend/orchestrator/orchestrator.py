@@ -78,6 +78,12 @@ from orchestrator.work_admission import (
     WorkAdmissionConflictError,
     WorkAdmissionCoordinator,
 )
+from orchestrator.work_recovery import (
+    ExecutorRecoveryService,
+    RecoveryDisposition,
+    owner_stop_gate,
+    recovery_interval_seconds,
+)
 from orchestrator.runtime_observability import RuntimeObservability
 from orchestrator.concurrency_cap import ConcurrencyCap
 from orchestrator.voice_control_binding import (
@@ -1137,6 +1143,10 @@ class Orchestrator:
             operation_retention=timedelta(seconds=operation_retention_seconds),
             submission_gate=emergency_submission_gate(self),
             execution_gate=self.emergency_stop_store.assert_running,
+        )
+        self.work_recovery = ExecutorRecoveryService(
+            self.work_admission,
+            stop_gate=owner_stop_gate(self.emergency_stop_store),
         )
         from orchestrator.agent_generator import (
             BYO_RUNTIME_CONTRACT_VERSION,
@@ -22913,6 +22923,46 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             self.rote.cleanup(websocket)
             logger.info(f"UI client session cleaned up (total: {len(self.ui_clients)})")
 
+    async def _work_recovery_loop(self):
+        interval = recovery_interval_seconds()
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                report = await asyncio.to_thread(
+                    self.work_recovery.recover_expired_executors
+                )
+            except Exception:
+                logger.warning("work_recovery_pass_failed", exc_info=True)
+                continue
+            rescheduled = report.count(RecoveryDisposition.RESCHEDULED)
+            replayed = report.count(RecoveryDisposition.REPLAYED)
+            refused = report.count(RecoveryDisposition.RESCHEDULE_REFUSED)
+            preserved = (
+                report.count(RecoveryDisposition.PRESERVED_CANCELLED)
+                + report.count(RecoveryDisposition.PRESERVED_STOPPED)
+                + report.count(RecoveryDisposition.PRESERVED_UNCERTAIN)
+                + report.count(RecoveryDisposition.PRESERVED_EXHAUSTED)
+            )
+            if report.expired or rescheduled or replayed or refused or preserved:
+                logger.info(
+                    "work_recovery_pass expired=%d rescheduled=%d replayed=%d "
+                    "refused=%d preserved=%d",
+                    report.expired,
+                    rescheduled,
+                    replayed,
+                    refused,
+                    preserved,
+                )
+                for entry in report.recovered:
+                    if entry.disposition is RecoveryDisposition.RESCHEDULE_REFUSED:
+                        logger.warning(
+                            "work_recovery_reschedule_refused operation_id=%s "
+                            "code=%s retryable=%s",
+                            entry.operation_id,
+                            entry.refusal_code,
+                            entry.retryable_refusal,
+                        )
+
     def _track_startup_background_task(self, coroutine, *, name: str):
         tasks = getattr(self, "_startup_background_tasks", None)
         if tasks is None:
@@ -23009,6 +23059,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         self._track_startup_background_task(
             self._jwks_warm_loop(),
             name="jwks-warm-loop",
+        )
+
+        self._track_startup_background_task(
+            self._work_recovery_loop(),
+            name="work-recovery-loop",
         )
 
         if (
