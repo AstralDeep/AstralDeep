@@ -59,17 +59,27 @@ _METHOD_NOT_FOUND = -32601
 _INTERNAL_ERROR = -32603
 _SAFE_PLAIN_NAME = re.compile(r"^[\x21-\x7e]+$")
 _BASE64_SENTINEL = re.compile(r"^=\?base64\?([A-Za-z0-9+/]*={0,2})\?=$")
+_WORK_UUID4 = r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+_WORK_UUID4_RE = re.compile(_WORK_UUID4)
+_WORK_RESOURCE_URI_PATTERN = re.compile(rf"^astral://work/({_WORK_UUID4})/(status|artifacts)\Z")
+_WORK_RESOURCE_KINDS = ("status", "artifacts")
+_RESOURCE_LIST_LIMIT = 50
+_MCP_RESOURCES_SCOPE = ("mcp:resources:read",)
 _METHOD_PHASE = {
     "server/discover": "discover",
     "tools/list": "tools_list",
     "tools/call": "tools_call",
     "subscriptions/listen": "subscriptions_listen",
+    "resources/list": "resources_list",
+    "resources/read": "resources_read",
 }
 _METHOD_SCOPE = {
     "server/discover": ("mcp:discover",),
     "tools/list": ("mcp:tools:read",),
     "tools/call": ("mcp:tools:invoke",),
     "subscriptions/listen": ("mcp:discover",),
+    "resources/list": ("mcp:resources:read",),
+    "resources/read": ("mcp:resources:read",),
 }
 
 
@@ -287,10 +297,15 @@ def _server_info() -> dict[str, str]:
 
 
 def _discover_result() -> dict[str, Any]:
+    from shared.feature_flags import flags
+
+    capabilities = {"tools": {}}
+    if flags.is_enabled("mcp_server"):
+        capabilities["resources"] = {}
     return {
         "resultType": "complete",
         "supportedVersions": list(MCP_SUPPORTED_PROTOCOL_VERSIONS),
-        "capabilities": {"tools": {}},
+        "capabilities": capabilities,
         "instructions": (
             "Astral exposes the requesting user's authorized tools. "
             "Destructive unattended calls are refused."
@@ -344,6 +359,135 @@ def _tool_result(response: Any) -> dict[str, Any]:
             "io.modelcontextprotocol/serverInfo": _server_info(),
             "astral/correlationId": response.correlation_id,
         },
+    }
+
+
+def _build_bounded_view_model(work: dict) -> dict:
+    return {
+        "id": work.get("id"),
+        "title": work.get("title") or "Untitled",
+        "kind": work.get("kind"),
+        "disposition": work.get("disposition"),
+        "lifecycle": work.get("lifecycle"),
+        "phase": work.get("phase"),
+        "revision": work.get("revision"),
+        "createdAt": work.get("created_at"),
+        "updatedAt": work.get("updated_at"),
+    }
+
+
+def _authorized_work_operations(orchestrator: Any, claims: dict) -> tuple[Any, Any]:
+    from orchestrator.framework_credentials import FrameworkCaller
+    from orchestrator.work_operations import FrameworkWorkOperations
+
+    ops = getattr(orchestrator, "framework_work_operations", None)
+    caller = claims.get("_framework_caller") if isinstance(claims, dict) else None
+    if (not isinstance(ops, FrameworkWorkOperations)
+            or not isinstance(caller, FrameworkCaller)
+            or not caller.has_scope("operations.read")):
+        raise MCPAuthError(
+            403,
+            "forbidden",
+            "Resource access is not authorized",
+            _MCP_RESOURCES_SCOPE,
+        )
+    return ops, caller
+
+
+async def list_resources(
+    orchestrator: Any,
+    user_id: str,
+    claims: dict,
+) -> list[dict]:
+    from persistent_agents.models import AssignmentError
+
+    ops, caller = _authorized_work_operations(orchestrator, claims)
+
+    try:
+        result = await ops.list(caller, limit=_RESOURCE_LIST_LIMIT)
+    except AssignmentError as exc:
+        raise MCPAuthError(
+            exc.status_code,
+            "resource_unavailable",
+            "The work listing is not available to this caller",
+            _MCP_RESOURCES_SCOPE,
+        )
+
+    records = result.get("operations", ()) if isinstance(result, dict) else ()
+
+    resources: list[dict] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        work_id = record.get("id")
+        if not isinstance(work_id, str) or not _WORK_UUID4_RE.fullmatch(work_id):
+            continue
+        title = record.get("title")
+        label = title if isinstance(title, str) and title else "Untitled"
+        for kind in _WORK_RESOURCE_KINDS:
+            resources.append({
+                "uri": f"astral://work/{work_id}/{kind}",
+                "name": f"{kind.capitalize()}: {label}",
+                "mimeType": "application/json",
+                "description": f"{kind.capitalize()} for work item {work_id}",
+            })
+
+    return resources
+
+
+async def read_resource(
+    orchestrator: Any,
+    user_id: str,
+    uri: str,
+    claims: dict,
+) -> dict:
+    from persistent_agents.models import AssignmentError
+
+    match = _WORK_RESOURCE_URI_PATTERN.match(uri) if isinstance(uri, str) else None
+    if match is None:
+        raise MCPAuthError(
+            400,
+            "invalid_uri",
+            "URI must be astral://work/{uuid4}/status or astral://work/{uuid4}/artifacts",
+            _MCP_RESOURCES_SCOPE,
+        )
+    work_id, kind = match.group(1), match.group(2)
+
+    ops, caller = _authorized_work_operations(orchestrator, claims)
+
+    try:
+        record = await ops.get(caller, work_id)
+    except AssignmentError as exc:
+        raise MCPAuthError(
+            exc.status_code,
+            "resource_unavailable",
+            "The resource is not available to this caller",
+            _MCP_RESOURCES_SCOPE,
+        )
+
+    if not isinstance(record, dict):
+        raise MCPAuthError(
+            503,
+            "service_unavailable",
+            "Work read returned an unexpected record",
+            _MCP_RESOURCES_SCOPE,
+        )
+
+    if kind == "status":
+        bounded_model = _build_bounded_view_model(record)
+    else:
+        bounded_model = {
+            "id": record.get("id"),
+            "title": record.get("title") or "Untitled",
+            "disposition": record.get("disposition"),
+            "revision": record.get("revision"),
+        }
+
+    return {
+        "uri": uri,
+        "name": f"{kind.capitalize()}: {bounded_model.get('title', 'Untitled')}",
+        "mimeType": "application/json",
+        "boundedViewModel": bounded_model,
     }
 
 
@@ -802,6 +946,67 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                             "_meta": {"io.modelcontextprotocol/serverInfo": _server_info()},
                         }
                         cache_control = "no-store"
+                    elif method == "resources/list":
+                        try:
+                            resources = await list_resources(orchestrator, user_id, claims)
+                            result = {
+                                "resultType": "complete",
+                                "resources": resources,
+                                "_meta": {"io.modelcontextprotocol/serverInfo": _server_info()},
+                            }
+                            cache_control = "private, max-age=60"
+                        except MCPAuthError as exc:
+                            result_code = exc.error
+                            return _with_origin(
+                                _json_error(
+                                    request_id,
+                                    MCP_INVALID_REQUEST,
+                                    "MCP resources authorization failed",
+                                    exc.status_code,
+                                    headers={"WWW-Authenticate": challenge_header(
+                                        base_url, error=exc.error, required_scopes=exc.required_scopes
+                                    )},
+                                ),
+                                origin,
+                                base_url,
+                            )
+                    elif method == "resources/read":
+                        uri = params.get("uri")
+                        if not uri:
+                            result_code = "invalid_request"
+                            return _with_origin(
+                                _json_error(request_id, MCP_INVALID_REQUEST, "Missing 'uri' parameter", 400),
+                                origin,
+                                base_url,
+                            )
+
+                        try:
+                            resource = await read_resource(orchestrator, user_id, uri, claims)
+                            result = {
+                                "resultType": "complete",
+                                "contents": [{
+                                    "uri": resource["uri"],
+                                    "mimeType": resource["mimeType"],
+                                    "text": json.dumps(resource["boundedViewModel"], ensure_ascii=False,
+                                                       allow_nan=False, separators=(",", ":")),
+                                }],
+                            }
+                            cache_control = "no-store"
+                        except MCPAuthError as exc:
+                            result_code = exc.error
+                            return _with_origin(
+                                _json_error(
+                                    request_id,
+                                    MCP_INVALID_REQUEST,
+                                    "MCP resource authorization failed",
+                                    exc.status_code,
+                                    headers={"WWW-Authenticate": challenge_header(
+                                        base_url, error=exc.error, required_scopes=exc.required_scopes
+                                    )},
+                                ),
+                                origin,
+                                base_url,
+                            )
                     else:
                         projected = await asyncio.to_thread(
                             resolve_projected_tool,
