@@ -3,6 +3,7 @@ Composes Work fixtures and the normal assignment runner across process restart.
 """
 
 from datetime import datetime, timedelta
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from persistent_agents.execution import ActionExecutor
 from persistent_agents.service import AssignmentService
 from persistent_agents.store import AssignmentStore
+from persistent_agents.models import AssignmentError
 from orchestrator.work_subscriptions import _redrive_pending
 from tests.helpers.database_clock import database_now, wait_for_database_time
 from tests.helpers.plane_template import plane_template as plane_template
@@ -88,3 +90,51 @@ async def test_recovery_terminal_failure_wakes_subscriber_durably(work, mode):
     assert len(wakes) == 1 and wakes[0].outputs_meta["outcome"] == "failed"
     assert after_restart == after and second.reclaimed_assignment_ids == ()
     assert work.audit.verify_chain(work.owner) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["wake", "audit", "missing_records", "unmatched_record"])
+async def test_recovery_rolls_back_source_and_wait_when_delivery_is_unavailable(work, monkeypatch, failure):
+    caller = _issue(work)
+    source = _operation(work, deadline_seconds=3)
+    target = _operation(work)
+    await _subscribe(work, caller, source, target)
+    before = (await _read(work, source)).assignment
+    parked = (await _read(work, target)).assignment
+    runner = await _runner(work)
+    repository = work.service.store.repository
+    recover = repository.recover_expired_operations_for_administration
+
+    def unavailable(*args, **kwargs):
+        raise AssignmentError("work_control_unavailable", 503)
+
+    def invalid_records(*args, **kwargs):
+        recovered = recover(*args, **kwargs)
+        return replace(recovered, terminal_assignments=None if failure == "missing_records" else (parked,))
+
+    try:
+        await wait_for_database_time(work.runtime,
+            datetime.fromisoformat(source.operation["deadline_at"]) + timedelta(milliseconds=1))
+        with monkeypatch.context() as fault:
+            if failure == "wake":
+                fault.setattr(repository, "accept_wake", unavailable)
+            elif failure == "audit":
+                fault.setattr(work.audit, "insert_in_transaction", unavailable)
+            else:
+                fault.setattr(repository, "recover_expired_operations_for_administration", invalid_records)
+            with pytest.raises(AssignmentError, match="work_control_unavailable|assignment_transaction_unavailable"):
+                await runner._recover_operations()
+        assert (await _read(work, source)).assignment == before
+        assert (await _read(work, target)).assignment == parked
+        assert await _audits(work, work.owner, "work.completion_wake") == []
+        assert _redrive_pending == {}
+        recovered = await runner._recover_operations()
+        assert recovered.reclaimed_assignment_ids == (source.assignment_id,)
+        after = (await _read(work, target)).assignment
+        assert after.wake_generation == parked.wake_generation + 1
+        assert after.operation["control"]["wait"] is None
+        assert len(await _audits(work, work.owner, "work.completion_wake")) == 1
+        assert (await runner._recover_operations()).reclaimed_assignment_ids == ()
+        assert work.audit.verify_chain(work.owner) is None
+    finally:
+        await runner.stop()

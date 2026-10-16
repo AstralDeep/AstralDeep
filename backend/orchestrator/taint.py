@@ -21,7 +21,7 @@ _UNTRUSTED_TOOLS = {
 _UNTRUSTED_AGENTS = {"web-research-1", "summarizer-1",
                      "remote-compute-1",
                      "computer-use-1", "gaiakeep-1", "fhir-1", "evidence-1",
-                     "cresco-1"}
+                     "cresco-1", "terminal-shell-1"}
 
 _SINK_TOOLS = {
     "send_*", "post_*", "create_*", "update_*",
@@ -55,6 +55,8 @@ def is_sink(agent: Optional[str], tool: Optional[str]) -> bool:
         return is_mutation(tool)
     if agent == "cresco-1":
         return tool in {"cresco_dispatch_work", "cresco_run_command"}
+    if agent == "terminal-shell-1":
+        return tool in {"start_terminal", "terminal_write"}
     name = tool or ""
     return any(fnmatch.fnmatchcase(name, pat) for pat in _SINK_TOOLS)
 

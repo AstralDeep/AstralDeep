@@ -41,7 +41,10 @@ class MCPServer:
 
         if request.method == "tools/call":
             tool_name = request.params.get("name", "")
-            arguments = request.params.get("arguments", {})
+            arguments = dict(request.params.get("arguments", {}))
+            authority = getattr(request, "_terminal_authority", None)
+            if authority is not None:
+                arguments["_terminal_authority"] = authority
 
             if tool_name not in self.tools:
                 return MCPResponse(
@@ -66,10 +69,12 @@ class MCPServer:
                     )
                     if error_comp is not None:
                         msg = error_comp.get("message", "Tool returned an error")
+                        data = result.get("_data") or {}
                         logger.info("Tool '%s' refused: %s", tool_name, msg)
                         return MCPResponse(
                             request_id=request.request_id,
-                            error={"code": -32603, "message": msg, "retryable": False},
+                            error={"code": -32603, "message": msg, "retryable": False,
+                                   "data": {"terminal_code": data.get("code"), "http_status": data.get("status_code")}},
                         )
                     return MCPResponse(request_id=request.request_id,
                                        result=result.get("_data"), ui_components=ui_comps)
@@ -78,9 +83,9 @@ class MCPServer:
 
             except Exception as e:  # noqa: BLE001
                 retryable = not isinstance(e, NON_RETRYABLE_EXCEPTIONS)
-                logger.error("Tool '%s' raised %s: %s", tool_name, type(e).__name__, e)
+                logger.error("Tool '%s' raised %s", tool_name, type(e).__name__)
                 return MCPResponse(request_id=request.request_id,
-                                   error={"code": -32603, "message": str(e), "retryable": retryable})
+                                   error={"code": -32603, "message": "Terminal tool execution failed", "retryable": retryable})
 
         return MCPResponse(
             request_id=request.request_id,

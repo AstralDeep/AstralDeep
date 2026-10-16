@@ -1,8 +1,5 @@
-"""Flag-gated MCP Streamable HTTP resource server: parses and admits requests, discovers
-and dispatches tools through mcp_projection.py and mcp_authz.py, validates
-schema-declared Mcp-Param mirror headers against tool arguments before dispatch,
-and routes framework-projected Work tools through work_operations.py. Installed by
-orchestrator.py.
+"""Serves flag-gated MCP discovery, tools, and owner-authorized Work status resources.
+Installed by orchestrator.py, it binds mcp_authz.py authorization and mcp_projection.py tool dispatch.
 """
 
 from __future__ import annotations
@@ -21,6 +18,7 @@ from typing import Any, AsyncIterator, Awaitable
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
+from orchestrator.framework_work_reads import FrameworkWorkReader, read_scope
 from orchestrator.mcp_authz import (
     MCPAuthError,
     authorize_mcp_request,
@@ -36,6 +34,11 @@ from orchestrator.mcp_projection import (
     has_unsupported_mirrors,
     project_tools,
     resolve_projected_tool,
+)
+from orchestrator.mcp_work_resources import (
+    RESOURCE_SCOPES,
+    RESOURCE_URI as _WORK_RESOURCE_URI_PATTERN,
+    WorkResourceAuthority,
 )
 from orchestrator.work_admission import AdmissionClass, OperationState
 from shared.protocol import (
@@ -59,12 +62,6 @@ _METHOD_NOT_FOUND = -32601
 _INTERNAL_ERROR = -32603
 _SAFE_PLAIN_NAME = re.compile(r"^[\x21-\x7e]+$")
 _BASE64_SENTINEL = re.compile(r"^=\?base64\?([A-Za-z0-9+/]*={0,2})\?=$")
-_WORK_UUID4 = r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
-_WORK_UUID4_RE = re.compile(_WORK_UUID4)
-_WORK_RESOURCE_URI_PATTERN = re.compile(rf"^astral://work/({_WORK_UUID4})/(status|artifacts)\Z")
-_WORK_RESOURCE_KINDS = ("status", "artifacts")
-_RESOURCE_LIST_LIMIT = 50
-_MCP_RESOURCES_SCOPE = ("mcp:resources:read",)
 _METHOD_PHASE = {
     "server/discover": "discover",
     "tools/list": "tools_list",
@@ -78,8 +75,8 @@ _METHOD_SCOPE = {
     "tools/list": ("mcp:tools:read",),
     "tools/call": ("mcp:tools:invoke",),
     "subscriptions/listen": ("mcp:discover",),
-    "resources/list": ("mcp:resources:read",),
-    "resources/read": ("mcp:resources:read",),
+    "resources/list": RESOURCE_SCOPES,
+    "resources/read": RESOURCE_SCOPES,
 }
 
 
@@ -362,133 +359,14 @@ def _tool_result(response: Any) -> dict[str, Any]:
     }
 
 
-def _build_bounded_view_model(work: dict) -> dict:
-    return {
-        "id": work.get("id"),
-        "title": work.get("title") or "Untitled",
-        "kind": work.get("kind"),
-        "disposition": work.get("disposition"),
-        "lifecycle": work.get("lifecycle"),
-        "phase": work.get("phase"),
-        "revision": work.get("revision"),
-        "createdAt": work.get("created_at"),
-        "updatedAt": work.get("updated_at"),
-    }
+async def list_resources(orchestrator: Any, user_id: str, claims: dict) -> list[dict]:
+    return await WorkResourceAuthority(orchestrator, user_id, claims).list()
 
 
-def _authorized_work_operations(orchestrator: Any, claims: dict) -> tuple[Any, Any]:
-    from orchestrator.framework_credentials import FrameworkCaller
-    from orchestrator.work_operations import FrameworkWorkOperations
-
-    ops = getattr(orchestrator, "framework_work_operations", None)
-    caller = claims.get("_framework_caller") if isinstance(claims, dict) else None
-    if (not isinstance(ops, FrameworkWorkOperations)
-            or not isinstance(caller, FrameworkCaller)
-            or not caller.has_scope("operations.read")):
-        raise MCPAuthError(
-            403,
-            "forbidden",
-            "Resource access is not authorized",
-            _MCP_RESOURCES_SCOPE,
-        )
-    return ops, caller
-
-
-async def list_resources(
-    orchestrator: Any,
-    user_id: str,
-    claims: dict,
-) -> list[dict]:
-    from persistent_agents.models import AssignmentError
-
-    ops, caller = _authorized_work_operations(orchestrator, claims)
-
-    try:
-        result = await ops.list(caller, limit=_RESOURCE_LIST_LIMIT)
-    except AssignmentError as exc:
-        raise MCPAuthError(
-            exc.status_code,
-            "resource_unavailable",
-            "The work listing is not available to this caller",
-            _MCP_RESOURCES_SCOPE,
-        )
-
-    records = result.get("operations", ()) if isinstance(result, dict) else ()
-
-    resources: list[dict] = []
-    for record in records:
-        if not isinstance(record, dict):
-            continue
-        work_id = record.get("id")
-        if not isinstance(work_id, str) or not _WORK_UUID4_RE.fullmatch(work_id):
-            continue
-        title = record.get("title")
-        label = title if isinstance(title, str) and title else "Untitled"
-        for kind in _WORK_RESOURCE_KINDS:
-            resources.append({
-                "uri": f"astral://work/{work_id}/{kind}",
-                "name": f"{kind.capitalize()}: {label}",
-                "mimeType": "application/json",
-                "description": f"{kind.capitalize()} for work item {work_id}",
-            })
-
-    return resources
-
-
-async def read_resource(
-    orchestrator: Any,
-    user_id: str,
-    uri: str,
-    claims: dict,
-) -> dict:
-    from persistent_agents.models import AssignmentError
-
-    match = _WORK_RESOURCE_URI_PATTERN.match(uri) if isinstance(uri, str) else None
-    if match is None:
-        raise MCPAuthError(
-            400,
-            "invalid_uri",
-            "URI must be astral://work/{uuid4}/status or astral://work/{uuid4}/artifacts",
-            _MCP_RESOURCES_SCOPE,
-        )
-    work_id, kind = match.group(1), match.group(2)
-
-    ops, caller = _authorized_work_operations(orchestrator, claims)
-
-    try:
-        record = await ops.get(caller, work_id)
-    except AssignmentError as exc:
-        raise MCPAuthError(
-            exc.status_code,
-            "resource_unavailable",
-            "The resource is not available to this caller",
-            _MCP_RESOURCES_SCOPE,
-        )
-
-    if not isinstance(record, dict):
-        raise MCPAuthError(
-            503,
-            "service_unavailable",
-            "Work read returned an unexpected record",
-            _MCP_RESOURCES_SCOPE,
-        )
-
-    if kind == "status":
-        bounded_model = _build_bounded_view_model(record)
-    else:
-        bounded_model = {
-            "id": record.get("id"),
-            "title": record.get("title") or "Untitled",
-            "disposition": record.get("disposition"),
-            "revision": record.get("revision"),
-        }
-
-    return {
-        "uri": uri,
-        "name": f"{kind.capitalize()}: {bounded_model.get('title', 'Untitled')}",
-        "mimeType": "application/json",
-        "boundedViewModel": bounded_model,
-    }
+async def read_resource(orchestrator: Any, user_id: str, uri: str, claims: dict) -> dict:
+    if not isinstance(uri, str) or _WORK_RESOURCE_URI_PATTERN.fullmatch(uri) is None:
+        raise MCPAuthError(400, "invalid_uri", "URI must be astral://work/{uuid4}/status", RESOURCE_SCOPES)
+    return await WorkResourceAuthority(orchestrator, user_id, claims).read(uri)
 
 
 async def _wait_for_disconnect(
@@ -917,6 +795,8 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                     base_url,
                 )
 
+            resource_authority = None
+            tool_read_authority = None
             try:
                 async with _admitted_request(
                     orchestrator,
@@ -948,13 +828,14 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                         cache_control = "no-store"
                     elif method == "resources/list":
                         try:
-                            resources = await list_resources(orchestrator, user_id, claims)
+                            resource_authority = WorkResourceAuthority(orchestrator, user_id, claims)
+                            resources = await resource_authority.list()
                             result = {
                                 "resultType": "complete",
                                 "resources": resources,
                                 "_meta": {"io.modelcontextprotocol/serverInfo": _server_info()},
                             }
-                            cache_control = "private, max-age=60"
+                            cache_control = "no-store"
                         except MCPAuthError as exc:
                             result_code = exc.error
                             return _with_origin(
@@ -981,7 +862,8 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                             )
 
                         try:
-                            resource = await read_resource(orchestrator, user_id, uri, claims)
+                            resource_authority = WorkResourceAuthority(orchestrator, user_id, claims)
+                            resource = await resource_authority.read(uri)
                             result = {
                                 "resultType": "complete",
                                 "contents": [{
@@ -1069,8 +951,15 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                                     base_url,
                                 )
                             if projected.agent_id == FRAMEWORK_WORK_AGENT_ID:
-                                # Work tools skip the normal agent dispatch security stack
                                 try:
+                                    from orchestrator.work_operations import dispatch_name
+
+                                    scope = read_scope(dispatch_name(projected.skill_id))
+                                    if scope is not None:
+                                        tool_read_authority = FrameworkWorkReader(
+                                            orchestrator.framework_work_operations,
+                                            claims.get("_framework_caller"), scope,
+                                        )
                                     tool_response = await _wait_for_disconnect(
                                         request,
                                         _dispatch_work_tool(
@@ -1127,6 +1016,29 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                     origin,
                     base_url,
                 )
+            if resource_authority is not None:
+                try:
+                    await resource_authority.recheck()
+                except MCPAuthError as exc:
+                    result_code = exc.error
+                    return _with_origin(
+                        _json_error(
+                            request_id, MCP_INVALID_REQUEST, "MCP resource authorization failed",
+                            exc.status_code, headers={"WWW-Authenticate": challenge_header(
+                                base_url, error=exc.error, required_scopes=exc.required_scopes,
+                            )},
+                        ), origin, base_url,
+                    )
+            if tool_read_authority is not None:
+                from persistent_agents.models import AssignmentError
+                from shared.protocol import MCPResponse
+
+                try:
+                    await tool_read_authority.recheck()
+                except AssignmentError:
+                    result = _tool_result(MCPResponse(
+                        result_type="complete", error={"message": "Work read is no longer authorized"},
+                    ))
             if notification:
                 result_code = "accepted"
                 return _with_origin(

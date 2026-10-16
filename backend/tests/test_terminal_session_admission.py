@@ -1,138 +1,50 @@
-"""Verifies atomic per-owner terminal admission and failed-spawn cleanup.
-Controlled spawn barriers exercise TerminalSessionManager without launching a shell.
+"""Checks that unsupported terminal admission cannot allocate host resources or accept an executor override.
+Concurrent requests retain a truthful unavailable result rather than simulating working shell sessions.
 """
 
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
-from threading import Event
-from types import SimpleNamespace
-import tempfile
+from unittest.mock import Mock
 
 import pytest
 
 from orchestrator import terminal_sessions as ts
+from shared.feature_flags import flags
 
 
-@pytest.fixture
-def manager_factory(monkeypatch, tmp_path):
-    managers = []
-    monkeypatch.setattr(ts.TerminalSession, "start_pump", lambda self: None)
-    monkeypatch.setattr(ts.TerminalSessionManager, "_ensure_sweeper", lambda self: None)
-    monkeypatch.setattr(ts, "_signal_group", lambda *args: None)
-    monkeypatch.setattr(ts, "audit_machine_event", lambda *args, **kwargs: None)
-    monkeypatch.setattr(ts, "_child_cwd", lambda: tempfile.mkdtemp(dir=tmp_path))
+@pytest.mark.parametrize("enabled,reason,status", [
+    (False, "terminal_disabled", 404),
+    (True, "terminal_isolation_unavailable", 503),
+])
+def test_concurrent_admission_is_refused_before_any_host_resource(monkeypatch, enabled, reason, status):
+    monkeypatch.setitem(flags._flags, "terminal_shell", enabled)
+    effect = Mock(side_effect=AssertionError("host resource must not be allocated"))
+    monkeypatch.setattr(ts, "_child_cwd", effect, raising=False)
+    monkeypatch.setattr(ts.os, "openpty", effect)
+    monkeypatch.setattr(ts.subprocess, "Popen", effect)
+    manager = ts.TerminalSessionManager()
 
-    def build(spawn):
-        manager = ts.TerminalSessionManager(spawn=spawn)
-        managers.append(manager)
-        return manager
+    def attempt(owner):
+        with pytest.raises(ts.TerminalError) as refused:
+            manager.create(owner, command="printf synthetic")
+        return refused.value.code, refused.value.status_code
 
-    yield build
-    for manager in managers:
-        manager.shutdown()
-
-
-def _spawned(cwd):
-    process = SimpleNamespace(pid=-1, poll=lambda: None, wait=lambda timeout: 0)
-    return -1, process, cwd
-
-
-def test_pending_owner_creation_counts_against_the_cap_without_blocking_other_owners(
-    manager_factory, monkeypatch,
-):
-    monkeypatch.setattr(ts, "SESSIONS_PER_OWNER", 1)
-    entered, release = Event(), Event()
-    attempts = []
-
-    def spawn(argv, env, cwd, dimensions):
-        attempts.append(cwd)
-        if len(attempts) == 1:
-            entered.set()
-            assert release.wait(timeout=10)
-        return _spawned(cwd)
-
-    manager = manager_factory(spawn)
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        first = executor.submit(manager.create, "owner-a")
-        try:
-            assert entered.wait(timeout=10)
-            other = manager.create("owner-b")
-            assert other["session_id"] in {item["session_id"] for item in manager.list_sessions("owner-b")}
-            with pytest.raises(ts.TerminalError) as refused:
-                manager.create("owner-a")
-            assert (refused.value.code, refused.value.status_code) == ("terminal_session_limit_reached", 409)
-            assert len(attempts) == 2
-        finally:
-            release.set()
-        assert first.result(timeout=10)["session_id"]
-    assert len(manager.list_sessions("owner-a")) == 1
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        assert list(executor.map(attempt, ["owner-a", "owner-a", "owner-b", "owner-b"])) == [(reason, status)] * 4
+    effect.assert_not_called()
+    assert manager._sessions == {}
+    assert manager._sweeper is None
 
 
-@pytest.mark.parametrize("failure", [OSError("synthetic spawn failure"), RuntimeError("synthetic spawn failure")])
-def test_failed_spawn_releases_the_owner_slot_and_removes_its_directory(manager_factory, monkeypatch, failure):
-    monkeypatch.setattr(ts, "SESSIONS_PER_OWNER", 1)
-    attempts = []
-
-    def spawn(argv, env, cwd, dimensions):
-        attempts.append(cwd)
-        if len(attempts) == 1:
-            raise failure
-        return _spawned(cwd)
-
-    manager = manager_factory(spawn)
-    expected = ts.TerminalError if isinstance(failure, OSError) else RuntimeError
-    with pytest.raises(expected):
-        manager.create("owner-a")
-    assert not Path(attempts[0]).exists()
-    assert manager.create("owner-a")["session_id"]
-    with pytest.raises(ts.TerminalError, match="terminal_session_limit_reached"):
-        manager.create("owner-a")
+def test_public_spawn_override_cannot_enable_unsupported_execution():
+    with pytest.raises(TypeError, match="spawn"):
+        ts.TerminalSessionManager(spawn=lambda *_: None)
 
 
-def test_failed_create_retains_another_pending_owner_reservation(manager_factory, monkeypatch):
-    monkeypatch.setattr(ts, "SESSIONS_PER_OWNER", 2)
-    entered, release = Event(), Event()
-    attempts = []
-
-    def spawn(argv, env, cwd, dimensions):
-        attempts.append(cwd)
-        if len(attempts) == 1:
-            entered.set()
-            assert release.wait(timeout=10)
-        elif len(attempts) == 2:
-            raise OSError("synthetic spawn failure")
-        return _spawned(cwd)
-
-    manager = manager_factory(spawn)
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        first = executor.submit(manager.create, "owner-a")
-        try:
-            assert entered.wait(timeout=10)
-            with pytest.raises(ts.TerminalError, match="terminal_spawn_failed"):
-                manager.create("owner-a")
-            assert manager.create("owner-a")["session_id"]
-            with pytest.raises(ts.TerminalError, match="terminal_session_limit_reached"):
-                manager.create("owner-a")
-            assert len(attempts) == 3
-        finally:
-            release.set()
-        assert first.result(timeout=10)["session_id"]
-    assert len(manager.list_sessions("owner-a")) == 2
-
-
-def test_workspace_creation_failure_does_not_reserve_owner_capacity(manager_factory, monkeypatch):
-    monkeypatch.setattr(ts, "SESSIONS_PER_OWNER", 1)
-    create_directory = ts._child_cwd
-    attempts = []
-
-    def directory():
-        attempts.append(True)
-        if len(attempts) == 1:
-            raise OSError("synthetic workspace failure")
-        return create_directory()
-
-    monkeypatch.setattr(ts, "_child_cwd", directory)
-    manager = manager_factory(lambda argv, env, cwd, dimensions: _spawned(cwd))
-    with pytest.raises(OSError, match="synthetic workspace failure"):
-        manager.create("owner-a")
-    assert manager.create("owner-a")["session_id"]
+@pytest.mark.parametrize("enabled,reason", [(False, "terminal_disabled"), (True, "terminal_isolation_unavailable")])
+def test_input_is_refused_without_looking_up_or_writing_to_an_existing_session(monkeypatch, enabled, reason):
+    monkeypatch.setitem(flags._flags, "terminal_shell", enabled)
+    manager = ts.TerminalSessionManager()
+    manager._get_live = Mock(side_effect=AssertionError("unsupported input must not access a PTY"))
+    with pytest.raises(ts.TerminalError, match=reason):
+        manager.write("owner", "retained-session", "eAo=")
+    manager._get_live.assert_not_called()

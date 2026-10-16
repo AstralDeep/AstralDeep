@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
-"""Governed shell/session verbs over the orchestrator's owner-scoped terminal session
-manager (orchestrator/terminal_sessions.py): each verb binds to the dispatch-injected
-owner identity — never a model-supplied one — and returns truthful machine codes as
-error alerts for the normal tool-result rendering path.
+"""Terminal agent tools require current dispatch-owned authority for retained-session access.
+Execution and input remain unavailable until an isolated executor is qualified.
 """
 from __future__ import annotations
 
@@ -12,8 +10,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from astralprims import Alert, Card, Table, Text
 
+from orchestrator.terminal_security import TerminalAuthority, require_terminal_enabled, require_terminal_execution
 from orchestrator.terminal_sessions import (
-    INPUT_CHUNK_MAX,
     READ_WAIT_MAX_S,
     TerminalError,
 )
@@ -23,8 +21,6 @@ _ORCH = None
 _MAX_FIELD = 256
 _MAX_SESSION_ID = 64
 _MAX_TEXT_CHARS = 16_000
-_MAX_COMMAND_CHARS = 512
-_MAX_WRITE_CHARS = 8_000
 _DEFAULT_WAIT_S = 1.0
 
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\x1b]")
@@ -66,10 +62,10 @@ def _data(data: Dict[str, Any], components: Optional[List[Any]] = None) -> Dict[
     return {"_ui_components": [c.to_dict() for c in (components or [])], "_data": data}
 
 
-def _fail(code: str, message: str, *, next_action: str = "") -> Dict[str, Any]:
+def _fail(code: str, message: str, *, next_action: str = "", status_code: int = 422) -> Dict[str, Any]:
     text = f"{code}: {_sanitize(message, 400)}" + (f" — {next_action}" if next_action else "")
     return {"_ui_components": [Alert(message=text, variant="error").to_dict()],
-            "_data": {"code": code, "message": message, "next_action": next_action}}
+            "_data": {"code": code, "message": message, "next_action": next_action, "status_code": status_code}}
 
 
 def _card(title: str, components: List[Any], data: Dict[str, Any]) -> Dict[str, Any]:
@@ -77,6 +73,13 @@ def _card(title: str, components: List[Any], data: Dict[str, Any]) -> Dict[str, 
 
 
 _ERROR_HINTS = {
+    "terminal_disabled": ("Terminal operations are disabled on this server.", ""),
+    "terminal_isolation_unavailable": (
+        "No qualified isolated terminal executor is available; no command or input was executed.", ""),
+    "terminal_authority_required": ("Use the normal authenticated terminal tool dispatch.", ""),
+    "terminal_permission_denied": ("Current terminal permission is unavailable.", ""),
+    "terminal_security_blocked": ("The terminal tool is blocked by system security policy.", ""),
+    "terminal_authority_expired": ("Current owner authority has expired.", ""),
     "terminal_session_not_found": (
         "That session id is not one of your open terminals.",
         "Call list_terminals and use a live session_id.",
@@ -123,30 +126,25 @@ _ERROR_HINTS = {
 def _terminal_fail(exc: TerminalError) -> Dict[str, Any]:
     message, next_action = _ERROR_HINTS.get(
         exc.code, ("The terminal refused the operation.", ""))
-    return _fail(exc.code, message, next_action=next_action)
+    return _fail(exc.code, message, next_action=next_action, status_code=exc.status_code)
 
 
-def _owner(kwargs: Dict[str, Any]) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
-    user_id = kwargs.get("user_id")
-    if not isinstance(user_id, str) or not user_id.strip():
-        return None, _fail(
-            "terminal_owner_required",
-            "Terminal sessions belong to a signed-in owner.",
-            next_action="Sign in and dispatch this tool through your own session.")
-    return user_id, None
-
-
-def _guarded(kwargs: Dict[str, Any]) -> Tuple[Any, Optional[str], Optional[Dict[str, Any]]]:
+def _guarded(kwargs: Dict[str, Any], tool_name: str) -> Tuple[Any, Optional[str], Optional[Dict[str, Any]]]:
     try:
+        require_terminal_enabled()
+        authority = kwargs.get("_terminal_authority")
+        if not isinstance(authority, TerminalAuthority) or not authority.matches(_ORCH):
+            raise TerminalError("terminal_authority_required", 403)
+        authority.assert_current(tool_name)
+        if kwargs.get("user_id") != authority.owner_id:
+            raise TerminalError("terminal_owner_required", 403)
         manager = _manager()
+    except TerminalError as exc:
+        return None, None, _terminal_fail(exc)
     except TerminalUnavailable:
         return None, None, _fail(
-            "terminal_unavailable",
-            "Terminal sessions are not available on this server.")
-    user_id, refusal = _owner(kwargs)
-    if refusal:
-        return None, None, refusal
-    return manager, user_id, None
+            "terminal_unavailable", "Terminal sessions are not available on this server.", status_code=503)
+    return manager, authority.owner_id, None
 
 
 def _session_ref(kwargs: Dict[str, Any]) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
@@ -170,7 +168,7 @@ def _describe_session(info: Dict[str, Any]) -> Text:
 
 
 def list_terminals(**kwargs) -> Dict[str, Any]:
-    manager, user_id, refusal = _guarded(kwargs)
+    manager, user_id, refusal = _guarded(kwargs, "list_terminals")
     if refusal:
         return refusal
     sessions = manager.list_sessions(user_id)
@@ -191,37 +189,17 @@ def list_terminals(**kwargs) -> Dict[str, Any]:
 
 
 def start_terminal(**kwargs) -> Dict[str, Any]:
-    manager, user_id, refusal = _guarded(kwargs)
+    _manager_value, _user_id, refusal = _guarded(kwargs, "start_terminal")
     if refusal:
         return refusal
-    cols = kwargs.get("cols", 80)
-    rows = kwargs.get("rows", 24)
-    command = kwargs.get("command")
-    if command is not None and not (isinstance(command, str) and command.strip()):
-        return _fail("terminal_command_invalid",
-                     "command must be non-empty text when given.")
-    if isinstance(command, str) and len(command) > _MAX_COMMAND_CHARS:
-        return _fail("terminal_command_invalid",
-                     f"command is too long (max {_MAX_COMMAND_CHARS} characters).")
     try:
-        info = manager.create(user_id, cols=cols, rows=rows, command=command)
+        require_terminal_execution()
     except TerminalError as exc:
         return _terminal_fail(exc)
-    except OSError:
-        return _fail("terminal_spawn_failed",
-                     "The server could not start a shell session.")
-    title = "Terminal command finished" if command else "Terminal ready"
-    body = [Text(
-        content=(f"Ran: {_sanitize(command, 200)}" if command
-                 else "An interactive shell is running. Send keystrokes with "
-                      "terminal_write and read output with terminal_read."),
-        variant="body"),
-        _describe_session(info)]
-    return _card(title, body, {"session": info, "command": command})
 
 
 def terminal_read(**kwargs) -> Dict[str, Any]:
-    manager, user_id, refusal = _guarded(kwargs)
+    manager, user_id, refusal = _guarded(kwargs, "terminal_read")
     if refusal:
         return refusal
     session_id, bad = _session_ref(kwargs)
@@ -242,6 +220,9 @@ def terminal_read(**kwargs) -> Dict[str, Any]:
                                wait_seconds=float(wait_seconds))
     except TerminalError as exc:
         return _terminal_fail(exc)
+    _manager_value, _user_id, refusal = _guarded(kwargs, "terminal_read")
+    if refusal:
+        return refusal
     chunk = base64.b64decode(payload.get("data_b64") or "")
     text = _sanitize(chunk.decode("utf-8", "replace"), _MAX_TEXT_CHARS)
     components: List[Any] = []
@@ -266,39 +247,23 @@ def terminal_read(**kwargs) -> Dict[str, Any]:
         "truncated": payload.get("truncated"),
         "eof": payload.get("eof"),
         "text": text,
+        "data_b64": payload.get("data_b64"),
+        "session": payload.get("session"),
     })
 
 
 def terminal_write(**kwargs) -> Dict[str, Any]:
-    manager, user_id, refusal = _guarded(kwargs)
+    _manager_value, _user_id, refusal = _guarded(kwargs, "terminal_write")
     if refusal:
         return refusal
-    session_id, bad = _session_ref(kwargs)
-    if bad:
-        return bad
-    data = kwargs.get("data")
-    if not isinstance(data, str) or not data:
-        return _fail("terminal_input_invalid",
-                     "data must be the text to send, e.g. 'ls -la\\n'.")
-    if len(data) > _MAX_WRITE_CHARS:
-        return _fail("terminal_input_invalid",
-                     f"data must be at most {_MAX_WRITE_CHARS} characters.")
-    encoded = data.encode("utf-8", "ignore")
-    if not encoded or len(encoded) > INPUT_CHUNK_MAX:
-        return _fail("terminal_input_invalid",
-                     f"data must encode to 1–{INPUT_CHUNK_MAX} bytes.")
     try:
-        info = manager.write(user_id, session_id,
-                             base64.b64encode(encoded).decode("ascii"))
+        require_terminal_execution()
     except TerminalError as exc:
         return _terminal_fail(exc)
-    return _card(f"Sent to terminal — {_sanitize(session_id, 48)}",
-                 [_describe_session(info)],
-                 {"session": info, "sent_bytes": len(encoded)})
 
 
 def terminal_resize(**kwargs) -> Dict[str, Any]:
-    manager, user_id, refusal = _guarded(kwargs)
+    manager, user_id, refusal = _guarded(kwargs, "terminal_resize")
     if refusal:
         return refusal
     session_id, bad = _session_ref(kwargs)
@@ -314,7 +279,7 @@ def terminal_resize(**kwargs) -> Dict[str, Any]:
 
 
 def terminal_interrupt(**kwargs) -> Dict[str, Any]:
-    manager, user_id, refusal = _guarded(kwargs)
+    manager, user_id, refusal = _guarded(kwargs, "terminal_interrupt")
     if refusal:
         return refusal
     session_id, bad = _session_ref(kwargs)
@@ -332,7 +297,7 @@ def terminal_interrupt(**kwargs) -> Dict[str, Any]:
 
 
 def close_terminal(**kwargs) -> Dict[str, Any]:
-    manager, user_id, refusal = _guarded(kwargs)
+    manager, user_id, refusal = _guarded(kwargs, "close_terminal")
     if refusal:
         return refusal
     session_id, bad = _session_ref(kwargs)
@@ -348,13 +313,13 @@ def close_terminal(**kwargs) -> Dict[str, Any]:
                  {"session_id": session_id, "closed": True, "reason": reason})
 
 
-def _entry(fn, description: str, input_schema: Dict[str, Any], scope: str, timeout: float):
+def _entry(fn, description: str, input_schema: Dict[str, Any], scope: str, timeout: float, destructive: str = "never"):
     return {
         "function": fn,
         "description": description,
         "input_schema": input_schema,
         "scope": scope,
-        "destructive": "never",
+        "destructive": destructive,
         "retryable": False,
         "timeout": timeout,
     }
@@ -369,9 +334,8 @@ TOOL_REGISTRY = {
         "tools:read", 10.0),
     "start_terminal": _entry(
         start_terminal,
-        "Open a new interactive shell terminal owned by the signed-in user, or run one "
-        "command to completion when 'command' is given. Creates new work; not "
-        "destructive. Read its output with terminal_read.",
+        "Requests arbitrary command execution in an owner terminal. Unavailable until "
+        "a qualified isolated executor exists; requires system permission and explicit approval.",
         {"type": "object", "properties": {
             "command": {"type": "string",
                         "description": ("Optional command to run instead of an "
@@ -379,7 +343,7 @@ TOOL_REGISTRY = {
             "cols": {"type": "integer", "minimum": 2, "maximum": 1000},
             "rows": {"type": "integer", "minimum": 2, "maximum": 300},
         }},
-        "tools:write", 20.0),
+        "tools:system", 20.0, "always"),
     "terminal_read": _entry(
         terminal_read,
         "Read new output from one of your terminal sessions since a byte offset; "
@@ -396,15 +360,14 @@ TOOL_REGISTRY = {
         "tools:read", 30.0),
     "terminal_write": _entry(
         terminal_write,
-        "Send keystrokes (text) to one of your terminal sessions, exactly as a user "
-        "would type them; include a trailing '\\n' to run the line. Not destructive "
-        "by itself — the shell executes what the session runs.",
+        "Requests arbitrary command execution through terminal input. Unavailable until "
+        "a qualified isolated executor exists; requires system permission and explicit approval.",
         {"type": "object", "properties": {
             **_SESSION_PROP,
             "data": {"type": "string",
                      "description": "Text to send, e.g. 'ls -la\\n' or 'y'."},
         }, "required": ["session_id", "data"]},
-        "tools:write", 15.0),
+        "tools:system", 15.0, "always"),
     "terminal_resize": _entry(
         terminal_resize,
         "Resize one of your terminal sessions (columns × rows). Not destructive.",

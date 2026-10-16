@@ -1,8 +1,5 @@
-"""Maintains owner-scoped, resource-limited PTY children for terminal_api.py.
-A bounded output ring supports reconnect and the lifecycle sweeper forwards events
-through audit_machine_event.
-The environment and resource limits do not isolate backend filesystem
-or network access.
+"""Retains bounded owner-scoped terminal output and cleanup for existing sessions.
+New execution and input fail closed because no isolated executor is qualified.
 """
 
 from __future__ import annotations
@@ -11,21 +8,22 @@ import base64
 import errno
 import fcntl
 import logging
+import math
 import os
 import select
 import shutil
 import signal
 import struct
 import subprocess
-import tempfile
 import termios
 import threading
 import time
-import uuid
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from orchestrator.remote_machines import audit_machine_event
-from orchestrator.sandbox import build_limits, make_preexec, sandbox_env
+from orchestrator.terminal_security import (
+    TerminalError, require_terminal_enabled, require_terminal_execution,
+)
 
 logger = logging.getLogger("TerminalSessions")
 
@@ -44,12 +42,6 @@ DEFAULT_COLS, DEFAULT_ROWS = 80, 24
 _READ_CHUNK = 4096
 _POLL_SLICE_S = 0.2
 
-
-class TerminalError(Exception):
-    def __init__(self, code: str, status_code: int = 400) -> None:
-        super().__init__(code)
-        self.code = code
-        self.status_code = status_code
 
 
 class TerminalSession:
@@ -164,17 +156,15 @@ class TerminalSession:
 
 
 class TerminalSessionManager:
-    def __init__(self, *, clock: Optional[Callable[[], float]] = None,
-                 spawn: Optional[Callable[[List[str], Dict[str, str], str, Tuple[int, int]], Tuple[int, Any, str]]] = None) -> None:
+    def __init__(self, *, clock: Optional[Callable[[], float]] = None) -> None:
         self._sessions: Dict[str, TerminalSession] = {}
-        self._creating: Dict[str, int] = {}
         self._lock = threading.Lock()
         self._clock = clock or time.monotonic
-        self._spawn = spawn or _spawn_shell
         self._sweeper: Optional[threading.Thread] = None
         self._sweeper_stop = threading.Event()
 
     def list_sessions(self, owner_id: str) -> List[Dict[str, Any]]:
+        require_terminal_enabled()
         with self._lock:
             live = [s for s in self._sessions.values() if s.owner_id == owner_id and not s.closed]
             return [self.describe(s) for s in sorted(live, key=lambda s: s.created_at)]
@@ -192,41 +182,7 @@ class TerminalSessionManager:
 
     def create(self, owner_id: str, *, cols: int = DEFAULT_COLS, rows: int = DEFAULT_ROWS,
                command: Optional[str] = None) -> Dict[str, Any]:
-        cols = _bounded_dimension(cols, COLS_RANGE, "terminal_cols_invalid")
-        rows = _bounded_dimension(rows, ROWS_RANGE, "terminal_rows_invalid")
-        with self._lock:
-            live = [s for s in self._sessions.values() if s.owner_id == owner_id and not s.closed]
-            if len(live) + self._creating.get(owner_id, 0) >= SESSIONS_PER_OWNER:
-                raise TerminalError("terminal_session_limit_reached", 409)
-            self._creating[owner_id] = self._creating.get(owner_id, 0) + 1
-        session = None
-        cwd = None
-        try:
-            cwd = _child_cwd()
-            try:
-                master_fd, process, cwd = self._spawn(_shell_argv(command), _child_env(cwd), cwd, (cols, rows))
-            except OSError as exc:
-                logger.warning("terminal_session.spawn_failed owner=%s error=%s", owner_id, exc)
-                raise TerminalError("terminal_spawn_failed", 503) from None
-            session = TerminalSession(str(uuid.uuid4()), owner_id, master_fd,
-                                      process, cwd, now=self._clock)
-            session.cols, session.rows = cols, rows
-        finally:
-            with self._lock:
-                remaining = self._creating[owner_id] - 1
-                if remaining:
-                    self._creating[owner_id] = remaining
-                else:
-                    self._creating.pop(owner_id)
-                if session is not None:
-                    self._sessions[session.session_id] = session
-            if session is None and cwd is not None:
-                shutil.rmtree(cwd, ignore_errors=True)
-        session.start_pump()
-        self._ensure_sweeper()
-        audit_machine_event(owner_id, "terminal_session_create",
-                           "interactive terminal session opened", machine_id=session.session_id)
-        return self.describe(session)
+        require_terminal_execution()
 
     def _get_owned(self, owner_id: str, session_id: str) -> TerminalSession:
         with self._lock:
@@ -242,25 +198,10 @@ class TerminalSessionManager:
         return session
 
     def write(self, owner_id: str, session_id: str, data_b64: str) -> Dict[str, Any]:
-        session = self._get_live(owner_id, session_id)
-        try:
-            data = base64.b64decode(data_b64 or "", validate=True)
-        except (ValueError, TypeError):
-            raise TerminalError("terminal_input_invalid", 422) from None
-        if not data or len(data) > INPUT_CHUNK_MAX:
-            raise TerminalError("terminal_input_invalid", 422)
-        try:
-            os.write(session.master_fd, data)
-        except OSError as exc:
-            if exc.errno in (errno.EIO, errno.EBADF):
-                session.close("process_exited")
-                raise TerminalError("terminal_session_closed", 409) from None
-            logger.warning("terminal_session.write_failed session=%s error=%s", session_id, exc)
-            raise TerminalError("terminal_write_failed", 500) from None
-        session.touch()
-        return self.describe(session)
+        require_terminal_execution()
 
     def resize(self, owner_id: str, session_id: str, *, cols: int, rows: int) -> Dict[str, Any]:
+        require_terminal_enabled()
         session = self._get_live(owner_id, session_id)
         cols = _bounded_dimension(cols, COLS_RANGE, "terminal_cols_invalid")
         rows = _bounded_dimension(rows, ROWS_RANGE, "terminal_rows_invalid")
@@ -287,6 +228,7 @@ class TerminalSessionManager:
 
     def read(self, owner_id: str, session_id: str, *, offset: int,
              wait_seconds: float = 0.0) -> Dict[str, Any]:
+        require_terminal_enabled()
         session = self._get_owned(owner_id, session_id)
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             raise TerminalError("terminal_offset_invalid", 422)
@@ -389,55 +331,9 @@ def _bounded_dimension(value: Any, bounds: Tuple[int, int], code: str) -> int:
 
 
 def _bounded_wait(value: Any) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
         raise TerminalError("terminal_wait_invalid", 422)
     return min(float(value), READ_WAIT_MAX_S)
-
-
-def _child_cwd() -> str:
-    return tempfile.mkdtemp(prefix="astral-terminal-")
-
-
-def _child_env(cwd: str) -> Dict[str, str]:
-    env = sandbox_env({"PATH": os.getenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")}, cwd)
-    env["TERM"] = "xterm-256color"
-    env["LANG"] = "C.UTF-8"
-    env["HOME"] = cwd
-    return env
-
-
-def _shell_argv(command: Optional[str]) -> List[str]:
-    shell = shutil.which("bash") or shutil.which("sh") or "/bin/sh"
-    if command:
-        return [shell, "-c", command]
-    return [shell, "-i"]
-
-
-def _spawn_shell(argv: List[str], env: Dict[str, str], cwd: str,
-                 size: Tuple[int, int]) -> Tuple[int, Any, str]:
-    master_fd, slave_fd = os.openpty()
-    _apply_winsize(master_fd, size)
-    limits_preexec = make_preexec(build_limits())
-
-    def _child_setup() -> None:
-        if limits_preexec is not None:
-            limits_preexec()
-        # Reset inherited ignored signals so the child remains interruptible.
-        for ignored in (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT):
-            signal.signal(ignored, signal.SIG_DFL)
-
-    try:
-        process = subprocess.Popen(
-            argv, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-            start_new_session=True, close_fds=True, env=env, cwd=cwd,
-            preexec_fn=_child_setup)
-    except OSError:
-        os.close(master_fd)
-        os.close(slave_fd)
-        raise
-    os.close(slave_fd)
-    _set_nonblocking(master_fd)
-    return master_fd, process, cwd
 
 
 def _apply_winsize(fd: int, size: Tuple[int, int]) -> None:

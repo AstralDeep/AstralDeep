@@ -18,8 +18,9 @@ from astralplane.repositories.assignment_models import (
 )
 
 from orchestrator.framework_credentials import FrameworkCaller
+from orchestrator.framework_work_reads import FrameworkWorkReader
 from orchestrator.emergency_stop import EmergencyStopRefused
-from orchestrator.work_service import WorkService, _identity, _public
+from orchestrator.work_service import _identity, _public
 from orchestrator.work_submit import _invalid, _limits, _text
 from persistent_agents.models import AssignmentError, digest, validate_id
 
@@ -66,25 +67,23 @@ class FrameworkWorkOperations:
 
     async def get(self, caller: FrameworkCaller, operation_id: str) -> dict:
         _require_scope(caller, "operations.read")
-        service = WorkService(self.assignments)
-        return await service.get(caller.owner_id, _framework_claims(caller.owner_id), operation_id)
+        return await FrameworkWorkReader(self, caller, "operations.read").read("get", operation_id)
 
     async def list(self, caller: FrameworkCaller, *, limit: int = 50, after_id: Optional[str] = None) -> dict:
         _require_scope(caller, "operations.read")
-        service = WorkService(self.assignments)
-        return await service.list(caller.owner_id, _framework_claims(caller.owner_id),
-                                  limit=limit, after_id=after_id)
+        return await FrameworkWorkReader(self, caller, "operations.read").read(
+            "list", limit=limit, after_id=after_id,
+        )
 
     async def poll(self, caller: FrameworkCaller, operation_id: str, *, after_revision=None) -> dict:
         _require_scope(caller, "operations.read")
-        service = WorkService(self.assignments)
-        return await service.poll(caller.owner_id, _framework_claims(caller.owner_id), operation_id,
-                                  after_revision=after_revision)
+        return await FrameworkWorkReader(self, caller, "operations.read").read(
+            "poll", operation_id, after_revision=after_revision,
+        )
 
     async def result(self, caller: FrameworkCaller, operation_id: str) -> dict:
         _require_scope(caller, "artifacts.read")
-        service = WorkService(self.assignments)
-        return await service.result(caller.owner_id, _framework_claims(caller.owner_id), operation_id)
+        return await FrameworkWorkReader(self, caller, "artifacts.read").read("result", operation_id)
 
     async def submit(
         self,
@@ -260,8 +259,13 @@ class FrameworkWorkOperations:
     async def subscriptions(self, caller: FrameworkCaller, **arguments) -> dict:
         from orchestrator.work_subscriptions import WorkSubscriptionService
 
-        return await WorkSubscriptionService(self.assignments, self.credentials).subscriptions(
+        reader = FrameworkWorkReader(self, caller, "operations.read")
+        service = WorkSubscriptionService(self.assignments, self.credentials)
+        service.store = reader.service.store
+        result = await service.subscriptions(
             caller, limit=arguments.get("limit", 50), after_id=arguments.get("after_id"))
+        await reader.recheck()
+        return result
 
     async def unsubscribe(self, caller: FrameworkCaller, **arguments) -> dict:
         from orchestrator.work_subscriptions import WorkSubscriptionService
@@ -297,7 +301,11 @@ class FrameworkWorkOperations:
 
     async def emergency_status(self, caller: FrameworkCaller) -> dict:
         _require_scope(caller, "operations.read")
-        return await self._translated(lambda: self._emergency().status(caller.owner_id))
+        reader = FrameworkWorkReader(self, caller, "operations.read")
+        await reader.recheck()
+        result = await self._translated(lambda: self._emergency().status(caller.owner_id))
+        await reader.recheck()
+        return result
 
     async def emergency_stop(self, caller: FrameworkCaller, *, reason: Optional[str] = None) -> dict:
         _require_scope(caller, "operations.control")

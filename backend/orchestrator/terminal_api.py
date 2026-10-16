@@ -1,20 +1,26 @@
-"""REST surface for owner-operated interactive terminal sessions, mounted by
-orchestrator.py next to the other owner APIs; the same endpoints serve the SDK/CLI
-bearer path and the web panel's cookie session. Access keeps the emergency-stop owner
-boundary: the owner's own Keycloak identity only, with delegated (`act`) and machine
-identities refused, and every terminal error returned as its truthful machine code.
+"""Routes owner terminal reads and cleanup through the ordinary authorized tool dispatcher.
+Execution endpoints explicitly report unavailable isolation without starting host processes.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from orchestrator.auth import get_web_or_bearer_user_payload, verify_user
-from orchestrator.terminal_sessions import TerminalError, TerminalSessionManager
+from orchestrator.auth import get_web_or_bearer_user_payload, security, verify_user
+from orchestrator.terminal_security import (
+    AGENT_ID,
+    TerminalError,
+    assert_human_owner,
+    assert_terminal_delivery,
+    require_terminal_enabled,
+    require_terminal_execution,
+    terminal_capability,
+)
 
 terminal_router = APIRouter(prefix="/api/terminals", tags=["Terminals"])
 
@@ -26,7 +32,7 @@ class TerminalCreateRequest(BaseModel):
 
 
 class TerminalInputRequest(BaseModel):
-    data_b64: str = Field(min_length=1)
+    data_b64: str = Field(min_length=1, max_length=21848)
 
 
 class TerminalResizeRequest(BaseModel):
@@ -34,20 +40,15 @@ class TerminalResizeRequest(BaseModel):
     rows: int = Field(ge=2, le=300)
 
 
-class TerminalReadRequest(BaseModel):
-    offset: int = Field(default=0, ge=0)
-    wait_seconds: float = Field(default=0.0, ge=0, le=25)
-
-
-async def _owner_id(request: Request,
-                    payload: dict = Depends(get_web_or_bearer_user_payload)) -> str:
-    user_id = payload.get("sub") if isinstance(payload, dict) else None
-    if not isinstance(user_id, str) or not user_id:
+async def _owner_claims(payload: dict = Depends(get_web_or_bearer_user_payload)) -> dict:
+    if not isinstance(payload, dict) or not isinstance(payload.get("sub"), str) or not payload["sub"].strip():
         raise HTTPException(status_code=401, detail="Not authenticated")
-    if payload.get("act") or payload.get("machine_class"):
-        raise HTTPException(status_code=403, detail="Terminal sessions require the owner's own session")
+    try:
+        assert_human_owner(payload, payload.get("sub"))
+    except TerminalError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from None
     await verify_user(payload)
-    return user_id
+    return payload
 
 
 def _orchestrator(request: Request):
@@ -58,13 +59,6 @@ def _orchestrator(request: Request):
     return orch
 
 
-def _manager(request: Request) -> TerminalSessionManager:
-    manager = getattr(_orchestrator(request), "terminal_sessions", None)
-    if manager is None:
-        raise HTTPException(status_code=503, detail="Terminal sessions are unavailable")
-    return manager
-
-
 def _json(value: Any, status: int = 200) -> JSONResponse:
     return JSONResponse(value, status_code=status, headers={"Cache-Control": "no-store"})
 
@@ -73,67 +67,106 @@ def _refused(exc: TerminalError) -> JSONResponse:
     return _json({"error": exc.code}, exc.status_code)
 
 
-@terminal_router.post("")
-def create_session(request: Request, body: TerminalCreateRequest,
-                   owner_id: str = Depends(_owner_id)):
+async def _dispatch(request: Request, claims: dict, tool_name: str, arguments: dict, *,
+                    unwrap_session: bool = False, fields: tuple[str, ...] | None = None):
     try:
-        return _json(_manager(request).create(owner_id, cols=body.cols, rows=body.rows,
-                                              command=body.command))
+        require_terminal_enabled()
+        orch = _orchestrator(request)
+        execute = getattr(orch, "execute_authorized_tool", None)
+        if not callable(execute):
+            raise TerminalError("terminal_unavailable", 503)
+        try:
+            response = await execute(
+                claims=claims, user_id=claims["sub"], agent_id=AGENT_ID,
+                tool_name=tool_name, arguments=arguments, channel="rest",
+            )
+        except Exception:
+            raise TerminalError("terminal_dispatch_unavailable", 503) from None
+        current = await get_web_or_bearer_user_payload(request, await security(request))
+        assert_human_owner(current, claims["sub"])
+        await verify_user(current)
+        await asyncio.to_thread(assert_terminal_delivery, orch, current, claims["sub"], tool_name)
+        if response is None:
+            raise TerminalError("terminal_unavailable", 503)
+        if response.error:
+            detail = response.error.get("data")
+            if not isinstance(detail, dict):
+                detail = {}
+            code = detail.get("terminal_code") or response.error.get("code")
+            if not isinstance(code, str) or not code.startswith("terminal_"):
+                code = "terminal_dispatch_refused"
+            status = detail.get("http_status", 403)
+            if isinstance(status, bool) or not isinstance(status, int) or not 400 <= status <= 599:
+                status = 403
+            raise TerminalError(code, status)
+        data = response.result
+        if not isinstance(data, dict):
+            raise TerminalError("terminal_invalid_result", 503)
+        if unwrap_session:
+            data = data.get("session")
+            if not isinstance(data, dict):
+                raise TerminalError("terminal_invalid_result", 503)
+        if fields is not None:
+            if any(key not in data for key in fields):
+                raise TerminalError("terminal_invalid_result", 503)
+            data = {key: data[key] for key in fields}
+        return _json(data)
+    except TerminalError as exc:
+        return _refused(exc)
+
+
+@terminal_router.get("/capabilities")
+async def capabilities(claims: dict = Depends(_owner_claims)):
+    return _json(terminal_capability())
+
+
+@terminal_router.post("")
+async def create_session(body: TerminalCreateRequest, claims: dict = Depends(_owner_claims)):
+    try:
+        require_terminal_execution()
     except TerminalError as exc:
         return _refused(exc)
 
 
 @terminal_router.get("")
-def list_sessions(request: Request, owner_id: str = Depends(_owner_id)):
-    return _json({"sessions": _manager(request).list_sessions(owner_id)})
+async def list_sessions(request: Request, claims: dict = Depends(_owner_claims)):
+    return await _dispatch(request, claims, "list_terminals", {})
 
 
 @terminal_router.post("/{session_id}/input")
-def write_input(request: Request, session_id: str, body: TerminalInputRequest,
-                owner_id: str = Depends(_owner_id)):
+async def write_input(session_id: str, body: TerminalInputRequest, claims: dict = Depends(_owner_claims)):
     try:
-        return _json(_manager(request).write(owner_id, session_id, body.data_b64))
+        require_terminal_execution()
     except TerminalError as exc:
         return _refused(exc)
 
 
 @terminal_router.post("/{session_id}/resize")
-def resize_session(request: Request, session_id: str, body: TerminalResizeRequest,
-                   owner_id: str = Depends(_owner_id)):
-    try:
-        return _json(_manager(request).resize(owner_id, session_id, cols=body.cols, rows=body.rows))
-    except TerminalError as exc:
-        return _refused(exc)
+async def resize_session(request: Request, session_id: str, body: TerminalResizeRequest,
+                         claims: dict = Depends(_owner_claims)):
+    return await _dispatch(
+        request, claims, "terminal_resize", {"session_id": session_id, "cols": body.cols, "rows": body.rows},
+        unwrap_session=True,
+    )
 
 
 @terminal_router.post("/{session_id}/interrupt")
-def interrupt_session(request: Request, session_id: str,
-                      owner_id: str = Depends(_owner_id)):
-    try:
-        return _json(_manager(request).interrupt(owner_id, session_id))
-    except TerminalError as exc:
-        return _refused(exc)
+async def interrupt_session(request: Request, session_id: str, claims: dict = Depends(_owner_claims)):
+    return await _dispatch(request, claims, "terminal_interrupt", {"session_id": session_id}, unwrap_session=True)
 
 
 @terminal_router.get("/{session_id}/output")
-def read_output(request: Request, session_id: str,
-                offset: int = Query(default=0, ge=0),
-                wait_seconds: float = Query(default=0.0, ge=0, le=25),
-                owner_id: str = Depends(_owner_id)):
-    try:
-        return _json(_manager(request).read(owner_id, session_id, offset=offset,
-                                            wait_seconds=wait_seconds))
-    except TerminalError as exc:
-        return _refused(exc)
+async def read_output(request: Request, session_id: str, offset: int = Query(default=0, ge=0),
+                      wait_seconds: float = Query(default=0.0, ge=0, le=25), claims: dict = Depends(_owner_claims)):
+    return await _dispatch(
+        request, claims, "terminal_read", {"session_id": session_id, "offset": offset, "wait_seconds": wait_seconds},
+        fields=("session_id", "offset", "next_offset", "data_b64", "bytes", "truncated", "eof", "session"),
+    )
 
 
 @terminal_router.delete("/{session_id}")
-def close_session(request: Request, session_id: str,
-                  owner_id: str = Depends(_owner_id)):
-    try:
-        return _json(_manager(request).close(owner_id, session_id))
-    except TerminalError as exc:
-        return _refused(exc)
+async def close_session(request: Request, session_id: str, claims: dict = Depends(_owner_claims)):
+    return await _dispatch(request, claims, "close_terminal", {"session_id": session_id})
 
 
 __all__ = ["terminal_router"]

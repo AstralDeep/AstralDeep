@@ -19,18 +19,14 @@ class TerminalShellAgent(BaseA2AAgent):
     agent_id = "terminal-shell-1"
     service_name = "Server terminal"
     description = (
-        "Opens and operates interactive shell sessions on the server you are signed "
-        "in to: start a terminal, send keystrokes, read output, interrupt a running "
-        "command, and close it again. Every session belongs to you and is limited to "
-        "your own terminal quota."
+        "Reads and cleans up retained owner terminal sessions through governed tools. "
+        "Starting a shell or sending command input is unavailable until an isolated "
+        "executor is qualified; resource limits alone do not provide isolation."
     )
     examples = [
-        {"title": "Check disk space",
-         "prompt": "Start a terminal on the server and show me disk usage"},
-        {"title": "Follow a long command",
-         "prompt": "Open a terminal, run the test suite, and show me the summary"},
-        {"title": "What is running",
-         "prompt": "List my open terminal sessions"},
+        {"title": "Retained terminals", "prompt": "List my retained terminal sessions"},
+        {"title": "Terminal output", "prompt": "Read the retained output from my terminal"},
+        {"title": "Close a terminal", "prompt": "Close my retained terminal session"},
     ]
     skill_tags = ["terminal", "shell", "server", "session", "cli"]
 

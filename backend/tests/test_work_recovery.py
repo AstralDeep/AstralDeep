@@ -13,7 +13,6 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
-
 from orchestrator.work_admission import (
     AdmissionClass,
     AdmissionClassConfig,
@@ -223,7 +222,7 @@ def test_replay_reuses_the_settled_recovery_operation() -> None:
     running_replay = service.reschedule_interrupted(
         _record(coordinator, accepted.operation_id)
     )
-    assert running_replay.disposition is RecoveryDisposition.RESCHEDULED
+    assert running_replay.disposition is RecoveryDisposition.REPLAYED
     assert running_replay.recovery_operation_id == recovery_id
 
     recovery_claim = coordinator.claim_next(AdmissionClass.INTERACTIVE)
@@ -295,9 +294,14 @@ def test_concurrent_full_passes_never_duplicate_recovery() -> None:
         thread.join()
 
     entries = [entry for report in outcomes for entry in report.recovered]
-    assert len(entries) == 1
-    assert entries[0].disposition is RecoveryDisposition.RESCHEDULED
-    assert entries[0].operation_id == accepted.operation_id
+    assert entries
+    assert {entry.operation_id for entry in entries} == {accepted.operation_id}
+    recovery_ids = {entry.recovery_operation_id for entry in entries}
+    assert len(recovery_ids) == 1 and None not in recovery_ids
+    replacement = coordinator.claim_next(AdmissionClass.INTERACTIVE)
+    assert replacement is not None
+    assert replacement.operation.operation_id in recovery_ids
+    assert coordinator.claim_next(AdmissionClass.INTERACTIVE) is None
     assert sum(report.expired for report in outcomes) == 1
 
 
@@ -356,7 +360,7 @@ def test_stop_gate_failure_fails_closed_and_preserves_work() -> None:
     assert report.count(RecoveryDisposition.PRESERVED_STOPPED) == 1
 
 
-def test_recovery_walk_tolerates_a_purged_ancestor() -> None:
+def test_purged_ancestor_cannot_reset_the_recovery_depth() -> None:
     clock = _FakeClock()
     coordinator, accepted, _claim = _claimed_operation(clock, "purged-parent")
     clock.advance(timedelta(seconds=30))
@@ -379,8 +383,9 @@ def test_recovery_walk_tolerates_a_purged_ancestor() -> None:
     ) is None
 
     entry = service.reschedule_interrupted(_record(coordinator, interrupted_id))
-    assert entry.disposition is RecoveryDisposition.RESCHEDULED
-    assert entry.recovery_operation_id != interrupted_id
+    assert entry.disposition is RecoveryDisposition.PRESERVED_EXHAUSTED
+    assert entry.recovery_operation_id is None
+    assert coordinator.claim_next(AdmissionClass.INTERACTIVE) is None
 
 
 def test_stop_gate_fails_closed_without_a_user_identity() -> None:

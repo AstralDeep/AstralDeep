@@ -130,6 +130,19 @@ def _cresco_summary(orch, user_id: str, tool_name: str, args: dict[str, Any]) ->
     return f"{tool_name} on {_cresco_label(orch, user_id, args.get('target'))}: {preview}"
 
 
+def _terminal_label(orch, user_id: str, ref) -> str:
+    return "terminal session"
+
+
+def _terminal_summary(orch, user_id: str, tool_name: str, args: dict[str, Any]) -> str:
+    from shared.phi_redactor import redact
+
+    public = {key: value for key, value in args.items()
+              if not str(key).startswith("_") and key != "user_id"}
+    preview, _ = redact(public, kind="args")
+    return f"{tool_name} on a terminal session: {preview}"
+
+
 def _policies() -> Dict[str, AgentConfirmationPolicy]:
     from agents.gaiakeep.catalog import READ_TOOLS, TOOLS, is_mutation
     from orchestrator import computer_use_policy
@@ -200,10 +213,30 @@ def _policies() -> Dict[str, AgentConfirmationPolicy]:
             auto_continue=True,
             card_as_result=True,
         ),
+        "terminal-shell-1": AgentConfirmationPolicy(
+            agent_id="terminal-shell-1",
+            classification={
+                "start_terminal": "always", "terminal_write": "always",
+                "list_terminals": "never", "terminal_read": "never",
+                "terminal_resize": "never", "terminal_interrupt": "never",
+                "close_terminal": "never",
+            },
+            machine_key="session_id",
+            gate_unclassified_unattended=True,
+            unattended_allowed=frozenset({
+                "list_terminals", "terminal_read", "terminal_resize",
+                "terminal_interrupt", "close_terminal",
+            }),
+            card_title="Confirm terminal execution",
+            card_caption="Approve only this exact terminal operation after checking its input.",
+            summary=_terminal_summary,
+            machine_label=_terminal_label,
+            card_as_result=True,
+        ),
     }
 
 
-GATED_AGENT_IDS = frozenset({MUTATING_AGENT_ID, "computer-use-1", "gaiakeep-1"})
+GATED_AGENT_IDS = frozenset({MUTATING_AGENT_ID, "computer-use-1", "gaiakeep-1", "cresco-1", "terminal-shell-1"})
 
 
 def policy_for(agent_id: Optional[str]) -> Optional[AgentConfirmationPolicy]:
@@ -374,8 +407,10 @@ def _no_live_human(orch, websocket) -> bool:
     except Exception:  # noqa: BLE001
         pass
     claims = orch.ui_sessions.get(websocket) or getattr(websocket, "machine_claims", None)
-    if isinstance(claims, dict) and claims.get("machine_class"):
-        return True
+    if isinstance(claims, dict):
+        if claims.get("machine_class") or claims.get("_invocation_channel") in {
+                "rest", "mcp", "a2a", "background", "scheduled", "chained", "stream"}:
+            return True
     return False
 
 
