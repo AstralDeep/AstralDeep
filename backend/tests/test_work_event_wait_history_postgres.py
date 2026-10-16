@@ -132,3 +132,20 @@ async def test_closed_matching_wait_history_cannot_block_source_or_new_subscribe
                                    expected_revision=source["revision"], submission_id=str(uuid4()))
     assert result["applied"] is True
     assert (await _read(work, target)).assignment.phase == "waiting"
+
+
+@pytest.mark.asyncio
+async def test_relevant_fanout_is_bounded_and_replays_do_not_consume_capacity(work, monkeypatch):
+    from orchestrator import work_subscriptions
+    from persistent_agents.models import AssignmentError
+
+    monkeypatch.setattr(work_subscriptions, "_MAX_EVENT_WAITERS", 2, raising=False)
+    caller = _issue(work)
+    source, first, second, refused = [_operation(work) for _ in range(4)]
+    await _subscribe(work, caller, source, first)
+    await _subscribe(work, caller, source, second)
+    with pytest.raises(AssignmentError, match="work_completion_capacity_exhausted"):
+        await _subscribe(work, caller, source, refused)
+    assert (await _read(work, refused)).assignment.operation.get("control", {}).get("wait") is None
+    assert (await _subscribe(work, caller, source, first))["applied"] is False
+

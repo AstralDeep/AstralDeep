@@ -1,8 +1,5 @@
-"""Completion subscriptions for framework Work callers: subscribe, list, and cancel a
-durable user-authorized "wake this operation when that operation finishes" continuation,
-stored as the target's owner-event wait on a source-completion event key and released by
-fire_completions when the source turns terminal. Used by work_operations.py,
-work_controls.py, and persistent_agents/runner.py.
+"""Manages framework Work completion subscriptions through durable owner-event waits.
+Composes work controls and auditing with authoritative source completion and runner delivery.
 """
 
 from __future__ import annotations
@@ -110,9 +107,6 @@ class WorkSubscriptionService(WorkControlService):
             _method(repository, "get_operation")(
                 tx, owner_id=owner, assignment_id=source_id, lock=True)
             self.credentials.assert_execution(tx, observation)
-            source = _owned_operation(tx, repository, owner, source_id).assignment
-            if source.lifecycle in {"stopped", "completed"} or source.operation.get("terminal_outcome") is not None:
-                raise AssignmentError("assignment_not_waiting", 409)
             read = _owned_operation(tx, repository, owner, target_id)
             record = read.assignment
             if record.operation.get("authority", {}).get("origin") != "interactive":
@@ -124,6 +118,9 @@ class WorkSubscriptionService(WorkControlService):
             if receipt is not None:
                 return {"operation": _public(read, owner), "applied": False,
                         "subscription": _subscription(source_id, target_id)}
+            source = _owned_operation(tx, repository, owner, source_id).assignment
+            if source.lifecycle in {"stopped", "completed"} or source.operation.get("terminal_outcome") is not None:
+                raise AssignmentError("assignment_not_waiting", 409)
             if wait is not None:
                 if wait["event_key"] != key:
                     raise AssignmentError("assignment_event_key_conflict", 409)
@@ -331,6 +328,9 @@ def completion_event_keys(source_id):
 
 def reconcile_completion_wait(assignments, tx, repository, record):
     from orchestrator.work_completion_wake import completion_event_source as owner_source, terminal_outcome
+
+    if type(record) is not AssignmentRecord:
+        raise AssignmentError("work_control_unavailable", 503)
 
     wait = _wait(record)
     if wait is None or record.lifecycle != "active" or record.phase != "awaiting_event":
