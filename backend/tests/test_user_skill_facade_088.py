@@ -55,6 +55,33 @@ async def test_empty_cutover_create_and_exact_receipt_replay(catalog, human, bou
     assert fixture[-1] == []
 
 
+@pytest.mark.parametrize('command_id', [None, '1cb62afb-adff-4477-b695-ef97a18a9130'])
+async def test_imported_skill_uses_real_catalog_identity_contract(catalog, human, bound, fixture, command_id):
+    from uuid import UUID
+    from orchestrator.skill_import import import_skill_text
+    caller = await selected(human, bound, fixture)
+    source = '---\nname: Imported outline\nlicense: MIT\n---\nUse this synthetic imported outline.'
+    preview = await import_skill_text(catalog, caller, source, command_id=command_id)
+    [saved] = await catalog.list(caller=caller)
+    assert saved.name == preview.name and saved.instructions == preview.instructions
+    assert saved.revision == 1 and not saved.enabled and saved.applies_to == ('always',)
+    assert UUID(saved.skill_id).version == 4 and str(UUID(saved.skill_id)) == saved.skill_id
+    if command_id is not None:
+        with catalog.runtime.transaction() as tx:
+            receipt = tx.fetch_one('SELECT skill_id FROM owner_skill_revision '
+                'WHERE owner_id=%s AND command_id=%s', (fixture[1], command_id))
+        assert receipt['skill_id'] == saved.skill_id
+
+
+async def test_imported_skill_cannot_write_through_read_only_caller(catalog, human, bound, fixture):
+    from orchestrator.skill_import import import_skill_text
+    caller = await selected(human, bound, fixture, method='GET')
+    source = '---\nname: Imported outline\nlicense: MIT\n---\nUse this synthetic imported outline.'
+    with pytest.raises(AssignmentError, match='human_write_required'):
+        await import_skill_text(catalog, caller, source)
+    assert await catalog.list(caller=caller) == ()
+
+
 async def test_exact_legacy_bytes_cutover_then_files_are_recovery_only(catalog, human, bound, fixture, runtime):
     legacy = user_skills.UserSkillStore(catalog.knowledge_dir)
     skill = legacy.save(fixture[1], name='Legacy format', instructions='Keep this exact original format.',
