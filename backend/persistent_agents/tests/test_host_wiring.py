@@ -50,6 +50,7 @@ async def test_actual_startup_only_starts_explicitly_enabled_assignment_runner(m
         generated_agent_publication_service=SimpleNamespace(
             recover_once=AsyncMock(return_value=SimpleNamespace(degraded_publication_ids=())), start=Mock()),
         _track_startup_background_task=background, _jwks_warm_loop=AsyncMock(),
+        _work_recovery_loop=AsyncMock(),
         _personal_agent_watchdog_task=SimpleNamespace(done=lambda: False),
         _start_phi_warm=Mock(), _monitor_agents=AsyncMock(), web_sessions=object(),
         explicit_notes=SimpleNamespace(expiry_loop=AsyncMock()),

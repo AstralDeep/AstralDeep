@@ -136,6 +136,7 @@ async def test_actual_server_startup_respects_flag_and_installs_the_qualified_pa
 
     host._track_startup_background_task = track
     host._jwks_warm_loop = idle
+    host._work_recovery_loop = idle
     host._personal_agent_watchdog_loop = idle
     host._personal_agent_watchdog_task = None
     host._monitor_agents = idle
