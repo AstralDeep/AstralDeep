@@ -31,20 +31,185 @@ ACTION_HASHES = {
 }
 ENV = {"PATH": "/usr/bin:/usr/sbin:/bin:/sbin", "LANG": "C", "LC_ALL": "C"}
 MAX_FILE = 64 * 1024 * 1024
-VALIDATE = """
+MAX_SAFE_INTEGER = (1 << 53) - 1
+NATIVE_REASONS = frozenset(
+    (
+        "Fence DNS evidence contains an unexpected GitHub artifact compatibility policy",
+        "Fence DNS evidence contains invalid hostname observation",
+        "Fence DNS evidence contains invalid rejection reasons",
+        "Fence DNS evidence contains invalid results-storage authorization",
+        "Fence DNS evidence contains invalid wildcard authorization",
+        "Fence DNS evidence contains invalid wildcard policy",
+        "Fence DNS evidence contains invalid wildcard transport policy",
+        "Fence DNS evidence contains unsorted wildcard transport policy",
+        "Fence DNS evidence does not contain bounded runner provenance",
+        "Fence DNS evidence does not contain bounded wildcard policy",
+        "Fence DNS evidence does not contain the reviewed proxy policy",
+        "Fence DNS evidence does not declare the GitHub artifact compatibility policy",
+        "Fence DNS evidence does not disclose the GitHub artifact data-egress policy",
+        "Fence DNS evidence does not match the resident report",
+        "Fence DNS evidence must be a JSON object",
+        "Fence DNS evidence resident process does not match the report",
+        "Fence DNS evidence worker set does not match its container routing",
+        "Fence DNS firewall failure is missing its critical finding",
+        "Fence DNS rejection reasons do not match the total",
+        "Fence readiness contains an unexpected GitHub artifact compatibility policy",
+        "Fence readiness does not declare the GitHub artifact compatibility policy",
+        "Fence readiness does not disclose the GitHub artifact data-egress policy",
+        "Fence readiness does not match the resident report",
+        "Fence readiness identity does not match the resident report",
+        "Fence readiness must be a JSON object",
+        "Fence readiness resident process does not match the report",
+        "Fence report cannot enable GitHub artifact compatibility in audit mode",
+        "Fence report contains an unexpected GitHub artifact compatibility policy",
+        "Fence report contains critical resident findings",
+        "Fence report critical findings do not match resident health",
+        "Fence report does not contain a recognized readiness status",
+        "Fence report does not contain bounded critical findings",
+        "Fence report does not contain resident health evidence",
+        "Fence report does not contain verified network state",
+        "Fence report does not declare the GitHub artifact compatibility policy",
+        "Fence report does not disclose the GitHub artifact data-egress policy",
+        "Fence report does not select the reviewed hosted-runner profile",
+        "Fence report has an unexpected status",
+        "Fence report mode and control status are inconsistent",
+        "Fence report must be a JSON object",
+        "Fence resident health evidence is invalid or unhealthy",
+        "Fence resident health evidence is stale or has an invalid timestamp",
+        "Fence resident service is not active with the expected main process",
+        "Fence resident service status is incomplete",
+        "Fence resident service status is malformed",
+        "Fence resident service status is unavailable",
+        "Fence resident worker health is invalid",
+        "Fence resident worker health is missing",
+        "Fence resident worker set does not match the reviewed runtime",
+    )
+)
+NATIVE_STAGES = frozenset(
+    ("load_action", "parse_input", "report", "startup_ready", "dns", "unit")
+)
+VALIDATE = (
+    "const reasons = new Set("
+    + json.dumps(sorted(NATIVE_REASONS))
+    + ");\n"
+    + """
 const fs = require('node:fs');
-const lib = require(process.argv[1]);
-const input = JSON.parse(fs.readFileSync(0, 'utf8'));
-lib.validateReport(input.report, true);
-lib.validateReady(input.ready, input.report);
-lib.validateDnsEvidence(input.dns, input.report);
-lib.validateResidentUnitStatus(input.unit, input.report.resident_health.resident_pid);
-process.stdout.write('validated');
+const crypto = require('node:crypto');
+let stage = 'load_action';
+let input;
+let post;
+try {
+    const lib = require(process.argv[1]);
+    post = require(process.argv[2]);
+    stage = 'parse_input';
+    input = JSON.parse(fs.readFileSync(0, 'utf8'));
+    stage = 'report';
+    lib.validateReport(input.report, true);
+    if (input.initial) {
+        stage = 'startup_ready';
+        lib.validateReady(input.ready, input.report);
+    }
+    stage = 'dns';
+    lib.validateDnsEvidence(input.dns, input.report);
+    stage = 'unit';
+    lib.validateResidentUnitStatus(input.unit, input.report.resident_health.resident_pid);
+    process.stdout.write('validated');
+} catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    const diagnostic = {stage, reason: reasons.has(message) ? message : 'unrecognized_native_error',
+                        native_code: null, message_sha256: crypto.createHash('sha256').update(message).digest('hex'),
+                        message_bytes: Buffer.byteLength(message), projections: []};
+    if (post && input && typeof input === 'object') {
+        for (const [document, value, source] of [['report', input.report, 'resident'],
+                ['startup_ready', input.ready, 'resident'], ['dns', input.dns, 'dns']]) {
+            try {
+                const projected = post.postFailureDiagnostic(value, source);
+                const health = JSON.parse(projected.slice('Fence failure diagnostic (unverified): '.length));
+                diagnostic.projections.push({document, health});
+            } catch {}
+        }
+    }
+    process.stdout.write(JSON.stringify(diagnostic));
+    process.exitCode = 1;
+}
 """
+)
 
 
 class VerificationError(RuntimeError):
     pass
+
+
+class RejectionPending(VerificationError):
+    pass
+
+
+def counter_values(report):
+    counters = report.get("counters")
+    if not isinstance(counters, dict) or any(
+        type(counters.get(name)) is not int
+        or not 0 <= counters[name] <= MAX_SAFE_INTEGER
+        for name in ("total_violations", "sampled_violations")
+    ):
+        raise VerificationError("fence_counters_invalid")
+    if (
+        report.get("mode") != "block"
+        or re.fullmatch("[0-9a-f]{64}", str(report.get("ruleset_hash", ""))) is None
+    ):
+        raise VerificationError("fence_counter_epoch_invalid")
+    return counters["total_violations"], counters["sampled_violations"]
+
+
+def assert_counter_transition(before, after):
+    first_total, first_sampled = counter_values(before)
+    last_total, last_sampled = counter_values(after)
+    if last_sampled < first_sampled:
+        raise VerificationError("fence_sampled_counter_regressed")
+    if last_total < first_total and after["ruleset_hash"] == before["ruleset_hash"]:
+        raise VerificationError("fence_total_counter_regressed")
+
+
+def assert_startup_binding(ready, report):
+    fields = (
+        "runtime_evidence_schema_version",
+        "platform_profile_id",
+        "profile_realization_id",
+        "allow_github_artifacts",
+        "policy_hash_schema_version",
+        "policy_hash",
+        "base_ruleset_hash",
+        "protection_available",
+    )
+    if any(
+        name not in ready or name not in report or ready[name] != report[name]
+        for name in fields
+    ) or ready.get("status") != report.get("readiness_status"):
+        raise VerificationError("fence_startup_identity_changed")
+    startup = ready["resident_health"]
+    current = report["resident_health"]
+    if startup["resident_pid"] != current["resident_pid"] or sorted(
+        worker["name"] for worker in startup["workers"]
+    ) != sorted(worker["name"] for worker in current["workers"]):
+        raise VerificationError("fence_startup_resident_changed")
+
+
+class EvidenceState:
+    def __init__(self):
+        self.ready_bytes = None
+        self.previous = None
+
+    def check_ready(self, raw_ready):
+        if self.ready_bytes is not None and raw_ready != self.ready_bytes:
+            raise VerificationError("fence_startup_readiness_changed")
+
+    def accept(self, report, ready, raw_ready):
+        self.check_ready(raw_ready)
+        assert_startup_binding(ready, report)
+        counter_values(report)
+        if self.previous is not None:
+            assert_counter_transition(self.previous, report)
+        self.ready_bytes = raw_ready
+        self.previous = report
 
 
 def _peer_module():
@@ -114,13 +279,16 @@ def matching_rejection(report, protocol, port):
 
 
 def assert_new_rejection(before, after, protocol, port):
+    counter_values(before)
+    counter_values(after)
     if matching_rejection(before, protocol, port):
         raise VerificationError("fence_rejection_preexisting")
     if not matching_rejection(after, protocol, port):
-        raise VerificationError(f"fence_rejection_missing:{protocol}:{port}")
-    first = before.get("counters", {}).get("total_violations")
-    last = after.get("counters", {}).get("total_violations")
-    if type(first) is not int or type(last) is not int or first < 0 or last <= first:
+        raise RejectionPending(f"fence_rejection_missing:{protocol}:{port}")
+    if (
+        after["counters"]["sampled_violations"]
+        <= before["counters"]["sampled_violations"]
+    ):
         raise VerificationError("fence_rejection_counter_missing")
 
 
@@ -215,16 +383,102 @@ def runner_node24():
     raise VerificationError("runner_node24_unavailable")
 
 
-def validate_upstream(node, root, report, ready, dns, unit):
+def safe_integer(value, minimum=0, maximum=MAX_SAFE_INTEGER):
+    return value if type(value) is int and minimum <= value <= maximum else None
+
+
+def native_diagnostic(result, payload):
+    output = result.stdout
+    try:
+        value = json.loads(output)
+    except (ValueError, UnicodeError):
+        value = {}
+    if not isinstance(value, dict):
+        value = {}
+    stage = value.get("stage")
+    reason = value.get("reason")
+    message_digest = value.get("message_sha256")
+    stderr = getattr(result, "stderr", b"")
+    diagnostic = {
+        "event": "upstream_fence_validation_failed",
+        "stage": stage
+        if isinstance(stage, str) and stage in NATIVE_STAGES
+        else "unknown",
+        "reason": reason
+        if isinstance(reason, str) and reason in NATIVE_REASONS
+        else "unrecognized_native_error",
+        "native_code": None,
+        "message_sha256": message_digest
+        if isinstance(message_digest, str)
+        and re.fullmatch("[0-9a-f]{64}", message_digest)
+        else None,
+        "message_bytes": safe_integer(value.get("message_bytes")),
+        "payload_sha256": hashlib.sha256(payload).hexdigest(),
+        "payload_bytes": len(payload),
+        "native_output_sha256": hashlib.sha256(output).hexdigest(),
+        "native_output_bytes": len(output),
+        "native_stderr_sha256": hashlib.sha256(stderr).hexdigest(),
+        "native_stderr_bytes": len(stderr),
+        "unverified_health": [],
+    }
+    projections = value.get("projections")
+    if isinstance(projections, list):
+        for row in projections[:3]:
+            if not isinstance(row, dict) or row.get("document") not in (
+                "report",
+                "startup_ready",
+                "dns",
+            ):
+                continue
+            health = row.get("health")
+            if not isinstance(health, dict):
+                continue
+            status = health.get("reported_resident_status")
+            truncated = health.get("critical_findings_truncated")
+            diagnostic["unverified_health"].append(
+                {
+                    "document": row["document"],
+                    "reported_resident_status": status
+                    if status in ("healthy", "critical", "starting")
+                    else "unavailable",
+                    "verification_sequence": safe_integer(
+                        health.get("verification_sequence"), 1
+                    ),
+                    "heartbeat_age_ms": safe_integer(
+                        health.get("heartbeat_age_ms"), -MAX_SAFE_INTEGER
+                    ),
+                    "critical_findings": safe_integer(
+                        health.get("critical_findings"), maximum=64
+                    ),
+                    "critical_findings_truncated": truncated
+                    if type(truncated) is bool
+                    else None,
+                }
+            )
+    return diagnostic
+
+
+def validate_upstream(node, root, report, ready, dns, unit, *, initial=True):
     require_node24(node)
     action_files(root)
     payload = json.dumps(
-        {"report": report, "ready": ready, "dns": dns, "unit": unit}
+        {"report": report, "ready": ready, "dns": dns, "unit": unit, "initial": initial}
     ).encode()
     if len(payload) > 1024 * 1024:
         raise VerificationError("fence_evidence_too_large")
-    result = _node(node, "-e", VALIDATE, str(root / "lib.cts"), payload=payload)
+    result = _node(
+        node,
+        "-e",
+        VALIDATE,
+        str(root / "lib.cts"),
+        str(root / "post.cts"),
+        payload=payload,
+    )
     if result.returncode != 0 or result.stdout != b"validated":
+        print(
+            json.dumps(native_diagnostic(result, payload), sort_keys=True),
+            file=sys.stderr,
+        )
         raise VerificationError("upstream_fence_validation_failed")
     assert_report(report, ready)
 
@@ -247,13 +501,16 @@ def assert_bundle_rejected(node, root):
 
 
 def _documents(directory):
-    return [
-        json.loads(read_protected(directory / name, 512 * 1024))
+    raw = [
+        read_protected(directory / name, 512 * 1024)
         for name in ("report.json", "ready.json", "dns-report.json")
     ]
+    return *(json.loads(value) for value in raw), raw[1]
 
 
-def validated_documents(node, root, directory, invocation):
+def validated_documents(node, root, directory, invocation, state=None):
+    if state is None:
+        state = EvidenceState()
     unit = subprocess.run(
         [
             "/usr/bin/systemctl",
@@ -269,8 +526,12 @@ def validated_documents(node, root, directory, invocation):
         timeout=5,
         check=True,
     ).stdout.decode()
-    report, ready, dns = _documents(directory)
-    validate_upstream(node, root, report, ready, dns, unit)
+    report, ready, dns, raw_ready = _documents(directory)
+    state.check_ready(raw_ready)
+    validate_upstream(
+        node, root, report, ready, dns, unit, initial=state.ready_bytes is None
+    )
+    state.accept(report, ready, raw_ready)
     return report, ready, dns
 
 
@@ -287,7 +548,10 @@ def verify(fixture_id, invocation, node, *, peer=None):
     peer.assert_baseline(before)
     directory = Path("/run/fence") / invocation
     root = Path("/run/fence-launcher") / invocation / "action"
-    report, ready, dns = validated_documents(node, root, directory, invocation)
+    evidence = EvidenceState()
+    report, ready, dns = validated_documents(
+        node, root, directory, invocation, evidence
+    )
     for protocol, port in (("tcp", 19443), ("tcp", 443), ("udp", 53)):
         if matching_rejection(report, protocol, port):
             raise VerificationError("fence_rejection_preexisting")
@@ -301,7 +565,9 @@ def verify(fixture_id, invocation, node, *, peer=None):
         ("address", "tcp", 443),
         ("dns", "udp", 53),
     ):
-        initial, _ready, _dns = validated_documents(node, root, directory, invocation)
+        initial, _ready, _dns = validated_documents(
+            node, root, directory, invocation, evidence
+        )
         if matching_rejection(initial, protocol, port):
             raise VerificationError("fence_rejection_preexisting")
         health_before = peer._tls(state, "allowed", "/health")
@@ -319,12 +585,12 @@ def verify(fixture_id, invocation, node, *, peer=None):
         deadline = time.monotonic() + 20
         while True:
             current, _ready, _dns = validated_documents(
-                node, root, directory, invocation
+                node, root, directory, invocation, evidence
             )
             try:
                 assert_new_rejection(initial, current, protocol, port)
                 break
-            except VerificationError:
+            except RejectionPending:
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(0.1)
@@ -336,7 +602,7 @@ def verify(fixture_id, invocation, node, *, peer=None):
         connection.send(query)
         assert_dns_refused(query, connection.recv(4096))
     assert_bundle_rejected(node, root)
-    validated_documents(node, root, directory, invocation)
+    validated_documents(node, root, directory, invocation, evidence)
     return {
         "fixture": fixture_id,
         "invocation": invocation,
