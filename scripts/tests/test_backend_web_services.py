@@ -67,6 +67,28 @@ def generated(tmp_path, ownership):
     return root, result, ownership
 
 
+@pytest.mark.parametrize("certificate_path,ca_path", [
+    ("proxy/server-cert.pem", "app/iam-ca.pem"),
+    ("keycloak/server-cert.pem", "app/iam-ca.pem"),
+    ("proxy/livekit-cert.pem", "app/iam-ca.pem"),
+    ("livekit/turn-cert.pem", "app/iam-ca.pem"),
+    ("warden/tls/server-cert.pem", "app/lets-ca.pem"),
+    ("warden/tls/peer-cert.pem", "app/lets-ca.pem"),
+    ("app/lets-client-cert.pem", "app/lets-ca.pem"),
+])
+def test_material_certificates_satisfy_strict_chain_requirements(generated, certificate_path, ca_path):
+    root, _, _ = generated
+    ca = x509.load_pem_x509_certificate((root / ca_path).read_bytes())
+    cert = x509.load_pem_x509_certificate((root / certificate_path).read_bytes())
+    cert.verify_directly_issued_by(ca)
+    ca_subject = ca.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value
+    assert cert.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier).value.key_identifier == ca_subject.digest
+    assert cert.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value.digest
+    assert ca.extensions.get_extension_for_class(x509.KeyUsage).value.key_cert_sign
+    usage = cert.extensions.get_extension_for_class(x509.KeyUsage)
+    assert usage.critical and usage.value.digital_signature and not usage.value.key_cert_sign
+
+
 def test_materials_bind_real_tls_owner_subjects_scopes_and_fresh_keys(generated):
     root, report, owners = generated
     assert report["qualification_id"] == QID
