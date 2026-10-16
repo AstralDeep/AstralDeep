@@ -427,7 +427,7 @@ async def list_resources(
             "resource_unavailable",
             "The work listing is not available to this caller",
             _MCP_RESOURCES_SCOPE,
-        ) from exc
+        )
 
     records = result.get("operations", ()) if isinstance(result, dict) else ()
 
@@ -491,7 +491,7 @@ async def read_resource(
             "resource_unavailable",
             "The resource is not available to this caller",
             _MCP_RESOURCES_SCOPE,
-        ) from exc
+        )
 
     if not isinstance(record, dict):
         raise MCPAuthError(

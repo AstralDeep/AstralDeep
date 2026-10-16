@@ -198,17 +198,21 @@ class TestResourceUriContract:
         assert _WORK_RESOURCE_URI_PATTERN.match(uri) is None
 
     def test_rejected_uri_reports_400(self):
-        with pytest.raises(MCPAuthError) as caught:
+        try:
             asyncio.run(read_resource(
                 _endpoint(_facade()), OWNER_ID, "astral://work/work-1/status", _claims(_caller())))
-        assert caught.value.status_code == 400
-        assert caught.value.error == "invalid_uri"
+            pytest.fail("expected MCPAuthError")
+        except MCPAuthError as caught:
+            assert caught.status_code == 400
+            assert caught.error == "invalid_uri"
 
     def test_non_string_uri_reports_400(self):
-        with pytest.raises(MCPAuthError) as caught:
+        try:
             asyncio.run(read_resource(
                 _endpoint(_facade()), OWNER_ID, None, _claims(_caller())))
-        assert caught.value.status_code == 400
+            pytest.fail("expected MCPAuthError")
+        except MCPAuthError as caught:
+            assert caught.status_code == 400
 
 
 class TestAuthorization:
@@ -216,36 +220,46 @@ class TestAuthorization:
 
     def test_listing_without_a_verified_caller_fails_closed(self):
         for claims in ({}, {"_framework_caller": None}, {"_framework_caller": object()}):
-            with pytest.raises(MCPAuthError) as caught:
+            try:
                 asyncio.run(list_resources(_endpoint(_facade()), OWNER_ID, claims))
-            assert caught.value.status_code == 403
+                pytest.fail("expected MCPAuthError")
+            except MCPAuthError as caught:
+                assert caught.status_code == 403
 
     def test_reading_without_a_verified_caller_fails_closed(self):
-        with pytest.raises(MCPAuthError) as caught:
+        try:
             asyncio.run(read_resource(
                 _endpoint(_facade(reads={WORK_ID: _make_read(OWNER_ID, WORK_ID)})), OWNER_ID,
                 f"astral://work/{WORK_ID}/status", {}))
-        assert caught.value.status_code == 403
+            pytest.fail("expected MCPAuthError")
+        except MCPAuthError as caught:
+            assert caught.status_code == 403
 
     def test_caller_without_the_read_scope_fails_closed(self):
         caller = _caller(scopes=("operations.submit",))
-        with pytest.raises(MCPAuthError) as caught:
+        try:
             asyncio.run(list_resources(_endpoint(_facade()), OWNER_ID, _claims(caller)))
-        assert caught.value.status_code == 403
+            pytest.fail("expected MCPAuthError")
+        except MCPAuthError as caught:
+            assert caught.status_code == 403
 
     def test_missing_facade_fails_closed(self):
         class _Endpoint:
             framework_work_operations = None
 
-        with pytest.raises(MCPAuthError) as caught:
+        try:
             asyncio.run(list_resources(_Endpoint(), OWNER_ID, _claims(_caller())))
-        assert caught.value.status_code == 403
+            pytest.fail("expected MCPAuthError")
+        except MCPAuthError as caught:
+            assert caught.status_code == 403
 
     def test_facade_denial_is_passed_through_unchanged(self):
         ops = _facade(list_error=AssignmentError("framework_scope_required", 403))
-        with pytest.raises(MCPAuthError) as caught:
+        try:
             asyncio.run(list_resources(_endpoint(ops), OWNER_ID, _claims(_caller())))
-        assert caught.value.status_code == 403
+            pytest.fail("expected MCPAuthError")
+        except MCPAuthError as caught:
+            assert caught.status_code == 403
 
 
 class TestResourceListing:
@@ -361,20 +375,24 @@ class TestBoundedViewModels:
         # exercised directly against the facade method.
         ops = _new_facade()
         ops.get = AsyncMock(return_value=None)
-        with pytest.raises(MCPAuthError) as caught:
+        try:
             asyncio.run(read_resource(
                 _endpoint(ops), OWNER_ID, f"astral://work/{WORK_ID}/status", _claims(_caller())))
-        assert caught.value.status_code == 503
+            pytest.fail("expected MCPAuthError")
+        except MCPAuthError as caught:
+            assert caught.status_code == 503
 
 
 class TestOwnerIsolation:
     def test_foreign_work_surfaces_the_facade_not_found(self):
         """A work item outside the caller's owner reads as absent, not as a leak."""
         ops = _facade(get_error=AssignmentError("work_not_found", 404))
-        with pytest.raises(MCPAuthError) as caught:
+        try:
             asyncio.run(read_resource(
                 _endpoint(ops), OWNER_ID, f"astral://work/{FOREIGN_ID}/status", _claims(_caller())))
-        assert caught.value.status_code == 404
+            pytest.fail("expected MCPAuthError")
+        except MCPAuthError as caught:
+            assert caught.status_code == 404
 
     def test_reader_authenticates_with_the_caller_owner(self):
         """The facade receives the caller's owner_id, never a caller-less request."""
@@ -385,10 +403,12 @@ class TestOwnerIsolation:
 
     def test_revoked_caller_is_refused_by_the_facade(self):
         ops = _facade(get_error=AssignmentError("work_authentication_required", 401))
-        with pytest.raises(MCPAuthError) as caught:
+        try:
             asyncio.run(read_resource(
                 _endpoint(ops), OWNER_ID, f"astral://work/{WORK_ID}/status", _claims(_caller())))
-        assert caught.value.status_code == 401
+            pytest.fail("expected MCPAuthError")
+        except MCPAuthError as caught:
+            assert caught.status_code == 401
 
 
 class _Orchestrator:
