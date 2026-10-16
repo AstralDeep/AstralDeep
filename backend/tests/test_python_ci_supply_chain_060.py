@@ -293,6 +293,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
     expected_test_paths = {
         "scripts/tests/test_ci_network_fixture.py",
         "scripts/tests/test_ci_fence_fixture_verifier.py",
+        "scripts/tests/test_ci_fence_egress_pilot.py",
         "scripts/tests/test_ci_review_diagnostics.py",
         "scripts/tests/test_acceptance_mutations.py",
         "scripts/tests/test_acceptance_ci_contract.py",

@@ -287,7 +287,7 @@ def evaluate_workflow(workflow: str, helpers: ReviewedHelpers | None = None) -> 
         return PilotEvaluation(STATE_ABSENT, ("the actual controlled Fence pilot is required",))
     prelude = (
         "    runs-on: ubuntu-24.04\n    timeout-minutes: 10\n"
-        "    permissions:\n      contents: read\n    steps:\n"
+        "    steps:\n"
     )
     expected = prelude + "".join(_expected_steps(helpers))
     if job != expected:

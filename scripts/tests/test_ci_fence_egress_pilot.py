@@ -93,8 +93,6 @@ jobs:
   lint:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    permissions:
-      contents: read
     steps:
 """ + start + fence + verify + close + """      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -137,7 +135,7 @@ def test_missing_or_invalid_trust_cannot_qualify(field, value):
 
 
 @pytest.mark.parametrize("old,new", [
-    ("contents: read\n    steps:", "contents: read\n      actions: write\n    steps:"),
+    ("    steps:\n", "    permissions:\n      contents: read\n      actions: write\n    steps:\n"),
     ("permissions:\n  contents: read", "permissions:\n  contents: write"),
     ("  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: \"true\"", "  BASH_ENV: /tmp/untrusted"),
     ("timeout-minutes: 10", "timeout-minutes: 30"),
@@ -178,6 +176,19 @@ def test_checkout_cannot_precede_attested_cleanup():
     setup = value.index("      - uses: actions/setup-python@")
     reordered = value[:start] + value[checkout:setup] + value[start:checkout] + value[setup:]
     assert pilot.evaluate_workflow(reordered, trust()).state == "nonconforming"
+
+
+@pytest.mark.parametrize("override", [
+    "    permissions:\n      contents: read\n",
+    "    permissions:\n      contents: write\n",
+    "    permissions:\n      contents: read\n      actions: read\n",
+    "    permissions: {contents: read}\n",
+])
+def test_lint_inherits_exact_global_readonly_and_refuses_job_override(override):
+    ordinary = workflow()
+    assert pilot.evaluate_workflow(ordinary, trust()).state == "conforming"
+    assert pilot.evaluate_workflow(ordinary.replace("    steps:\n", override + "    steps:\n", 1),
+                                   trust()).state == "nonconforming"
 
 
 def test_absent_actual_action_is_not_success(tmp_path, monkeypatch, capsys):
