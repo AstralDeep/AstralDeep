@@ -458,6 +458,175 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      - name: Start and baseline the immutable reviewed CI peer
+        id: fence_peer
+        shell: bash --noprofile --norc -euo pipefail {0}
+        run: |
+          state=$(/usr/bin/sudo --non-interactive /usr/bin/env -i PATH=/usr/bin:/usr/sbin:/bin:/sbin LANG=C LC_ALL=C /usr/bin/python3 -I - <<'ASTRAL_REVIEWED_START'
+          import hashlib, json, os, re, stat, sys, types
+          identities = (('ci_network_fixture.py', '23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240'), ('ci_fence_fixture_verifier.py', '68bb90701e0302714686a685752a2e93da541146877a5cfac069c319d9921ca3'))
+          limit = 262144
+          commit = '85e50f5392e7916ccfd4da84c1ae90e097ef01e5'
+          import urllib.request
+          if os.geteuid() != 0:
+              raise RuntimeError("trusted_start_requires_root")
+          class RefuseRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *_arguments, **_keywords):
+                  raise RuntimeError("trusted_helper_redirect_refused")
+          opener = urllib.request.build_opener(RefuseRedirect())
+          buffers = {}
+          for name, digest in identities:
+              url = "https://raw.githubusercontent.com/AstralDeep/AstralDeep/" + commit + "/scripts/" + name
+              with opener.open(url, timeout=15) as response:
+                  if response.status != 200 or response.geturl() != url:
+                      raise RuntimeError("trusted_helper_response_invalid")
+                  data = response.read(limit + 1)
+              if len(data) > limit or hashlib.sha256(data).hexdigest() != digest:
+                  raise RuntimeError("trusted_helper_digest_mismatch")
+              buffers[name] = data
+          peer = types.ModuleType("ci_peer_fixture")
+          peer.__file__ = "/run/astral-ci-peer/ci_network_fixture.py"
+          exec(compile(buffers["ci_network_fixture.py"], peer.__file__, "exec"), peer.__dict__)
+          state = peer.start()
+          try:
+              fixture = state["id"]
+              if not isinstance(fixture, str) or re.fullmatch("[0-9a-f]{16}", fixture) is None:
+                  raise RuntimeError("trusted_fixture_identity_invalid")
+              directory = "/run/astral-ci-peer/" + fixture
+              descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+              try:
+                  metadata = os.fstat(descriptor)
+                  if metadata.st_uid != 0 or metadata.st_mode & 0o022 or not stat.S_ISDIR(metadata.st_mode):
+                      raise RuntimeError("trusted_fixture_directory_invalid")
+                  for name, _digest in identities:
+                      target = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                       0o444, dir_fd=descriptor)
+                      with os.fdopen(target, "wb") as handle:
+                          handle.write(buffers[name])
+              finally:
+                  os.close(descriptor)
+          except BaseException:
+              receipt = peer.close(state)
+              if (not isinstance(receipt, dict) or receipt.get("resources_removed") is not True
+                      or receipt.get("supervisor_exited") is not True):
+                  raise RuntimeError("trusted_fixture_cleanup_incomplete")
+              raise
+          print(json.dumps({"fixture_id": fixture}, sort_keys=True))
+          ASTRAL_REVIEWED_START
+          )
+          printf '%s' "$state" | /usr/bin/python3 -I -c 'import json,re,sys; value=json.load(sys.stdin)["fixture_id"]; assert isinstance(value,str) and re.fullmatch("[0-9a-f]{16}",value); print("fixture_id="+value)' >> "$GITHUB_OUTPUT"
+      - name: Install the reviewed Fence egress firewall in block mode
+        uses: openai/fence@abc5790eac3445fe3854eea6b506aa7d31bed67c # v0.10.5
+        with:
+          mode: block
+          invocation_id: astral-lint-${{ github.run_id }}-${{ github.run_attempt }}
+          allow_github_artifacts: true
+          allowlist: |
+            github.com:443
+            codeload.github.com:443
+            raw.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            pypi.org:443
+            files.pythonhosted.org:443
+            ip 192.0.2.2 tcp 18443
+      - name: Verify actual Fence evidence and controlled peer denials
+        shell: bash --noprofile --norc -euo pipefail {0}
+        run: |
+          /usr/bin/python3 -I - '${{ steps.fence_peer.outputs.fixture_id }}' 'astral-lint-${{ github.run_id }}-${{ github.run_attempt }}' <<'ASTRAL_REVIEWED_VERIFY'
+          import hashlib, json, os, re, stat, sys, types
+          identities = (('ci_network_fixture.py', '23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240'), ('ci_fence_fixture_verifier.py', '68bb90701e0302714686a685752a2e93da541146877a5cfac069c319d9921ca3'))
+          limit = 262144
+          fixture = sys.argv[1]
+          if re.fullmatch("[0-9a-f]{16}", fixture) is None:
+              raise RuntimeError("trusted_fixture_identity_invalid")
+          directory = "/run/astral-ci-peer/" + fixture
+          parent = os.open("/run/astral-ci-peer", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+          buffers = {}
+          try:
+              metadata = os.fstat(parent)
+              if metadata.st_uid != 0 or metadata.st_mode & 0o022 or not stat.S_ISDIR(metadata.st_mode):
+                  raise RuntimeError("trusted_fixture_root_invalid")
+              descriptor = os.open(fixture, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+              try:
+                  metadata = os.fstat(descriptor)
+                  if metadata.st_uid != 0 or metadata.st_mode & 0o022 or not stat.S_ISDIR(metadata.st_mode):
+                      raise RuntimeError("trusted_fixture_directory_invalid")
+                  for name, digest in identities:
+                      target = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
+                      with os.fdopen(target, "rb") as handle:
+                          metadata = os.fstat(handle.fileno())
+                          if metadata.st_uid != 0 or metadata.st_mode & 0o022 or not stat.S_ISREG(metadata.st_mode):
+                              raise RuntimeError("trusted_helper_metadata_invalid")
+                          data = handle.read(limit + 1)
+                      if len(data) > limit or hashlib.sha256(data).hexdigest() != digest:
+                          raise RuntimeError("trusted_helper_digest_mismatch")
+                      buffers[name] = data
+              finally:
+                  os.close(descriptor)
+          finally:
+              os.close(parent)
+          modules = {}
+          for name, _digest in identities:
+              module = types.ModuleType(name[:-3])
+              module.__file__ = directory + "/" + name
+              exec(compile(buffers[name], module.__file__, "exec"), module.__dict__)
+              modules[name] = module
+          peer = modules["ci_network_fixture.py"]
+          verifier = modules["ci_fence_fixture_verifier.py"]
+          result = verifier.verify(fixture, sys.argv[2], verifier.runner_node24(), peer=peer)
+          print(json.dumps(result, sort_keys=True))
+          ASTRAL_REVIEWED_VERIFY
+      - name: Close the owned peer and attest supervisor exit
+        if: always()
+        shell: bash --noprofile --norc -euo pipefail {0}
+        run: |
+          /usr/bin/python3 -I - '${{ steps.fence_peer.outputs.fixture_id }}' <<'ASTRAL_REVIEWED_CLOSE'
+          import hashlib, json, os, re, stat, sys, types
+          identities = (('ci_network_fixture.py', '23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240'), ('ci_fence_fixture_verifier.py', '68bb90701e0302714686a685752a2e93da541146877a5cfac069c319d9921ca3'))
+          limit = 262144
+          fixture = sys.argv[1]
+          if re.fullmatch("[0-9a-f]{16}", fixture) is None:
+              raise RuntimeError("trusted_fixture_identity_invalid")
+          directory = "/run/astral-ci-peer/" + fixture
+          parent = os.open("/run/astral-ci-peer", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+          buffers = {}
+          try:
+              metadata = os.fstat(parent)
+              if metadata.st_uid != 0 or metadata.st_mode & 0o022 or not stat.S_ISDIR(metadata.st_mode):
+                  raise RuntimeError("trusted_fixture_root_invalid")
+              descriptor = os.open(fixture, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+              try:
+                  metadata = os.fstat(descriptor)
+                  if metadata.st_uid != 0 or metadata.st_mode & 0o022 or not stat.S_ISDIR(metadata.st_mode):
+                      raise RuntimeError("trusted_fixture_directory_invalid")
+                  for name, digest in identities:
+                      target = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
+                      with os.fdopen(target, "rb") as handle:
+                          metadata = os.fstat(handle.fileno())
+                          if metadata.st_uid != 0 or metadata.st_mode & 0o022 or not stat.S_ISREG(metadata.st_mode):
+                              raise RuntimeError("trusted_helper_metadata_invalid")
+                          data = handle.read(limit + 1)
+                      if len(data) > limit or hashlib.sha256(data).hexdigest() != digest:
+                          raise RuntimeError("trusted_helper_digest_mismatch")
+                      buffers[name] = data
+              finally:
+                  os.close(descriptor)
+          finally:
+              os.close(parent)
+          modules = {}
+          for name, _digest in identities:
+              module = types.ModuleType(name[:-3])
+              module.__file__ = directory + "/" + name
+              exec(compile(buffers[name], module.__file__, "exec"), module.__dict__)
+              modules[name] = module
+          peer = modules["ci_network_fixture.py"]
+          state = peer.read_owned(peer._directory(fixture) / "ready.json")
+          result = peer.close(state)
+          if result.get("resources_removed") is not True or result.get("supervisor_exited") is not True:
+              raise RuntimeError("trusted_fixture_cleanup_incomplete")
+          print(json.dumps(result, sort_keys=True))
+          ASTRAL_REVIEWED_CLOSE
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -468,8 +637,6 @@ jobs:
           cache-dependency-path: tooling/python-ci/requirements.lock.txt
       - name: Install hash-locked CI-only Python tooling
         run: python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
-      - name: Qualify the owned local CI peer lifecycle
-        run: python scripts/ci_network_fixture.py qualify
       - name: Lint Deep-owned Python
         run: ruff check .
 
@@ -607,6 +774,7 @@ jobs:
             scripts/tests/test_component_build_surfaces_074.py
             scripts/tests/test_ci_network_fixture.py
             scripts/tests/test_ci_fence_fixture_verifier.py
+            scripts/tests/test_ci_fence_egress_pilot.py
             scripts/tests/test_backend_web_auth.py
             scripts/tests/test_backend_web_evidence.py
             scripts/tests/test_backend_web_functional.py
