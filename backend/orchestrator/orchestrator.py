@@ -52,6 +52,11 @@ from orchestrator.credential_manager import CredentialManager
 from orchestrator.delegation import DelegationService
 from orchestrator.tool_security import ToolSecurityAnalyzer
 from orchestrator.compaction import compact_messages, estimate_overhead_tokens
+from llm_config.tool_continuation import (
+    is_gemini_continuation_profile,
+    merge_continuation_signature,
+    validate_continuation_wire,
+)
 from orchestrator import evidence_context
 from orchestrator import context_engineering
 from orchestrator import datamarking
@@ -155,32 +160,6 @@ _VOICE_REQUEST_SUCCEEDED_MESSAGE = (
 _VOICE_REQUEST_PROCESSING_MESSAGE = (
     "Voice request accepted. Working on it; typed chat remains available."
 )
-
-
-_MAX_TOOL_EXTRA_CONTENT_BYTES = 8192
-
-
-def _bounded_extra_content(tool_call: Any) -> Optional[Dict[str, Any]]:
-    extra = getattr(tool_call, "extra_content", None)
-    if extra is None:
-        model_extra = getattr(tool_call, "model_extra", None)
-        if isinstance(model_extra, dict):
-            extra = model_extra.get("extra_content")
-    if not isinstance(extra, dict):
-        return None
-    google = extra.get("google")
-    if not isinstance(google, dict):
-        return None
-    signature = google.get("thought_signature")
-    if not isinstance(signature, str) or not signature or len(signature) > _MAX_TOOL_EXTRA_CONTENT_BYTES:
-        return None
-    try:
-        encoded = signature.encode("utf-8")
-    except UnicodeEncodeError:
-        return None
-    if len(encoded) > _MAX_TOOL_EXTRA_CONTENT_BYTES:
-        return None
-    return {"google": {"thought_signature": signature}}
 
 
 class _SafeLLMErrorMetadata(NamedTuple):
@@ -15921,6 +15900,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 feature=feature,
             )
             return None, None
+        if is_gemini_continuation_profile(getattr(resolved, "base_url", None)):
+            validate_continuation_wire(messages)
         call_model = resolved.model
         effort = reasoning_effort if reasoning_effort is not None else getattr(
             self, "llm_reasoning_effort", None)
@@ -16014,7 +15995,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             )
                         else:
                             response = await self._call_llm_streamed(
-                                websocket, client, kwargs, stream_chat_id)
+                                websocket, client, kwargs, stream_chat_id,
+                                context_base_url=getattr(resolved, "base_url", None),
+                            )
                     except Exception as _stream_exc:
                         stream_error = self._safe_llm_error_metadata(_stream_exc)
                         logger.warning(
@@ -16277,6 +16260,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         queue: asyncio.Queue = asyncio.Queue()
         from threading import Event
         abandoned = Event()
+        preserve_continuation = is_gemini_continuation_profile(context_base_url)
 
         def _pump():
             from types import SimpleNamespace
@@ -16345,18 +16329,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     for tc in delta.tool_calls:
                         idx = getattr(tc, "index", 0) or 0
                         acc = tool_calls_acc.setdefault(
-                            idx, {"id": None, "name": "", "arguments": ""})
+                            idx, {"id": None, "name": "", "arguments": "",
+                                  "signature": None})
                         if getattr(tc, "id", None):
                             acc["id"] = tc.id
-                        extra = _bounded_extra_content(tc)
-                        if extra is not None:
-                            acc["extra_content"] = extra
                         fn = getattr(tc, "function", None)
                         if fn is not None:
                             if getattr(fn, "name", None):
                                 acc["name"] += fn.name
                             if getattr(fn, "arguments", None):
                                 acc["arguments"] += fn.arguments
+                        if preserve_continuation:
+                            frag = getattr(tc, "extra_content", None)
+                            if frag is not None:
+                                acc["signature"] = merge_continuation_signature(
+                                    acc["signature"], frag)
                 d_content = getattr(delta, "content", None)
                 if d_content:
                     content_parts.append(d_content)
@@ -16422,22 +16409,25 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     ChatCompletionMessageToolCall, Function)
                 tool_calls = []
                 for i, acc in enumerate(ordered):
-                    extras = ({"extra_content": acc["extra_content"]}
-                              if acc.get("extra_content") else {})
-                    tool_calls.append(ChatCompletionMessageToolCall(
+                    call = ChatCompletionMessageToolCall(
                         id=acc["id"] or f"call_{i}", type="function",
-                        function=Function(name=acc["name"], arguments=acc["arguments"]),
-                        **extras))
+                        function=Function(name=acc["name"], arguments=acc["arguments"]))
+                    if acc.get("signature") is not None:
+                        call.extra_content = {
+                            "google": {"thought_signature": acc["signature"]}}
+                    tool_calls.append(call)
             except Exception:
-                tool_calls = [
-                    SimpleNamespace(
-                        id=acc["id"] or f"call_{i}", type="function",
-                        function=SimpleNamespace(name=acc["name"],
-                                                 arguments=acc["arguments"]),
-                        **({"extra_content": acc["extra_content"]}
-                           if acc.get("extra_content") else {}))
-                    for i, acc in enumerate(ordered)
-                ]
+                tool_calls = []
+                for i, acc in enumerate(ordered):
+                    fields = {
+                        "id": acc["id"] or f"call_{i}", "type": "function",
+                        "function": SimpleNamespace(name=acc["name"],
+                                                    arguments=acc["arguments"]),
+                    }
+                    if acc.get("signature") is not None:
+                        fields["extra_content"] = {
+                            "google": {"thought_signature": acc["signature"]}}
+                    tool_calls.append(SimpleNamespace(**fields))
         try:
             from openai.types.chat import ChatCompletionMessage
             return ChatCompletionMessage(

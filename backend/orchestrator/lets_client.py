@@ -151,6 +151,10 @@ class _MintingHTTPClient:
     def headers(self) -> httpx.Headers:
         return self._inner.headers
 
+    @property
+    def timeout(self) -> httpx.Timeout:
+        return self._inner.timeout
+
     def stream(
         self,
         method: str,
@@ -521,6 +525,8 @@ class LetsWardenClient:
         except RequestConflictError as exc:
             raise _remote_error("request_conflict", exc) from None
         except RemoteValidationError as exc:
+            if exc.problem.code == "invalid_response":
+                raise LetsClientBoundaryError("invalid_response") from None
             raise _remote_error("remote_validation_failed", exc) from None
         except RemoteUnavailableError as exc:
             raise _remote_error("remote_unavailable", exc, retryable=True) from None
