@@ -107,7 +107,7 @@ class _Repository:
         self.get_error = get_error
         self.captured_owner_ids = []
 
-    async def list_operations(self, tx, *, owner_id, limit=50, after_id=None):
+    def list_operations(self, tx, *, owner_id, limit=50, after_id=None):
         self.captured_owner_ids.append(owner_id)
         if self.list_error is not None:
             raise self.list_error
@@ -116,7 +116,7 @@ class _Repository:
             items = [r for r in items if r.assignment.assignment_id > after_id]
         return items[:limit]
 
-    async def get_operation(self, tx, *, owner_id, assignment_id):
+    def get_operation(self, tx, *, owner_id, assignment_id):
         if self.get_error is not None:
             raise self.get_error
         return self._reads.get(assignment_id)
