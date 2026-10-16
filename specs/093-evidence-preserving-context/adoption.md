@@ -1,6 +1,6 @@
 # Context adoption decision record
 
-**Date:** 2026-10-15. **Decision: WITHHELD.** The evidence-preserving context changes (owner/conversation-scoped exact observation recall and failure-preserving compaction) remain a documented experiment: every deterministic paired oracle passes, the required external evidence classes do not exist yet, so adoption is not granted. No default, flag, test, or gate was changed by this task.
+**Updated:** 2026-10-16. **Decision: WITHHELD.** The evidence-preserving context changes (owner/conversation-scoped exact observation recall and failure-preserving compaction) remain a documented experiment: every deterministic paired oracle passes, the required external evidence classes do not exist yet, so adoption is not granted. The verifier now rejects rehashed semantic forgeries; no default, flag, or gate was changed.
 
 This record is the deliverable of tracker child [#273](https://github.com/AstralDeep/AstralDeep/issues/273) ("Produce candidate-bound context adoption evidence") under the best-harness wishlist tracker [#238](https://github.com/AstralDeep/AstralDeep/issues/238), decomposition reference `wishlist-20261005/context_evaluation`. It is limited to producing candidate-bound adoption evidence. It defers none of the implementation children's required security, coverage, deterministic CI, staging, or affected-client checks (see [Nothing deferred](#nothing-deferred)).
 
@@ -10,14 +10,16 @@ All evaluation artifacts are bound to one exact candidate and to the accepted fe
 
 | Binding | Value | Verification |
 | --- | --- | --- |
-| Evaluated candidate | `7e0db649247fae2849f201e79e72d54b88d8039b` | `git rev-parse` of the tree the harness executed |
+| Evaluated source anchor | `dc1bdc96bedf53119a9083108dd51a0db886f33d` | Exact Git merge of the original PR head and main `9d297ce79efdcf1366adcf85d6352ab4a573713f`; the producer verifies the executed source bytes against this object |
 | Implementation digest | `13a66ac5fb9f4319d31bed556936efd6e3b911820884582b4816c8d2a4a9cc40` | SHA-256 identity over the nine context-implementation files at that commit (list in `backend/context_evaluation/evaluate.py`) |
 | Accepted feature plan | `600725e5e3f37c3e41fac9d521c174e84a73c612728f8a55cf1b017069fdf80f` | SHA-256 of `specs/093-evidence-preserving-context/plan.md` at the candidate commit |
 | Workflow fixtures | `776b3f069d9a4446…` (full value in the evidence record) | SHA-256 identity of `backend/context_evaluation/workflows.json` |
 | Scoring rules | `exact-frozen-task-outcome-and-source-v1`, digest `1198653f860aa2e8…` | SHA-256 identity of the frozen rule set in `backend/context_evaluation/evaluate.py` |
-| Evidence record | `specs/093-evidence-preserving-context/adoption-evidence.json` | File SHA-256 `b183f667cb2256b005ed8fb589e815134f7d80a19d83fb59de9a3615f40d63b5`; internal receipt `24d3d50bee4130277e19a40f458995424b5841dd1ae57bea3e8dbc7221596e37` |
+| Declared flag source | `dde6b5bc57e203a93c1b87f3d0bf1380db12bde4e9a16805579439812c86bda2` | SHA-256 of `backend/shared/feature_flags.py` at the source anchor, checked against the executing tree |
+| Decision rules | `5472480902d585debc69aaff2240d152fcc4829fd114d38a25785943ebb9c124` | Identity of the verifier-owned rules, checked independently of the record's receipt |
+| Evidence record | `specs/093-evidence-preserving-context/adoption-evidence.json` | Version `astral.context-adoption/v2`; file SHA-256 `ee067bf1c59d3713484fd8c000fa5672ba313a98b86dc871bbf23d7e40859079`; internal receipt `f96830492c7bd9271fc312d003d0ad43d93133d8cb2fb18277800170a93e1d80` |
 
-The evaluated candidate is the current qualified main state that contains the feature delivered by merged PR #232 (merge commit `c3e3477e80d12e5a8474614e7d7c0997746e1061`, 2026-10-08) on top of the feature's declared baseline `e9a47d8b826dc506dd509b6110a5199ad1cddc42`. Between that merge and the candidate, the archive, compaction, accounting, presentation, authority, and budget modules are byte-identical; `orchestrator.py` carries later unrelated changes, which is exactly why the record binds the evaluated tree by digest rather than by the merge commit alone. The evidence PR adds only the adoption module, its tests, and this record, so the bound implementation digest remains verifiable at the PR head.
+The source anchor includes the feature delivered by merged PR #232 (merge commit `c3e3477e80d12e5a8474614e7d7c0997746e1061`, 2026-10-08). Its nine-file implementation digest is unchanged from the original diagnostic. Git binding covers those files, workflow fixtures, accepted plan, and declared flag source. Generated evidence, this document, and the adoption tooling are outside that source digest, so a subsequent evidence commit does not require its own future hash. This proves source consistency with the named object; it does not independently authenticate an execution, provider, participant, or client observation.
 
 Mechanism provenance: the evaluated mechanisms are the AstralDeep engineering inference from SoL-Pi (Haozhe Liu et al., arXiv:2609.20519v1, 2026 preprint, retrieved 2026-10-04) recorded in [`specs/research/2026-10-04-sol-pi-review.md`](../research/2026-10-04-sol-pi-review.md); the paper's reported scores are not reproduced or claimed here.
 
@@ -43,7 +45,7 @@ The candidate-bound diagnostic ran all 96 paired workflow/control combinations (
 
 ## Comparison under explicit acceptance rules
 
-The comparison ran under the frozen acceptance rule set (`SCORING_RULES` plus the decision rules embedded in the evidence record): paired-oracle passing, owner-isolation/revocation/privacy/confirmation/integrity/failure-preservation/retention/concurrency/accounting checks, a 10% minimum complete-cost saving per accepted task on the held-out split including all auxiliary and charged-failed work, a five-participant formative usability floor of 4/5 unaided successes, and product/all-client qualification. Verdict of the frozen `promotion()` evaluator:
+The comparison ran under the frozen acceptance rule set (`SCORING_RULES` plus verifier-owned decision rules): paired-oracle passing, owner-isolation/revocation/privacy/confirmation/integrity/failure-preservation/retention/concurrency/accounting checks, a 10% minimum complete-cost saving per accepted task on the held-out split including all auxiliary and charged-failed work, a five-participant formative usability floor of 4/5 unaided successes, and product/all-client qualification. The record retains bounded raw `provider_route`, `promoted_control`, `provider_measurements`, `formative`, and `qualification` inputs, and verification recomputes the canonical `promotion()` result from them and the complete frozen run inventory. Verdict:
 
 - Deterministic capability, boundary, and failure-preservation criteria: **satisfied**.
 - Real-provider complete-cost measurements (`complete_cost_target`): **missing** — no dated provider prices or usage exist, and missing usage cannot count as zero cost or as a saving.
@@ -57,15 +59,17 @@ The comparison ran under the frozen acceptance rule set (`SCORING_RULES` plus th
 
 Adoption would be reconsidered only when the three missing evidence classes are produced through their own governed tasks with receipts bound to a new exact candidate, and a fresh record supersedes this one. The defaults stay off until then.
 
+The supplied-receipt schema cannot prove external origin. Even if all structural comparisons pass, this local tool records `external_evidence_origin = "unverified"` and withholds adoption with `external_evidence_origin_unverified`; independent provenance and live qualification are still required. Rehashing a dictionary never provides that authority.
+
 ## Defaults and gates unchanged
 
 - Verified at the candidate: `FF_OBSERVATION_PACKING`, `FF_SAFE_COMPACTION`, and `FF_MESSAGE_COMPACTION` all default to disabled in `backend/shared/feature_flags.py`; the record's `controls_default_off` field re-verifies the declared defaults through the flag registry with the environment scrubbed.
 - `defaults_changed = false` and `waived_gates = []` are structural fields of the evidence record; the verifier rejects any record that changes them.
-- No test, threshold, workflow, or gate was modified or waived by this task. The frozen diagnostic (`backend/context_evaluation/evaluate.py`) is untouched; its suite passes unchanged (219 tests).
+- No threshold, workflow, or gate was modified or waived. The frozen diagnostic (`backend/context_evaluation/evaluate.py`) is untouched; its suite passes unchanged (219 tests). Verifier tests now include rehashed rule, run, promotion, source, input, and authenticity forgeries.
 
 ## Nothing deferred
 
-This evidence task does not defer any implementation child's required checks. Still required before any default promotion, each owned by its own task or ordinary qualification path: changed-line coverage and the complete backend/module CI groups; production image build and fail-closed boot smoke; secret scan; real-authentication staging with representative migrated data; live evidence-modal acceptance on web, macOS, iOS, and watchOS (Windows and Android live verification remain explicitly untested per recorded owner direction in [verification.md](verification.md)); and the review gates above. The `ui-v2-contracts` CI profile was reproduced locally on this snapshot (339 passed, 1 skipped, fresh hash-locked Python 3.11 environment) and required no repair.
+This evidence task does not defer any implementation child's required checks. Still required before any default promotion, each owned by its own task or ordinary qualification path: changed-line coverage and the complete backend/module CI groups; production image build and fail-closed boot smoke; secret scan; real-authentication staging with representative migrated data; live evidence-modal acceptance on web, macOS, iOS, and watchOS (Windows and Android live verification remain explicitly untested per recorded owner direction in [verification.md](verification.md)); and the review gates above. The current local owning check runs the adoption and evaluation suites together on Python 3.11; full current-head CI and the external evidence holds remain separate requirements.
 
 ## Reproduction
 
@@ -74,15 +78,15 @@ From the repository root at the evaluated candidate (or any tree whose bound dig
 ```text
 cd backend
 python3 -m context_evaluation.adoption \
-  --candidate 7e0db649247fae2849f201e79e72d54b88d8039b \
+  --candidate dc1bdc96bedf53119a9083108dd51a0db886f33d \
   --plan ../specs/093-evidence-preserving-context/plan.md \
   --output ../specs/093-evidence-preserving-context/adoption-evidence.json
 python3 -m pytest tests/test_context_adoption.py tests/test_context_evaluation.py -q
 ```
 
-The record is deterministic: rerunning with the same inputs reproduces byte-identical JSON, so the committed artifact can be regenerated and compared. `context_evaluation.adoption.verify(record, plan_path=...)` re-checks the receipt, all scope digests against the live tree, the plan digest, the embedded run summary, the decision consistency, and the no-waiver posture.
+The record is deterministic: rerunning with the same inputs reproduces byte-identical JSON, so the committed artifact can be regenerated and compared. `context_evaluation.adoption.verify(record, plan_path=..., expected_candidate="dc1bdc96bedf53119a9083108dd51a0db886f33d")` checks the caller's candidate expectation, actual Git/source bindings, fixed rule identity, complete run inventory/schema, retained inputs, recomputed promotion, declared defaults, decision, and receipt. It also replays all 96 deterministic scenarios and compares their exact outputs, then rechecks source and plan bindings. Async callers use `await verify_async(...)`; synchronous `verify(...)` owns its event loop and refuses an existing loop. Version-1 records are rejected and must be regenerated. All local receipts are diagnostic, not protected release authorization or external-origin attestations.
 
 ## Tooling identities
 
-- New: `backend/context_evaluation/adoption.py` (record producer/verifier; stdlib-only, no new dependency) — 16 focused tests in `backend/tests/test_context_adoption.py`, 100% statement coverage of the new module.
+- `backend/context_evaluation/adoption.py` is the record producer/verifier; it uses the standard library and local Git, with no new Python dependency. Its owning tests are in `backend/tests/test_context_adoption.py`; coverage and exact test results belong to the current PR qualification.
 - Unchanged: `backend/context_evaluation/evaluate.py`, `backend/context_evaluation/workflows.json`, and all nine bound implementation files.

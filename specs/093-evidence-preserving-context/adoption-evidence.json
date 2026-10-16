@@ -1,9 +1,10 @@
 {
-  "format": "astral.context-adoption/v1",
-  "candidate": "7e0db649247fae2849f201e79e72d54b88d8039b",
+  "format": "astral.context-adoption/v2",
+  "candidate": "dc1bdc96bedf53119a9083108dd51a0db886f33d",
   "implementation_digest": "13a66ac5fb9f4319d31bed556936efd6e3b911820884582b4816c8d2a4a9cc40",
-  "plan_path": "../specs/093-evidence-preserving-context/plan.md",
+  "plan_path": "specs/093-evidence-preserving-context/plan.md",
   "plan_digest": "600725e5e3f37c3e41fac9d521c174e84a73c612728f8a55cf1b017069fdf80f",
+  "defaults_digest": "dde6b5bc57e203a93c1b87f3d0bf1380db12bde4e9a16805579439812c86bda2",
   "workflows_digest": "776b3f069d9a44462ae4f00c25a9eb677e326baf488151d12b2c4cc5bf1ad4a0",
   "scoring": "exact-frozen-task-outcome-and-source-v1",
   "scoring_digest": "1198653f860aa2e8c159ae5668836fb2d5cc0944638bb8374e52eee6b1d55aae",
@@ -24,11 +25,22 @@
       "product_and_client_qualification",
       "real_provider_measurements"
     ],
+    "external_evidence_origin": "independent-verification-required-never-established-by-this-diagnostic",
     "missing_evidence": "recorded-as-missing-never-counted-as-passing-or-zero-cost",
     "paired_oracle": "exact-frozen-task-outcome-and-source-v1",
     "record_scope": "candidate-and-accepted-feature-plan-with-separate-development-held-out-fixtures",
-    "retained_results": "failed-runs-source-identities-and-unknown-accounting-stay-in-the-record"
+    "retained_results": "failed-runs-source-identities-and-unknown-accounting-stay-in-the-record",
+    "synthetic_results": "replayed-with-the-source-bound-frozen-diagnostic"
   },
+  "acceptance_rules_digest": "5472480902d585debc69aaff2240d152fcc4829fd114d38a25785943ebb9c124",
+  "inputs": {
+    "formative": null,
+    "promoted_control": "combined",
+    "provider_measurements": null,
+    "provider_route": null,
+    "qualification": null
+  },
+  "external_evidence_origin": "unverified",
   "run_summary": {
     "total": 96,
     "passed": 96,
@@ -2295,5 +2307,5 @@
   ],
   "defaults_changed": false,
   "waived_gates": [],
-  "receipt_digest": "24d3d50bee4130277e19a40f458995424b5841dd1ae57bea3e8dbc7221596e37"
+  "receipt_digest": "f96830492c7bd9271fc312d003d0ad43d93133d8cb2fb18277800170a93e1d80"
 }
