@@ -84,6 +84,28 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(result)
     result.add_argument("operation_id")
 
+    subscribe = sub.add_parser("subscribe-completion",
+                               help="Subscribe one operation to wake when another finishes")
+    _add_common(subscribe)
+    subscribe.add_argument("source_operation_id")
+    subscribe.add_argument("target_operation_id")
+    subscribe.add_argument("--expected-revision", type=int, required=True)
+    subscribe.add_argument("--submission-id", default=None)
+
+    subscriptions = sub.add_parser("subscriptions",
+                                   help="List pending completion subscriptions")
+    _add_common(subscriptions)
+    subscriptions.add_argument("--limit", type=int, default=50)
+    subscriptions.add_argument("--after-id", default=None)
+
+    unsubscribe = sub.add_parser("cancel-completion",
+                                 help="Withdraw one pending completion subscription")
+    _add_common(unsubscribe)
+    unsubscribe.add_argument("source_operation_id")
+    unsubscribe.add_argument("target_operation_id")
+    unsubscribe.add_argument("--expected-revision", type=int, required=True)
+    unsubscribe.add_argument("--submission-id", default=None)
+
     status = sub.add_parser("emergency-status", help="Read the emergency stop status")
     _add_common(status)
 
@@ -124,6 +146,18 @@ def run(argv: Optional[list[str]] = None) -> int:
                                            expected_revision=args.expected_revision)
         elif args.command == "result":
             value = client.get_artifact(args.operation_id)
+        elif args.command == "subscribe-completion":
+            value = client.subscribe_operation_completion(
+                source_operation_id=args.source_operation_id,
+                target_operation_id=args.target_operation_id,
+                expected_revision=args.expected_revision, submission_id=args.submission_id)
+        elif args.command == "subscriptions":
+            value = client.list_completion_subscriptions(limit=args.limit, after_id=args.after_id)
+        elif args.command == "cancel-completion":
+            value = client.cancel_operation_completion_subscription(
+                source_operation_id=args.source_operation_id,
+                target_operation_id=args.target_operation_id,
+                expected_revision=args.expected_revision, submission_id=args.submission_id)
         elif args.command == "emergency-status":
             value = client.emergency_status()
         elif args.command == "emergency-stop":
