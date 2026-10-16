@@ -119,6 +119,7 @@ jobs:
 def test_only_actual_reviewed_trust_can_enable_cli_conformance(tmp_path, monkeypatch, capsys):
     path = tmp_path / "workflow.yml"
     path.write_text(workflow())
+    monkeypatch.setattr(pilot, "REVIEWED_HELPERS", None)
     assert pilot.main(["--check", str(path)]) == 1
     assert json.loads(capsys.readouterr().out)["state"] == "missing_trust"
     monkeypatch.setattr(pilot, "REVIEWED_HELPERS", trust())
@@ -223,13 +224,13 @@ def test_single_lint_job_at_end_of_file_can_conform():
     assert pilot.evaluate_workflow(workflow().partition("  other:\n")[0], trust()).state == "conforming"
 
 
-def test_real_cli_refuses_unresolved_authority_and_removed_patch_mode(tmp_path, capsys):
+def test_real_cli_refuses_different_helper_identity_and_removed_patch_mode(tmp_path, capsys):
     path = tmp_path / "workflow.yml"
     path.write_text(workflow())
     result = subprocess.run([sys.executable, str(MODULE), "--check", str(path)],
                             capture_output=True, text=True, check=False)
     assert result.returncode == 1
-    assert json.loads(result.stdout)["state"] == "missing_trust"
+    assert json.loads(result.stdout)["state"] == "nonconforming"
     assert pilot.main(["--patch", str(path)]) == 2
     assert pilot.main([]) == 2
     assert "usage:" in capsys.readouterr().err
@@ -238,14 +239,22 @@ def test_real_cli_refuses_unresolved_authority_and_removed_patch_mode(tmp_path, 
     assert pilot.main(["--check", str(path)]) == 1
 
 
-def test_script_entrypoint_fails_closed_without_merged_helper_pin(tmp_path, monkeypatch, capsys):
+def test_script_entrypoint_refuses_different_helper_identity(tmp_path, monkeypatch, capsys):
     path = tmp_path / "workflow.yml"
     path.write_text(workflow())
     monkeypatch.setattr(sys, "argv", [str(MODULE), "--check", str(path)])
     with pytest.raises(SystemExit) as result:
         runpy.run_path(str(MODULE), run_name="__main__")
     assert result.value.code == 1
-    assert json.loads(capsys.readouterr().out)["state"] == "missing_trust"
+    assert json.loads(capsys.readouterr().out)["state"] == "nonconforming"
+
+
+def test_actual_workflow_cli_uses_only_real_merged_helper_identities():
+    path = MODULE.parents[1] / ".github" / "workflows" / "ci.yml"
+    result = subprocess.run([sys.executable, str(MODULE), "--check", str(path)],
+                            capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout) == {"state": "conforming", "reasons": []}
 
 
 class BufferFile(io.BytesIO):
