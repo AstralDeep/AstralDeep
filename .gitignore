@@ -31,6 +31,7 @@ docs/*
 !docs/your-own-agents-and-skills.md
 !docs/fhir-agent.md
 !docs/ci-egress-fence-pilot.md
+!docs/ci-controlled-peer.md
 /.ruff_cache/
 Qualifying_Exam/
 .docker-cache/

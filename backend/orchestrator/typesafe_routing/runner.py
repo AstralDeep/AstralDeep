@@ -66,6 +66,11 @@ class RoutingOutcome:
     fingerprint: Optional[str] = None
 
 
+@dataclass
+class RoutingProgress:
+    attempts: int = 0
+
+
 def routing_enabled(flags: Any = None) -> bool:
     if flags is None:
         try:
@@ -85,12 +90,14 @@ class _Attempt:
     api_key: str = field(repr=False)
     request: RoutingRequest
     question_set: QuestionSet
+    progress: RoutingProgress
     attempt_timeout_ms: int = ATTEMPT_TIMEOUT_MS
 
     async def run(self, deadline: Deadline) -> Any:
         timeout = attempt_timeout(deadline, self.attempt_timeout_ms)
         if timeout <= 0:
             raise asyncio.TimeoutError
+        self.progress.attempts += 1
         return await self.client.system_one(
             api_key=self.api_key,
             state=self.request.state(),
@@ -111,6 +118,7 @@ async def _route(
     deadline: Deadline,
     attempt_timeout_ms: int,
     sleep: Callable[[float], Any],
+    progress: RoutingProgress,
 ) -> RoutingOutcome:
     try:
         from .client import load_sdk
@@ -134,6 +142,7 @@ async def _route(
         api_key=api_key,
         request=request,
         question_set=question_set,
+        progress=progress,
         attempt_timeout_ms=attempt_timeout_ms,
     )
 
@@ -243,6 +252,7 @@ async def start_routing(
         return _skip(Outcome.SKIPPED_CIRCUIT)
 
     deadline = Deadline(total=budget_seconds, clock=clock)
+    progress = RoutingProgress()
     runner = _route(
         user_id=user_id,
         api_key=api_key,
@@ -254,9 +264,11 @@ async def start_routing(
         deadline=deadline,
         attempt_timeout_ms=attempt_timeout_ms,
         sleep=sleep or asyncio.sleep,
+        progress=progress,
     )
     task = asyncio.ensure_future(runner)
     task.astral_routing_deadline = deadline  # type: ignore[attr-defined]
+    task.astral_routing_progress = progress  # type: ignore[attr-defined]
     return task
 
 

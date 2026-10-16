@@ -655,6 +655,7 @@ async def invoke_fixed_user_model(
     allow_stream,
     stream_chat_id,
 ):
+    from llm_config.invocation import provider_finished, provider_started, runner_failed
     from llm_config.types import CredentialSource, ResolvedConfig
     from orchestrator.evidence_context import enabled
     from shared import isolated_http
@@ -678,10 +679,13 @@ async def invoke_fixed_user_model(
     actor, principal = orch._llm_audit_principals(websocket)
     response = None
     unsent = None
+    provider_attempt = None
+    parsed = None
 
     async def physical():
-        nonlocal response, unsent
+        nonlocal response, unsent, provider_attempt
         selected.assert_body(context.owner_id, body)
+        provider_attempt = provider_started()
         try:
             response = await isolated_http.request(
                 "POST",
@@ -697,6 +701,7 @@ async def invoke_fixed_user_model(
             if error.code not in PRE_SEND_FAILURE_CODES:
                 raise
             unsent = UnsentAttempt(error.code)
+            provider_finished(provider_attempt, sent=False)
             return unsent
         return response
 
@@ -716,7 +721,8 @@ async def invoke_fixed_user_model(
             return SimpleNamespace(usage=reported_usage)
 
         await orch._context_model_call(websocket, context.conversation_id, feature, profile.MODEL, receipt,
-                                       request=body, base_url=profile.BASE_URL, provider_capture=selected._config)
+                                       request=body, base_url=profile.BASE_URL, provider_capture=selected._config,
+                                       account_invocation=False)
         return unsent if unsent is not None else response
 
     try:
@@ -724,13 +730,16 @@ async def invoke_fixed_user_model(
         if unsent is not None:
             raise DispatchDenied(PRE_SEND_FAILURE)
         parsed = selected.parse(response.body, status_code=response.status_code)
+        if not _accepted(parsed):
+            runner_failed("ResearchResponseInvalid")
         return parsed, parsed.usage
     finally:
-        parsed = (
-            selected.parse(response.body, status_code=response.status_code)
-            if response is not None
-            else None
-        )
+        if parsed is None and response is not None:
+            try:
+                parsed = selected.parse(response.body, status_code=response.status_code)
+            except Exception:
+                parsed = None
+        provider_finished(provider_attempt, getattr(parsed, "usage", None))
         await orch._record_llm_call(
             orch.audit_recorder,
             actor_user_id=actor,
