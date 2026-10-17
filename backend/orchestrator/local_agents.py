@@ -223,6 +223,10 @@ async def register_built_ins(orch) -> List[str]:
                 RegisterAgent(agent_card=agent.card, api_key=os.getenv("AGENT_API_KEY") or None),
             )
             orch.local_agents[agent.card.agent_id] = agent
+            if dir_name == "terminal_shell":
+                from orchestrator.terminal_host_review import review_registered_terminal
+
+                review_registered_terminal(orch)
             registered.append(agent.card.agent_id)
         except Exception:  # noqa: BLE001
             logger.exception("Feature 040: failed to load built-in agent '%s' in-process", dir_name)

@@ -111,6 +111,12 @@ def assert_terminal_identity(orchestrator, websocket, user_id: str) -> None:
 
 
 def _assert_terminal_security(orchestrator, tool_name: str) -> None:
+    from orchestrator.orchestrator import Orchestrator
+    from orchestrator.terminal_host_review import assert_current_review
+
+    if isinstance(orchestrator, Orchestrator) and (tool_name in EXECUTION_TOOLS
+            or getattr(orchestrator, "_terminal_host_review", None) is not None):
+        assert_current_review(orchestrator)
     all_flags = getattr(orchestrator, "security_flags", None)
     flags_for_agent = all_flags.get(AGENT_ID, {}) if isinstance(all_flags, dict) else None
     tool_flag = flags_for_agent.get(tool_name, {}) if isinstance(flags_for_agent, dict) else None
