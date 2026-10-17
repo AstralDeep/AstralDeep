@@ -393,9 +393,22 @@ def test_image_gate_passes_only_a_known_group_to_the_suite_runner(tmp_path, grou
     calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     database = next(call for call in calls if call[:1] == ["run"]
                     and any(argument.endswith("-pg") for argument in call))
-    assert database[database.index("--tmpfs") + 1] == "/var/lib/postgresql/data:rw,nosuid,nodev,size=1g"
+    mounts = [database[index + 1] for index, value in enumerate(database) if value == "--tmpfs"]
+    assert mounts == [
+        "/var/lib/postgresql/data:rw,nosuid,nodev,size=1g",
+        "/var/lib/postgresql/wal:rw,nosuid,nodev,size=512m",
+    ]
     assert "--memory=2g" in database
+    assert "--cpus=2" in database
     assert database[database.index("POSTGRES_INITDB_WALDIR=/var/lib/postgresql/wal") - 1] == "--env"
+    assert database[-6:] == [
+        "postgres:17-alpine@sha256:dc17045ccfd343b49600570ea734b9c4991cf1c3f3302e67df51e3b402dd55c4",
+        "postgres", "-c", "max_wal_size=256MB", "-c", "min_wal_size=80MB",
+    ]
+    assert [database[index + 1] for index, value in enumerate(database) if value == "--env"] == [
+        "POSTGRES_INITDB_WALDIR=/var/lib/postgresql/wal",
+        "POSTGRES_USER=astral", "POSTGRES_PASSWORD=isolated_ci_only", "POSTGRES_DB=ad_gate_tests",
+    ]
     runner = next(call for call in calls if call[:1] == ["run"]
                   and any(argument.endswith("-test") for argument in call))
     assert runner[runner.index(f"ASTRAL_GATE_GROUP={expected}") - 1] == "--env"

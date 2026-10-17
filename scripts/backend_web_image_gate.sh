@@ -34,11 +34,13 @@ trap cleanup EXIT
 docker network create --label "org.astraldeep.qualification.namespace=$namespace" "$namespace" >/dev/null
 docker run -d --name "$namespace-pg" --network "$namespace" --cpus=2 --memory=2g \
   --tmpfs /var/lib/postgresql/data:rw,nosuid,nodev,size=1g \
+  --tmpfs /var/lib/postgresql/wal:rw,nosuid,nodev,size=512m \
   --label "org.astraldeep.qualification.namespace=$namespace" \
   --env POSTGRES_INITDB_WALDIR=/var/lib/postgresql/wal \
   --env POSTGRES_USER=astral --env POSTGRES_PASSWORD=isolated_ci_only \
   --env POSTGRES_DB=ad_gate_tests \
-  postgres:17-alpine@sha256:dc17045ccfd343b49600570ea734b9c4991cf1c3f3302e67df51e3b402dd55c4 >/dev/null
+  postgres:17-alpine@sha256:dc17045ccfd343b49600570ea734b9c4991cf1c3f3302e67df51e3b402dd55c4 \
+  postgres -c max_wal_size=256MB -c min_wal_size=80MB >/dev/null
 for attempt in $(seq 1 60); do
   if docker exec "$namespace-pg" pg_isready -h 127.0.0.1 -U astral -d ad_gate_tests >/dev/null 2>&1; then break; fi
   sleep 1

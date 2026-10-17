@@ -84,6 +84,9 @@ async def _dispatch(request: Request, claims: dict, tool_name: str, arguments: d
             await asyncio.to_thread(require_terminal_execution, getattr(orch, "terminal_sessions", None), claims["sub"])
         original = deepcopy(claims)
         owner_id = original["sub"]
+        subject_token = getattr(request.state, "delegation_subject_token", None)
+        if not isinstance(subject_token, str) or not subject_token:
+            subject_token = None
         selection = getattr(request.state, "_authenticated_cookie_session", None)
         sessions = getattr(orch, "web_sessions", None)
         connections = getattr(orch, "_connection_contexts", None)
@@ -131,11 +134,13 @@ async def _dispatch(request: Request, claims: dict, tool_name: str, arguments: d
                 with terminal_approvals.request_scope(pending):
                     response = await execute(
                         claims=claims, user_id=owner_id, agent_id=AGENT_ID,
-                        tool_name=tool_name, arguments=arguments, channel="rest")
+                        tool_name=tool_name, arguments=arguments, channel="rest",
+                        delegation_subject_token=subject_token)
             else:
                 response = await execute(
                     claims=claims, user_id=owner_id, agent_id=AGENT_ID,
-                    tool_name=tool_name, arguments=arguments, channel="rest")
+                    tool_name=tool_name, arguments=arguments, channel="rest",
+                    delegation_subject_token=subject_token)
         except TerminalError:
             raise
         except Exception:
