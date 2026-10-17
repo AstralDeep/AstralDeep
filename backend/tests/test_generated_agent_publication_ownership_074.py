@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import unicodedata
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,7 +31,10 @@ def _production_python() -> tuple[Path, ...]:
 def _legacy_importers() -> list[str]:
     paths: list[str] = []
     for path in _production_python():
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        source = path.read_text(encoding="utf-8")
+        if "artifact_publication" not in unicodedata.normalize("NFKC", source):
+            continue
+        tree = ast.parse(source, filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 forbidden = any(
@@ -59,3 +65,31 @@ def test_generated_agent_filesystem_publication_is_plane_owned() -> None:
         ROOT / "backend" / "tests" / "test_agent_artifact_publication_060.py"
     ).exists()
     assert _legacy_importers() == []
+
+
+@pytest.mark.parametrize(("source", "forbidden"), [
+    ("value = 1\n", False),
+    ("import orchestrator.artifact_publication\n", True),
+    ("from orchestrator import artifact_publication\n", True),
+    ("from orchestrator import 𝒶rtifact_publication\n", True),
+    ("value = 'artifact_publication'\n", False),
+])
+def test_import_inventory_keeps_normalized_candidates_without_unrelated_asts(
+    tmp_path, monkeypatch, source, forbidden,
+):
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    path = backend / "sample.py"
+    path.write_text(source, encoding="utf-8")
+    monkeypatch.setitem(globals(), "ROOT", tmp_path)
+    original = ast.parse
+    parsed = []
+
+    def observed(source, filename="<unknown>", mode="exec", **kwargs):
+        parsed.append(filename)
+        return original(source, filename=filename, mode=mode, **kwargs)
+
+    monkeypatch.setattr(ast, "parse", observed)
+    assert _legacy_importers() == (["backend/sample.py"] if forbidden else [])
+    if source == "value = 1\n":
+        assert parsed == []

@@ -11,7 +11,7 @@ import re
 import secrets
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Optional
 
 from astralplane.repositories import (
@@ -24,7 +24,6 @@ from astralplane.repositories.framework_credentials import (
     FrameworkCredentialRecord,
 )
 from astralplane.repositories.history import (
-    FrameworkCredentialFence,
     FrameworkCredentialObservation,
     SessionConsentObservation,
 )
@@ -33,7 +32,6 @@ from orchestrator.plane_repository_context import PlaneRepositoryContext, reposi
 from persistent_agents.models import AssignmentError
 
 _TOKEN_PREFIX = "afk_"
-_OBSERVATION_WINDOW = timedelta(seconds=15)
 _MIN_TTL_SECONDS = 300
 _MAX_TTL_SECONDS = 90 * 86400
 _NAME_MAX = 128
@@ -262,44 +260,16 @@ class FrameworkCredentialService:
             return None
         owner_id, credential_id, token_hash = parsed
         try:
-            records = self._credentials.call(
-                self._credentials.repository.list_for_owner, owner_id=owner_id,
-            )
-        except (RepositoryConflictError, RepositoryValidationError, RepositoryNotFoundError):
-            return None
-        record = next((r for r in records if r.credential_id == credential_id), None)
-        if record is None:
-            return None
-        try:
-            fence = FrameworkCredentialFence(
-                owner_id=owner_id,
-                credential_id=credential_id,
-                token_hash=token_hash,
-                scopes=tuple(sorted(record.scopes)),
-                max_admissions=record.max_admissions,
-                consumed_admissions=record.consumed_admissions,
-                created_at=record.created_at,
-                expires_at=record.expires_at,
-                revoked_at=record.revoked_at,
-            )
-        except (ValueError, TypeError):
-            return None
-        now = _now()
-        observation = FrameworkCredentialObservation(fence, now, now + _OBSERVATION_WINDOW)
-
-        def _check(transaction):
-            return self._credentials.repository.assert_current_execution(
-                transaction, observation=observation,
-            )
-
-        try:
             with self._credentials.transaction() as transaction:
-                _check(transaction)
+                observation = self._credentials.repository.capture_execution_observation(
+                    transaction, owner_id=owner_id, credential_id=credential_id, token_hash=token_hash,
+                )
         except (RepositoryConflictError, RepositoryNotFoundError, RepositoryValidationError,
                 ValueError, TypeError):
             return None
         return FrameworkCaller(
-            owner_id=owner_id, credential_id=credential_id, scopes=frozenset(record.scopes),
+            owner_id=owner_id, credential_id=credential_id,
+            scopes=frozenset(observation.credential.scopes),
             _token_hash=token_hash,
         )
 
@@ -323,30 +293,14 @@ class FrameworkCredentialService:
         if not isinstance(caller, FrameworkCaller):
             return None
         try:
-            records = self._credentials.call(
-                self._credentials.repository.list_for_owner, owner_id=caller.owner_id,
-            )
-        except (RepositoryConflictError, RepositoryValidationError, RepositoryNotFoundError):
+            with self._credentials.transaction() as transaction:
+                return self._credentials.repository.capture_execution_observation(
+                    transaction, owner_id=caller.owner_id, credential_id=caller.credential_id,
+                    token_hash=caller._token_hash, scopes=tuple(sorted(caller.scopes)),
+                )
+        except (RepositoryConflictError, RepositoryValidationError, RepositoryNotFoundError,
+                ValueError, TypeError):
             return None
-        record = next((r for r in records if r.credential_id == caller.credential_id), None)
-        if record is None:
-            return None
-        try:
-            fence = FrameworkCredentialFence(
-                owner_id=caller.owner_id,
-                credential_id=caller.credential_id,
-                token_hash=caller._token_hash,
-                scopes=tuple(sorted(record.scopes)),
-                max_admissions=record.max_admissions,
-                consumed_admissions=record.consumed_admissions,
-                created_at=record.created_at,
-                expires_at=record.expires_at,
-                revoked_at=record.revoked_at,
-            )
-        except (ValueError, TypeError):
-            return None
-        now = _now()
-        return FrameworkCredentialObservation(fence, now, now + _OBSERVATION_WINDOW)
 
     def _parse_token(self, token: object) -> Optional[tuple[str, str, str]]:
         if (not isinstance(token, str) or not token.startswith(_TOKEN_PREFIX)

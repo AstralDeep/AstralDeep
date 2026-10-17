@@ -9,8 +9,10 @@ import asyncio
 import base64
 import hashlib
 import json
+import ssl
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -589,3 +591,120 @@ def test_start_rate_window_expiry_allows_same_address_again(env, monkeypatch):
     clock.advance(dl._START_WINDOW_SECONDS + 1)
     dl._check_start_rate("9.9.9.9")
     assert dl._START_HITS["9.9.9.9"] == [100.0 + dl._START_WINDOW_SECONDS + 1]
+
+
+@pytest.fixture
+async def tls_idp(tmp_path):
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Synthetic device-login CA")])
+    ca = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+          .public_key(key.public_key()).serial_number(x509.random_serial_number())
+          .not_valid_before(datetime(2020, 1, 1, tzinfo=timezone.utc))
+          .not_valid_after(datetime(2100, 1, 1, tzinfo=timezone.utc))
+          .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+          .sign(key, hashes.SHA256()))
+    leaf_key = ec.generate_private_key(ec.SECP256R1())
+    leaf = (x509.CertificateBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")]))
+            .issuer_name(name).public_key(leaf_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime(2020, 1, 1, tzinfo=timezone.utc))
+            .not_valid_after(datetime(2100, 1, 1, tzinfo=timezone.utc))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False)
+            .sign(key, hashes.SHA256()))
+    ca_path, cert_path, key_path = (tmp_path / name for name in ("ca.pem", "leaf.pem", "key.pem"))
+    ca_path.write_bytes(ca.public_bytes(serialization.Encoding.PEM))
+    cert_path.write_bytes(leaf.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(leaf_key.private_bytes(serialization.Encoding.PEM,
+                         serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    key_path.chmod(0o600)
+    unrelated_key = ec.generate_private_key(ec.SECP256R1())
+    unrelated = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+                 .public_key(unrelated_key.public_key()).serial_number(x509.random_serial_number())
+                 .not_valid_before(datetime(2020, 1, 1, tzinfo=timezone.utc))
+                 .not_valid_after(datetime(2100, 1, 1, tzinfo=timezone.utc))
+                 .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+                 .sign(unrelated_key, hashes.SHA256()))
+    unrelated_path = tmp_path / "unrelated-ca.pem"
+    unrelated_path.write_bytes(unrelated.public_bytes(serialization.Encoding.PEM))
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert_path, key_path)
+    requests = []
+
+    async def respond(reader, writer):
+        try:
+            headers = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
+            length = next((int(line.split(b":", 1)[1]) for line in headers.split(b"\r\n")
+                           if line.lower().startswith(b"content-length:")), 0)
+            body = await asyncio.wait_for(reader.readexactly(length), 5)
+            requests.append((headers.split(b"\r\n")[0], body))
+            payload = b'{"synthetic_idp":true}'
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+                         + str(len(payload)).encode() + b"\r\nConnection: close\r\n\r\n" + payload)
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async with await asyncio.start_server(respond, "127.0.0.1", 0, ssl=context) as server:
+        port = server.sockets[0].getsockname()[1]
+        yield SimpleNamespace(ca=ca_path, unrelated=unrelated_path, url=f"https://localhost:{port}/idp",
+                              wrong_host=f"https://127.0.0.1:{port}/idp", requests=requests)
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+async def test_bounded_transport_loads_selected_ca_and_ignores_proxy_environment(
+        tls_idp, monkeypatch, method):
+    monkeypatch.setenv("SSL_CERT_FILE", str(tls_idp.ca))
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.setenv(name, "http://127.0.0.1:1")
+    monkeypatch.setenv("NO_PROXY", "")
+    data = {"grant_type": "synthetic_control"} if method == "POST" else None
+    result = await dl._bounded_json(method, tls_idp.url, data=data)
+    assert result == (200, {"synthetic_idp": True})
+    expected_body = b"grant_type=synthetic_control" if method == "POST" else b""
+    assert tls_idp.requests == [(f"{method} /idp HTTP/1.1".encode(), expected_body)]
+
+
+@pytest.mark.parametrize("invalid_ca", ["missing", "malformed"])
+async def test_bounded_transport_refuses_invalid_selected_ca_before_http(
+        tmp_path, monkeypatch, invalid_ca):
+    import httpx
+
+    selected = tmp_path / "selected-ca.pem"
+    if invalid_ca == "malformed":
+        selected.write_text("not a certificate")
+    monkeypatch.setenv("SSL_CERT_FILE", str(selected))
+    calls = []
+
+    def unexpected_client(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("invalid trust configuration reached HTTP construction")
+
+    monkeypatch.setattr(httpx, "AsyncClient", unexpected_client)
+    with pytest.raises((FileNotFoundError, ssl.SSLError)):
+        await dl._bounded_json("GET", "https://idp.example/")
+    assert calls == []
+
+
+@pytest.mark.parametrize("trust", ["default", "unrelated_ca", "wrong_hostname"])
+async def test_bounded_transport_preserves_certificate_and_hostname_validation(
+        tls_idp, monkeypatch, trust):
+    import httpx
+
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    url = tls_idp.url
+    if trust == "unrelated_ca":
+        monkeypatch.setenv("SSL_CERT_FILE", str(tls_idp.unrelated))
+    if trust == "wrong_hostname":
+        monkeypatch.setenv("SSL_CERT_FILE", str(tls_idp.ca))
+        url = tls_idp.wrong_host
+    with pytest.raises(httpx.ConnectError, match="CERTIFICATE_VERIFY_FAILED"):
+        await dl._bounded_json("GET", url)
+    assert tls_idp.requests == []

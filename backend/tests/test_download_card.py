@@ -8,6 +8,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
@@ -15,6 +17,18 @@ if str(BACKEND_DIR) not in sys.path:
 from rote.adapter import ComponentAdapter  # noqa: E402
 from rote.capabilities import DeviceProfile  # noqa: E402
 from webrender.renderer import allowed_primitive_types, render_one  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def synthetic_release_dns(monkeypatch):
+    from shared import external_http
+
+    def resolve(host):
+        if host not in {"api.github.com", "github.com"}:
+            raise external_http.ServiceUnreachableError("unconfigured synthetic host")
+        return ("140.82.112.4",)
+
+    monkeypatch.setattr(external_http, "_resolve_host_addresses", resolve)
 
 
 def _profile(device_type: str) -> DeviceProfile:
@@ -165,6 +179,37 @@ def test_fetch_sha256_extracts_hash(monkeypatch):
                         lambda *a, **k: _Resp())
     h = dc._fetch_sha256("https://github.com/AstralDeep/AstralDeep/releases/download/v1/SHA256SUMS")
     assert h == "d" * 64
+
+
+@pytest.mark.parametrize("addresses", [("127.0.0.1",), ("::1",), ("140.82.112.4", "10.0.0.1")])
+def test_release_fetches_refuse_private_dns_before_transport(monkeypatch, addresses):
+    import requests
+    from shared import external_http
+
+    monkeypatch.setattr(external_http, "_resolve_host_addresses", lambda _host: addresses)
+
+    def forbidden_transport(*_args, **_kwargs):
+        pytest.fail("blocked release DNS reached HTTP transport")
+
+    monkeypatch.setattr(requests, "get", forbidden_transport)
+    assert dc._fetch_release_info() is None
+    assert dc._fetch_sha256("https://github.com/AstralDeep/AstralDeep/releases/download/v1/SHA256SUMS") is None
+
+
+def test_release_fetches_refuse_failed_dns_before_transport(monkeypatch):
+    import requests
+    from shared import external_http
+
+    def unavailable(_host):
+        raise external_http.ServiceUnreachableError("synthetic DNS unavailable")
+
+    def forbidden_transport(*_args, **_kwargs):
+        pytest.fail("unresolved release DNS reached HTTP transport")
+
+    monkeypatch.setattr(external_http, "_resolve_host_addresses", unavailable)
+    monkeypatch.setattr(requests, "get", forbidden_transport)
+    assert dc._fetch_release_info() is None
+    assert dc._fetch_sha256("https://github.com/AstralDeep/AstralDeep/releases/download/v1/SHA256SUMS") is None
 
 
 def test_handle_meta_tool_returns_code_and_card(monkeypatch):

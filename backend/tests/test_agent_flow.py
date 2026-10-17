@@ -11,7 +11,6 @@ import sys
 import pytest
 import websockets
 from dotenv import load_dotenv
-
 load_dotenv()
 
 QUERY = (

@@ -148,7 +148,9 @@ def test_consequential_verbs_are_always_gated_and_unattended_set_is_minimal():
 
 
 def test_gate_policy_table_covers_each_agent_and_063_is_unchanged():
-    assert rc.GATED_AGENT_IDS == {"remote-compute-1", "computer-use-1", "gaiakeep-1"}
+    assert rc.GATED_AGENT_IDS == {
+        "remote-compute-1", "computer-use-1", "gaiakeep-1", "cresco-1", "terminal-shell-1",
+    }
     p063 = rc.policy_for("remote-compute-1")
     assert p063.classification is rc.DESTRUCTIVE_CLASSIFICATION
     assert p063.gate_unclassified_unattended is False

@@ -78,6 +78,12 @@ from orchestrator.work_admission import (
     WorkAdmissionConflictError,
     WorkAdmissionCoordinator,
 )
+from orchestrator.work_recovery import (
+    ExecutorRecoveryService,
+    RecoveryDisposition,
+    owner_stop_gate,
+    recovery_interval_seconds,
+)
 from orchestrator.runtime_observability import RuntimeObservability
 from orchestrator.concurrency_cap import ConcurrencyCap
 from orchestrator.voice_control_binding import (
@@ -1028,6 +1034,8 @@ class Orchestrator:
         from orchestrator.computer_sessions import ComputerSessionManager
         self.computer_hosts = ComputerHostRegistry(self)
         self.computer_sessions = ComputerSessionManager(self, self.computer_hosts)
+        from orchestrator.terminal_sessions import TerminalSessionManager
+        self.terminal_sessions = TerminalSessionManager(orchestrator=self)
         self._job_context: Dict[str, Dict[str, Any]] = {}
         self.cancelled_sessions: Dict[str, bool] = {}
         self._chat_locks: Dict[tuple, asyncio.Lock] = {}
@@ -1055,6 +1063,7 @@ class Orchestrator:
 
         self._ws_active_chat: Dict[int, str] = {}
         self._conversation_scopes: Dict[int, Dict[str, Any]] = {}
+        self._terminal_review_scoped: set[int] = set()
 
         self._ws_timeline_mode: Dict[int, bool] = {}
         self._workspace_locks: Dict[str, asyncio.Lock] = {}
@@ -1135,6 +1144,11 @@ class Orchestrator:
             operation_retention=timedelta(seconds=operation_retention_seconds),
             submission_gate=emergency_submission_gate(self),
             execution_gate=self.emergency_stop_store.assert_running,
+        )
+        self.work_recovery = ExecutorRecoveryService(
+            self.work_admission,
+            stop_gate=owner_stop_gate(self.emergency_stop_store),
+            mode=ExecutorRecoveryService.Mode.PRESERVE_UNSUPPORTED,
         )
         from orchestrator.agent_generator import (
             BYO_RUNTIME_CONTRACT_VERSION,
@@ -10684,6 +10698,9 @@ class Orchestrator:
                         ])
 
                 elif msg.action == "new_chat":
+                    terminal_review_scoped = getattr(self, "_terminal_review_scoped", None)
+                    if type(terminal_review_scoped) is set:
+                        terminal_review_scoped.add(id(websocket))
                     new_chat_session = self.ui_sessions.get(websocket)
                     new_chat_context = getattr(self, "_connection_contexts", {}).get(
                         id(websocket))
@@ -14243,6 +14260,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         _skill_facade = _user_skills.store_for(self)
         if _skill_facade is not None:
             from orchestrator.turn_guidance_authority import acquire_turn_guidance_reader
+            from orchestrator import skill_guidance_read as _skill_guidance_read
             _skill_caller = None
             try:
                 _skill_caller = await acquire_turn_guidance_reader(
@@ -14250,6 +14268,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if _skill_caller.owner_id != user_id:
                     raise SkillCatalogError("skill_authentication_required", 401)
                 _current_user_skills = await _skill_facade.list(caller=_skill_caller)
+                if flags.is_enabled("skill_packs") and _current_user_skills:
+                    _skill_guidance_read.record_turn_catalog(
+                        expected_orchestrator=self, websocket=websocket, chat_id=chat_id,
+                        user_id=user_id, skills=_current_user_skills)
             except AssignmentError as exc:
                 logger.warning("Current turn skill catalog refused: %s (%s)",
                                exc.code, exc.status_code)
@@ -14605,6 +14627,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 tool_to_agent[_st_name] = _subtasks.META_AGENT_ID
                 tool_to_unqualified[_st_name] = _st_name
 
+        from orchestrator import skill_guidance_read as _skill_guidance_read
+        if _skill_guidance_read.should_inject(draft_agent_id, _current_user_skills) \
+                and not is_text_only:
+            for _sg_def in _skill_guidance_read.meta_tool_definitions():
+                _sg_name = _sg_def["function"]["name"]
+                tools_desc.append(_sg_def)
+                tool_to_agent[_sg_name] = _skill_guidance_read.META_AGENT_ID
+                tool_to_unqualified[_sg_name] = _sg_name
+
         if not tools_desc and draft_agent_id:
             _perm_memo.__exit__(None, None, None)
             await self.send_ui_render(websocket, [
@@ -14675,7 +14706,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 try:
                     from orchestrator import skill_packs
                     _meta = {"__orchestrator__", "__scheduler__", "__memory__", "__persistent_assignments__",
-                             "__desktop_codegen__", "__subtasks__"}
+                             "__desktop_codegen__", "__subtasks__", "__skill_guidance__"}
                     _agents_in_play = {a for a in tool_to_agent.values() if a and a not in _meta}
                     _digest = skill_packs.build_skill_digest(
                         self.knowledge_index, _agents_in_play, user_skills=_current_user_skills)
@@ -14686,7 +14717,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
             personalization_skill_lines: List[str] = []
             _meta_agent_ids = {"__orchestrator__", "__scheduler__", "__memory__", "__subtasks__", "__persistent_assignments__",
-                               "__desktop_codegen__"}
+                               "__desktop_codegen__", "__skill_guidance__"}
             for _td in tools_desc:
                 try:
                     _fn = _td.get("function") or {}
@@ -17205,6 +17236,26 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 render_target="chat")
 
         _session_claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
+        if agent_id == "terminal-shell-1":
+            from orchestrator.terminal_security import (
+                TerminalError, assert_terminal_execution_available, assert_terminal_identity,
+            )
+
+            try:
+                if parent_token is not None or initiating_agent_id is not None:
+                    raise TerminalError("terminal_owner_required", 403)
+                assert_terminal_identity(self, websocket, user_id)
+                await asyncio.to_thread(
+                    assert_terminal_execution_available, tool_name,
+                    getattr(self, "terminal_sessions", None), user_id,
+                )
+            except TerminalError as exc:
+                await self._audit_gate_denial(
+                    websocket, user_id, agent_id, tool_name, chat_id, args,
+                    gate="terminal_authority", detail=exc.code,
+                )
+                return GateRefusal(response=MCPResponse(error={
+                    "code": exc.code, "message": exc.code, "retryable": False}))
         from orchestrator import mesh_admission
         if mesh_admission.MEMBER_CLAIM in _session_claims or (
                 isinstance(parent_token, dict) and mesh_admission.MEMBER_CLAIM in parent_token):
@@ -17287,7 +17338,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 render_components=[alert.to_dict()])
 
         if (
-            agent_id in ("remote-compute-1", "computer-use-1", "gaiakeep-1")
+            agent_id in ("remote-compute-1", "computer-use-1", "gaiakeep-1", "cresco-1", "terminal-shell-1")
             and _session_claims.get("_invocation_channel") == "mcp"
         ):
             from orchestrator import remote_confirmation
@@ -17315,11 +17366,37 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from agents.gaiakeep.mcp_server import bind_owner_context
             bind_owner_context(args, user_id)
 
-        if agent_id in ("remote-compute-1", "computer-use-1", "gaiakeep-1"):
+        if agent_id == "cresco-1":
+            from agents.cresco.mcp_server import bind_owner_context
+            bind_owner_context(args, user_id)
+
+        if agent_id == "terminal-shell-1":
+            from agents.terminal_shell.mcp_server import bind_owner_context
+            bind_owner_context(args, user_id)
+
+        if agent_id in ("remote-compute-1", "computer-use-1", "gaiakeep-1", "cresco-1", "terminal-shell-1"):
             from orchestrator import remote_confirmation
-            _conf = await asyncio.to_thread(
-                remote_confirmation.evaluate, self, websocket, agent_id, tool_name,
-                args, chat_id, user_id)
+            from orchestrator.terminal_security import TerminalError
+
+            try:
+                _conf = await asyncio.to_thread(
+                    remote_confirmation.evaluate, self, websocket, agent_id, tool_name,
+                    args, chat_id, user_id)
+            except TerminalError as exc:
+                if agent_id != "terminal-shell-1":
+                    raise
+                await self._audit_gate_denial(
+                    websocket, user_id, agent_id, tool_name, chat_id, args,
+                    gate="terminal_confirmation", detail=exc.code,
+                )
+                return GateRefusal(
+                    response=MCPResponse(error={
+                        "code": exc.code, "message": exc.code, "retryable": False,
+                        "data": {"terminal_code": exc.code, "http_status": exc.status_code},
+                    }),
+                    render_components=[Alert(message=exc.code, variant="error").to_dict()],
+                    render_target="chat",
+                )
             if _conf is not None:
                 _msg, _comps = _conf
                 _policy = remote_confirmation.policy_for(agent_id)
@@ -17595,6 +17672,20 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if hook_resp.action == "modify" and hook_resp.modified_args:
                 args = hook_resp.modified_args
 
+        if agent_id == "terminal-shell-1":
+            from orchestrator.terminal_security import TerminalError, bind_terminal_authority
+
+            try:
+                args["_terminal_authority"] = await asyncio.to_thread(
+                    bind_terminal_authority, self, websocket, user_id, tool_name)
+            except TerminalError as exc:
+                await self._audit_gate_denial(
+                    websocket, user_id, agent_id, tool_name, chat_id, args,
+                    gate="terminal_authority", detail=exc.code,
+                )
+                return GateRefusal(response=MCPResponse(error={
+                    "code": exc.code, "message": exc.code, "retryable": False}))
+
         cap_job_id: Optional[str] = None
         if user_id and agent_id and self._is_long_running_tool(agent_id, tool_name):
             cap_job_id = f"cap_{tool_name}_{_uuid.uuid4().hex[:8]}"
@@ -17679,6 +17770,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         read_only = (agent_id, tool_name) in {
             ("__memory__", "memory_get"), ("__memory__", "memory_search"),
             ("__desktop_codegen__", "offer_desktop_codegen"),
+            ("__skill_guidance__", "read_user_skill"),
         }
         decomposition = (agent_id, tool_name) == ("__subtasks__", "delegate_subtasks")
         if session.get("sub") == user_id and scopes and (
@@ -17779,6 +17871,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return await _st.handle_meta_tool(
                 self, tool_name, args, user_id=user_id, chat_id=chat_id, websocket=websocket
             )
+        if agent_id == "__skill_guidance__":
+            from orchestrator import skill_guidance_read
+            return await skill_guidance_read.handle_meta_tool(
+                self, tool_name, args, user_id=user_id, chat_id=chat_id, websocket=websocket,
+                tool_to_agent=tool_to_agent
+            )
 
         auth = await self._authorize_and_prepare(
             websocket, agent_id, tool_name, args, chat_id, user_id,
@@ -17819,8 +17917,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             args_meta={k: v for k, v in args.items() if not (isinstance(k, str) and k.startswith("_"))},
         ) as _audit_ctx:
             from orchestrator import hitl_confirmation
+            from orchestrator.terminal_security import terminal_dispatch_arguments
             hitl_refusal = hitl_confirmation.effect_refusal(
-                self, websocket, user_id, chat_id, agent_id, tool_name, args)
+                self, websocket, user_id, chat_id, agent_id, tool_name,
+                terminal_dispatch_arguments(agent_id, args))
             with evidence_context.dispatch_requester(self, parent_token, initiating_agent_id, user_id, chat_id, websocket):
                 result = hitl_refusal or await self._execute_with_retry(
                     websocket,
@@ -17856,6 +17956,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 except Exception:
                     pass
 
+        from orchestrator.terminal_security import terminal_dispatch_arguments
+        args = terminal_dispatch_arguments(agent_id, args)
         if user_id and result is not None and result.error is None:
             try:
                 from orchestrator import taint as _taint
@@ -18360,6 +18462,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 except Exception:
                     pass
 
+        from orchestrator.terminal_security import terminal_dispatch_arguments
+        args = terminal_dispatch_arguments(agent_id, args)
         if user_id and result is not None and result.error is None:
             try:
                 from orchestrator import taint as _taint
@@ -18566,6 +18670,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                  _st.handle_meta_tool(
                                      self, tool_name, args, user_id=user_id,
                                      chat_id=chat_id, websocket=websocket)))
+                continue
+            if agent_id == "__skill_guidance__":
+                from orchestrator import skill_guidance_read
+                prepared.append((idx, tc, tool_name, agent_id, None,
+                                 skill_guidance_read.handle_meta_tool(
+                                     self, tool_name, args, user_id=user_id,
+                                     chat_id=chat_id, websocket=websocket,
+                                     tool_to_agent=tool_to_agent)))
                 continue
 
             auth = await self._authorize_and_prepare(
@@ -18917,6 +19029,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         protected_auth_principal: Optional[str] = None,
         protected_conversation_id: Optional[str] = None,
     ) -> Optional[MCPResponse]:
+        refusal = self._terminal_dispatch_refusal(agent_id)
+        if refusal is not None:
+            return refusal
         if timeout is None:
             timeout = 30.0
             if agent_id == "gaiakeep-1":
@@ -18927,7 +19042,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         step_id = None
         if recorder is not None:
             try:
-                step_id = await recorder.start("tool_call", tool_name, args)
+                from orchestrator.terminal_security import terminal_dispatch_arguments
+                step_id = await recorder.start(
+                    "tool_call", tool_name, terminal_dispatch_arguments(agent_id, args))
             except Exception:  # pragma: no cover
                 logger.debug("recorder.start failed", exc_info=True)
                 step_id = None
@@ -18970,6 +19087,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     pass
             raise
 
+    def _terminal_dispatch_refusal(self, agent_id: str) -> Optional[MCPResponse]:
+        if agent_id != "terminal-shell-1":
+            return None
+        from orchestrator.terminal_security import TerminalError, assert_terminal_local_dispatch
+
+        try:
+            assert_terminal_local_dispatch(self)
+        except TerminalError as exc:
+            return MCPResponse(error={"code": exc.code, "message": exc.code, "retryable": False})
+        return None
+
+    @staticmethod
+    def _terminal_transport_unavailable() -> MCPResponse:
+        return MCPResponse(error={"code": "terminal_transport_unavailable",
+                                  "message": "terminal_transport_unavailable", "retryable": False})
+
     async def _dispatch_tool_call(
         self,
         agent_id: str,
@@ -18985,6 +19118,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         protected_auth_principal: Optional[str] = None,
         protected_conversation_id: Optional[str] = None,
     ) -> Optional[MCPResponse]:
+        refusal = self._terminal_dispatch_refusal(agent_id)
+        if refusal is not None:
+            return refusal
         from orchestrator.agent_identity import required_identity_claims
 
         stop = getattr(self, "emergency_stop", None)
@@ -19002,6 +19138,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         channel = protected_channel or self._protected_dispatch_channel(ui_websocket)
 
         async def guarded(final_arguments, physical_invoke):
+            from orchestrator.terminal_security import terminal_dispatch_arguments
+            final_arguments = terminal_dispatch_arguments(agent_id, final_arguments)
             from persistent_agents.dispatch_context import current_dispatch
             persistent_dispatch = current_dispatch()
             if persistent_dispatch is not None:
@@ -19185,6 +19323,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         ui_websocket=None,
         caller_capabilities: Optional[Dict[str, object]] = None,
     ) -> Optional[MCPResponse]:
+        if agent_id == "terminal-shell-1":
+            return self._terminal_transport_unavailable()
         projected_socket = self.agents.get(agent_id)
         if bool(
             getattr(projected_socket, "is_fenced_user_agent_tunnel", False)
@@ -19478,7 +19618,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         ui_websocket=None,
         caller_capabilities: Optional[Dict[str, object]] = None,
     ) -> Optional[MCPResponse]:
+        refusal = self._terminal_dispatch_refusal(agent_id)
+        if refusal is not None:
+            return refusal
         import copy
+        from orchestrator.terminal_security import terminal_dispatch_arguments
         from shared.local_transport import LoopbackSocket
         from orchestrator.agent_identity import (
             identity_access_message,
@@ -19509,7 +19653,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if verified_identity:
             caller_info["verified_identity"] = verified_identity
         request_id = f"req_{tool_name}_{_uuid.uuid4().hex}"
-        call_args = copy.deepcopy(args)
+        call_args = copy.deepcopy(terminal_dispatch_arguments(agent_id, args))
         request = MCPRequest(
             request_id=request_id,
             method="tools/call",
@@ -19518,6 +19662,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             caller_capabilities=dict(caller_capabilities or {}),
             caller_info=caller_info,
         )
+        if agent_id == "terminal-shell-1":
+            request._terminal_authority = args.get("_terminal_authority")
         future = asyncio.get_event_loop().create_future()
         self.pending_requests[request_id] = future
         _targets = getattr(self, "_pending_request_agent", None)
@@ -19588,6 +19734,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         caller_capabilities: Optional[Dict[str, object]] = None,
         wire_arguments: Optional[Dict[str, Any]] = None,
     ) -> Optional[MCPResponse]:
+        if agent_id == "terminal-shell-1":
+            return self._terminal_transport_unavailable()
         import uuid
         import httpx
         from a2a.types import Message as A2AMessage, Role
@@ -19890,6 +20038,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         websocket,
         chat_id: str,
     ) -> str:
+        if agent_id == "terminal-shell-1":
+            raise PermissionError("terminal_transport_unavailable")
         if agent_id not in self.agents and agent_id not in self.local_agents:
             raise RuntimeError(f"agent {agent_id!r} is not connected")
 
@@ -19953,6 +20103,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 caller_capabilities=dict(caller_capabilities),
                 caller_info=caller_info,
             )
+            stream_manager = getattr(self, "stream_manager", None)
+            if stream_manager is not None:
+                stream_manager.register_pending_request(stream_id, request_id)
             if agent_id in self.local_agents:
                 from shared.local_transport import LoopbackSocket
 
@@ -22418,10 +22571,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     pass
 
     async def send_ui_render(self, websocket, components: List, target: str = "canvas",
-                             speak: bool = True):
+                             speak: bool = True) -> bool:
         from persistent_agents.dispatch_context import current_dispatch
         if current_dispatch() is not None:
-            return
+            return False
         if target == "canvas" and components and all(
             isinstance(c, dict) and c.get("type") == "alert"
             for c in components
@@ -22452,7 +22605,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.debug("watch_speech unavailable for ui_render", exc_info=True)
         msg = UIRender(components=adapted, target=target, html=html, speech=speech)
-        await self._safe_send(websocket, msg.to_json())
+        sent = await self._safe_send(websocket, msg.to_json())
         if target == "chat":
             from orchestrator.async_tasks import VirtualWebSocket
             if isinstance(websocket, VirtualWebSocket):
@@ -22461,6 +22614,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         await self.send_ui_render(ws, components, target="chat", speak=speak)
                     except Exception:  # pragma: no cover
                         logger.debug("vws chat-rail fan failed", exc_info=True)
+        return sent
 
     async def _shell_token_for_request(self, request):
         try:
@@ -22811,11 +22965,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 logger.debug("user-agent tunnel teardown failed", exc_info=True)
             self._ws_active_chat.pop(id(websocket), None)
             getattr(self, "_conversation_scopes", {}).pop(id(websocket), None)
+            terminal_review_scoped = getattr(self, "_terminal_review_scoped", None)
+            if type(terminal_review_scoped) is set:
+                terminal_review_scoped.discard(id(websocket))
             self._ws_timeline_mode.pop(id(websocket), None)
             self._ws_welcome.pop(id(websocket), None)
             if websocket in self.ui_clients:
                 self.ui_clients.remove(websocket)
             self._clear_voice_control_binding(websocket)
+            terminal_sessions = getattr(self, "terminal_sessions", None)
+            if terminal_sessions is not None:
+                await asyncio.to_thread(terminal_sessions.close_for_connection, websocket)
             if websocket in self.ui_sessions:
                 del self.ui_sessions[websocket]
             self._drop_chat_locks(websocket)
@@ -22856,11 +23016,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 logger.debug("user-agent tunnel teardown failed", exc_info=True)
             self._ws_active_chat.pop(id(websocket), None)
             getattr(self, "_conversation_scopes", {}).pop(id(websocket), None)
+            terminal_review_scoped = getattr(self, "_terminal_review_scoped", None)
+            if type(terminal_review_scoped) is set:
+                terminal_review_scoped.discard(id(websocket))
             self._ws_timeline_mode.pop(id(websocket), None)
             self._ws_welcome.pop(id(websocket), None)
             if websocket in self.ui_clients:
                 self.ui_clients.remove(websocket)
             self._clear_voice_control_binding(websocket)
+            terminal_sessions = getattr(self, "terminal_sessions", None)
+            if terminal_sessions is not None:
+                await asyncio.to_thread(terminal_sessions.close_for_connection, websocket)
             if websocket in self.ui_sessions:
                 del self.ui_sessions[websocket]
             self._drop_chat_locks(websocket)
@@ -22870,6 +23036,46 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             _llm_gate.clear_socket(self, websocket)
             self.rote.cleanup(websocket)
             logger.info(f"UI client session cleaned up (total: {len(self.ui_clients)})")
+
+    async def _work_recovery_loop(self):
+        interval = recovery_interval_seconds()
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                report = await asyncio.to_thread(
+                    self.work_recovery.recover_expired_executors
+                )
+            except Exception:
+                logger.warning("work_recovery_pass_failed", exc_info=True)
+                continue
+            rescheduled = report.count(RecoveryDisposition.RESCHEDULED)
+            replayed = report.count(RecoveryDisposition.REPLAYED)
+            refused = report.count(RecoveryDisposition.RESCHEDULE_REFUSED)
+            preserved = (
+                report.count(RecoveryDisposition.PRESERVED_CANCELLED)
+                + report.count(RecoveryDisposition.PRESERVED_STOPPED)
+                + report.count(RecoveryDisposition.PRESERVED_UNCERTAIN)
+                + report.count(RecoveryDisposition.PRESERVED_EXHAUSTED)
+            )
+            if report.expired or rescheduled or replayed or refused or preserved:
+                logger.info(
+                    "work_recovery_pass expired=%d rescheduled=%d replayed=%d "
+                    "refused=%d preserved=%d",
+                    report.expired,
+                    rescheduled,
+                    replayed,
+                    refused,
+                    preserved,
+                )
+                for entry in report.recovered:
+                    if entry.disposition is RecoveryDisposition.RESCHEDULE_REFUSED:
+                        logger.warning(
+                            "work_recovery_reschedule_refused operation_id=%s "
+                            "code=%s retryable=%s",
+                            entry.operation_id,
+                            entry.refusal_code,
+                            entry.retryable_refusal,
+                        )
 
     def _track_startup_background_task(self, coroutine, *, name: str):
         tasks = getattr(self, "_startup_background_tasks", None)
@@ -22926,10 +23132,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if flags.is_enabled("safe_agents"):
                 from orchestrator import agent_trust
                 seed_ids = tuple(a for a in FIRST_PARTY_PUBLIC_AGENT_IDS if a != "gaiakeep-1")
+                # Cresco must never be auto-marked safe: owner approval is required by the bridge's charter
+                seed_ids = tuple(a for a in seed_ids if a != "cresco-1")
                 if not flags.is_enabled("remote_compute"):
                     seed_ids = tuple(a for a in seed_ids if a != "remote-compute-1")
                 if not flags.is_enabled("computer_use"):
                     seed_ids = tuple(a for a in seed_ids if a != "computer-use-1")
+                if not flags.is_enabled("terminal_shell"):
+                    seed_ids = tuple(a for a in seed_ids if a != "terminal-shell-1")
                 if not flags.is_enabled("fhir"):
                     seed_ids = tuple(a for a in seed_ids if a != "fhir-1")
                 await agent_trust.seed_safe(self.user_agent_registry, seed_ids)
@@ -22963,6 +23173,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         self._track_startup_background_task(
             self._jwks_warm_loop(),
             name="jwks-warm-loop",
+        )
+
+        self._track_startup_background_task(
+            self._work_recovery_loop(),
+            name="work-recovery-loop",
         )
 
         if (
@@ -23036,6 +23251,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if flags.is_enabled("persistent_agents"):
             from persistent_agents.runtime import start_assignment_runtime
             start_assignment_runtime(self)
+
+        from orchestrator.framework_runtime import start_framework_runtime
+        start_framework_runtime(self)
 
         if flags.is_enabled("scheduler_execution"):
             try:
@@ -23328,6 +23546,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             skills_router,
             memory_router,
         )
+        from personalization.atlas_api import atlas_router
         from scheduler.api import schedule_router
         from persistent_agents.api import assignment_router
         from orchestrator.emergency_stop_api import emergency_stop_router
@@ -23357,6 +23576,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(task_router)
         app.include_router(async_task_router)
         app.include_router(operation_router)
+        from orchestrator.terminal_api import terminal_router
+        app.include_router(terminal_router)
         app.include_router(audit_router)
         app.include_router(feedback_user_router)
         app.include_router(feedback_admin_router)
@@ -23366,6 +23587,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(personalization_router)
         app.include_router(skills_router)
         app.include_router(memory_router)
+        app.include_router(atlas_router)
         app.include_router(schedule_router)
         app.include_router(assignment_router)
         app.include_router(emergency_stop_router)
@@ -23458,6 +23680,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             raise
 
     async def _close_started_services_once(self) -> None:
+        terminal_sessions = getattr(self, "terminal_sessions", None)
+        if terminal_sessions is not None:
+            await asyncio.to_thread(terminal_sessions.shutdown)
+        from orchestrator.framework_runtime import stop_framework_runtime
+        stop_framework_runtime(self)
         startup_tasks = tuple(getattr(self, "_startup_background_tasks", ()))
         for task in startup_tasks:
             task.cancel()

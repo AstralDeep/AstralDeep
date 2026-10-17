@@ -119,6 +119,51 @@ python -m astral_sdk cancel <operation_id> --expected-revision 2
 Every command prints one JSON document to stdout on success, or a JSON error
 object to stderr with a non-zero exit code.
 
+## Terminal sessions
+
+The operator CLI can drive governed terminal sessions through `/api/terminals`.
+
+Start and input require an exact approval in a fresh signed-in web review tab with no selected conversation or open Settings/modal surface. Use a separate private browser window or profile, sign in, close settings, and keep it free of restored conversations before requesting a terminal operation. New chat still selects a conversation and cannot provide this review context. An active conversation or native console alone cannot display this out-of-band approval; the API returns `terminal_review_context_required` (409) before creating a proposal. After changing review context, issue a new request rather than replaying an uncertain write.
+The operator must configure an isolated SSH runtime with `TERMINAL_SSH_PROFILE_FILE`
+and enroll its exact machine and host key through the normal encrypted owner settings.
+Execution is unavailable without that profile; the orchestrator never opens a host shell.
+Terminal sessions are owner-only: they require a current Keycloak owner
+access token, and framework credentials (`afk_…`) are refused locally with
+`terminal_owner_authentication_required` before any request is sent.
+
+Keep a signed-in Astral UI connected. Creating a session or sending input publishes
+a confirmation card there; approve the exact operation and target in that UI.
+The CLI waits up to 120 seconds for its result and never approves or retries a write
+itself. Use `--approval-timeout 0` to return immediately with
+`terminal_confirmation_required` and a `proposal_id`, then inspect it with
+`python -m astral_sdk terminal-approval PROPOSAL_ID --token "$ASTRAL_TOKEN"`.
+After a timeout, inspect the original request before creating another.
+Approvals expire with the original request authority or after five minutes, and
+cannot survive a server restart. Existing sessions retain their normal owner,
+permission, idle and lifetime checks independently of a completed request.
+
+```bash
+session=$(python -m astral_sdk terminal-create --cols 100 --rows 30 \
+    --base-url "$ASTRAL_BASE_URL" --token "$ASTRAL_TOKEN" | jq -r .session_id)
+python -m astral_sdk terminal-write "$session" --data "echo hello\n" \
+    --token "$ASTRAL_TOKEN"
+python -m astral_sdk terminal-read "$session" --offset 0 --token "$ASTRAL_TOKEN"
+python -m astral_sdk terminal-resize "$session" --cols 120 --rows 40 --token "$ASTRAL_TOKEN"
+python -m astral_sdk terminal-interrupt "$session" --token "$ASTRAL_TOKEN"
+python -m astral_sdk terminal-attach "$session" --token "$ASTRAL_TOKEN"   # stream until the session ends
+python -m astral_sdk terminal-close "$session" --token "$ASTRAL_TOKEN"
+python -m astral_sdk terminal-list --token "$ASTRAL_TOKEN"
+```
+
+`terminal-read` accepts `--offset` for reconnect-safe resumption: output is
+retained server-side in a bounded ring, and `next_offset` feeds the next read.
+`terminal-write` sends text, or raw bytes with a `base64:` prefix.
+
+The client methods (`create_terminal_session`, `write_terminal`,
+`read_terminal`, `stream_terminal`, `resize_terminal`, `interrupt_terminal`,
+`close_terminal`, `list_terminal_sessions`) exist on both `AstralClient` and
+`AsyncAstralClient` and speak the same REST surface.
+
 `emergency-status` and `emergency-stop` accept a framework credential with the
 corresponding read or control scope. `emergency-resume --expected-revision N`
 requires a current owner Keycloak access token obtained through the existing

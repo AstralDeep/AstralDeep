@@ -338,7 +338,13 @@ class VoiceSessionRuntime:
             self._repository.get_live_session,
             user_id=checked_user,
         )
-        available = capability.status == "ready" and capability.reason == "ready"
+        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
+            available = (
+                capability.status == "requires_client_readiness"
+                and capability.reason == "client_readiness_required"
+            )
+        else:
+            available = capability.status == "ready" and capability.reason == "ready"
         if session is None:
             return build_composer_state(
                 VoiceComposerContext(

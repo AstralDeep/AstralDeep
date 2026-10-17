@@ -57,7 +57,8 @@ def test_emergency_tools_are_projected_and_dispatchable():
 def test_emergency_operations_require_their_scopes():
     coordinator = EmergencyStopCoordinator()
     ops, read_only = _ops(coordinator, scopes=("operations.read",))
-    assert asyncio.run(ops.emergency_status(read_only))["state"] == "running"
+    with pytest.raises(AssignmentError, match="framework_credential_authority_unavailable"):
+        asyncio.run(ops.emergency_status(read_only))
     with pytest.raises(AssignmentError) as denied:
         asyncio.run(ops.emergency_stop(read_only))
     assert denied.value.code == "framework_scope_required"
@@ -77,12 +78,12 @@ def test_framework_stop_cannot_invent_current_owner_resume_authority():
     assert coordinator.admission_allowed(OWNER) is False
 
 
-def test_emergency_operations_without_a_coordinator_fail_closed():
+def test_unverified_emergency_reader_is_refused_before_coordinator_access():
     ops, caller = _ops(EmergencyStopCoordinator())
     ops.emergency = None
     with pytest.raises(AssignmentError) as unavailable:
         asyncio.run(ops.emergency_status(caller))
-    assert unavailable.value.code == "emergency_stop_unavailable"
+    assert unavailable.value.code == "framework_credential_authority_unavailable"
 
 
 def test_emergency_resume_through_the_facade_rejects_bad_revisions():
@@ -127,7 +128,7 @@ def test_dispatch_routes_emergency_tools_to_the_coordinator():
     engaged = _dispatch(orchestrator, "astral_emergency_stop", {"reason": "drill"})
     assert engaged.result["state"] == "stopped"
     status = _dispatch(orchestrator, "astral_emergency_status", {})
-    assert status.result["engaged"] is True
+    assert _mcp_error(status) == "framework_credential_authority_unavailable"
     resumed = _dispatch(orchestrator, "astral_emergency_resume",
                         {"expected_revision": engaged.result["revision"]})
     assert _mcp_error(resumed) == "emergency_stop_owner_authentication_required"

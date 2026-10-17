@@ -172,6 +172,9 @@ class AssignmentRunner:
         await self.store.call("recover_expired_for_administration", limit=100)
         if self.one_shot is not None:
             await self._recover_operations()
+            from orchestrator.work_subscriptions import redrive_pending
+
+            await redrive_pending(self.service)
             if self._operation_first:
                 await self._tick_operations()
             self._operation_first = not self._operation_first
@@ -307,6 +310,9 @@ class AssignmentRunner:
     async def _recover_operations(self):
         def recover(tx, repository):
             recovered = repository.recover_expired_operations_for_administration(tx, limit=100)
+            terminal = getattr(recovered, "terminal_assignments", None)
+            if type(terminal) is not tuple:
+                raise DispatchDenied("assignment_recovery_contract_unavailable")
             for binding in recovered.operation_bindings:
                 fence = ExecutionFence(uuid.UUID(binding["operation_id"]),
                     binding["execution_generation"], uuid.UUID(binding["execution_lease_token"]))
@@ -316,6 +322,14 @@ class AssignmentRunner:
                         retry_after_ms=None, transaction=tx)
                 except StaleExecutionFenceError:
                     pass
+            for record in terminal:
+                if (type(record) is not AssignmentRecord
+                        or record.assignment_id not in recovered.reclaimed_assignment_ids
+                        or record.execution_profile != "one_shot"
+                        or record.lifecycle != "completed"
+                        or record.operation.get("terminal_outcome") != "failed"):
+                    raise DispatchDenied("assignment_recovery_contract_unavailable")
+                self._fire_operation_completion(tx, repository, record)
             return recovered
         return await self.store.transaction(recover, bound_session_waits=True)
 
@@ -509,7 +523,18 @@ class AssignmentRunner:
         self.orch.work_admission.terminalize(executor.operation_fence,
             state=OperationState.COMPLETED, terminal_code=None, safe_summary=None,
             retry_after_ms=None, transaction=tx)
+        self._fire_operation_completion(tx, repository, result)
         return result
+
+    def _fire_operation_completion(self, tx, repository, result):
+        outcome = result.operation.get("terminal_outcome")
+        if result.lifecycle == "completed" and outcome in {"completed", "failed", "cancelled"}:
+            from orchestrator.work_subscriptions import fire_completions
+
+            fire_completions(self.service, tx, repository, owner_id=result.owner_id,
+                             source_id=result.assignment_id,
+                             source_revision=result.state_version,
+                             outcome=outcome)
 
     async def _finish_operation(self, executor, outcome):
         from persistent_agents.chat_episode import ChatCompletion

@@ -208,6 +208,7 @@ async def _drive_start(monkeypatch, *, remote_compute: bool, gaiakeep: bool = Fa
         explicit_notes=SimpleNamespace(expiry_loop=_noop_loop),
         _track_startup_background_task=_discard_background,
         _jwks_warm_loop=_noop_loop,
+        _work_recovery_loop=_noop_loop,
         _personal_agent_watchdog_task=None,
         _personal_agent_watchdog_loop=_noop_loop,
         _remote_job_poll_task=None,
@@ -235,7 +236,7 @@ async def test_boot_launches_the_poller_and_seeds_remote_compute_when_enabled(mo
     assert "remote-compute-1" in seeded[0][1]
     assert seeded[0][1] == tuple(
         agent_id for agent_id in oo.FIRST_PARTY_PUBLIC_AGENT_IDS
-        if agent_id not in ("computer-use-1", "gaiakeep-1", "fhir-1")
+        if agent_id not in ("computer-use-1", "gaiakeep-1", "fhir-1", "cresco-1", "terminal-shell-1")
     )
     task = fake._remote_job_poll_task
     assert task is not None and task.get_name() == "remote-cluster-job-poller"
@@ -264,7 +265,8 @@ async def test_flag_off_boot_creates_no_poller_and_drops_remote_compute_from_the
     assert seeded[0][1] == tuple(
         agent_id
         for agent_id in oo.FIRST_PARTY_PUBLIC_AGENT_IDS
-        if agent_id not in ("remote-compute-1", "computer-use-1", "gaiakeep-1", "fhir-1")
+        if agent_id not in ("remote-compute-1", "computer-use-1", "gaiakeep-1", "fhir-1",
+                            "cresco-1", "terminal-shell-1")
     )
     assert fake._remote_job_poll_task is None
 

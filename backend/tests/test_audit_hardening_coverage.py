@@ -191,6 +191,8 @@ class _CredScrubFakeOrch:
         self.stream_manager = None
         self._dispatch_context = {}
         from orchestrator.orchestrator import Orchestrator as _O
+        self._terminal_dispatch_refusal = types.MethodType(
+            _O._terminal_dispatch_refusal, self)
         self._register_dispatch_context = types.MethodType(
             _O._register_dispatch_context, self)
 

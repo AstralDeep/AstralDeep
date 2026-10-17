@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import math
 from dataclasses import dataclass, asdict
 from typing import Any, Callable, Dict, List, Optional
 
@@ -135,6 +136,15 @@ def is_streaming_tool(fn: Any) -> bool:
 
 def get_stream_metadata(fn: Any) -> Optional[Dict[str, Any]]:
     return getattr(fn, "__stream_metadata__", None)
+
+
+def stream_seconds_left(args: Dict[str, Any], declared_s: float) -> float:
+    elapsed = args.get("_stream_elapsed_s")
+    if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)):
+        return declared_s
+    if not math.isfinite(elapsed) or elapsed <= 0:
+        return declared_s
+    return max(0.0, declared_s - float(elapsed))
 
 
 def assign_stream_id_to_components(
