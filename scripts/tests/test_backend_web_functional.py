@@ -127,7 +127,9 @@ class Application:
     def handle(self, request):
         path = request.url.path
         code, payload = 200, {}
-        if path == "/api/chats":
+        if path == "/auth/session":
+            payload = {"authenticated": True, "user_id": "fixture-owner-a", "access_token": "current-token"}
+        elif path == "/api/chats":
             code, payload = 201, {"chat_id": CHAT}
             if self.failure == "create":
                 code = 500
@@ -174,6 +176,112 @@ class Application:
                  "snapshot_purpose": "hydration" if name == "load_chat" else "commit",
                  "transcript": ["synthetic"],
                  "canvas": {"components": []} if self.failure != "hydration" or name != "load_chat" else {}}]
+
+
+class ExpiringApplication(Application):
+    def __init__(self, refresh_failure=None, read_status=None):
+        super().__init__()
+        self.refresh_failure = refresh_failure
+        self.read_status = read_status
+        self.current_token = "original-access-token"
+        self.generation = 0
+        self.refreshes = 0
+        self.business_requests = []
+        self.rejected_bearers = 0
+
+    def advance_token(self):
+        self.generation += 1
+        self.current_token = "current-access-token-" + str(self.generation)
+
+    def action(self, *args, **kwargs):
+        frames = super().action(*args, **kwargs)
+        if args[0] != "chrome_llm_save":
+            self.advance_token()
+        return frames
+
+    def handle(self, request):
+        if request.url.path == "/auth/session":
+            self.refreshes += 1
+            assert "Authorization" not in request.headers
+            assert request.headers["Cookie"] == "astral_session=synthetic-session"
+            payload = {"authenticated": True, "user_id": "fixture-owner-a", "access_token": self.current_token}
+            if self.refreshes == 2:
+                if self.refresh_failure == "transport":
+                    raise httpx.ConnectError("synthetic refresh transport failure", request=request)
+                if self.refresh_failure == "status":
+                    return httpx.Response(503, json={"detail": "unavailable"})
+                if self.refresh_failure == "malformed":
+                    return httpx.Response(200, content=b"not-json")
+                if self.refresh_failure == "shape":
+                    payload = []
+                if self.refresh_failure == "owner":
+                    payload["user_id"] = "fixture-owner-b"
+                if self.refresh_failure == "no-owner":
+                    payload.pop("user_id")
+                if self.refresh_failure == "expired":
+                    payload["authenticated"] = False
+                if self.refresh_failure == "truthy-auth":
+                    payload["authenticated"] = "true"
+                if self.refresh_failure == "no-token":
+                    payload.pop("access_token")
+                if self.refresh_failure == "empty-token":
+                    payload["access_token"] = ""
+                if self.refresh_failure == "blank-token":
+                    payload["access_token"] = "   "
+                if self.refresh_failure == "token-type":
+                    payload["access_token"] = 7
+            return httpx.Response(200, json=payload)
+        self.business_requests.append((request.method, request.url.path))
+        if request.headers.get("Authorization") != "Bearer " + self.current_token:
+            self.rejected_bearers += 1
+            return httpx.Response(401, json={"detail": "Token expired"})
+        if request.url.path.startswith("/api/chats/") and self.read_status is not None:
+            return httpx.Response(self.read_status, json={"detail": "Read refused"})
+        response = super().handle(request)
+        self.advance_token()
+        return response
+
+
+def test_completed_socket_actions_refresh_cookie_session_before_each_http_use():
+    app = ExpiringApplication()
+    with httpx.Client(transport=httpx.MockTransport(app.handle),
+                      headers={"Authorization": "Bearer original-access-token"},
+                      cookies={"astral_session": "synthetic-session"}) as client:
+        report = probe.exercise(client, CONFIG, ID, open_wire=app.wire)
+    assert report["real_provider_chat"] == report["workspace_reconnection"] == "passed"
+    assert app.rejected_bearers == 0
+    assert app.refreshes == len(app.business_requests) == 7
+    assert app.actions[-1][0] == "chat_message"
+    assert "access-token" not in json.dumps(report)
+
+
+@pytest.mark.parametrize("failure", ["transport", "status", "malformed", "shape", "owner", "no-owner", "expired",
+                                     "truthy-auth", "no-token", "empty-token", "blank-token", "token-type"])
+def test_session_refresh_failure_stops_before_post_socket_http_delivery(failure):
+    app = ExpiringApplication(failure)
+    with httpx.Client(transport=httpx.MockTransport(app.handle),
+                      headers={"Authorization": "Bearer original-access-token"},
+                      cookies={"astral_session": "synthetic-session"}) as client:
+        with pytest.raises((probe.ProbeError, httpx.ConnectError, ValueError)):
+            probe.exercise(client, CONFIG, ID, open_wire=app.wire)
+        assert "Authorization" not in client.headers
+    assert app.refreshes == 2
+    assert app.business_requests == [("POST", "/api/chats")]
+    assert app.rejected_bearers == 0
+    assert [name for name, *_ in app.actions] == ["chrome_llm_save", "chat_message"]
+
+
+@pytest.mark.parametrize("status", [401, 403, 503])
+def test_fresh_session_does_not_retry_or_mask_a_refused_business_read(status):
+    app = ExpiringApplication(read_status=status)
+    with httpx.Client(transport=httpx.MockTransport(app.handle),
+                      headers={"Authorization": "Bearer original-access-token"},
+                      cookies={"astral_session": "synthetic-session"}) as client:
+        with pytest.raises(probe.ProbeError, match="completed chat could not be restored"):
+            probe.exercise(client, CONFIG, ID, open_wire=app.wire)
+    assert app.refreshes == 2 and app.rejected_bearers == 0
+    assert app.business_requests == [("POST", "/api/chats"), ("GET", "/api/chats/" + CHAT)]
+    assert [name for name, *_ in app.actions] == ["chrome_llm_save", "chat_message"]
 
 
 def test_functional_probe_checks_real_paths_but_receipt_contains_no_credentials():

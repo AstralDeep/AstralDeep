@@ -108,12 +108,19 @@ class BrowserWire:
         return frames
 
 
-@contextmanager
-def wire(client, context):
+def refresh_owner(client):
+    client.headers.pop("Authorization", None)
     current = session(client)
     require(current.get("authenticated") is True and current.get("user_id") == "fixture-owner-a"
-            and current.get("access_token"), "functional probe lost its authenticated owner")
+            and isinstance(current.get("access_token"), str) and current["access_token"].strip(),
+            "functional probe lost its authenticated owner")
     client.headers["Authorization"] = "Bearer " + current["access_token"]
+    return current
+
+
+@contextmanager
+def wire(client, context):
+    current = refresh_owner(client)
     with connect("wss://ad-bwq-web:9443/ws", ssl=context, origin=WEB,
                  open_timeout=20, close_timeout=5, max_size=16 * 1024 * 1024) as socket:
         yield BrowserWire(socket, current["access_token"])
@@ -144,9 +151,11 @@ def retained_chat(client, chat_id, expected):
 def exercise(owner, config, qualification_id, *, open_wire):
     with open_wire() as browser:
         browser.action("chrome_llm_save", {"fields": dict(config) | {"data_sharing_acknowledged": True}}, timeout=90)
+    refresh_owner(owner)
     chat_id = create_chat(owner)
     with open_wire() as browser:
         frames = browser.action("chat_message", {"message": MESSAGE, "snapshot_purpose": "commit"}, chat_id=chat_id)
+    refresh_owner(owner)
     retained_chat(owner, chat_id, "ORBITAL")
     snapshots = [frame for frame in frames if frame.get("type") == "conversation_snapshot"
                  and frame.get("chat_id") == chat_id and frame.get("snapshot_purpose") == "commit"]
@@ -159,11 +168,13 @@ def exercise(owner, config, qualification_id, *, open_wire):
             and hydrated[-1].get("canvas") == snapshots[-1].get("canvas"),
             "reconnected workspace differs from committed conversation state")
 
+    refresh_owner(owner)
     upload = owner.post(WEB + "/api/upload", files={"file": ("synthetic-animal.txt", ATTACHMENT, "text/plain")})
     require(upload.status_code == 201 and upload.json().get("sha256") == hashlib.sha256(ATTACHMENT).hexdigest(),
             "functional attachment upload failed")
     attachment = upload.json()
     require(canonical_uuid(attachment.get("attachment_id")), "functional attachment identity was invalid")
+    refresh_owner(owner)
     attachment_chat = create_chat(owner)
     with open_wire() as browser:
         browser.action("chat_message", {
@@ -172,9 +183,12 @@ def exercise(owner, config, qualification_id, *, open_wire):
                 "attachment_id": attachment["attachment_id"], "filename": "synthetic-animal.txt", "category": "document",
             }],
         }, chat_id=attachment_chat)
+    refresh_owner(owner)
     retained_chat(owner, attachment_chat, "turquoise")
+    refresh_owner(owner)
     retained_chat(owner, attachment_chat, "otter")
 
+    refresh_owner(owner)
     audit = owner.get(WEB + "/api/audit", params={"limit": 200, "event_class": "llm_config_change", "outcome": "success"})
     require(audit.status_code == 200, "authenticated audit view failed")
     entries = audit.json().get("items", [])
