@@ -12,6 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+import unicodedata
 
 import pytest
 
@@ -169,8 +170,43 @@ def _production_python() -> tuple[Path, ...]:
     return tuple(sorted(result))
 
 
-def _module_tree(path: Path) -> ast.Module:
-    return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+def _module_tree(path: Path, identifiers: frozenset[str]) -> ast.Module | None:
+    source = path.read_text(encoding="utf-8")
+    normalized = unicodedata.normalize("NFKC", source)
+    if not any(identifier in normalized for identifier in identifiers):
+        return None
+    return ast.parse(source, filename=str(path))
+
+
+@pytest.mark.parametrize(("source", "drivers", "callers"), [
+    ("value = 1\n", False, False),
+    ("import psycopg2\n", True, False),
+    ("import 𝓅𝓈𝓎𝒸𝑜𝓅𝑔2\n", True, False),
+    ("db.execute('SELECT 1')\n", False, True),
+    ("db.𝑒𝓍𝑒𝒸𝓊𝓉𝑒('SELECT 1')\n", False, True),
+    ("value = 'psycopg2 db.execute'\n", False, False),
+])
+def test_inventory_source_selection_preserves_normalized_candidates(
+    tmp_path, monkeypatch, source, drivers, callers,
+):
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    path = backend / "sample.py"
+    path.write_text(source, encoding="utf-8")
+    monkeypatch.setitem(globals(), "ROOT", tmp_path)
+    monkeypatch.setitem(globals(), "_production_python", lambda: (path,))
+    original = ast.parse
+    parsed = []
+
+    def observed(source, filename="<unknown>", mode="exec", **kwargs):
+        parsed.append(filename)
+        return original(source, filename=filename, mode=mode, **kwargs)
+
+    monkeypatch.setattr(ast, "parse", observed)
+    assert _direct_psycopg_paths() == (["backend/sample.py"] if drivers else [])
+    assert _legacy_database_callers() == (["backend/sample.py"] if callers else [])
+    if source == "value = 1\n":
+        assert parsed == []
 
 
 def _direct_psycopg_paths() -> list[str]:
@@ -179,7 +215,10 @@ def _direct_psycopg_paths() -> list[str]:
         if "scripts" in path.relative_to(ROOT).parts:
             continue
         imported = False
-        for node in ast.walk(_module_tree(path)):
+        tree = _module_tree(path, frozenset({"psycopg"}))
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 imported = any(
                     alias.name.split(".", 1)[0] in {"psycopg", "psycopg2"}
@@ -200,7 +239,10 @@ def _legacy_database_callers() -> list[str]:
         if "scripts" in relative.parts:
             continue
         found = False
-        for node in ast.walk(_module_tree(path)):
+        tree = _module_tree(path, DB_METHODS)
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
             if (
                 not isinstance(node, ast.Call)
                 or not isinstance(node.func, ast.Attribute)
