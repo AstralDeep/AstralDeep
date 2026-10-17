@@ -117,12 +117,17 @@ async def test_dispatch_cannot_retry_fan_out_or_publish_uncheckpointed_ui():
     hub.MAX_RETRIES = 5
     hub.execute_tool_and_wait = AsyncMock(return_value=MCPResponse(error={"retryable": True}))
     hub._protected_dispatch_channel = lambda *a, **kw: "persistent_assignment"
+    hub.rote = SimpleNamespace(adapt=Mock(), get_profile=Mock())
+    hub._safe_send = AsyncMock()
     with bind_dispatch(context()):
         await hub._execute_with_retry(None, "reader", "read", {})
         with pytest.raises(DispatchDenied, match="unreserved_parallel"):
             await hub.execute_parallel_tools(None, [], {})
-        assert await hub.send_ui_render(None, [{"type": "text", "text": "uncommitted"}]) is None
+        assert await hub.send_ui_render(None, [{"type": "text", "text": "uncommitted"}]) is False
     hub.execute_tool_and_wait.assert_awaited_once()
+    hub.rote.adapt.assert_not_called()
+    hub.rote.get_profile.assert_not_called()
+    hub._safe_send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
