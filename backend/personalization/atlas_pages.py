@@ -166,7 +166,7 @@ def decode_page_cursor(value: object, owner_id: str, project_id: str | None):
                 or not isinstance(payload["id"], str)
                 or canonical_page_id(payload["id"]) != payload["id"]):
             raise ValueError
-    except ValueError:
+    except (ValueError, RecursionError):
         raise AtlasPageError("page_cursor_invalid") from None
     return payload["created"], payload["id"]
 

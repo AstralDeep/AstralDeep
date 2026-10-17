@@ -65,6 +65,15 @@ def test_page_cursor_refuses_malformed_or_oversized_tokens(value):
         decode_page_cursor(value, "owner", "project")
 
 
+@pytest.mark.parametrize("depth", [20, 1100])
+def test_page_cursor_refuses_nested_json_within_token_bound(depth):
+    raw = ("[" * depth + "0" + "]" * depth).encode()
+    value = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+    assert len(value) < 4096
+    with pytest.raises(AtlasPageError, match="page_cursor_invalid"):
+        decode_page_cursor(value, "owner", "project")
+
+
 @pytest.mark.parametrize("change", [
     {"v": True}, {"v": 2}, {"created": True}, {"created": -1},
     {"created": 2 ** 63}, {"id": "invalid"}, {"id": 1}, {"extra": "x"},

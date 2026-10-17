@@ -6,6 +6,7 @@ refusal, generated-import unavailability, bounded results, and audit evidence.
 
 from __future__ import annotations
 
+import base64
 import os
 import sys
 from pathlib import Path
@@ -320,6 +321,16 @@ def test_http_listing_uses_owner_bound_continuation_and_retains_original_fields(
         assert denied.json()["detail"] == "page_cursor_invalid"
     for value in ["", "!", "x" * 4097]:
         assert client.get(url, params={"cursor": value}, headers=AUTH_A).status_code == 422
+
+
+@pytest.mark.parametrize("depth", [20, 1100])
+def test_http_listing_refuses_nested_cursor_with_typed_422(client, depth):
+    raw = ("[" * depth + "0" + "]" * depth).encode()
+    value = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+    assert len(value) < 4096
+    response = client.get("/api/atlas/projects/-/pages", params={"cursor": value}, headers=AUTH_A)
+    assert response.status_code == 422
+    assert response.json()["detail"] == "page_cursor_invalid"
 
 
 def test_global_project_scope_round_trips(client):
