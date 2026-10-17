@@ -48,6 +48,7 @@ class LoopbackOrchestrator:
         self.frames = 0
         self._dispatch_context = {}
         self._register_dispatch_context = MethodType(Orchestrator._register_dispatch_context, self)
+        self._terminal_dispatch_refusal = MethodType(Orchestrator._terminal_dispatch_refusal, self)
         self.execute = MethodType(Orchestrator._execute_in_process, self)
 
     async def handle_agent_message(self, websocket, message):
