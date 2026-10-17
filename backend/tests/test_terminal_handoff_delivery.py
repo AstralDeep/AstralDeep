@@ -85,7 +85,9 @@ async def test_card_requires_positive_delivery_and_same_current_owner_registrati
     async with httpx.AsyncClient(transport=httpx.ASGITransport(handoff.app), base_url="https://terminal.invalid") as client:
         response = await client.post("/api/terminals", json={})
     assert response.status_code == 409
-    assert response.json() == {"error": "terminal_human_session_required"}
+    expected = ("terminal_review_context_required" if outcome in {"replaced", "removed", "expired"}
+                else "terminal_human_session_required")
+    assert response.json() == {"error": expected}
     assert handoff.state["request"].status == "failed"
     fixture.orch.send_ui_render = AsyncMock(return_value=True)
     await rc.handle_decision(fixture.orch, fixture.socket, "owner", handoff.state["card"]["content"][-2]["payload"])

@@ -28,6 +28,10 @@ def fixture(monkeypatch):
         runtime_preview=lambda *a, **k: "isolated.test:2222 as runner",
         runtime_machine_id=lambda *a, **k: "b" * 32)
     orch.security_flags = {}
+    orch.rote = SimpleNamespace(get_profile=lambda socket: SimpleNamespace(device_type="browser"))
+    orch._conversation_scopes = {}
+    orch._ws_active_chat = {}
+    orch._terminal_review_scoped = set()
     orch.tool_permissions = SimpleNamespace(is_tool_allowed=lambda *a: True)
     calls = []
 

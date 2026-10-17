@@ -1063,6 +1063,7 @@ class Orchestrator:
 
         self._ws_active_chat: Dict[int, str] = {}
         self._conversation_scopes: Dict[int, Dict[str, Any]] = {}
+        self._terminal_review_scoped: set[int] = set()
 
         self._ws_timeline_mode: Dict[int, bool] = {}
         self._workspace_locks: Dict[str, asyncio.Lock] = {}
@@ -10697,6 +10698,9 @@ class Orchestrator:
                         ])
 
                 elif msg.action == "new_chat":
+                    terminal_review_scoped = getattr(self, "_terminal_review_scoped", None)
+                    if type(terminal_review_scoped) is set:
+                        terminal_review_scoped.add(id(websocket))
                     new_chat_session = self.ui_sessions.get(websocket)
                     new_chat_context = getattr(self, "_connection_contexts", {}).get(
                         id(websocket))
@@ -22961,6 +22965,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 logger.debug("user-agent tunnel teardown failed", exc_info=True)
             self._ws_active_chat.pop(id(websocket), None)
             getattr(self, "_conversation_scopes", {}).pop(id(websocket), None)
+            terminal_review_scoped = getattr(self, "_terminal_review_scoped", None)
+            if type(terminal_review_scoped) is set:
+                terminal_review_scoped.discard(id(websocket))
             self._ws_timeline_mode.pop(id(websocket), None)
             self._ws_welcome.pop(id(websocket), None)
             if websocket in self.ui_clients:
@@ -23009,6 +23016,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 logger.debug("user-agent tunnel teardown failed", exc_info=True)
             self._ws_active_chat.pop(id(websocket), None)
             getattr(self, "_conversation_scopes", {}).pop(id(websocket), None)
+            terminal_review_scoped = getattr(self, "_terminal_review_scoped", None)
+            if type(terminal_review_scoped) is set:
+                terminal_review_scoped.discard(id(websocket))
             self._ws_timeline_mode.pop(id(websocket), None)
             self._ws_welcome.pop(id(websocket), None)
             if websocket in self.ui_clients:

@@ -73,6 +73,7 @@ def _refused(exc: TerminalError) -> JSONResponse:
 async def _dispatch(request: Request, claims: dict, tool_name: str, arguments: dict, *,
                     unwrap_session: bool = False, fields: tuple[str, ...] | None = None):
     pending = None
+    review_sockets = []
     try:
         require_terminal_enabled()
         orch = _orchestrator(request)
@@ -85,6 +86,8 @@ async def _dispatch(request: Request, claims: dict, tool_name: str, arguments: d
         owner_id = original["sub"]
         selection = getattr(request.state, "_authenticated_cookie_session", None)
         sessions = getattr(orch, "web_sessions", None)
+        scope_maps = (getattr(orch, "_conversation_scopes", None), getattr(orch, "_ws_active_chat", None),
+                      getattr(orch, "_open_chrome_surface", None), getattr(orch, "_terminal_review_scoped", None))
 
         def current_selection():
             assert_human_owner(original, owner_id)
@@ -110,9 +113,18 @@ async def _dispatch(request: Request, claims: dict, tool_name: str, arguments: d
             current_selection()
             assert_terminal_delivery(orch, original, owner_id, tool_name)
             current_selection()
+            if (pending is None or pending.status in {"pending", "running"}) and not any(
+                    terminal_approvals.review_context_current(orch, socket, owner_id, registration, scope_maps)
+                    for socket, registration in review_sockets):
+                raise TerminalError("terminal_review_context_required", 409)
 
         try:
             if tool_name in {"start_terminal", "terminal_write"}:
+                review_sockets = [(socket, registration) for socket, registration in list(
+                    getattr(orch, "ui_sessions", {}).items()) if terminal_approvals.review_context_current(
+                        orch, socket, owner_id, registration, scope_maps)]
+                if not review_sockets:
+                    raise TerminalError("terminal_review_context_required", 409)
                 pending = terminal_approvals.PendingTerminalRequest(orch, owner_id, tool_name, pending_authority)
                 with terminal_approvals.request_scope(pending):
                     response = await execute(
@@ -152,15 +164,13 @@ async def _dispatch(request: Request, claims: dict, tool_name: str, arguments: d
                 status = 403
             raise TerminalError(code, status)
         if pending is not None and pending.proposal_id is not None:
-            from orchestrator.remote_confirmation import _no_live_human, is_approval_card_result
+            from orchestrator.remote_confirmation import is_approval_card_result
 
             if not is_approval_card_result(response.ui_components):
                 raise TerminalError("terminal_invalid_result", 503)
             delivered = 0
-            for socket in list(getattr(orch, "ui_sessions", {})):
-                socket_claims = orch.ui_sessions.get(socket)
-                if (not isinstance(socket_claims, dict) or socket_claims.get("sub") != owner_id
-                        or _no_live_human(orch, socket)):
+            for socket, socket_claims in review_sockets:
+                if not terminal_approvals.review_context_current(orch, socket, owner_id, socket_claims, scope_maps):
                     continue
                 try:
                     assert_human_owner(socket_claims, owner_id)
@@ -169,13 +179,14 @@ async def _dispatch(request: Request, claims: dict, tool_name: str, arguments: d
                     if sent is not True:
                         continue
                     await asyncio.to_thread(pending.assert_current)
-                    if orch.ui_sessions.get(socket) is not socket_claims or _no_live_human(orch, socket):
+                    if not terminal_approvals.review_context_current(orch, socket, owner_id, socket_claims, scope_maps):
                         continue
                     assert_human_owner(socket_claims, owner_id)
                     delivered += 1
                 except Exception:
                     continue
             if not delivered:
+                pending.assert_current()
                 pending.status, pending.error = "failed", "terminal_human_session_required"
                 raise TerminalError("terminal_human_session_required", 409)
             return _json(await asyncio.to_thread(pending.public, owner_id), 202)

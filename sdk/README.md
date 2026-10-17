@@ -122,6 +122,8 @@ object to stderr with a non-zero exit code.
 ## Terminal sessions
 
 The operator CLI can drive governed terminal sessions through `/api/terminals`.
+
+Start and input require an exact approval in a fresh signed-in web review tab with no selected conversation or open Settings/modal surface. Use a separate private browser window or profile, sign in, close settings, and keep it free of restored conversations before requesting a terminal operation. New chat still selects a conversation and cannot provide this review context. An active conversation or native console alone cannot display this out-of-band approval; the API returns `terminal_review_context_required` (409) before creating a proposal. After changing review context, issue a new request rather than replaying an uncertain write.
 The operator must configure an isolated SSH runtime with `TERMINAL_SSH_PROFILE_FILE`
 and enroll its exact machine and host key through the normal encrypted owner settings.
 Execution is unavailable without that profile; the orchestrator never opens a host shell.

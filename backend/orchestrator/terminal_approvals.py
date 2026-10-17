@@ -10,7 +10,7 @@ import threading
 import time
 from uuid import uuid4
 
-from orchestrator.terminal_security import TerminalError, assert_terminal_identity
+from orchestrator.terminal_security import TerminalError, assert_human_owner, assert_terminal_identity
 
 PREFIX = "terminal-api:"
 MAX_PENDING_PER_OWNER = 8
@@ -21,6 +21,34 @@ _EFFECT = ContextVar("terminal_approval_effect", default=None)
 _LOCK = threading.RLock()
 _SESSION_FIELDS = frozenset({"session_id", "cols", "rows", "created_at_monotonic",
                              "idle_seconds", "ring_start", "ring_end"})
+
+
+def review_context_current(orch, websocket, owner_id, registration, scope_maps):
+    from orchestrator.remote_confirmation import _no_live_human
+
+    try:
+        if (not isinstance(registration, dict) or orch.ui_sessions.get(websocket) is not registration
+                or _no_live_human(orch, websocket)):
+            return False
+        assert_human_owner(registration, owner_id)
+        scopes = getattr(orch, "_conversation_scopes", None)
+        active = getattr(orch, "_ws_active_chat", None)
+        if (type(scopes) is not dict or type(active) is not dict
+                or scopes is not scope_maps[0] or active is not scope_maps[1]
+                or id(websocket) in scopes or id(websocket) in active):
+            return False
+        surface = getattr(orch, "_open_chrome_surface", None)
+        if (surface is not scope_maps[2] or surface is not None and (type(surface) is not dict
+                or surface.get(id(websocket), "") not in (None, ""))):
+            return False
+        scoped = getattr(orch, "_terminal_review_scoped", None)
+        if type(scoped) is not set or scoped is not scope_maps[3] or id(websocket) in scoped:
+            return False
+        profile = orch.rote.get_profile(websocket)
+        device = getattr(profile.device_type, "value", profile.device_type)
+        return device == "browser"
+    except Exception:
+        return False
 
 
 def _store(orch):
