@@ -176,6 +176,7 @@ class TurnGuidanceBinding:
     closed: bool = False
     foreground: object = field(default=None, repr=False)
     selection: object = field(default=None, repr=False)
+    skill_reads: object = field(default_factory=dict, repr=False)
 
     def close(self):
         object.__setattr__(self, "closed", True)

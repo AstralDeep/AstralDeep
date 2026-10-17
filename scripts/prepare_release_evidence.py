@@ -429,8 +429,29 @@ def _changed_coverage_summary(
     }
 
 
+def _missing_platform_reports(
+    documents: Sequence[tuple[str, Mapping[str, Any]]], candidate_sha: str
+) -> list[str] | None:
+    sets = [document for _, document in documents if document.get("document_type") == "release_evidence_set"]
+    if len(sets) > 1 or (sets and sets[0].get("candidate_sha") != candidate_sha):
+        return None
+    reports = sets[0]["evidence"] if sets else [
+        document for _, document in documents if document.get("document_type") == "platform_evidence"
+    ]
+    identities = {(report["candidate_sha"], report["release_id"], report["release_version"]) for report in reports}
+    if len(identities) > 1 or any(identity[0] != candidate_sha for identity in identities):
+        return None
+    if sets and identities != {(candidate_sha, sets[0]["release_id"], sets[0]["release_version"])}:
+        return None
+    platforms = [report["platform"] for report in reports]
+    if len(platforms) != len(set(platforms)):
+        return None
+    return [target for target in VALIDATOR.REQUIRED_TARGETS if target not in platforms]
+
+
 def _failure_document(
-    exc: Exception, *, base_sha: str, candidate_sha: str
+    exc: Exception, *, base_sha: str, candidate_sha: str,
+    missing_platform_reports: list[str] | None,
 ) -> dict[str, Any]:
     message = str(exc)
     missing_provider_inputs = (
@@ -448,12 +469,17 @@ def _failure_document(
         "error_message_sha256": hashlib.sha256(message.encode()).hexdigest(),
         "base_sha": base_sha,
         "candidate_sha": candidate_sha,
+        "required_targets": list(VALIDATOR.REQUIRED_TARGETS),
+        "missing_platform_reports": (
+            list(VALIDATOR.REQUIRED_TARGETS) if missing_provider_inputs else missing_platform_reports
+        ),
         "protected_release_authorization": False,
     }
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    missing_platform_reports = None
     try:
         if not VALIDATOR.GIT_SHA_RE.fullmatch(args.base_sha) or not (
             VALIDATOR.GIT_SHA_RE.fullmatch(args.candidate_sha)
@@ -474,6 +500,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for schema in (evidence_schema, trust_schema, profile_schema):
             VALIDATOR.validate_schema_document(schema)
         documents = _inventory(Path(args.evidence_dir), evidence_schema)
+        missing_platform_reports = _missing_platform_reports(documents, args.candidate_sha)
         sets = [
             document
             for _, document in documents
@@ -552,6 +579,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     exc,
                     base_sha=args.base_sha,
                     candidate_sha=args.candidate_sha,
+                    missing_platform_reports=missing_platform_reports,
                 ),
             )
         print(f"release evidence rejected: {exc}", file=sys.stderr)

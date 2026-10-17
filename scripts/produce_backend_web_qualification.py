@@ -23,7 +23,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE_PLANE = "4a07d59a448c1960ce2ae3f35e605f4d78c4a3f9"
 BASELINE_IMAGE = "sha256:0061eecdbdc516f900a0d77221d806ac6f4d0c7e74cfa743eb5e0ce7b430c634"
-FIXTURE = "109b0c2d812b18efa1481b7a2851e847711626173807048a33ebea4172a86e5a"
+FIXTURE = "c016d8dd30f2bdf932ba8e855bbc586826f5b0f4137b6413c61a82293ef41c1d"
 POSTGRES = "postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73"
 PHASES = ("all", "gate", "services", "assemble")
 GATE_GROUPS = ("tests", "persistent_agents", "modules")

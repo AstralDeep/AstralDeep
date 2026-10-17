@@ -11,7 +11,7 @@ import pytest
 
 from orchestrator import remote_jobs as rj
 from orchestrator.remote_transport import MachineTarget, RemoteResult, Verdict, set_transport
-from tests.helpers.remote_plane_runtime import make_remote_plane_source
+from tests.helpers.remote_plane_runtime import make_remote_wake_plane_source
 
 
 def _target(pinned: bool = True):
@@ -129,12 +129,13 @@ def test_probe_completed_reads_output(monkeypatch):
     assert out["output_tail"] == "job output here"
 
 
-def test_probe_gone_from_both_when_was_running_is_completed(monkeypatch):
+def test_probe_gone_from_both_when_was_running_is_unresolved(monkeypatch):
     monkeypatch.setattr("orchestrator.remote_machines.build_target", lambda *a, **k: _target())
     set_transport(_Scripted({"squeue": (_SQUEUE_EMPTY, 0), "sacct": (_SQUEUE_EMPTY, 0)}))
     out = rj._probe_state(_orch(), {"owner_user_id": "u", "machine_id": "m1",
                                     "scheduler_job_id": "5", "state": "running"})
-    assert out["terminal"] is True and out["state"] == "COMPLETED"
+    assert out.get("transient") is True
+    assert not out.get("terminal")
 
 
 def test_probe_skips_unpinned_host_key(monkeypatch):
@@ -169,6 +170,8 @@ def test_probe_transport_error_is_transient(monkeypatch):
 def spy(monkeypatch):
     rec = {"apply": [], "orphan": 0, "notified_mark": 0, "touch": [], "push": [], "notify": []}
     monkeypatch.setattr(rj, "_apply", lambda db, tid, **kw: rec["apply"].append(kw))
+    monkeypatch.setattr(rj, "_apply_and_wake",
+                        lambda db, tid, **kw: rec["apply"].append({**kw, "terminal": True}))
     monkeypatch.setattr(rj, "_orphan", lambda db, tid: rec.__setitem__("orphan", rec["orphan"] + 1))
     monkeypatch.setattr(rj, "_mark_notified", lambda db, tid: rec.__setitem__("notified_mark", rec["notified_mark"] + 1))
     monkeypatch.setattr(rj, "_touch_fail", lambda db, tid, fc: rec["touch"].append(fc))
@@ -252,7 +255,7 @@ class _JobsDB:
         self.jobs = self.rows
         self.machines = {}
         self.credentials = {}
-        source = make_remote_plane_source(self)
+        source = make_remote_wake_plane_source(self)
         self.plane_runtime = source.plane_runtime
         self.plane_repositories = source.plane_repositories
 
@@ -514,7 +517,7 @@ class _CaptureDB:
         self.jobs = {"t1": _row(created_at=0, last_polled_at=None)}
         self.machines = {}
         self.credentials = {}
-        source = make_remote_plane_source(self)
+        source = make_remote_wake_plane_source(self)
         self.plane_runtime = source.plane_runtime
         self.plane_repositories = source.plane_repositories
 
@@ -630,14 +633,15 @@ class TestProbeEdges:
                                         "scheduler_job_id": "5", "state": "running"})
         assert out.get("transient") is True and out.get("machine") == "dgx"
 
-    def test_gone_from_both_while_running_still_reads_the_output(self, monkeypatch):
+    def test_gone_from_both_while_running_is_unresolved_without_output_claims(self, monkeypatch):
         monkeypatch.setattr("orchestrator.remote_machines.build_target", lambda *a, **k: _target())
         set_transport(_Scripted({"squeue": (_SQUEUE_EMPTY, 0), "sacct": (_SQUEUE_EMPTY, 0),
                                  "tail": ("purged but produced output", 0)}))
         out = rj._probe_state(_orch(), {"owner_user_id": "u", "machine_id": "m1",
                                         "scheduler_job_id": "5", "state": "RUNNING",
                                         "output_path": "/o"})
-        assert out["terminal"] is True and out["output_tail"] == "purged but produced output"
+        assert out.get("transient") is True
+        assert not out.get("terminal") and "output_tail" not in out
 
     def test_gone_from_both_while_never_started_stays_open(self, monkeypatch):
         monkeypatch.setattr("orchestrator.remote_machines.build_target", lambda *a, **k: _target())
@@ -663,7 +667,7 @@ class _OneRowDB:
         self.jobs = {"t1": _row(created_at=0, last_polled_at=None)}
         self.machines = {}
         self.credentials = {}
-        source = make_remote_plane_source(self)
+        source = make_remote_wake_plane_source(self)
         self.plane_runtime = source.plane_runtime
         self.plane_repositories = source.plane_repositories
 

@@ -45,6 +45,7 @@ _SOCKET_READS = frozenset({"chrome_author_list", "chrome_user_skill_edit", "chro
                            "chrome_note_search", "chrome_turn_selection_set", "chrome_safety_verify"})
 _SOCKET_WRITES = frozenset({"chrome_user_skill_save", "chrome_user_skill_toggle",
                            "chrome_user_skill_delete", "chrome_declarative_command",
+                           "chrome_connection_issue", "chrome_connection_revoke",
                            "chrome_note_save", "chrome_note_toggle", "chrome_note_forget",
                            "chrome_safety_stop", "chrome_safety_resume",
                            "chrome_mesh_create", "chrome_mesh_confirm", "chrome_mesh_reject",

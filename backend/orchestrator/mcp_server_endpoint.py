@@ -1,8 +1,5 @@
-"""Flag-gated MCP Streamable HTTP resource server: parses and admits requests, discovers
-and dispatches tools through mcp_projection.py and mcp_authz.py, validates
-schema-declared Mcp-Param mirror headers against tool arguments before dispatch,
-and routes framework-projected Work tools through work_operations.py. Installed by
-orchestrator.py.
+"""Serves flag-gated MCP discovery, tools, and owner-authorized Work status and retained-result resources.
+Installed by orchestrator.py, it binds mcp_authz.py authorization and mcp_projection.py tool dispatch.
 """
 
 from __future__ import annotations
@@ -21,6 +18,7 @@ from typing import Any, AsyncIterator, Awaitable
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
+from orchestrator.framework_work_reads import FrameworkWorkReader, read_scope
 from orchestrator.mcp_authz import (
     MCPAuthError,
     authorize_mcp_request,
@@ -36,6 +34,12 @@ from orchestrator.mcp_projection import (
     has_unsupported_mirrors,
     project_tools,
     resolve_projected_tool,
+)
+from orchestrator.mcp_work_resources import (
+    RESOURCE_SCOPES,
+    RESOURCE_URI as _WORK_RESOURCE_URI_PATTERN,  # noqa: F401
+    WorkResourceAuthority,
+    resource_scope,
 )
 from orchestrator.work_admission import AdmissionClass, OperationState
 from shared.protocol import (
@@ -64,12 +68,16 @@ _METHOD_PHASE = {
     "tools/list": "tools_list",
     "tools/call": "tools_call",
     "subscriptions/listen": "subscriptions_listen",
+    "resources/list": "resources_list",
+    "resources/read": "resources_read",
 }
 _METHOD_SCOPE = {
     "server/discover": ("mcp:discover",),
     "tools/list": ("mcp:tools:read",),
     "tools/call": ("mcp:tools:invoke",),
     "subscriptions/listen": ("mcp:discover",),
+    "resources/list": RESOURCE_SCOPES,
+    "resources/read": RESOURCE_SCOPES,
 }
 
 
@@ -287,10 +295,15 @@ def _server_info() -> dict[str, str]:
 
 
 def _discover_result() -> dict[str, Any]:
+    from shared.feature_flags import flags
+
+    capabilities = {"tools": {}}
+    if flags.is_enabled("mcp_server"):
+        capabilities["resources"] = {}
     return {
         "resultType": "complete",
         "supportedVersions": list(MCP_SUPPORTED_PROTOCOL_VERSIONS),
-        "capabilities": {"tools": {}},
+        "capabilities": capabilities,
         "instructions": (
             "Astral exposes the requesting user's authorized tools. "
             "Destructive unattended calls are refused."
@@ -345,6 +358,14 @@ def _tool_result(response: Any) -> dict[str, Any]:
             "astral/correlationId": response.correlation_id,
         },
     }
+
+
+async def list_resources(orchestrator: Any, user_id: str, claims: dict) -> list[dict]:
+    return await WorkResourceAuthority(orchestrator, user_id, claims).list()
+
+
+async def read_resource(orchestrator: Any, user_id: str, uri: str, claims: dict) -> dict:
+    return await WorkResourceAuthority(orchestrator, user_id, claims, scope=resource_scope(uri)).read(uri)
 
 
 async def _wait_for_disconnect(
@@ -608,6 +629,21 @@ async def _dispatch_work_tool(orchestrator: Any, claims: dict, tool_name: str, a
             result = await ops.emergency_stop(caller, reason=args.get("reason"))
         elif method_name == "emergency_resume":
             result = await ops.emergency_resume(caller, expected_revision=args.get("expected_revision"))
+        elif method_name == "subscribe":
+            result = await ops.subscribe(
+                caller, source_operation_id=args.get("source_operation_id"),
+                target_operation_id=args.get("target_operation_id"),
+                submission_id=args.get("submission_id"),
+                expected_revision=args.get("expected_revision"))
+        elif method_name == "subscriptions":
+            result = await ops.subscriptions(
+                caller, limit=args.get("limit", 50), after_id=args.get("after_id"))
+        elif method_name == "unsubscribe":
+            result = await ops.unsubscribe(
+                caller, source_operation_id=args.get("source_operation_id"),
+                target_operation_id=args.get("target_operation_id"),
+                submission_id=args.get("submission_id"),
+                expected_revision=args.get("expected_revision"))
         else:  # pragma: no cover
             return MCPResponse(result_type="complete",
                                error={"message": "Tool is unavailable or not authorized"})
@@ -758,6 +794,8 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                     base_url,
                 )
 
+            resource_authority = None
+            tool_read_authority = None
             try:
                 async with _admitted_request(
                     orchestrator,
@@ -787,6 +825,71 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                             "_meta": {"io.modelcontextprotocol/serverInfo": _server_info()},
                         }
                         cache_control = "no-store"
+                    elif method == "resources/list":
+                        try:
+                            resource_authority = WorkResourceAuthority(orchestrator, user_id, claims)
+                            resources = await resource_authority.list()
+                            result = {
+                                "resultType": "complete",
+                                "resources": resources,
+                                "_meta": {"io.modelcontextprotocol/serverInfo": _server_info()},
+                            }
+                            cache_control = "no-store"
+                        except MCPAuthError as exc:
+                            result_code = exc.error
+                            return _with_origin(
+                                _json_error(
+                                    request_id,
+                                    MCP_INVALID_REQUEST,
+                                    "MCP resources authorization failed",
+                                    exc.status_code,
+                                    headers={"WWW-Authenticate": challenge_header(
+                                        base_url, error=exc.error, required_scopes=exc.required_scopes
+                                    )},
+                                ),
+                                origin,
+                                base_url,
+                            )
+                    elif method == "resources/read":
+                        uri = params.get("uri")
+                        if not uri:
+                            result_code = "invalid_request"
+                            return _with_origin(
+                                _json_error(request_id, MCP_INVALID_REQUEST, "Missing 'uri' parameter", 400),
+                                origin,
+                                base_url,
+                            )
+
+                        try:
+                            resource_authority = WorkResourceAuthority(
+                                orchestrator, user_id, claims, scope=resource_scope(uri),
+                            )
+                            resource = await resource_authority.read(uri)
+                            result = {
+                                "resultType": "complete",
+                                "contents": [{
+                                    "uri": resource["uri"],
+                                    "mimeType": resource["mimeType"],
+                                    "text": json.dumps(resource["boundedViewModel"], ensure_ascii=False,
+                                                       allow_nan=False, separators=(",", ":")),
+                                }],
+                            }
+                            cache_control = "no-store"
+                        except MCPAuthError as exc:
+                            result_code = exc.error
+                            return _with_origin(
+                                _json_error(
+                                    request_id,
+                                    MCP_INVALID_REQUEST,
+                                    "MCP resource authorization failed",
+                                    exc.status_code,
+                                    headers={"WWW-Authenticate": challenge_header(
+                                        base_url, error=exc.error, required_scopes=exc.required_scopes
+                                    )},
+                                ),
+                                origin,
+                                base_url,
+                            )
                     else:
                         projected = await asyncio.to_thread(
                             resolve_projected_tool,
@@ -849,8 +952,15 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                                     base_url,
                                 )
                             if projected.agent_id == FRAMEWORK_WORK_AGENT_ID:
-                                # Work tools skip the normal agent dispatch security stack
                                 try:
+                                    from orchestrator.work_operations import dispatch_name
+
+                                    scope = read_scope(dispatch_name(projected.skill_id))
+                                    if scope is not None:
+                                        tool_read_authority = FrameworkWorkReader(
+                                            orchestrator.framework_work_operations,
+                                            claims.get("_framework_caller"), scope,
+                                        )
                                     tool_response = await _wait_for_disconnect(
                                         request,
                                         _dispatch_work_tool(
@@ -907,6 +1017,29 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                     origin,
                     base_url,
                 )
+            if resource_authority is not None:
+                try:
+                    await resource_authority.recheck()
+                except MCPAuthError as exc:
+                    result_code = exc.error
+                    return _with_origin(
+                        _json_error(
+                            request_id, MCP_INVALID_REQUEST, "MCP resource authorization failed",
+                            exc.status_code, headers={"WWW-Authenticate": challenge_header(
+                                base_url, error=exc.error, required_scopes=exc.required_scopes,
+                            )},
+                        ), origin, base_url,
+                    )
+            if tool_read_authority is not None:
+                from persistent_agents.models import AssignmentError
+                from shared.protocol import MCPResponse
+
+                try:
+                    await tool_read_authority.recheck()
+                except AssignmentError:
+                    result = _tool_result(MCPResponse(
+                        result_type="complete", error={"message": "Work read is no longer authorized"},
+                    ))
             if notification:
                 result_code = "accepted"
                 return _with_origin(

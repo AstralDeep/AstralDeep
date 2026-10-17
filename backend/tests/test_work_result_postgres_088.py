@@ -69,6 +69,43 @@ async def test_completed_result_is_rebuilt_from_actual_settled_receipts(complete
     assert (await actions(op)) == op.ledger
 
 
+async def test_framework_result_preserves_verified_content_and_current_scope(completed, monkeypatch):
+    from audit.repository import AuditRepository
+    from orchestrator.framework_credentials import FrameworkCredentialService
+    from orchestrator.work_operations import FrameworkWorkOperations
+    from persistent_agents.models import AssignmentError
+    from tests.helpers.session_consent_088 import consent_from_store
+
+    op = completed
+
+    def credential_clock():
+        with op.runtime.transaction() as tx:
+            return tx.fetch_one("SELECT clock_timestamp() AS now")["now"]
+
+    monkeypatch.setattr("orchestrator.framework_credentials._now", credential_clock)
+    credentials = FrameworkCredentialService(
+        plane_runtime=op.runtime, audit=AuditRepository(plane_runtime=op.runtime),
+    )
+    _, token = credentials.issue(
+        owner_id=op.owner, caller=consent_from_store(op.sessions, op.owner, op.sid).observation,
+        name="Synthetic result reader", scopes=("artifacts.read",),
+        expires_in_seconds=3600, max_admissions=10,
+    )
+    caller = credentials.resolve_bearer(token)
+    assert caller is not None
+    ops = FrameworkWorkOperations(assignments=op.executor.service, credentials=credentials)
+    actual = await ops.result(caller, op.completed.assignment_id)
+    assert actual == {"id": op.completed.assignment_id, "revision": op.completed.state_version,
+                      "result": await project(op)}
+    assert actual["result"]["available"] is True
+    with pytest.raises(AssignmentError, match="framework_scope_required"):
+        await ops.get(caller, op.completed.assignment_id)
+    credentials.revoke(owner_id=op.owner, credential_id=caller.credential_id)
+    with pytest.raises(AssignmentError, match="framework_credential_authority_unavailable"):
+        await ops.result(caller, op.completed.assignment_id)
+    assert len(op.model_calls) == 1
+
+
 async def _mutate_action(op, action, change):
     def mutate():
         with op.runtime.transaction() as tx:

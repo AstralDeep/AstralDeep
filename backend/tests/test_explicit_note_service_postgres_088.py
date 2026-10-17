@@ -6,7 +6,7 @@ revision conflicts, PHI refusal, and timed expiry/erasure.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
+from dataclasses import asdict, replace
 from types import SimpleNamespace
 import threading
 import time
@@ -106,6 +106,54 @@ def body(**changes):
 
 async def apply(state, command=None, **changes):
     return await state.service.command(caller=await caller(state), body=command or body(**changes))
+
+
+async def seed_search_notes(state, identities, *, needle_index):
+    from astralplane.repositories.guidance_models import ExplicitNoteRecord
+
+    initial = await apply(state, note_id=identities[0],
+        value="Unique needle" if needle_index == 0 else "Ordinary paragraph")
+    for start in range(1, len(identities), 100):
+        writer = await caller(state)
+
+        def populate(tx, repository):
+            for index in range(start, min(start + 100, len(identities))):
+                prepared = repository.prepare_explicit_note(tx, owner_id=writer.owner_id,
+                    note_id=identities[index], expected_revision=0)
+                metadata = replace(initial, note_id=identities[index],
+                    created_at=prepared.observed_at_ms, updated_at=prepared.observed_at_ms)
+                encrypted = state.service.cipher.seal(metadata,
+                    "Unique needle" if index == needle_index else "Ordinary paragraph")
+                record = ExplicitNoteRecord(**asdict(encrypted.metadata), ciphertext=encrypted.ciphertext)
+                saved = repository.put_explicit_note(tx, preparation=prepared, record=record)
+                state.service._audit(tx, owner_id=writer.owner_id, principal=writer.owner_id,
+                    action="save", record=saved)
+
+        await state.service._transaction(writer, populate)
+        await writer.verify_delivery()
+
+
+async def test_search_fixture_keeps_real_encryption_and_owner_reads_with_one_command(notes, monkeypatch):
+    identities = sorted(str(uuid4()) for _ in range(3))
+    original = notes.service.command
+    writes = []
+
+    async def observed(**kwargs):
+        writes.append(kwargs["body"].note_id)
+        return await original(**kwargs)
+
+    monkeypatch.setattr(notes.service, "command", observed)
+    await seed_search_notes(notes, identities, needle_index=2)
+    page = await notes.service.list(caller=await caller(notes, method="GET"))
+    assert [note.metadata.note_id for note in page.notes] == identities
+    assert [note.value for note in page.notes] == ["Ordinary paragraph", "Ordinary paragraph", "Unique needle"]
+    assert all(note.metadata.owner_id == notes.api.fixture[1] for note in page.notes)
+    assert all(b"Ordinary paragraph" not in bytes(row["ciphertext"]) for row in rows(notes))
+    assert len(events(notes)) == 3
+    assert notes.api.service.audit.verify_chain(notes.api.fixture[1]) is None
+    with pytest.raises(AssignmentError, match="work_authentication_required"):
+        await notes.service.list(caller=await caller(notes, method="GET", owner=str(uuid4())))
+    assert writes == [identities[0]]
 
 
 def rows(state):
@@ -339,11 +387,7 @@ async def test_search_nondivisible_scan_budget_caps_each_storage_page(notes, mon
 
     count = 1100 if scan_limit == 1000 else scan_limit + 2
     identities = sorted(str(uuid4()) for _ in range(count))
-    for index, identity in enumerate(identities):
-        if index % 100 == 0:
-            writer = await caller(notes)
-        await notes.service.command(caller=writer, body=body(
-            note_id=identity, value="Unique needle" if index == count - 1 else "Ordinary paragraph"))
+    await seed_search_notes(notes, identities, needle_index=count - 1)
     repository = notes.api.runtime.repositories.preferences.personalization
     original = type(repository).list_explicit_notes
     pages = []

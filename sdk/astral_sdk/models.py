@@ -1,11 +1,14 @@
-"""Typed dataclass views (Operation, Event, Artifact, ControlResult, RetryPolicy) over
-Deep's Work-over-MCP wire contract, matching astral_sdk/work_contract.json field for
-field, with unknown extra keys preserved on Operation.raw.
+"""Typed dataclass views (Operation, Event, Artifact, ControlResult,
+CompletionSubscription, RetryPolicy) over Deep's Work-over-MCP wire contract, matching
+astral_sdk/work_contract.json field for field, with unknown extra keys preserved on
+Operation.raw.
 """
 
 from __future__ import annotations
 
 import random
+import base64
+
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -120,6 +123,92 @@ class ControlResult:
 
 
 @dataclass(frozen=True)
+class CompletionSubscription:
+    target_operation_id: str
+    source_operation_id: str
+    target_disposition: Optional[str]
+    target_phase: Optional[str]
+    event_revision: int
+    source_disposition: Optional[str]
+    source_missing: bool
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CompletionSubscription":
+        return cls(
+            target_operation_id=data["target_operation_id"],
+            source_operation_id=data["source_operation_id"],
+            target_disposition=data.get("target_disposition"),
+            target_phase=data.get("target_phase"),
+            event_revision=int(data.get("event_revision") or 0),
+            source_disposition=data.get("source_disposition"),
+            source_missing=bool(data.get("source_missing")),
+        )
+
+
+@dataclass(frozen=True)
+class CompletionSubscriptionList:
+    subscriptions: tuple[CompletionSubscription, ...]
+    next_after_id: Optional[str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CompletionSubscriptionList":
+        return cls(
+            subscriptions=tuple(
+                CompletionSubscription.from_dict(s) for s in data.get("subscriptions", [])
+            ),
+            next_after_id=data.get("next_after_id"),
+        )
+
+
+@dataclass(frozen=True)
+class TerminalSessionView:
+    session_id: str
+    cols: int
+    rows: int
+    created_at_monotonic: float
+    idle_seconds: float
+    ring_start: int
+    ring_end: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TerminalSessionView":
+        return cls(
+            session_id=data["session_id"],
+            cols=int(data.get("cols", 0)),
+            rows=int(data.get("rows", 0)),
+            created_at_monotonic=float(data.get("created_at_monotonic", 0.0)),
+            idle_seconds=float(data.get("idle_seconds", 0.0)),
+            ring_start=int(data.get("ring_start", 0)),
+            ring_end=int(data.get("ring_end", 0)),
+        )
+
+
+@dataclass(frozen=True)
+class TerminalOutput:
+    session_id: str
+    offset: int
+    next_offset: int
+    data: bytes
+    truncated: bool
+    eof: bool
+    session: Optional[TerminalSessionView]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TerminalOutput":
+        session = data.get("session")
+        return cls(
+            session_id=data["session_id"],
+            offset=int(data.get("offset", 0)),
+            next_offset=int(data.get("next_offset", 0)),
+            data=base64.b64decode(data.get("data_b64") or ""),
+            truncated=bool(data.get("truncated")),
+            eof=bool(data.get("eof")),
+            session=TerminalSessionView.from_dict(session) if session else None,
+        )
+
+
+
+@dataclass(frozen=True)
 class RetryPolicy:
     max_attempts: int = 4
     base_delay_seconds: float = 0.25
@@ -155,5 +244,9 @@ __all__ = [
     "Event",
     "Artifact",
     "ControlResult",
+    "CompletionSubscription",
+    "CompletionSubscriptionList",
+    "TerminalSessionView",
+    "TerminalOutput",
     "RetryPolicy",
 ]

@@ -30,6 +30,7 @@ READ_TOOLS = [
     ("__memory__", "memory_get", "orchestrator.memory_chat"),
     ("__memory__", "memory_search", "orchestrator.memory_chat"),
     ("__desktop_codegen__", "offer_desktop_codegen", "orchestrator.desktop_codegen"),
+    ("__skill_guidance__", "read_user_skill", "orchestrator.skill_guidance_read"),
 ]
 SUBTASK = ("__subtasks__", "delegate_subtasks", "orchestrator.subtasks")
 

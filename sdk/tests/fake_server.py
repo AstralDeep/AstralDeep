@@ -4,9 +4,11 @@ The in-memory state complements backend authority and PostgreSQL qualification.
 
 from __future__ import annotations
 
+import base64
 import json
 import threading
 import uuid
+from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
 
@@ -23,6 +25,9 @@ _SCOPE_FOR_TOOL = {
     "astral_emergency_status": "operations.read",
     "astral_emergency_stop": "operations.control",
     "astral_emergency_resume": "operations.control",
+    "astral_subscribe_operation_completion": "operations.control",
+    "astral_list_operation_completion_subscriptions": "operations.read",
+    "astral_cancel_operation_completion_subscription": "operations.control",
 }
 
 
@@ -38,6 +43,9 @@ class FakeAstralState:
         self.requests: list[dict[str, Any]] = []
         self.stop_engaged: bool = False
         self.stop_revision: int = 0
+        self.subscriptions: dict[tuple[str, str], dict[str, Any]] = {}
+        self.terminals: dict[str, dict[str, Any]] = {}
+        self.terminal_interrupts: list[str] = []
 
 
 def _operation_view(op: dict[str, Any]) -> dict[str, Any]:
@@ -70,6 +78,9 @@ class _Handler(BaseHTTPRequestHandler):
                         www_authenticate=challenge)
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path.startswith("/api/terminals"):
+            self._terminal_api("POST")
+            return
         if self.path.startswith("/api/emergency-stop/"):
             self._owner_emergency()
             return
@@ -118,7 +129,96 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"jsonrpc": "2.0", "id": request_id, "result": result})
 
     def do_GET(self) -> None:  # noqa: N802
+        if self.path.startswith("/api/terminals"):
+            self._terminal_api("GET")
+            return
         self._owner_emergency()
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._terminal_api("DELETE")
+
+    def _terminal_authorized(self) -> bool:
+        return self.headers.get("Authorization") == f"Bearer {self.state.owner_token}"
+
+    def _terminal_describe(self, session: dict[str, Any]) -> dict[str, Any]:
+        output = session["output"]
+        return {"session_id": session["session_id"], "cols": session["cols"],
+                "rows": session["rows"], "created_at_monotonic": session["created"],
+                "idle_seconds": 0.0, "ring_start": 0, "ring_end": len(output)}
+
+    def _terminal_api(self, method: str) -> None:
+        if not self._terminal_authorized():
+            self._send_json(401, {"error": "terminal_owner_authentication_required"})
+            return
+        path_only = self.path.split("?", 1)[0]
+        parts = [p for p in path_only.split("/") if p]
+        state = self.state
+        with state.lock:
+            if method == "POST" and len(parts) == 2:
+                length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(length)) if length else {}
+                session_id = str(uuid.uuid4())
+                session = {"session_id": session_id, "cols": body.get("cols", 80),
+                           "rows": body.get("rows", 24), "output": bytearray(),
+                           "closed": False, "created": 1.0}
+                state.terminals[session_id] = session
+                self._send_json(200, self._terminal_describe(session))
+                return
+            if method == "GET" and len(parts) == 2:
+                self._send_json(200, {"sessions": [
+                    self._terminal_describe(s) for s in state.terminals.values() if not s["closed"]]})
+                return
+            if len(parts) == 4:
+                session = state.terminals.get(parts[2])
+                if session is None:
+                    self._send_json(404, {"error": "terminal_session_not_found"})
+                    return
+                action = parts[3]
+                if session["closed"] and action != "output":
+                    self._send_json(409, {"error": "terminal_session_closed"})
+                    return
+                if action == "input" and method == "POST":
+                    length = int(self.headers.get("Content-Length", "0"))
+                    body = json.loads(self.rfile.read(length)) if length else {}
+                    if not body.get("data_b64"):
+                        self._send_json(422, {"error": "terminal_input_invalid"})
+                        return
+                    session["output"].extend(base64.b64decode(body["data_b64"]))
+                    self._send_json(200, self._terminal_describe(session))
+                    return
+                if action == "resize" and method == "POST":
+                    length = int(self.headers.get("Content-Length", "0"))
+                    body = json.loads(self.rfile.read(length)) if length else {}
+                    session["cols"], session["rows"] = body.get("cols", 80), body.get("rows", 24)
+                    self._send_json(200, self._terminal_describe(session))
+                    return
+                if action == "interrupt" and method == "POST":
+                    state.terminal_interrupts.append(session["session_id"])
+                    self._send_json(200, self._terminal_describe(session))
+                    return
+                if action == "output" and method == "GET":
+                    query = parse_qs(urlsplit(self.path).query)
+                    offset = int(query.get("offset", ["0"])[0])
+                    if offset < 0 or offset > len(session["output"]):
+                        offset = min(max(offset, 0), len(session["output"]))
+                    chunk = bytes(session["output"][offset:offset + 65536])
+                    self._send_json(200, {
+                        "session_id": session["session_id"], "offset": offset,
+                        "next_offset": offset + len(chunk),
+                        "data_b64": base64.b64encode(chunk).decode("ascii"),
+                        "bytes": len(chunk), "truncated": False, "eof": session["closed"],
+                        "session": None if session["closed"] else self._terminal_describe(session)})
+                    return
+            if method == "DELETE" and len(parts) == 3:
+                session = state.terminals.get(parts[2])
+                if session is None:
+                    self._send_json(404, {"error": "terminal_session_not_found"})
+                    return
+                session["closed"] = True
+                self._send_json(200, {"session_id": session["session_id"],
+                                      "closed": True, "reason": "owner_close"})
+                return
+        self._send_json(404, {"error": "not found"})
 
     def _owner_emergency(self) -> None:
         if self.headers.get("Authorization") != f"Bearer {self.state.owner_token}":
@@ -221,6 +321,69 @@ class _Handler(BaseHTTPRequestHandler):
     def _tool_astral_get_artifact(self, arguments: dict[str, Any]) -> dict[str, Any]:
         op = self._tool_astral_get_operation(arguments)
         return {"id": op["id"], "revision": op["revision"], "result": {"text": "synthetic result"}}
+
+    def _tool_astral_subscribe_operation_completion(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        source_id = arguments["source_operation_id"]
+        target_id = arguments["target_operation_id"]
+        with self.state.lock:
+            target = self.state.operations.get(target_id)
+            source = self.state.operations.get(source_id)
+            if target is None or source is None:
+                raise _ToolError("work_not_found")
+            if target["revision"] != arguments["expected_revision"]:
+                raise _ToolError("assignment_revision_conflict")
+            if source["disposition"] in ("completed", "failed", "cancelled"):
+                raise _ToolError("assignment_not_waiting")
+            key = (source_id, target_id)
+            existing = self.state.subscriptions.get(key)
+            if existing is not None:
+                return {"operation": _operation_view(target), "applied": False,
+                        "subscription": {"source_operation_id": source_id,
+                                         "target_operation_id": target_id}}
+            self.state.subscriptions[key] = {
+                "source_operation_id": source_id, "target_operation_id": target_id,
+                "target_disposition": target["disposition"], "target_phase": target["phase"],
+                "event_revision": 0, "source_disposition": source["disposition"],
+                "source_missing": False,
+            }
+            target["disposition"] = "awaiting_event"
+            target["phase"] = "awaiting_event"
+            target["revision"] += 1
+            return {"operation": _operation_view(target), "applied": True,
+                    "subscription": {"source_operation_id": source_id,
+                                     "target_operation_id": target_id}}
+
+    def _tool_astral_list_operation_completion_subscriptions(
+            self, arguments: dict[str, Any]) -> dict[str, Any]:
+        with self.state.lock:
+            entries = [dict(entry) for entry in self.state.subscriptions.values()]
+        entries.sort(key=lambda entry: entry["target_operation_id"])
+        after_id = arguments.get("after_id")
+        if after_id is not None:
+            entries = [entry for entry in entries if entry["target_operation_id"] > after_id]
+        limit = arguments.get("limit", 50)
+        selected = entries[:limit]
+        next_after_id = selected[-1]["target_operation_id"] if len(entries) > limit else None
+        return {"subscriptions": selected, "next_after_id": next_after_id}
+
+    def _tool_astral_cancel_operation_completion_subscription(
+            self, arguments: dict[str, Any]) -> dict[str, Any]:
+        source_id = arguments["source_operation_id"]
+        target_id = arguments["target_operation_id"]
+        with self.state.lock:
+            target = self.state.operations.get(target_id)
+            entry = self.state.subscriptions.get((source_id, target_id))
+            if target is None or entry is None:
+                raise _ToolError("work_not_found")
+            if target["revision"] != arguments["expected_revision"]:
+                raise _ToolError("assignment_revision_conflict")
+            del self.state.subscriptions[(source_id, target_id)]
+            target["disposition"] = "active"
+            target["phase"] = "waiting"
+            target["revision"] += 1
+            return {"operation": _operation_view(target), "applied": True,
+                    "subscription": {"source_operation_id": source_id,
+                                     "target_operation_id": target_id}}
 
     def _tool_astral_emergency_status(self, arguments: dict[str, Any]) -> dict[str, Any]:
         with self.state.lock:

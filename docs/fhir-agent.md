@@ -114,11 +114,17 @@ first card only.
 A stream runs for the duration it was asked for, counted from its first start. Both tools
 declare `minutes` as their duration argument, so the orchestrator holds the deadline and
 the tool does not have to. Leaving the chat or losing the connection pauses the stream,
-and coming back resumes it by running the tool again, but the deadline does not move. A
-stream whose deadline passed while it was paused is ended instead of resumed, and a run
-still going 30 seconds after the deadline is ended by the orchestrator. Asking again after
-that starts a new stream. A stream the orchestrator ends keeps its last live card, because
-the tool never sent its closing one.
+and coming back resumes it by running the tool again, but the deadline does not move: the
+agent remembers when it first saw the stream and tells the tool how long it has been
+running, so a resumed run lasts only the rest of the original duration and sends the same
+closing card as a stream that was never interrupted. The agent keeps that clock per
+stream id and loses it when the agent restarts; the orchestrator's deadline stays
+authoritative either way. A stream whose deadline passed while it was paused is ended
+instead of resumed, and a run still going 30 seconds after the deadline is ended by the
+orchestrator. Asking again after that starts a new stream. A stream ended by an
+unsubscribe, the dormant timeout or a server restart keeps its last live card, because no
+tool run is left to send a closing one; so does a run that never receives or ignores the
+tell-tale elapsed time, which the deadline cuts off the same way.
 
 ```text
 FF_TOOL_STREAMING=true

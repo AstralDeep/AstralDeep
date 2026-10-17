@@ -7,9 +7,11 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
+import json
 import os
 import stat
 import threading
+import uuid
 from uuid import uuid4
 
 from audit.repository import AuditRepository
@@ -24,6 +26,14 @@ from persistent_agents.models import AssignmentError
 
 class SkillCatalogError(AssignmentError):
     pass
+
+
+def _canonical_identity(value):
+    try:
+        parsed = uuid.UUID(value) if type(value) is str else None
+    except ValueError:
+        parsed = None
+    return parsed is not None and parsed.version == 4 and str(parsed) == value
 
 
 @dataclass(frozen=True, repr=False)
@@ -247,6 +257,45 @@ class UserSkillFacade:
         result = await self._transaction(caller, read, delivery_check=unchanged, read_only=True)
         return result[0]
 
+    async def read_revision(self, *, caller, skill_id, revision):
+        if not _canonical_identity(skill_id) or type(revision) is not int or revision < 1:
+            raise SkillCatalogError('skill_invalid', 422)
+        def read(tx):
+            head = self.repository.get(tx, owner_id=caller.owner_id, skill_id=skill_id)
+            if head is None or head.deleted_at is not None or not head.enabled:
+                raise SkillCatalogError('skill_not_found', 404)
+            if head.revision != revision:
+                raise SkillCatalogError('skill_conflict', 409)
+            skill = self._skill(tx, caller.owner_id, head)
+            self._audit_read(tx, caller, head, len(skill.instructions))
+            return head, skill
+        def unchanged(tx, captured):
+            if self.repository.get(tx, owner_id=caller.owner_id, skill_id=skill_id) != captured[0]:
+                raise SkillCatalogError('skill_conflict', 409)
+        head, skill = await self._transaction(caller, read, delivery_check=unchanged, read_only=True)
+        return skill, head
+
+    async def assert_revision(self, *, caller, skill_id, revision, expected):
+        if not _canonical_identity(skill_id) or type(revision) is not int or revision < 1:
+            raise SkillCatalogError('skill_invalid', 422)
+        def check(tx):
+            head = self.repository.get(tx, owner_id=caller.owner_id, skill_id=skill_id)
+            if head is None or head.deleted_at is not None or not head.enabled:
+                raise SkillCatalogError('skill_not_found', 404)
+            if head != expected or head.revision != revision:
+                raise SkillCatalogError('skill_conflict', 409)
+            return head
+        return await self._transaction(caller, check, read_only=True)
+
+    def _audit_read(self, tx, caller, head, body_chars):
+        now = datetime.now(timezone.utc)
+        event = AuditEventCreate(actor_user_id=caller.owner_id, auth_principal=caller.owner_id,
+            event_class='settings', action_type='user_skill_read',
+            description='Owner skill revision read on demand', correlation_id=head.skill_id,
+            outcome='success', outputs_meta={'skill_id': head.skill_id, 'revision': head.revision,
+                'body_chars': body_chars}, started_at=now, completed_at=now)
+        self._append_audit(tx, caller, event, read_only=True)
+
     def _append_audit(self, tx, caller, event, *, read_only=False):
         from orchestrator.work_submit import _sync
         result = _sync(self.audit.insert_in_transaction(event, transaction=tx, plane_runtime=self.runtime))
@@ -265,36 +314,95 @@ class UserSkillFacade:
             started_at=now, completed_at=now)
         self._append_audit(tx, caller, event, read_only=read_only)
 
-    def _audit(self, tx, caller, prepared):
+    def _audit(self, tx, caller, prepared, import_meta=None):
         command = prepared.command
         now = datetime.now(timezone.utc)
+        outputs = {'skill_id': command.skill_id, 'command_id': command.command_id,
+                   'revision': command.expected_revision + 1}
+        if import_meta is not None:
+            outputs['import'] = import_meta
         event = AuditEventCreate(actor_user_id=caller.owner_id, auth_principal=caller.owner_id,
+            event_id=command.command_id if import_meta is not None else None,
             event_class='settings', action_type='user_skill_' + command.command,
             description='Owner skill revision command', correlation_id=command.skill_id,
-            outcome='success', outputs_meta={'skill_id': command.skill_id,
-                'command_id': command.command_id, 'revision': command.expected_revision + 1},
+            outcome='success', outputs_meta=outputs,
             started_at=now, completed_at=now)
         self._append_audit(tx, caller, event)
 
-    async def _change(self, caller, build):
+    async def _change(self, caller, build, *, import_meta=None):
         self._current(caller)
         caller.require_write()
         def change(tx):
+            if import_meta is not None and not legacy.import_enabled():
+                raise SkillCatalogError('skill_import_disabled', 403)
             command = build(tx)
             prepared = self.repository.prepare_change(tx, command=command)
             if not prepared.replayed:
-                self._audit(tx, caller, prepared)
+                self._audit(tx, caller, prepared, import_meta)
+            elif import_meta is not None:
+                record = self.repositories.audit.get(tx, chain_id=caller.owner_id,
+                                                     event_id=command.command_id)
+                if (record is None or record.event.action_type != 'user_skill_create'
+                        or record.event.correlation_id != command.skill_id
+                        or json.loads(record.event.outputs_json).get('import') != import_meta):
+                    raise SkillCatalogError('skill_conflict', 409)
             result = self.repository.apply_change(tx, command=command)
             if result.replayed != prepared.replayed:
                 raise SkillCatalogError('skill_conflict', 409)
+            if import_meta is not None and not legacy.import_enabled():
+                raise SkillCatalogError('skill_import_disabled', 403)
             return result
         return await self._transaction(caller, change)
 
+    def _import_preview(self, caller, source):
+        from orchestrator.user_skill_import import (
+            LICENSE_REFUSAL_MESSAGE, SkillImportError, parse_skill_import,
+        )
+        self._current(caller)
+        caller.require_write()
+        if not legacy.enabled() or not legacy.import_enabled():
+            raise SkillCatalogError('skill_import_disabled', 403)
+        if type(source) is not str:
+            raise SkillCatalogError('skill_invalid', 422)
+        preview = parse_skill_import(source)
+        if preview.license_requires_confirmation:
+            raise SkillImportError(LICENSE_REFUSAL_MESSAGE,
+                                   'skill_import_license_required')
+        return preview
+
+    async def preview_import(self, *, caller, source):
+        from orchestrator.user_skill_import import audit_representation
+        preview = self._import_preview(caller, source)
+
+        def record(tx):
+            self._current(caller)
+            now = datetime.now(timezone.utc)
+            event = AuditEventCreate(actor_user_id=caller.owner_id,
+                auth_principal=caller.owner_id, event_class='settings',
+                action_type='user_skill_import_preview',
+                description='Owner skill import previewed', outcome='success',
+                correlation_id=str(uuid4()),
+                outputs_meta=audit_representation(preview),
+                started_at=now, completed_at=now)
+            self._append_audit(tx, caller, event)
+            return preview
+
+        return await self._transaction(caller, record)
+
     async def save(self, *, caller, skill_id, command_id, expected_revision, name,
-                   instructions, applies_to, command='', enabled=True, slug=''):
+                   instructions, applies_to, command='', enabled=True, slug='',
+                   import_source=None):
         from astralplane.repositories.guidance_models import SkillCommand, SkillDefinition
         from orchestrator.slash_commands import reserved_names
         self._current(caller)
+        import_meta = None
+        if import_source is not None:
+            from orchestrator.user_skill_import import audit_representation
+            preview = self._import_preview(caller, import_source)
+            if expected_revision != 0 or enabled is not False:
+                raise SkillCatalogError('skill_invalid', 422)
+            import_meta = audit_representation(preview)
+            import_meta['owner_edited'] = name != preview.name or instructions != preview.instructions
         try:
             if any(type(value) is not str for value in (name, instructions, command, slug)):
                 raise ValueError
@@ -316,7 +424,7 @@ class UserSkillFacade:
                 raise ValueError
         except (TypeError, ValueError):
             raise SkillCatalogError('skill_invalid', 422) from None
-        return await self._change(caller, lambda tx: intent)
+        return await self._change(caller, lambda tx: intent, import_meta=import_meta)
 
     async def set_enabled(self, *, caller, skill_id, command_id, expected_revision, enabled):
         from astralplane.repositories.guidance_models import SkillCommand

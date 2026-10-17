@@ -92,6 +92,20 @@ def generate_materials(
                 ),
                 critical=True,
             )
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(private.public_key()), critical=False)
+            .add_extension(
+                x509.AuthorityKeyIdentifier.from_issuer_public_key(
+                    issuer[0].public_key() if issuer else private.public_key()
+                ), critical=False,
+            )
+            .add_extension(
+                x509.KeyUsage(
+                    digital_signature=True, content_commitment=False,
+                    key_encipherment=issuer is not None, data_encipherment=False,
+                    key_agreement=False, key_cert_sign=issuer is None,
+                    crl_sign=issuer is None, encipher_only=False, decipher_only=False,
+                ), critical=True,
+            )
         )
         if usage:
             builder = builder.add_extension(

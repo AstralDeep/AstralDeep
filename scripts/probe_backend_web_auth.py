@@ -71,6 +71,18 @@ def session(client):
     return value
 
 
+def listed_chat_ids(response):
+    value = response.json()
+    chats = value.get("chats") if isinstance(value, dict) else None
+    require(isinstance(chats, list) and all(
+        isinstance(chat, dict) and isinstance(chat.get("id"), str) and chat["id"]
+        for chat in chats
+    ), "history listing was malformed")
+    identities = {chat["id"] for chat in chats}
+    require(len(identities) == len(chats), "history listing was malformed")
+    return identities
+
+
 def login(client, username: str, password: str, qualification_id: str):
     require(session(client).get("authenticated") is False, "new browser was already authenticated")
     start = client.get(WEB + "/auth/login?next=%2F")
@@ -120,8 +132,22 @@ def exercise(clients, identities, qualification_id, *, clock=time.monotonic, wai
     own_list = owner.get(WEB + "/api/chats")
     foreign_list = foreign.get(WEB + "/api/chats")
     require(own_list.status_code == foreign_list.status_code == 200, "history listing failed")
-    require(chat_id in json.dumps(own_list.json()) and chat_id not in json.dumps(foreign_list.json()),
+    own_ids, foreign_ids = listed_chat_ids(own_list), listed_chat_ids(foreign_list)
+    require("conversation-1" in own_ids and "conversation-2" not in own_ids
+            and "conversation-2" in foreign_ids and "conversation-1" not in foreign_ids
+            and chat_id not in foreign_ids,
             "history listing crossed ownership")
+    retained = owner.get(WEB + "/api/chats/conversation-1")
+    require(retained.status_code == 200, "migrated history message was not retained")
+    payload = retained.json()
+    restored_chat = payload.get("chat") if isinstance(payload, dict) else None
+    require(isinstance(restored_chat, dict) and restored_chat.get("id") == "conversation-1"
+            and isinstance(restored_chat.get("messages"), list) and any(
+                isinstance(message, dict) and message.get("role") == "user"
+                and message.get("content") == "Synthetic message A"
+                for message in restored_chat["messages"]), "migrated history message was not retained")
+    require(foreign.get(WEB + "/api/chats/conversation-1").status_code in {403, 404},
+            "foreign owner could read migrated history")
 
     contents = b"Synthetic backend/browser qualification attachment.\n"
     uploaded = owner.post(WEB + "/api/upload", files={"file": ("qualification.txt", contents, "text/plain")})

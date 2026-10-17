@@ -5,6 +5,7 @@ jobs stay source-free, and signing dependencies are hash-locked.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import subprocess
@@ -247,6 +248,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
 
     expected_scripts = {
         "check_acceptance_mutations.py",
+        "ci_fence_egress_pilot.py",
         "ci_review_diagnostics.py",
         "ci_network_fixture.py",
         "ci_fence_fixture_verifier.py",
@@ -261,6 +263,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "export_xccov_line_coverage.py",
         "extract_release_artifact.py",
         "initialize_backend_web_services.py",
+        "install_doctor.py",
         "install_local_components.py",
         "merge_backend_web_coverage.py",
         "prepare_plane_upgrade_baseline.py",
@@ -291,6 +294,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
     expected_test_paths = {
         "scripts/tests/test_ci_network_fixture.py",
         "scripts/tests/test_ci_fence_fixture_verifier.py",
+        "scripts/tests/test_ci_fence_egress_pilot.py",
         "scripts/tests/test_ci_review_diagnostics.py",
         "scripts/tests/test_acceptance_mutations.py",
         "scripts/tests/test_acceptance_ci_contract.py",
@@ -320,6 +324,8 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "scripts/tests/test_backend_web_state.py",
         "scripts/tests/test_merge_backend_web_coverage.py",
         "scripts/tests/test_install_local_components.py",
+        "scripts/tests/test_install_doctor.py",
+        "backend/tests/test_install_doctor.py",
         "scripts/tests/test_retire_restored_sessions.py",
         "scripts/tests/test_verify_component_ownership.py",
         "scripts/tests/test_verify_composition.py",
@@ -342,6 +348,7 @@ def test_release_tooling_job_excludes_real_component_checkout_tests() -> None:
         "backend/tests/test_python_ci_supply_chain_060.py::test_ci_only_python_manifest_cannot_enter_projection_product_artifacts",
         "scripts/tests/test_verify_composition.py::test_current_composition_has_exact_pins_canonical_urls_and_contracts",
         "scripts/tests/test_verify_composition.py::test_real_checkout_verification_executes_only_local_git_commands",
+        "scripts/tests/test_install_doctor.py::test_real_checkout_composition_and_contract_pass",
     }
 
 
@@ -364,6 +371,28 @@ def test_android_canary_suite_runs_without_projection_checkout(tmp_path: Path) -
     )
 
     assert completed.returncode == 0, completed.stdout
+
+
+def test_lint_job_requires_actual_fence_and_merged_helper_bytes() -> None:
+    from scripts.ci_fence_egress_pilot import REVIEWED_HELPERS, evaluate_workflow
+
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    evaluation = evaluate_workflow(workflow)
+    assert evaluation.state == "conforming", evaluation.reasons
+    assert REVIEWED_HELPERS is not None
+    merged = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", REVIEWED_HELPERS.commit, "origin/main"],
+        cwd=REPO_ROOT, capture_output=True, check=False,
+    )
+    assert merged.returncode == 0, "reviewed helper commit must already be on the default branch"
+    for name, digest in REVIEWED_HELPERS.identities():
+        pinned = subprocess.run(
+            ["git", "show", f"{REVIEWED_HELPERS.commit}:scripts/{name}"],
+            cwd=REPO_ROOT, capture_output=True, check=False,
+        )
+        assert pinned.returncode == 0, "reviewed helper Git object must exist"
+        assert hashlib.sha256(pinned.stdout).hexdigest() == digest
+        assert (REPO_ROOT / "scripts" / name).read_bytes() == pinned.stdout
 
 
 def test_windows_candidate_build_never_installs_the_test_lock() -> None:

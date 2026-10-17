@@ -44,7 +44,12 @@ def session(runtime):
 
 
 @pytest.fixture
-def credentials(runtime):
+def credentials(runtime, monkeypatch):
+    def credential_clock():
+        with runtime.transaction() as tx:
+            return tx.fetch_one("SELECT clock_timestamp() AS now")["now"]
+
+    monkeypatch.setattr("orchestrator.framework_credentials._now", credential_clock)
     return FrameworkCredentialService(plane_runtime=runtime, audit=AuditRepository(plane_runtime=runtime))
 
 
@@ -180,6 +185,145 @@ async def test_revoked_credential_ends_further_polling(ops, credentials, session
     await ops.submit(caller, idempotency_key=str(uuid.uuid4()), name="A", instructions="B")
     credentials.revoke(owner_id=owner, credential_id=view["credential_id"])
     assert credentials.resolve_bearer(token) is None
+
+
+async def _read_command(ops, caller, command, record):
+    if command == "list":
+        return await ops.list(caller)
+    if command == "poll":
+        return await ops.poll(caller, record["id"], after_revision=record["revision"])
+    return await getattr(ops, command)(caller, record["id"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["get", "list", "poll", "result"])
+async def test_cached_framework_caller_cannot_read_after_revocation(ops, credentials, session, command):
+    store, owner, sid = session
+    view, token = _issue(credentials, store, owner, sid)
+    caller = _caller(credentials, token)
+    record = await ops.submit(caller, idempotency_key=str(uuid.uuid4()), name="A", instructions="B")
+    credentials.revoke(owner_id=owner, credential_id=view["credential_id"])
+    with pytest.raises(AssignmentError, match="framework_credential_authority_unavailable"):
+        await _read_command(ops, caller, command, record)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["get", "list", "poll", "result"])
+async def test_revoke_during_read_await_denies_framework_response(ops, credentials, session,
+                                                               monkeypatch, command):
+    store, owner, sid = session
+    view, token = _issue(credentials, store, owner, sid)
+    caller = _caller(credentials, token)
+    record = await ops.submit(caller, idempotency_key=str(uuid.uuid4()), name="A", instructions="B")
+    original = ops.store.transaction
+    completed = []
+
+    async def read_then_revoke(*args, **kwargs):
+        value = await original(*args, **kwargs)
+        if not completed:
+            completed.append(True)
+            credentials.revoke(owner_id=owner, credential_id=view["credential_id"])
+        return value
+
+    monkeypatch.setattr(ops.store, "transaction", read_then_revoke)
+    with pytest.raises(AssignmentError, match="framework_credential_authority_unavailable"):
+        await _read_command(ops, caller, command, record)
+    assert completed == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["get", "list", "poll", "result"])
+async def test_execution_fence_scope_restricts_each_framework_read(ops, credentials, session,
+                                                                monkeypatch, command):
+    from dataclasses import replace
+
+    store, owner, sid = session
+    _, token = _issue(credentials, store, owner, sid)
+    caller = _caller(credentials, token)
+    record = await ops.submit(caller, idempotency_key=str(uuid.uuid4()), name="A", instructions="B")
+    original = credentials.assert_execution
+
+    def attenuated(tx, observation):
+        current = original(tx, observation)
+        return replace(current, credential=replace(current.credential, scopes=("operations.submit",)))
+
+    monkeypatch.setattr(credentials, "assert_execution", attenuated)
+    with pytest.raises(AssignmentError, match="framework_scope_required"):
+        await _read_command(ops, caller, command, record)
+
+
+@pytest.mark.asyncio
+async def test_emergency_status_reads_only_its_current_scoped_owner(ops, credentials, session):
+    from orchestrator.emergency_stop import EmergencyStopCoordinator
+
+    store, owner, sid = session
+    _, token = _issue(credentials, store, owner, sid, scopes=("operations.read",))
+    caller = _caller(credentials, token)
+    ops.emergency = EmergencyStopCoordinator()
+    await ops.emergency.engage(str(uuid.uuid4()), reason="Other synthetic owner")
+    assert (await ops.emergency_status(caller))["state"] == "running"
+    await ops.emergency.engage(owner, reason="Synthetic owner stop")
+    actual = await ops.emergency_status(caller)
+    assert actual["engaged"] is True and actual["reason"] == "Synthetic owner stop"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["missing", "refused"])
+async def test_current_emergency_reader_retains_coordinator_failures(ops, credentials, session,
+                                                                   monkeypatch, scenario):
+    from orchestrator.emergency_stop import EmergencyStopCoordinator, EmergencyStopRefused
+
+    store, owner, sid = session
+    _, token = _issue(credentials, store, owner, sid, scopes=("operations.read",))
+    caller = _caller(credentials, token)
+    ops.emergency = None if scenario == "missing" else EmergencyStopCoordinator()
+    if scenario == "refused":
+        def fail(_):
+            raise EmergencyStopRefused("emergency_stop_unavailable", 503)
+
+        monkeypatch.setattr(ops.emergency, "status", fail)
+    with pytest.raises(AssignmentError, match="emergency_stop_unavailable"):
+        await ops.emergency_status(caller)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["revoked", "coordinator_await", "current_scope"])
+async def test_emergency_status_denies_stale_read_authority(ops, credentials, session,
+                                                          monkeypatch, scenario):
+    from dataclasses import replace
+    from orchestrator.emergency_stop import EmergencyStopCoordinator
+
+    store, owner, sid = session
+    _, token = _issue(credentials, store, owner, sid, scopes=("operations.read",))
+    caller = _caller(credentials, token)
+    ops.emergency = EmergencyStopCoordinator()
+    original = ops.emergency.status
+    observed = []
+
+    async def status(selected_owner):
+        observed.append(selected_owner)
+        value = original(selected_owner)
+        if scenario == "coordinator_await":
+            import asyncio
+
+            await asyncio.to_thread(credentials.revoke, owner_id=owner,
+                                    credential_id=caller.credential_id)
+        return value
+
+    monkeypatch.setattr(ops.emergency, "status", status)
+    if scenario == "revoked":
+        credentials.revoke(owner_id=owner, credential_id=caller.credential_id)
+    elif scenario == "current_scope":
+        current = credentials.assert_execution
+
+        def attenuate(tx, observation):
+            value = current(tx, observation)
+            return replace(value, credential=replace(value.credential, scopes=("operations.control",)))
+
+        monkeypatch.setattr(credentials, "assert_execution", attenuate)
+    with pytest.raises(AssignmentError):
+        await ops.emergency_status(caller)
+    assert observed == ([owner] if scenario == "coordinator_await" else [])
 
 
 @pytest.mark.asyncio

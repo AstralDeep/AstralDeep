@@ -6,7 +6,11 @@ CI workflows gate the right voice/coverage suites without duplication.
 from __future__ import annotations
 
 import ast
+import os
 from pathlib import Path
+import re
+import subprocess
+import textwrap
 
 import pytest
 
@@ -262,12 +266,52 @@ def test_android_ci_gates_all_voice_suites_and_kover_inputs() -> None:
     assert "needs.instrumented.result" in workflow
     assert "needs.build-test.result" in workflow
 
+    assert _android_aggregate_script(workflow)
+
+
+def _android_aggregate_script(workflow: str) -> str:
     aggregate = workflow.split("  android-required:", 1)[1]
-    assert (
-        "      - name: Enforce every Android conformance and coverage producer\n"
-        "        working-directory: .\n"
-        "        run: |"
-    ) in aggregate
+    match = re.search(r"(?m)^        run: \|\n(?P<body>(?:          [^\n]*(?:\n|$))+)", aggregate)
+    assert match is not None
+    return textwrap.dedent(match.group("body"))
+
+
+@pytest.mark.parametrize(
+    ("applicable", "changes", "build", "instrumented", "passed"),
+    [
+        ("true", "success", "success", "success", True),
+        ("true", "success", "success", "skipped", False),
+        ("true", "success", "cancelled", "success", False),
+        ("true", "failure", "success", "success", False),
+        ("false", "success", "skipped", "skipped", True),
+        ("false", "failure", "skipped", "skipped", False),
+        ("false", "success", "failure", "skipped", False),
+        ("", "success", "success", "success", False),
+    ],
+)
+def test_actual_android_aggregate_enforces_changes_and_both_lane_results(
+    tmp_path: Path, applicable: str, changes: str, build: str, instrumented: str, passed: bool,
+) -> None:
+    workflow = (WORKFLOW_ROOT / "android-ci.yml").read_text(encoding="utf-8")
+    script = _android_aggregate_script(workflow)
+    values = {
+        "needs.changes.outputs.android": applicable,
+        "needs.changes.result": changes,
+        "needs.build-test.result": build,
+        "needs.instrumented.result": instrumented,
+    }
+    for expression, value in values.items():
+        script = script.replace("${{ " + expression + " }}", value)
+    environment = {key: value for key, value in os.environ.items() if key in {"PATH", "LANG", "LC_ALL"}}
+    summary = tmp_path / "summary.txt"
+    environment["GITHUB_STEP_SUMMARY"] = str(summary)
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", script], cwd=WORKFLOW_ROOT.parent.parent,
+        env=environment, capture_output=True, text=True, check=False,
+    )
+    assert (result.returncode == 0) is passed
+    if passed:
+        assert summary.read_text().strip() == ("passed" if applicable == "true" else "not applicable")
 
 
 def test_apple_ci_gates_voice_suites_and_every_xccov_input() -> None:

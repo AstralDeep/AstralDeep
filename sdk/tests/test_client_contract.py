@@ -10,7 +10,9 @@ import uuid
 import pytest
 
 from astral_sdk import AstralClient, AsyncAstralClient
-from astral_sdk.errors import AstralAuthError, AstralConflictError, RetryExhaustedError
+from astral_sdk.errors import (
+    AstralAuthError, AstralConflictError, AstralHTTPError, RetryExhaustedError,
+)
 from astral_sdk.models import RetryPolicy
 from tests.fake_server import FakeAstralState
 
@@ -160,3 +162,63 @@ async def test_async_client_wait_for_terminal(fake_server):
         await client.cancel_operation(op.id, expected_revision=paused.revision)
         terminal = await client.wait_for_terminal(op.id, poll_interval_seconds=0.01, timeout_seconds=5)
         assert terminal.is_terminal
+
+
+def test_completion_subscription_round_trip(fake_server):
+    with AstralClient(fake_server.base_url, fake_server.state.valid_token) as client:
+        source = client.submit_operation(idempotency_key=str(uuid.uuid4()),
+                                         name="S", instructions="s")
+        target = client.submit_operation(idempotency_key=str(uuid.uuid4()),
+                                         name="T", instructions="t")
+        armed = client.subscribe_operation_completion(
+            source_operation_id=source.id, target_operation_id=target.id,
+            expected_revision=target.revision)
+        assert armed.applied is True
+        assert armed.operation.phase == "awaiting_event"
+        replay = client.subscribe_operation_completion(
+            source_operation_id=source.id, target_operation_id=target.id,
+            expected_revision=armed.operation.revision)
+        assert replay.applied is False
+
+        listed = client.list_completion_subscriptions()
+        assert listed.next_after_id is None
+        assert len(listed.subscriptions) == 1
+        entry = listed.subscriptions[0]
+        assert entry.source_operation_id == source.id
+        assert entry.target_operation_id == target.id
+        assert entry.source_missing is False
+
+        with pytest.raises(AstralConflictError):
+            client.subscribe_operation_completion(
+                source_operation_id=source.id, target_operation_id=target.id,
+                expected_revision=1)
+
+        released = client.cancel_operation_completion_subscription(
+            source_operation_id=source.id, target_operation_id=target.id,
+            expected_revision=armed.operation.revision)
+        assert released.applied is True
+        assert released.operation.phase == "waiting"
+        assert client.list_completion_subscriptions().subscriptions == ()
+        with pytest.raises(AstralHTTPError, match="work_not_found"):
+            client.cancel_operation_completion_subscription(
+                source_operation_id=source.id, target_operation_id=target.id,
+                expected_revision=released.operation.revision)
+
+
+async def test_async_completion_subscription_round_trip(fake_server):
+    async with AsyncAstralClient(fake_server.base_url, fake_server.state.valid_token) as client:
+        source = await client.submit_operation(idempotency_key=str(uuid.uuid4()),
+                                               name="S", instructions="s")
+        target = await client.submit_operation(idempotency_key=str(uuid.uuid4()),
+                                               name="T", instructions="t")
+        armed = await client.subscribe_operation_completion(
+            source_operation_id=source.id, target_operation_id=target.id,
+            expected_revision=target.revision)
+        assert armed.applied is True
+        listed = await client.list_completion_subscriptions()
+        assert len(listed.subscriptions) == 1
+        released = await client.cancel_operation_completion_subscription(
+            source_operation_id=source.id, target_operation_id=target.id,
+            expected_revision=armed.operation.revision)
+        assert released.applied is True
+        assert (await client.list_completion_subscriptions()).subscriptions == ()

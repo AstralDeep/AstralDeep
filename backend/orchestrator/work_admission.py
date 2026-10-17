@@ -18,8 +18,8 @@ from astralplane.repositories import (
     RepositoryConflictError as PlaneRepositoryConflictError,
 )
 from astralplane.repositories import work_admission as plane_admission
-from orchestrator.emergency_stop import EmergencyStopRefused
 
+from orchestrator.emergency_stop import EmergencyStopRefused
 
 _OPERATION_KIND_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SAFE_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
@@ -241,6 +241,18 @@ class OperationRecord:
 
 
 @dataclass(frozen=True)
+class RetryableOperationCursor:
+    accepted_at: datetime
+    operation_id: uuid.UUID
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.accepted_at, datetime):
+            raise ValueError("accepted_at must be a timezone-aware datetime")
+        _normalize_datetime(self.accepted_at)
+        _require_uuid(self.operation_id, "operation_id")
+
+
+@dataclass(frozen=True)
 class SafeOperationProjection:
     operation_id: uuid.UUID
     operation_kind: str
@@ -373,6 +385,11 @@ class WorkAdmissionRepository(Protocol):
         transaction: Any | None = None,
     ) -> OperationRecord | None: ...
 
+    def get_idempotent_operation(
+        self, *, owner: OperationOwner, idempotency_namespace: str,
+        idempotency_key: str,
+    ) -> OperationRecord | None: ...
+
     def bind_request_generation(
         self,
         fence: ExecutionFence,
@@ -464,6 +481,12 @@ class WorkAdmissionRepository(Protocol):
 
     def expire_execution_leases(
         self, *, now: datetime | None, retention: timedelta
+    ) -> tuple[OperationRecord, ...]: ...
+
+    def list_retryable_for_administration(
+        self, *, terminal_code: str, now: datetime | None,
+        after: RetryableOperationCursor | None, limit: int,
+        handled_idempotency_namespace: str | None = None,
     ) -> tuple[OperationRecord, ...]: ...
 
     def oldest_purge_eligible_due_at(
@@ -732,6 +755,17 @@ class WorkAdmissionCoordinator:
             now=self._now(), retention=self._operation_retention
         )
 
+    def list_retryable_for_administration(
+        self, *, terminal_code: str, after: RetryableOperationCursor | None = None,
+        limit: int = 100,
+        handled_idempotency_namespace: str | None = None,
+    ) -> tuple[OperationRecord, ...]:
+        _validate_retry_inventory_query(terminal_code, after, limit, handled_idempotency_namespace)
+        return self._repository.list_retryable_for_administration(
+            terminal_code=terminal_code, now=self._now(), after=after, limit=limit,
+            handled_idempotency_namespace=handled_idempotency_namespace,
+        )
+
     def oldest_purge_eligible_due_at(
         self, *, transaction: Any | None = None
     ) -> datetime | None:
@@ -809,6 +843,35 @@ def _require_uuid(value: uuid.UUID, name: str) -> uuid.UUID:
 def _validate_safe_code(value: str, name: str) -> None:
     if not _SAFE_CODE_RE.fullmatch(value):
         raise ValueError(f"{name} must be bounded snake_case")
+
+
+def _validate_retry_inventory_query(
+    terminal_code: str, after: RetryableOperationCursor | None, limit: int,
+    handled_idempotency_namespace: str | None,
+) -> None:
+    if not isinstance(terminal_code, str):
+        raise ValueError("terminal_code must be bounded snake_case")
+    _validate_safe_code(terminal_code, "terminal_code")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+        raise ValueError("inventory limit must be between 1 and 1000")
+    if after is not None and not isinstance(after, RetryableOperationCursor):
+        raise ValueError("after must be a retryable operation cursor")
+    if handled_idempotency_namespace is not None and (
+        not isinstance(handled_idempotency_namespace, str)
+        or not 1 <= len(handled_idempotency_namespace) <= 128
+    ):
+        raise ValueError("handled idempotency namespace must be 1..128 characters")
+
+
+def _validate_idempotent_operation_query(
+    owner: OperationOwner, idempotency_namespace: str, idempotency_key: str,
+) -> None:
+    if not isinstance(owner, OperationOwner):
+        raise ValueError("owner must be an OperationOwner")
+    if not isinstance(idempotency_namespace, str) or not 1 <= len(idempotency_namespace) <= 128:
+        raise ValueError("idempotency namespace must be 1..128 characters")
+    if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 256:
+        raise ValueError("idempotency key must be 1..256 characters")
 
 
 def _validate_safe_summary(value: str | None) -> None:
@@ -1504,6 +1567,16 @@ class InMemoryWorkAdmissionRepository:
         with self._lock:
             return self._operations.get(operation_id)
 
+    def get_idempotent_operation(
+        self, *, owner: OperationOwner, idempotency_namespace: str,
+        idempotency_key: str,
+    ) -> OperationRecord | None:
+        _validate_idempotent_operation_query(owner, idempotency_namespace, idempotency_key)
+        scope, partition = _owner_partition(owner)
+        with self._lock:
+            operation_id = self._idempotency.get((scope, partition, idempotency_namespace, idempotency_key))
+            return self._operations.get(operation_id)
+
     def bind_request_generation(
         self,
         fence: ExecutionFence,
@@ -1845,6 +1918,42 @@ class InMemoryWorkAdmissionRepository:
         current_time = self._now(now)
         with self._lock:
             return self._expire_execution_leases_locked(current_time, retention)
+
+    def list_retryable_for_administration(
+        self, *, terminal_code: str, now: datetime | None,
+        after: RetryableOperationCursor | None, limit: int,
+        handled_idempotency_namespace: str | None = None,
+    ) -> tuple[OperationRecord, ...]:
+        _validate_retry_inventory_query(terminal_code, after, limit, handled_idempotency_namespace)
+        current_time = self._now(now)
+        with self._lock:
+            records = (
+                record for record in self._operations.values()
+                if record.state is OperationState.RETRYABLE
+                and record.terminal_code == terminal_code
+                and record.purge_after is not None and record.purge_after > current_time
+                and (after is None or (record.accepted_at, record.operation_id.int)
+                     > (after.accepted_at, after.operation_id.int))
+                and (handled_idempotency_namespace is None or not any(
+                    child.parent_operation_id == record.operation_id
+                    and child.operation_kind == record.operation_kind
+                    and child.admission_class is record.admission_class
+                    and child.chat_id == record.chat_id
+                    and child.connection_generation == record.connection_generation
+                    and child.request_generation == record.request_generation
+                    and record.normalized_input_digest is not None
+                    and child.normalized_input_digest == record.normalized_input_digest
+                    and child.owner_scope is record.owner_scope
+                    and child.owner_user_id == record.owner_user_id
+                    and child.connection_scope_id == record.connection_scope_id
+                    and child.idempotency_namespace == handled_idempotency_namespace
+                    and child.idempotency_key == str(record.operation_id)
+                    for child in self._operations.values()
+                ))
+            )
+            return tuple(sorted(
+                records, key=lambda record: (record.accepted_at, record.operation_id.int)
+            )[:limit])
 
     def _expire_execution_leases_locked(
         self, current_time: datetime, retention: timedelta
@@ -2411,6 +2520,18 @@ class PlaneWorkAdmissionRepository:
         )
         return None if record is None else _from_plane_record(record)
 
+    def get_idempotent_operation(
+        self, *, owner: OperationOwner, idempotency_namespace: str,
+        idempotency_key: str,
+    ) -> OperationRecord | None:
+        _validate_idempotent_operation_query(owner, idempotency_namespace, idempotency_key)
+        record = self._invoke(
+            self._plane_repository.get_idempotent_operation,
+            owner=_to_plane_owner(owner), idempotency_namespace=idempotency_namespace,
+            idempotency_key=idempotency_key,
+        )
+        return None if record is None else _from_plane_record(record)
+
     def bind_request_generation(
         self,
         fence: ExecutionFence,
@@ -2626,6 +2747,24 @@ class PlaneWorkAdmissionRepository:
                 self._plane_repository.expire_execution_leases,
                 now=now,
                 retention=retention,
+            )
+        )
+
+    def list_retryable_for_administration(
+        self, *, terminal_code: str, now: datetime | None,
+        after: RetryableOperationCursor | None, limit: int,
+        handled_idempotency_namespace: str | None = None,
+    ) -> tuple[OperationRecord, ...]:
+        _validate_retry_inventory_query(terminal_code, after, limit, handled_idempotency_namespace)
+        return tuple(
+            _from_plane_record(record)
+            for record in self._invoke(
+                self._plane_repository.list_retryable_for_administration,
+                terminal_code=terminal_code, now=now, limit=limit,
+                handled_idempotency_namespace=handled_idempotency_namespace,
+                after=(None if after is None else plane_admission.RetryableOperationCursor(
+                    after.accepted_at, after.operation_id,
+                )),
             )
         )
 
