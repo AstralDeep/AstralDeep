@@ -1,4 +1,4 @@
-"""Projects owner-scoped Work status through WorkService for the MCP resource endpoint.
+"""Projects owner-scoped Work status and verified retained results through WorkService.
 Framework credential fences and the local sharing policy guard every read and delivery.
 """
 
@@ -20,7 +20,7 @@ from personalization.phi_gate import PHIGate
 
 RESOURCE_SCOPES = ("mcp:tools:read",)
 WORK_UUID4 = r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
-RESOURCE_URI = re.compile(rf"^astral://work/({WORK_UUID4})/(status)\Z")
+RESOURCE_URI = re.compile(rf"^astral://work/({WORK_UUID4})/(status|result)\Z")
 RESOURCE_LIST_LIMIT = 50
 
 
@@ -33,6 +33,72 @@ def _text(value, maximum):
             or any(ord(char) < 32 or 0xD800 <= ord(char) <= 0xDFFF for char in value)):
         raise _refuse(503)
     return value
+
+
+def resource_scope(uri):
+    match = RESOURCE_URI.fullmatch(uri) if isinstance(uri, str) else None
+    if match is None:
+        raise MCPAuthError(400, "invalid_uri", "URI must be astral://work/{uuid4}/status or /result", RESOURCE_SCOPES)
+    return "artifacts.read" if match.group(2) == "result" else "operations.read"
+
+
+def bounded_result(work):
+    if (type(work) is not dict or set(work) != {"id", "revision", "result"}
+            or not isinstance(work["id"], str) or re.fullmatch(WORK_UUID4, work["id"]) is None
+            or type(work["revision"]) is not int or not 1 <= work["revision"] <= 2**63 - 1):
+        raise _refuse(503)
+    result = work["result"]
+    if (type(result) is not dict or set(result) != {"version", "available", "reason", "content"}
+            or type(result["version"]) is not int or result["version"] != 1
+            or type(result["available"]) is not bool):
+        raise _refuse(503)
+    content = result["content"]
+    if result["available"] is False:
+        if result["reason"] not in ("unsupported", "not_completed", "not_retained", "unavailable") or content is not None:
+            raise _refuse(503)
+        return {**work, "result": dict(result)}
+    if (result["reason"] is not None or type(content) is not dict
+            or set(content) != {"version", "scope", "disposition", "source", "passages"}
+            or type(content["version"]) is not int or content["version"] != 1
+            or content["scope"] != "one_page_excerpts"
+            or content["disposition"] not in ("evidence", "insufficient_evidence")):
+        raise _refuse(503)
+    source, passages = content["source"], content["passages"]
+    if (type(source) is not dict or set(source) != {
+            "requested_url", "final_url", "retrieved_at", "media_type", "extraction_profile",
+            "title", "body_complete", "extraction_complete", "excerpt_complete", "redacted",
+            "action_id", "result_digest", "revision_digest",
+        } or type(passages) is not list or len(passages) > 8
+            or (content["disposition"] == "evidence") != bool(passages)):
+        raise _refuse(503)
+    title = source["title"]
+    if (type(title) is not str or len(title) > 512
+            or any(ord(char) < 32 or 0xD800 <= ord(char) <= 0xDFFF for char in title)):
+        raise _refuse(503)
+    if (type(source["action_id"]) is not str or re.fullmatch(WORK_UUID4, source["action_id"]) is None
+            or any(type(source[name]) is not str or re.fullmatch(r"[a-f0-9]{64}", source[name]) is None
+                   for name in ("result_digest", "revision_digest"))):
+        raise _refuse(503)
+    projected = []
+    seen = set()
+    for passage in passages:
+        if (type(passage) is not dict or set(passage) != {"id", "text"}
+                or type(passage["id"]) is not str or re.fullmatch(r"p[0-9]{3,5}", passage["id"]) is None
+                or passage["id"] in seen or type(passage["text"]) is not str
+                or not passage["text"].strip() or len(passage["text"]) > 512
+                or any((ord(char) < 32 and char not in "\n\r\t") or 0xD800 <= ord(char) <= 0xDFFF
+                       for char in passage["text"])):
+            raise _refuse(503)
+        seen.add(passage["id"])
+        projected.append(dict(passage))
+    return {"id": work["id"], "revision": work["revision"], "result": {
+        "version": 1, "available": True, "reason": None, "content": {
+            "version": 1, "scope": "one_page_excerpts", "disposition": content["disposition"],
+            "source": {"title": title, "action_id": source["action_id"],
+                       "result_digest": source["result_digest"], "revision_digest": source["revision_digest"]},
+            "passages": projected,
+        },
+    }}
 
 
 def bounded_status(work: dict) -> dict:
@@ -65,14 +131,14 @@ def bounded_status(work: dict) -> dict:
 
 
 class WorkResourceAuthority:
-    def __init__(self, orchestrator: Any, user_id: str, claims: dict):
+    def __init__(self, orchestrator: Any, user_id: str, claims: dict, *, scope="operations.read"):
         self.orchestrator = orchestrator
         self.ops = getattr(orchestrator, "framework_work_operations", None)
         self.caller = claims.get("_framework_caller") if isinstance(claims, dict) else None
         if (not isinstance(self.ops, FrameworkWorkOperations)
                 or not isinstance(self.caller, FrameworkCaller)
                 or user_id != self.caller.owner_id or claims.get("sub") != user_id
-                or not self.caller.has_scope("operations.read")
+                or scope not in ("operations.read", "artifacts.read") or not self.caller.has_scope(scope)
                 or any(claims.get(key) for key in
                        ("act", "delegated", "machine_class", "machine_turn_class", "_machine_turn"))):
             raise _refuse()
@@ -81,7 +147,7 @@ class WorkResourceAuthority:
         self.store = self.ops.store
         self.gate = getattr(self.assignments, "phi_gate", None)
         self._bound()
-        self.reader = FrameworkWorkReader(self.ops, self.caller, "operations.read")
+        self.reader = FrameworkWorkReader(self.ops, self.caller, scope)
         self.service = self.reader.service
 
     def _bound(self):
@@ -119,6 +185,8 @@ class WorkResourceAuthority:
         return value
 
     async def list(self):
+        if self.reader.scope != "operations.read":
+            raise _refuse()
         try:
             page = await self.service.list(
                 self.caller.owner_id, {"sub": self.caller.owner_id}, limit=RESOURCE_LIST_LIMIT,
@@ -138,19 +206,22 @@ class WorkResourceAuthority:
         return await self._share(resources)
 
     async def read(self, uri):
-        match = RESOURCE_URI.fullmatch(uri) if isinstance(uri, str) else None
-        if match is None:
-            raise MCPAuthError(400, "invalid_uri", "URI must be astral://work/{uuid4}/status", RESOURCE_SCOPES)
+        scope = resource_scope(uri)
+        if scope != self.reader.scope:
+            raise _refuse()
+        match = RESOURCE_URI.fullmatch(uri)
+        retained = scope == "artifacts.read"
         try:
-            record = await self.service.get(
+            record = await getattr(self.service, "result" if retained else "get")(
                 self.caller.owner_id, {"sub": self.caller.owner_id}, match.group(1),
             )
         except AssignmentError as exc:
             raise _refuse(exc.status_code) from None
-        view = bounded_status(record)
+        view = bounded_result(record) if retained else bounded_status(record)
         if view["id"] != match.group(1):
             raise _refuse(503)
         return await self._share({
-            "uri": uri, "name": f"Status: {view['title']}", "mimeType": "application/json",
+            "uri": uri, "name": f"Retained result: {view['id']}" if retained else f"Status: {view['title']}",
+            "mimeType": "application/json",
             "boundedViewModel": view,
         })

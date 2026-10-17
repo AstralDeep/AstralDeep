@@ -1,4 +1,4 @@
-"""Serves flag-gated MCP discovery, tools, and owner-authorized Work status resources.
+"""Serves flag-gated MCP discovery, tools, and owner-authorized Work status and retained-result resources.
 Installed by orchestrator.py, it binds mcp_authz.py authorization and mcp_projection.py tool dispatch.
 """
 
@@ -37,8 +37,9 @@ from orchestrator.mcp_projection import (
 )
 from orchestrator.mcp_work_resources import (
     RESOURCE_SCOPES,
-    RESOURCE_URI as _WORK_RESOURCE_URI_PATTERN,
+    RESOURCE_URI as _WORK_RESOURCE_URI_PATTERN,  # noqa: F401
     WorkResourceAuthority,
+    resource_scope,
 )
 from orchestrator.work_admission import AdmissionClass, OperationState
 from shared.protocol import (
@@ -364,9 +365,7 @@ async def list_resources(orchestrator: Any, user_id: str, claims: dict) -> list[
 
 
 async def read_resource(orchestrator: Any, user_id: str, uri: str, claims: dict) -> dict:
-    if not isinstance(uri, str) or _WORK_RESOURCE_URI_PATTERN.fullmatch(uri) is None:
-        raise MCPAuthError(400, "invalid_uri", "URI must be astral://work/{uuid4}/status", RESOURCE_SCOPES)
-    return await WorkResourceAuthority(orchestrator, user_id, claims).read(uri)
+    return await WorkResourceAuthority(orchestrator, user_id, claims, scope=resource_scope(uri)).read(uri)
 
 
 async def _wait_for_disconnect(
@@ -862,7 +861,9 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                             )
 
                         try:
-                            resource_authority = WorkResourceAuthority(orchestrator, user_id, claims)
+                            resource_authority = WorkResourceAuthority(
+                                orchestrator, user_id, claims, scope=resource_scope(uri),
+                            )
                             resource = await resource_authority.read(uri)
                             result = {
                                 "resultType": "complete",
