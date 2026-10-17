@@ -1,7 +1,5 @@
-"""Tests for orchestrator/work_recovery.py: executor-node failure recovery over the
-work-admission coordinator with a manually advanced clock — reschedule, idempotent
-replay, denial preservation (cancellation/stop/uncertainty/depth), refusals, and
-stale-executor fencing after recovery.
+"""Checks explicit admission-metadata recovery through the work coordinator.
+Clock-controlled replay, denials and stale fences are library evidence, not executor delivery.
 """
 
 from __future__ import annotations
@@ -11,6 +9,7 @@ import threading
 import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from orchestrator.work_admission import (
@@ -28,6 +27,7 @@ from orchestrator.work_admission import (
 from orchestrator.work_recovery import (
     RECOVERY_IDEMPOTENCY_NAMESPACE,
     ExecutorRecoveryService,
+    ExecutorRecoveryMode,
     RecoveryDisposition,
     owner_stop_gate,
     recovery_interval_seconds,
@@ -114,8 +114,28 @@ def _service(
     return ExecutorRecoveryService(
         coordinator,
         stop_gate=stop_gate or (lambda record: False),
+        mode=ExecutorRecoveryMode.ADMISSION_METADATA_ONLY,
         **kwargs,
     )
+
+
+@pytest.mark.parametrize("mode", [None, True, "admission_metadata_only", object()])
+def test_recovery_mode_requires_the_closed_typed_policy(mode):
+    with pytest.raises(ValueError, match="explicit and typed"):
+        ExecutorRecoveryService(_coordinator(_FakeClock()), stop_gate=lambda _record: False,
+                                mode=mode)
+
+
+def test_production_constructor_explicitly_preserves_unsupported_admissions():
+    import ast
+
+    source = Path(__file__).resolve().parents[1] / "orchestrator/orchestrator.py"
+    tree = ast.parse(source.read_text())
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name) and node.func.id == "ExecutorRecoveryService"]
+    assert len(calls) == 1
+    mode, = [keyword.value for keyword in calls[0].keywords if keyword.arg == "mode"]
+    assert ast.unparse(mode) == "ExecutorRecoveryService.Mode.PRESERVE_UNSUPPORTED"
 
 
 def _claimed_operation(clock: _FakeClock, label: str, **kwargs):

@@ -1,6 +1,6 @@
-"""Discovers expired executor admissions and creates linked, idempotent replacements.
-The periodic recovery loop preserves cancelled, stopped, expired, or uncertain work;
-actual execution and current-authority checks remain with supported workers.
+"""Discovers expired admissions and preserves work without a supported execution boundary.
+Explicit metadata-only mode supports coordinator callers; durable execution and
+current-authority checks remain with the assignment runner and supported workers.
 """
 
 from __future__ import annotations
@@ -40,6 +40,11 @@ class RecoveryDisposition(str, Enum):
     RESCHEDULE_REFUSED = "reschedule_refused"
 
 
+class ExecutorRecoveryMode(str, Enum):
+    PRESERVE_UNSUPPORTED = "preserve_unsupported"
+    ADMISSION_METADATA_ONLY = "admission_metadata_only"
+
+
 class StopEpochReader(Protocol):
     def load(self, owner_id: str) -> dict | None: ...
 
@@ -69,6 +74,8 @@ class RecoveryReport:
 
 
 class ExecutorRecoveryService:
+    Mode = ExecutorRecoveryMode
+
     def __init__(
         self,
         coordinator: WorkAdmissionCoordinator,
@@ -78,7 +85,10 @@ class ExecutorRecoveryService:
         max_recovery_depth: int = 1,
         idempotency_namespace: str = RECOVERY_IDEMPOTENCY_NAMESPACE,
         page_size: int = 100,
+        mode: ExecutorRecoveryMode = ExecutorRecoveryMode.PRESERVE_UNSUPPORTED,
     ) -> None:
+        if type(mode) is not ExecutorRecoveryMode:
+            raise ValueError("executor recovery mode must be explicit and typed")
         if max_recovery_depth < 0:
             raise ValueError("max_recovery_depth cannot be negative")
         if not (1 <= len(idempotency_namespace) <= 128):
@@ -92,17 +102,18 @@ class ExecutorRecoveryService:
         self._idempotency_namespace = idempotency_namespace
         self._page_size = page_size
         self._after: RetryableOperationCursor | None = None
+        self._mode = mode
 
     def recover_expired_executors(self) -> RecoveryReport:
         expired = self._coordinator.expire_execution_leases()
         candidates = self._coordinator.list_retryable_for_administration(
             terminal_code=_EXPIRED_TERMINAL_CODE, after=self._after, limit=self._page_size,
-            handled_idempotency_namespace=self._idempotency_namespace,
+            handled_idempotency_namespace=self._handled_namespace(),
         )
         if not candidates and self._after is not None:
             candidates = self._coordinator.list_retryable_for_administration(
                 terminal_code=_EXPIRED_TERMINAL_CODE, limit=self._page_size,
-                handled_idempotency_namespace=self._idempotency_namespace,
+                handled_idempotency_namespace=self._handled_namespace(),
             )
         recovered = tuple(self._recover_one(record) for record in candidates)
         self._after = (
@@ -110,6 +121,10 @@ class ExecutorRecoveryService:
             if len(candidates) == self._page_size else None
         )
         return RecoveryReport(expired=len(expired), recovered=recovered)
+
+    def _handled_namespace(self):
+        return (self._idempotency_namespace
+                if self._mode is ExecutorRecoveryMode.ADMISSION_METADATA_ONLY else None)
 
     def reschedule_interrupted(self, record: OperationRecord) -> RecoveredOperation:
         return self._recover_one(record)
@@ -148,6 +163,12 @@ class ExecutorRecoveryService:
             return RecoveredOperation(
                 operation_id=current.operation_id,
                 disposition=RecoveryDisposition.PRESERVED_EXHAUSTED,
+            )
+        if self._mode is ExecutorRecoveryMode.PRESERVE_UNSUPPORTED:
+            return RecoveredOperation(
+                operation_id=current.operation_id,
+                disposition=RecoveryDisposition.UNAVAILABLE,
+                refusal_code="executor_recovery_unavailable",
             )
         return self._reschedule(current)
 

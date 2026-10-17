@@ -148,14 +148,16 @@ async def list_pages(
     project_id: str,
     request: Request,
     limit: int = Query(default=50, ge=1, le=100),
+    cursor: str | None = Query(default=None, min_length=1, max_length=4096),
     user_id: str = Depends(require_user_id),
     payload: dict = Depends(get_current_user_payload),
 ):
     service = _service(request)
     try:
-        pages = service.list_pages(
-            owner_id=user_id, project_id=_project_scope(project_id), limit=limit
+        batch = service.list_page_batch(
+            owner_id=user_id, project_id=_project_scope(project_id), limit=limit, cursor=cursor
         )
+        pages = batch.pages
     except (
         AtlasPageError,
         AtlasNotFound,
@@ -170,7 +172,8 @@ async def list_pages(
         description="Viewed Atlas page list",
         outputs={"project": project_id, "count": len(pages)},
     )
-    return {"pages": [_summary(page) for page in pages], "count": len(pages)}
+    return {"pages": [_summary(page) for page in pages], "count": len(pages),
+            "next_cursor": batch.next_cursor}
 
 
 @atlas_router.post("/projects/{project_id}/pages", status_code=status.HTTP_201_CREATED)

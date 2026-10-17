@@ -6,6 +6,8 @@ ciphertext openings.
 from __future__ import annotations
 
 import sys
+import base64
+import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -30,6 +32,8 @@ from personalization.atlas_pages import (  # noqa: E402
     PageSealed,
     AtlasPageError,
     canonical_page_id,
+    decode_page_cursor,
+    encode_page_cursor,
     envelope_bytes,
     envelope_fingerprint,
     normalize_body,
@@ -42,6 +46,35 @@ from personalization.atlas_pages import (  # noqa: E402
     parse_envelope,
     revision_identity,
 )
+
+
+def test_page_cursor_round_trips_with_exact_owner_project_and_global_scope():
+    page_id = str(uuid4())
+    for project in ("project", None):
+        cursor = encode_page_cursor("owner", project, 123, page_id)
+        assert decode_page_cursor(cursor, "owner", project) == (123, page_id)
+        for owner, wrong_project in [("foreign", project), ("owner", "different")]:
+            with pytest.raises(AtlasPageError, match="page_cursor_invalid"):
+                decode_page_cursor(cursor, owner, wrong_project)
+    assert decode_page_cursor(None, "owner", None) is None
+
+
+@pytest.mark.parametrize("value", ["", "x" * 4097, "!", "a", "YQ", "YR", "Yg", "W10", 1, True])
+def test_page_cursor_refuses_malformed_or_oversized_tokens(value):
+    with pytest.raises(AtlasPageError, match="page_cursor_invalid"):
+        decode_page_cursor(value, "owner", "project")
+
+
+@pytest.mark.parametrize("change", [
+    {"v": True}, {"v": 2}, {"created": True}, {"created": -1},
+    {"created": 2 ** 63}, {"id": "invalid"}, {"id": 1}, {"extra": "x"},
+])
+def test_page_cursor_refuses_unbound_schema_and_types(change):
+    payload = {"v": 1, "owner": "owner", "project": "project", "created": 1, "id": str(uuid4())}
+    payload.update(change)
+    value = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    with pytest.raises(AtlasPageError, match="page_cursor_invalid"):
+        decode_page_cursor(value, "owner", "project")
 
 
 def _sealed(**changes):

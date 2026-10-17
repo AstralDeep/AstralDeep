@@ -39,10 +39,12 @@ from tests.test_work_recovery_postgres import (
 )
 
 
-def lost_operation(runtime, *, without_digest=False, without_delivery_binding=False):
+def lost_operation(runtime, *, without_digest=False, without_delivery_binding=False,
+                   operation_kind="connection_frame"):
     clock = _FakeClock()
     first, second = _node(runtime, clock), _node(runtime, clock)
     request = _request("interrupted")
+    request = replace(request, operation_kind=operation_kind)
     if without_digest:
         request = replace(request, idempotency_namespace=None, idempotency_key=None, normalized_input_digest=None)
     if without_delivery_binding:
@@ -52,6 +54,45 @@ def lost_operation(runtime, *, without_digest=False, without_delivery_binding=Fa
     assert claim is not None
     clock.advance(timedelta(seconds=30))
     return clock, first, second, accepted, claim
+
+
+@pytest.mark.parametrize("kind", [
+    "connection_frame", "background_chat", "mcp_request",
+    "one_shot_assignment", "persistent_assignment",
+])
+def test_default_recovery_never_mints_a_child_without_an_execution_boundary(clean_database, kind):
+    _clock, first, second, accepted, claim = lost_operation(clean_database, operation_kind=kind)
+    before = clean_database.fetch_one("SELECT count(*) AS total FROM operation_submission_result")
+    first_report = ExecutorRecoveryService(second, stop_gate=lambda _record: False).recover_expired_executors()
+    entry, = first_report.recovered
+    assert entry.operation_id == accepted.operation_id
+    assert entry.disposition is RecoveryDisposition.UNAVAILABLE
+    assert entry.refusal_code == "executor_recovery_unavailable"
+    assert entry.recovery_operation_id is None
+    assert _record(second, accepted.operation_id).state is OperationState.RETRYABLE
+    assert second.claim_next(AdmissionClass.INTERACTIVE) is None
+    again = ExecutorRecoveryService(second, stop_gate=lambda _record: False).recover_expired_executors()
+    assert again.recovered[0].disposition is RecoveryDisposition.UNAVAILABLE
+    assert clean_database.fetch_one("SELECT count(*) AS total FROM operation_record")["total"] == 1
+    assert clean_database.fetch_one("SELECT count(*) AS total FROM operation_submission_result") == before
+    from orchestrator.work_admission import StaleExecutionFenceError
+    with pytest.raises(StaleExecutionFenceError):
+        first.assert_current_execution(claim.fence)
+
+
+def test_default_recovery_does_not_adopt_or_hide_an_existing_metadata_child(clean_database):
+    _clock, _first, second, accepted, _claim = lost_operation(clean_database)
+    metadata = _service(second).recover_expired_executors()
+    child = _record(second, metadata.recovered[0].recovery_operation_id)
+    before = clean_database.fetch_one("SELECT count(*) AS total FROM operation_submission_result")
+    for _ in range(2):
+        report = ExecutorRecoveryService(second, stop_gate=lambda _record: False).recover_expired_executors()
+        original, = [entry for entry in report.recovered if entry.operation_id == accepted.operation_id]
+        assert original.disposition is RecoveryDisposition.UNAVAILABLE
+        assert original.recovery_operation_id is None
+        assert _record(second, child.operation_id) == child
+    assert clean_database.fetch_one("SELECT count(*) AS total FROM operation_record")["total"] == 2
+    assert clean_database.fetch_one("SELECT count(*) AS total FROM operation_submission_result") == before
 
 
 def assert_reconsidered(report, operation_id):

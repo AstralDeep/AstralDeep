@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from astralplane.repositories import RepositoryConflictError, RepositoryNotFoundError
-from astralplane.repositories.preferences import MemoryRecord
+from astralplane.repositories.preferences import MemoryEnvelopeCursor, MemoryRecord
 from cryptography.fernet import Fernet
 
 from audit.repository import AuditRepository
@@ -20,6 +20,7 @@ from orchestrator.plane_repository_context import PlaneRepositoryContext, reposi
 from personalization.atlas_pages import (
     KIND_PAGE,
     KIND_REVISION,
+    FORMAT,
     MAX_HISTORY,
     MAX_LINKS,
     MAX_REVISION,
@@ -27,6 +28,8 @@ from personalization.atlas_pages import (
     PageSealed,
     AtlasPageError,
     canonical_page_id,
+    decode_page_cursor,
+    encode_page_cursor,
     envelope_bytes,
     envelope_fingerprint,
     normalize_body,
@@ -110,6 +113,12 @@ class PageSummary:
     deleted: bool = False
     revisions_removed: int = 0
     links_removed: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class PageBatch:
+    pages: tuple[PageSummary, ...]
+    next_cursor: str | None
 
 
 class AtlasPageService:
@@ -676,31 +685,44 @@ class AtlasPageService:
     def list_pages(
         self, *, owner_id: str, project_id: str | None, limit: int = 50
     ) -> tuple[PageSummary, ...]:
+        return self.list_page_batch(owner_id=owner_id, project_id=project_id, limit=limit).pages
+
+    def list_page_batch(
+        self, *, owner_id: str, project_id: str | None, limit: int = 50,
+        cursor: str | None = None,
+    ) -> PageBatch:
         caller = self._author(owner_id)
         project = normalize_project(project_id)
-        if not isinstance(limit, int) or not 1 <= limit <= _MAX_LIST:
+        if type(limit) is not int or not 1 <= limit <= _MAX_LIST:
             raise AtlasPageError("limit_out_of_bounds")
+        decoded = decode_page_cursor(cursor, caller, project)
+        continuation = (MemoryEnvelopeCursor(caller, project, FORMAT, KIND_PAGE, *decoded)
+                        if decoded is not None else None)
 
         def accept(transaction):
-            rows = self.pages.repository.list_memory(
+            page = self.pages.repository.list_memory_envelope_page(
                 transaction,
                 owner_id=caller,
                 project_id=project,
-                include_global=False,
-                global_only=project is None,
-                limit=_MAX_LIST,
+                envelope_format=FORMAT,
+                envelope_kind=KIND_PAGE,
+                cursor=continuation,
+                limit=limit,
             )
             summaries: list[PageSummary] = []
-            for row in rows:
+            for row in page.records:
                 envelope = parse_envelope(row.value)
-                if envelope is None or envelope.get("kind") != KIND_PAGE:
-                    continue
-                if envelope.get("owner_id") != caller:
-                    continue
+                if (envelope is None or envelope.get("kind") != KIND_PAGE
+                        or envelope.get("owner_id") != caller
+                        or envelope.get("project_id") != project
+                        or envelope.get("page_id") != row.memory_id):
+                    raise AtlasUnavailable("atlas_page_unreadable")
+                self._opened(envelope)
                 summaries.append(self._summary(row, envelope))
-                if len(summaries) >= limit:
-                    break
-            return tuple(summaries)
+            next_cursor = (encode_page_cursor(caller, project, page.next_cursor.created_at,
+                                             page.next_cursor.memory_id)
+                           if page.next_cursor is not None else None)
+            return PageBatch(tuple(summaries), next_cursor)
 
         return self._run(accept)
 

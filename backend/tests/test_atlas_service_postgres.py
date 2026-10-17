@@ -6,6 +6,8 @@ recovery after injected storage failures.
 
 from __future__ import annotations
 
+from dataclasses import replace
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -122,6 +124,79 @@ def test_create_and_get_round_trip_decrypts_only_for_the_owner(service):
     stored = plane_stored_value(service, created.page_id, OWNER_A)
     assert "First draft" not in stored
     assert stored.startswith('{"body":')
+
+
+def test_page_listing_is_not_hidden_by_newer_ordinary_memories(service):
+    owner = "atlas-list-owner-" + uuid4().hex
+    project = "atlas-list-project-" + uuid4().hex
+    created = service.create_page(owner_id=owner, page=_page(project_id=project))
+    with service.runtime.transaction() as transaction:
+        head = service.pages.repository.get_memory(
+            transaction, owner_id=owner, memory_id=created.page_id
+        )
+        for index in range(101):
+            service.pages.repository.create_memory(
+                transaction,
+                replace(head, memory_id=str(uuid4()), value="Ordinary project memory",
+                        created_at=head.created_at + index + 1,
+                        updated_at=head.updated_at + index + 1, signature=None),
+            )
+    pages = service.list_pages(owner_id=owner, project_id=project, limit=1)
+    assert [page.page_id for page in pages] == [created.page_id]
+
+
+def test_list_batches_continue_without_duplicates_and_use_one_bounded_query(service, monkeypatch):
+    owner, project = "atlas-page-" + uuid4().hex, "project-" + uuid4().hex
+    created = [service.create_page(owner_id=owner, page=_page(project_id=project)) for _ in range(3)]
+    query = service.pages.repository.list_memory_envelope_page
+    calls = []
+
+    def observed(transaction, **kwargs):
+        calls.append(kwargs)
+        return query(transaction, **kwargs)
+
+    monkeypatch.setattr(service.pages.repository, "list_memory_envelope_page", observed)
+    first = service.list_page_batch(owner_id=owner, project_id=project, limit=2)
+    assert len(first.pages) == 2 and first.next_cursor
+    assert len(calls) == 1 and calls[0]["limit"] == 2
+    second = service.list_page_batch(owner_id=owner, project_id=project, limit=2,
+                                     cursor=first.next_cursor)
+    assert second.next_cursor is None
+    assert len(calls) == 2
+    assert {page.page_id for page in first.pages + second.pages} == {p.page_id for p in created}
+    assert len(first.pages + second.pages) == 3
+    for wrong_owner, wrong_project in [("foreign", project), (owner, "foreign")]:
+        with pytest.raises(AtlasPageError, match="page_cursor_invalid"):
+            service.list_page_batch(owner_id=wrong_owner, project_id=wrong_project,
+                                    cursor=first.next_cursor)
+    assert len(calls) == 2
+
+
+def test_list_batch_refuses_broken_cipher_binding_without_exposing_a_summary(service, monkeypatch):
+    owner, project = "atlas-cipher-" + uuid4().hex, "project-" + uuid4().hex
+    service.create_page(owner_id=owner, page=_page(project_id=project))
+
+    def unavailable(*_args):
+        raise AtlasUnavailable("atlas_page_unreadable")
+
+    monkeypatch.setattr(service.cipher, "open", unavailable)
+    with pytest.raises(AtlasUnavailable, match="atlas_page_unreadable"):
+        service.list_page_batch(owner_id=owner, project_id=project)
+
+
+def test_list_batch_refuses_a_header_that_does_not_bind_its_row_identity(service):
+    owner, project = "atlas-identity-" + uuid4().hex, "project-" + uuid4().hex
+    page = service.create_page(owner_id=owner, page=_page(project_id=project))
+    with service.runtime.transaction() as transaction:
+        row = service.pages.repository.get_memory(transaction, owner_id=owner, memory_id=page.page_id)
+        payload = json.loads(row.value)
+        payload["page_id"] = str(uuid4())
+        service.pages.repository.update_memory_value(
+            transaction, owner_id=owner, memory_id=row.memory_id, value=json.dumps(payload),
+            signature=None, expected_updated_at=row.updated_at, updated_at=row.updated_at + 1,
+        )
+    with pytest.raises(AtlasUnavailable, match="atlas_page_unreadable"):
+        service.list_page_batch(owner_id=owner, project_id=project)
 
 
 def plane_stored_value(service, page_id: str, owner: str) -> str:

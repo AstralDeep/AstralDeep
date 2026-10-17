@@ -5,6 +5,7 @@ identities, and seals/opens page bodies with the host Fernet key.
 
 from __future__ import annotations
 
+import base64
 import binascii
 import hashlib
 import json
@@ -18,6 +19,7 @@ from cryptography.fernet import Fernet, InvalidToken
 FORMAT = "astral.atlas-page/v1"
 KIND_PAGE = "page"
 KIND_REVISION = "revision"
+MAX_CURSOR_BYTES = 4096
 MAX_TITLE_BYTES = 256
 MAX_SLUG_CHARACTERS = 128
 MAX_BODY_BYTES = 8192
@@ -136,6 +138,37 @@ def canonical_page_id(value: str) -> str | None:
         return str(UUID(value))
     except ValueError:
         return None
+
+
+def encode_page_cursor(owner_id: str, project_id: str | None, moment: int, page_id: str) -> str:
+    payload = {"v": 1, "owner": owner_id, "project": project_id,
+               "created": moment, "id": page_id}
+    return base64.urlsafe_b64encode(_canonical_bytes(payload)).decode("ascii").rstrip("=")
+
+
+def decode_page_cursor(value: object, owner_id: str, project_id: str | None):
+    if value is None:
+        return None
+    if (not isinstance(value, str) or not 1 <= len(value) <= MAX_CURSOR_BYTES
+            or re.fullmatch(r"[A-Za-z0-9_-]+", value) is None):
+        raise AtlasPageError("page_cursor_invalid")
+    try:
+        raw = base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)
+        if base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=") != value:
+            raise ValueError
+        payload = json.loads(raw)
+        if (type(payload) is not dict
+                or set(payload) != {"v", "owner", "project", "created", "id"}
+                or type(payload["v"]) is not int or payload["v"] != 1
+                or payload["owner"] != owner_id or payload["project"] != project_id
+                or type(payload["created"]) is not int
+                or not 0 <= payload["created"] < 2 ** 63
+                or not isinstance(payload["id"], str)
+                or canonical_page_id(payload["id"]) != payload["id"]):
+            raise ValueError
+    except ValueError:
+        raise AtlasPageError("page_cursor_invalid") from None
+    return payload["created"], payload["id"]
 
 
 def _canonical_bytes(value: dict) -> bytes:

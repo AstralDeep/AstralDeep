@@ -1,6 +1,5 @@
-"""PostgreSQL two-node staging tests for orchestrator/work_recovery.py: one shared
-AstralPlane runtime hosts a failing executor node and a recovering supervisor node,
-with deterministic loss, race, denial, and fencing outcomes across coordinators.
+"""Checks explicit admission-metadata recovery across PostgreSQL coordinators.
+Controlled expiry, races and fence denials are not live two-node executor acceptance.
 """
 
 from __future__ import annotations
@@ -27,6 +26,7 @@ from orchestrator.work_admission import (
 )
 from orchestrator.work_recovery import (
     ExecutorRecoveryService,
+    ExecutorRecoveryMode,
     RecoveryDisposition,
 )
 from tests.helpers.voice_plane_runtime import PlaneTestRuntime, isolated_plane_runtime
@@ -101,7 +101,8 @@ def _node(
 
 def _service(coordinator: WorkAdmissionCoordinator) -> ExecutorRecoveryService:
     return ExecutorRecoveryService(
-        coordinator, stop_gate=lambda record: False
+        coordinator, stop_gate=lambda record: False,
+        mode=ExecutorRecoveryMode.ADMISSION_METADATA_ONLY,
     )
 
 

@@ -1147,6 +1147,7 @@ class Orchestrator:
         self.work_recovery = ExecutorRecoveryService(
             self.work_admission,
             stop_gate=owner_stop_gate(self.emergency_stop_store),
+            mode=ExecutorRecoveryService.Mode.PRESERVE_UNSUPPORTED,
         )
         from orchestrator.agent_generator import (
             BYO_RUNTIME_CONTRACT_VERSION,

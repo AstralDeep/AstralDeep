@@ -300,6 +300,28 @@ def test_listing_is_bounded_and_supports_the_limit_parameter(client):
     )
 
 
+def test_http_listing_uses_owner_bound_continuation_and_retains_original_fields(client):
+    project = "cursor-" + uuid4().hex
+    created = [_create(client, project=project)[0].json()["page_id"] for _ in range(3)]
+    url = f"/api/atlas/projects/{project}/pages"
+    first = client.get(url, params={"limit": 2}, headers=AUTH_A)
+    assert first.status_code == 200
+    page = first.json()
+    assert set(page) == {"pages", "count", "next_cursor"}
+    assert page["count"] == 2 and page["next_cursor"]
+    second = client.get(url, params={"limit": 2, "cursor": page["next_cursor"]}, headers=AUTH_A)
+    assert second.status_code == 200
+    rest = second.json()
+    assert rest["count"] == 1 and rest["next_cursor"] is None
+    assert {p["page_id"] for p in page["pages"] + rest["pages"]} == set(created)
+    for target, headers in [(url, AUTH_B), (url.replace(project, "foreign"), AUTH_A)]:
+        denied = client.get(target, params={"cursor": page["next_cursor"]}, headers=headers)
+        assert denied.status_code == 422
+        assert denied.json()["detail"] == "page_cursor_invalid"
+    for value in ["", "!", "x" * 4097]:
+        assert client.get(url, params={"cursor": value}, headers=AUTH_A).status_code == 422
+
+
 def test_global_project_scope_round_trips(client):
     global_response, global_payload = _create(client, project="-")
     assert global_response.status_code == 201
