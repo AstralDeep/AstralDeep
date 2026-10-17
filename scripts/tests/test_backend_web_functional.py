@@ -118,11 +118,15 @@ class Application:
             if self.failure == "create":
                 code = 500
         elif path.startswith("/api/chats/"):
-            payload = {"messages": [{"role": "assistant", "content": "ORBITAL turquoise otter"}]}
+            payload = {"chat": {"id": CHAT, "title": "Synthetic conversation", "agent_id": None,
+                                "updated_at": 1011, "messages": [
+                                    {"role": "user", "content": probe.MESSAGE, "timestamp": 1010},
+                                    {"role": "assistant", "content": "ORBITAL turquoise otter", "timestamp": 1011},
+                                ]}}
             if self.failure == "read":
                 code = 404
             if self.failure == "retention":
-                payload["messages"] = []
+                payload["chat"]["messages"] = []
         elif path == "/api/upload":
             assert probe.ATTACHMENT in request.content
             code, payload = 201, {"attachment_id": FILE, "sha256": hashlib.sha256(probe.ATTACHMENT).hexdigest()}
@@ -164,6 +168,42 @@ def test_functional_probe_checks_real_paths_but_receipt_contains_no_credentials(
     assert report["release_authorized"] is False and report["real_provider_chat"] == "passed"
     assert CONFIG["api_key"] not in json.dumps(report)
     assert [action[0] for action in app.actions] == ["chrome_llm_save", "chat_message", "load_chat", "chat_message"]
+
+
+@pytest.mark.parametrize("content", ["An orbital response", [{"type": "text", "text": "An orbital response"}]])
+def test_retained_history_accepts_matching_nested_assistant_content(content):
+    document = {"chat": {"id": CHAT, "title": "Synthetic conversation", "agent_id": None,
+                         "updated_at": 1011, "messages": [
+                             {"role": "user", "content": probe.MESSAGE, "timestamp": 1010},
+                             {"role": "assistant", "content": content, "timestamp": 1011},
+                         ]}}
+    with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=document))) as client:
+        assert probe.retained_chat(client, CHAT, "ORBITAL") == document
+
+
+@pytest.mark.parametrize("document", [
+    [], {}, {"chat": None}, {"chat": []},
+    {"messages": [{"role": "assistant", "content": "ORBITAL"}]},
+    {"chat": {"id": FILE, "messages": [{"role": "assistant", "content": "ORBITAL"}]}},
+    {"chat": {"messages": [{"role": "assistant", "content": "ORBITAL"}]}},
+    {"chat": {"id": CHAT}},
+    {"chat": {"id": CHAT, "messages": None}},
+    {"chat": {"id": CHAT, "messages": {"role": "assistant", "content": "ORBITAL"}}},
+    {"chat": {"id": CHAT, "messages": "ORBITAL"}},
+    {"chat": {"id": CHAT, "messages": []}},
+    {"chat": {"id": CHAT, "messages": [None]}},
+    {"chat": {"id": CHAT, "messages": ["ORBITAL"]}},
+    {"chat": {"id": CHAT, "messages": [{"role": "assistant", "content": "ORBITAL"}, None]}},
+    {"chat": {"id": CHAT, "messages": [{"role": "user", "content": "ORBITAL"}]}},
+    {"chat": {"id": CHAT, "messages": [{"role": "assistant", "content": "unrelated"}]}},
+    {"chat": {"id": CHAT, "messages": [{"role": "assistant", "preview": "ORBITAL"}]}},
+    {"chat": {"id": CHAT, "title": "ORBITAL", "preview": "ORBITAL", "messages": []}},
+    {"chat": {"id": CHAT, "messages": []}, "messages": [{"role": "assistant", "content": "ORBITAL"}]},
+])
+def test_malformed_or_unrelated_retained_history_cannot_pass(document):
+    with (httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=document))) as client,
+          pytest.raises(probe.ProbeError)):
+        probe.retained_chat(client, CHAT, "ORBITAL")
 
 
 @pytest.mark.parametrize("failure", ["create", "read", "retention", "upload", "attachment-id", "audit",

@@ -130,7 +130,12 @@ def retained_chat(client, chat_id, expected):
     response = client.get(WEB + "/api/chats/" + chat_id)
     require(response.status_code == 200, "completed chat could not be restored")
     document = response.json()
-    rows = document.get("messages", [])
+    chat = document.get("chat") if isinstance(document, dict) else None
+    require(isinstance(chat, dict) and chat.get("id") == chat_id
+            and isinstance(chat.get("messages"), list)
+            and all(isinstance(row, dict) for row in chat["messages"]),
+            "restored chat identity or messages were malformed")
+    rows = chat["messages"]
     require(any(row.get("role") == "assistant" and expected.casefold() in str(row.get("content", "")).casefold()
                 for row in rows), "provider response was absent from retained history")
     return document
