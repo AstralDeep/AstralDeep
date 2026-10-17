@@ -110,6 +110,24 @@ def assert_terminal_identity(orchestrator, websocket, user_id: str) -> None:
     assert_human_owner(claims, user_id)
 
 
+def terminal_connection_context(orchestrator, websocket):
+    from orchestrator.orchestrator import ConnectionContext
+
+    contexts = getattr(orchestrator, "_connection_contexts", None)
+    context = contexts.get(id(websocket)) if type(contexts) is dict else None
+    if (type(context) is not ConnectionContext or context.websocket is not websocket
+            or context.registered is not True or context.closing is not False):
+        raise TerminalError("terminal_connection_unavailable", 409)
+    return contexts, context
+
+
+def assert_terminal_connection(orchestrator, websocket, captured) -> None:
+    current = terminal_connection_context(orchestrator, websocket)
+    if (type(captured) is not tuple or len(captured) != 2
+            or current[0] is not captured[0] or current[1] is not captured[1]):
+        raise TerminalError("terminal_connection_unavailable", 409)
+
+
 def _assert_terminal_security(orchestrator, tool_name: str) -> None:
     from orchestrator.orchestrator import Orchestrator
     from orchestrator.terminal_host_review import assert_current_review
@@ -162,17 +180,25 @@ class TerminalAuthority:
     _admission: Any = field(default=None, repr=False)
     _runtime: Any = field(default=None, repr=False)
     _request_check: Callable[[], None] | None = field(default=None, repr=False)
+    _connection: Any = field(default=None, repr=False)
 
     def assert_session_current(self, tool_name: str) -> None:
         if self._request_check is not None:
             self._request_check()
         if tool_name != self.tool_name:
             raise TerminalError("terminal_authority_invalid", 403)
+
+        def current_identity():
+            assert_terminal_identity(self._orchestrator, self._websocket, self.owner_id)
+            if tool_name in EXECUTION_TOOLS:
+                assert_terminal_connection(self._orchestrator, self._websocket, self._connection)
+
         _assert_current_permission(
             self._orchestrator, self.owner_id, tool_name,
-            lambda: assert_terminal_identity(self._orchestrator, self._websocket, self.owner_id))
+            current_identity)
         if self._request_check is not None:
             self._request_check()
+        current_identity()
 
     def assert_current(self, tool_name: str) -> None:
         self.assert_session_current(tool_name)
@@ -209,7 +235,8 @@ def bind_terminal_authority(orchestrator, websocket, user_id: str, tool_name: st
         runtime = plane_source_from_orchestrator(orchestrator).plane_runtime
     elif tool_name in EXECUTION_TOOLS and admission is not None:
         raise TerminalError("terminal_execution_authority_required", 403)
+    connection = terminal_connection_context(orchestrator, websocket) if tool_name in EXECUTION_TOOLS else None
     authority = TerminalAuthority(user_id, tool_name, orchestrator, websocket, fence, admission, runtime,
-                                  current_effect_check(orchestrator, user_id, tool_name))
+                                  current_effect_check(orchestrator, user_id, tool_name), connection)
     authority.assert_current(tool_name)
     return authority

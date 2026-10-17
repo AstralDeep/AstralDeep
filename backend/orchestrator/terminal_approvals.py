@@ -10,7 +10,9 @@ import threading
 import time
 from uuid import uuid4
 
-from orchestrator.terminal_security import TerminalError, assert_human_owner, assert_terminal_identity
+from orchestrator.terminal_security import (
+    TerminalError, assert_human_owner, assert_terminal_connection, assert_terminal_identity,
+)
 
 PREFIX = "terminal-api:"
 MAX_PENDING_PER_OWNER = 8
@@ -31,6 +33,8 @@ def review_context_current(orch, websocket, owner_id, registration, scope_maps):
                 or _no_live_human(orch, websocket)):
             return False
         assert_human_owner(registration, owner_id)
+        connections, captured = scope_maps[4]
+        assert_terminal_connection(orch, websocket, (connections, captured.get(id(websocket))))
         scopes = getattr(orch, "_conversation_scopes", None)
         active = getattr(orch, "_ws_active_chat", None)
         if (type(scopes) is not dict or type(active) is not dict

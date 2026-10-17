@@ -12,6 +12,7 @@ from orchestrator import remote_confirmation as rc
 from tests.test_terminal_handoff_delivery import handoff as handoff
 from tests.test_terminal_approvals import fixture as fixture
 from tests.test_new_chat_scope_088 import runtime as runtime
+from tests.helpers.terminal_connection import registered_connection
 
 
 def _scope(fixture, kind):
@@ -209,6 +210,7 @@ async def test_actual_new_chat_clears_maps_but_never_recovers_terminal_review_el
 
     orch, socket = runtime.orchestrator, runtime.socket
     orch._terminal_review_scoped = set()
+    registered_connection(orch, socket)
     orch.ui_sessions[socket].update(exp=time.time() + 600)
     await Orchestrator.handle_ui_message(orch, socket, json.dumps({"type": "ui_event", "action": "new_chat", "payload": {}}))
     assert id(socket) not in orch._conversation_scopes and id(socket) not in orch._ws_active_chat

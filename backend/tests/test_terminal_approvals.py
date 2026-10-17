@@ -14,6 +14,7 @@ from orchestrator.terminal_security import TerminalError
 from shared.protocol import MCPResponse
 from shared.feature_flags import flags
 from tests.test_remote_confirmation_063 import _FakeDB, _orch
+from tests.helpers.terminal_connection import registered_connection
 
 
 @pytest.fixture
@@ -32,6 +33,7 @@ def fixture(monkeypatch):
     orch._conversation_scopes = {}
     orch._ws_active_chat = {}
     orch._terminal_review_scoped = set()
+    registered_connection(orch, socket)
     orch.tool_permissions = SimpleNamespace(is_tool_allowed=lambda *a: True)
     calls = []
 

@@ -86,8 +86,10 @@ async def _dispatch(request: Request, claims: dict, tool_name: str, arguments: d
         owner_id = original["sub"]
         selection = getattr(request.state, "_authenticated_cookie_session", None)
         sessions = getattr(orch, "web_sessions", None)
+        connections = getattr(orch, "_connection_contexts", None)
         scope_maps = (getattr(orch, "_conversation_scopes", None), getattr(orch, "_ws_active_chat", None),
-                      getattr(orch, "_open_chrome_surface", None), getattr(orch, "_terminal_review_scoped", None))
+                      getattr(orch, "_open_chrome_surface", None), getattr(orch, "_terminal_review_scoped", None),
+                      (connections, dict(connections) if type(connections) is dict else {}))
 
         def current_selection():
             assert_human_owner(original, owner_id)

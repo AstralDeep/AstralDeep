@@ -20,6 +20,7 @@ from orchestrator import terminal_security as security
 from orchestrator.terminal_security import TerminalError, bind_terminal_authority
 from shared.feature_flags import flags
 from shared.protocol import MCPRequest
+from tests.helpers.terminal_connection import registered_connection
 
 OWNER = "owner"
 SESSION = "retained"
@@ -41,6 +42,7 @@ def retained(monkeypatch):
     )
     orch = SimpleNamespace(terminal_sessions=manager, ui_sessions={socket: claims}, security_flags={},
                            tool_permissions=SimpleNamespace(is_tool_allowed=Mock(return_value=True)))
+    registered_connection(orch, socket)
     mcp_tools.register_deps(orch)
 
     def invoke(name, **arguments):

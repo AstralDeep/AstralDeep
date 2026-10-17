@@ -19,6 +19,7 @@ from orchestrator import terminal_sessions as sessions
 from orchestrator import terminal_ssh as ssh
 from orchestrator.remote_transport import MachineTarget
 from orchestrator.terminal_security import TerminalError, bind_terminal_authority
+from tests.helpers.terminal_connection import registered_connection
 
 
 def test_isolated_profile_cannot_be_enabled_by_an_owner_machine_alone(monkeypatch):
@@ -107,6 +108,7 @@ def isolated(monkeypatch, tmp_path):
     orch = SimpleNamespace(plane_repository_source=object(), credential_manager=object(),
                            ui_sessions={socket: claims}, security_flags={},
                            tool_permissions=SimpleNamespace(is_tool_allowed=lambda *_: permissions.allowed))
+    registered_connection(orch, socket)
     state = SimpleNamespace(target=target, connects=[], channels=[], clients=[])
     monkeypatch.setattr(ssh.remote_machines, "build_target", lambda source, credentials, owner, machine: state.target)
 
@@ -686,6 +688,7 @@ async def test_real_connection_teardown_closes_its_remote_channel(isolated, entr
 
     socket = Socket()
     env.orch.ui_sessions[socket] = env.orch.ui_sessions.pop(env.socket)
+    registered_connection(env.orch, socket)
     authority = bind_terminal_authority(env.orch, socket, "owner", "start_terminal")
     ident = env.manager.create("owner", authority=authority, runtime_binding=env.manager.runtime_binding("owner"))["session_id"]
 

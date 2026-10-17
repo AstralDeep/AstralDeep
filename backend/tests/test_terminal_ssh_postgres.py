@@ -17,6 +17,7 @@ from orchestrator.tool_permissions import ToolPermissionManager
 from shared.feature_flags import flags
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 from tests.test_terminal_ssh_runtime import Channel, Client
+from tests.helpers.terminal_connection import registered_connection
 
 
 @pytest.fixture
@@ -53,6 +54,7 @@ def runtime(monkeypatch, tmp_path):
                                    "realm_access": {"roles": ["user"]},
                                }})
         channels = []
+        registered_connection(orch, socket)
         clients = []
 
         def connect(self, target, timeout):
