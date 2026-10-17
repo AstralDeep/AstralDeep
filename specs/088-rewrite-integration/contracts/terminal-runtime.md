@@ -1,0 +1,28 @@
+# Isolated terminal runtime
+
+Terminal execution uses an explicitly provisioned isolated SSH runtime. Registering an ordinary SSH machine does not qualify it for terminal execution. The operator must verify the remote boundary before configuring it: a non-root account, no host filesystem or Docker socket exposure, no added capabilities or privilege escalation, a read-only runtime filesystem with bounded ephemeral writable space, process/memory/CPU limits, and an egress policy suitable for the owner's data. Separate owners must have separate SSH accounts and isolated storage; the same host key/account pair cannot appear twice in the profile.
+
+The application neither starts a host shell nor receives a Docker daemon connection. Its existing SSH transport enforces address resolution, egress restrictions, mandatory pinned host identity and connected-peer verification. The operator remains responsible for the remote isolation boundary; an SSH server cannot prove its own container policy to the client.
+
+## Operator profile
+
+Set `TERMINAL_SSH_PROFILE_FILE` to a regular, non-symlink UTF-8 JSON file owned by the application's effective UID. It must be read-only, inaccessible to other users, at most 65,536 bytes, and contain no credentials. Mode `0400` is the normal deployment posture. A trusted read-only group may read a `0440` file. Missing or malformed profiles refuse execution.
+
+The object has exactly two fields:
+
+- `profile`: `operator-isolated-ssh-pty/v1`.
+- `targets`: one to 64 objects, each with exactly `owner_id`, `machine_id`, `address`, `port`, `username`, and `host_key_fingerprint`.
+
+Each owner appears once. `machine_id` is the 32-character lowercase hexadecimal ID returned by normal owner machine registration. Address, port, username and the complete `SHA256:` SSH host-key fingerprint must match that owner's current machine record. The existing owner credential store must contain a decryptable SSH key or password. The profile does not provision IAM identities, register machines, save credentials or trust a new host key.
+
+Profiles are reread through a bounded, non-following file descriptor. Replaced profiles and changed machine or credential bindings cannot silently retarget an existing session. Session bindings retain only in-memory credential identity, never a durable credential digest or secret. The public `runtime_binding` approval digest excludes credential identity and binds the profile bytes and owner/machine/endpoint/username/host key. An approved replay must retain that exact digest; only an initial request selects it.
+
+## Authority and lifecycle
+
+`FF_TERMINAL_SHELL` enables discovery; it does not make execution available without a qualified owner profile. Start and input remain system-scoped, hard security reviewed, taint sinks requiring an actual current human's exact single-use approval. Framework credentials, delegated agents and unattended REST callers cannot perform that approval. The REST handoff may request an ordinary proposal and read its outcome, but only the normal authenticated human WebSocket decision redispatches the approved tool.
+
+Every active action rechecks current socket identity, expiry, permission, system security state, original REST request authority when applicable, and the captured current Work execution lease before remote effects. Blocking SSH opens recheck before PTY allocation, before shell/command dispatch and after dispatch. Stale or cancelled actions close opened resources and do not retry an uncertain remote command. A session lifetime retains its original human socket and start permission; it does not retain the completed creation operation's fence or approval-request deadline. Subsequent actions use fresh full action authority.
+
+Input, resize and interrupt operate on the owned remote PTY. Disconnect, authority or binding loss, process exit, idle/lifetime expiry and application shutdown close both SSH channel and client. A fresh authenticated owner may read retained closed output without reopening execution. Unknown and foreign session IDs remain indistinguishable.
+
+Default bounds are four live or pending sessions per owner, 256 retained/live/pending sessions overall, 16 KiB per input, a 128 KiB output ring, 64 KiB per output read, a 25-second maximum read wait, a 30-minute idle timeout and an eight-hour maximum session lifetime. Admission evicts only the oldest closed output when its retention cap is full; active sessions are not evicted to admit another owner. Terminal output is ephemeral and not an assignment result or durable recovery payload.

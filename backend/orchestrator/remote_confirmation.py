@@ -6,6 +6,8 @@ handle_decision(), stored through astralplane's remote_proposals.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextvars
 import copy
 import hashlib
@@ -138,9 +140,40 @@ def _terminal_summary(orch, user_id: str, tool_name: str, args: dict[str, Any]) 
     from shared.phi_redactor import redact
 
     public = {key: value for key, value in args.items()
-              if not str(key).startswith("_") and key != "user_id"}
+              if not str(key).startswith("_") and key not in {"user_id", "runtime_binding"}}
+    target = "a terminal session"
+    if args.get("runtime_binding"):
+        target = orch.terminal_sessions.runtime_preview(
+            user_id, runtime_binding=args["runtime_binding"], session_id=args.get("session_id"))
+    if "data_b64" in public:
+        try:
+            encoded = public.pop("data_b64")
+            if not isinstance(encoded, str) or len(encoded) > 21848:
+                raise ValueError()
+            raw = base64.b64decode(encoded, validate=True)
+            if not 1 <= len(raw) <= 16384:
+                raise ValueError()
+            public.update(input_bytes=len(raw), input_sha256=hashlib.sha256(raw).hexdigest())
+            try:
+                public["input_text"] = raw.decode("utf-8")
+            except UnicodeError:
+                public["input_base64"] = base64.b64encode(raw).decode("ascii")
+        except (ValueError, TypeError, binascii.Error):
+            from orchestrator.terminal_security import TerminalError
+
+            raise TerminalError("terminal_input_invalid", 422) from None
+    if "data" in public and (not isinstance(public["data"], str)
+            or not 1 <= len(public["data"].encode("utf-8")) <= 16384):
+        from orchestrator.terminal_security import TerminalError
+
+        raise TerminalError("terminal_input_invalid", 422)
     preview, _ = redact(public, kind="args")
-    return f"{tool_name} on a terminal session: {preview}"
+    return f"{tool_name} on {target}: {preview}"
+
+
+def _terminal_machine_id(orch, user_id: str, args: dict[str, Any]) -> str:
+    return orch.terminal_sessions.runtime_machine_id(
+        user_id, runtime_binding=args.get("runtime_binding"), session_id=args.get("session_id"))
 
 
 def _policies() -> Dict[str, AgentConfirmationPolicy]:
@@ -231,6 +264,7 @@ def _policies() -> Dict[str, AgentConfirmationPolicy]:
             card_caption="Approve only this exact terminal operation after checking its input.",
             summary=_terminal_summary,
             machine_label=_terminal_label,
+            machine_id=_terminal_machine_id,
             card_as_result=True,
         ),
     }
@@ -452,6 +486,9 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
     proposal_id = uuid.uuid4().hex
     now = int(time.time())
     summary = policy.summary(orch, user_id, tool_name, args)
+    display_summary = summary
+    if agent_id == "terminal-shell-1" and len(summary) > 1024:
+        summary = summary[:1000] + "… (see approval card preview)"
     machine_ref = args.get(policy.machine_key)
     if policy.machine_id is not None:
         machine_ref = policy.machine_id(orch, user_id, args)
@@ -489,7 +526,7 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
     if "{host}" in title:
         title = title.replace("{host}", policy.machine_label(orch, user_id, machine_ref))
     card = Card(title=title, content=[
-        Text(content=summary, variant="body"),
+        Text(content=display_summary, variant="body"),
         Text(content=policy.card_caption, variant="caption"),
         Button(label="Approve", action="remote_op_decision",
                payload={"proposal_id": proposal_id, "decision": "approve"}),
@@ -527,7 +564,7 @@ def is_approval_card_result(components: Any) -> bool:
 
 
 async def _replace_card(orch, row, title: str, body: str, variant: str = "default") -> None:
-    if not row.conversation_id:
+    if not row.conversation_id or str(row.conversation_id).startswith("terminal-api:"):
         return
     try:
         from astralprims import Card, Text
@@ -555,6 +592,17 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
     policy = policy_for(agent_id)
     if policy is None:
         return None
+    if agent_id == "terminal-shell-1" and tool_name in {"start_terminal", "terminal_write"}:
+        from orchestrator import terminal_approvals
+
+        request = terminal_approvals.current_request(orch, user_id, tool_name)
+        if not args.get(_MARKER) and (request is not None or not _no_live_human(orch, websocket)):
+            args["runtime_binding"] = orch.terminal_sessions.runtime_binding(
+                user_id, session_id=args.get("session_id") if tool_name == "terminal_write" else None)
+        if request is not None and _no_live_human(orch, websocket) and not args.get(_MARKER):
+            pid, card = request.create_proposal(lambda: _create_proposal(
+                orch, user_id, request.conversation_id, agent_id, tool_name, args))
+            return (policy.refusal_text, [card])
     if agent_id == "gaiakeep-1":
         from agents.gaiakeep.catalog import validate
         public = {k: v for k, v in args.items() if not str(k).startswith("_") and k not in {"user_id", "session_id"}}
@@ -672,6 +720,17 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
                            proposal_id=proposal_id, outcome="failure")
         await _say("That confirmation is not available.")
         return
+    terminal_request = None
+    if str(row.conversation_id or "").startswith("terminal-api:"):
+        from orchestrator import terminal_approvals
+        from orchestrator.terminal_security import TerminalError
+
+        try:
+            terminal_request = await asyncio.to_thread(
+                terminal_approvals.for_decision, orch, websocket, user_id, row)
+        except TerminalError:
+            await _say("This terminal request is no longer available. Re-request it from the original client.")
+            return
     from persistent_agents.approvals import handle_linked_remote_decision
     if await handle_linked_remote_decision(orch, websocket, user_id, row, decision):
         return
@@ -720,6 +779,8 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
                            outcome="failure", chat_id=_cid)
         await _say("Declined — nothing was changed.", variant="info")
         await _replace_card(orch, row, "Declined", f"{row.summary} — not done.")
+        if terminal_request is not None:
+            terminal_request.status = "declined"
         return
 
     def _approve():
@@ -756,13 +817,25 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
     tc = SimpleNamespace(id="remote-op", function=SimpleNamespace(
         name=row.tool_name, arguments=json.dumps(stored_args)))
     logger.info("remote_op approved -> re-dispatch: id=%s verb=%s", proposal_id, row.tool_name)
-    result = await orch.execute_single_tool(
-        websocket,
-        tc,
-        {row.tool_name: row.agent_id},
-        row.conversation_id,
-        user_id=user_id,
-    )
+    if terminal_request is not None:
+        terminal_request.status = "running"
+        try:
+            with terminal_approvals.effect_scope(terminal_request):
+                result = await orch.execute_single_tool(
+                    websocket, tc, {row.tool_name: row.agent_id}, None, user_id=user_id)
+            terminal_request.complete(result)
+        except Exception as exc:
+            terminal_request.complete(error=exc)
+            await _say("The terminal request could not complete. Check its status before issuing another request.")
+            return
+    else:
+        result = await orch.execute_single_tool(
+            websocket,
+            tc,
+            {row.tool_name: row.agent_id},
+            row.conversation_id,
+            user_id=user_id,
+        )
     if (row.agent_id == "gaiakeep-1" and websocket is not None and row.conversation_id
             and result is not None and result.error is None and result.ui_components):
         components = copy.deepcopy(result.ui_components)

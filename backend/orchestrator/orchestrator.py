@@ -1035,7 +1035,7 @@ class Orchestrator:
         self.computer_hosts = ComputerHostRegistry(self)
         self.computer_sessions = ComputerSessionManager(self, self.computer_hosts)
         from orchestrator.terminal_sessions import TerminalSessionManager
-        self.terminal_sessions = TerminalSessionManager()
+        self.terminal_sessions = TerminalSessionManager(orchestrator=self)
         self._job_context: Dict[str, Dict[str, Any]] = {}
         self.cancelled_sessions: Dict[str, bool] = {}
         self._chat_locks: Dict[tuple, asyncio.Lock] = {}
@@ -17241,7 +17241,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if parent_token is not None or initiating_agent_id is not None:
                     raise TerminalError("terminal_owner_required", 403)
                 assert_terminal_identity(self, websocket, user_id)
-                assert_terminal_execution_available(tool_name)
+                await asyncio.to_thread(
+                    assert_terminal_execution_available, tool_name,
+                    getattr(self, "terminal_sessions", None), user_id,
+                )
             except TerminalError as exc:
                 await self._audit_gate_denial(
                     websocket, user_id, agent_id, tool_name, chat_id, args,
@@ -17369,9 +17372,27 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         if agent_id in ("remote-compute-1", "computer-use-1", "gaiakeep-1", "cresco-1", "terminal-shell-1"):
             from orchestrator import remote_confirmation
-            _conf = await asyncio.to_thread(
-                remote_confirmation.evaluate, self, websocket, agent_id, tool_name,
-                args, chat_id, user_id)
+            from orchestrator.terminal_security import TerminalError
+
+            try:
+                _conf = await asyncio.to_thread(
+                    remote_confirmation.evaluate, self, websocket, agent_id, tool_name,
+                    args, chat_id, user_id)
+            except TerminalError as exc:
+                if agent_id != "terminal-shell-1":
+                    raise
+                await self._audit_gate_denial(
+                    websocket, user_id, agent_id, tool_name, chat_id, args,
+                    gate="terminal_confirmation", detail=exc.code,
+                )
+                return GateRefusal(
+                    response=MCPResponse(error={
+                        "code": exc.code, "message": exc.code, "retryable": False,
+                        "data": {"terminal_code": exc.code, "http_status": exc.status_code},
+                    }),
+                    render_components=[Alert(message=exc.code, variant="error").to_dict()],
+                    render_target="chat",
+                )
             if _conf is not None:
                 _msg, _comps = _conf
                 _policy = remote_confirmation.policy_for(agent_id)
@@ -22546,10 +22567,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     pass
 
     async def send_ui_render(self, websocket, components: List, target: str = "canvas",
-                             speak: bool = True):
+                             speak: bool = True) -> bool:
         from persistent_agents.dispatch_context import current_dispatch
         if current_dispatch() is not None:
-            return
+            return False
         if target == "canvas" and components and all(
             isinstance(c, dict) and c.get("type") == "alert"
             for c in components
@@ -22580,7 +22601,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.debug("watch_speech unavailable for ui_render", exc_info=True)
         msg = UIRender(components=adapted, target=target, html=html, speech=speech)
-        await self._safe_send(websocket, msg.to_json())
+        sent = await self._safe_send(websocket, msg.to_json())
         if target == "chat":
             from orchestrator.async_tasks import VirtualWebSocket
             if isinstance(websocket, VirtualWebSocket):
@@ -22589,6 +22610,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         await self.send_ui_render(ws, components, target="chat", speak=speak)
                     except Exception:  # pragma: no cover
                         logger.debug("vws chat-rail fan failed", exc_info=True)
+        return sent
 
     async def _shell_token_for_request(self, request):
         try:
@@ -22944,6 +22966,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if websocket in self.ui_clients:
                 self.ui_clients.remove(websocket)
             self._clear_voice_control_binding(websocket)
+            terminal_sessions = getattr(self, "terminal_sessions", None)
+            if terminal_sessions is not None:
+                await asyncio.to_thread(terminal_sessions.close_for_connection, websocket)
             if websocket in self.ui_sessions:
                 del self.ui_sessions[websocket]
             self._drop_chat_locks(websocket)
@@ -22989,6 +23014,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if websocket in self.ui_clients:
                 self.ui_clients.remove(websocket)
             self._clear_voice_control_binding(websocket)
+            terminal_sessions = getattr(self, "terminal_sessions", None)
+            if terminal_sessions is not None:
+                await asyncio.to_thread(terminal_sessions.close_for_connection, websocket)
             if websocket in self.ui_sessions:
                 del self.ui_sessions[websocket]
             self._drop_chat_locks(websocket)
@@ -23642,6 +23670,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             raise
 
     async def _close_started_services_once(self) -> None:
+        terminal_sessions = getattr(self, "terminal_sessions", None)
+        if terminal_sessions is not None:
+            await asyncio.to_thread(terminal_sessions.shutdown)
         from orchestrator.framework_runtime import stop_framework_runtime
         stop_framework_runtime(self)
         startup_tasks = tuple(getattr(self, "_startup_background_tasks", ()))

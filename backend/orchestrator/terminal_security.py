@@ -21,16 +21,21 @@ class TerminalError(Exception):
         self.status_code = status_code
 
 
-def terminal_capability() -> dict[str, Any]:
+def terminal_capability(manager=None, owner_id: str | None = None) -> dict[str, Any]:
     try:
         enabled = flags.is_enabled("terminal_shell") is True
     except Exception:
         enabled = False
-    return {
-        "enabled": enabled,
-        "available": False,
-        "reason": "terminal_isolation_unavailable" if enabled else "terminal_disabled",
-    }
+    reason = "terminal_disabled"
+    if enabled:
+        reason = "terminal_isolation_unavailable"
+        if manager is not None and owner_id:
+            try:
+                require_terminal_execution(manager, owner_id)
+                return {"enabled": True, "available": True, "reason": None}
+            except TerminalError as exc:
+                reason = exc.code
+    return {"enabled": enabled, "available": False, "reason": reason}
 
 
 def require_terminal_enabled() -> None:
@@ -38,14 +43,18 @@ def require_terminal_enabled() -> None:
         raise TerminalError("terminal_disabled", 404)
 
 
-def require_terminal_execution() -> None:
-    capability = terminal_capability()
-    raise TerminalError(capability["reason"], 503 if capability["enabled"] else 404)
+def require_terminal_execution(manager=None, owner_id: str | None = None) -> None:
+    require_terminal_enabled()
+    from orchestrator.terminal_sessions import TerminalSessionManager
+
+    if not isinstance(manager, TerminalSessionManager) or not owner_id:
+        raise TerminalError("terminal_isolation_unavailable", 503)
+    manager.require_execution(owner_id)
 
 
-def assert_terminal_execution_available(tool_name: str) -> None:
+def assert_terminal_execution_available(tool_name: str, manager=None, owner_id=None) -> None:
     if tool_name in EXECUTION_TOOLS:
-        require_terminal_execution()
+        require_terminal_execution(manager, owner_id)
 
 
 def terminal_dispatch_arguments(agent_id: str, arguments):
@@ -143,19 +152,58 @@ class TerminalAuthority:
     tool_name: str
     _orchestrator: Any = field(repr=False)
     _websocket: Any = field(repr=False)
+    _execution_fence: Any = field(default=None, repr=False)
+    _admission: Any = field(default=None, repr=False)
+    _runtime: Any = field(default=None, repr=False)
+    _request_check: Callable[[], None] | None = field(default=None, repr=False)
 
-    def assert_current(self, tool_name: str) -> None:
+    def assert_session_current(self, tool_name: str) -> None:
+        if self._request_check is not None:
+            self._request_check()
         if tool_name != self.tool_name:
             raise TerminalError("terminal_authority_invalid", 403)
         _assert_current_permission(
             self._orchestrator, self.owner_id, tool_name,
             lambda: assert_terminal_identity(self._orchestrator, self._websocket, self.owner_id))
+        if self._request_check is not None:
+            self._request_check()
+
+    def assert_current(self, tool_name: str) -> None:
+        self.assert_session_current(tool_name)
+        if self._execution_fence is not None:
+            from orchestrator.plane_repository_context import plane_source_from_orchestrator
+
+            try:
+                if (getattr(self._orchestrator, "work_admission", None) is not self._admission
+                        or plane_source_from_orchestrator(self._orchestrator).plane_runtime is not self._runtime):
+                    raise ValueError()
+                with self._runtime.transaction() as transaction:
+                    self._admission.assert_current_execution_lease(self._execution_fence, transaction=transaction)
+            except Exception:
+                raise TerminalError("terminal_execution_authority_lost", 409) from None
+            self.assert_session_current(tool_name)
 
     def matches(self, orchestrator) -> bool:
         return self._orchestrator is orchestrator
 
 
 def bind_terminal_authority(orchestrator, websocket, user_id: str, tool_name: str) -> TerminalAuthority:
-    authority = TerminalAuthority(user_id, tool_name, orchestrator, websocket)
+    from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
+    from orchestrator.plane_repository_context import plane_source_from_orchestrator
+    from orchestrator.work_admission import ExecutionFence
+    from orchestrator.terminal_approvals import current_effect_check
+
+    context = _CONNECTION_OPERATION_CONTEXT.get()
+    fence = context.get("execution_fence") if isinstance(context, dict) else None
+    admission = getattr(orchestrator, "work_admission", None)
+    runtime = None
+    if fence is not None:
+        if type(fence) is not ExecutionFence or admission is None:
+            raise TerminalError("terminal_execution_authority_required", 403)
+        runtime = plane_source_from_orchestrator(orchestrator).plane_runtime
+    elif tool_name in EXECUTION_TOOLS and admission is not None:
+        raise TerminalError("terminal_execution_authority_required", 403)
+    authority = TerminalAuthority(user_id, tool_name, orchestrator, websocket, fence, admission, runtime,
+                                  current_effect_check(orchestrator, user_id, tool_name))
     authority.assert_current(tool_name)
     return authority

@@ -1,5 +1,5 @@
 """Routes owner terminal reads and cleanup through the ordinary authorized tool dispatcher.
-Execution endpoints explicitly report unavailable isolation without starting host processes.
+Execution uses the same governed tools and explicit isolated SSH profiles as human agent dispatch.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from orchestrator.auth import get_web_or_bearer_user_payload, security, verify_user
+from orchestrator import terminal_approvals
 from orchestrator.session_store import WebSessionStore
 from orchestrator.terminal_security import (
     AGENT_ID,
@@ -71,12 +72,15 @@ def _refused(exc: TerminalError) -> JSONResponse:
 
 async def _dispatch(request: Request, claims: dict, tool_name: str, arguments: dict, *,
                     unwrap_session: bool = False, fields: tuple[str, ...] | None = None):
+    pending = None
     try:
         require_terminal_enabled()
         orch = _orchestrator(request)
         execute = getattr(orch, "execute_authorized_tool", None)
         if not callable(execute):
             raise TerminalError("terminal_unavailable", 503)
+        if tool_name in {"start_terminal", "terminal_write"}:
+            await asyncio.to_thread(require_terminal_execution, getattr(orch, "terminal_sessions", None), claims["sub"])
         original = deepcopy(claims)
         owner_id = original["sub"]
         selection = getattr(request.state, "_authenticated_cookie_session", None)
@@ -102,11 +106,24 @@ async def _dispatch(request: Request, claims: dict, tool_name: str, arguments: d
             if current is not True:
                 raise TerminalError("terminal_authority_changed", 401)
 
+        def pending_authority():
+            current_selection()
+            assert_terminal_delivery(orch, original, owner_id, tool_name)
+            current_selection()
+
         try:
-            response = await execute(
-                claims=claims, user_id=owner_id, agent_id=AGENT_ID,
-                tool_name=tool_name, arguments=arguments, channel="rest",
-            )
+            if tool_name in {"start_terminal", "terminal_write"}:
+                pending = terminal_approvals.PendingTerminalRequest(orch, owner_id, tool_name, pending_authority)
+                with terminal_approvals.request_scope(pending):
+                    response = await execute(
+                        claims=claims, user_id=owner_id, agent_id=AGENT_ID,
+                        tool_name=tool_name, arguments=arguments, channel="rest")
+            else:
+                response = await execute(
+                    claims=claims, user_id=owner_id, agent_id=AGENT_ID,
+                    tool_name=tool_name, arguments=arguments, channel="rest")
+        except TerminalError:
+            raise
         except Exception:
             raise TerminalError("terminal_dispatch_unavailable", 503) from None
         current = await get_web_or_bearer_user_payload(request, await security(request))
@@ -134,6 +151,34 @@ async def _dispatch(request: Request, claims: dict, tool_name: str, arguments: d
             if isinstance(status, bool) or not isinstance(status, int) or not 400 <= status <= 599:
                 status = 403
             raise TerminalError(code, status)
+        if pending is not None and pending.proposal_id is not None:
+            from orchestrator.remote_confirmation import _no_live_human, is_approval_card_result
+
+            if not is_approval_card_result(response.ui_components):
+                raise TerminalError("terminal_invalid_result", 503)
+            delivered = 0
+            for socket in list(getattr(orch, "ui_sessions", {})):
+                socket_claims = orch.ui_sessions.get(socket)
+                if (not isinstance(socket_claims, dict) or socket_claims.get("sub") != owner_id
+                        or _no_live_human(orch, socket)):
+                    continue
+                try:
+                    assert_human_owner(socket_claims, owner_id)
+                    await asyncio.to_thread(pending.assert_current)
+                    sent = await orch.send_ui_render(socket, response.ui_components, target="chat")
+                    if sent is not True:
+                        continue
+                    await asyncio.to_thread(pending.assert_current)
+                    if orch.ui_sessions.get(socket) is not socket_claims or _no_live_human(orch, socket):
+                        continue
+                    assert_human_owner(socket_claims, owner_id)
+                    delivered += 1
+                except Exception:
+                    continue
+            if not delivered:
+                pending.status, pending.error = "failed", "terminal_human_session_required"
+                raise TerminalError("terminal_human_session_required", 409)
+            return _json(await asyncio.to_thread(pending.public, owner_id), 202)
         data = response.result
         if not isinstance(data, dict):
             raise TerminalError("terminal_invalid_result", 503)
@@ -147,20 +192,25 @@ async def _dispatch(request: Request, claims: dict, tool_name: str, arguments: d
             data = {key: data[key] for key in fields}
         return _json(data)
     except TerminalError as exc:
+        if pending is not None and pending.status == "pending":
+            pending.status, pending.error = "failed", exc.code
         return _refused(exc)
+    except BaseException:
+        if pending is not None and pending.status == "pending":
+            pending.status, pending.error = "failed", "terminal_dispatch_unavailable"
+        raise
 
 
 @terminal_router.get("/capabilities")
-async def capabilities(claims: dict = Depends(_owner_claims)):
-    return _json(terminal_capability())
+async def capabilities(request: Request, claims: dict = Depends(_owner_claims)):
+    return _json(await asyncio.to_thread(
+        terminal_capability, getattr(_orchestrator(request), "terminal_sessions", None), claims["sub"],
+    ))
 
 
 @terminal_router.post("")
-async def create_session(body: TerminalCreateRequest, claims: dict = Depends(_owner_claims)):
-    try:
-        require_terminal_execution()
-    except TerminalError as exc:
-        return _refused(exc)
+async def create_session(request: Request, body: TerminalCreateRequest, claims: dict = Depends(_owner_claims)):
+    return await _dispatch(request, claims, "start_terminal", body.model_dump(), unwrap_session=True)
 
 
 @terminal_router.get("")
@@ -168,12 +218,22 @@ async def list_sessions(request: Request, claims: dict = Depends(_owner_claims))
     return await _dispatch(request, claims, "list_terminals", {})
 
 
-@terminal_router.post("/{session_id}/input")
-async def write_input(session_id: str, body: TerminalInputRequest, claims: dict = Depends(_owner_claims)):
+@terminal_router.get("/approvals/{proposal_id}")
+async def approval_status(request: Request, proposal_id: str, claims: dict = Depends(_owner_claims)):
     try:
-        require_terminal_execution()
+        pending = await asyncio.to_thread(
+            terminal_approvals.get_request, _orchestrator(request), claims["sub"], proposal_id)
+        await asyncio.to_thread(assert_terminal_delivery, pending.orch, claims, claims["sub"], pending.tool_name)
+        return _json(await asyncio.to_thread(pending.public, claims["sub"]))
     except TerminalError as exc:
         return _refused(exc)
+
+
+@terminal_router.post("/{session_id}/input")
+async def write_input(request: Request, session_id: str, body: TerminalInputRequest,
+                      claims: dict = Depends(_owner_claims)):
+    return await _dispatch(request, claims, "terminal_write",
+                           {"session_id": session_id, "data_b64": body.data_b64}, unwrap_session=True)
 
 
 @terminal_router.post("/{session_id}/resize")

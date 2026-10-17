@@ -5,7 +5,9 @@ astral_sdk.models and astral_sdk.errors, only httpx at runtime.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import math
 import re
 import time
 import uuid
@@ -137,6 +139,27 @@ def _terminal_body(cols: int, rows: int, command: Optional[str]) -> dict[str, An
     if command is not None:
         body["command"] = command
     return body
+
+
+def _approval_timeout(value: float) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise ValueError("approval_timeout_seconds must be a finite nonnegative number")
+
+
+def _approval_session(value: dict[str, Any]) -> Optional[dict[str, Any]]:
+    if "session_id" in value:
+        return value
+    proposal_id = value.get("proposal_id")
+    if not isinstance(proposal_id, str) or not re.fullmatch(r"[0-9a-f]{32}", proposal_id):
+        raise AstralHTTPError("malformed terminal approval", code="terminal_invalid_approval")
+    status = value.get("status")
+    if status == "succeeded" and isinstance(value.get("session"), dict) and value["session"].get("session_id"):
+        return value["session"]
+    if status in {"pending", "running"}:
+        return None
+    code = "terminal_approval_declined" if status == "declined" else (
+        str(value.get("error") or "terminal_dispatch_refused") if status == "failed" else "terminal_invalid_approval")
+    raise AstralHTTPError("terminal approval did not complete", code=code, data={"proposal_id": proposal_id})
 
 
 def _owner_response(response: httpx.Response) -> dict[str, Any]:
@@ -366,19 +389,41 @@ class AstralClient:
         return _terminal_response(response)
 
     def create_terminal_session(self, *, cols: int = 80, rows: int = 24,
-                                command: Optional[str] = None) -> TerminalSessionView:
-        return TerminalSessionView.from_dict(
-            self._terminal("POST", "", _terminal_body(cols, rows, command)))
+                                command: Optional[str] = None,
+                                approval_timeout_seconds: float = 120) -> TerminalSessionView:
+        _approval_timeout(approval_timeout_seconds)
+        return self._approved_terminal(
+            self._terminal("POST", "", _terminal_body(cols, rows, command)), approval_timeout_seconds)
+
+    def get_terminal_approval(self, proposal_id: str) -> dict[str, Any]:
+        if not re.fullmatch(r"[0-9a-f]{32}", proposal_id):
+            raise ValueError("invalid terminal proposal ID")
+        return self._terminal("GET", f"/approvals/{proposal_id}")
+
+    def _approved_terminal(self, value: dict[str, Any], timeout: float) -> TerminalSessionView:
+        deadline = time.monotonic() + timeout
+        while True:
+            session = _approval_session(value)
+            if session is not None:
+                return TerminalSessionView.from_dict(session)
+            if time.monotonic() >= deadline:
+                raise AstralHTTPError("Approve this request in the signed-in Astral UI, then check its status.",
+                    code="terminal_confirmation_required", data={"proposal_id": value["proposal_id"]})
+            value = self.get_terminal_approval(value["proposal_id"])
+            if value.get("status") in {"pending", "running"}:
+                time.sleep(min(0.5, max(0, deadline - time.monotonic())))
 
     def list_terminal_sessions(self) -> list[TerminalSessionView]:
         sessions = self._terminal("GET", "").get("sessions", [])
         return [TerminalSessionView.from_dict(s) for s in sessions]
 
-    def write_terminal(self, session_id: str, data: str | bytes) -> TerminalSessionView:
+    def write_terminal(self, session_id: str, data: str | bytes, *,
+                       approval_timeout_seconds: float = 120) -> TerminalSessionView:
+        _approval_timeout(approval_timeout_seconds)
         payload = data.encode("utf-8") if isinstance(data, str) else data
         encoded = base64.b64encode(payload).decode("ascii")
-        return TerminalSessionView.from_dict(
-            self._terminal("POST", f"/{session_id}/input", {"data_b64": encoded}))
+        return self._approved_terminal(
+            self._terminal("POST", f"/{session_id}/input", {"data_b64": encoded}), approval_timeout_seconds)
 
     def resize_terminal(self, session_id: str, *, cols: int, rows: int) -> TerminalSessionView:
         return TerminalSessionView.from_dict(
@@ -609,19 +654,41 @@ class AsyncAstralClient:
         return _terminal_response(response)
 
     async def create_terminal_session(self, *, cols: int = 80, rows: int = 24,
-                                      command: Optional[str] = None) -> TerminalSessionView:
-        return TerminalSessionView.from_dict(
-            await self._terminal("POST", "", _terminal_body(cols, rows, command)))
+                                      command: Optional[str] = None,
+                                      approval_timeout_seconds: float = 120) -> TerminalSessionView:
+        _approval_timeout(approval_timeout_seconds)
+        return await self._approved_terminal(
+            await self._terminal("POST", "", _terminal_body(cols, rows, command)), approval_timeout_seconds)
+
+    async def get_terminal_approval(self, proposal_id: str) -> dict[str, Any]:
+        if not re.fullmatch(r"[0-9a-f]{32}", proposal_id):
+            raise ValueError("invalid terminal proposal ID")
+        return await self._terminal("GET", f"/approvals/{proposal_id}")
+
+    async def _approved_terminal(self, value: dict[str, Any], timeout: float) -> TerminalSessionView:
+        deadline = time.monotonic() + timeout
+        while True:
+            session = _approval_session(value)
+            if session is not None:
+                return TerminalSessionView.from_dict(session)
+            if time.monotonic() >= deadline:
+                raise AstralHTTPError("Approve this request in the signed-in Astral UI, then check its status.",
+                    code="terminal_confirmation_required", data={"proposal_id": value["proposal_id"]})
+            value = await self.get_terminal_approval(value["proposal_id"])
+            if value.get("status") in {"pending", "running"}:
+                await asyncio.sleep(min(0.5, max(0, deadline - time.monotonic())))
 
     async def list_terminal_sessions(self) -> list[TerminalSessionView]:
         sessions = (await self._terminal("GET", "")).get("sessions", [])
         return [TerminalSessionView.from_dict(s) for s in sessions]
 
-    async def write_terminal(self, session_id: str, data: str | bytes) -> TerminalSessionView:
+    async def write_terminal(self, session_id: str, data: str | bytes, *,
+                             approval_timeout_seconds: float = 120) -> TerminalSessionView:
+        _approval_timeout(approval_timeout_seconds)
         payload = data.encode("utf-8") if isinstance(data, str) else data
         encoded = base64.b64encode(payload).decode("ascii")
-        return TerminalSessionView.from_dict(
-            await self._terminal("POST", f"/{session_id}/input", {"data_b64": encoded}))
+        return await self._approved_terminal(
+            await self._terminal("POST", f"/{session_id}/input", {"data_b64": encoded}), approval_timeout_seconds)
 
     async def resize_terminal(self, session_id: str, *, cols: int, rows: int) -> TerminalSessionView:
         return TerminalSessionView.from_dict(

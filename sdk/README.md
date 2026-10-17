@@ -121,11 +121,24 @@ object to stderr with a non-zero exit code.
 
 ## Terminal sessions
 
-The operator CLI can also drive the server's governed interactive terminal
-sessions — the same `/api/terminals` REST surface the in-app terminal panel
-uses. Terminal sessions are owner-only: they require a current Keycloak owner
+The operator CLI can drive governed terminal sessions through `/api/terminals`.
+The operator must configure an isolated SSH runtime with `TERMINAL_SSH_PROFILE_FILE`
+and enroll its exact machine and host key through the normal encrypted owner settings.
+Execution is unavailable without that profile; the orchestrator never opens a host shell.
+Terminal sessions are owner-only: they require a current Keycloak owner
 access token, and framework credentials (`afk_…`) are refused locally with
 `terminal_owner_authentication_required` before any request is sent.
+
+Keep a signed-in Astral UI connected. Creating a session or sending input publishes
+a confirmation card there; approve the exact operation and target in that UI.
+The CLI waits up to 120 seconds for its result and never approves or retries a write
+itself. Use `--approval-timeout 0` to return immediately with
+`terminal_confirmation_required` and a `proposal_id`, then inspect it with
+`python -m astral_sdk terminal-approval PROPOSAL_ID --token "$ASTRAL_TOKEN"`.
+After a timeout, inspect the original request before creating another.
+Approvals expire with the original request authority or after five minutes, and
+cannot survive a server restart. Existing sessions retain their normal owner,
+permission, idle and lifetime checks independently of a completed request.
 
 ```bash
 session=$(python -m astral_sdk terminal-create --cols 100 --rows 30 \

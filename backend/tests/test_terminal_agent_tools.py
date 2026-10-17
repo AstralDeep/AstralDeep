@@ -191,7 +191,12 @@ def test_retained_read_preserves_raw_bytes_and_sanitizes_ui(retained):
     text = json.dumps(result["_ui_components"])
     assert "\\u001b" not in text and "\\u0000" not in text
     assert "TerminalAuthority" not in json.dumps(result)
-    retained.manager.read.assert_called_once_with(OWNER, SESSION, offset=0, wait_seconds=1.0)
+    retained.manager.read.assert_called_once()
+    args = retained.manager.read.call_args
+    assert args.args == (OWNER, SESSION)
+    assert args.kwargs["offset"] == 0 and args.kwargs["wait_seconds"] == 1.0
+    assert type(args.kwargs["authority"]) is security.TerminalAuthority
+    assert args.kwargs["authority"].matches(retained.orch)
 
 
 @pytest.mark.parametrize("change,expected", [

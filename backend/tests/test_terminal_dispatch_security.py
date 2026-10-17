@@ -15,6 +15,7 @@ from orchestrator.orchestrator import GateRefusal
 from shared.feature_flags import flags
 from shared.protocol import RegisterAgent
 from tests.test_cresco_dispatch_096 import orch as orch
+from tests.test_terminal_ssh_runtime import isolated as isolated
 
 
 @pytest.mark.parametrize("tool", ["start_terminal", "terminal_write"])
@@ -97,3 +98,44 @@ async def test_gate_binds_fresh_host_authority_after_normal_permission_checks(or
         assert authority.matches(orch)
         assert prepared.stream_params["_terminal_authority"] == "forged"
     assert orch.tool_permissions.is_tool_allowed.call_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("loss,code", [("profile", "terminal_profile_invalid"),
+                                       ("target", "terminal_target_unavailable")])
+async def test_real_gate_types_terminal_loss_between_permission_and_confirmation(orch, isolated, loss, code):
+    from dataclasses import replace
+    from orchestrator.terminal_sessions import TerminalSessionManager
+
+    socket = object()
+    orch.ui_sessions[socket] = {"sub": "owner", "exp": time.time() + 600,
+                                "realm_access": {"roles": ["user"]}}
+    orch.terminal_sessions = TerminalSessionManager(orchestrator=orch)
+    orch.security_flags["terminal-shell-1"] = {"start_terminal": {"blocked": False}}
+
+    def permission(*args):
+        if loss == "profile":
+            isolated.profile.unlink()
+        else:
+            isolated.state.target = replace(isolated.target, address="changed.test")
+        return True
+
+    orch.tool_permissions.is_tool_allowed = permission
+    result = await orch._run_gate_stack(socket, "terminal-shell-1", "start_terminal", {}, user_id="owner")
+    assert isinstance(result, GateRefusal)
+    assert result.response.error == {"code": code, "message": code, "retryable": False,
+                                     "data": {"terminal_code": code, "http_status": 503}}
+    assert result.render_components[0]["message"] == code
+    assert isolated.state.connects == [] and orch.terminal_sessions._sessions == {}
+
+
+@pytest.mark.asyncio
+async def test_terminal_confirmation_catch_does_not_reclassify_another_agent_failure(orch, monkeypatch):
+    from orchestrator.terminal_security import TerminalError
+
+    def failure(*args):
+        raise TerminalError("terminal_profile_invalid", 503)
+
+    monkeypatch.setattr(remote_confirmation, "evaluate", failure)
+    with pytest.raises(TerminalError, match="terminal_profile_invalid"):
+        await orch._run_gate_stack(object(), "cresco-1", "cresco_list_regions", {}, user_id="u1")

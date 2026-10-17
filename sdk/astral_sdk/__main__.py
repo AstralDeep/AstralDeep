@@ -125,6 +125,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(tcreate)
     tcreate.add_argument("--cols", type=int, default=80)
     tcreate.add_argument("--rows", type=int, default=24)
+    tcreate.add_argument("--approval-timeout", type=float, default=120,
+                         help="Seconds to wait for approval in the signed-in Astral UI")
     tcreate.add_argument("--shell-command", dest="shell_command", default=None,
                          help="Run one command instead of an interactive shell")
 
@@ -134,6 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
     twrite = sub.add_parser("terminal-write", help="Write one base64-free text/byte chunk to a session's stdin")
     _add_common(twrite)
     twrite.add_argument("session_id")
+    twrite.add_argument("--approval-timeout", type=float, default=120)
     twrite.add_argument("--data", required=True,
                         help="Text to send; prefix 'base64:' to send raw bytes")
 
@@ -160,6 +163,10 @@ def build_parser() -> argparse.ArgumentParser:
     tattach = sub.add_parser("terminal-attach", help="Attach stdin/stdout to a live session until it ends")
     _add_common(tattach)
     tattach.add_argument("session_id")
+
+    tapproval = sub.add_parser("terminal-approval", help="Check a terminal request awaiting human approval")
+    _add_common(tapproval)
+    tapproval.add_argument("proposal_id")
 
     return parser
 
@@ -260,11 +267,14 @@ def run(argv: Optional[list[str]] = None) -> int:
             value = client.emergency_resume(expected_revision=args.expected_revision)
         elif args.command == "terminal-create":
             value = client.create_terminal_session(cols=args.cols, rows=args.rows,
-                                                   command=args.shell_command)
+                command=args.shell_command, approval_timeout_seconds=args.approval_timeout)
         elif args.command == "terminal-list":
             value = client.list_terminal_sessions()
         elif args.command == "terminal-write":
-            value = client.write_terminal(args.session_id, _terminal_payload(args.data))
+            value = client.write_terminal(args.session_id, _terminal_payload(args.data),
+                                           approval_timeout_seconds=args.approval_timeout)
+        elif args.command == "terminal-approval":
+            value = client.get_terminal_approval(args.proposal_id)
         elif args.command == "terminal-read":
             value = client.read_terminal(args.session_id, offset=args.offset,
                                          wait_seconds=args.wait_seconds)
@@ -278,8 +288,13 @@ def run(argv: Optional[list[str]] = None) -> int:
             return _attach(client, args.session_id)
         else:  # pragma: no cover
             raise SystemExit(f"unknown command: {args.command}")
+    except ValueError:
+        sys.stderr.write(json.dumps({"error": "Invalid command arguments", "code": "invalid_arguments"}) + "\n")
+        return 1
     except AstralHTTPError as exc:
         error = {"error": str(exc), "code": exc.code, "status_code": exc.status_code}
+        if exc.code == "terminal_confirmation_required" and isinstance(exc.data, dict):
+            error["proposal_id"] = exc.data.get("proposal_id")
         sys.stderr.write(json.dumps(error) + "\n")
         return 1
     except AstralError as exc:

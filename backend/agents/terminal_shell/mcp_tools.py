@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Terminal agent tools require current dispatch-owned authority for retained-session access.
-Execution and input remain unavailable until an isolated executor is qualified.
+Execution and input require an explicitly approved isolated SSH runtime and current human approval.
 """
 from __future__ import annotations
 
@@ -189,13 +189,17 @@ def list_terminals(**kwargs) -> Dict[str, Any]:
 
 
 def start_terminal(**kwargs) -> Dict[str, Any]:
-    _manager_value, _user_id, refusal = _guarded(kwargs, "start_terminal")
+    manager, user_id, refusal = _guarded(kwargs, "start_terminal")
     if refusal:
         return refusal
     try:
-        require_terminal_execution()
+        require_terminal_execution(manager, user_id)
+        info = manager.create(user_id, cols=kwargs.get("cols", 80), rows=kwargs.get("rows", 24),
+                              command=kwargs.get("command"), authority=kwargs["_terminal_authority"],
+                              runtime_binding=kwargs.get("runtime_binding"))
     except TerminalError as exc:
         return _terminal_fail(exc)
+    return _card("Terminal started", [_describe_session(info)], {"session": info})
 
 
 def terminal_read(**kwargs) -> Dict[str, Any]:
@@ -217,7 +221,7 @@ def terminal_read(**kwargs) -> Dict[str, Any]:
                      f"wait_seconds must be a number between 0 and {READ_WAIT_MAX_S:.0f}.")
     try:
         payload = manager.read(user_id, session_id, offset=offset,
-                               wait_seconds=float(wait_seconds))
+                               wait_seconds=float(wait_seconds), authority=kwargs["_terminal_authority"])
     except TerminalError as exc:
         return _terminal_fail(exc)
     _manager_value, _user_id, refusal = _guarded(kwargs, "terminal_read")
@@ -253,13 +257,27 @@ def terminal_read(**kwargs) -> Dict[str, Any]:
 
 
 def terminal_write(**kwargs) -> Dict[str, Any]:
-    _manager_value, _user_id, refusal = _guarded(kwargs, "terminal_write")
+    manager, user_id, refusal = _guarded(kwargs, "terminal_write")
     if refusal:
         return refusal
     try:
-        require_terminal_execution()
+        require_terminal_execution(manager, user_id)
+        session_id, bad = _session_ref(kwargs)
+        if bad:
+            return bad
+        data = kwargs.get("data")
+        encoded = kwargs.get("data_b64")
+        if (data is None) == (encoded is None):
+            raise TerminalError("terminal_input_invalid", 422)
+        if data is not None:
+            if not isinstance(data, str):
+                raise TerminalError("terminal_input_invalid", 422)
+            encoded = base64.b64encode(data.encode("utf-8")).decode("ascii")
+        info = manager.write(user_id, session_id, encoded,
+                             authority=kwargs["_terminal_authority"], runtime_binding=kwargs.get("runtime_binding"))
     except TerminalError as exc:
         return _terminal_fail(exc)
+    return _card("Terminal input sent", [_describe_session(info)], {"session": info})
 
 
 def terminal_resize(**kwargs) -> Dict[str, Any]:
@@ -271,7 +289,8 @@ def terminal_resize(**kwargs) -> Dict[str, Any]:
         return bad
     try:
         info = manager.resize(user_id, session_id,
-                              cols=kwargs.get("cols", 80), rows=kwargs.get("rows", 24))
+                              cols=kwargs.get("cols", 80), rows=kwargs.get("rows", 24),
+                              authority=kwargs["_terminal_authority"])
     except TerminalError as exc:
         return _terminal_fail(exc)
     return _card(f"Terminal resized — {_sanitize(session_id, 48)}",
@@ -286,7 +305,7 @@ def terminal_interrupt(**kwargs) -> Dict[str, Any]:
     if bad:
         return bad
     try:
-        info = manager.interrupt(user_id, session_id)
+        info = manager.interrupt(user_id, session_id, authority=kwargs["_terminal_authority"])
     except TerminalError as exc:
         return _terminal_fail(exc)
     return _card(f"Interrupted — {_sanitize(session_id, 48)}",
@@ -334,9 +353,11 @@ TOOL_REGISTRY = {
         "tools:read", 10.0),
     "start_terminal": _entry(
         start_terminal,
-        "Requests arbitrary command execution in an owner terminal. Unavailable until "
-        "a qualified isolated executor exists; requires system permission and explicit approval.",
+        "Requests arbitrary command execution on the operator-approved isolated SSH runtime; "
+        "requires system permission and explicit approval.",
         {"type": "object", "properties": {
+            "runtime_binding": {"type": "string", "pattern": "^[a-f0-9]{64}$",
+                                "description": "Server-selected runtime binding retained by the approval."},
             "command": {"type": "string",
                         "description": ("Optional command to run instead of an "
                                         "interactive shell, e.g. 'df -h'.")},
@@ -360,13 +381,17 @@ TOOL_REGISTRY = {
         "tools:read", 30.0),
     "terminal_write": _entry(
         terminal_write,
-        "Requests arbitrary command execution through terminal input. Unavailable until "
-        "a qualified isolated executor exists; requires system permission and explicit approval.",
+        "Requests arbitrary command execution through input on the approved isolated runtime; "
+        "requires system permission and explicit approval.",
         {"type": "object", "properties": {
             **_SESSION_PROP,
             "data": {"type": "string",
                      "description": "Text to send, e.g. 'ls -la\\n' or 'y'."},
-        }, "required": ["session_id", "data"]},
+            "runtime_binding": {"type": "string", "pattern": "^[a-f0-9]{64}$",
+                                "description": "Server-selected runtime binding retained by the approval."},
+            "data_b64": {"type": "string", "maxLength": 21848,
+                         "description": "Base64 input bytes, instead of data."},
+        }, "required": ["session_id"], "oneOf": [{"required": ["data"]}, {"required": ["data_b64"]}]},
         "tools:system", 15.0, "always"),
     "terminal_resize": _entry(
         terminal_resize,
