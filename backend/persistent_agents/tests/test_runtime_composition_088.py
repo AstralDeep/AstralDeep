@@ -9,8 +9,11 @@ from types import SimpleNamespace
 import pytest
 from cryptography.fernet import Fernet
 
+from audit.repository import AuditRepository
+from orchestrator.framework_credentials import FrameworkCredentialService
 from orchestrator.session_store import WebSessionStore
 from orchestrator.work_admission import WorkAdmissionCoordinator
+from orchestrator.work_operations import FrameworkWorkOperations
 from orchestrator.orchestrator import Orchestrator
 from persistent_agents import runtime as composition
 from persistent_agents.runner import AssignmentRunner
@@ -26,9 +29,12 @@ def host(plane, monkeypatch):
         runtime_composition=SimpleNamespace(plane=SimpleNamespace(
             runtime=plane, repositories=plane.repositories)),
         web_sessions=WebSessionStore(plane_runtime=plane),
+        audit_repo=AuditRepository(plane_runtime=plane),
         work_admission=WorkAdmissionCoordinator.from_plane(plane_runtime=plane),
         persistent_assignments=None,
         persistent_assignment_runner=None,
+        framework_credentials=None,
+        framework_work_operations=None,
     )
 
 
@@ -107,14 +113,19 @@ async def test_failed_initialization_closes_only_its_store_and_exposes_no_pair(h
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enabled", [False, True])
-async def test_actual_server_startup_respects_flag_and_installs_the_qualified_pair(host, monkeypatch, enabled):
+@pytest.mark.parametrize("framework_enabled", [False, True])
+async def test_actual_server_startup_respects_flag_and_installs_the_qualified_pair(
+    host, monkeypatch, enabled, framework_enabled,
+):
     from shared.feature_flags import flags
 
     class BeforeHTTP(Exception):
         pass
 
     events = []
-    monkeypatch.setattr(flags, "is_enabled", lambda name: name == "persistent_agents" and enabled)
+    monkeypatch.setattr(flags, "is_enabled", lambda name: {
+        "persistent_agents": enabled, "framework_credentials": framework_enabled,
+    }.get(name, False))
     monkeypatch.setenv("ASTRAL_ENV", "development")
     host.runtime_composition.start = lambda: events.append("runtime")
 
@@ -157,6 +168,19 @@ async def test_actual_server_startup_respects_flag_and_installs_the_qualified_pa
             assert isinstance(runner._loop, asyncio.Task) and not runner._loop.done()
         else:
             assert host.persistent_assignments is None and host.persistent_assignment_runner is None
+        if framework_enabled:
+            assert isinstance(host.framework_credentials, FrameworkCredentialService)
+            assert host.framework_credentials.plane_runtime is host.runtime_composition.plane.runtime
+            assert host.framework_credentials._sessions is host.web_sessions._sessions.repository
+            assert host.framework_credentials._audit is host.audit_repo
+            if enabled:
+                assert isinstance(host.framework_work_operations, FrameworkWorkOperations)
+                assert host.framework_work_operations.credentials is host.framework_credentials
+                assert host.framework_work_operations.assignments is host.persistent_assignments
+            else:
+                assert host.framework_work_operations is None
+        else:
+            assert host.framework_credentials is None and host.framework_work_operations is None
     finally:
         runner = host.persistent_assignment_runner
         if runner is not None:

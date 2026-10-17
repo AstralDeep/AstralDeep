@@ -23214,6 +23214,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from persistent_agents.runtime import start_assignment_runtime
             start_assignment_runtime(self)
 
+        from orchestrator.framework_runtime import start_framework_runtime
+        start_framework_runtime(self)
+
         if flags.is_enabled("scheduler_execution"):
             try:
                 from scheduler.loop import SchedulerLoop
@@ -23639,6 +23642,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             raise
 
     async def _close_started_services_once(self) -> None:
+        from orchestrator.framework_runtime import stop_framework_runtime
+        stop_framework_runtime(self)
         startup_tasks = tuple(getattr(self, "_startup_background_tasks", ()))
         for task in startup_tasks:
             task.cancel()
