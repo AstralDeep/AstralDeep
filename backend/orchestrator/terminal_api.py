@@ -5,6 +5,7 @@ Execution endpoints explicitly report unavailable isolation without starting hos
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -12,6 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from orchestrator.auth import get_web_or_bearer_user_payload, security, verify_user
+from orchestrator.session_store import WebSessionStore
 from orchestrator.terminal_security import (
     AGENT_ID,
     TerminalError,
@@ -75,17 +77,50 @@ async def _dispatch(request: Request, claims: dict, tool_name: str, arguments: d
         execute = getattr(orch, "execute_authorized_tool", None)
         if not callable(execute):
             raise TerminalError("terminal_unavailable", 503)
+        original = deepcopy(claims)
+        owner_id = original["sub"]
+        selection = getattr(request.state, "_authenticated_cookie_session", None)
+        sessions = getattr(orch, "web_sessions", None)
+
+        def current_selection():
+            assert_human_owner(original, owner_id)
+            if getattr(request.state, "_authenticated_cookie_session", None) != selection:
+                raise TerminalError("terminal_authority_changed", 401)
+            if selection is None:
+                return
+            if (type(selection) is not tuple or len(selection) != 2
+                    or not all(isinstance(value, str) and value for value in selection)
+                    or type(sessions) is not WebSessionStore
+                    or getattr(orch, "web_sessions", None) is not sessions):
+                raise TerminalError("terminal_authority_changed", 401)
+            try:
+                current = sessions.is_current_incarnation(
+                    owner_id, session_id=selection[0], incarnation_id=selection[1],
+                )
+            except Exception:
+                raise TerminalError("terminal_authority_unavailable", 503) from None
+            if current is not True:
+                raise TerminalError("terminal_authority_changed", 401)
+
         try:
             response = await execute(
-                claims=claims, user_id=claims["sub"], agent_id=AGENT_ID,
+                claims=claims, user_id=owner_id, agent_id=AGENT_ID,
                 tool_name=tool_name, arguments=arguments, channel="rest",
             )
         except Exception:
             raise TerminalError("terminal_dispatch_unavailable", 503) from None
         current = await get_web_or_bearer_user_payload(request, await security(request))
-        assert_human_owner(current, claims["sub"])
+        assert_human_owner(current, owner_id)
         await verify_user(current)
-        await asyncio.to_thread(assert_terminal_delivery, orch, current, claims["sub"], tool_name)
+
+        def delivery():
+            current_selection()
+            assert_human_owner(current, owner_id)
+            assert_terminal_delivery(orch, original, owner_id, tool_name)
+            current_selection()
+            assert_human_owner(current, owner_id)
+
+        await asyncio.to_thread(delivery)
         if response is None:
             raise TerminalError("terminal_unavailable", 503)
         if response.error:
