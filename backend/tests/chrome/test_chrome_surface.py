@@ -305,15 +305,16 @@ class _StubCredentialsForReload:
 
 
 def test_connections_issue_and_revoke_refuse_without_a_live_human_caller(_connections_on):
+    from persistent_agents.models import AssignmentError
+
     orch = FakeOrch(device="browser")
     orch.framework_credentials = _StubCredentialsForReload()
-    run(chrome_events.handle_chrome_event(
-        orch, orch.ws, "chrome_connection_issue",
-        {"fields": {"name": "x", "scopes": ["operations.read"],
-                    "expires_in_seconds": 3600, "max_admissions": 10}}, "u1"))
-    html = _last(orch, "chrome_render")["html"]
-    assert "sign in" in html.lower()
-    run(chrome_events.handle_chrome_event(
-        orch, orch.ws, "chrome_connection_revoke", {"credential_id": "whatever"}, "u1"))
-    html = _last(orch, "chrome_render")["html"]
-    assert "sign in" in html.lower()
+    with pytest.raises(AssignmentError, match="human_authentication_required"):
+        run(chrome_events.handle_chrome_event(
+            orch, orch.ws, "chrome_connection_issue",
+            {"fields": {"name": "x", "scopes": ["operations.read"],
+                        "expires_in_seconds": 3600, "max_admissions": 10}}, "u1"))
+    with pytest.raises(AssignmentError, match="human_authentication_required"):
+        run(chrome_events.handle_chrome_event(
+            orch, orch.ws, "chrome_connection_revoke", {"credential_id": "whatever"}, "u1"))
+    assert orch.sent == []
