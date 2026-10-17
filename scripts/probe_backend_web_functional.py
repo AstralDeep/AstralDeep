@@ -175,10 +175,12 @@ def exercise(owner, config, qualification_id, *, open_wire):
     retained_chat(owner, attachment_chat, "turquoise")
     retained_chat(owner, attachment_chat, "otter")
 
-    audit = owner.get(WEB + "/api/audit", params={"limit": 200})
+    audit = owner.get(WEB + "/api/audit", params={"limit": 200, "event_class": "llm_config_change", "outcome": "success"})
     require(audit.status_code == 200, "authenticated audit view failed")
     entries = audit.json().get("items", [])
-    require(any(item.get("action_type") == "llm_config_change" for item in entries),
+    require(any(item.get("event_class") == "llm_config_change"
+                and item.get("action_type") in {"llm_config.created", "llm_config.updated"}
+                and item.get("outcome") == "success" for item in entries),
             "provider settings produced no retained audit event")
     return {"schema_version": 1, "qualification_id": qualification_id,
             "provider_settings_save_and_probe": "passed", "real_provider_chat": "passed",

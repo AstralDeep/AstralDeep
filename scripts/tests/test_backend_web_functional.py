@@ -107,8 +107,22 @@ def test_provider_input_refuses_malformed_or_insecure_values(tmp_path, config):
 
 
 class Application:
-    def __init__(self, failure=None):
+    def __init__(self, failure=None, audit_event=None):
         self.failure, self.actions = failure, []
+        self.audit_queries = []
+        self.audit_event = {
+            "event_id": "33333333-3333-4333-8333-333333333333",
+            "event_class": "llm_config_change", "action_type": "llm_config.created",
+            "description": "User saved their personal LLM configuration (test)",
+            "agent_id": None, "conversation_id": None,
+            "correlation_id": "44444444-4444-4444-8444-444444444444",
+            "outcome": "success", "outcome_detail": None,
+            "inputs_meta": {"action": "created", "transport": "ws", "scope": "user",
+                            "base_url": CONFIG["base_url"], "model": CONFIG["model"]},
+            "outputs_meta": {}, "artifact_pointers": [],
+            "started_at": "2026-10-17T00:00:00Z", "completed_at": "2026-10-17T00:00:00Z",
+            "recorded_at": "2026-10-17T00:00:00Z", **(audit_event or {}),
+        }
 
     def handle(self, request):
         path = request.url.path
@@ -135,7 +149,8 @@ class Application:
             if self.failure == "attachment-id":
                 payload["attachment_id"] = "invalid"
         elif path == "/api/audit":
-            payload = {"items": [{"action_type": "llm_config_change"}]}
+            self.audit_queries.append(dict(request.url.params))
+            payload = {"items": [self.audit_event]}
             if self.failure == "audit":
                 code = 503
             if self.failure == "audit-missing":
@@ -168,6 +183,30 @@ def test_functional_probe_checks_real_paths_but_receipt_contains_no_credentials(
     assert report["release_authorized"] is False and report["real_provider_chat"] == "passed"
     assert CONFIG["api_key"] not in json.dumps(report)
     assert [action[0] for action in app.actions] == ["chrome_llm_save", "chat_message", "load_chat", "chat_message"]
+
+
+@pytest.mark.parametrize("action", ["created", "updated"])
+def test_provider_audit_accepts_the_real_saved_event_class_and_action(action):
+    app = Application(audit_event={"action_type": "llm_config." + action,
+                                  "inputs_meta": {"action": action, "scope": "user", "transport": "ws"}})
+    with httpx.Client(transport=httpx.MockTransport(app.handle)) as client:
+        report = probe.exercise(client, CONFIG, ID, open_wire=app.wire)
+    assert report["provider_audit_observed"] == "passed"
+    assert app.audit_queries == [{"limit": "200", "event_class": "llm_config_change", "outcome": "success"}]
+
+
+@pytest.mark.parametrize("change", [
+    {"event_class": "llm_call"}, {"event_class": None},
+    {"action_type": "llm_config_change"}, {"action_type": "llm_config.tested"},
+    {"action_type": "llm_config.cleared"}, {"action_type": None},
+    {"outcome": "failure"}, {"outcome": None},
+])
+def test_provider_audit_rejects_unrelated_or_unsaved_events(change):
+    app = Application(audit_event=change)
+    with httpx.Client(transport=httpx.MockTransport(app.handle)) as client, pytest.raises(
+        probe.ProbeError, match="provider settings produced no retained audit event"
+    ):
+        probe.exercise(client, CONFIG, ID, open_wire=app.wire)
 
 
 @pytest.mark.parametrize("content", ["An orbital response", [{"type": "text", "text": "An orbital response"}]])
