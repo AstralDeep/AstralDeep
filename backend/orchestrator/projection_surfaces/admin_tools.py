@@ -6,6 +6,7 @@ Registered in projection_surfaces via SURFACE_MODULES.
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
@@ -63,7 +64,12 @@ def _is_admin(roles) -> bool:
 
 
 async def title(orch, user_id, params) -> str:
-    return "Tutorial admin" if (params or {}).get("tab") == "tutorial" else "Tool quality"
+    tab = (params or {}).get("tab")
+    if tab == "tutorial":
+        return "Tutorial admin"
+    if tab == "a2a":
+        return "A2A publishing"
+    return "Tool quality"
 
 
 async def render(orch, user_id, roles, params) -> str:
@@ -74,6 +80,9 @@ async def render(orch, user_id, roles, params) -> str:
     tab = params.get("tab") or "quality"
     if tab == "tutorial":
         return await asyncio.to_thread(_render_tutorial, orch, params)
+    if tab == "a2a":
+        body = await asyncio.to_thread(_render_a2a, orch, roles, params)
+        return _tab_bar(tab) + body
     if tab not in ("quality", "diagnostics"):
         tab = "quality"
     if tab == "quality":
@@ -85,7 +94,11 @@ async def render(orch, user_id, roles, params) -> str:
 
 def _tab_bar(active: str) -> str:
     buttons = []
-    for key, label in (("quality", "Tool quality"), ("diagnostics", "Runtime diagnostics")):
+    for key, label in (
+        ("quality", "Tool quality"),
+        ("diagnostics", "Runtime diagnostics"),
+        ("a2a", "A2A publishing"),
+    ):
         payload = json.dumps({"surface": SURFACE_KEY, "params": {"tab": key}})
         if key == active:
             cls = ("bg-astral-primary/20 text-astral-primary "
@@ -672,6 +685,227 @@ async def handle_step_archive(orch, websocket, user_id, roles, payload):
 
 async def handle_step_restore(orch, websocket, user_id, roles, payload):
     return await _toggle_archive(orch, user_id, roles, payload, archive=False)
+
+
+def _a2a_registry(orch):
+    from shared.a2a_publication import A2APublicationRegistry
+
+    registry = getattr(orch, "a2a_publications", None)
+    return registry if isinstance(registry, A2APublicationRegistry) else None
+
+
+def _a2a_server_enabled() -> bool:
+    from shared.feature_flags import flags
+
+    return flags.is_enabled("a2a_server")
+
+
+def _a2a_disabled_notice():
+    return notice_block(
+        "info",
+        "A2A server is disabled on this deployment. Enable FF_A2A_SERVER to publish "
+        "capabilities for external A2A clients.",
+    )
+
+
+def _a2a_status_badge(status: str) -> str:
+    classes = {
+        "active": "border-green-500/20 bg-green-500/10 text-green-400",
+        "expired": "border-yellow-500/20 bg-yellow-500/10 text-yellow-400",
+        "withdrawn": "border-white/10 bg-white/5 text-astral-muted",
+        "eligible": "border-white/10 bg-white/5 text-astral-muted",
+        "published": "border-green-500/20 bg-green-500/10 text-green-400",
+    }
+    cls = classes.get(status, classes["eligible"])
+    return (
+        f'<span class="px-2 py-0.5 rounded text-xs border {cls}">{esc(status)}</span>'
+    )
+
+
+def _audience_badges(audiences) -> str:
+    badges = "".join(
+        f'<span class="px-2 py-0.5 rounded text-xs border border-astral-primary/30 '
+        f'bg-astral-primary/10 text-astral-primary">{esc(scope)}</span>'
+        for scope in audiences
+    )
+    return f'<div class="flex flex-wrap gap-1">{badges}</div>' if audiences else \
+        '<span class="text-xs text-astral-muted">no audiences registered</span>'
+
+
+def _render_a2a_capability_row(agent_id: str, name: str, description: str,
+                               audiences, published: bool) -> str:
+    if published:
+        state_html = _a2a_status_badge("published")
+    elif audiences:
+        state_html = (
+            f'{_a2a_status_badge("eligible")}'
+            f'<div class="text-xs text-astral-muted mt-1">Stage via REST: '
+            f'POST /api/a2a/publications/intents with agent_id, audiences and '
+            f'lifetime, then confirm the intent.</div>'
+        )
+    else:
+        state_html = (
+            f'{_a2a_status_badge("eligible")}'
+            f'<div class="text-xs text-astral-muted mt-1">no audiences to publish</div>'
+        )
+    return (
+        f'<div class="bg-white/5 border border-white/10 rounded-lg p-3 space-y-2" '
+        f'data-a2a-capability="{esc(agent_id)}">'
+        f'<div class="flex items-center gap-2"><span class="text-sm font-medium text-astral-text">'
+        f'{esc(name)}</span>{state_html}</div>'
+        f'<div class="text-xs text-astral-muted">{esc(description)}</div>'
+        f'{_audience_badges(audiences)}'
+        f'</div>'
+    )
+
+
+def _render_a2a_pending_row(entry: dict) -> str:
+    expires = _iso_short(
+        datetime.fromtimestamp(entry["expires_at"], tz=timezone.utc).isoformat()
+        if entry.get("expires_at") else ""
+    )
+    return (
+        f'<div class="bg-white/5 border border-yellow-500/20 rounded-lg p-3 space-y-1" '
+        f'data-a2a-intent="{esc(entry["intent_id"])}">'
+        f'<div class="text-sm text-astral-text">{esc(entry["agent_id"])} '
+        f'<span class="text-xs text-astral-muted">awaiting confirmation</span></div>'
+        f'{_audience_badges(entry.get("audiences") or [])}'
+        f'<div class="text-xs text-astral-muted">lifetime {esc(entry["lifetime"])} '
+        f'&middot; confirmation expires {esc(expires)}</div>'
+        f'</div>'
+    )
+
+
+def _render_a2a_publication_row(entry: dict) -> str:
+    status = entry.get("status") or "active"
+    published = _iso_short(
+        datetime.fromtimestamp(entry["published_at"], tz=timezone.utc).isoformat()
+        if entry.get("published_at") else ""
+    )
+    expires = _iso_short(
+        datetime.fromtimestamp(entry["expires_at"], tz=timezone.utc).isoformat()
+        if entry.get("expires_at") else "open-ended"
+    )
+    return (
+        f'<div class="bg-white/5 border border-white/10 rounded-lg p-3 space-y-1" '
+        f'data-a2a-publication="{esc(entry["publication_id"])}">'
+        f'<div class="flex items-center gap-2"><span class="text-sm text-astral-text">'
+        f'{esc(entry["agent_id"])}</span>{_a2a_status_badge(status)}</div>'
+        f'{_audience_badges(entry.get("audiences") or [])}'
+        f'<div class="text-xs text-astral-muted">published {esc(published)} '
+        f'&middot; expires {esc(expires)} &middot; lifetime {esc(entry.get("lifetime") or "")}</div>'
+        f'</div>'
+    )
+
+
+def _render_a2a(orch, roles, params) -> str:
+    if not _is_admin(roles):
+        return chrome_error_block("Admin role required to view this surface.")
+    if not _a2a_server_enabled() or _a2a_registry(orch) is None:
+        return _a2a_disabled_notice()
+    registry = _a2a_registry(orch)
+    sections = ['<div class="space-y-4" data-admin-tab="a2a">']
+    sections.append(notice_block(
+        "info",
+        "Publication actions run through the admin REST API: stage with "
+        "POST /api/a2a/publications/intents, confirm the intent, and withdraw with "
+        "DELETE /api/a2a/publications/{publication_id}.",
+    ))
+    try:
+        capabilities = registry.eligible_catalog()
+        pending = registry.pending_intents()
+        inventory = registry.inventory()
+    except Exception:
+        logger.exception("admin_tools: failed to load A2A publication state")
+        sections.append(notice_block("error", "Failed to load A2A publication state."))
+        sections.append("</div>")
+        return "".join(sections)
+    cards = getattr(orch, "agent_cards", {}) or {}
+    sections.append('<h3 class="text-sm font-semibold text-astral-text">Approved capabilities</h3>')
+    if capabilities:
+        for agent_id, audiences, published in capabilities:
+            card = cards.get(agent_id)
+            sections.append(_render_a2a_capability_row(
+                agent_id,
+                str(getattr(card, "name", None) or agent_id),
+                str(getattr(card, "description", None) or ""),
+                audiences,
+                published,
+            ))
+    else:
+        sections.append(notice_block(
+            "info",
+            "No approved capabilities are eligible for A2A publication yet. Mark a "
+            "first-party agent safe to add it to the approved catalog.",
+        ))
+    sections.append('<h3 class="text-sm font-semibold text-astral-text">Awaiting confirmation</h3>')
+    if pending:
+        for entry in pending:
+            sections.append(_render_a2a_pending_row(entry))
+    else:
+        sections.append('<div class="text-xs text-astral-muted">No staged publications.</div>')
+    sections.append('<h3 class="text-sm font-semibold text-astral-text">Publications</h3>')
+    if inventory:
+        for entry in inventory:
+            sections.append(_render_a2a_publication_row(entry))
+    else:
+        sections.append('<div class="text-xs text-astral-muted">Nothing published for A2A.</div>')
+    sections.append("</div>")
+    return "".join(sections)
+
+
+async def components(orch, user_id, roles, params):
+    from webrender.chrome.surfaces import _sdui
+
+    if not _is_admin(roles):
+        return [_sdui.alert("Admin role required to view this surface.", "error")]
+    params = params or {}
+    if (params.get("tab") or "quality") != "a2a":
+        return [_sdui.alert(
+            "Use the web client for this Admin Tools tab.", "info",
+            title="Not available here",
+        )]
+    if not _a2a_server_enabled() or _a2a_registry(orch) is None:
+        return [_sdui.alert(
+            "A2A server is disabled on this deployment. Enable FF_A2A_SERVER to publish "
+            "capabilities for external A2A clients.", "info",
+        )]
+    registry = _a2a_registry(orch)
+    comps: list = [_sdui.alert(
+        "Publishing advertises an approved capability in the public A2A agent card "
+        "until it expires or is withdrawn. Publication never grants execution authority. "
+        "Stage and confirm publications through the admin REST API "
+        "(/api/a2a/publications).",
+        "info", title="A2A publishing",
+    )]
+    cards = getattr(orch, "agent_cards", {}) or {}
+    for agent_id, audiences, published in registry.eligible_catalog():
+        card = cards.get(agent_id)
+        name = str(getattr(card, "name", None) or agent_id)
+        state = f"{agent_id}: " + (
+            "published" if published else (
+                f"eligible audiences: {', '.join(audiences)}" if audiences
+                else "no audiences to publish"
+            )
+        )
+        comps.append(_sdui.card(name, [
+            _sdui.badge("published" if published else "eligible",
+                        "success" if published else "default"),
+            _sdui.text(state),
+        ]))
+    for entry in registry.pending_intents():
+        comps.append(_sdui.card(
+            f"Awaiting confirmation: {entry['agent_id']}",
+            [_sdui.text(f"lifetime {entry['lifetime']} — confirm through the admin REST API")],
+        ))
+    for entry in registry.inventory():
+        status = entry.get("status") or "active"
+        comps.append(_sdui.card(entry["agent_id"], [
+            _sdui.badge(status, "success" if status == "active" else "default"),
+            _sdui.text(f"audiences: {', '.join(entry.get('audiences') or [])} "
+                       f"· lifetime {entry.get('lifetime')}")
+        ]))
+    return comps
 
 
 HANDLERS = {
