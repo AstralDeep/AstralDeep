@@ -7,11 +7,12 @@ sanitized inventory, audit events, and advertisement semantics.
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 import os
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
@@ -504,6 +505,71 @@ def test_dispatch_is_not_publication_gated_for_authorized_callers(monkeypatch):
     response = _tool_call(client, name="web_search", rpc_id="c2")
     assert response.status_code == 200
     assert orch.execute_authorized_tool.await_count == 2
+
+
+# --- real startup wiring -----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_startup_mounts_a2a_and_publication_routes_when_server_enabled(monkeypatch):
+    from orchestrator import session_store
+    from orchestrator import orchestrator as module
+    from shared.a2a_publication import A2APublicationRegistry
+    from tests.test_evidence_entry import lifetime_host
+
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    monkeypatch.setenv("USE_MOCK_AUTH", "false")
+    monkeypatch.delenv("A2A_EXTERNAL_AGENTS", raising=False)
+    monkeypatch.setattr(session_store, "assert_production_posture", lambda: None)
+    monkeypatch.setattr(
+        module.flags, "is_enabled", lambda name: name == "a2a_server"
+    )
+    host = lifetime_host(monkeypatch)
+    host.voice_services = None
+    host.generated_agent_publication_service = SimpleNamespace(
+        recover_once=AsyncMock(return_value=SimpleNamespace(degraded_publication_ids=())),
+        start=MagicMock(), close=AsyncMock(),
+    )
+
+    async def idle(*_args):
+        await asyncio.Event().wait()
+
+    def track(coroutine, *, name):
+        coroutine.close()
+
+    host._track_startup_background_task = track
+    host.explicit_notes = SimpleNamespace(expiry_loop=idle)
+    host._jwks_warm_loop = idle
+    host._personal_agent_watchdog_task = None
+    host._personal_agent_watchdog_loop = idle
+    host._start_phi_warm = MagicMock()
+    host.lifecycle_manager = SimpleNamespace(reconcile_orphaned_draft_permissions=lambda: 0,
+        reconcile_legacy_directory_ownership=lambda: None)
+    host._monitor_agents = idle
+    host.task_manager = SimpleNamespace(prune_missing=MagicMock())
+    host.async_task_manager.start_retention_sweep = MagicMock()
+    serving = AsyncMock()
+    captured = {}
+
+    def capture(config):
+        captured["app"] = config.app
+        return SimpleNamespace(serve=serving)
+
+    monkeypatch.setattr(module.uvicorn, "Server", capture)
+    await host._run_started_server()
+    serving.assert_awaited_once()
+    assert isinstance(host.a2a_publications, A2APublicationRegistry)
+    route_paths = set()
+    for route in captured["app"].router.routes:
+        route_paths.add(getattr(route, "path", ""))
+        original = getattr(route, "original_router", None)
+        for sub in getattr(original, "routes", []) or []:
+            route_paths.add(getattr(sub, "path", ""))
+    assert "/a2a" in route_paths
+    assert "/a2a/.well-known/agent-card.json" in route_paths
+    assert "/api/a2a/publications" in route_paths
+    assert "/api/a2a/publications/catalog" in route_paths
+    await host._close_started_services()
 
 
 # --- admin REST API ----------------------------------------------------------
