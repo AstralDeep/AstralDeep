@@ -32,6 +32,7 @@ def handoff(fixture, monkeypatch):
 
     async def dispatch(**kwargs):
         state["request"] = approvals.current_request(fixture.orch, "owner", "start_terminal")
+        state["arguments"] = dict(kwargs["arguments"])
         result = rc.evaluate(fixture.orch, None, kwargs["agent_id"], kwargs["tool_name"],
                              kwargs["arguments"], None, kwargs["user_id"])
         state["card"] = result[1][0]
@@ -39,6 +40,19 @@ def handoff(fixture, monkeypatch):
 
     fixture.orch.execute_authorized_tool = dispatch
     return SimpleNamespace(app=app, fixture=fixture, state=state)
+
+
+@pytest.mark.asyncio
+async def test_create_handoff_preserves_explicit_target_and_directory(handoff):
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(handoff.app), base_url="https://terminal.invalid") as client:
+        response = await client.post("/api/terminals", json={
+            "target": "b" * 32, "directory": "/srv/project", "command": "pwd"})
+    assert response.status_code == 202
+    assert handoff.state["arguments"] == {
+        "cols": 80, "rows": 24, "command": "pwd", "target": "b" * 32,
+        "directory": "/srv/project",
+    }
+    assert handoff.state["card"]["content"][-2]["payload"]
 
 
 @pytest.mark.asyncio

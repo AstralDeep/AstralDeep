@@ -292,6 +292,17 @@ def test_retained_lists_and_cleanup_return_truthful_owner_results(retained, sess
     retained.manager.close.assert_called_once_with(OWNER, SESSION)
 
 
+def test_close_reports_the_runtime_exit_code_without_hiding_the_reason(retained):
+    retained.manager.close.return_value = {
+        "session_id": SESSION, "closed": True, "reason": "process_exited", "exit_code": 7,
+    }
+    result = retained.invoke("close_terminal", session_id=SESSION)
+    assert result["_data"] == {
+        "session_id": SESSION, "closed": True, "reason": "process_exited", "exit_code": 7,
+    }
+    assert "exit code 7" in json.dumps(result["_ui_components"])
+
+
 @pytest.mark.parametrize("payload", [
     {"data_b64": "", "truncated": True, "eof": False},
     {"data_b64": "", "eof": True}, {"data_b64": "", "eof": False},

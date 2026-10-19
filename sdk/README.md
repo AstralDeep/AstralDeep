@@ -144,6 +144,7 @@ permission, idle and lifetime checks independently of a completed request.
 
 ```bash
 session=$(python -m astral_sdk terminal-create --cols 100 --rows 30 \
+    --target "$ASTRAL_TERMINAL_MACHINE_ID" --directory /srv/project \
     --base-url "$ASTRAL_BASE_URL" --token "$ASTRAL_TOKEN" | jq -r .session_id)
 python -m astral_sdk terminal-write "$session" --data "echo hello\n" \
     --token "$ASTRAL_TOKEN"
@@ -155,9 +156,12 @@ python -m astral_sdk terminal-close "$session" --token "$ASTRAL_TOKEN"
 python -m astral_sdk terminal-list --token "$ASTRAL_TOKEN"
 ```
 
-`terminal-read` accepts `--offset` for reconnect-safe resumption: output is
-retained server-side in a bounded ring, and `next_offset` feeds the next read.
-`terminal-write` sends text, or raw bytes with a `base64:` prefix.
+`terminal-create` accepts an optional approved `--target` machine ID and an
+absolute `--directory` on that runtime. `terminal-read` accepts `--offset` for
+reconnect-safe resumption: output is retained server-side in a bounded ring,
+and `next_offset` feeds the next read. A closed read reports `close_reason` and
+the runtime's actual `exit_code` when one was supplied; unavailable status stays
+`null`. `terminal-write` sends text, or raw bytes with a `base64:` prefix.
 
 The client methods (`create_terminal_session`, `write_terminal`,
 `read_terminal`, `stream_terminal`, `resize_terminal`, `interrupt_terminal`,

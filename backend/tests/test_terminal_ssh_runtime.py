@@ -167,6 +167,73 @@ def test_explicit_command_uses_only_remote_pty_exec(isolated):
     assert isolated.state.channels[0].effects[-1] == ("command", "printf 'remote only'")
 
 
+def test_explicit_target_must_match_the_current_approved_runtime(isolated):
+    info = isolated.create(target=isolated.target.machine_id)
+    assert info["target"] == isolated.target.machine_id
+    with pytest.raises(TerminalError, match="terminal_target_changed"):
+        isolated.create(target="b" * 32)
+    assert len(isolated.state.connects) == 1
+
+
+@pytest.mark.parametrize("target", ["", " owner", "a" * 129, "owner\n", 1])
+def test_invalid_target_is_refused_before_any_remote_connection(isolated, target):
+    with pytest.raises(TerminalError, match="terminal_target_invalid"):
+        isolated.create(target=target)
+    assert isolated.state.connects == []
+
+
+def test_explicit_directory_sets_the_remote_entrypoint(isolated):
+    interactive = isolated.create(directory="/srv/work dir")
+    assert interactive["directory"] == "/srv/work dir"
+    assert isolated.state.channels[0].effects[-1] == (
+        "command", "cd '/srv/work dir' && exec \"${SHELL:-/bin/sh}\" -l")
+    isolated.create(command="pwd; printf done", directory="/srv/project")
+    assert isolated.state.channels[1].effects[-1] == ("command", "cd /srv/project && pwd; printf done")
+
+
+@pytest.mark.parametrize("directory", ["", "relative/path", "../escape", "/bad\npath", "/" + "x" * 4096])
+def test_invalid_directory_is_refused_before_any_remote_connection(isolated, directory):
+    with pytest.raises(TerminalError, match="terminal_directory_invalid"):
+        isolated.create(directory=directory)
+    assert isolated.state.connects == []
+
+
+def test_remote_exit_status_is_truthful_and_survives_a_closed_read(isolated):
+    ident = isolated.create()["session_id"]
+    channel = isolated.state.channels[0]
+    channel.exit_status_ready = lambda: True
+    channel.status_event = SimpleNamespace(is_set=lambda: True)
+    channel.exit_status = 7
+    session = isolated.manager._sessions[ident]
+    session.remote.receive = lambda size: b""
+    session._pump_loop()
+    assert session.closed and session.close_reason == "process_exited" and session.exit_code == 7
+    result = isolated.manager.read("owner", ident, offset=0, authority=isolated.authority("terminal_read"))
+    assert result["eof"] is True and result["exit_code"] == 7
+    assert result["close_reason"] == "process_exited" and result["session"] is None
+
+
+@pytest.mark.parametrize("status", [-1, None, "7", True])
+def test_missing_or_malformed_remote_exit_status_is_not_reported_as_success(isolated, status):
+    ident = isolated.create()["session_id"]
+    channel = isolated.state.channels[0]
+    channel.exit_status_ready = lambda: True
+    channel.status_event = SimpleNamespace(is_set=lambda: True)
+    channel.exit_status = status
+    session = isolated.manager._sessions[ident]
+    session.capture_exit()
+    assert session.exit_code is None
+
+
+def test_unready_remote_exit_status_remains_unknown(isolated):
+    ident = isolated.create()["session_id"]
+    channel = isolated.state.channels[0]
+    channel.exit_status_ready = lambda: False
+    session = isolated.manager._sessions[ident]
+    session.capture_exit()
+    assert session.exit_code is None
+
+
 def test_proposal_machine_identity_requires_same_approved_target_and_live_session(isolated):
     env = isolated
     binding = env.manager.runtime_binding("owner")
@@ -396,8 +463,13 @@ def test_actual_terminal_agent_create_and_binary_input_use_current_bound_authori
             user_id="owner", _terminal_authority=env.authority(tool),
             runtime_binding=env.manager.runtime_binding("owner"), **arguments)
 
-    created = invoke("start_terminal", cols=92, rows=28)
+    created = invoke("start_terminal", cols=92, rows=28, target=env.target.machine_id,
+                     directory="/srv/agent work")
     ident = created["_data"]["session"]["session_id"]
+    assert created["_data"]["session"]["target"] == env.target.machine_id
+    assert created["_data"]["session"]["directory"] == "/srv/agent work"
+    assert env.state.channels[0].effects[-1] == (
+        "command", "cd '/srv/agent work' && exec \"${SHELL:-/bin/sh}\" -l")
     written = invoke("terminal_write", session_id=ident, data="echo safe\n")
     assert written["_data"]["session"]["session_id"] == ident
     assert env.state.channels[0].effects[-1] == ("send", b"echo safe\n")
