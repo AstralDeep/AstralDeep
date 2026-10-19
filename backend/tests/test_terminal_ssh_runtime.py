@@ -198,6 +198,13 @@ def test_invalid_directory_is_refused_before_any_remote_connection(isolated, dir
     assert isolated.state.connects == []
 
 
+def test_directory_shell_metacharacters_remain_literal(isolated):
+    directory = "/srv/work's $(touch /tmp/terminal-escape)"
+    isolated.create(command="printf safe", directory=directory)
+    assert isolated.state.channels[0].effects[-1] == (
+        "command", "cd '/srv/work'\"'\"'s $(touch /tmp/terminal-escape)' && printf safe")
+
+
 def test_remote_exit_status_is_truthful_and_survives_a_closed_read(isolated):
     ident = isolated.create()["session_id"]
     channel = isolated.state.channels[0]
