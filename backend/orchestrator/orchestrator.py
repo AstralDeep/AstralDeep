@@ -1145,11 +1145,6 @@ class Orchestrator:
             submission_gate=emergency_submission_gate(self),
             execution_gate=self.emergency_stop_store.assert_running,
         )
-        self.work_recovery = ExecutorRecoveryService(
-            self.work_admission,
-            stop_gate=owner_stop_gate(self.emergency_stop_store),
-            mode=ExecutorRecoveryService.Mode.PRESERVE_UNSUPPORTED,
-        )
         from orchestrator.agent_generator import (
             BYO_RUNTIME_CONTRACT_VERSION,
             BYO_RUNTIME_LOCK_SHA256,
@@ -1349,6 +1344,43 @@ class Orchestrator:
         self._owned_audit_recorder = self.audit_recorder
         self.audit_recorder.set_publisher(make_publish_callable(self))
         set_recorder(self.audit_recorder)
+
+        from orchestrator.plane_repository_context import (
+            PlaneRepositoryContext,
+            repository_from,
+        )
+        from orchestrator.work_reconciliation import (
+            EffectAttemptLedger,
+            EffectReconciliationService,
+            MeshTargetAuthority,
+        )
+        credentials_repository, _ = repository_from(
+            "credentials",
+            plane_runtime=self.runtime_composition.plane.runtime,
+            repositories=self.runtime_composition.plane.repositories,
+        )
+        self.effect_attempts = EffectAttemptLedger(
+            coordinator=self.work_admission,
+            source=PlaneRepositoryContext(
+                repository=credentials_repository,
+                plane_runtime=self.runtime_composition.plane.runtime,
+            ),
+            audit_repository=self.audit_repo,
+        )
+        self.effect_reconciliation = EffectReconciliationService(
+            ledger=self.effect_attempts,
+            target_authority=MeshTargetAuthority(
+                plane_runtime=self.runtime_composition.plane.runtime,
+                plane_repositories=self.runtime_composition.plane.repositories,
+                audit_repository=self.audit_repo,
+            ),
+        )
+        self.work_recovery = ExecutorRecoveryService(
+            self.work_admission,
+            stop_gate=owner_stop_gate(self.emergency_stop_store),
+            uncertainty_probe=self.effect_attempts.resolution_probe,
+            mode=ExecutorRecoveryService.Mode.PRESERVE_UNSUPPORTED,
+        )
 
         from orchestrator.human_request_authority import HumanRequestBoundary
         self.human_request_boundary = HumanRequestBoundary(self)
@@ -23055,6 +23087,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 report.count(RecoveryDisposition.PRESERVED_CANCELLED)
                 + report.count(RecoveryDisposition.PRESERVED_STOPPED)
                 + report.count(RecoveryDisposition.PRESERVED_UNCERTAIN)
+                + report.count(RecoveryDisposition.RESOLVED_APPLIED)
                 + report.count(RecoveryDisposition.PRESERVED_EXHAUSTED)
             )
             if report.expired or rescheduled or replayed or refused or preserved:

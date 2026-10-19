@@ -2485,6 +2485,45 @@ async def cancel_async_task(
     return {"status": "cancelled", "task_id": task_id}
 
 
+class EffectReconcileRequest(BaseModel):
+    attempt_nonce: str
+    argument_digest: str
+    target_kind: str
+    target_id: str
+    outcome: str
+    result_digest: Optional[str] = None
+
+
+@async_task_router.post(
+    "/{task_id}/effect-reconcile",
+    summary="Reconcile a late cross-node effect result",
+    description=(
+        "Reconciles one bound cross-node effect attempt with an authenticated late "
+        "result report; ambiguous outcomes stay preserved and are never re-executed."
+    ),
+)
+async def reconcile_async_task_effect(
+    task_id: str,
+    body: EffectReconcileRequest,
+    request: Request,
+    user_id: str = Depends(require_user_id),
+):
+    from orchestrator.work_reconciliation import LateResultReport, ReconciliationRefused
+    from pydantic import ValidationError
+
+    orch = _get_orchestrator(request)
+    try:
+        report = LateResultReport.model_validate(body.model_dump())
+    except ValidationError:
+        raise HTTPException(status_code=422, detail="reconcile_report_invalid") from None
+    try:
+        return await asyncio.to_thread(
+            orch.effect_reconciliation.report, user_id, task_id, report
+        )
+    except ReconciliationRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.code) from None
+
+
 export_router = APIRouter(prefix="/api/export", tags=["Export"])
 
 export_router.include_router(workspace_export_router)

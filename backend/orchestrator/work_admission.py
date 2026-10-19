@@ -468,6 +468,7 @@ class WorkAdmissionRepository(Protocol):
         phase_code: str,
         *,
         now: datetime | None,
+        transaction: Any | None = None,
     ) -> OperationRecord: ...
 
     def renew_execution_lease(
@@ -736,9 +737,17 @@ class WorkAdmissionCoordinator:
             fence, now=self._now(), slot_lease=self._slot_lease
         )
 
-    def update_phase(self, fence: ExecutionFence, phase_code: str) -> OperationRecord:
+    def update_phase(
+        self,
+        fence: ExecutionFence,
+        phase_code: str,
+        *,
+        transaction: Any | None = None,
+    ) -> OperationRecord:
         _validate_safe_code(phase_code, "phase_code")
-        return self._repository.update_phase(fence, phase_code, now=self._now())
+        return self._repository.update_phase(
+            fence, phase_code, now=self._now(), transaction=transaction
+        )
 
     def bind_chat(self, fence: ExecutionFence, chat_id: str) -> OperationRecord:
         return self._repository.bind_chat(fence, chat_id, now=self._now())
@@ -1835,6 +1844,7 @@ class InMemoryWorkAdmissionRepository:
         phase_code: str,
         *,
         now: datetime | None,
+        transaction: Any | None = None,
     ) -> OperationRecord:
         current_time = self._now(now)
         with self._lock:
@@ -2707,6 +2717,7 @@ class PlaneWorkAdmissionRepository:
         phase_code: str,
         *,
         now: datetime | None,
+        transaction: Any | None = None,
     ) -> OperationRecord:
         return _from_plane_record(
             self._invoke(
@@ -2714,6 +2725,7 @@ class PlaneWorkAdmissionRepository:
                 _to_plane_fence(fence),
                 phase_code,
                 now=now,
+                transaction=transaction,
             )
         )
 
