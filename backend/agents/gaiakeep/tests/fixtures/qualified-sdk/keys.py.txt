@@ -1,0 +1,122 @@
+"""
+ECDSA P-384 keys (CNSA) for principals, and the core's public identity key.
+
+Formats, the same as the core (EcKeys, Ec) and eval/gfs_auth.py:
+- public key: base64url (no padding) of the X.509 SubjectPublicKeyInfo DER;
+- private key file: base64url of the PKCS#8 DER, one line, mode 0600, with `<name>.pub` beside it.
+PEM PKCS#8 files are also accepted when loading. Only P-384 is accepted anywhere.
+"""
+import base64
+import hashlib
+import os
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+
+CURVE_NAME = "secp384r1"
+
+
+def b64url(b):
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
+
+
+def unb64url(s):
+    if isinstance(s, bytes):
+        s = s.decode("ascii")
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def generate():
+    """A fresh P-384 private key."""
+    return ec.generate_private_key(ec.SECP384R1())
+
+
+def _require_p384(k):
+    if not isinstance(k, (ec.EllipticCurvePrivateKey, ec.EllipticCurvePublicKey)) or k.curve.name != CURVE_NAME:
+        raise ValueError("not an ECDSA P-384 key")
+    return k
+
+
+def public_b64(key):
+    """base64url SPKI of a private or public key."""
+    pub = key.public_key() if hasattr(key, "public_key") else key
+    return b64url(pub.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo))
+
+
+def private_b64(key):
+    return b64url(key.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.PKCS8,
+                                    serialization.NoEncryption()))
+
+
+def parse_public(b64):
+    """A P-384 public key from base64url SPKI; any other key or curve is refused."""
+    if not b64 or len(b64) > 1024:
+        raise ValueError("public key missing or too long")
+    try:
+        k = serialization.load_der_public_key(unb64url(b64))
+    except Exception as e:
+        raise ValueError("public key is not a valid X.509 key") from e
+    return _require_p384(k)
+
+
+def parse_private(data):
+    """A P-384 private key from base64url PKCS#8 text, PEM, or DER bytes."""
+    if isinstance(data, str):
+        data = data.strip().encode("ascii")
+    data = data.strip()
+    try:
+        if data.startswith(b"-----BEGIN"):
+            k = serialization.load_pem_private_key(data, password=None)
+        elif data[:1] == b"\x30":
+            k = serialization.load_der_private_key(data, password=None)
+        else:
+            k = serialization.load_der_private_key(unb64url(data), password=None)
+    except Exception as e:
+        raise ValueError("private key is not a valid PKCS#8 EC key") from e
+    return _require_p384(k)
+
+
+def load_private(path):
+    """Load a private key file. Refuses a file readable by group or others (it would leak the principal)."""
+    st = os.stat(path)
+    if os.name == "posix" and st.st_mode & 0o077:
+        raise PermissionError(f"private key file {path} is readable by others (chmod 600)")
+    with open(path, "rb") as f:
+        return parse_private(f.read())
+
+
+def save_keypair(directory, name, key=None):
+    """Write <name>.key (base64url PKCS#8, 0600, created exclusively) and <name>.pub. Returns (key, public b64).
+    Never overwrites an existing key file."""
+    os.makedirs(directory, exist_ok=True)
+    key = key or generate()
+    kp, pp = os.path.join(directory, name + ".key"), os.path.join(directory, name + ".pub")
+    fd = os.open(kp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(private_b64(key))
+        f.flush()
+        os.fsync(f.fileno())
+    pub = public_b64(key)
+    with open(pp, "w") as f:
+        f.write(pub + "\n")
+    return key, pub
+
+
+def load_or_create(directory, name):
+    """The key pair <directory>/<name>.key, created on first use."""
+    kp = os.path.join(directory, name + ".key")
+    if os.path.exists(kp):
+        k = load_private(kp)
+        return k, public_b64(k)
+    return save_keypair(directory, name)
+
+
+def admin_id(public_key_b64):
+    """The principal id a bootstrap administrator gets from core_admin_keys (EcKeys.adminIdFor)."""
+    parse_public(public_key_b64)
+    return "admin-" + hashlib.sha384(unb64url(public_key_b64)).hexdigest()[:16]
+
+
+def private_from_scalar(hex_scalar):
+    """A P-384 private key from its scalar (tests and golden vectors only)."""
+    return ec.derive_private_key(int(hex_scalar, 16), ec.SECP384R1())

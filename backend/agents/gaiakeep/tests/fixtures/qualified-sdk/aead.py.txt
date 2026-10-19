@@ -1,0 +1,127 @@
+"""
+AES-256-GCM for the client: every IV this client encrypts with is made here, and only here (the client's mirror of the
+core's GfsCrypto constructions, docs/KEY-CUSTODY.md §IV; tests/test_aead.py fails the suite on an encryption anywhere
+else in the package). Callers name where a ciphertext sits in their format, never the IV.
+
+- GcmKey (random, IG C.H scenario 2): a 96-bit IV from os.urandom per encryption, stored in front of the ciphertext
+  (iv || ct || tag); the key counts its encryptions and refuses past its bound (SP 800-38D §8.3 caps 2^32; a caller
+  that seals once per key says 1).
+- GcmSequence (deterministic, scenario 3): IV = u64 context || u32 invocation, the invocation numbered here (0, 1, 2,
+  ... across the whole key, never per context) and written into the caller's frame header before the header is used
+  as AAD, so no IV repeats under the key whatever is resent. GKT DATA frames: context = seq, the wire's attempt
+  field is the invocation (receivers only read it).
+- GcmCounter (deterministic, MONOTONE): IV = u64 position || u32 lane, each lane's position strictly increasing.
+  Have-check pages: position = page, lane = direction.
+
+Decryption takes whatever IV a ciphertext was made with.
+"""
+import os
+import struct
+import threading
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+IV_BYTES, TAG_BYTES = 12, 16
+INVOCATION_LIMIT = 1 << 32
+
+
+class IvRefused(RuntimeError):
+    """The module refused to encrypt: a key past its bound, or an IV it already spent. A coding error, never retried."""
+
+
+class GcmKey:
+    """One key with random IVs drawn here; at most `limit` encryptions."""
+    __slots__ = ("_aead", "_limit", "_used", "_lock")
+
+    def __init__(self, key, limit=INVOCATION_LIMIT):
+        if not 1 <= limit <= INVOCATION_LIMIT:
+            raise ValueError("invocation limit outside 1..2^32")
+        self._aead = AESGCM(bytes(key))
+        self._limit, self._used, self._lock = limit, 0, threading.Lock()
+
+    @property
+    def invocations(self):
+        return self._used
+
+    def seal(self, aad, plaintext):
+        """iv(12) || ciphertext || tag(16)."""
+        with self._lock:
+            if self._used >= self._limit:
+                raise IvRefused(f"AES-GCM key reached its limit of {self._limit} encryptions: rekey")
+            self._used += 1
+        iv = os.urandom(IV_BYTES)
+        return iv + self._aead.encrypt(iv, bytes(plaintext), aad)
+
+    def open(self, aad, blob):
+        """Raises cryptography.exceptions.InvalidTag when it does not authenticate."""
+        return open_random(self._aead, aad, blob)
+
+    def __repr__(self):
+        return "GcmKey(<key>)"
+
+
+def open_random(aead, aad, blob):
+    if len(blob) < IV_BYTES + TAG_BYTES:
+        from cryptography.exceptions import InvalidTag
+        raise InvalidTag()
+    return aead.decrypt(bytes(blob[:IV_BYTES]), bytes(blob[IV_BYTES:]), aad)
+
+
+def seal_once(key, aad, plaintext):
+    """A key that encrypts exactly one plaintext, with a random IV: iv || ct || tag."""
+    return GcmKey(key, 1).seal(aad, plaintext)
+
+
+def open_once(key, aad, blob):
+    return open_random(AESGCM(bytes(key)), aad, blob)
+
+
+class GcmSequence:
+    """A flow's sending key: IV = u64 context || u32 invocation, the invocation numbered here. Thread-safe."""
+    __slots__ = ("_aead", "_next", "_lock")
+
+    def __init__(self, key):
+        self._aead = AESGCM(bytes(key))
+        self._next, self._lock = 0, threading.Lock()
+
+    @property
+    def invocations(self):
+        return min(self._next, INVOCATION_LIMIT)
+
+    def seal(self, context, header, inv_at, plaintext):
+        """ciphertext || tag under AAD = the header after the invocation was written at header[inv_at:inv_at+4].
+        Returns (header, ct). `header` is a bytearray (written in place)."""
+        if inv_at < 0 or inv_at + 4 > len(header):
+            raise ValueError("the invocation field must lie inside the AAD")
+        with self._lock:
+            inv = self._next
+            if inv >= INVOCATION_LIMIT:
+                raise IvRefused("flow key reached 2^32 invocations: open a new flow")
+            self._next = inv + 1
+        struct.pack_into(">I", header, inv_at, inv)
+        iv = struct.pack(">QI", context, inv)
+        return header, self._aead.encrypt(iv, bytes(plaintext), bytes(header))
+
+
+class GcmCounter:
+    """A key whose IVs are u64 position || u32 lane, each lane's position strictly increasing (MONOTONE)."""
+    __slots__ = ("_aead", "_last", "_n", "_lock")
+
+    def __init__(self, key):
+        self._aead = AESGCM(bytes(key))
+        self._last, self._n, self._lock = {}, 0, threading.Lock()
+
+    def seal(self, pos, lane, aad, plaintext):
+        """ciphertext || tag (the IV is implicit: a reader recomputes it from (pos, lane))."""
+        with self._lock:
+            prior = self._last.get(lane)
+            if prior is not None and pos <= prior:
+                raise IvRefused(f"IV ({pos}, {lane}) is not past the last one spent ({prior})")
+            if self._n >= INVOCATION_LIMIT:
+                raise IvRefused("key reached 2^32 invocations: rekey")
+            self._last[lane] = pos
+            self._n += 1
+        return self._aead.encrypt(struct.pack(">QI", pos, lane), bytes(plaintext), aad)
+
+    def open(self, pos, lane, aad, ct):
+        return self._aead.decrypt(struct.pack(">QI", pos, lane), bytes(ct), aad)

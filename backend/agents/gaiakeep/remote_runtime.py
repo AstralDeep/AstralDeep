@@ -158,14 +158,13 @@ def _public_key(value):
 
 def _trust(value):
     fields = {'core_address', 'allowed_peers', 'tls_name', 'ca_pem', 'core_public_key',
-              'port', 'allow_legacy', 'restore_root'}
+              'port', 'allow_legacy'}
     if not isinstance(value, dict) or set(value) - fields:
         raise ValueError
     peers = value.get('allowed_peers')
     if (not isinstance(peers, list) or not 1 <= len(peers) <= 16
             or value.get('core_address') not in peers or type(value.get('port')) is not int
-            or not 1 <= value['port'] <= 65535 or type(value.get('allow_legacy', False)) is not bool
-            or not isinstance(value.get('restore_root', ''), str)):
+            or not 1 <= value['port'] <= 65535 or type(value.get('allow_legacy', False)) is not bool):
         raise ValueError
     for peer in peers:
         if not isinstance(peer, str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}:[A-Za-z0-9_.-]{1,128}:[A-Za-z0-9_.-]{1,128}', peer):
@@ -284,7 +283,7 @@ def run(request):
         action = catalog.TOOLS[name]['action']
         mutation = catalog.is_mutation(name)
         trust = _trust(request.get('trust'))
-        if action == 'fetch' or (catalog.ACTIONS.get(action, {}).get('legacy') and not trust.get('allow_legacy', False)):
+        if catalog.ACTIONS.get(action, {}).get('legacy') and not trust.get('allow_legacy', False):
             raise client.AgentError('unsupported', 'This Gaia operation is not enabled for the qualified deployment.')
         if action == 'core.legalorder' and arguments['params'].get('action', 'erase') != 'erase':
             raise client.AgentError('unsupported', 'GaiaKeep cannot currently sign legal-order shortening.')
@@ -312,13 +311,14 @@ def run(request):
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         config = GatewayConfig(trust['core_address'], frozenset(trust['allowed_peers']), trust['tls_name'], '',
                                trust['core_public_key'], profile.service_key, trust['port'],
-                               trust.get('allow_legacy', False), trust.get('restore_root', ''))
+                               trust.get('allow_legacy', False))
         transport = _sdk_transport(config, context)
         transport.deadline = started + FLOW_TIMEOUT
         core = CoreClient(
             transport, trust['core_address'], principal=profile.principal, key=key, key_file=None,
             core_public_key=trust['core_public_key'], flows=1, chunk=1 << 20, window_bytes=4 << 20,
             redirects=2, redirect_wait=0, read_peers=profile.read_peers, busy_backoff_max=2,
+            wait_commit=False, seal='require',
             timeouts=Timeouts(c0=RPC_TIMEOUT, c1=RPC_TIMEOUT, open=RPC_TIMEOUT, commit=RPC_TIMEOUT,
                               commit_wait=FLOW_TIMEOUT, flow_stall=20, flow_max=FLOW_TIMEOUT,
                               legacy_min=RPC_TIMEOUT, legacy_max=RPC_TIMEOUT, sync_verb=RPC_TIMEOUT))
@@ -355,7 +355,7 @@ def run(request):
             else:
                 result = dataset_workspace.download(core, arguments, deadline)
         else:
-            result = client.execute(core, action, arguments['params'], config, {},
+            result = client.execute(core, action, arguments['params'], config,
                                     sdk_loader=lambda: (CoreClient, Timeouts, GaiaKeepError, raise_for))
         secrets = [profile.service_key, private.decode('ascii', 'ignore'), base64.b64encode(private).decode(), str(profile_path), profile.key_file]
         phase = 'result_validation'

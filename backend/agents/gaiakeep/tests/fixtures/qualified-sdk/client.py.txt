@@ -14,14 +14,19 @@ CoreClient: the supported Python client for the GaiaKeep storage core (io.cresco
   20 s); bytes go only over GKT flows on the dataplane (transfer.py).
 - Fails closed: the core's identity key is pinned by the caller (core_public_key); a key exchange, event
   or download that does not verify raises IntegrityError.
+- Sealed params (GFS-SEAL-1, OUT-109; seal.py): every signed request to a core peer that advertises a seal key in
+  core.status (endorsed by the pinned identity) is sealed to that peer, so the fabric carries only the action, the
+  routing envelope and ciphertext; its reply comes back sealed. seal="auto" (default) seals wherever a peer
+  advertises it and, once a peer has, never sends it plaintext again; "require" refuses to send any signed request
+  in plaintext; "off" never seals (a core with core_meta_require_sealed_params refuses it).
 """
 import json as _json
 import os
 import threading
 import time
 
-from . import jobs as _jobs, log
-from .errors import BadRequest, NotFound, OutcomeUnknown, RpcTimeout, raise_for, TransportError
+from . import jobs as _jobs, log, seal as _seal
+from .errors import BadRequest, CommitPending, GaiaKeepError, NotFound, OutcomeUnknown, RpcTimeout, raise_for, TransportError
 from .events import EventHub
 from .ingest import Ingest, IngestTarget
 from .keys import parse_public, load_private
@@ -55,13 +60,16 @@ LINEARIZABLE, SESSION = "linearizable", "session"
 
 class Timeouts:
     """Seconds. C0 instant control, C1 bounded reads, opens and commits: opmodel §1 and §3. sync_verb bounds a
-    job verb that a wave-1 core runs synchronously. A transport's own cap (max_rpc_seconds; 30 s on the 1.3
-    Cresco transports) applies on top of every one of these."""
+    job verb that a wave-1 core runs synchronously. read_commit_wait bounds how long a read of a version still
+    committing to VERIFIED tape copies (status 16) awaits its commit (OUT-102); commit_poll_max caps the back-off
+    between looks when no commit job is known. A transport's own cap (max_rpc_seconds; 30 s on the 1.3 Cresco
+    transports) applies on top of every one of these."""
 
     def __init__(self, c0=20.0, c1=60.0, open=20.0, commit=20.0, commit_wait=600.0, flow_stall=120.0,
                  flow_max=6 * 3600.0, legacy_floor_bytes_per_s=20e6, legacy_min=120.0, legacy_max=6 * 3600.0,
-                 sync_verb=600.0):
+                 sync_verb=600.0, read_commit_wait=1800.0, commit_poll_max=30.0):
         self.c0, self.c1, self.open, self.commit, self.sync_verb = c0, c1, open, commit, sync_verb
+        self.read_commit_wait, self.commit_poll_max = read_commit_wait, commit_poll_max
         self.commit_wait, self.flow_stall, self.flow_max = commit_wait, flow_stall, flow_max
         self.legacy_floor, self.legacy_min, self.legacy_max = legacy_floor_bytes_per_s, legacy_min, legacy_max
 
@@ -89,14 +97,20 @@ class CoreClient:
                      the leader. Reads are spread over them round-robin, falling back to the leader.
     read_consistency "linearizable" (default: the peer asks the leader for a read index first) or "session"
                      (the peer waits only for this client's min_index; the core must enable it)
+    wait_commit      True (default): a read of a version still committing to VERIFIED tape copies (status 16)
+                     awaits the commit (its job through core.job when known, else reads again with back-off) for
+                     up to timeouts.read_commit_wait, then reads; False: raise CommitPending at once (OUT-102).
+                     Every read call also takes wait_commit= and commit_wait= (seconds) for itself.
     """
 
     def __init__(self, transport, addr, signer=None, core_public_key=None, principal=None, key=None, key_file=None,
                  audience=None, flows=4, chunk=1 << 20, window_bytes=16 << 20, timeouts=None, redirects=5,
                  redirect_wait=1.0, rto=None, read_peers=None, read_consistency=LINEARIZABLE, busy_backoff_max=2.0,
-                 digests="auto"):
+                 digests="auto", wait_commit=True, seal="auto"):
         if read_consistency not in (LINEARIZABLE, SESSION):
             raise ValueError("read_consistency must be linearizable or session")
+        if seal not in ("auto", "require", "off"):
+            raise ValueError("seal must be auto, require or off")
         # digests (METADATA-CRYPTO.md §12): "auto" (keyed when core.status names mac in digests, else a core from
         # before it: the raw sha256), "mac" (keyed only; no raw digest ever leaves this client) or "sha256" (legacy)
         if digests not in ("auto", "mac", "sha256"):
@@ -112,7 +126,11 @@ class CoreClient:
                 raise ValueError("a signer, or principal and key/key_file, is required")
             signer = Signer(principal, key)
         self.transport, self.addr, self.signer = transport, addr, signer
-        self.core_key = parse_public(core_public_key)
+        # core_public_key: one pinned identity key, or several comma-separated while an identity rotation is staged
+        self.core_pins = [k.strip() for k in core_public_key.split(",") if k.strip()]
+        self.core_key = parse_public(self.core_pins[0])
+        self._seals = _seal.PeerSeals(seal, self.core_pins, self._seal_status,
+                                      lambda r: self.signer.audience or (r or {}).get("audience") or "")
         if audience:
             self.signer.audience = audience
         self.timeouts = timeouts or Timeouts()
@@ -131,6 +149,8 @@ class CoreClient:
         self.read_stats = {"follower": 0, "leader_fallback": 0, "skipped": {}}
         self.profile = None                      # the Profile, when made by from_profile
         self._own_transport = False
+        self.wait_commit = bool(wait_commit)
+        self._commit_jobs = {}                   # vid -> the commit job this client's own put of it was answered with
 
     # ------------------------------------------------------------------------------------------ plumbing
 
@@ -175,9 +195,25 @@ class CoreClient:
         self.close()
 
     def _raw(self, addr, action, params, timeout, audience=None, not_before=None):
-        p = params if unsigned(action) else self.signer.sign(action, params, audience=audience, not_before=not_before)
-        r = self.transport.call(addr, action, p, timeout)
+        if unsigned(action):
+            r = self.transport.call(addr, action, params, timeout)
+            self._saw(r)
+            return r
+        r = self._seals.exchange(addr, action, lambda: self.signer.sign(action, params, audience=audience, not_before=not_before),
+                                 lambda p: self.transport.call(addr, action, p, timeout), timeout)
         self._saw(r)
+        return r
+
+    # GFS-SEAL-1: the policy and the per-peer sessions live in seal.PeerSeals (shared with the eval harness)
+    seal_mode = property(lambda self: self._seals.mode)
+    seal_stats = property(lambda self: self._seals.stats)
+    _no_seal = property(lambda self: self._seals.no_seal)
+
+    def _seal_status(self, addr, timeout):
+        """core.status of `addr` for its seal advertisement (and this client's audience, when it has none yet)."""
+        r = raise_for("core.status", self.transport.call(addr, "core.status", {}, min(timeout, self.timeouts.c0)))
+        if not self.signer.audience and r.get("audience"):
+            self.signer.audience = r["audience"]
         return r
 
     def _saw(self, r):
@@ -427,7 +463,8 @@ class CoreClient:
 
     def placement(self, vid, path, after=None, limit=None, tape=None):
         """core.placement (C1): one page of where a file's blocks are, {blocks: [{n, offset, length, required, state,
-        copies}], count, size, blocks_total, next}. tape=True asks archive sites for presence and mount."""
+        copies}], count, size, blocks_total, next}. tape=True asks archive sites for presence and mount; tape="detail" also
+        each tape copy's file_number and block on its cartridge and the cartridge's tape_type."""
         return decode_params(self.call("core.placement", {"vid": vid, "path": path, "after": after, "limit": limit,
                                                           "tape": tape}))
 
@@ -457,12 +494,19 @@ class CoreClient:
                                                      "limit": limit, "detail": detail}))
 
     def create_collection(self, collection_id, tenant_id, domain_id=None, profile=None, replication=None,
-                          durability=None, retention=None):
+                          durability=None, retention=None, redundancy=None):
         """core.collection: a new versioned collection of `tenant_id` (tenant-admin@<tenant>), in `domain_id` or under
-        a policy `profile` (the domain is then the profile's)."""
+        a policy `profile` (the domain is then the profile's). `redundancy`: single, replicas:R or ec:k+m (the core's
+        core_default_redundancy when neither it nor `replication` is given)."""
         return decode_params(self.call("core.collection", {
             "collection_id": collection_id, "tenant_id": tenant_id, "domain_id": domain_id, "profile": profile,
-            "replication": replication, "durability": durability, "retention": retention}))
+            "replication": replication, "durability": durability, "retention": retention, "redundancy": redundancy}))
+
+    def redundancy(self, collection_id, to=None):
+        """core.redundancy: a collection's durability mode (reader); with `to` (single, replicas:R, ec:k+m) change it
+        (tenant-admin): journaled, its blocks' requirements follow at once and repair re-encodes them in place."""
+        return decode_params(self.call("core.redundancy", {
+            "collection_id": collection_id, "op": "set" if to is not None else "get", "to": to}))
 
     def extract(self, vid=None, selector=None, members=None, cls=None, ttl_ms=None, pin_mode=None,
                 max_amplification=None, dry_run=False, request_id=None, wait_ms=None):
@@ -556,48 +600,125 @@ class CoreClient:
         idempotent; a wave-1 core has no request_id (see Ingest for how a lost answer is resolved).
         note: the version's note (at most 512 UTF-8 bytes, no control characters), shown by core.versions."""
         target = IngestTarget(collection_id, branch, expected_head, base_vid, deletes, note)
-        return Ingest(self, files, target, request_id=request_id, mode=mode, legacy_publish=legacy_publish).run()
+        r = Ingest(self, files, target, request_id=request_id, mode=mode, legacy_publish=legacy_publish).run()
+        if getattr(r, "commit_job", None):
+            self.note_commit_job(r.vid, r.commit_job)
+        return r
 
     def have_ingest(self, files, collection_id, branch="main", expected_head=None, note=None):
         """Upload local files by have-check (api §3) and publish one version: only the blocks the core lacks travel
         (a de-identified DICOM copy in a format-adapter domain: its header). Streams each file with bounded memory.
         Returns (publish reply with vid, {path: stats}); see gaiakeep.have."""
         from .have import have_ingest
-        return have_ingest(self, files, collection_id, branch, expected_head, note)
+        reply, stats = have_ingest(self, files, collection_id, branch, expected_head, note)
+        if isinstance(reply, dict):
+            self.note_commit_job(reply.get("vid"), reply.get("commit_job"))
+        return reply, stats
 
-    def file_info(self, vid, path):
+    def file_info(self, vid, path, wait_commit=None, commit_wait=None):
         """{size, file_hash, file_alg, file_mac, digests} of one file, from a zero-length core.get (C0; no bytes move).
         size and file_hash are bound into the core's signed key exchange (GFS-GKT-2), so they are the pinned core's
         word. A keyed core (core_meta_client_digest=mac, the default) never sends a raw whole-file digest
         (METADATA-CRYPTO.md §12): file_hash is None, file_alg names the digest algorithm, and file_mac is the core's
         proof of that digest under this transfer's own key (digests="keyed"); downloads are verified that way. A
-        legacy core names file_hash ("SHA-384:<hex>"; digests="raw")."""
-        lane = self.transfers.lane(0)
-        r, _ = self.transfers.keyed_call("core.get", {"vid": vid, "path": path, "offset": "0", "length": "0",
-                                                      "chunk": str(self.transfers.chunk), "xfer": new_id("", 8),
-                                                      "up_stream": lane.up_name, "down_stream": lane.down_name})
-        return {"size": int(r["size"]), "file_hash": r.get("file_hash"), "file_alg": r.get("file_alg"),
-                "file_mac": r.get("file_mac"), "digests": "raw" if r.get("file_hash") else "keyed"}
+        legacy core names file_hash ("SHA-384:<hex>"; digests="raw"). A version still committing is awaited (see
+        await_commit)."""
+        def go():
+            lane = self.transfers.lane(0)
+            r, _ = self.transfers.keyed_call("core.get", {"vid": vid, "path": path, "offset": "0", "length": "0",
+                                                          "chunk": str(self.transfers.chunk), "xfer": new_id("", 8),
+                                                          "up_stream": lane.up_name, "down_stream": lane.down_name})
+            return {"size": int(r["size"]), "file_hash": r.get("file_hash"), "file_alg": r.get("file_alg"),
+                    "file_mac": r.get("file_mac"), "digests": "raw" if r.get("file_hash") else "keyed"}
+        return self.await_commit(vid, go, wait_commit, commit_wait)
 
-    def download(self, vid, path, dest, offset=0, length=None):
-        """Download a file (or a range) to `dest` over K flows; a whole file is verified by its hash."""
-        return self.transfers.download(vid, path, dest, offset=offset, length=length)
+    def download(self, vid, path, dest, offset=0, length=None, wait_commit=None, commit_wait=None):
+        """Download a file (or a range) to `dest` over K flows; a whole file is verified by its hash. A version still
+        committing is awaited (see await_commit)."""
+        return self.await_commit(vid, lambda: self.transfers.download(vid, path, dest, offset=offset, length=length),
+                                 wait_commit, commit_wait)
 
-    def read(self, vid, path, offset=0, length=None, max_bytes=64 << 20):
-        """A range as bytes (for small reads; bounded by max_bytes). Use download() for files."""
+    def read(self, vid, path, offset=0, length=None, max_bytes=64 << 20, wait_commit=None, commit_wait=None):
+        """A range as bytes (for small reads; bounded by max_bytes). Use download() for files. A version still
+        committing is awaited (see await_commit)."""
         import tempfile
-        info = self.file_info(vid, path)
-        n = info["size"] - offset if length is None else min(length, info["size"] - offset)
-        if n > max_bytes:
-            raise BadRequest(f"read of {n} bytes exceeds max_bytes; use download()", action="core.get")
-        fd, tmp = tempfile.mkstemp(prefix="gk-read-")
-        os.close(fd)
-        try:
-            self.transfers.download(vid, path, tmp, size=info["size"], file_hash=info["file_hash"], offset=offset, length=n)
-            with open(tmp, "rb") as f:
-                return f.read()
-        finally:
-            os.unlink(tmp)
+
+        def go():
+            info = self.file_info(vid, path, wait_commit=False)
+            n = info["size"] - offset if length is None else min(length, info["size"] - offset)
+            if n > max_bytes:
+                raise BadRequest(f"read of {n} bytes exceeds max_bytes; use download()", action="core.get")
+            fd, tmp = tempfile.mkstemp(prefix="gk-read-")
+            os.close(fd)
+            try:
+                self.transfers.download(vid, path, tmp, size=info["size"], file_hash=info["file_hash"], offset=offset, length=n)
+                with open(tmp, "rb") as f:
+                    return f.read()
+            finally:
+                os.unlink(tmp)
+        return self.await_commit(vid, go, wait_commit, commit_wait)
+
+    # ------------------------------------------------------------------------------------ commit-on-VERIFIED
+
+    COMMIT_JOBS_KEPT = 4096
+
+    def note_commit_job(self, vid, job_id):
+        """Remember that `vid` was answered with commit job `job_id` (a durable put by this client), so a read of it
+        that meets status 16 awaits that job instead of polling the read."""
+        if not vid or not job_id:
+            return
+        with self._lock:
+            if len(self._commit_jobs) >= self.COMMIT_JOBS_KEPT:
+                self._commit_jobs.pop(next(iter(self._commit_jobs)))
+            self._commit_jobs[vid] = job_id
+
+    def await_commit(self, vid, fn, wait_commit=None, commit_wait=None):
+        """fn() (a read of `vid`); while it raises CommitPending (status 16: the version is committing to VERIFIED tape
+        copies, gfs#8) and waiting is on (wait_commit, default the client's), wait for the commit and call fn() again,
+        for at most commit_wait seconds (default timeouts.read_commit_wait, 30 min). The wait follows the commit job
+        through core.job when one is known (named in the reply, or this client's own put of `vid`; signed events
+        first, polling as the fallback); otherwise fn() is asked again with back-off (retry_after_ms, else 2 s
+        doubling to timeouts.commit_poll_max). Every look is a short C0 call; nothing holds an RPC open. Raises
+        CommitPending (retryable, naming job_id, retry_after_ms and waited_s) when the wait is spent or off."""
+        wait = self.wait_commit if wait_commit is None else bool(wait_commit)
+        limit = self.timeouts.read_commit_wait if commit_wait is None else max(0.0, float(commit_wait))
+        t0 = time.monotonic()
+        backoff = 2.0
+        awaited = set()                          # commit jobs already waited on: each once, then the read decides
+        while True:
+            try:
+                return fn()
+            except CommitPending as e:
+                e.vid = e.vid or vid
+                job_id = e.job_id or self._commit_jobs.get(vid)
+                e.job_id = job_id
+                waited = time.monotonic() - t0
+                left = limit - waited
+                if e.retry_after_ms is None:
+                    e.retry_after_ms = int(min(backoff, self.timeouts.commit_poll_max) * 1000)
+                e.waited_s = round(waited, 3)
+                if not wait or left <= 0:
+                    if wait:
+                        e.args = (f"{e.args[0]} (still committing after {waited:.0f} s of waiting)",)
+                    raise
+                log.info("version committing: awaiting its commit", vid=vid, job_id=job_id, waited_s=int(waited))
+                if job_id and job_id not in awaited:
+                    awaited.add(job_id)
+                    # polled no slower than the read would be asked again (the core's retry_after_ms, 5 s): a commit job
+                    # carries no event stream of this client's, so its end is seen at the next core.job look
+                    poll_max = max(0.05, min(e.retry_after_ms / 1000.0, self.timeouts.commit_poll_max, 10.0))
+                    try:                                # DONE: read again now; FAILED: the pump retries, the read decides
+                        self.job(job_id).wait(left, poll_min=min(1.0, poll_max), poll_max=poll_max)
+                        continue
+                    except GaiaKeepError as je:
+                        self.events.unwatch("job", job_id)
+                        # not a job this principal may poll, gone, or still running at the deadline: poll the read
+                        log.info("commit job not awaitable: polling the read", job_id=job_id, error=type(je).__name__)
+                        if time.monotonic() - t0 >= limit:
+                            continue
+                pause = min(e.retry_after_ms / 1000.0, backoff, self.timeouts.commit_poll_max, max(0.0, limit - (time.monotonic() - t0)))
+                time.sleep(max(0.05, pause))
+                backoff = min(backoff * 2, self.timeouts.commit_poll_max)
 
     # --------------------------------------------------------------------------------------------- jobs
 

@@ -29,8 +29,6 @@ class GaiakeepAgent(BaseA2AAgent):
          'description': 'Your existing GaiaKeep principal identifier.'},
         {'key': 'GAIAKEEP_PRIVATE_KEY', 'label': 'GaiaKeep P-384 key (base64 PEM)', 'type': 'api_key', 'required': True,
          'description': 'Single-line base64 of your unencrypted P-384 PEM key; encrypted by the agent credential flow.'},
-        {'key': 'GAIAKEEP_RECONSTRUCTION_TOKEN', 'label': 'Legacy reconstruction token', 'type': 'api_key',
-         'required': False, 'description': 'An existing token for an operator-enabled legacy restore.'},
     ]}
 
     def __init__(self, port=None, *, plane_runtime, plane_repositories=None, plane_blobs=None):

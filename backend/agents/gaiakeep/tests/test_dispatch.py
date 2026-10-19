@@ -35,7 +35,7 @@ def request(name='gaiakeep_core_whoami', params=None, **context):
 
 def test_list_and_result_shape(server):
     reply = server.process_request(MCPRequest(method='tools/list'))
-    assert len(reply.result['tools']) == 118
+    assert len(reply.result['tools']) == 104
     assert all(t['scope'] for t in reply.result['tools'])
     reply = server.process_request(request())
     reply.validate_result_shape()
@@ -303,7 +303,7 @@ def test_owner_scoped_lookup(server, monkeypatch):
 
 
 @pytest.mark.parametrize('name,params', [
-    ('gaiakeep_listnodes', {}),
+    ('gaiakeep_getmetrics', {}),
     ('gaiakeep_core_legalorder', {'tenant_id': 't', 'order_ref': 'o', 'authority': 'a', 'action': 'shorten'}),
 ])
 def test_unsupported_before_dispatch(server, name, params):
@@ -323,13 +323,14 @@ def test_unknown_mutation_is_not_retried(server, monkeypatch):
     assert 'fabric-secret' not in str(out.error)
 
 
-def test_legacy_fetch_never_opens_a_connection(server, monkeypatch):
+@pytest.mark.parametrize('name', ['gaiakeep_fetch', 'gaiakeep_restore', 'gaiakeep_listnodes'])
+def test_retired_prototype_tools_never_open_a_connection(server, monkeypatch, name):
     def forbidden(*a):
-        pytest.fail('incomplete fetch reached a transport')
+        pytest.fail('a retired prototype tool reached a transport')
     monkeypatch.setattr(client, 'open_client', forbidden)
-    params = {}
-    response = server.process_request(request('gaiakeep_fetch', params))
-    assert response.error['data']['verdict'] == 'unsupported'
+    response = server.process_request(request(name, {}))
+    assert response.error['code'] == -32602
+    assert name not in {tool['name'] for tool in server.get_tool_list()}
 
 
 def test_upload_timeout_retains_exact_ingest_identity(server, monkeypatch):

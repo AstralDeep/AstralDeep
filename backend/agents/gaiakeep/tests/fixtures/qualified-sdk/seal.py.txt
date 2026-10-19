@@ -1,0 +1,336 @@
+"""
+GFS-SEAL-1: core.* request params sealed end to end, this client to the core peer that serves them, so brokers,
+Cresco controllers and MsgEvent logs on the path see only the action, the routing envelope and ciphertext. Wire-
+identical to io.cresco.gfs.core.auth.ParamSeal (vectors: clients/conformance/seal-golden-v1.json).
+
+  advertisement  core.status (and every status-18 reply): seal_pub (the peer's ECDH P-384 key), seal_pub_kid,
+                 seal_expires, seal_peer, seal_identity and seal_sig = ECDSA P-384 by the core identity over
+                 info("GFS-SEAL-1/key", audience, peer, kid, seal_pub, expires, identity_pub); verified against the
+                 pinned core_public_key, or one reached from it through identity_history's endorsed rotations
+  request        Z = ECDH(e, seal_pub) with an ephemeral key e reused for a session; salt = 32 fresh bytes;
+                 K_dir = HKDF-SHA-384(salt, Z, info("GFS-SEAL-1", dir, kid, seal_epk), 32), dir = req | rsp;
+                 AAD_dir = info("GFS-SEAL-1", dir, action, kid, seal_epk, seal_salt);
+                 params: seal=GFS-SEAL-1, seal_kid, seal_epk, seal_salt, seal_body = b64url(iv || GCM(K_req, AAD_req,
+                 JSON{param: value})); visible: action, request_id, read_peer, consistency, min_index
+  reply          seal_reply = b64url(iv || GCM(K_rsp, AAD_rsp, JSON{param: value}))
+
+Each K seals once, with an IV drawn by aead.seal_once (random, module-made).
+"""
+import hashlib
+import json
+import os
+import threading
+import time
+
+from cryptography.exceptions import InvalidSignature, InvalidTag
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+from . import aead
+from .errors import IntegrityError
+from .keys import b64url, unb64url, public_b64, parse_public
+
+SCHEME = "GFS-SEAL-1"
+SEAL, KID, EPK, SALT, BODY, REPLY = "seal", "seal_kid", "seal_epk", "seal_salt", "seal_body", "seal_reply"
+AD_PUB, AD_KID, AD_EXPIRES, AD_PEER, AD_IDENTITY, AD_SIG = ("seal_pub", "seal_pub_kid", "seal_expires", "seal_peer",
+                                                            "seal_identity", "seal_sig")
+AD_REQUIRED, AD_HISTORY = "seal_required", "identity_history"
+ENVELOPE = ("action", "request_id", "read_peer", "consistency", "min_index")
+REQUEST_FIELDS = (SEAL, KID, EPK, SALT, BODY)
+REFRESH = "18"
+SALT_BYTES = 32
+REQ, RSP = "req", "rsp"
+# a client's ephemeral key is reused for at most this long, or this many requests, per advertisement
+SESSION_SECONDS, SESSION_USES = 900.0, 100_000
+
+
+class SealError(IntegrityError):
+    """A seal advertisement, sealed reply or sealed exchange did not verify. Never retried in plaintext."""
+
+
+class SealUnavailable(SealError):
+    """A peer advertises no seal key where this client must seal (seal=require, or the peer advertised one before:
+    was_sealing, as a restarting peer does until its engine is up). Nothing was sent."""
+
+    def __init__(self, msg, was_sealing=False):
+        super().__init__(msg)
+        self.was_sealing = was_sealing
+
+
+def info(*parts):
+    out = bytearray()
+    for p in parts:
+        b = p if isinstance(p, (bytes, bytearray)) else str(p).encode("utf-8")
+        out += len(b).to_bytes(4, "big") + b
+    return bytes(out)
+
+
+def kid(pub_b64):
+    return hashlib.sha384(unb64url(pub_b64)).hexdigest()[:32]
+
+
+def key(z, salt, direction, k, epk):
+    return HKDF(algorithm=hashes.SHA384(), length=32, salt=salt, info=info(SCHEME, direction, k, epk)).derive(z)
+
+
+def aad(direction, action, k, epk, salt_b64):
+    return info(SCHEME, direction, action, k, epk, salt_b64)
+
+
+def advert_bytes(audience, peer, k, pub, expires, identity):
+    return info(SCHEME + "/key", audience, peer, k, pub, str(expires), identity)
+
+
+def body(params):
+    return json.dumps(dict(sorted(params.items())), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def is_sealed(params):
+    return SEAL in params or BODY in params
+
+
+class Advert:
+    __slots__ = ("pub", "kid", "peer", "identity", "expires", "key")
+
+    def __init__(self, pub, k, peer, identity, expires):
+        self.pub, self.kid, self.peer, self.identity, self.expires = pub, k, peer, identity, expires
+        self.key = parse_public(pub)
+
+    def __repr__(self):
+        return f"Advert(kid={self.kid}, peer={self.peer})"
+
+
+def _rotation_bytes(old, new, ts):
+    return info("GFS-IDROT-1", old, new, str(ts))
+
+
+def trusted(identity, pinned, history):
+    """Whether `identity` is pinned, or reached from a pinned key through endorsed rotations in `history` (JSON)."""
+    if identity in pinned:
+        return True
+    if not history:
+        return False
+    try:
+        epochs = json.loads(history)
+        chain, prev = False, None
+        for ep in epochs:
+            pub = ep["pub"]
+            if chain:
+                try:
+                    parse_public(prev).verify(unb64url(ep.get("endorsement") or ""),
+                                              _rotation_bytes(prev, pub, int(ep["since"])), ec.ECDSA(hashes.SHA384()))
+                except (InvalidSignature, ValueError):
+                    chain = False
+            if pub in pinned:
+                chain = True
+            if chain and pub == identity:
+                return True
+            prev = pub
+    except (ValueError, KeyError, TypeError):
+        return False
+    return False
+
+
+def advert(reply, audience, pinned):
+    """The verified advertisement in a reply (core.status, a status-18 refusal), or None when it carries none.
+    Raises SealError when one is present and does not verify: never fall back to plaintext over a bad one."""
+    pub = (reply or {}).get(AD_PUB)
+    if not pub:
+        return None
+    k, peer, ident, sig, exp = (reply.get(AD_KID), reply.get(AD_PEER), reply.get(AD_IDENTITY), reply.get(AD_SIG),
+                                reply.get(AD_EXPIRES))
+    if not (k and peer is not None and ident and sig and exp):
+        raise SealError("seal advertisement incomplete")
+    try:
+        expires = int(exp)
+    except ValueError:
+        raise SealError("seal_expires is not a number")
+    if k != kid(pub):
+        raise SealError("seal_pub_kid does not name seal_pub")
+    if not trusted(ident, pinned, reply.get(AD_HISTORY)):
+        raise SealError("the seal key is endorsed by an identity this client does not trust (pin the core identity)")
+    try:
+        parse_public(ident).verify(unb64url(sig), advert_bytes(audience, peer, k, pub, expires, ident),
+                                   ec.ECDSA(hashes.SHA384()))
+    except (InvalidSignature, ValueError):
+        raise SealError("seal_sig does not verify under the core identity")
+    try:
+        return Advert(pub, k, peer, ident, expires)
+    except ValueError:
+        raise SealError("seal_pub is not a P-384 key")
+
+
+class Session:
+    """This client's ephemeral key for one advertisement: its ECDH is done once and reused for a bounded time."""
+    __slots__ = ("advert", "epk", "_z", "created", "uses")
+
+    def __init__(self, adv, private=None):
+        e = private or ec.generate_private_key(ec.SECP384R1())
+        self.advert, self.epk = adv, public_b64(e)
+        self._z = e.exchange(ec.ECDH(), adv.key)
+        self.created, self.uses = time.monotonic(), 0
+
+    def fresh(self):
+        return time.monotonic() - self.created < SESSION_SECONDS and self.uses < SESSION_USES
+
+    def __repr__(self):
+        return f"Session({self.advert!r})"
+
+
+class Sealed:
+    """A sealed request in flight: what to send, and what opens its reply."""
+    __slots__ = ("params", "action", "kid", "epk", "salt", "_k_rsp")
+
+    def __init__(self, params, action, k, epk, salt, k_rsp):
+        self.params, self.action, self.kid, self.epk, self.salt, self._k_rsp = params, action, k, epk, salt, k_rsp
+
+
+def seal(session, action, params, salt=None):
+    """Seal signed `params`: the envelope stays visible, everything else (the signature included) goes in seal_body."""
+    raw = salt if salt is not None else os.urandom(SALT_BYTES)
+    s = b64url(raw)
+    inner, out = {}, {}
+    for k, v in params.items():
+        if v is None:
+            continue
+        (out if k in ENVELOPE else inner)[k] = v
+    out["action"] = action
+    k = session.advert.kid
+    k_req = key(session._z, raw, REQ, k, session.epk)
+    session.uses += 1
+    out.update({SEAL: SCHEME, KID: k, EPK: session.epk, SALT: s,
+                BODY: b64url(aead.seal_once(k_req, aad(REQ, action, k, session.epk, s), body(inner)))})
+    return Sealed(out, action, k, session.epk, s, key(session._z, raw, RSP, k, session.epk))
+
+
+def open_reply(q, plain, reply):
+    """The reply as the caller reads it: the request's own params (what the core echoed before sealing), the visible
+    reply over them, the opened seal_reply over both. Without a seal_reply only a refusal is accepted (the core did not
+    open the request: a redirect, a status 18, an unauthenticated replay); an OK without one is refused."""
+    view = dict(plain)
+    for k, v in (reply or {}).items():
+        if k not in REQUEST_FIELDS and k != REPLY:
+            view[k] = v
+    sr = (reply or {}).get(REPLY)
+    if sr is None:
+        if str((reply or {}).get("status")) == "10":
+            raise SealError(f"{q.action}: an OK reply to a sealed request carries no sealed reply")
+        return view
+    try:
+        pt = aead.open_once(q._k_rsp, aad(RSP, q.action, q.kid, q.epk, q.salt), unb64url(sr))
+        opened = json.loads(pt.decode("utf-8"))
+    except (InvalidTag, ValueError, UnicodeDecodeError):
+        raise SealError(f"{q.action}: the sealed reply does not open")
+    if not isinstance(opened, dict) or not all(isinstance(v, str) for v in opened.values()):
+        raise SealError(f"{q.action}: the sealed reply is not a flat object of strings")
+    view.update(opened)
+    return view
+
+
+class PeerSeals:
+    """The seal=auto|require|off policy over per-peer sessions: one place for what CoreClient, the eval harness
+    (eval/gfs_auth.signing_call) and the standing tools do, so none of them carries a copy of the protocol.
+
+      status(addr, timeout) -> that peer's core.status reply (a dict; raises when there is none)
+      audience(reply)       -> the audience its advertisement is verified for (the core's, which core.status names)
+      pins                  -> the trusted core identity keys: a list, or a callable returning one (called when a key
+                               is verified, so a caller may learn it late)
+
+    auto seals to every peer that advertises a key endorsed by a pinned identity and, once one has, never sends that peer
+    plaintext again; require never sends a signed request in plaintext; off never seals."""
+    NO_SEAL_RECHECK = 60.0
+    MODES = ("auto", "require", "off")
+
+    def __init__(self, mode, pins, status, audience):
+        if mode not in self.MODES:
+            raise ValueError("seal must be auto, require or off")
+        self.mode, self._pins, self._status, self._audience = mode, pins, status, audience
+        self.sessions = {}                       # peer addr -> Session (its verified advertisement)
+        self.sealing = set()                     # peers that advertised a seal key: never sent plaintext again
+        self.no_seal = {}                        # peer addr -> when it was seen without an advertisement (monotonic)
+        self.stats = {"sealed": 0, "plaintext": 0, "refreshed": 0}
+        self._lock = threading.Lock()
+
+    def pins(self):
+        p = self._pins() if callable(self._pins) else self._pins
+        if isinstance(p, str):
+            p = [k.strip() for k in p.split(",") if k.strip()]
+        return list(p or [])
+
+    def _adopt(self, addr, adv):
+        s = Session(adv)
+        with self._lock:
+            self.sessions[addr] = s
+            self.sealing.add(addr)
+            self.no_seal.pop(addr, None)
+        return s
+
+    def take(self, addr, reply):
+        """Adopt the advertisement in `reply` for `addr` (verified; raises SealError when it does not verify)."""
+        adv = advert(reply, self._audience(reply), self.pins())
+        if adv is None:
+            return False
+        self._adopt(addr, adv)
+        with self._lock:
+            self.stats["refreshed"] += 1
+        return True
+
+    def session(self, addr, timeout):
+        """The seal session for `addr`, from its core.status advertisement (fetched once, then on expiry); None to send
+        plaintext (seal off, or a peer that does not advertise sealing and never did, unless seal=require)."""
+        if self.mode == "off":
+            return None
+        now = time.monotonic()
+        with self._lock:
+            s = self.sessions.get(addr)
+            sticky = addr in self.sealing
+            seen_plain = self.no_seal.get(addr)
+        if s is not None and s.advert.expires > int(time.time() * 1000):
+            if s.fresh():
+                return s
+            s = Session(s.advert)                    # a new ephemeral key for the same advertisement
+            with self._lock:
+                self.sessions[addr] = s
+            return s
+        if s is None and seen_plain is not None and now - seen_plain < self.NO_SEAL_RECHECK and self.mode == "auto":
+            return None
+        r = self._status(addr, timeout)
+        adv = advert(r, self._audience(r), self.pins())
+        if adv is None:
+            if self.mode == "require" or sticky:
+                raise SealUnavailable(f"core peer {addr} does not advertise a seal key (seal={self.mode}"
+                                      f"{', and it did before' if sticky else ''}): refusing to send params in plaintext", sticky)
+            with self._lock:
+                self.no_seal[addr] = now
+            return None
+        return self._adopt(addr, adv)
+
+    def exchange(self, addr, action, sign, send, timeout):
+        """One signed request to `addr`, sealed when the policy says so. sign() returns the params signed afresh (a new
+        nonce: called again for the one re-send), send(params) the reply (None when none came). A status 18 is answered
+        once, with the advertisement it names. Returns the reply as the caller reads it (a sealed one opened)."""
+        r = None
+        for attempt in (0, 1):
+            p = sign()
+            sess = self.session(addr, timeout)
+            if sess is None:
+                with self._lock:
+                    self.stats["plaintext"] += 1
+                r = send(p)
+                # a core that requires sealed params refuses plaintext with status 18, naming its key: sealed, once more
+                if attempt == 0 and r and str(r.get("status")) == REFRESH and self.mode != "off" and self.take(addr, r):
+                    continue
+                return r
+            q = seal(sess, action, p)
+            with self._lock:
+                self.stats["sealed"] += 1
+            r = send(q.params)
+            if attempt == 0 and r and str(r.get("status")) == REFRESH:
+                # this peer holds no key by our kid (rotated, restarted): its reply names the current one
+                if not self.take(addr, r):
+                    raise SealError(f"{action}: core peer {addr} could not open sealed params and names no seal key")
+                continue
+            # no reply, or the transport's own (no status: wsapi's {"error": ...}) is not the core's answer: as it came
+            return open_reply(q, p, r) if r and r.get("status") is not None else r
+        return r
