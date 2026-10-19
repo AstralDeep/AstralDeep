@@ -1,4 +1,4 @@
-"""Exercises the qualified SDK's byte-pinned retry methods against the real remote RPC boundary and deterministic fake sockets. Public source fixtures remain inert outside these tests; signing, TLS and service behavior are not replaced in production."""
+"""Exercises the qualified SDK's byte-pinned retry and sealed-exchange methods against the real remote RPC boundary and deterministic fake sockets. Public source fixtures remain inert outside these tests; signing, sealing, TLS and service behavior are not replaced in production."""
 
 import ast
 from contextlib import contextmanager
@@ -14,6 +14,8 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 from agents.gaiakeep import client, remote_runtime, transport
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK, InvalidStatus
 from websockets.frames import Close
 
@@ -30,10 +32,19 @@ def sdk(monkeypatch):
         if name.endswith('.py.txt'):
             assert info['sha256'] == remote_runtime.SDK_LOCK['files']['gaiakeep/' + name[:-4]]
             data[name] = raw
-    errors = ModuleType('gaiakeep.errors')
-    exec(compile(data['errors.py.txt'], str(FIXTURES / 'errors.py.txt'), 'exec'), errors.__dict__)
-    monkeypatch.setitem(sys.modules, 'gaiakeep.errors', errors)
-    methods = {'_raw', '_saw', '_skip', '_follower_read', 'call', '_peer_audience', '_learn_audience', 'status'}
+    package = ModuleType('gaiakeep')
+    package.__path__ = []
+    monkeypatch.setitem(sys.modules, 'gaiakeep', package)
+    modules = {}
+    for name in ('errors', 'keys', 'aead', 'seal'):
+        module = ModuleType('gaiakeep.' + name)
+        module.__package__ = 'gaiakeep'
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+        exec(compile(data[name + '.py.txt'], str(FIXTURES / (name + '.py.txt')), 'exec'), module.__dict__)
+        modules[name] = module
+    errors = modules['errors']
+    methods = {'_raw', '_seal_status', '_saw', '_skip', '_follower_read', 'call', '_peer_audience', '_learn_audience',
+               'status'}
     constants = {'ANY_PEER', 'NOT_LEADER', 'MAX_HORIZON_AHEAD_MS', 'BUSY', 'FOLLOWER_READS', 'LINEARIZABLE',
                  'SESSION', 'C1_VERBS', 'IDEMPOTENT_READS', '_PATH_PARAMS'}
     parsed = ast.parse(data['client.py.txt'])
@@ -59,7 +70,8 @@ def sdk(monkeypatch):
     ingest.body = [method for method in ingest.body if isinstance(method, ast.FunctionDef) and method.name == '_commit']
     assert len(ingest.body) == 1
     exec(compile(ast.Module(body=[ingest], type_ignores=[]), str(FIXTURES / 'ingest.py.txt'), 'exec'), namespace)
-    return SimpleNamespace(errors=errors, Core=namespace['CoreClient'], Ingest=namespace['Ingest'])
+    return SimpleNamespace(errors=errors, Core=namespace['CoreClient'], Ingest=namespace['Ingest'],
+                           seal=modules['seal'], keys=modules['keys'], aead=modules['aead'])
 
 
 @pytest.fixture
@@ -86,6 +98,11 @@ def rpc(monkeypatch, sdk):
             reply = records['replies'].get((peer, action),
                        {'status': records['statuses'].get((peer, action), '10'), 'audience': 'fixture-audience',
                         'peer_audience': 'fixture-peer-audience', 'vid': 'verified-head'})
+            sealing = records.get('sealing')
+            if sealing is not None and action == 'core.status' and sealing.advertise:
+                reply = dict(reply, **sealing.advert)
+            elif sealing is not None and sdk.seal.is_sealed(payload):
+                reply = sealing.answer(payload, reply)
             return json.dumps(dict(reply, client_rpc_id=payload['client_rpc_id']))
 
         def close(self):
@@ -111,7 +128,7 @@ def rpc(monkeypatch, sdk):
     compatible = remote_runtime._sdk_transport(config, ssl.create_default_context())
     unadapted = transport.VerifiedLoopbackTransport(config, ssl.create_default_context())
 
-    def core(native, read_peers=('r:a:p', 'r:b:p')):
+    def core(native, read_peers=('r:a:p', 'r:b:p'), seal='off', pins=()):
         instance = sdk.Core()
         instance.transport, instance.addr = native, 'r:l:p'
         instance.signer = SimpleNamespace(audience=None, sign=lambda action, params, **kwargs: dict(params))
@@ -122,6 +139,8 @@ def rpc(monkeypatch, sdk):
         instance._peer_audiences = {}
         instance.read_stats = {'follower': 0, 'leader_fallback': 0, 'skipped': {}}
         instance.busy_backoff_max, instance.redirect_wait, instance.redirects = 0, 0, 2
+        instance._seals = sdk.seal.PeerSeals(seal, list(pins), instance._seal_status,
+                                             lambda reply: instance.signer.audience or (reply or {}).get('audience') or '')
         return instance
 
     return SimpleNamespace(records=records, compatible=compatible, unadapted=unadapted, core=core, sdk=sdk)
@@ -522,3 +541,104 @@ def test_socket_exit_timeout_is_not_an_open_failure(rpc, monkeypatch):
         core.call('core.branches', {'collection_id': 'scratch'})
     assert type(raised.value.__cause__) is TimeoutError
     assert rpc.records['openings'] == 1 and rpc.records['calls'] == [('r:l:p', 'core.branches')]
+
+
+class SealingCore:
+    def __init__(self, sdk, advertise=True):
+        self.sdk, self.advertise, self.tamper = sdk, advertise, False
+        self.identity = ec.generate_private_key(ec.SECP384R1())
+        self.seal_key = ec.generate_private_key(ec.SECP384R1())
+        self.pin = sdk.keys.public_b64(self.identity)
+        pub = sdk.keys.public_b64(self.seal_key)
+        kid, expires = sdk.seal.kid(pub), int(time.time() * 1000) + 600000
+        signed = sdk.seal.advert_bytes('fixture-audience', 'r:l:p', kid, pub, expires, self.pin)
+        self.advert = {'seal_pub': pub, 'seal_pub_kid': kid, 'seal_expires': str(expires), 'seal_peer': 'r:l:p',
+                       'seal_identity': self.pin,
+                       'seal_sig': sdk.keys.b64url(self.identity.sign(signed, ec.ECDSA(hashes.SHA384())))}
+        self.opened = []
+
+    def answer(self, payload, reply):
+        seal, keys, aead = self.sdk.seal, self.sdk.keys, self.sdk.aead
+        action, kid, epk, salt = payload['action'], payload['seal_kid'], payload['seal_epk'], payload['seal_salt']
+        shared = self.seal_key.exchange(ec.ECDH(), keys.parse_public(epk))
+        inner = json.loads(aead.open_once(seal.key(shared, keys.unb64url(salt), seal.REQ, kid, epk),
+                                          seal.aad(seal.REQ, action, kid, epk, salt), keys.unb64url(payload['seal_body'])))
+        self.opened.append((action, inner))
+        body = json.dumps({key: str(value) for key, value in reply.items()}).encode()
+        sealed = aead.seal_once(seal.key(shared, keys.unb64url(salt), seal.RSP, kid, epk),
+                                seal.aad(seal.RSP, action, kid, epk, salt), body)
+        if self.tamper:
+            sealed = sealed[:-1] + bytes([sealed[-1] ^ 1])
+        return {'status': str(reply.get('status', '10')), 'seal_reply': keys.b64url(sealed)}
+
+
+def sealed_core(rpc, advertise=True):
+    rpc.records['sealing'] = sealing = SealingCore(rpc.sdk, advertise)
+    return sealing, rpc.core(rpc.compatible, read_peers=(), seal='require', pins=(sealing.pin,))
+
+
+def test_required_sealing_hides_signed_params_and_opens_the_reply(rpc):
+    sealing, core = sealed_core(rpc)
+    rpc.records['replies'][('r:l:p', 'core.head')] = {'status': '10', 'vid': 'sealed-head'}
+    reply = core.call('core.head', {'collection_id': 'private-collection', 'branch': 'main'})
+    assert reply['vid'] == 'sealed-head' and reply['status'] == '10'
+    head = [payload for payload in rpc.records['payloads'] if payload['action'] == 'core.head']
+    assert len(head) == 1 and 'private-collection' not in json.dumps(head[0])
+    assert set(head[0]) == {'action', 'client_rpc_id', 'seal', 'seal_kid', 'seal_epk', 'seal_salt', 'seal_body'}
+    assert sealing.opened == [('core.head', {'collection_id': 'private-collection', 'branch': 'main'})]
+    assert core._seals.stats == {'sealed': 1, 'plaintext': 0, 'refreshed': 0}
+
+
+def test_sealed_pending_read_keeps_the_commit_job_for_reconciliation(rpc):
+    _, core = sealed_core(rpc)
+    rpc.records['replies'][('r:l:p', 'core.list')] = {'status': '16', 'vid': 'version-42', 'commit_job': 'durable-42'}
+    with pytest.raises(rpc.sdk.errors.CommitPending) as raised:
+        core.call('core.list', {'vid': 'version-42'})
+    assert client.failure(raised.value, False)[0] == 'pending'
+    assert client.native_reconciliation(raised.value) == {'commit_job': 'durable-42', 'vid': 'version-42'}
+    assert [action for _, action in rpc.records['calls']].count('core.list') == 1
+
+
+def test_sealed_publication_metadata_is_left_to_the_opened_sdk_result(rpc):
+    _, core = sealed_core(rpc)
+    rpc.records['replies'][('r:l:p', 'core.publish')] = {'status': '10', 'vid': 'version-42', 'commit_job': '../secret'}
+    assert core.call('core.publish', {'request_id': 'retained-request'})['commit_job'] == '../secret'
+    assert rpc.compatible.publication_metadata == {}
+    assert client.native_reconciliation({'commit_job': '../secret', 'vid': 'version-42'}) == {'vid': 'version-42'}
+
+
+@pytest.mark.parametrize('mutation,verdict', [(False, 'unavailable'), (True, 'unconfirmed')])
+def test_required_sealing_without_an_advertisement_sends_nothing_signed(rpc, mutation, verdict):
+    _, core = sealed_core(rpc, advertise=False)
+    with pytest.raises(rpc.sdk.seal.SealUnavailable) as raised:
+        core.call('core.put' if mutation else 'core.head', {'collection_id': 'private-collection'})
+    assert {action for _, action in rpc.records['calls']} == {'core.status'}
+    assert 'private-collection' not in json.dumps(rpc.records['payloads'])
+    assert client.failure(raised.value, mutation)[0] == verdict
+    assert transport.failure_detail(raised.value, 'sdk_control')['failure_kind'] == 'integrity'
+
+
+def test_sealed_reply_that_does_not_open_is_an_integrity_failure(rpc):
+    sealing, core = sealed_core(rpc)
+    sealing.tamper = True
+    with pytest.raises(rpc.sdk.seal.SealError) as raised:
+        core.call('core.head', {'collection_id': 'scratch', 'branch': 'main'})
+    assert client.failure(raised.value, False)[0] == 'integrity_error'
+    assert [action for _, action in rpc.records['calls']].count('core.head') == 1
+
+
+def test_untrusted_seal_advertisement_is_refused_before_any_signed_request(rpc):
+    sealing, _ = sealed_core(rpc)
+    core = rpc.core(rpc.compatible, read_peers=(), seal='require',
+                    pins=(rpc.sdk.keys.public_b64(ec.generate_private_key(ec.SECP384R1())),))
+    with pytest.raises(rpc.sdk.seal.SealError):
+        core.call('core.head', {'collection_id': 'private-collection', 'branch': 'main'})
+    assert {action for _, action in rpc.records['calls']} == {'core.status'} and not sealing.opened
+
+
+def test_quota_refusal_is_a_native_denial(rpc):
+    rpc.records['replies'][('r:l:p', 'core.commit')] = {'status': '17', 'quota': 'stored'}
+    with pytest.raises(rpc.sdk.errors.QuotaExceeded) as raised:
+        rpc.core(rpc.compatible).call('core.commit', {'upload_id': 'synthetic'})
+    assert client.failure(raised.value, True) == (
+        'upstream_denied', 'GaiaKeep refused the operation because the tenant quota is exhausted.')

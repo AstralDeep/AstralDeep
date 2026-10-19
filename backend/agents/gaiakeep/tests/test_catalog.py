@@ -13,9 +13,11 @@ def test_upload_id_is_bounded_and_matches_supported_ingest_strategy(change):
 
 
 def test_complete_closed_catalog():
-    assert len(catalog.ACTIONS) == 115
-    assert sum(a.startswith('core.') for a in catalog.ACTIONS) == 94
-    assert len(catalog.TOOLS) == 118
+    assert len(catalog.ACTIONS) == 101
+    assert sum(a.startswith('core.') for a in catalog.ACTIONS) == 99
+    assert len(catalog.TOOLS) == 104
+    assert catalog.REVISION == 'fbd957521b4b3b828371241465d3ba5438dbdad2'
+    assert {name for name, item in catalog.ACTIONS.items() if item['legacy']} == {'getmetrics', 'getcapabilities'}
     assert catalog.FILE_ACTIONS == {'core.put', 'core.get', 'core.haveopen', 'core.have'}
     for info in catalog.TOOLS.values():
         schema = info['input_schema']
@@ -40,6 +42,40 @@ def test_protected_input(field):
 def test_invalid_parameters(args):
     with pytest.raises(ValueError):
         catalog.validate('gaiakeep_core_head', args)
+
+
+@pytest.mark.parametrize('name', ['gaiakeep_fetch', 'gaiakeep_restore', 'gaiakeep_listnodes',
+                                  'gaiakeep_reconstructauth', 'gaiakeep_approvereconstruct'])
+def test_retired_prototype_tools_are_absent(name):
+    assert name not in catalog.TOOLS
+    with pytest.raises(ValueError):
+        catalog.validate(name, {'machine_id': 'mine', 'params': {}})
+
+
+@pytest.mark.parametrize('name,scope', [('gaiakeep_core_membership', 'tools:system'), ('gaiakeep_core_quota', 'tools:system'),
+                                        ('gaiakeep_core_redundancy', 'tools:system'), ('gaiakeep_core_deepattest', 'tools:system'),
+                                        ('gaiakeep_core_extractattest', 'tools:write')])
+def test_new_core_actions_require_approval(name, scope):
+    assert catalog.TOOLS[name]['scope'] == scope and catalog.is_mutation(name)
+
+
+@pytest.mark.parametrize('name,params,valid', [
+    ('gaiakeep_core_quota', {'tenant_id': 't', 'op': 'set', 'stored_max': -1}, True),
+    ('gaiakeep_core_quota', {'tenant_id': 't', 'stored_max': '-1'}, False),
+    ('gaiakeep_core_quota', {'tenant_id': 't', 'weight': True}, False),
+    ('gaiakeep_core_extract', {'vid': 'v', 'max_amplification': 2.5}, True),
+    ('gaiakeep_core_extract', {'vid': 'v', 'max_amplification': 1e16}, False),
+    ('gaiakeep_core_extract', {'vid': 'v', 'max_amplification': '2.5'}, False),
+    ('gaiakeep_core_lclist', {'limit': 1000}, True),
+    ('gaiakeep_core_lclist', {'limit': 1001}, False),
+])
+def test_integer_and_number_parameters_are_typed(name, params, valid):
+    arguments = {'machine_id': 'mine', 'params': params}
+    if valid:
+        assert catalog.validate(name, arguments) is arguments
+    else:
+        with pytest.raises(ValueError):
+            catalog.validate(name, arguments)
 
 
 def test_conservative_classification():

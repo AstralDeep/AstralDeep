@@ -382,7 +382,7 @@ def test_qualified_sdk_destination_replacement_does_not_follow_symlinks(tmp_path
     destination.symlink_to(outside)
     transfer = object.__new__(Transfers)
     transfer.flows, transfer.chunk = 1, 16
-    transfer.client = SimpleNamespace(file_info=lambda *args: {'size': len(data), 'file_hash': digest})
+    transfer.client = SimpleNamespace(file_info=lambda *args, **kwargs: {'size': len(data), 'file_hash': digest})
     transfer.lane = lambda index: None
     def copied(lane, descriptor, offset, vid, path, start, length, keys):
         os.pwrite(descriptor, data[start:start + length], offset)

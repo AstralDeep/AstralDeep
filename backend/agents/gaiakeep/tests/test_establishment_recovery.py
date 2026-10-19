@@ -88,6 +88,7 @@ def core_for(wire, audience='fixture-audience', peers=()):
     core._peer_audiences = {}
     core.read_stats = {'follower': 0, 'leader_fallback': 0, 'skipped': {}}
     core.busy_backoff_max, core.redirect_wait, core.redirects = 0, 0, 2
+    core._seals = wire.sdk.seal.PeerSeals('off', [], core._seal_status, lambda reply: core.signer.audience)
     return core
 
 

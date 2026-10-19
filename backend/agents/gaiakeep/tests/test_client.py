@@ -149,41 +149,56 @@ def test_missing_config_and_cleanup_on_constructor_failure(monkeypatch):
     assert closed == [True]
 
 
-def test_legacy_opt_in_and_peer_audience_refused():
-    core = SimpleNamespace(signer=SimpleNamespace(principal='p'),
-                           transport=SimpleNamespace(call=lambda *a: {'status': '10'}))
-    with pytest.raises(client.AgentError):
-        client.execute(core, 'listnodes', {})
-    config = SimpleNamespace(allow_legacy=True, core_address='r:a:p')
-    with pytest.raises(client.AgentError):
-        client.execute(core, 'reconstructauth', {'key_id': 'k'}, config)
+def test_native_client_requires_sealed_requests_and_reports_pending_reads(monkeypatch):
+    constructed = []
+    def constructor(transport, address, **kwargs):
+        constructed.append(kwargs)
+        return SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(client, 'load_sdk', lambda: (constructor, lambda **kwargs: kwargs, None, None))
+    monkeypatch.setattr(client, 'NativeTransport', lambda *a: SimpleNamespace(close=lambda: None))
+    creds, _ = credentials()
+    with client.open_client(object(), creds, SimpleNamespace(core_address='r:a:p', core_public_key='pinned')):
+        pass
+    assert constructed[0]['seal'] == 'require' and constructed[0]['wait_commit'] is False
 
 
-def test_legacy_restore_confinement_and_incomplete_fetch_refusal(monkeypatch):
-    monkeypatch.setattr(client, 'load_sdk', lambda: (None, None, None, lambda action, reply: reply))
-    captured = []
-    def call(*args):
-        captured.append(args)
-        return {'status': '10', 'job_id': 'accepted-job'}
-    core = SimpleNamespace(signer=SimpleNamespace(principal='p'), transport=SimpleNamespace(call=call))
-    config = SimpleNamespace(allow_legacy=True, core_address='r:a:p', restore_root='/srv/gaia-restore')
-    assert client.execute(core, 'restore', {'object_id': 'o', 'dest_path': 'relative'}, config,
-                          {'GAIAKEEP_RECONSTRUCTION_TOKEN': 'credential-token'})['job_id'] == 'accepted-job'
-    assert captured[-1][2]['dest_path'] == '/srv/gaia-restore/relative'
-    assert captured[-1][2]['user'] == 'p'
-    assert captured[-1][2]['reconstruct_token'] == 'credential-token'
-    with pytest.raises(ValueError):
-        client.execute(core, 'restore', {'object_id': 'o', 'dest_path': '../escape'}, config)
-    config.restore_root = '/'
-    with pytest.raises(client.AgentError):
-        client.execute(core, 'restore', {'object_id': 'o', 'dest_path': 'relative'}, config)
-    with pytest.raises(client.AgentError):
-        client.execute(core, 'fetch', {}, config)
-    before = len(captured)
+def test_sdk_commit_pending_names_its_job_and_version():
+    pending = type('CommitPending', (Exception,), {})('committing')
+    pending.job_id, pending.vid, pending.detail = 'durable-42', 'version-42', {}
+    assert client.native_reconciliation(pending) == {'commit_job': 'durable-42', 'vid': 'version-42'}
+    assert client.failure(pending, True)[0] == 'pending'
+    other = type('JobFailed', (Exception,), {})('failed')
+    other.job_id = 'durable-42'
+    assert client.native_reconciliation(other) == {}
+
+
+def test_sealed_native_reply_is_left_to_the_sdk():
+    transport = SimpleNamespace(publication_metadata={})
+    client.observe_native_reply(transport, 'core.list', {}, {'status': '16', 'seal_reply': 'opaque'})
+    client.observe_native_reply(transport, 'core.publish', {'request_id': 'r'}, {'status': '10', 'seal_reply': 'opaque'})
+    assert transport.publication_metadata == {}
+
+
+@pytest.mark.parametrize('config', [None, SimpleNamespace(allow_legacy=False, core_address='r:a:p')])
+def test_legacy_requires_operator_opt_in(config):
+    calls = []
+    core = SimpleNamespace(transport=SimpleNamespace(call=lambda *a: calls.append(a) or {'status': '10'}))
     with pytest.raises(client.AgentError) as error:
-        client.execute(core, 'fetch', {}, config, {'GAIAKEEP_FETCH_GRANT': 'encrypted-grant'})
-    assert error.value.verdict == 'unsupported'
-    assert len(captured) == before
+        client.execute(core, 'getmetrics', {}, config)
+    assert error.value.verdict == 'unsupported' and not calls
+
+
+def test_opted_in_legacy_metrics_stay_unsigned_and_native_checked():
+    calls = []
+    core = SimpleNamespace(transport=SimpleNamespace(call=lambda *a: calls.append(a) or {'status': '10', 'metrics': '{}'}))
+    config = SimpleNamespace(allow_legacy=True, core_address='r:a:p')
+    checked = []
+
+    def loader():
+        return None, None, None, lambda action, reply: checked.append(action) or reply
+
+    assert client.execute(core, 'getmetrics', {}, config, sdk_loader=loader)['metrics'] == '{}'
+    assert calls == [('r:a:p', 'getmetrics', {}, client.RPC_TIMEOUT)] and checked == ['getmetrics']
 
 
 def test_idempotency_and_events_owned():

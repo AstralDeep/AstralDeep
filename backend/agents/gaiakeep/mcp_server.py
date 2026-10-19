@@ -60,8 +60,6 @@ class MCPServer:
                 raise client.AgentError('not_configured', 'GaiaKeep is disabled by the operator.')
             public = {k: v for k, v in arguments.items() if k not in CONTEXT_FIELDS}
             catalog.validate(name, public)
-            if catalog.TOOLS[name]['action'] == 'fetch':
-                raise client.AgentError('unsupported', 'Legacy fetch requires a separately qualified bounded receiver. Use the versioned file read tool.')
             user_id = arguments.get('user_id')
             if not isinstance(user_id, str) or not user_id:
                 raise client.AgentError('auth_failed', 'A signed-in owner is required.')
@@ -110,7 +108,7 @@ class MCPServer:
                 elif action == 'read':
                     result = client.read(core, public['vid'], public['path'])
                 else:
-                    result = client.execute(core, action, params, config, credentials)
+                    result = client.execute(core, action, params, config)
             if action == 'read':
                 data_base64 = result.pop('data_base64')
                 result = client.clean_result(result, secrets)

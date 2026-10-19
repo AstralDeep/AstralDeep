@@ -92,7 +92,11 @@ class IngestResult:
 
 
 class _LeaderMoved(Exception):
-    pass
+    """The core leader changed during an §1a upload; `upload` names the upload, which the new leader may continue."""
+
+    def __init__(self, message="", upload=None):
+        super().__init__(message)
+        self.upload = upload
 
 
 _UNKNOWN = object()                     # the head before the publish could not be read
@@ -149,24 +153,69 @@ class Ingest:
             return self._legacy()
         if mode != "1a":
             raise ValueError("mode must be auto, 1a or legacy")
-        attempt = 0
+        attempt, resume = 0, None
         while True:
             try:
-                return self._one_upload_1a(reuploads=attempt)
+                return self._one_upload_1a(reuploads=attempt, resume=resume)
             except _LeaderMoved as e:
                 if attempt >= self.reuploads:
                     raise NotLeader(f"ingest: the core leader changed during the upload ({e}); retry with request_id "
                                     f"{self.request_id}", action="ingest")
                 attempt += 1
-                log.warn("leader changed during ingest: uploading again under the same request_id",
-                         request_id=self.request_id, attempt=attempt)
+                # OUT-89: the new leader may hold, from its predecessor's journal, the files already written: then the
+                # same upload carries on there and only the other files are sent
+                resume = self._journaled(e.upload)
+                if resume:
+                    log.warn("leader changed during ingest: resuming the same upload on the new leader",
+                             request_id=self.request_id, upload_id=resume[0], journaled=len(resume[1]), attempt=attempt)
+                else:
+                    log.warn("leader changed during ingest: uploading again under the same request_id",
+                             request_id=self.request_id, attempt=attempt)
 
     # --------------------------------------------------------------------------------------------- §1a
 
-    def _one_upload_1a(self, reuploads):
+    def _journaled(self, upload):
+        """OUT-89: (upload, {path: durable offset}, ranges) when the core leader now holds whole files of `upload` from its
+        predecessor's journal (core.putstatus `journaled`) and each matches the local file; None to upload again.
+        `ranges` are the parts the new leader already holds (a redirected open landed there): re-opened with resume."""
+        if not upload:
+            return None
+        try:
+            r = self.client.call("core.putstatus", {"upload_id": upload})
+        except GaiaKeepError:
+            return None
+        from .transport import json_param
+        try:
+            j = json_param(r, "journaled") or {}
+        except ValueError:
+            return None
+        done = {}
+        for path, off in j.items():
+            local = self.files.get(path)
+            if local is None or int(off) != os.path.getsize(local):
+                return None                      # not this upload's file as it is here: start again
+            done[path] = int(off)
+        if not done:
+            return None
+        try:
+            ranges = json_param(r, "ranges") or {}
+        except ValueError:
+            ranges = {}
+        return (upload, done, ranges)
+
+    def _one_upload_1a(self, reuploads, resume=None):
         c, x = self.client, self.x
-        upload = new_id("u", 16)
-        plan = Transfers.plan(self.files, x.chunk, x.flows, keyed=self.client.keyed_digests())
+        upload = resume[0] if resume else new_id("u", 16)
+        journaled = set(resume[1]) if resume else set()
+        held = {}                                # (path, part) -> flow seqs the leader already holds: re-opened with resume
+        for path, per in ((resume[2] if resume else None) or {}).items():
+            for k, rr in (per or {}).items():
+                have = set()
+                for a, b in rr:
+                    have.update(range(int(a), int(b)))
+                held[(path, int(k))] = have
+        todo = {p: local for p, local in self.files.items() if p not in journaled}
+        plan = Transfers.plan(todo, x.chunk, x.flows, keyed=self.client.keyed_digests())
         parts = [p for fparts in plan for p in fparts]
         lanes = x.lanes()
         leader = c.addr
@@ -177,8 +226,12 @@ class Ingest:
                 fds[fp[0].path] = os.open(fp[0].local, os.O_RDONLY)
             target = dict(self.target.params())
             target.update({"request_id": self.request_id, "ingest": "1a"})
-            first = parts[0]
-            opened_first = x.open_part(lanes[0], upload, first, target)     # names the target once
+            first = parts[0] if parts else None
+            first_skip = held.get((first.path, first.k)) if first else None
+            if first_skip is not None:
+                target["resume"] = "true"
+            # names the target once; with nothing left to send (every file journaled) the commit goes straight on
+            opened_first = x.open_part(lanes[0], upload, first, target) if first else None
             # a redirect on the first open (a client addressed to a follower) staged nothing anywhere else: the part
             # is open at the leader that answered, so the upload carries on there instead of starting again
             leader = c.addr
@@ -189,7 +242,7 @@ class Ingest:
             def work(i, part, pre=None):
                 lane = lanes[i % len(lanes)]
                 tries = 0
-                opened, skip = pre, None
+                opened, skip = pre, held.get((part.path, part.k))
                 while True:
                     if stop.is_set():
                         return
@@ -215,7 +268,7 @@ class Ingest:
                                  attempt=tries, missing=part.total - len(skip))
 
             with cf.ThreadPoolExecutor(max(1, x.flows)) as ex:
-                futs = [ex.submit(work, 0, first, opened_first)] + \
+                futs = ([ex.submit(work, 0, first, opened_first)] if first else []) + \
                        [ex.submit(work, i, p) for i, p in enumerate(parts[1:], start=1)]
                 for f in cf.as_completed(futs):
                     try:
@@ -224,17 +277,17 @@ class Ingest:
                         failed.append(e)
                         stop.set()
             if failed:
-                self._discard(upload)
                 e = failed[0]
                 if isinstance(e, (_LeaderMoved, NotLeader)):
-                    raise _LeaderMoved(str(e))
+                    raise _LeaderMoved(str(e), upload)        # kept: the new leader may continue it (OUT-89)
+                self._discard(upload)
                 raise e
             try:
                 r = self._commit(upload)
             except NotLeader as e:
-                raise _LeaderMoved(str(e))
+                raise _LeaderMoved(str(e), upload)
             if c.addr != leader:
-                raise _LeaderMoved("redirected on commit")
+                raise _LeaderMoved("redirected on commit", upload)
             state = (r.get("state") or "committed").lower()
             if state == "committing":
                 r = self._await_commit(upload, hub_q)

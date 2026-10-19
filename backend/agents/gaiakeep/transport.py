@@ -85,7 +85,7 @@ def _failure_kind(exc, status):
         return 'authentication'
     if isinstance(exc, PermissionError) or name in {'Forbidden', 'PolicyRefused'}:
         return 'authorization'
-    if name in {'IntegrityError', 'InvalidSignature'}:
+    if name in {'IntegrityError', 'InvalidSignature', 'SealError', 'SealUnavailable'}:
         return 'integrity'
     if isinstance(exc, ProtocolError) or name == 'BadRequest':
         return 'protocol'
@@ -195,7 +195,6 @@ class GatewayConfig:
     service_key: str = field(repr=False)
     port: int = 8282
     allow_legacy: bool = False
-    restore_root: str = ''
 
     @classmethod
     def from_environment(cls):
@@ -215,8 +214,7 @@ class GatewayConfig:
         if not 1 <= port <= 65535 or not re.fullmatch(r'[A-Za-z0-9.-]{1,253}', name):
             raise ValueError('Invalid gateway configuration.')
         return cls(address, allowed, name, ca, key, service, port,
-                   os.getenv('GAIAKEEP_ALLOW_LEGACY', '').lower() == 'true',
-                   os.getenv('GAIAKEEP_RESTORE_ROOT', ''))
+                   os.getenv('GAIAKEEP_ALLOW_LEGACY', '').lower() == 'true')
 
     def tls_context(self):
         context = ssl.create_default_context(cafile=self.ca_file)

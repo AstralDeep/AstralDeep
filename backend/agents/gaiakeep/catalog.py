@@ -11,9 +11,6 @@ PROTECTED = frozenset({'principal', 'audience', 'sig', 'sig_ts', 'sig_nonce', 's
                        'user', 'approver', 'client_rpc_id', 'events', 'grant',
                        'reconstruct_token', 'up_stream', 'down_stream', 'ident_key',
                        'ident_id', 'transfer_id'})
-MODERN_PROTOTYPE = frozenset({'listfiles', 'createproject', 'projectmember', 'commit',
-                             'projectfiles', 'resolve', 'promote', 'approvereconstruct',
-                             'reconstructauth'})
 METADATA = json.loads(Path(__file__).with_name('capabilities.json').read_text(encoding='utf-8'))
 REVISION = METADATA['revision']
 ACTIONS = {item['action']: item for item in METADATA['actions']}
@@ -43,8 +40,10 @@ def _schema(fields, required):
 
 
 def _field(kind):
-    if kind in {'int', 'long'}:
+    if kind in {'int', 'long', 'integer'}:
         return {'type': 'integer', 'minimum': -(2 ** 63), 'maximum': 2 ** 63 - 1}
+    if kind == 'number':
+        return {'type': 'number', 'minimum': -1e15, 'maximum': 1e15}
     if kind == 'boolean':
         return {'type': 'boolean'}
     return {'type': 'string', 'maxLength': 65536}
@@ -68,8 +67,6 @@ def _tools():
                                     + ('Requires human approval.' if not item['read'] else 'Reads remote state.'),
                      'input_schema': _schema({'machine_id': {'type': 'string', 'minLength': 1, 'maxLength': 128},
                                               'params': _schema(params, required)}, ['machine_id', 'params'])}
-        if action == 'fetch':
-            out[name]['description'] = 'Legacy fetch is unsupported until its bounded receiver is qualified. Use gaiakeep_read_file for versioned files.'
     common = {'machine_id': {'type': 'string', 'minLength': 1, 'maxLength': 128},
               'path': {'type': 'string', 'minLength': 1, 'maxLength': 4096}}
     out['gaiakeep_upload_file'] = {'action': 'upload', 'scope': 'tools:write',
