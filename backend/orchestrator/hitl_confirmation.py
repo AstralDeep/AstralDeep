@@ -11,11 +11,11 @@ import hashlib
 import json
 import logging
 import re
-import secrets
 import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 from urllib.parse import unquote, urlsplit
+from uuid import uuid4
 
 from astralprims import Alert, Button, Card, CodeBlock, Text
 
@@ -302,7 +302,7 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
         if call is None:
             if len(pending) >= 128 or sum(item.owner == owner for item in pending.values()) >= 32:
                 return _refused("Too many pending confirmations. Resolve an existing request and retry.")
-            call = PendingCall(secrets.token_urlsafe(24), owner, chat, agent, tool,
+            call = PendingCall(str(uuid4()), owner, chat, agent, tool,
                                encoded, tuple(sorted(risks)), time.monotonic() + TTL_SECONDS)
             pending[call.request_id] = call
             try:
@@ -335,8 +335,8 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
 
 async def _finish_card(orch, websocket, call, title, message, components=None):
     try:
-        cid = f"hitl_{call.request_id}"
-        component = Card(id=cid, title=title, content=[Text(content=message)]).to_dict()
+        component = Card(id=f"hitl_{call.request_id}", title=title, content=[Text(content=message)]).to_dict()
+        cid = orch.workspace.resolve_identity(component)
 
         async def mutation():
             ops = await orch.workspace.aupsert(call.chat, call.owner, [component], force_component_id=cid)
@@ -352,14 +352,36 @@ async def _finish_card(orch, websocket, call, title, message, components=None):
     await orch.send_ui_render(websocket, [Alert(message=message, variant="info").to_dict()], target="chat")
 
 
-async def handle_decision(orch, websocket, owner, payload) -> None:
+async def handle_decision(orch, websocket, owner, payload, *, admission_check=None) -> None:
     pending = _pending(orch)
     request_id = payload.get("hitl_request_id") if isinstance(payload, dict) else None
     call = pending.get(request_id) if isinstance(request_id, str) else None
-    if (call is None or call.owner != owner or not _attended(orch, websocket, owner)
+    valid = not (call is None or call.owner != owner or not _attended(orch, websocket, owner)
             or getattr(orch, "_ws_active_chat", {}).get(id(websocket)) != call.chat
-            or set(payload) != {"hitl_request_id", "decision"}
-            or payload.get("decision") not in ("approve", "decline")):
+            or not {"hitl_request_id", "decision"}.issubset(payload)
+            or set(payload) - {"hitl_request_id", "decision", "chat_id", "component_id"}
+            or payload.get("decision") not in ("approve", "decline")
+            or "chat_id" in payload and payload["chat_id"] != call.chat
+            or admission_check is not None and not admission_check())
+    if valid and "component_id" in payload:
+        try:
+            expected = orch.workspace.resolve_identity({"id": f"hitl_{call.request_id}"})
+            if not isinstance(payload["component_id"], str) or payload["component_id"] != expected:
+                valid = False
+            else:
+                row = await orch.workspace.aget_by_component_id(call.chat, owner, expected)
+                component = (row or {}).get("component_data", {})
+                valid = (isinstance(component, dict) and component.get("type") == "card"
+                    and component.get("id") == f"hitl_{call.request_id}"
+                    and any(isinstance(item, dict) and item.get("type") == "button"
+                        and item.get("action") == "authorize_action" and item.get("disabled") is not True
+                        and item.get("payload") == {"hitl_request_id": request_id, "decision": payload["decision"]}
+                        for item in component.get("content", [])))
+        except Exception:
+            valid = False
+    pending = _pending(orch)
+    if (not valid or pending.get(request_id) is not call or not _current_session(orch, websocket, call)
+            or admission_check is not None and not admission_check()):
         await orch.send_ui_render(websocket, [Alert(message="This confirmation is unavailable in this conversation. "
             "It may have expired or already been handled.", variant="warning").to_dict()], target="chat")
         return

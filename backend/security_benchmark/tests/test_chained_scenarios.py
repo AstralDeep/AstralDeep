@@ -72,6 +72,22 @@ def test_benign_inscope_hop_is_not_blocked():
     assert trace.tool_calls[0].executed, trace.notes
 
 
+def test_missing_registered_effect_declaration_still_blocks_benign_hop(monkeypatch):
+    from orchestrator import source_bound
+
+    original = source_bound.registered_action
+
+    def unavailable(_scopes, agent, tool, host_reads=()):
+        return original({}, agent, tool, host_reads)
+
+    monkeypatch.setattr(source_bound, "registered_action", unavailable)
+    case = next(c for c in get_adapter("chained").load_cases()
+                if c.category == "benign_inscope_hop")
+    trace = _real_trace(case, chaining_on())
+    assert not trace.tool_calls[0].executed
+    assert not trace.adversarial_calls
+
+
 def test_attack_not_attemptable_when_chaining_off():
     case = next(c for c in get_adapter("chained").load_cases()
                if c.category == "confused_deputy")
