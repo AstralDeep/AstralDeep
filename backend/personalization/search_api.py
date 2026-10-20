@@ -14,6 +14,7 @@ from audit.hooks import record_generic
 from orchestrator.auth import get_current_user_payload, require_user_id
 from personalization.federated_search import (
     FederatedSearchService,
+    get_search_service,
     SearchQueryInvalid,
     hit_payload,
     report_payload,
@@ -40,7 +41,7 @@ def _service(request: Request) -> FederatedSearchService:
             detail="search_unavailable",
         )
     try:
-        return FederatedSearchService(orch)
+        return get_search_service(orch)
     except Exception:
         logger.warning("federated_search_service_unavailable", exc_info=True)
         raise HTTPException(
