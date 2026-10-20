@@ -25,7 +25,7 @@ def lock_owner(runtime, transaction, owner_id):
     runtime.repositories.stop_epochs.get(transaction, owner_id=owner_id, for_update=True)
 
 
-def _incarnation(runtime, transaction, owner_id, key, *, rotate=False):
+def _incarnation(runtime, transaction, owner_id, key, *, rotate=False, initialize=True):
     repository = runtime.repositories.credentials
     row = repository.get_credential(transaction, owner_id=owner_id,
                                     agent_id=_NAMESPACE, credential_key=key)
@@ -40,6 +40,8 @@ def _incarnation(runtime, transaction, owner_id, key, *, rotate=False):
             raise RemoteAuthorityUnavailable("remote_authority_invalid") from exc
         if not rotate:
             return value["incarnation"]
+    if not initialize:
+        raise RemoteAuthorityUnavailable("remote_authority_unavailable")
     incarnation = uuid.uuid4().hex
     repository.upsert_credential(transaction, owner_id=owner_id, agent_id=_NAMESPACE,
         credential_key=key, encrypted_value=me._encode_record({"version": 1, "incarnation": incarnation}),
@@ -64,6 +66,14 @@ def rotate_authority(runtime, transaction, owner_id, machine_id=None):
 
 def authority_digest(runtime, transaction, owner_id, machine_id):
     lock_owner(runtime, transaction, owner_id)
+    return _authority_digest(runtime, transaction, owner_id, machine_id, initialize=True)
+
+
+def read_authority_digest(runtime, transaction, owner_id, machine_id):
+    return _authority_digest(runtime, transaction, owner_id, machine_id, initialize=False)
+
+
+def _authority_digest(runtime, transaction, owner_id, machine_id, *, initialize):
     machine = runtime.repositories.remote.get_machine(transaction, owner_id=owner_id, machine_id=machine_id)
     credential = runtime.repositories.credentials.get_machine_credential(
         transaction, owner_id=owner_id, machine_id=machine_id)
@@ -71,6 +81,6 @@ def authority_digest(runtime, transaction, owner_id, machine_id):
         raise RemoteAuthorityUnavailable("remote_authority_unavailable")
     material = [owner_id, machine_id, machine.address, machine.port, machine.username,
         machine.host_key_fingerprint, credential.credential_type, credential.updated_at,
-        _incarnation(runtime, transaction, owner_id, "owner"),
-        _incarnation(runtime, transaction, owner_id, "machine:" + machine_id)]
+        _incarnation(runtime, transaction, owner_id, "owner", initialize=initialize),
+        _incarnation(runtime, transaction, owner_id, "machine:" + machine_id, initialize=initialize)]
     return hashlib.sha256(json.dumps(material, separators=(",", ":"), allow_nan=False).encode()).hexdigest()

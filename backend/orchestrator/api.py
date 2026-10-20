@@ -2485,6 +2485,29 @@ async def cancel_async_task(
     return {"status": "cancelled", "task_id": task_id}
 
 
+@async_task_router.get(
+    "/{task_id}/effect-attempts",
+    summary="Read the current owner's late-attestation attempt identities",
+    description=(
+        "Requires a current selected human session and returns bounded, non-secret "
+        "attempt metadata for the owned operation. This read grants no execution authority."
+    ),
+)
+async def list_async_task_effect_attempts(task_id: str, request: Request):
+    from orchestrator.human_request_authority import authenticate_current_human_request
+    from orchestrator.work_reconciliation import ReconciliationRefused
+    from persistent_agents.models import AssignmentError
+
+    orch = _get_orchestrator(request)
+    try:
+        caller = await authenticate_current_human_request(request, boundary=orch.human_request_boundary)
+        return await orch.effect_reconciliation.list_current(caller, task_id, orchestrator=orch)
+    except ReconciliationRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.code) from None
+    except AssignmentError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from None
+
+
 class EffectReconcileRequest(BaseModel):
     attempt_nonce: str
     argument_digest: str

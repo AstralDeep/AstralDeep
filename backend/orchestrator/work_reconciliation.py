@@ -837,6 +837,56 @@ class EffectReconciliationService:
         self._ledger = ledger
         self._targets = target_authority
 
+    async def list_current(self, caller, operation_id, *, orchestrator):
+        from orchestrator.human_request_authority import CurrentHumanCaller
+        from persistent_agents.models import AssignmentError
+
+        if (type(caller) is not CurrentHumanCaller
+                or caller.runtime is not self._ledger._store.source.plane_runtime):
+            raise ReconciliationRefused("effect_current_authority_unavailable")
+        caller.require_session()
+        parsed_operation = _parse_operation_id(operation_id)
+
+        def read(transaction, repositories):
+            try:
+                record = self._ledger._coordinator.repository.get_operation_for_administration(
+                    parsed_operation, transaction=transaction)
+                if (record is None or record.owner_scope is not OwnerScope.USER
+                        or record.owner_user_id != caller.owner_id):
+                    raise ReconciliationRefused("work_not_found", status=404)
+                attempts = self._ledger._list_in_transaction(transaction,
+                    partition=caller.owner_id, operation_id=parsed_operation)
+                for attempt in attempts:
+                    if attempt.execution_generation != record.execution_generation:
+                        raise ReconciliationRefused("reconcile_report_stale")
+                    if attempt.dispatch_id is not None:
+                        self._assert_current_target(transaction, caller.owner_id, attempt, read_only=True)
+                    else:
+                        self._targets.assert_reportable(owner_id=caller.owner_id,
+                            target_kind=attempt.target_kind, target_id=attempt.target_id)
+                return {
+                    "operation_id": str(parsed_operation),
+                    "execution_generation": record.execution_generation,
+                    "operation_state": record.state.value,
+                    "attempts": [{
+                        "attempt_nonce": attempt.attempt_nonce,
+                        "argument_digest": attempt.argument_digest,
+                        "target_kind": attempt.target_kind,
+                        "target_id": attempt.target_id,
+                        "execution_generation": attempt.execution_generation,
+                        "state": attempt.state,
+                        "outcome": attempt.report_outcome,
+                        "outcome_digest": attempt.outcome_digest,
+                        "recorded_at": attempt.recorded_at,
+                        "settled_at": attempt.settled_at,
+                        "revision": attempt.revision,
+                    } for attempt in attempts],
+                }
+            except ReconciliationRefused as exc:
+                raise AssignmentError(exc.code, exc.status) from None
+
+        return await caller.transaction(read, expected_orchestrator=orchestrator)
+
     def report(self, owner_id: object, operation_id: object, body: object) -> dict:
         if not isinstance(owner_id, str) or not owner_id:
             raise ReconciliationRefused("work_authentication_required", status=401)
@@ -951,11 +1001,14 @@ class EffectReconciliationService:
         }
 
 
-    def _assert_current_target(self, transaction, owner_id, attempt):
-        from orchestrator.remote_effect_authority import authority_digest, RemoteAuthorityUnavailable
+    def _assert_current_target(self, transaction, owner_id, attempt, *, read_only=False):
+        from orchestrator.remote_effect_authority import (
+            authority_digest, read_authority_digest, RemoteAuthorityUnavailable,
+        )
         try:
-            current_digest = authority_digest(self._ledger._store.source.plane_runtime,
-                                               transaction, owner_id, attempt.target_id)
+            digest = read_authority_digest if read_only else authority_digest
+            current_digest = digest(self._ledger._store.source.plane_runtime,
+                                    transaction, owner_id, attempt.target_id)
         except RemoteAuthorityUnavailable:
             raise ReconciliationRefused("reconcile_target_unavailable") from None
         if attempt.target_kind != "remote_machine" or current_digest != attempt.authority_digest:
