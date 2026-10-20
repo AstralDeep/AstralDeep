@@ -1145,6 +1145,15 @@ class AtlasPageService:
                 ),
                 event_id=proposal_id,
             )
+            self._load_promotion_sources(
+                transaction,
+                owner_id=caller,
+                project_id=project,
+                sources=inputs,
+                now=_now_ms(),
+            )
+            if _now_ms() >= payload["expires"]:
+                raise AtlasPageError("promotion_expired")
             return PromotionApplied(proposal_id, page, references)
 
         return self._run(accept)

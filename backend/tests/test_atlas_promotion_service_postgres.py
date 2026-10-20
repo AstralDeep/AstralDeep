@@ -1038,3 +1038,130 @@ def test_source_lock_failure_rolls_back_and_allows_unchanged_proposal_retry(
         (proposal.proposal_id,),
     )["total"] == 0
     assert _approve(service, proposal).page.revision == 1
+
+
+def _promotion_effects(service):
+    return (
+        service.runtime.fetch_all(
+            "SELECT * FROM memory_item WHERE user_id = %s ORDER BY id", (OWNER_A,)
+        ),
+        service.runtime.fetch_all(
+            "SELECT event_id FROM audit_events WHERE actor_user_id = %s "
+            "AND action_type IN ('atlas_page_create', 'atlas_page_update', "
+            "'atlas_promotion_apply') ORDER BY event_id", (OWNER_A,),
+        ),
+    )
+
+
+def test_earlier_memory_expiry_is_rechecked_after_later_source_lock(service, monkeypatch):
+    from personalization import atlas_service as service_module
+
+    first, second = sorted((_seed_memory(service), _seed_memory(service)),
+                           key=lambda record: record.memory_id)
+    with service.runtime.transaction() as transaction:
+        first = service.notes.set_validity(
+            transaction, owner_id=OWNER_A, memory_id=first.memory_id,
+            valid_from=None, valid_to=first.created_at + 60_000, ingested_at=None,
+            updated_at=first.updated_at + 1, expected_updated_at=first.updated_at,
+        )
+    proposal = service.propose_promotion(
+        owner_id=OWNER_A, project_id=PROJECT, slug=_slug("later-source-expiry"),
+        sources=[PromotionSourceInput("memory", record.memory_id, record.updated_at)
+                 for record in (second, first)],
+    )
+    assert first.memory_id < second.memory_id
+    assert first.valid_to < proposal.expires_at
+    before = _promotion_effects(service)
+    clock = [service_module._now_ms()]
+    monkeypatch.setattr(service_module, "_now_ms", lambda: clock[0])
+    entered = Queue()
+    original_read = service.notes.get_memory
+
+    def observed_read(transaction, **kwargs):
+        if kwargs.get("for_update") and kwargs["memory_id"] == second.memory_id:
+            entered.put(transaction.fetch_one("SELECT pg_backend_pid() AS pid")["pid"])
+        return original_read(transaction, **kwargs)
+
+    monkeypatch.setattr(service.notes, "get_memory", observed_read)
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        with service.runtime.transaction() as holder:
+            blocker = holder.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
+            original_read(holder, owner_id=OWNER_A, memory_id=second.memory_id, for_update=True)
+            approval = workers.submit(_approve, service, proposal)
+            pid = entered.get(timeout=10)
+            assert pid != blocker
+            _wait_for_database_blocker(service, approval, pid, blocker)
+            clock[0] = first.valid_to
+        with pytest.raises(AtlasConflict, match="promotion_source_stale"):
+            approval.result(timeout=10)
+    assert _promotion_effects(service) == before
+    with pytest.raises(AtlasNotFound):
+        service.get_page(owner_id=OWNER_A, project_id=PROJECT,
+                         reference=proposal.destination.slug)
+
+
+@pytest.mark.parametrize("mode", ("create", "append"))
+@pytest.mark.parametrize("expired", ("note", "memory", "proposal"))
+def test_final_acceptance_refuses_expiry_during_audit_lock_wait(service, monkeypatch, mode, expired):
+    from personalization import atlas_service as service_module
+
+    note = _seed_note(service, expires_after=60_000) if expired == "note" else None
+    memory = None if note else _seed_memory(service)
+    if expired == "memory":
+        with service.runtime.transaction() as transaction:
+            memory = service.notes.set_validity(
+                transaction, owner_id=OWNER_A, memory_id=memory.memory_id,
+                valid_from=None, valid_to=memory.created_at + 60_000, ingested_at=None,
+                updated_at=memory.updated_at + 1, expected_updated_at=memory.updated_at,
+            )
+    slug = _slug("audit-expiry")
+    if mode == "append":
+        service.create_page(
+            owner_id=OWNER_A,
+            page=PageInput(slug=slug, title="Owner instructions", body="Original owner page.",
+                           project_id=PROJECT),
+        )
+    proposal = _proposal(
+        service, slug=slug, mode=mode,
+        source=PromotionSourceInput(
+            "note" if note else "memory", note.note_id if note else memory.memory_id,
+            note.revision if note else memory.updated_at,
+        ),
+    )
+    deadline = (note.expires_at if note else
+                memory.valid_to if expired == "memory" else proposal.expires_at)
+    if expired != "proposal":
+        assert deadline < proposal.expires_at
+    before = _promotion_effects(service)
+    clock = [service_module._now_ms()]
+    monkeypatch.setattr(service_module, "_now_ms", lambda: clock[0])
+    loaded = Queue()
+    original_load = service._load_promotion_sources
+
+    def observed_load(transaction, **kwargs):
+        result = original_load(transaction, **kwargs)
+        loaded.put(transaction.fetch_one("SELECT pg_backend_pid() AS pid")["pid"])
+        return result
+
+    monkeypatch.setattr(service, "_load_promotion_sources", observed_load)
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        with service.runtime.transaction() as holder:
+            blocker = holder.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
+            service._audit_in_transaction(
+                holder, owner_id=OWNER_A, action="test_barrier",
+                description="Hold audit chain for expiry verification", detail="synthetic",
+            )
+            approval = workers.submit(_approve, service, proposal)
+            pid = loaded.get(timeout=10)
+            assert pid != blocker
+            _wait_for_database_blocker(service, approval, pid, blocker)
+            clock[0] = deadline
+        with pytest.raises(AtlasPageError if expired == "proposal" else AtlasConflict):
+            approval.result(timeout=10)
+    assert _promotion_effects(service) == before
+    if mode == "create":
+        with pytest.raises(AtlasNotFound):
+            service.get_page(owner_id=OWNER_A, project_id=PROJECT, reference=slug)
+    else:
+        page = service.get_page(owner_id=OWNER_A, project_id=PROJECT, reference=slug)
+        assert page.revision == 1 and page.body == "Original owner page."
