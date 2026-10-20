@@ -4,6 +4,7 @@ for web and native clients; ordinary chrome_open carries every request.
 """
 
 import logging
+from uuid import UUID
 
 from audit.hooks import record_generic
 from orchestrator.human_request_authority import current_human_caller
@@ -75,6 +76,16 @@ async def _audit(caller, outcome):
         outputs_meta={"count": len(outcome.hits), "partial": outcome.partial})
 
 
+def _interactive_chat_id(value):
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = UUID(value)
+    except ValueError:
+        return False
+    return parsed.version == 4 and str(parsed) == value
+
+
 def _source_components(view, params):
     back = {key: value for key, value in params.items() if key not in {"open", "error"}}
     output = [_navigation("Back to search", back), _sdui.badge(SOURCE_LABELS[view.source]),
@@ -82,8 +93,11 @@ def _source_components(view, params):
     if not view.complete:
         output.append(_sdui.alert("This source preview was shortened to the display limit.", "warning"))
     if view.source == "conversations":
-        output.append(_sdui.button("Open conversation", "load_chat",
-                                  {"chat_id": view.ref["conversation_id"]}))
+        chat_id = view.ref.get("conversation_id")
+        if _interactive_chat_id(chat_id):
+            output.append(_sdui.button("Open conversation", "load_chat", {"chat_id": chat_id}))
+        else:
+            output.append(_sdui.alert("This archived conversation is available in this preview."))
     return output
 
 

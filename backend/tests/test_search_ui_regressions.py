@@ -105,3 +105,33 @@ async def test_search_uses_existing_chrome_form_dispatch_instead_of_a_chat_templ
     assert "astral-pp-submit" not in html
     for field in ("q", "source", "type", "project_id"):
         assert f'name="{field}"' in html
+
+
+@pytest.mark.parametrize("chat_id", [
+    "conversation-1", 'quote"slash\\emoji😀', "x" * 512,
+    "C1137F19-AE88-4A35-82F3-253F77BDEEA0",
+    "c1137f19-ae88-1a35-82f3-253f77bdeea0", "", None, 42,
+])
+def test_archived_conversation_preview_does_not_offer_unsupported_navigation(chat_id):
+    view = SimpleNamespace(source="conversations", title="Archived title", text="Authorized preview",
+                           complete=True, ref={"conversation_id": chat_id})
+    definitions = search._source_components(view, {"q": "needle"})
+    assert not any(node.get("action") == "load_chat" for node in definitions)
+    assert "Authorized preview" in str(definitions)
+    assert "This archived conversation is available in this preview." in str(definitions)
+    html = search.render_html(search.ChromeViewModel("search", "Search", tuple(
+        search.ComponentView(node["type"], {key: value for key, value in node.items() if key != "type"})
+        for node in definitions)))
+    assert "Authorized preview" in html
+    assert "This archived conversation is available in this preview." in html
+    assert 'data-ui-action="load_chat"' not in html
+
+
+def test_canonical_conversation_preview_offers_exact_normal_navigation():
+    chat_id = "c1137f19-ae88-4a35-82f3-253f77bdeea0"
+    view = SimpleNamespace(source="conversations", title="Current title", text="Authorized preview",
+                           complete=True, ref={"conversation_id": chat_id})
+    definitions = search._source_components(view, {})
+    button = next(node for node in definitions if node.get("action") == "load_chat")
+    assert button["payload"] == {"chat_id": chat_id}
+    assert "This archived conversation is available in this preview." not in str(definitions)
