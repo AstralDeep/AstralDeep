@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from dataclasses import replace
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -32,8 +33,9 @@ def _hit(source="memory", ref_id="m1", *, updated=10, phrase=True, score=100,
         ref = {"kind": "memory", "memory_id": ref_id, "type": "preference"}
     if rank_key is None:
         rank_key = (-int(phrase), 0, 0, 1, -updated,
-                    module.SOURCE_ORDER[source], module._stable_ref(
-                        {key: value for key, value in ref.items() if key != "type"}))
+                    module.SOURCE_ORDER[source], hashlib.sha256(module._stable_ref(
+                        {key: value for key, value in ref.items() if key != "type"}
+                    ).encode("utf-8")).hexdigest())
     return SearchHit(source=source, type="preference", ref=ref, title="preference",
                      snippet="concise result", updated_at=updated, score=score,
                      rank_key=rank_key)
@@ -101,7 +103,7 @@ def test_sanitize_and_snippet_bound_markup_and_control_characters():
 def test_cursors_bind_owner_query_filters_and_rank_key():
     args = {"owner_id": "owner-a", "query": "concise", "sources": ("notes", "memory"),
             "types": ("preference",), "project_id": "p1"}
-    key = (-1, 0, 0, 1, -10, 0, '{"kind":"note","note_id":"n1"}')
+    key = (-1, 0, 0, 1, -10, 0, "a" * 64)
     cursor = module.encode_cursor(**args, rank_key=key)
     assert module.decode_cursor(cursor, **args) == key
     assert module.decode_cursor(None, **args) is None
@@ -115,7 +117,7 @@ def test_cursors_bind_owner_query_filters_and_rank_key():
         assert refused.value.code == "search_cursor_scope_invalid"
     for bad in ("!!!!", "A" * 2049, "éé", base64.urlsafe_b64encode(b"[]").decode(),
                 base64.urlsafe_b64encode(json.dumps({
-                    "v": 1, "o": module._owner_digest("owner-a"),
+                    "v": 2, "o": module._owner_digest("owner-a"),
                     "q": module._query_digest("concise"),
                     "f": module._filter_digest(*args["sources"][:1], (), None),
                     "k": [True, 0, 0, 1, -10, 0, "x"],
@@ -132,6 +134,8 @@ def test_matched_parts_is_deterministic_and_phrase_first():
                                     "preference", 20, "memory", ref)
     assert phrase is not None and overlap is not None
     assert phrase.rank_key < overlap.rank_key
+    assert phrase.rank_key[6] == hashlib.sha256(
+        module._stable_ref(ref).encode("utf-8")).hexdigest()
     assert phrase.type == "preference" and "type" not in phrase.ref
     assert module._matched_parts("missing", ["unrelated"], "preference", 1,
                                  "memory", ref) is None
@@ -144,8 +148,7 @@ def test_matched_parts_is_deterministic_and_phrase_first():
 async def test_search_merges_filters_deduplicates_and_paginates():
     first = _hit(updated=10)
     duplicate = _hit(updated=11, score=50,
-                     rank_key=(-1, 0, 0, 1, -11, 1, module._stable_ref(
-                         {"kind": "memory", "memory_id": "m1"})))
+                     rank_key=(-1, 0, 0, 1, -11, 1, "a" * 64))
     note = _hit(source="notes", ref_id="n1", updated=9)
     service = StubSearch({
         "memory": ([duplicate, first], SourceReport("memory", True, True, 2, 2)),
@@ -168,6 +171,25 @@ async def test_search_merges_filters_deduplicates_and_paginates():
     assert [report.source for report in skipped.reports] == list(module.SOURCES)
     assert service.scan_calls[before][0] == "atlas"
     assert all(report.available and report.matched == 0 for report in skipped.reports)
+
+
+@pytest.mark.asyncio
+async def test_mixed_source_cursor_keeps_source_priority_when_relevance_and_recency_tie():
+    scans = {}
+    for source in module.SOURCES:
+        ref = {"kind": source, "id": source}
+        hit = module._matched_parts("needle", ["needle"], "ordinary", 10, source, ref)
+        scans[source] = ([hit], SourceReport(source, True, True, 1, 1))
+    service = StubSearch(scans)
+    collected = []
+    cursor = None
+    for _ in module.SOURCES:
+        page = await service.search(owner_id="owner", query="needle", limit=1, cursor=cursor)
+        assert len(page.hits) == 1
+        collected.append(page.hits[0].source)
+        cursor = page.next_cursor
+    assert collected == list(module.SOURCES)
+    assert cursor is None
 
 
 @pytest.mark.asyncio
@@ -324,13 +346,17 @@ def test_cursor_rejects_wrong_shape_and_keys():
     def encoded(value):
         return base64.urlsafe_b64encode(
             json.dumps(value, separators=(",", ":")).encode()).decode().rstrip("=")
-    good = {"v": 1, "o": module._owner_digest("owner-a"),
+    good = {"v": 2, "o": module._owner_digest("owner-a"),
             "q": module._query_digest("q"),
             "f": module._filter_digest(("memory",), (), None),
-            "k": [0, 0, 0, 0, 0, 1, "ref"]}
-    assert module.decode_cursor(encoded(good), **args) == (0, 0, 0, 0, 0, 1, "ref")
+            "k": [0, 0, 0, 0, 0, 1, "a" * 64]}
+    assert module.decode_cursor(encoded(good), **args) == (0, 0, 0, 0, 0, 1, "a" * 64)
     for value in (
         {**good, "extra": 1},
+        {**good, "v": 1, "k": [0, 0, 0, 0, 0, 1,
+                                 '{"kind":"memory","memory_id":"m1"}']},
+        *({**good, "k": [0, 0, 0, 0, 0, 1, digest]}
+          for digest in ("a" * 63, "a" * 65, "z" * 64, "A" * 64)),
         {**good, "k": [0, 0, 0, 0, 0, 1]},
         {**good, "k": [0, 0, 0, 0, 0, 1, ""]},
         {**good, "k": [False, 0, 0, 0, 0, 1, "ref"]},
@@ -577,6 +603,43 @@ class _ConversationContext:
 
     def call(self, operation, **kwargs):
         return operation(None, **kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conversation_id", [
+    "c" * 36, "c" * 440, "c" * 512, "\\" * 256, "\\" * 512,
+    '"' * 512, "😀" * 512, "\x01" * 512,
+], ids=["ordinary", "ascii440", "ascii512", "slash256", "slash512",
+        "quote512", "unicode512", "control512"])
+async def test_conversation_boundary_ids_have_complete_bounded_cursor_traversal(
+    conversation_id,
+):
+    service = _bare_service()
+    chats = [SimpleNamespace(conversation_id=conversation_id, title="ordinary", updated_at=1)]
+    messages = [SimpleNamespace(message_id=index, content="needle", timestamp=1)
+                for index in (1, 2, 3)]
+    service._history_context = lambda: _ConversationContext(chats, [*messages, messages[0]])
+    arguments = {"owner_id": "owner", "query": "needle", "sources": "conversations",
+                 "types": "conversation"}
+    complete = await service.search(**arguments)
+    assert len(complete.hits) == complete.total == 3
+    assert {hit.ref["message_id"] for hit in complete.hits} == {1, 2, 3}
+    assert all(hit.ref["conversation_id"] == conversation_id for hit in complete.hits)
+    collected = []
+    cursor = None
+    for index in range(3):
+        page = await service.search(**arguments, limit=1, cursor=cursor)
+        assert len(page.hits) == 1 and page.total == 3
+        assert page.reports[0].complete and page.reports[0].available
+        collected.extend(hit.ref for hit in page.hits)
+        cursor = page.next_cursor
+        if index < 2:
+            assert cursor and cursor.isascii() and len(cursor) <= 2048
+        else:
+            assert cursor is None
+    assert collected == [hit.ref for hit in complete.hits]
+    repeated = await service.search(**arguments)
+    assert [hit.ref for hit in repeated.hits] == collected
 
 
 def test_conversation_scan_fallbacks_limits_and_recheck(monkeypatch):

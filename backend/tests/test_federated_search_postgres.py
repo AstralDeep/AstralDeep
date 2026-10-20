@@ -308,6 +308,68 @@ def _client(orchestrator, owner):
     return TestClient(app), identity
 
 
+@pytest.mark.parametrize("conversation_id", [
+    "c" * 512, "\\" * 512, '"' * 512, "😀" * 512, "\x01" * 512,
+], ids=["ascii512", "slash512", "quote512", "unicode512", "control512"])
+def test_http_conversation_boundary_ids_have_complete_bounded_cursor_traversal(
+    plane_runtime, orchestrator, conversation_id,
+):
+    from tests.helpers.voice_plane_runtime import history_manager
+    from shared.protocol import Message, UIEvent
+
+    owner = f"search-owner-{uuid4().hex}"
+    history = history_manager(plane_runtime)
+    frame = Message.from_json(UIEvent(
+        action="chat_message", session_id=conversation_id, payload={"message": "needle"},
+    ).to_json())
+    assert frame.session_id == conversation_id
+    assert history.create_chat(chat_id=frame.session_id, user_id=owner) == conversation_id
+    for _ in range(3):
+        history.add_message(conversation_id, "user", "needle", user_id=owner)
+    client, identity = _client(orchestrator, owner)
+    arguments = {"q": "needle", "source": "conversations", "type": "conversation"}
+    with client:
+        complete = client.get("/api/search", params=arguments)
+        assert complete.status_code == 200, complete.text
+        expected = complete.json()["hits"]
+        assert len(expected) == 3
+        collected = []
+        cursor = None
+        for index in range(3):
+            parameters = {**arguments, "limit": 1}
+            if cursor:
+                parameters["cursor"] = cursor
+            response = client.get("/api/search", params=parameters)
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["count"] == 1 and body["total"] == 3
+            assert body["partial"] is False and body["reports"][0]["complete"]
+            collected.extend(body["hits"])
+            cursor = body["next_cursor"]
+            if index < 2:
+                assert cursor and cursor.isascii() and len(cursor) <= 2048
+            else:
+                assert cursor is None
+        assert collected == expected
+        assert len({hit["ref"]["message_id"] for hit in collected}) == 3
+        assert all(hit["ref"]["conversation_id"] == conversation_id for hit in collected)
+        first_cursor = client.get("/api/search", params={**arguments, "limit": 1}).json()[
+            "next_cursor"]
+        for changed in ({"q": "other"}, {"source": "memory"}, {"type": "preference"},
+                        {"project_id": "elsewhere"}):
+            denied = client.get("/api/search", params={
+                **arguments, "cursor": first_cursor, **changed,
+            })
+            assert denied.status_code == 422
+            assert denied.json()["detail"] == "search_cursor_scope_invalid"
+        identity["owner"] = f"other-{owner}"
+        denied = client.get("/api/search", params={**arguments, "cursor": first_cursor})
+        assert denied.status_code == 422
+        assert denied.json()["detail"] == "search_cursor_scope_invalid"
+        oversized = client.get("/api/search", params={**arguments, "cursor": "A" * 2049})
+        assert oversized.status_code == 422
+
+
 @pytest.mark.parametrize("change", ["expiry", "revocation", "future", "supersession",
                                     "deletion", "tamper"])
 def test_http_search_omits_memory_invalidated_after_scan(

@@ -53,7 +53,7 @@ _SNIPPET_CHARS = 180
 _CONTEXT_CHARS = 40
 _TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 _TAG_RE = re.compile(r"<[^>]{0,2048}>")
-_CURSOR_VERSION = 1
+_CURSOR_VERSION = 2
 
 
 class SearchQueryInvalid(ValueError):
@@ -290,7 +290,8 @@ def decode_cursor(cursor: object, *, owner_id: str, query: str,
     key = value.get("k")
     if (not isinstance(key, list) or len(key) != 7
             or any(type(item) is not int for item in key[:6])
-            or not isinstance(key[6], str) or not 1 <= len(key[6]) <= 512):
+            or not isinstance(key[6], str)
+            or re.fullmatch(r"[0-9a-f]{64}", key[6]) is None):
         raise SearchQueryInvalid("search_cursor_invalid")
     return tuple(key)
 
@@ -313,7 +314,7 @@ def _matched_parts(query: str, parts: list[str], title: str,
     if not phrase and (not tokens or overlap == 0):
         return None
     score = int(phrase) * 4000 + int(title_phrase) * 2000 + title_overlap * 200 + overlap * 100
-    stable = _stable_ref(ref)
+    stable = hashlib.sha256(_stable_ref(ref).encode("utf-8")).hexdigest()
     rank_key = (-int(phrase), -int(title_phrase), -title_overlap, -overlap,
                 -updated_at, SOURCE_ORDER[source], stable)
     return SearchHit(
