@@ -5189,6 +5189,10 @@ class Orchestrator:
                         logger.debug("close after refused agent registration failed", exc_info=True)
                 return
 
+        host_reads = getattr(self, "_source_bound_read_tools", set())
+        self._source_bound_read_tools = {
+            item for item in host_reads if item[0] != card.agent_id}
+
         from shared.schema_validation import validate_tool_schema
 
         try:
@@ -17255,8 +17259,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator import source_bound
 
         try:
-            action = source_bound.declaration(
-                self.tool_permissions.get_tool_scope_map(agent_id), agent_id, tool_name)
+            action = source_bound.registered_action(
+                self.tool_permissions.get_tool_scope_map(agent_id), agent_id, tool_name,
+                getattr(self, "_source_bound_read_tools", ()))
         except (AttributeError, TypeError, ValueError) as exc:
             logger.warning("Source-bound declaration unavailable: %s", exc)
             await self._audit_gate_denial(
@@ -18919,8 +18924,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     return MCPResponse(error={"code": mesh_admission.MeshAdmissionError.code,
                         "message": "Current member authority is unavailable", "retryable": False})
             try:
-                action = source_bound.declaration(
-                    self.tool_permissions.get_tool_scope_map(agent_id), agent_id, tool_name)
+                action = source_bound.registered_action(
+                    self.tool_permissions.get_tool_scope_map(agent_id), agent_id, tool_name,
+                    getattr(self, "_source_bound_read_tools", ()))
             except (AttributeError, TypeError, ValueError):
                 return MCPResponse(error={"code": "effect_declaration_unavailable",
                     "message": "Tool effect declaration is unavailable.", "retryable": False})
@@ -20143,7 +20149,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         try:
             source_bound.read_only_stream(
-                self.tool_permissions.get_tool_scope_map(agent_id), agent_id, tool_name)
+                self.tool_permissions.get_tool_scope_map(agent_id), agent_id, tool_name,
+                host_file_read=(agent_id, tool_name) in getattr(
+                    self, "_source_bound_read_tools", ()))
         except (AttributeError, TypeError, ValueError) as exc:
             raise PermissionError("Stream tool effect is unavailable") from exc
 

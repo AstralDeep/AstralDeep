@@ -7,8 +7,8 @@ from __future__ import annotations
 import pytest
 
 from orchestrator.source_bound import (
-    Effect, Origin, SourceLedger, action_digest, combine_origins, declaration,
-    read_only_stream, review_risks,
+    READ_ONLY_GENERAL_FILE_TOOLS, Effect, Origin, SourceLedger, action_digest,
+    combine_origins, declaration, read_only_stream, registered_action, review_risks,
 )
 
 
@@ -36,6 +36,25 @@ def test_missing_or_malformed_declaration_denied(scopes):
 def test_alias_needs_own_declaration():
     with pytest.raises(ValueError):
         declaration({"send": "tools:write"}, "agent", "alias_send")
+
+
+def test_host_owned_file_read_exemption_matches_first_party_registry():
+    from agents.general.mcp_tools import TOOL_REGISTRY
+
+    actual = {name for name, info in TOOL_REGISTRY.items()
+              if info.get("scope") == "tools:files"}
+    assert actual == READ_ONLY_GENERAL_FILE_TOOLS
+    assert declaration({"read_text": "tools:files"}, "general-1", "read_text",
+                       host_file_read=True).effect is Effect.READ
+    assert declaration({"read_text": "tools:files"}, "user-agent", "read_text"
+                       ).effect is Effect.MUTATION
+    assert registered_action({"read_text": "tools:files"}, "general-1", "read_text",
+                             {("general-1", "read_text")}).effect is Effect.READ
+    assert read_only_stream({"read_text": "tools:files"}, "general-1", "read_text",
+                            host_file_read=True).effect is Effect.READ
+    with pytest.raises(ValueError, match="conflicting"):
+        declaration({"write_file": "tools:files"}, "general-1", "write_file",
+                    host_file_read=True)
 
 
 def test_unknown_or_derived_origin_cannot_become_human():

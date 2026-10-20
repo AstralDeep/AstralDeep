@@ -34,6 +34,13 @@ _EFFECT_BY_SCOPE = {
     "tools:system": Effect.PRIVILEGED,
 }
 
+READ_ONLY_GENERAL_FILE_TOOLS = frozenset({
+    "read_document", "read_spreadsheet", "read_presentation", "read_text",
+    "read_image", "list_attachments", "read_dicom", "read_nifti",
+    "read_czi", "read_bio_tiff", "read_volume_itk", "read_wsi",
+    "extract_volume_slice", "extract_wsi_region", "compute_volume_statistics",
+})
+
 
 @dataclass(frozen=True)
 class ActionDeclaration:
@@ -47,11 +54,22 @@ class ActionDeclaration:
         return self.effect is not Effect.READ
 
 
-def declaration(scopes: Mapping[str, str], agent: str, tool: str) -> ActionDeclaration:
+def declaration(scopes: Mapping[str, str], agent: str, tool: str, *,
+                host_file_read: bool = False) -> ActionDeclaration:
     scope = scopes.get(tool)
     if not isinstance(scope, str) or scope not in _EFFECT_BY_SCOPE:
         raise ValueError(f"Tool {agent}/{tool} has no valid effect declaration")
-    return ActionDeclaration(agent, tool, scope, _EFFECT_BY_SCOPE[scope])
+    if host_file_read and (scope != "tools:files" or tool not in READ_ONLY_GENERAL_FILE_TOOLS):
+        raise ValueError(f"Tool {agent}/{tool} has a conflicting host read declaration")
+    effect = Effect.READ if host_file_read else _EFFECT_BY_SCOPE[scope]
+    return ActionDeclaration(agent, tool, scope, effect)
+
+
+def registered_action(scopes: Mapping[str, str], agent: str, tool: str,
+                      host_reads=()) -> ActionDeclaration:
+    if (agent, tool) in host_reads:
+        return declaration(scopes, agent, tool, host_file_read=True)
+    return declaration(scopes, agent, tool)
 
 
 def combine_origins(*origins: Origin) -> Origin:
@@ -77,8 +95,10 @@ def review_risks(action: ActionDeclaration) -> tuple[str, ...]:
     return ("source_bound", action.effect.value, action.scope)
 
 
-def read_only_stream(scopes: Mapping[str, str], agent: str, tool: str) -> ActionDeclaration:
-    action = declaration(scopes, agent, tool)
+def read_only_stream(scopes: Mapping[str, str], agent: str, tool: str, *,
+                     host_file_read: bool = False) -> ActionDeclaration:
+    action = (declaration(scopes, agent, tool, host_file_read=True)
+              if host_file_read else declaration(scopes, agent, tool))
     if action.needs_review:
         raise ValueError("Effectful tools cannot use the stream transport")
     return action
