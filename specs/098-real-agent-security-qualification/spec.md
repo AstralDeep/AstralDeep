@@ -72,7 +72,7 @@ A release owner sees what passed on the exact candidate, which results are simul
 ### Functional Requirements
 
 - **FR-001**: Qualification MUST exercise the product's actual authenticated agent dispatch and effect boundary for every run labeled real, including ordinary permission, delegation, privacy, confirmation, provenance, and audit decisions applicable to that case.
-- **FR-002**: Simulated defenses, scripted model behavior, and sample corpora MAY remain as diagnostics, but their results MUST have distinct labels and MUST NOT satisfy a real-dispatch or external-benchmark claim.
+- **FR-002**: Simulated defenses and sample corpora MAY remain as diagnostics, but their results MUST have distinct labels and MUST NOT satisfy a real-dispatch or external-benchmark claim. A scripted proposer MAY drive a deterministic real-dispatch gate when the signed request, authorization, physical effect path, and audit are real; that result MUST be labeled scripted-proposer and MUST NOT support a model-resistance claim.
 - **FR-003**: Selecting a named external corpus MUST use the exact declared version and content, or fail visibly. Unsupported cases MUST be enumerated with reasons and excluded from the supported-case denominator; an empty supported set MUST fail qualification.
 - **FR-004**: Each case MUST have a declared legitimate task, attacker-controlled surface, attacker objective, expected permitted behavior, adjudication point, and observable effect oracle before execution.
 - **FR-005**: Results MUST distinguish attack not attempted, attempted and denied, effect completed, legitimate task failed, indeterminate, and unsupported; an indeterminate or missing trace MUST NOT count as a defended success.
