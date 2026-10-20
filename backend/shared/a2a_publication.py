@@ -11,6 +11,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from functools import wraps
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Protocol, Tuple
 
 logger = logging.getLogger("A2APublication")
@@ -89,7 +90,27 @@ class PublicationStoreConflict(PublicationStoreError):
 class PublicationStateStore(Protocol):
     def load(self) -> Optional[Mapping[str, Any]]: ...
 
-    def save(self, state: Mapping[str, Any], expected_version: int) -> None: ...
+    def save(self, state: Mapping[str, Any], expected_version: int,
+             event: Mapping[str, Any], *, authorize=None) -> None: ...
+
+
+def _serialized_transition(method):
+    @wraps(method)
+    def transition(self, *args, **kwargs):
+        authorize = kwargs.pop("authorize", None)
+        with self._lock:
+            self._authorize = authorize
+            try:
+                for attempt in range(3):
+                    self._ensure_loaded()
+                    try:
+                        return method(self, *args, **kwargs)
+                    except PublicationStoreConflict:
+                        if attempt == 2:
+                            raise
+            finally:
+                self._authorize = None
+    return transition
 
 
 def normalize_audiences(value: Any) -> Tuple[str, ...]:
@@ -249,6 +270,7 @@ class A2APublicationRegistry:
         self._version = 0
         self._loaded = store is None
         self._degraded = False
+        self._authorize = None
 
     @property
     def available(self) -> bool:
@@ -259,32 +281,30 @@ class A2APublicationRegistry:
         return self._version
 
     def refresh(self) -> bool:
-        if self._store is None:
-            with self._lock:
+        with self._lock:
+            if self._store is None:
                 self._loaded = True
                 self._degraded = False
-            return True
-        try:
-            state = self._store.load()
-            intents, records, order, version = self._parse_state(state)
-        except Exception:
-            logger.exception("A2A publication state could not be loaded")
-            with self._lock:
+                return True
+            try:
+                state = self._store.load()
+                intents, records, order, version = self._parse_state(state)
+            except Exception:
+                logger.exception("A2A publication state could not be loaded")
                 self._intents = {}
                 self._records = {}
                 self._order = []
                 self._version = 0
                 self._loaded = True
                 self._degraded = True
-            return False
-        with self._lock:
+                return False
             self._intents = intents
             self._records = records
             self._order = order
             self._version = version
             self._loaded = True
             self._degraded = False
-        return True
+            return True
 
     def _parse_state(
         self, state: Optional[Mapping[str, Any]]
@@ -297,7 +317,7 @@ class A2APublicationRegistry:
             raise PublicationStoreError("publication state format is unsupported")
         raw_intents = state.get("intents", [])
         raw_publications = state.get("publications", [])
-        if not isinstance(raw_intents, list) or not isinstance(raw_publications, list):
+        if not isinstance(raw_intents, (list, tuple)) or not isinstance(raw_publications, (list, tuple)):
             raise PublicationStoreError("publication state collections are invalid")
         intents = {
             intent.intent_id: intent
@@ -333,10 +353,6 @@ class A2APublicationRegistry:
         }
 
     def _ensure_loaded(self) -> None:
-        if self._loaded:
-            if self._degraded:
-                raise PublicationStoreUnavailable("A2A publication state is unavailable")
-            return
         if not self.refresh():
             raise PublicationStoreUnavailable("A2A publication state is unavailable")
 
@@ -345,39 +361,57 @@ class A2APublicationRegistry:
         intents: Dict[str, PublicationIntent],
         records: Dict[str, PublicationRecord],
         order: list[str],
+        event: Dict[str, Any],
     ) -> None:
         previous = (self._intents, self._records, self._order, self._version)
         self._intents, self._records, self._order = intents, records, order
-        if self._store is None:
-            self._version += 1
-            return
-        state = self._state_locked()
+
+        def authorize(agent_id):
+            if self._authorize is not None and not self._authorize(agent_id):
+                return False
+            if event["action"] in {"intent_created", "published"}:
+                if (agent_id not in set(self._catalog())
+                        or any(scope not in self._audiences(agent_id) for scope in event["audiences"])):
+                    raise PublicationStoreConflict("Publication eligibility changed")
+            if event["action"] == "published":
+                intent = previous[0][event["intent_id"]]
+                if self._time_fn() >= intent.expires_at:
+                    raise PublicationStoreConflict("Publication confirmation expired")
+            return True
+
         try:
-            self._store.save(state, previous[3])
+            if self._store is None:
+                if not authorize(event["agent_id"]):
+                    raise PublicationForbiddenError("Publication management authority changed")
+                self._audit(event)
+            else:
+                self._store.save(self._state_locked(), previous[3], event, authorize=authorize)
         except Exception as exc:
             self._intents, self._records, self._order, self._version = previous
             if isinstance(exc, A2APublicationError):
                 raise
             raise PublicationStoreUnavailable(
-                "A2A publication state could not be written"
+                "A2A publication state and audit could not be committed"
             ) from exc
         self._version += 1
 
     def _audit(self, event: Dict[str, Any]) -> None:
-        sink = self._audit_sink
-        if sink is None:
-            return
-        try:
-            sink(event)
-        except Exception:
-            logger.debug("A2A publication audit sink failed", exc_info=True)
+        if self._store is not None:
+            self._ensure_loaded()
+            self._commit_locked(dict(self._intents), dict(self._records),
+                                list(self._order), event)
+        elif self._audit_sink is not None:
+            try:
+                self._audit_sink(event)
+            except Exception as exc:
+                raise PublicationStoreUnavailable("A2A publication audit unavailable") from exc
 
     def record_event(self, event: Mapping[str, Any]) -> None:
-        self._audit(dict(event))
+        with self._lock:
+            self._audit(dict(event))
 
     def eligible_catalog(self) -> Tuple[Tuple[str, Tuple[str, ...], bool], ...]:
-        if not self._loaded:
-            self.refresh()
+        self.refresh()
         if self._degraded:
             return ()
         now = self._time_fn()
@@ -392,6 +426,7 @@ class A2APublicationRegistry:
             entries.append((agent_id, tuple(self._audiences(agent_id)), agent_id in published))
         return tuple(entries)
 
+    @_serialized_transition
     def create_intent(
         self,
         *,
@@ -414,7 +449,6 @@ class A2APublicationRegistry:
         rejected = [scope for scope in requested if scope not in allowed]
         if rejected:
             raise InvalidAudienceError(f"audience not registered for this capability: {rejected[0]}")
-        self._ensure_loaded()
         now = self._time_fn()
         intent = PublicationIntent(
             intent_id=self._id_factory(),
@@ -436,19 +470,19 @@ class A2APublicationRegistry:
             if len(intents) >= _MAX_PENDING_INTENTS:
                 raise StaleIntentError("too many pending publication confirmations")
             intents[intent.intent_id] = intent
-            self._commit_locked(intents, dict(self._records), list(self._order))
-        self._audit({
-            "action": "intent_created",
-            "intent_id": intent.intent_id,
-            "agent_id": agent_id,
-            "audiences": list(requested),
-            "lifetime": lifetime,
-            "actor": actor,
-            "owner": owner,
-            "fingerprint": intent.fingerprint,
-        })
+            self._commit_locked(intents, dict(self._records), list(self._order), {
+                "action": "intent_created",
+                "intent_id": intent.intent_id,
+                "agent_id": agent_id,
+                "audiences": list(requested),
+                "lifetime": lifetime,
+                "actor": actor,
+                "owner": owner,
+                "fingerprint": intent.fingerprint,
+            })
         return intent
 
+    @_serialized_transition
     def confirm(
         self,
         *,
@@ -457,7 +491,6 @@ class A2APublicationRegistry:
         actor: str,
         privileged: bool = False,
     ) -> PublicationRecord:
-        self._ensure_loaded()
         now = self._time_fn()
         with self._lock:
             intent = self._intents.get(str(intent_id or ""))
@@ -468,13 +501,12 @@ class A2APublicationRegistry:
             with self._lock:
                 intents = dict(self._intents)
                 intents.pop(intent.intent_id, None)
-                self._commit_locked(intents, dict(self._records), list(self._order))
-            self._audit({
-                "action": reason,
-                "intent_id": intent.intent_id,
-                "agent_id": intent.agent_id,
-                "actor": actor,
-            })
+                self._commit_locked(intents, dict(self._records), list(self._order), {
+                    "action": reason,
+                    "intent_id": intent.intent_id,
+                    "agent_id": intent.agent_id,
+                    "actor": actor,
+                })
 
         if not secrets.compare_digest(str(confirmation_token or ""), intent.confirmation_token):
             _consume("confirm_denied")
@@ -490,6 +522,10 @@ class A2APublicationRegistry:
         if not eligible or any(scope not in allowed for scope in intent.audiences):
             _consume("confirm_denied")
             raise NotEligibleError("capability is no longer in the approved A2A catalog")
+        if any(record.agent_id == intent.agent_id and record.effective_status(now) == "active"
+               for record in self._records.values()):
+            _consume("confirm_denied")
+            raise AlreadyWithdrawnError("capability already has an active publication")
         lifetime = _LIFETIME_MAP[intent.lifetime]
         record = PublicationRecord(
             publication_id=self._id_factory(),
@@ -512,19 +548,20 @@ class A2APublicationRegistry:
             while len(order) > self._max_inventory:
                 dropped = order.pop(0)
                 records.pop(dropped, None)
-            self._commit_locked(intents, records, order)
-        self._audit({
-            "action": "published",
-            "publication_id": record.publication_id,
-            "agent_id": record.agent_id,
-            "audiences": list(record.audiences),
-            "lifetime": record.lifetime,
-            "expires_at": record.expires_at,
-            "actor": actor,
-            "owner": record.owner,
-        })
+            self._commit_locked(intents, records, order, {
+                "action": "published",
+                "intent_id": intent.intent_id,
+                "publication_id": record.publication_id,
+                "agent_id": record.agent_id,
+                "audiences": list(record.audiences),
+                "lifetime": record.lifetime,
+                "expires_at": record.expires_at,
+                "actor": actor,
+                "owner": record.owner,
+            })
         return record
 
+    @_serialized_transition
     def withdraw(
         self,
         *,
@@ -533,7 +570,6 @@ class A2APublicationRegistry:
         reason: str = "",
         privileged: bool = False,
     ) -> PublicationRecord:
-        self._ensure_loaded()
         now = self._time_fn()
         with self._lock:
             record = self._records.get(str(publication_id or ""))
@@ -564,19 +600,17 @@ class A2APublicationRegistry:
             )
             records = dict(self._records)
             records[withdrawn.publication_id] = withdrawn
-            self._commit_locked(dict(self._intents), records, list(self._order))
-        self._audit({
-            "action": "withdrawn",
-            "publication_id": record.publication_id,
-            "agent_id": record.agent_id,
-            "actor": actor,
-            "reason": str(reason or "")[:200],
-        })
+            self._commit_locked(dict(self._intents), records, list(self._order), {
+                "action": "withdrawn",
+                "publication_id": record.publication_id,
+                "agent_id": record.agent_id,
+                "actor": actor,
+                "reason": str(reason or "")[:200],
+            })
         return withdrawn
 
     def active(self) -> Tuple[PublicationRecord, ...]:
-        if not self._loaded:
-            self.refresh()
+        self.refresh()
         if self._degraded:
             return ()
         now = self._time_fn()
@@ -617,24 +651,21 @@ class A2APublicationRegistry:
         return tuple(merged)
 
     def get(self, publication_id: str) -> Optional[PublicationRecord]:
-        if not self._loaded:
-            self.refresh()
+        self.refresh()
         if self._degraded:
             return None
         with self._lock:
             return self._records.get(str(publication_id or ""))
 
     def get_intent(self, intent_id: str) -> Optional[PublicationIntent]:
-        if not self._loaded:
-            self.refresh()
+        self.refresh()
         if self._degraded:
             return None
         with self._lock:
             return self._intents.get(str(intent_id or ""))
 
     def inventory(self, *, actor: Optional[str] = None) -> Tuple[Dict[str, Any], ...]:
-        if not self._loaded:
-            self.refresh()
+        self.refresh()
         if self._degraded:
             return ()
         now = self._time_fn()
@@ -662,8 +693,7 @@ class A2APublicationRegistry:
     def pending_intents(
         self, *, actor: Optional[str] = None
     ) -> Tuple[Dict[str, Any], ...]:
-        if not self._loaded:
-            self.refresh()
+        self.refresh()
         if self._degraded:
             return ()
         now = self._time_fn()

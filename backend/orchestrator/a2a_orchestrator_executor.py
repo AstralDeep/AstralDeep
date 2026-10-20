@@ -264,7 +264,7 @@ class OrchestratorA2AExecutor(AgentExecutor):
 
         policy = _publication_policy(self.orchestrator)
         if policy is not None:
-            admission = policy.admit(projected.agent_id)
+            admission = policy.admit(projected.agent_id, projected.skill_id)
             if admission is None:
                 policy.record_denial(
                     actor=str(claims.get("sub") or ""),
@@ -429,7 +429,8 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
     registry = _publication_registry(orchestrator)
     policy = _publication_policy(orchestrator)
     if policy is not None:
-        published_ids = list(policy.published_agent_ids())
+        publications = policy.published_records()
+        published_ids = list(dict.fromkeys(record.agent_id for record in publications))
     else:
         published_ids = public_catalog_agent_ids(orchestrator)
 
@@ -459,7 +460,11 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
                 open_id_connect_url=f"{authority}/.well-known/openid-configuration",
             )
         )
-        if registry is not None:
+        if policy is not None:
+            advertised = list(dict.fromkeys(scope for record in publications
+                             for scope in record.audiences
+                             if scope in policy._registered_scopes(record.agent_id)))
+        elif registry is not None:
             advertised = list(registry.advertised_audiences()) if registry.available else []
         else:
             advertised = ["tools:read", "tools:write", "tools:search", "tools:system"]

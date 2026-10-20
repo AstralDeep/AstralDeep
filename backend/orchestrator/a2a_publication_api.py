@@ -47,7 +47,7 @@ def _registry_or_409(orch) -> A2APublicationRegistry:
     registry = registry_for(orch)
     if registry is None:
         raise HTTPException(status_code=409, detail=_A2A_DISABLED)
-    if not registry.available:
+    if not registry.refresh():
         raise HTTPException(
             status_code=503, detail="A2A publication state is unavailable"
         )
@@ -228,6 +228,7 @@ async def create_intent(
             lifetime=body.lifetime,
             actor=sub,
             owner=policy.owner_of(body.agent_id),
+            authorize=lambda agent_id: policy.can_manage(emails, agent_id, is_admin=is_admin),
         )
     except A2APublicationError as exc:
         await record_publication_event(
@@ -236,11 +237,7 @@ async def create_intent(
             outcome="failure", detail={"agent_id": body.agent_id},
         )
         raise HTTPException(status_code=_error_status(exc), detail=str(exc))
-    await record_publication_event(
-        user_id=sub, action="intent_created",
-        detail={"agent_id": intent.agent_id, "audiences": ",".join(intent.audiences),
-                "lifetime": intent.lifetime, "intent_id": intent.intent_id},
-    )
+
     return {
         "intent_id": intent.intent_id,
         "agent_id": intent.agent_id,
@@ -287,6 +284,8 @@ async def confirm_intent(
             confirmation_token=body.confirmation_token,
             actor=sub,
             privileged=is_admin or owner_allowed,
+            authorize=lambda agent_id: (policy.can_manage(emails, agent_id, is_admin=is_admin)
+                and (intent is None or intent.owner is None or intent.owner == policy.owner_of(agent_id))),
         )
     except A2APublicationError as exc:
         await record_publication_event(
@@ -295,11 +294,7 @@ async def confirm_intent(
             outcome="failure", detail={"intent_id": intent_id},
         )
         raise HTTPException(status_code=_error_status(exc), detail=str(exc))
-    await record_publication_event(
-        user_id=sub, action="published",
-        detail={"publication_id": record.publication_id, "agent_id": record.agent_id,
-                "audiences": ",".join(record.audiences), "lifetime": record.lifetime},
-    )
+
     return _publication_body(record)
 
 
@@ -322,7 +317,7 @@ async def withdraw_publication(
     owner_allowed = bool(
         existing is not None
         and policy is not None
-        and policy.can_manage(emails, existing.agent_id, is_admin=False)
+        and policy.owner_of(existing.agent_id) in emails
     )
     if existing is not None and not is_admin and not owner_allowed:
         await record_publication_event(
@@ -338,6 +333,7 @@ async def withdraw_publication(
             actor=sub,
             reason=str(reason or "")[:200],
             privileged=is_admin or owner_allowed,
+            authorize=lambda agent_id: is_admin or policy.owner_of(agent_id) in emails,
         )
     except A2APublicationError as exc:
         await record_publication_event(
@@ -346,10 +342,7 @@ async def withdraw_publication(
             outcome="failure", detail={"publication_id": publication_id},
         )
         raise HTTPException(status_code=_error_status(exc), detail=str(exc))
-    await record_publication_event(
-        user_id=sub, action="withdrawn",
-        detail={"publication_id": record.publication_id, "agent_id": record.agent_id},
-    )
+
     return _publication_body(record)
 
 

@@ -56,20 +56,21 @@ class A2APublicationPolicy:
             return frozenset()
 
     def published_records(self) -> tuple[PublicationRecord, ...]:
-        if not self.registry.available:
-            return ()
         catalog = set(self.catalog_ids())
         try:
             active = self.registry.active()
         except Exception:
             logger.warning("A2A publication state could not be read", exc_info=True)
             return ()
-        return tuple(record for record in active if record.agent_id in catalog)
+        return tuple(record for record in active if record.agent_id in catalog
+                     and any(scope in self._registered_scopes(record.agent_id)
+                             for scope in record.audiences)
+                     and (record.owner is None or record.owner == self.owner_of(record.agent_id)))
 
     def published_agent_ids(self) -> tuple[str, ...]:
         return tuple(dict.fromkeys(record.agent_id for record in self.published_records()))
 
-    def admit(self, agent_id: str) -> Optional[PublicationAdmission]:
+    def admit(self, agent_id: str, skill_id: Optional[str] = None) -> Optional[PublicationAdmission]:
         from orchestrator.mcp_projection import FRAMEWORK_WORK_AGENT_ID
 
         if agent_id == FRAMEWORK_WORK_AGENT_ID:
@@ -89,36 +90,34 @@ class A2APublicationPolicy:
                 audiences=(),
                 expires_at=None,
             )
-        if not self.registry.available:
-            return None
         record = self.registry.active_publication(agent_id)
-        if record is None or agent_id not in set(self.catalog_ids()):
+        if (record is None or agent_id not in set(self.catalog_ids())
+                or (record.owner is not None and record.owner != self.owner_of(agent_id))):
+            return None
+        scopes = tuple(scope for scope in record.audiences if scope in self._registered_scopes(agent_id))
+        if not scopes or (skill_id is not None and self._skill_scope(agent_id, skill_id) not in scopes):
             return None
         return PublicationAdmission(
             publication_id=record.publication_id,
             agent_id=record.agent_id,
-            audiences=record.audiences,
+            audiences=scopes,
             expires_at=record.expires_at,
         )
 
-    def filter_projected_tools(self, tools: Iterable[Any]) -> tuple[Any, ...]:
-        from orchestrator.mcp_projection import FRAMEWORK_WORK_AGENT_ID
+    def _registered_scopes(self, agent_id: str) -> tuple[str, ...]:
+        card = (getattr(self.orchestrator, "agent_cards", {}) or {}).get(agent_id)
+        return tuple(str(skill.scope) for skill in getattr(card, "skills", ()) or ()
+                     if getattr(skill, "scope", None))
 
-        published = set(self.published_agent_ids())
-        managed = self.managed_ids()
-        if not self.registry.available or self._managed_failed:
-            published = set()
-        return tuple(
-            tool
-            for tool in tools
-            if (
-                tool.agent_id == FRAMEWORK_WORK_AGENT_ID
-                or (
-                    not self._managed_failed
-                    and (tool.agent_id not in managed or tool.agent_id in published)
-                )
-            )
-        )
+    def _skill_scope(self, agent_id: str, skill_id: str) -> Optional[str]:
+        card = (getattr(self.orchestrator, "agent_cards", {}) or {}).get(agent_id)
+        for skill in getattr(card, "skills", ()) or ():
+            if skill.id == skill_id:
+                return getattr(skill, "scope", None) or None
+        return None
+
+    def filter_projected_tools(self, tools: Iterable[Any]) -> tuple[Any, ...]:
+        return tuple(tool for tool in tools if self.admit(tool.agent_id, tool.skill_id) is not None)
 
     def owner_of(self, agent_id: str) -> Optional[str]:
         if self._owner_lookup is None:

@@ -95,6 +95,13 @@ def _orchestrator():
     orch.execute_authorized_tool = AsyncMock(
         return_value=MCPResponse(request_id="r1", result={"temp": 21})
     )
+    from shared.a2a_publication import A2APublicationRegistry
+    from orchestrator.a2a_orchestrator_executor import public_catalog_agent_ids
+    from orchestrator.a2a_publication_wiring import registered_audiences
+    orch.a2a_publications = A2APublicationRegistry(
+        catalog=lambda: public_catalog_agent_ids(orch),
+        audiences=lambda agent_id: registered_audiences(orch, agent_id),
+    )
     return orch
 
 

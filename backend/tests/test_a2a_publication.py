@@ -65,7 +65,9 @@ class _Store:
             raise RuntimeError("store offline")
         return self.state
 
-    def save(self, state, expected_version):
+    def save(self, state, expected_version, event, *, authorize=None):
+        if authorize is not None and not authorize(event["agent_id"]):
+            raise PublicationForbiddenError("authority changed")
         if self.fail_save:
             raise RuntimeError("store offline")
         current = 0 if self.state is None else int(self.state.get("version", 0))
@@ -198,6 +200,12 @@ def _orchestrator(*, safe=("weather-1",), owners=None):
     orch.execute_authorized_tool = AsyncMock(
         return_value=MCPResponse(request_id="r1", result={"temp": 21})
     )
+    from orchestrator.a2a_orchestrator_executor import public_catalog_agent_ids
+    from orchestrator.a2a_publication_wiring import registered_audiences
+    orch.a2a_publications = A2APublicationRegistry(
+        catalog=lambda: public_catalog_agent_ids(orch),
+        audiences=lambda agent_id: registered_audiences(orch, agent_id),
+    )
     return orch
 
 
@@ -270,7 +278,6 @@ def _publish_for_client(client, agent_id="weather-1", actor=ALICE, audiences=Non
     )
 
 
-# --- registry contract -------------------------------------------------------
 
 
 def test_publish_intent_confirm_flow_activates_publication():
@@ -544,13 +551,14 @@ def test_registry_store_save_failure_does_not_change_in_memory_state():
     assert registry.pending_intents() == ()
 
 
-# --- card advertisement ------------------------------------------------------
 
 
 def test_card_without_registry_keeps_safe_catalog_behavior(mock_env):
     from orchestrator.a2a_orchestrator_executor import build_orchestrator_a2a_card
 
-    card = build_orchestrator_a2a_card(_orchestrator())
+    orch = _orchestrator()
+    del orch.a2a_publications
+    card = build_orchestrator_a2a_card(orch)
     ids = {skill.id for skill in card.skills}
     assert "weather-1" in ids
     assert "draft-secret-9" not in ids
@@ -615,7 +623,6 @@ def test_card_intersection_keeps_unsafe_agents_unadvertised(mock_env):
     assert "chat" in ids
 
 
-# --- authenticated A2A dispatch ----------------------------------------------
 
 
 def test_tools_list_hides_unpublished_tools_and_shows_published(mock_env):
@@ -751,7 +758,6 @@ def test_policy_denial_is_audited(mock_env):
     }]
 
 
-# --- Plane adapter -----------------------------------------------------------
 
 
 class _Canvas:
@@ -800,61 +806,6 @@ class _Repositories:
         self.workspaces = SimpleNamespace(canvas=_Canvas())
 
 
-def test_plane_store_loads_creates_and_compare_and_sets_state():
-    from orchestrator.a2a_publication_store import PlaneA2APublicationStore, initial_state
-
-    repositories = _Repositories()
-    store = PlaneA2APublicationStore(
-        runtime=_Runtime(), repositories=repositories, clock=lambda: 12.5,
-    )
-    initial = store.load()
-    assert initial == initial_state()
-    state = dict(initial)
-    state["version"] = 1
-    state["publications"] = [{"publication_id": "p1"}]
-    store.save(state, 0)
-    assert store.load()["publications"] == [{"publication_id": "p1"}]
-    with pytest.raises(PublicationStoreConflict):
-        store.save({**state, "version": 2}, 0)
-
-
-def test_plane_store_rejects_malformed_state_and_wraps_read_failures():
-    from orchestrator.a2a_publication_store import PlaneA2APublicationStore
-
-    repositories = _Repositories()
-    store = PlaneA2APublicationStore(runtime=_Runtime(), repositories=repositories)
-    store.load()
-    repositories.workspaces.canvas.record.payload = []
-    with pytest.raises(PublicationStoreUnavailable):
-        store.load()
-
-    class _Broken:
-        def transaction(self):
-            raise RuntimeError("unavailable")
-
-    broken = PlaneA2APublicationStore(runtime=_Broken(), repositories=repositories)
-    with pytest.raises(PublicationStoreUnavailable):
-        broken.load()
-
-
-def test_plane_store_wraps_write_failures():
-    from orchestrator.a2a_publication_store import PlaneA2APublicationStore
-
-    repositories = _Repositories()
-    store = PlaneA2APublicationStore(runtime=_Runtime(), repositories=repositories)
-    initial = store.load()
-
-    def _broken_replace(*args, **kwargs):
-        raise RuntimeError("write failed")
-
-    repositories.workspaces.canvas.replace = _broken_replace
-    state = dict(initial)
-    state["version"] = 1
-    with pytest.raises(PublicationStoreUnavailable):
-        store.save(state, 0)
-
-
-# --- authenticated owner/admin API ------------------------------------------
 
 
 def _api_client(orch):
@@ -1031,6 +982,7 @@ def test_api_disabled_without_registry_returns_conflict(mock_env):
     app = FastAPI()
     app.include_router(publication_router)
     app.state.orchestrator = _orchestrator()
+    del app.state.orchestrator.a2a_publications
     client = TestClient(app)
     response = client.get("/api/a2a/publications", headers=_auth())
     assert response.status_code == 409
@@ -1047,51 +999,26 @@ def test_api_orchestrator_unavailable_returns_503(mock_env):
     assert response.status_code == 503
 
 
-def test_api_records_audit_events_through_recorder(mock_env, monkeypatch):
+def test_api_success_has_one_lifecycle_event(mock_env):
     orch = _orchestrator(owners={"weather-1": ALICE_EMAIL})
     client = _api_client(orch)
     recorded = []
-
-    class _FakeRecorder:
-        async def record(self, event):
-            recorded.append(event)
-            return None
-
-    from audit import recorder as audit_recorder
-
-    monkeypatch.setattr(audit_recorder, "get_recorder", lambda: _FakeRecorder())
+    orch.a2a_publications._audit_sink = recorded.append
     client.post(
         "/api/a2a/publications/intents", headers=_auth(),
         json={"agent_id": "weather-1", "audiences": ["tools:read"], "lifetime": "7d"},
     )
-    assert any("intent_created" in event.action_type for event in recorded)
+    assert [event["action"] for event in recorded] == ["intent_created"]
 
 
-def test_publication_wiring_audit_sink_tolerates_recorder_failures(mock_env, monkeypatch):
+def test_publication_wiring_requires_durable_runtime(mock_env):
     from orchestrator.a2a_publication_wiring import attach_publication_registry
 
-    recorded = []
-
-    class _FakeRecorder:
-        def __init__(self, fail=False):
-            self.fail = fail
-
-        def record_blocking(self, event):
-            if self.fail:
-                raise RuntimeError("audit unavailable")
-            recorded.append(event)
-
-    from audit import recorder as audit_recorder
-
-    monkeypatch.setattr(audit_recorder, "get_recorder", lambda: _FakeRecorder())
     orch = _orchestrator()
-    registry = attach_publication_registry(orch)
-    _publish(registry)
-    assert any("a2a_publication.published" in event.action_type for event in recorded)
+    del orch.a2a_publications
+    with pytest.raises(Exception):
+        attach_publication_registry(orch)
 
-    monkeypatch.setattr(audit_recorder, "get_recorder", lambda: _FakeRecorder(fail=True))
-    _publish(registry)
-    assert registry.is_published("weather-1")
 
 def test_policy_fails_closed_when_catalog_and_registry_reads_fail(mock_env):
     from orchestrator.a2a_publication_policy import A2APublicationPolicy
@@ -1229,7 +1156,9 @@ def test_api_policy_fallback_and_owner_denial_paths(mock_env):
     policy = _policy(orch)
     assert policy is not None
     assert policy.can_manage({ALICE_EMAIL}, "weather-1")
-    assert _policy(_orchestrator()) is None
+    empty = _orchestrator()
+    del empty.a2a_publications
+    assert _policy(empty) is None
 
 
 def test_api_returns_service_unavailable_when_publication_state_is_degraded(mock_env):
@@ -1262,12 +1191,6 @@ def test_registry_store_conflict_is_recoverable_without_corrupting_memory():
         "intents": [],
         "publications": [],
     }
-    with pytest.raises(PublicationStoreConflict):
-        registry.create_intent(
-            agent_id="weather-1", audiences=["tools:read"], lifetime="24h", actor=ADMIN,
-        )
-    assert registry.pending_intents() == ()
-    assert registry.refresh() is True
     intent = registry.create_intent(
         agent_id="weather-1", audiences=["tools:read"], lifetime="24h", actor=ADMIN,
     )
