@@ -26,6 +26,7 @@ ALL_KEYS = ([f"observe:{n}" for n in sorted(obs.TOOL_REGISTRY)]
             + [f"control:{n}" for n in sorted(ctl.TOOL_REGISTRY)])
 
 NO_TRANSPORT = {"observe:list_machines"}
+QUALIFIED_MUTATORS = {"control:make_directory", "control:remove_path"}
 TRANSPORT_KEYS = [k for k in ALL_KEYS if k not in NO_TRANSPORT]
 MACHINE_KEYS = TRANSPORT_KEYS
 
@@ -181,7 +182,8 @@ def test_unreachable_transport_maps_to_unreachable(key, monkeypatch, tmp_path):
     _setup(key, monkeypatch, tmp_path)
     _fake(reachable=False)
     res = _fn(key)(user_id=USER, **VALID_ARGS[key])
-    _assert_vocab_failure(key, res, Verdict.UNREACHABLE.value)
+    _assert_vocab_failure(key, res, Verdict.UNATTENDED_REFUSED.value
+                         if key in QUALIFIED_MUTATORS else Verdict.UNREACHABLE.value)
 
 
 @pytest.mark.parametrize("key", TRANSPORT_KEYS)
@@ -189,7 +191,8 @@ def test_auth_failure_maps_to_auth_failed(key, monkeypatch, tmp_path):
     _setup(key, monkeypatch, tmp_path)
     _fake(authenticated=False)
     res = _fn(key)(user_id=USER, **VALID_ARGS[key])
-    _assert_vocab_failure(key, res, Verdict.AUTH_FAILED.value)
+    _assert_vocab_failure(key, res, Verdict.UNATTENDED_REFUSED.value
+                         if key in QUALIFIED_MUTATORS else Verdict.AUTH_FAILED.value)
 
 
 @pytest.mark.parametrize("key", MACHINE_KEYS)
@@ -227,5 +230,9 @@ def test_remote_rejection_is_surfaced_not_swallowed(key):
     _fake(command_exit=1, command_stderr="sbatch: error: Permission denied",
           command_stdout=_REJECTION_STDOUT.get(key, ""))
     res = _fn(key)(user_id=USER, **VALID_ARGS[key])
-    _assert_vocab_failure(key, res, Verdict.PARTIAL.value)
-    assert "Permission denied" in res["_data"]["next_action"]
+    _assert_vocab_failure(key, res, Verdict.UNATTENDED_REFUSED.value
+                         if key in QUALIFIED_MUTATORS else Verdict.PARTIAL.value)
+    if key in QUALIFIED_MUTATORS:
+        assert res["_data"]["next_action"] == "effect_current_authority_unavailable"
+    else:
+        assert "Permission denied" in res["_data"]["next_action"]

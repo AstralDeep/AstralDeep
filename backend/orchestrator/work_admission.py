@@ -468,6 +468,7 @@ class WorkAdmissionRepository(Protocol):
         phase_code: str,
         *,
         now: datetime | None,
+        transaction: Any | None = None,
     ) -> OperationRecord: ...
 
     def renew_execution_lease(
@@ -687,6 +688,9 @@ class WorkAdmissionCoordinator:
             retention=self._operation_retention,
         )
 
+    def set_completion_guard(self, guard):
+        self._completion_guard = guard
+
     def terminalize(
         self,
         fence: ExecutionFence,
@@ -697,6 +701,15 @@ class WorkAdmissionCoordinator:
         retry_after_ms: int | None,
         transaction: Any | None = None,
     ) -> OperationRecord:
+        guard = getattr(self, "_completion_guard", None)
+        if state in {OperationState.COMPLETED, OperationState.FAILED} and guard is not None:
+            if transaction is None:
+                with self.fenced_transaction(fence) as transaction:
+                    return self.terminalize(fence, state=state, terminal_code=terminal_code,
+                        safe_summary=safe_summary, retry_after_ms=retry_after_ms, transaction=transaction)
+            if guard(transaction, fence):
+                state, terminal_code = OperationState.RETRYABLE, "effect_uncertain"
+                safe_summary, retry_after_ms = "Effect outcome requires reconciliation", None
         if state not in _TERMINAL_STATES:
             raise ValueError("terminalize requires a terminal state")
         if state is not OperationState.COMPLETED and terminal_code is None:
@@ -736,9 +749,17 @@ class WorkAdmissionCoordinator:
             fence, now=self._now(), slot_lease=self._slot_lease
         )
 
-    def update_phase(self, fence: ExecutionFence, phase_code: str) -> OperationRecord:
+    def update_phase(
+        self,
+        fence: ExecutionFence,
+        phase_code: str,
+        *,
+        transaction: Any | None = None,
+    ) -> OperationRecord:
         _validate_safe_code(phase_code, "phase_code")
-        return self._repository.update_phase(fence, phase_code, now=self._now())
+        return self._repository.update_phase(
+            fence, phase_code, now=self._now(), transaction=transaction
+        )
 
     def bind_chat(self, fence: ExecutionFence, chat_id: str) -> OperationRecord:
         return self._repository.bind_chat(fence, chat_id, now=self._now())
@@ -1835,6 +1856,7 @@ class InMemoryWorkAdmissionRepository:
         phase_code: str,
         *,
         now: datetime | None,
+        transaction: Any | None = None,
     ) -> OperationRecord:
         current_time = self._now(now)
         with self._lock:
@@ -2707,6 +2729,7 @@ class PlaneWorkAdmissionRepository:
         phase_code: str,
         *,
         now: datetime | None,
+        transaction: Any | None = None,
     ) -> OperationRecord:
         return _from_plane_record(
             self._invoke(
@@ -2714,6 +2737,7 @@ class PlaneWorkAdmissionRepository:
                 _to_plane_fence(fence),
                 phase_code,
                 now=now,
+                transaction=transaction,
             )
         )
 

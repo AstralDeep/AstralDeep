@@ -22,7 +22,10 @@ def _target():
 
 
 @pytest.fixture(autouse=True)
-def _wire(monkeypatch):
+def _wire(monkeypatch, request):
+    if request.node.name != "test_mutator_without_execution_authority_cannot_send_unledgered_command":
+        monkeypatch.setattr(ctl, "run_qualified", lambda transport, target, argv, **kw:
+                            transport.run(target, argv, timeout=kw["timeout"], retryable=False))
     repositories = SimpleNamespace(artifacts=object())
     runtime = SimpleNamespace(repositories=repositories)
     source = SimpleNamespace(
@@ -568,3 +571,10 @@ def test_unreachable_verdict_names_the_documented_next_action_on_every_verb(monk
         assert data["verdict"] == Verdict.UNREACHABLE.value, verb
         assert data["next_action"] == expected, verb
         assert data["machine"] == "dgx", verb
+
+
+def test_mutator_without_execution_authority_cannot_send_unledgered_command():
+    transport = _fake(command_exit=0)
+    result = ctl.make_directory(user_id=USER, machine_id="dgx", path="/tmp/x")
+    assert transport.calls == []
+    assert result.get("_data", {}).get("verdict") != "ok"
