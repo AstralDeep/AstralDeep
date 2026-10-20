@@ -147,6 +147,13 @@ class PageBatch:
     next_cursor: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class PageScan:
+    pages: tuple[PageSummary, ...]
+    scanned: int
+    complete: bool
+
+
 class AtlasPageService:
     def __init__(
         self,
@@ -1277,6 +1284,42 @@ class AtlasPageService:
                                              page.next_cursor.memory_id)
                            if page.next_cursor is not None else None)
             return PageBatch(tuple(summaries), next_cursor)
+
+        return self._run(accept)
+
+    def scan_pages(
+        self, *, owner_id: str, project_id: str | None = None,
+        all_projects: bool = False, limit: int = 500,
+    ) -> PageScan:
+        caller = self._author(owner_id)
+        if type(all_projects) is not bool:
+            raise AtlasPageError("project_scope_invalid")
+        project = None if all_projects else normalize_project(project_id)
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise AtlasPageError("limit_out_of_bounds")
+
+        def accept(transaction):
+            rows = self.pages.repository.list_memory(
+                transaction, owner_id=caller, limit=1000
+            )
+            summaries: list[PageSummary] = []
+            scanned = 0
+            for row in rows:
+                envelope = parse_envelope(row.value)
+                if envelope is None or envelope.get("kind") != KIND_PAGE:
+                    continue
+                if (envelope.get("owner_id") != caller
+                        or envelope.get("page_id") != row.memory_id):
+                    raise AtlasUnavailable("atlas_page_unreadable")
+                if not all_projects and envelope.get("project_id") != project:
+                    continue
+                body = self._opened(envelope)
+                scanned += 1
+                summaries.append(self._summary(row, envelope, body=body))
+                if len(summaries) >= limit:
+                    break
+            complete = len(rows) < 1000 and len(summaries) < limit
+            return PageScan(tuple(summaries), scanned, complete)
 
         return self._run(accept)
 

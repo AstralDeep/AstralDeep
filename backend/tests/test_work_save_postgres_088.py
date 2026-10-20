@@ -14,10 +14,11 @@ import pytest
 
 from audit.repository import AuditRepository
 from orchestrator.work_api import work_router
-from tests.test_work_result_postgres_088 import (
-    completed as completed, current, fixture as fixture, gate_orchestrator as gate_orchestrator,
+from persistent_agents.tests.test_research_execution_postgres_088 import (
+    current, fixture as fixture, gate_orchestrator as gate_orchestrator,
     operation as operation, plane as plane, research as research, signing_key as signing_key,
 )
+from tests.test_work_result_postgres_088 import complete_research
 from tests.test_work_write_http_postgres_088 import headers
 
 runtime = plane
@@ -40,6 +41,11 @@ async def _mounted(op, fixture):
         op.runtime.repositories.history.conversations.create(tx, owner_id=op.owner,
             conversation_id=chat_id, title="Reviewed result destination", agent_id=None, created_at=1)
     return SimpleNamespace(op=op, app=app, fixture=fixture, chat_id=chat_id)
+
+
+@pytest.fixture
+async def completed(research):
+    return await complete_research(research)
 
 
 @pytest.fixture
