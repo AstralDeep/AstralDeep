@@ -70,7 +70,7 @@ An operator can inspect which registered actions read external data, change stat
 
 ### Functional Requirements
 
-- **FR-001**: Every agent-visible external, uploaded, retrieved, generated, remote-agent, and tool-produced value MUST carry an integrity origin that survives supported transformations, handoffs, retention, and restart until it is no longer usable.
+- **FR-001**: Every agent-visible external, uploaded, retrieved, generated, remote-agent, and tool-produced value MUST carry an integrity origin through supported transformations, handoffs, and retention until it is no longer usable. After restart, a retained value whose precise lineage cannot be verified MUST carry the `unknown` origin and MUST remain unavailable to authorize an effect.
 - **FR-002**: Source content MUST NOT become an instruction, user consent, permission, policy rule, or approval merely by appearing in a prompt, summary, memory, search result, or tool response.
 - **FR-003**: Every registered action MUST have an explicit, reviewable classification for source, read, local mutation, external disclosure, privileged control, and applicable owner/data sensitivity; effectful actions with missing or conflicting classifications MUST be unavailable.
 - **FR-004**: Before every effect, the system MUST bind the actual actor, current user intent, owner, target, data lineage, effect class, policy, and any delegated authority to the proposed action. Entry point, tool alias, or agent placement MUST NOT weaken this check.
