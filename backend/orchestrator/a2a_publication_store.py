@@ -134,6 +134,8 @@ class PlaneA2APublicationStore(PublicationStateStore):
                         or receipt.outcome != audit_event.outcome):
                     raise PublicationStoreUnavailable("A2A publication audit receipt is invalid")
                 self._current()
+                if authorize is not None and not authorize(str(event.get("agent_id") or "")):
+                    raise PublicationForbiddenError("Publication management authority changed")
         except (PublicationStoreConflict, PublicationForbiddenError):
             raise
         except RepositoryConflictError as exc:

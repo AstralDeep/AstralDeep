@@ -41,7 +41,7 @@ from shared.a2a_bridge import (
 from shared.a2a_publication import A2APublicationRegistry
 from shared.a2a_security import A2ASecurityValidator
 from orchestrator.a2a_publication_policy import A2APublicationPolicy
-from orchestrator.a2a_publication_wiring import attach_publication_registry
+from orchestrator.a2a_publication_wiring import attach_publication_registry, owner_lookup
 from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
 
 logger = logging.getLogger("OrchestratorA2AExecutor")
@@ -409,6 +409,7 @@ def _publication_policy(orchestrator) -> Optional[A2APublicationPolicy]:
         orchestrator,
         registry,
         catalog=lambda: public_catalog_agent_ids(orchestrator),
+        owner_lookup=owner_lookup(orchestrator),
         managed=lambda: FIRST_PARTY_PUBLIC_AGENT_IDS,
     )
     orchestrator.a2a_publication_policy = policy

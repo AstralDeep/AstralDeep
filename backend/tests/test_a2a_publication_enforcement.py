@@ -15,7 +15,7 @@ def test_selected_scope_filters_each_skill():
     orch = _orchestrator()
     registry = _registry()
     _publish(registry)
-    policy = A2APublicationPolicy(orch, registry, catalog=lambda: ('weather-1',))
+    policy = A2APublicationPolicy(orch, registry, catalog=lambda: ('weather-1',), owner_lookup=lambda _: None)
     read = SimpleNamespace(agent_id='weather-1', skill_id='get_weather')
     write = SimpleNamespace(agent_id='weather-1', skill_id='set_weather')
     assert policy.filter_projected_tools([read, write]) == (read,)
@@ -87,7 +87,7 @@ def test_current_skill_scope_never_expands_publication(scope):
     orch = _orchestrator()
     registry = _registry()
     _publish(registry)
-    policy = A2APublicationPolicy(orch, registry, catalog=lambda: ('weather-1',))
+    policy = A2APublicationPolicy(orch, registry, catalog=lambda: ('weather-1',), owner_lookup=lambda _: None)
     orch.agent_cards['weather-1'].skills[0].scope = scope
     assert policy.admit('weather-1', 'get_weather') is None
     assert policy.filter_projected_tools([SimpleNamespace(agent_id='weather-1', skill_id='get_weather')]) == ()

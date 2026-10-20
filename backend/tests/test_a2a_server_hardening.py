@@ -87,6 +87,7 @@ def _orchestrator():
         "web-research-1": _card("web-research-1", "Web Research", [_skill("web_search", "tools:search")]),
         "draft-secret-9": _card("draft-secret-9", "Secret Draft", [_skill("exfiltrate", "tools:write")]),
     }
+    orch.a2a_agent_owners = {}
     orch.agents = {}
     orch.local_agents = {"weather-1": object(), "web-research-1": object(), "draft-secret-9": object()}
     orch.security_flags = {}

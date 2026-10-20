@@ -1081,10 +1081,13 @@ def test_policy_owner_management_and_lookup_failure(mock_env):
     broken = A2APublicationPolicy(
         orch, registry, catalog=lambda: ("weather-1",), owner_lookup=_boom,
     )
-    assert broken.owner_of("weather-1") is None
-    assert A2APublicationPolicy(
-        orch, registry, catalog=lambda: ("weather-1",),
-    ).owner_of("weather-1") is None
+    with pytest.raises(PublicationStoreUnavailable):
+        broken.owner_of("weather-1")
+    assert not broken.can_manage(set(), "weather-1", is_admin=True)
+    with pytest.raises(PublicationStoreUnavailable):
+        A2APublicationPolicy(
+            orch, registry, catalog=lambda: ("weather-1",),
+        ).owner_of("weather-1")
 
 
 def test_wiring_resolves_plane_owner_and_store_and_reuses_registry(mock_env):

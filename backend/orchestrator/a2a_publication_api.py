@@ -221,14 +221,16 @@ async def create_intent(
         )
         raise HTTPException(status_code=403, detail="Capability is not managed by this owner")
     try:
+        owner = policy.owner_of(body.agent_id)
         intent = await asyncio.to_thread(
             registry.create_intent,
             agent_id=body.agent_id,
             audiences=body.audiences,
             lifetime=body.lifetime,
             actor=sub,
-            owner=policy.owner_of(body.agent_id),
-            authorize=lambda agent_id: policy.can_manage(emails, agent_id, is_admin=is_admin),
+            owner=owner,
+            authorize=lambda agent_id: (policy.can_manage(emails, agent_id, is_admin=is_admin)
+                and policy.owner_matches(agent_id, owner)),
         )
     except A2APublicationError as exc:
         await record_publication_event(
@@ -285,7 +287,7 @@ async def confirm_intent(
             actor=sub,
             privileged=is_admin or owner_allowed,
             authorize=lambda agent_id: (policy.can_manage(emails, agent_id, is_admin=is_admin)
-                and (intent is None or intent.owner is None or intent.owner == policy.owner_of(agent_id))),
+                and (intent is not None and policy.owner_matches(agent_id, intent.owner))),
         )
     except A2APublicationError as exc:
         await record_publication_event(
@@ -317,7 +319,7 @@ async def withdraw_publication(
     owner_allowed = bool(
         existing is not None
         and policy is not None
-        and policy.owner_of(existing.agent_id) in emails
+        and any(policy.owner_matches(existing.agent_id, email) for email in emails)
     )
     if existing is not None and not is_admin and not owner_allowed:
         await record_publication_event(
@@ -333,7 +335,7 @@ async def withdraw_publication(
             actor=sub,
             reason=str(reason or "")[:200],
             privileged=is_admin or owner_allowed,
-            authorize=lambda agent_id: is_admin or policy.owner_of(agent_id) in emails,
+            authorize=lambda agent_id: is_admin or any(policy.owner_matches(agent_id, email) for email in emails),
         )
     except A2APublicationError as exc:
         await record_publication_event(

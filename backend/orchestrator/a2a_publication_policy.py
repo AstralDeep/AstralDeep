@@ -9,7 +9,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Optional
 
-from shared.a2a_publication import A2APublicationRegistry, PublicationRecord
+from shared.a2a_publication import A2APublicationRegistry, PublicationRecord, PublicationStoreUnavailable
 
 logger = logging.getLogger("A2APublicationPolicy")
 
@@ -65,7 +65,7 @@ class A2APublicationPolicy:
         return tuple(record for record in active if record.agent_id in catalog
                      and any(scope in self._registered_scopes(record.agent_id)
                              for scope in record.audiences)
-                     and (record.owner is None or record.owner == self.owner_of(record.agent_id)))
+                     and self.owner_matches(record.agent_id, record.owner))
 
     def published_agent_ids(self) -> tuple[str, ...]:
         return tuple(dict.fromkeys(record.agent_id for record in self.published_records()))
@@ -92,7 +92,7 @@ class A2APublicationPolicy:
             )
         record = self.registry.active_publication(agent_id)
         if (record is None or agent_id not in set(self.catalog_ids())
-                or (record.owner is not None and record.owner != self.owner_of(agent_id))):
+                or not self.owner_matches(agent_id, record.owner)):
             return None
         scopes = tuple(scope for scope in record.audiences if scope in self._registered_scopes(agent_id))
         if not scopes or (skill_id is not None and self._skill_scope(agent_id, skill_id) not in scopes):
@@ -121,21 +121,28 @@ class A2APublicationPolicy:
 
     def owner_of(self, agent_id: str) -> Optional[str]:
         if self._owner_lookup is None:
-            return None
+            raise PublicationStoreUnavailable("A2A publication owner lookup is unavailable")
         try:
             owner = self._owner_lookup(agent_id)
-        except Exception:
+        except Exception as exc:
             logger.warning("A2A publication owner lookup failed", exc_info=True)
-            return None
+            raise PublicationStoreUnavailable("A2A publication ownership could not be resolved") from exc
         return None if owner is None else str(owner)
 
+    def owner_matches(self, agent_id: str, expected_owner: Optional[str]) -> bool:
+        try:
+            return self.owner_of(agent_id) == expected_owner
+        except PublicationStoreUnavailable:
+            return False
+
     def can_manage(self, actor_emails: Iterable[str], agent_id: str, *, is_admin: bool = False) -> bool:
-        if is_admin:
-            return agent_id in set(self.catalog_ids())
         if agent_id not in set(self.catalog_ids()):
             return False
-        owner = self.owner_of(agent_id)
-        return bool(owner and owner in {str(item) for item in actor_emails})
+        try:
+            owner = self.owner_of(agent_id)
+        except PublicationStoreUnavailable:
+            return False
+        return is_admin or bool(owner and owner in {str(item) for item in actor_emails})
 
     def record_denial(self, *, actor: str, agent_id: str, reason: str) -> None:
         self.registry.record_event({
