@@ -9,3 +9,11 @@ Run from the repository root with Python 3.11, the pinned components, and an iso
 5. Run grouped backend web tests, Ruff, and changed-line coverage. Do not claim native client verification: Apple and Android tests are intentionally omitted at the owner's direction.
 
 The current optional taint and policy flags do not constitute this feature's enforcement.
+
+## Local implementation evidence, 2026-10-20
+
+The combined `codex/098-real-agent-security-qualification` branch includes the 097 host implementation. Registered tool scopes now provide the dispatch effect declaration; missing or invalid declarations fail closed. Effectful calls require exact attended review even when optional taint/HITL flags are off. The physical invocation rechecks that review, writes a pre-effect audit receipt, and records a response or uncertain-outcome receipt. Tool text and presentation components enter a bounded origin ledger; unknown or paraphrased material stays unknown. Effectful stream starts are refused because that transport cannot bind a completion to the same review.
+
+On this Windows host, the combined focused backend suite passed **265 tests**; the stream denial and exact review tests are included. The targeted Ruff E4/E7/E9/F check and `git diff --check` passed. Web renderer Python tests passed **64 tests**, and Projection tooling web tests passed **11 tests**. No Apple or Android client tests ran, as requested.
+
+This is **implemented locally but not qualified for release**. Scope-derived classification does not prove every registered read tool is side-effect-free, and exact-string origin tracking does not preserve every transformation, upload, or remote provenance path. The registered dispatch integration gate cannot run here: Windows lacks `fcntl`, and Docker Desktop could not start an isolated PostgreSQL backend. Live web approval, changed-line coverage, grouped Linux backend tests, and full classification inventory remain required. No component pin, schema, or native client contract changed.

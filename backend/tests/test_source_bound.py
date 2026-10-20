@@ -7,7 +7,8 @@ from __future__ import annotations
 import pytest
 
 from orchestrator.source_bound import (
-    Effect, Origin, action_digest, combine_origins, declaration, review_risks,
+    Effect, Origin, SourceLedger, action_digest, combine_origins, declaration,
+    read_only_stream, review_risks,
 )
 
 
@@ -51,3 +52,28 @@ def test_action_digest_binds_owner_target_arguments_and_effect():
     assert first != action_digest("alice", "chat", action, {"to": "b@example.org", "body": "x"})
     assert first != action_digest("alice", "chat", action, {"to": "a@example.org", "body": "y"})
     assert "source_bound" in review_risks(action)
+
+
+def test_tool_result_and_presentation_both_downgrade_lineage():
+    ledger = SourceLedger()
+    ledger.record_tool_output({"_data": {"text": "outside text"}},
+                              [{"type": "text", "content": "presented text"}])
+    assert ledger.origin_of({"body": "outside text"}) is Origin.TOOL
+    assert ledger.origin_of({"body": "presented text"}) is Origin.TOOL
+    assert ledger.origin_of({"body": "outside text paraphrased"}) is Origin.UNKNOWN
+    assert ledger.origin_of({"body": "outside text", "note": "new"}) is Origin.UNKNOWN
+    assert SourceLedger().origin_of({"body": "outside text"}) is Origin.UNKNOWN
+
+
+def test_lineage_eviction_becomes_unknown():
+    ledger = SourceLedger(limit=1)
+    ledger.record_tool_output("old", "new")
+    assert ledger.origin_of("old") is Origin.UNKNOWN
+    assert ledger.origin_of("new") is Origin.TOOL
+
+
+def test_stream_requires_explicit_read_effect():
+    assert read_only_stream({"fetch": "tools:read"}, "agent", "fetch").effect is Effect.READ
+    for scopes in ({"send": "tools:write"}, {"send": "tools:execute"}, {}):
+        with pytest.raises(ValueError):
+            read_only_stream(scopes, "agent", "send")

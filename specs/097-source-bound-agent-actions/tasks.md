@@ -64,3 +64,7 @@ Origin and action-declaration design can be reviewed independently before integr
 ## Implementation Strategy
 
 Land the host enforcement core first, then exact approval and inventory coverage. Keep existing security gates active and test the physical effect path. No new client contract is planned; web testing is required, native testing intentionally omitted.
+
+## Current checkpoint (2026-10-20)
+
+Host effect review, fail-closed declaration/policy/audit checks, one-use exact approval, bounded origin diagnostics, and stream effect refusal are implemented on the combined 098 branch. The checkboxes above remain open where full cross-channel provenance, effect inventory, live dispatch, changed-line coverage, or grouped Linux verification is missing. Apple and Android tests are intentionally omitted by owner instruction; web-only client checks passed locally. See `quickstart.md` for exact evidence and limits.

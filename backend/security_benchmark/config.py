@@ -1,6 +1,5 @@
-"""Run configuration for the security-benchmark harness: selects synthetic (scripted,
-DB-free), in_process (drives the real orchestrator), or external mode; consumed by
-runner.py and __main__.py.
+"""Configures the legacy benchmark ablation runner and its diagnostic artifacts.
+The signed-turn security qualification command owns its separate run identity.
 """
 
 from __future__ import annotations

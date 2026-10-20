@@ -68,3 +68,7 @@ T001–T002 precede T003–T005. US1 requires T003–T005; US2 can start after t
 ## Implementation Strategy
 
 Deliver US1 as the first independently testable increment, then add truthful corpus coverage and exact-candidate gating. Synthetic ablations remain diagnostics throughout. No native client changes or tests are planned; web and backend evidence delimit the result.
+
+## Current checkpoint (2026-10-20)
+
+The scripted registered-turn fixture, effect oracle, candidate-bound report, paired local cases, and fail-closed legacy/external labels are implemented on the combined branch. The checkboxes above remain open where the real PostgreSQL integration, external corpus mapping, distinct delegated/delayed cases, mutated-gate regression, held-out study, and full CI/coverage proof have not been completed. Apple and Android tests are intentionally omitted by owner instruction; web-only client checks passed locally. See `quickstart.md` for exact evidence and limits.

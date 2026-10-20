@@ -17126,6 +17126,23 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             store[key] = tracker
         return tracker
 
+    def _source_ledger(self, user_id: Optional[str], chat_id: Optional[str]):
+        from collections import OrderedDict
+
+        from orchestrator.source_bound import SourceLedger
+
+        store = getattr(self, "_source_ledgers", None)
+        if store is None:
+            store = OrderedDict()
+            self._source_ledgers = store
+        key = (user_id, chat_id)
+        if key not in store:
+            store[key] = SourceLedger()
+            if len(store) > 256:
+                store.popitem(last=False)
+        store.move_to_end(key)
+        return store[key]
+
     def _current_request_text(self, chat_id: Optional[str]) -> str:
         try:
             text = _ACTIVE_REQUEST_TEXT.get()
@@ -17485,9 +17502,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if user_id and agent_id and action.needs_review:
             from orchestrator import hitl_confirmation
 
+            origin = self._source_ledger(user_id, chat_id).origin_of(args)
             pending = await hitl_confirmation.evaluate(
                 self, websocket, user_id, chat_id, agent_id, tool_name,
-                args, source_bound.review_risks(action))
+                args, (*source_bound.review_risks(action), f"origin:{origin.value}"))
             if pending is not None:
                 return GateRefusal(response=pending)
 
@@ -17993,6 +18011,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator.terminal_security import terminal_dispatch_arguments
         args = terminal_dispatch_arguments(agent_id, args)
         if user_id and result is not None and result.error is None:
+            self._source_ledger(user_id, chat_id).record_tool_output(
+                result.result, result.ui_components)
             try:
                 from orchestrator import taint as _taint
                 if _taint.taint_enabled():
@@ -18499,6 +18519,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator.terminal_security import terminal_dispatch_arguments
         args = terminal_dispatch_arguments(agent_id, args)
         if user_id and result is not None and result.error is None:
+            self._source_ledger(user_id, chat_id).record_tool_output(
+                result.result, result.ui_components)
             try:
                 from orchestrator import taint as _taint
                 if _taint.taint_enabled():
@@ -18919,15 +18941,36 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if refusal is not None:
                 return refusal
             stop = getattr(self, "emergency_stop", None)
-            if stop is not None and user_id and user_id != "legacy":
-                from orchestrator.emergency_stop import EmergencyStopRefused
+            try:
+                if stop is not None and user_id and user_id != "legacy":
+                    from orchestrator.emergency_stop import EmergencyStopRefused
 
+                    try:
+                        async with stop.effect(user_id):
+                            result = await invoke(capabilities)
+                    except EmergencyStopRefused as exc:
+                        result = MCPResponse(error={"message": exc.code, "retryable": False})
+                else:
+                    result = await invoke(capabilities)
+            except Exception:
+                if action.needs_review:
+                    try:
+                        await hitl_confirmation.audit_effect_outcome(
+                            self, approval.call, uncertain=True)
+                    except Exception:
+                        logger.exception("Source-bound uncertain-outcome audit unavailable")
+                raise
+            if action.needs_review:
                 try:
-                    async with stop.effect(user_id):
-                        return await invoke(capabilities)
-                except EmergencyStopRefused as exc:
-                    return MCPResponse(error={"message": exc.code, "retryable": False})
-            return await invoke(capabilities)
+                    await hitl_confirmation.audit_effect_outcome(
+                        self, approval.call, uncertain=(
+                            result is None or bool(result.error)))
+                except Exception:
+                    logger.exception("Source-bound effect outcome audit unavailable")
+                    return MCPResponse(error={"code": "outcome_uncertain",
+                        "message": "Action outcome could not be audited; reconcile before retrying.",
+                        "retryable": False})
+            return result
 
         adapter = self._governed_dispatch_adapter()
         scope = self.tool_permissions.get_tool_scope(agent_id, tool_name) or ""
@@ -20095,6 +20138,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             raise PermissionError("terminal_transport_unavailable")
         if agent_id not in self.agents and agent_id not in self.local_agents:
             raise RuntimeError(f"agent {agent_id!r} is not connected")
+
+        from orchestrator import source_bound
+
+        try:
+            source_bound.read_only_stream(
+                self.tool_permissions.get_tool_scope_map(agent_id), agent_id, tool_name)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise PermissionError("Stream tool effect is unavailable") from exc
 
         auth = await self._authorize_and_prepare(
             websocket,

@@ -164,7 +164,8 @@ async def _audit(orch, call: PendingCall, transition: str) -> None:
             actor_user_id=call.owner, auth_principal=call.owner,
             event_class="agent_tool_call", action_type=f"hitl.{transition}",
             description=f"{transition}: {call.tool}", correlation_id=call.request_id,
-            conversation_id=call.chat, outcome="success",
+            conversation_id=call.chat,
+            outcome="interrupted" if transition == "effect_uncertain" else "success",
             inputs_meta={"agent_id": call.agent, "tool": call.tool,
                          "risks": list(call.risks),
                          "arguments_sha256": hashlib.sha256(
@@ -183,6 +184,12 @@ async def audit_pre_effect(orch, call: PendingCall) -> None:
     if "source_bound" not in call.risks:
         raise ValueError("source-bound approval required")
     await _audit(orch, call, "effect_started")
+
+
+async def audit_effect_outcome(orch, call: PendingCall, *, uncertain: bool) -> None:
+    if "source_bound" not in call.risks:
+        raise ValueError("source-bound approval required")
+    await _audit(orch, call, "effect_uncertain" if uncertain else "effect_response_success")
 
 
 def _refused(message: str) -> MCPResponse:

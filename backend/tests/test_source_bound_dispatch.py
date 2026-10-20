@@ -74,6 +74,20 @@ async def test_audit_receipt_failure_prevents_review(runtime):
 
 
 @pytest.mark.asyncio
+async def test_malformed_policy_refuses_effect(runtime, monkeypatch):
+    from orchestrator import policy
+
+    orch, ws = runtime
+    monkeypatch.setattr(policy, "policy_enabled", lambda: True)
+    monkeypatch.setenv("POLICY_RULES", "{malformed")
+    response = await orch.execute_single_tool(
+        ws, _call("send_email", {"to": "a@example.org"}),
+        {"send_email": "agent-a"}, "chat-a", user_id="owner-a")
+    assert response.error["code"] == "effect_policy_unavailable"
+    orch._execute_with_retry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_physical_effect_requires_one_current_exact_approval(runtime):
     orch, ws = runtime
     effects = []
@@ -142,5 +156,54 @@ async def test_pre_effect_audit_failure_has_zero_effect(runtime):
             conversation_id="chat-a", invoke=lambda _cap: effects.append("sent"))
         assert response.error["code"] == "effect_audit_unavailable"
         assert not effects
+    finally:
+        hc._APPROVAL.reset(token)
+
+
+def test_expired_or_revoked_approval_cannot_reach_physical_effect(runtime):
+    orch, _ws = runtime
+    args = {"to": "a@example.org"}
+    call = hc.PendingCall("id", "owner-a", "chat-a", "agent-a", "send_email",
+                          json.dumps(args, sort_keys=True, separators=(",", ":")),
+                          ("source_bound",), time.monotonic() - 1)
+    token = hc._APPROVAL.set(hc.Approval(orch, call, consumed=True))
+    try:
+        assert hc.current_approval(
+            orch, "owner-a", "chat-a", "agent-a", "send_email", args) is None
+    finally:
+        hc._APPROVAL.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_missing_completion_audit_reports_uncertain_outcome(runtime):
+    orch, ws = runtime
+    orch.audit_recorder.record.side_effect = [object(), None]
+    args = {"to": "a@example.org"}
+    call = hc.PendingCall("id", "owner-a", "chat-a", "agent-a", "send_email",
+                          json.dumps(args, sort_keys=True, separators=(",", ":")),
+                          ("source_bound",), time.monotonic() + 60)
+    token = hc._APPROVAL.set(hc.Approval(orch, call, consumed=True))
+    effects = []
+
+    class Adapter:
+        mode = "off"
+
+        async def execute(self, **kwargs):
+            return await kwargs["invoke"](None)
+
+    async def invoke(_capabilities):
+        effects.append("sent")
+        return MCPResponse(result={"ok": True})
+
+    orch.governed_final_dispatch = Adapter()
+    try:
+        response = await orch._execute_governed_attempt(
+            ws, "agent-a", "send_email", args,
+            user_id="owner-a", channel="web", audit_correlation_id="test",
+            actor_user_id="owner-a", auth_principal="owner-a",
+            conversation_id="chat-a", invoke=invoke)
+        assert effects == ["sent"]
+        assert response.error["code"] == "outcome_uncertain"
+        assert hc._APPROVAL.get().effect_started is True
     finally:
         hc._APPROVAL.reset(token)
