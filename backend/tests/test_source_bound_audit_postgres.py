@@ -11,6 +11,7 @@ import pytest
 from audit.recorder import Recorder
 from audit.repository import AuditRepository
 from orchestrator import hitl_confirmation as hc
+from orchestrator.workspace import WorkspaceManager
 from shared.protocol import MCPResponse
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 from tests.test_lets_gate_ordering import gate_orchestrator  # noqa: F401
@@ -28,7 +29,8 @@ async def durable_approval(runtime, monkeypatch, tmp_path):  # noqa: F811
         recorder = Recorder(repository, retry_queue=tmp_path / "audit-retry.jsonl")
         orch.audit_recorder = recorder
         orch.history = SimpleNamespace(get_chat=MagicMock(return_value={"id": "chat-a"}))
-        orch.workspace = SimpleNamespace(aupsert=AsyncMock(return_value=[]))
+        orch.workspace = SimpleNamespace(aupsert=AsyncMock(return_value=[]),
+            resolve_identity=WorkspaceManager.__new__(WorkspaceManager).resolve_identity)
         orch.send_ui_render = AsyncMock()
 
         async def mutation(**kwargs):
