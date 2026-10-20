@@ -67,20 +67,33 @@ def _apply_rewrite(spec: Any, args: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def evaluate_policy(rules: List[Dict[str, Any]], context: Dict[str, Any]) -> PolicyDecision:
+def evaluate_policy(rules: List[Dict[str, Any]], context: Dict[str, Any],
+                    *, strict: bool = False) -> PolicyDecision:
     base_args = context.get("args") or {}
     args = dict(base_args)
     ctx = {**context, "args": args}
     for rule in (rules or []):
         if not isinstance(rule, dict):
+            if strict:
+                raise ValueError("policy rule must be an object")
             continue
         effect = str(rule.get("effect", "")).strip().lower()
         if effect not in _EFFECTS:
+            if strict:
+                raise ValueError("policy rule has an invalid effect")
             continue
+        if strict:
+            when = rule.get("when", {})
+            if not isinstance(when, dict):
+                raise ValueError("policy rule condition must be an object")
+            if "args_regex" in when:
+                re.compile(str(when["args_regex"]))
         try:
             if not _matches(rule.get("when") or {}, ctx):
                 continue
         except Exception:
+            if strict:
+                raise
             logger.debug("policy: rule %r failed to evaluate — skipping",
                          rule.get("id"), exc_info=True)
             continue
@@ -97,13 +110,17 @@ def evaluate_policy(rules: List[Dict[str, Any]], context: Dict[str, Any]) -> Pol
 _SEED_RULES: List[Dict[str, Any]] = []
 
 
-def load_rules() -> List[Dict[str, Any]]:
+def load_rules(*, strict: bool = False) -> List[Dict[str, Any]]:
     raw = os.getenv("POLICY_RULES")
     if not raw:
         return list(_SEED_RULES)
     try:
         rules = json.loads(raw)
     except (ValueError, TypeError) as exc:
+        if strict:
+            raise ValueError("POLICY_RULES is invalid") from exc
         logger.warning("POLICY_RULES ignored (%s); using seed rules", exc)
         return list(_SEED_RULES)
+    if strict and not isinstance(rules, list):
+        raise ValueError("POLICY_RULES must be an array")
     return rules if isinstance(rules, list) else list(_SEED_RULES)

@@ -1,6 +1,6 @@
 """Tests for orchestrator/taint.py wired into real tool dispatch: read-only fetches are
-not sinks, text the user typed verbatim this turn is exempt, and a taint denial for a
-built-in agent leaves a non-blocking audit row.
+not sinks, coincident human text does not promote tool data, and a taint denial
+for a built-in agent leaves a non-blocking audit row.
 """
 
 from __future__ import annotations
@@ -20,6 +20,10 @@ URL = "https://example.org/some/article"
 
 @pytest.fixture
 def orch(orchestrator_factory, monkeypatch):
+    from orchestrator import source_bound
+
+    monkeypatch.setattr(source_bound, "declaration", lambda _scopes, agent, tool:
+                        source_bound.ActionDeclaration(agent, tool, "tools:read", source_bound.Effect.READ))
     monkeypatch.setenv("FF_TAINT_TRACKING", "true")
     o = orchestrator_factory()
     o.audit_recorder = MagicMock()
@@ -103,11 +107,11 @@ async def test_untrusted_value_into_a_real_sink_is_still_denied(orch):
 
 
 @pytest.mark.asyncio
-async def test_value_typed_by_user_passes_the_sink(orch):
+async def test_value_typed_by_user_does_not_promote_source(orch):
     _taint_search_result(orch)
     resp = await _dispatch(orch, "send_email", {"to": "bob@x", "body": URL},
                            request=f"email bob this link: {URL}")
-    assert "No agent available" in _err(resp)
+    assert "blocked" in _err(resp)
 
 
 @pytest.mark.asyncio
@@ -119,7 +123,7 @@ async def test_user_exemption_is_exact_not_fuzzy(orch):
 
 
 @pytest.mark.asyncio
-async def test_user_exemption_reads_the_contextvar_request(orch):
+async def test_contextvar_request_cannot_promote_source(orch):
     from orchestrator import orchestrator as om
     _taint_search_result(orch)
     token = om._ACTIVE_REQUEST_TEXT.set(f"send {URL} to bob")
@@ -131,7 +135,7 @@ async def test_user_exemption_reads_the_contextvar_request(orch):
             "c1", user_id="u1")
     finally:
         om._ACTIVE_REQUEST_TEXT.reset(token)
-    assert "No agent available" in _err(resp)
+    assert "blocked" in _err(resp)
 
 
 @pytest.mark.asyncio

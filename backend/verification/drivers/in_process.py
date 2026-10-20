@@ -226,6 +226,14 @@ class InProcessDriver:
         )
         self.orch.agents[self.agent_id] = LoopbackAgent(self.orch, server)
         self.orch.tool_permissions.register_tool_scopes(self.agent_id, scope_map)
+        from orchestrator.source_bound import READ_ONLY_GENERAL_FILE_TOOLS
+
+        if {name for name, scope in scope_map.items()
+                if scope == "tools:files"} == READ_ONLY_GENERAL_FILE_TOOLS:
+            host_reads = set(getattr(self.orch, "_source_bound_read_tools", ()))
+            host_reads.update((self.agent_id, tool)
+                              for tool in READ_ONLY_GENERAL_FILE_TOOLS)
+            self.orch._source_bound_read_tools = host_reads
 
     async def upload_as(self, principal: Principal, fixture: Fixture) -> Dict[str, Any]:
         from orchestrator.attachments import content_type as ct
