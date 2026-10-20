@@ -11,11 +11,11 @@ import hashlib
 import json
 import logging
 import re
-import secrets
 import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 from urllib.parse import unquote, urlsplit
+from uuid import uuid4
 
 from astralprims import Alert, Button, Card, CodeBlock, Text
 
@@ -302,7 +302,7 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
         if call is None:
             if len(pending) >= 128 or sum(item.owner == owner for item in pending.values()) >= 32:
                 return _refused("Too many pending confirmations. Resolve an existing request and retry.")
-            call = PendingCall(secrets.token_urlsafe(24), owner, chat, agent, tool,
+            call = PendingCall(str(uuid4()), owner, chat, agent, tool,
                                encoded, tuple(sorted(risks)), time.monotonic() + TTL_SECONDS)
             pending[call.request_id] = call
             try:
