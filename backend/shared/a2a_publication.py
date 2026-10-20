@@ -71,6 +71,10 @@ class AlreadyWithdrawnError(A2APublicationError):
     pass
 
 
+class PublicationCapacityError(A2APublicationError):
+    pass
+
+
 class PublicationForbiddenError(A2APublicationError):
     pass
 
@@ -526,6 +530,16 @@ class A2APublicationRegistry:
                for record in self._records.values()):
             _consume("confirm_denied")
             raise AlreadyWithdrawnError("capability already has an active publication")
+        order = list(self._order)
+        records = dict(self._records)
+        needed = max(0, len(order) + 1 - self._max_inventory)
+        inactive = [key for key in order if records[key].effective_status(now) != "active"]
+        if len(inactive) < needed:
+            _consume("confirm_denied")
+            raise PublicationCapacityError("active publication capacity is full; create a new intent after capacity is available")
+        for key in inactive[:needed]:
+            order.remove(key)
+            records.pop(key)
         lifetime = _LIFETIME_MAP[intent.lifetime]
         record = PublicationRecord(
             publication_id=self._id_factory(),
@@ -541,13 +555,8 @@ class A2APublicationRegistry:
         with self._lock:
             intents = dict(self._intents)
             intents.pop(intent.intent_id, None)
-            records = dict(self._records)
-            order = list(self._order)
             records[record.publication_id] = record
             order.append(record.publication_id)
-            while len(order) > self._max_inventory:
-                dropped = order.pop(0)
-                records.pop(dropped, None)
             self._commit_locked(intents, records, order, {
                 "action": "published",
                 "intent_id": intent.intent_id,

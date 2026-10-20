@@ -1,8 +1,10 @@
 """Exercises publication races and journal/audit rollback using isolated real Plane databases and independent pools."""
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from threading import Barrier
+from threading import Barrier, Event
+import time
 from uuid import uuid4
 
 from psycopg2.extensions import make_dsn
@@ -52,6 +54,141 @@ def proposal(registry, actor):
 def confirm(registry, intent, actor):
     return registry.confirm(intent_id=intent.intent_id,
                             confirmation_token=intent.confirmation_token, actor=actor)
+
+
+@pytest.mark.parametrize('inactive', ['withdrawn', 'expired'])
+def test_bounded_history_keeps_other_owner_consent_across_workers(publication_workers, inactive):
+    from tests.test_a2a_publication import _Clock
+    actor, workers = publication_workers
+    clock = _Clock()
+    for registry, _, _, _ in workers:
+        registry._catalog = lambda: ('weather-1', 'web-research-1')
+        registry._max_inventory = 2
+        registry._time_fn = clock
+    first, _, audit, _ = workers[0]
+    second, store, _, _ = workers[1]
+    alice, bob = actor + '-alice', actor + '-bob'
+    original = confirm(first, proposal(first, alice), alice)
+    def publish_bob(lifetime):
+        intent = second.create_intent(agent_id='web-research-1', audiences=['tools:read'],
+                                      lifetime=lifetime, actor=bob, owner=bob)
+        return confirm(second, intent, bob)
+    historical = publish_bob('1h')
+    if inactive == 'withdrawn':
+        second.withdraw(publication_id=historical.publication_id, actor=bob)
+    else:
+        clock.advance(3601)
+    replacement = publish_bob('open')
+    restarted = A2APublicationRegistry(catalog=first._catalog, audiences=first._audiences,
+        max_inventory=2, time_fn=clock, store=store)
+    assert first.active() == restarted.active() == (original, replacement)
+    assert restarted.get(historical.publication_id) is None
+    assert restarted.inventory(actor=alice)[0]['publication_id'] == original.publication_id
+    assert len(store.load()['publications']) == 2
+    for owner in (alice, bob):
+        assert audit.verify_chain(owner) is None
+
+
+def test_capacity_denial_is_durable_atomic_and_recoverable(publication_workers, monkeypatch):
+    actor, workers = publication_workers
+    for registry, _, _, _ in workers:
+        registry._catalog = lambda: ('weather-1', 'web-research-1', 'third')
+        registry._max_inventory = 2
+    first, store, audit, _ = workers[0]
+    second = workers[1][0]
+    original = confirm(first, proposal(first, actor), actor)
+    def intent_for(agent_id):
+        return second.create_intent(agent_id=agent_id, audiences=['tools:read'],
+                                    lifetime='open', actor=actor)
+    other = confirm(second, intent_for('web-research-1'), actor)
+    intent = intent_for('third')
+    before = store.load()
+    with monkeypatch.context() as patch:
+        patch.setattr(audit, 'insert_in_transaction', lambda *a, **k: None)
+        with pytest.raises(PublicationStoreUnavailable):
+            confirm(first, intent, actor)
+    assert store.load() == before
+    assert second.get_intent(intent.intent_id) == intent
+    with pytest.raises(A2APublicationError, match='capacity'):
+        confirm(first, intent, actor)
+    assert second.get_intent(intent.intent_id) is None
+    assert second.active() == (original, other)
+    with pytest.raises(A2APublicationError):
+        confirm(second, intent, actor)
+    rows, _ = audit.list_for_user(actor)
+    assert [row.action_type for row in rows].count('a2a_publication.published') == 2
+    assert [row.action_type for row in rows].count('a2a_publication.confirm_denied') == 1
+    first.withdraw(publication_id=other.publication_id, actor=actor)
+    replacement = confirm(second, intent_for('third'), actor)
+    assert first.active() == (original, replacement)
+    assert len(store.load()['publications']) == 2
+    assert audit.verify_chain(actor) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('route', ['rest', 'card', 'a2a'])
+async def test_requests_progress_while_real_plane_journal_is_locked(publication_workers, monkeypatch, route):
+    import httpx
+    from fastapi import FastAPI
+    from orchestrator.a2a_orchestrator_executor import setup_orchestrator_a2a
+    from orchestrator.a2a_publication_api import publication_router
+    from tests.test_a2a_publication import _auth, _orchestrator
+    monkeypatch.setenv('USE_MOCK_AUTH', 'true')
+    monkeypatch.setenv('KEYCLOAK_AUTHORITY', 'https://iam.example/realms/astral')
+    monkeypatch.setenv('KEYCLOAK_CLIENT_ID', 'astral-frontend')
+    actor, workers = publication_workers
+    registry = workers[0][0]
+    confirm(registry, proposal(registry, actor), actor)
+    orch = _orchestrator()
+    orch.a2a_publications = registry
+    app = FastAPI()
+    app.state.orchestrator = orch
+    app.include_router(publication_router)
+    setup_orchestrator_a2a(app, orch)
+    _, blocker_store, _, blocker_runtime = workers[1]
+    held, release = Event(), Event()
+    guarded_release = []
+    def hold_journal():
+        with blocker_runtime.transaction() as transaction:
+            blocker_store._record(transaction)
+            held.set()
+            if not release.wait(timeout=10):
+                guarded_release.append(True)
+    def observe_database_wait():
+        deadline = time.monotonic() + 10
+        while not release.is_set():
+            blocked = blocker_runtime.fetch_one(
+                'SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname=current_database() '
+                'AND cardinality(pg_blocking_pids(pid)) > 0) AS blocked')['blocked']
+            if blocked:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            Event().wait(0.01)
+        return False
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        holder = pool.submit(hold_journal)
+        assert await asyncio.to_thread(held.wait, 10)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            if route == 'rest':
+                request = client.get('/api/a2a/publications', headers=_auth())
+            elif route == 'card':
+                request = client.get('/a2a/.well-known/agent-card.json')
+            else:
+                request = client.post('/a2a', headers={**_auth(), 'A2A-Version': '1.0'}, json={
+                    'jsonrpc': '2.0', 'id': '1', 'method': 'SendMessage', 'params': {'message': {
+                        'message_id': 'm-1', 'role': 'ROLE_USER', 'parts': [{'data': {'method': 'tools/list'}}]}}})
+            task = asyncio.create_task(request)
+            try:
+                assert await asyncio.to_thread(observe_database_wait)
+                await asyncio.sleep(0)
+                assert not task.done()
+                assert not guarded_release
+            finally:
+                release.set()
+            response = await task
+        holder.result(timeout=10)
+    assert response.status_code == 200
 
 
 def test_independent_workers_race_single_use_and_observe_withdrawal(publication_workers):

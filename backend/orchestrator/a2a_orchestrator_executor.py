@@ -262,11 +262,11 @@ class OrchestratorA2AExecutor(AgentExecutor):
             )
             return
 
-        policy = _publication_policy(self.orchestrator)
+        policy = await asyncio.to_thread(_publication_policy, self.orchestrator)
         if policy is not None:
-            admission = policy.admit(projected.agent_id, projected.skill_id)
+            admission = await asyncio.to_thread(policy.admit, projected.agent_id, projected.skill_id)
             if admission is None:
-                policy.record_denial(
+                await asyncio.to_thread(policy.record_denial,
                     actor=str(claims.get("sub") or ""),
                     agent_id=projected.agent_id,
                     reason="not_published",
@@ -340,9 +340,9 @@ class OrchestratorA2AExecutor(AgentExecutor):
         projected = await asyncio.to_thread(
             project_tools, self.orchestrator, claims["sub"], claims
         )
-        policy = _publication_policy(self.orchestrator)
+        policy = await asyncio.to_thread(_publication_policy, self.orchestrator)
         if policy is not None:
-            projected = policy.filter_projected_tools(projected)
+            projected = await asyncio.to_thread(policy.filter_projected_tools, projected)
         tools = []
         for tool in projected:
             card = self.orchestrator.agent_cards.get(tool.agent_id)
@@ -530,7 +530,7 @@ def setup_orchestrator_a2a(app, orchestrator):
     validator = executor.security_validator
 
     async def refresh_card(_card):
-        return build_orchestrator_a2a_card(orchestrator)
+        return await asyncio.to_thread(build_orchestrator_a2a_card, orchestrator)
 
     def _gated(endpoint):
         async def gated_endpoint(request):

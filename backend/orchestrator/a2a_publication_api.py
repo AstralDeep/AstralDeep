@@ -22,6 +22,7 @@ from shared.a2a_publication import (
     InvalidLifetimeError,
     LIFETIMES,
     NotEligibleError,
+    PublicationCapacityError,
     PublicationForbiddenError,
     PublicationStoreConflict,
     PublicationStoreUnavailable,
@@ -136,7 +137,8 @@ def _error_status(exc: A2APublicationError) -> int:
         return 404
     if isinstance(exc, (ConfirmationMismatchError, PublicationForbiddenError)):
         return 403
-    if isinstance(exc, (StaleIntentError, AlreadyWithdrawnError, PublicationStoreConflict)):
+    if isinstance(exc, (StaleIntentError, AlreadyWithdrawnError, PublicationStoreConflict,
+                        PublicationCapacityError)):
         return 409
     if isinstance(exc, PublicationStoreUnavailable):
         return 503
@@ -156,7 +158,7 @@ async def list_publications(
     payload: dict = Depends(get_current_user_payload),
 ):
     sub, _emails, is_admin = _actor(payload)
-    registry = _registry_or_409(_orchestrator(request))
+    registry = await asyncio.to_thread(_registry_or_409, _orchestrator(request))
     actor = None if is_admin else sub
     return {
         "publications": list(await asyncio.to_thread(registry.inventory, actor=actor)),
@@ -176,14 +178,14 @@ async def get_catalog(
 ):
     _sub, emails, is_admin = _actor(payload)
     orch = _orchestrator(request)
-    registry = _registry_or_409(orch)
-    policy = _policy(orch)
+    registry = await asyncio.to_thread(_registry_or_409, orch)
+    policy = await asyncio.to_thread(_policy, orch)
     if policy is None:
         raise HTTPException(status_code=409, detail=_A2A_DISABLED)
     cards = getattr(orch, "agent_cards", {}) or {}
     catalog = []
     for agent_id, audiences, published in await asyncio.to_thread(registry.eligible_catalog):
-        if not policy.can_manage(emails, agent_id, is_admin=is_admin):
+        if not await asyncio.to_thread(policy.can_manage, emails, agent_id, is_admin=is_admin):
             continue
         card = cards.get(agent_id)
         catalog.append({
@@ -192,7 +194,7 @@ async def get_catalog(
             "description": str(getattr(card, "description", None) or ""),
             "audiences": list(audiences),
             "published": published,
-            "owner": policy.owner_of(agent_id),
+            "owner": await asyncio.to_thread(policy.owner_of, agent_id),
         })
     return {"capabilities": catalog, "lifetimes": [key for key, _ in LIFETIMES]}
 
@@ -209,10 +211,10 @@ async def create_intent(
 ):
     sub, emails, is_admin = _actor(payload)
     orch = _orchestrator(request)
-    registry = _registry_or_409(orch)
-    policy = _policy(orch)
+    registry = await asyncio.to_thread(_registry_or_409, orch)
+    policy = await asyncio.to_thread(_policy, orch)
     if not is_admin and (
-        policy is None or not policy.can_manage(emails, body.agent_id, is_admin=False)
+        policy is None or not await asyncio.to_thread(policy.can_manage, emails, body.agent_id, is_admin=False)
     ):
         await record_publication_event(
             user_id=sub, action="intent_denied",
@@ -221,7 +223,7 @@ async def create_intent(
         )
         raise HTTPException(status_code=403, detail="Capability is not managed by this owner")
     try:
-        owner = policy.owner_of(body.agent_id)
+        owner = await asyncio.to_thread(policy.owner_of, body.agent_id)
         intent = await asyncio.to_thread(
             registry.create_intent,
             agent_id=body.agent_id,
@@ -264,13 +266,13 @@ async def confirm_intent(
 ):
     sub, emails, is_admin = _actor(payload)
     orch = _orchestrator(request)
-    registry = _registry_or_409(orch)
-    policy = _policy(orch)
+    registry = await asyncio.to_thread(_registry_or_409, orch)
+    policy = await asyncio.to_thread(_policy, orch)
     intent = await asyncio.to_thread(registry.get_intent, intent_id)
     owner_allowed = bool(
         intent is not None
         and policy is not None
-        and policy.can_manage(emails, intent.agent_id, is_admin=False)
+        and await asyncio.to_thread(policy.can_manage, emails, intent.agent_id, is_admin=False)
     )
     if intent is not None and not is_admin and not owner_allowed:
         await record_publication_event(
@@ -313,13 +315,13 @@ async def withdraw_publication(
 ):
     sub, emails, is_admin = _actor(payload)
     orch = _orchestrator(request)
-    registry = _registry_or_409(orch)
-    policy = _policy(orch)
+    registry = await asyncio.to_thread(_registry_or_409, orch)
+    policy = await asyncio.to_thread(_policy, orch)
     existing = await asyncio.to_thread(registry.get, publication_id)
     owner_allowed = bool(
         existing is not None
         and policy is not None
-        and any(policy.owner_matches(existing.agent_id, email) for email in emails)
+        and await asyncio.to_thread(lambda: any(policy.owner_matches(existing.agent_id, email) for email in emails))
     )
     if existing is not None and not is_admin and not owner_allowed:
         await record_publication_event(
