@@ -118,3 +118,5 @@ def data_sharing_store(credential_plane_089):
         plane_runtime=credential_plane_089,
         plane_repositories=credential_plane_089.repositories,
     )
+
+from tests.helpers.completed_result import completed_seed  # noqa: E402,F401

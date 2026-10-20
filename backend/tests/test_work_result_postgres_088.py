@@ -18,14 +18,14 @@ from persistent_agents.tests.test_research_episode_postgres_088 import outcome
 from persistent_agents.tests.test_research_execution_postgres_088 import (
     actions,
     current,
-    fixture as fixture,
     gate_orchestrator as gate_orchestrator,
-    operation as operation,
-    plane as plane,
     research as research,
     signing_key as signing_key,
 )
 from tests.helpers.session_plane_runtime import get_session_record
+from tests.helpers.completed_result import (
+    completed as completed, fixture as fixture, operation as operation, plane as plane,
+)
 
 runtime = plane
 pytestmark = [
@@ -34,8 +34,7 @@ pytestmark = [
 ]
 
 
-@pytest.fixture
-async def completed(research):
+async def complete_research(research):
     runner, result = await outcome(research)
     research.completed = await runner._finish_operation(research.executor, result)
     research.ledger = await actions(research)
@@ -57,8 +56,8 @@ async def project(op, *, owner=None):
     return await op.executor.store.transaction(read, bound_session_waits=True)
 
 
-async def test_completed_result_is_rebuilt_from_actual_settled_receipts(completed):
-    op = completed
+async def test_completed_result_is_rebuilt_from_actual_settled_receipts(research):
+    op = await complete_research(research)
     result = await project(op)
     assert set(result) == {"version", "available", "reason", "content"}
     assert result["version"] == 1 and result["available"] is True and result["reason"] is None
@@ -103,7 +102,7 @@ async def test_framework_result_preserves_verified_content_and_current_scope(com
     credentials.revoke(owner_id=op.owner, credential_id=caller.credential_id)
     with pytest.raises(AssignmentError, match="framework_credential_authority_unavailable"):
         await ops.result(caller, op.completed.assignment_id)
-    assert len(op.model_calls) == 1
+    assert len(op.seed_observations["model_calls"]) == 1 and op.model_calls == []
 
 
 async def _mutate_action(op, action, change):
@@ -151,13 +150,15 @@ async def test_completed_excerpts_survive_config_and_original_session_retirement
     op = completed
     before = await project(op)
     assert await op.executor.orch._llm_store.clear(op.owner)
-    session = get_session_record(op.runtime, op.sid)
+    session = get_session_record(op.runtime, op.original_sid)
     with op.runtime.transaction() as tx:
         op.runtime.repositories.history.sessions.delete(tx, owner_id=op.owner,
-            session_id=op.sid, expected_incarnation_id=session.incarnation_id)
+            session_id=op.original_sid, expected_incarnation_id=session.incarnation_id)
     assert await project(op) == before
     assert before["available"] is True
-    assert len(op.model_calls) == 1 and len(op.physical) == 2
+    assert len(op.seed_observations["model_calls"]) == 1
+    assert len(op.seed_observations["physical"]) == 2
+    assert op.model_calls == [] and op.physical == []
 
 
 async def test_empty_selection_is_honest_insufficient_evidence(research):
