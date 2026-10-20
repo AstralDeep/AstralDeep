@@ -87,10 +87,12 @@ class EffectAttempt:
     outcome_digest: str | None
     settled_at: int | None
     revision: int
+    dispatch_id: str | None = None
+    authority_digest: str | None = None
 
     @property
     def settled(self) -> bool:
-        return self.state != "bound"
+        return self.state in {AttemptOutcome.APPLIED.value, AttemptOutcome.NOT_APPLIED.value}
 
     @property
     def report_outcome(self) -> str | None:
@@ -267,6 +269,8 @@ class EffectAttemptLedger:
         target_kind: str,
         target_id: str,
         argument_digest: str,
+        dispatch_id: str | None = None,
+        authority_digest: str | None = None,
     ) -> EffectAttempt:
         if not isinstance(fence, ExecutionFence):
             raise ReconciliationRefused("reconcile_fence_invalid")
@@ -282,6 +286,8 @@ class EffectAttemptLedger:
                 argument_digest=argument_digest,
                 target_kind=target_kind,
                 target_id=target_id,
+                dispatch_id=dispatch_id,
+                authority_digest=authority_digest,
             )
 
     def read(
@@ -331,7 +337,15 @@ class EffectAttemptLedger:
         argument_digest: str,
         target_kind: str,
         target_id: str,
+        dispatch_id: str | None = None,
+        authority_digest: str | None = None,
     ) -> EffectAttempt:
+        if dispatch_id is not None and (
+            not isinstance(dispatch_id, str) or _NONCE_RE.fullmatch(dispatch_id) is None
+            or not isinstance(authority_digest, str)
+            or _SHA256_RE.fullmatch(authority_digest) is None
+        ):
+            raise ReconciliationRefused("reconcile_dispatch_invalid")
         record = self._coordinator.repository.get_operation_for_administration(
             fence.operation_id, for_update=True, transaction=transaction
         )
@@ -340,12 +354,15 @@ class EffectAttemptLedger:
         partition = _partition_of(record)
         if not partition:  # pragma: no cover - owner scopes always partition
             raise ReconciliationRefused("reconcile_partition_unavailable", status=503)
-        nonce = self._attempt_nonce(fence, target_kind, target_id)
+        nonce = self._attempt_nonce(fence, target_kind, target_id, dispatch_id)
         rows = self._store.list(
             transaction, partition=partition, limit=_OWNER_SCAN_LIMIT + 1
         )
         if len(rows) > _OWNER_SCAN_LIMIT:
             raise ReconciliationRefused("attempt_inventory_exhausted", status=503)
+        for row in rows:
+            if self._parse_row(row) is None:
+                raise ReconciliationRefused("attempt_inventory_invalid", status=503)
         self._prune_missing_operations(
             transaction,
             partition=partition,
@@ -371,6 +388,8 @@ class EffectAttemptLedger:
                 or existing.target_id != target_id
             ):
                 raise ReconciliationRefused("attempt_nonce_conflict")
+            if dispatch_id is not None:
+                raise ReconciliationRefused("effect_selection_already_reserved")
             if existing.settled:
                 raise ReconciliationRefused("attempt_already_settled")
             return existing
@@ -388,6 +407,8 @@ class EffectAttemptLedger:
                 target_kind=target_kind,
                 target_id=target_id,
                 recorded_at=now,
+                dispatch_id=dispatch_id,
+                authority_digest=authority_digest,
             ),
         )
         self._audit_in_transaction(
@@ -432,7 +453,9 @@ class EffectAttemptLedger:
         attempts = []
         for row in rows:
             parsed = self._parse_row(row)
-            if parsed is not None and parsed.operation_id == operation_id:
+            if parsed is None:
+                raise ReconciliationRefused("attempt_inventory_invalid", status=503)
+            if parsed.operation_id == operation_id:
                 attempts.append(parsed)
         return tuple(attempts)
 
@@ -459,17 +482,17 @@ class EffectAttemptLedger:
         parsed = self._parse_row(row)
         if parsed is None or parsed.operation_id != operation_id:
             raise ReconciliationRefused("reconcile_attempt_unknown")
+        if parsed.outcome is outcome and parsed.outcome_digest == outcome_digest:
+            return parsed
         if parsed.settled:
-            if parsed.outcome is outcome and parsed.outcome_digest == outcome_digest:
-                return parsed
             raise ReconciliationRefused("reconcile_outcome_conflict")
-        now = _now_ms()
+        now = max(_now_ms(), parsed.revision + 1)
         updated = self._record_of(parsed)
         updated.update(
             state=outcome.value,
             outcome=outcome.value,
             outcome_digest=outcome_digest,
-            settled_at=now,
+            settled_at=now if outcome is not AttemptOutcome.UNCERTAIN else None,
             revision=now,
         )
         try:
@@ -508,19 +531,46 @@ class EffectAttemptLedger:
                 attempts = self._list_in_transaction(
                     transaction, partition=partition, operation_id=record.operation_id
                 )
-        except ReconciliationRefused:
+        except Exception:
             return None
         if not attempts:
             return None
         states = {attempt.state for attempt in attempts}
         if states == {AttemptOutcome.NOT_APPLIED.value}:
             return "cleared"
-        if AttemptOutcome.APPLIED.value in states:
+        if states <= {AttemptOutcome.APPLIED.value, AttemptOutcome.NOT_APPLIED.value}:
             return "applied"
         return None
 
+    def completion_uncertain(self, transaction, fence):
+        record = self._coordinator.repository.get_operation_for_administration(
+            fence.operation_id, for_update=True, transaction=transaction)
+        if record is None:
+            raise ReconciliationRefused("reconcile_operation_missing")
+        try:
+            attempts = self._list_in_transaction(transaction, partition=_partition_of(record),
+                                                 operation_id=fence.operation_id)
+        except Exception:
+            return True
+        return any(not attempt.settled for attempt in attempts)
+
+    def preservation_probe(self, record: OperationRecord) -> str | None:
+        try:
+            attempts = self.list_for_operation(
+                partition=_partition_of(record), operation_id=record.operation_id
+            )
+        except Exception:
+            return "uncertain"
+        if not attempts:
+            return None
+        if any(not attempt.settled for attempt in attempts):
+            return "uncertain"
+        return "applied" if any(
+            attempt.outcome is AttemptOutcome.APPLIED for attempt in attempts
+        ) else "cleared"
+
     def _attempt_nonce(
-        self, fence: ExecutionFence, target_kind: str, target_id: str
+        self, fence: ExecutionFence, target_kind: str, target_id: str, dispatch_id=None
     ) -> str:
         material = "|".join(
             (
@@ -531,6 +581,8 @@ class EffectAttemptLedger:
                 target_id,
             )
         )
+        if dispatch_id is not None:
+            material += "|" + dispatch_id
         return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
 
     def _prune_missing_operations(
@@ -568,9 +620,13 @@ class EffectAttemptLedger:
         target_kind: str,
         target_id: str,
         recorded_at: int,
+        dispatch_id: str | None = None,
+        authority_digest: str | None = None,
     ) -> dict[str, Any]:
         return {
-            "version": _ATTEMPT_RECORD_VERSION,
+            "version": 2 if dispatch_id else _ATTEMPT_RECORD_VERSION,
+            "dispatch_id": dispatch_id,
+            "authority_digest": authority_digest,
             "operation_id": str(fence.operation_id),
             "execution_generation": fence.execution_generation,
             "attempt_nonce": nonce,
@@ -587,7 +643,7 @@ class EffectAttemptLedger:
 
     def _parse_row(self, row) -> EffectAttempt | None:
         record = _decode_record(row.encrypted_value)
-        if record is None or record.get("version") != _ATTEMPT_RECORD_VERSION:
+        if record is None or type(record.get("version")) is not int or record.get("version") not in {1, 2}:
             return None
         try:
             attempt = EffectAttempt(
@@ -615,19 +671,49 @@ class EffectAttemptLedger:
                     else None
                 ),
                 revision=int(row.updated_at),
+                dispatch_id=record.get("dispatch_id"),
+                authority_digest=record.get("authority_digest"),
             )
         except (KeyError, TypeError, ValueError):
             return None
         if (
             attempt.attempt_nonce != row.credential_key
+            or any(type(record.get(key)) is not str for key in ("operation_id", "attempt_nonce",
+                "argument_digest", "target_kind", "target_id", "state"))
+            or (record.get("outcome_digest") is not None and type(record["outcome_digest"]) is not str)
             or attempt.state not in _ATTEMPT_STATES
+            or _NONCE_RE.fullmatch(attempt.attempt_nonce) is None
+            or _SHA256_RE.fullmatch(attempt.argument_digest) is None
+            or _TARGET_KIND_RE.fullmatch(attempt.target_kind) is None
+            or _TARGET_ID_RE.fullmatch(attempt.target_id) is None
+            or any(type(record.get(key)) is not int or not 0 < record[key] < 2**63
+                   for key in ("execution_generation", "recorded_at", "revision"))
+            or record["revision"] != attempt.revision
+            or attempt.revision < attempt.recorded_at
+            or (attempt.state == "bound" and (attempt.outcome is not None
+                or attempt.outcome_digest is not None or attempt.settled_at is not None))
+            or (attempt.state != "bound" and (attempt.outcome is None
+                or attempt.state != attempt.outcome.value))
+            or (attempt.outcome is AttemptOutcome.APPLIED and (
+                attempt.outcome_digest is None or _SHA256_RE.fullmatch(attempt.outcome_digest) is None))
+            or (attempt.outcome is not AttemptOutcome.APPLIED and attempt.outcome_digest is not None)
+            or (attempt.settled and (type(record.get("settled_at")) is not int
+                or not attempt.recorded_at <= attempt.settled_at <= attempt.revision))
+            or (record["version"] == 2 and (not isinstance(attempt.dispatch_id, str)
+                or _NONCE_RE.fullmatch(attempt.dispatch_id) is None
+                or not isinstance(attempt.authority_digest, str)
+                or _SHA256_RE.fullmatch(attempt.authority_digest) is None))
+            or (record["version"] == 1 and (attempt.dispatch_id is not None
+                or attempt.authority_digest is not None))
         ):
             return None
         return attempt
 
     def _record_of(self, attempt: EffectAttempt) -> dict[str, Any]:
         return {
-            "version": _ATTEMPT_RECORD_VERSION,
+            "version": 2 if attempt.dispatch_id else _ATTEMPT_RECORD_VERSION,
+            "dispatch_id": attempt.dispatch_id,
+            "authority_digest": attempt.authority_digest,
             "operation_id": str(attempt.operation_id),
             "execution_generation": attempt.execution_generation,
             "attempt_nonce": attempt.attempt_nonce,
@@ -760,75 +846,120 @@ class EffectReconciliationService:
                 body = LateResultReport.model_validate(body)
             except ValidationError:
                 raise ReconciliationRefused("reconcile_report_invalid", status=422) from None
-        coordinator = self._ledger._coordinator
         with self._ledger._store.source.transaction() as transaction:
-            record = coordinator.repository.get_operation_for_administration(
-                parsed_operation, for_update=True, transaction=transaction
-            )
-            if (
-                record is None
-                or record.owner_scope is not OwnerScope.USER
-                or record.owner_user_id != owner_id
-            ):
-                raise ReconciliationRefused("work_not_found", status=404)
-            partition = _partition_of(record)
-            if not partition:  # pragma: no cover - owner scopes always partition
-                raise ReconciliationRefused("reconcile_partition_unavailable", status=503)
-            self._targets.assert_reportable(
-                owner_id=owner_id,
-                target_kind=body.target_kind,
-                target_id=body.target_id,
-            )
-            attempt = self._ledger._read_in_transaction(
-                transaction,
-                partition=partition,
-                operation_id=parsed_operation,
-                nonce=body.attempt_nonce,
-            )
-            if attempt is None:
-                raise ReconciliationRefused("reconcile_attempt_unknown", status=404)
-            if (
-                attempt.argument_digest != body.argument_digest
-                or attempt.target_kind != body.target_kind
-                or attempt.target_id != body.target_id
-            ):
-                raise ReconciliationRefused("reconcile_report_stale")
-            outcome = _OUTCOME_BY_REPORT[body.outcome]
-            outcome_digest = (
-                body.result_digest if outcome is AttemptOutcome.APPLIED else None
-            )
-            if (
-                record.state is OperationState.RUNNING
-                and record.execution_generation == attempt.execution_generation
-                and not attempt.settled
-            ):
-                raise ReconciliationRefused("reconcile_execution_current")
-            if (
-                record.state
-                in {
-                    OperationState.QUEUED,
-                    OperationState.COMPLETED,
-                    OperationState.FAILED,
-                    OperationState.CANCELLED,
-                }
-                and not attempt.settled
-            ):
-                raise ReconciliationRefused("reconcile_outcome_conflict")
-            settled = self._ledger._settle_in_transaction(
-                transaction,
-                partition=partition,
-                operation_id=parsed_operation,
-                nonce=body.attempt_nonce,
-                outcome=outcome,
-                outcome_digest=outcome_digest,
-            )
-            return {
-                "operation_id": str(parsed_operation),
-                "attempt_nonce": settled.attempt_nonce,
-                "outcome": settled.report_outcome,
-                "applied": settled.outcome is AttemptOutcome.APPLIED,
-                "operation_state": record.state.value,
+            return self._report_in_transaction(transaction, owner_id, parsed_operation, body)
+
+    async def report_current(self, caller, operation_id, body, *, orchestrator):
+        from orchestrator.remote_effect_authority import lock_owner
+        from orchestrator.human_request_authority import CurrentHumanCaller
+        if type(caller) is not CurrentHumanCaller:
+            raise ReconciliationRefused("effect_current_authority_unavailable")
+        caller.require_write()
+        if self._ledger._audit is None:
+            raise ReconciliationRefused("effect_audit_unavailable")
+        if caller.runtime is not self._ledger._store.source.plane_runtime:
+            raise ReconciliationRefused("effect_current_authority_unavailable")
+        parsed_operation = _parse_operation_id(operation_id)
+        if type(body) is not LateResultReport:
+            raise ReconciliationRefused("reconcile_report_invalid", status=422)
+
+        def apply(transaction, repositories):
+            lock_owner(caller.runtime, transaction, caller.owner_id)
+            from persistent_agents.models import AssignmentError
+            try:
+                return self._report_in_transaction(transaction, caller.owner_id,
+                    parsed_operation, body, current_human=True)
+            except ReconciliationRefused as exc:
+                raise AssignmentError(exc.code, exc.status) from None
+
+        return await caller.transaction(apply, expected_orchestrator=orchestrator)
+
+    def _report_in_transaction(self, transaction, owner_id, parsed_operation, body, *, current_human=False):
+        coordinator = self._ledger._coordinator
+        record = coordinator.repository.get_operation_for_administration(
+            parsed_operation, for_update=True, transaction=transaction
+        )
+        if (
+            record is None
+            or record.owner_scope is not OwnerScope.USER
+            or record.owner_user_id != owner_id
+        ):
+            raise ReconciliationRefused("work_not_found", status=404)
+        partition = _partition_of(record)
+        if not partition:  # pragma: no cover - owner scopes always partition
+            raise ReconciliationRefused("reconcile_partition_unavailable", status=503)
+        attempt = self._ledger._read_in_transaction(
+            transaction,
+            partition=partition,
+            operation_id=parsed_operation,
+            nonce=body.attempt_nonce,
+        )
+        if attempt is None:
+            raise ReconciliationRefused("reconcile_attempt_unknown", status=404)
+        if attempt.dispatch_id is not None:
+            if not current_human:
+                raise ReconciliationRefused("effect_current_authority_unavailable")
+            self._assert_current_target(transaction, owner_id, attempt)
+        else:
+            self._targets.assert_reportable(owner_id=owner_id, target_kind=body.target_kind,
+                                            target_id=body.target_id)
+        if (
+            attempt.argument_digest != body.argument_digest
+            or attempt.target_kind != body.target_kind
+            or attempt.target_id != body.target_id
+        ):
+            raise ReconciliationRefused("reconcile_report_stale")
+        if record.execution_generation != attempt.execution_generation:
+            raise ReconciliationRefused("reconcile_report_stale")
+        outcome = _OUTCOME_BY_REPORT[body.outcome]
+        outcome_digest = (
+            body.result_digest if outcome is AttemptOutcome.APPLIED else None
+        )
+        if (
+            record.state is OperationState.RUNNING
+            and record.execution_generation == attempt.execution_generation
+            and not attempt.settled
+        ):
+            raise ReconciliationRefused("reconcile_execution_current")
+        if (
+            record.state
+            in {
+                OperationState.QUEUED,
+                OperationState.COMPLETED,
+                OperationState.FAILED,
+                OperationState.CANCELLED,
             }
+            and not attempt.settled
+        ):
+            raise ReconciliationRefused("reconcile_outcome_conflict")
+        settled = self._ledger._settle_in_transaction(
+            transaction,
+            partition=partition,
+            operation_id=parsed_operation,
+            nonce=body.attempt_nonce,
+            outcome=outcome,
+            outcome_digest=outcome_digest,
+        )
+        if attempt.dispatch_id is not None:
+            self._assert_current_target(transaction, owner_id, attempt)
+        return {
+            "operation_id": str(parsed_operation),
+            "attempt_nonce": settled.attempt_nonce,
+            "outcome": settled.report_outcome,
+            "applied": settled.outcome is AttemptOutcome.APPLIED,
+            "operation_state": record.state.value,
+        }
+
+
+    def _assert_current_target(self, transaction, owner_id, attempt):
+        from orchestrator.remote_effect_authority import authority_digest, RemoteAuthorityUnavailable
+        try:
+            current_digest = authority_digest(self._ledger._store.source.plane_runtime,
+                                               transaction, owner_id, attempt.target_id)
+        except RemoteAuthorityUnavailable:
+            raise ReconciliationRefused("reconcile_target_unavailable") from None
+        if attempt.target_kind != "remote_machine" or current_digest != attempt.authority_digest:
+            raise ReconciliationRefused("reconcile_target_unavailable")
 
 
 __all__ = (

@@ -203,6 +203,8 @@ class CredentialManager:
         now = int(time.time() * 1000)
         repository = self._credentials.repository
         with self._credentials.transaction() as transaction:
+            from orchestrator.remote_effect_authority import rotate_authority
+            rotate_authority(self._credentials.plane_runtime, transaction, owner_user_id, machine_id)
             current = repository.get_machine_credential(
                 transaction,
                 owner_id=owner_user_id,
@@ -235,12 +237,14 @@ class CredentialManager:
         self,
         machine_id: str,
         owner_user_id: str,
+        *, transaction=None,
     ) -> Optional[Dict[str, Optional[str]]]:
-        row = self._credentials.call(
-            self._credentials.repository.get_machine_credential,
-            owner_id=owner_user_id,
-            machine_id=machine_id,
-        )
+        if transaction is None:
+            row = self._credentials.call(self._credentials.repository.get_machine_credential,
+                owner_id=owner_user_id, machine_id=machine_id)
+        else:
+            row = self._credentials.repository.get_machine_credential(transaction,
+                owner_id=owner_user_id, machine_id=machine_id)
         if row is None:
             return None
         try:
@@ -259,18 +263,23 @@ class CredentialManager:
         }
 
     def delete_machine_credential(self, machine_id: str, owner_user_id: str):
-        self._credentials.call(
-            self._credentials.repository.delete_machine_credential,
-            owner_id=owner_user_id,
-            machine_id=machine_id,
-        )
+        from orchestrator.remote_effect_authority import lock_owner, rotate_authority
+        with self._credentials.transaction() as transaction:
+            lock_owner(self._credentials.plane_runtime, transaction, owner_user_id)
+            if self._credentials.repository.get_machine_credential(
+                    transaction, owner_id=owner_user_id, machine_id=machine_id) is None:
+                return
+            rotate_authority(self._credentials.plane_runtime, transaction, owner_user_id, machine_id)
+            self._credentials.repository.delete_machine_credential(
+                transaction, owner_id=owner_user_id, machine_id=machine_id)
         logger.info(f"Machine credential deleted: machine={machine_id}")
 
     def remove_machine_credentials_for_user(self, owner_user_id: str) -> int:
-        removed = self._credentials.call(
-            self._credentials.repository.delete_owner_machine_credentials,
-            owner_id=owner_user_id,
-        )
+        from orchestrator.remote_effect_authority import rotate_authority
+        with self._credentials.transaction() as transaction:
+            rotate_authority(self._credentials.plane_runtime, transaction, owner_user_id)
+            removed = self._credentials.repository.delete_owner_machine_credentials(
+                transaction, owner_id=owner_user_id)
         logger.info(f"Machine credentials removed for user={owner_user_id}: {removed}")
         return removed
 

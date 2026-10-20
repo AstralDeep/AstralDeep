@@ -407,7 +407,7 @@ def test_settled_attempt_cannot_rebind_under_the_same_fence(encryption_key):
         partition="owner-a",
         operation_id=attempt.operation_id,
         nonce=attempt.attempt_nonce,
-        outcome=AttemptOutcome.UNCERTAIN,
+        outcome=AttemptOutcome.NOT_APPLIED,
         outcome_digest=None,
     )
     with pytest.raises(ReconciliationRefused, match="attempt_already_settled"):
@@ -661,7 +661,7 @@ def test_inventory_overflow_refuses_bind_and_probe_failures_stay_preserved(encry
     assert ledger.resolution_probe(_record(coordinator, _accepted.operation_id)) is None
 
 
-def test_unreadable_rows_are_skipped_while_binding_and_probing(encryption_key):
+def test_unreadable_rows_refuse_binding_and_preserve_inventory(encryption_key):
     clock = _FakeClock()
     coordinator = _coordinator(clock)
     repository = _FakeCredentialRepository()
@@ -676,11 +676,10 @@ def test_unreadable_rows_are_skipped_while_binding_and_probing(encryption_key):
             encrypted_value="junk",
             updated_at=index + 1,
         )
-    attempt = ledger.bind(
-        claim.fence, target_kind="mesh_member", target_id="member-1",
-        argument_digest=_digest("arguments"),
-    )
-    assert attempt.state == "bound"
+    with pytest.raises(ReconciliationRefused, match="attempt_inventory_invalid"):
+        ledger.bind(claim.fence, target_kind="mesh_member", target_id="member-1",
+                    argument_digest=_digest("arguments"))
+    assert len(repository._rows) == 100
     probe_record = _record(coordinator, _accepted.operation_id)
     assert ledger.resolution_probe(probe_record) is None
 
@@ -1020,7 +1019,7 @@ def test_reports_are_refused_while_the_attempt_generation_still_holds_the_lease(
                        _report(attempt, "confirmed_applied"))
 
 
-def test_reports_settle_stale_generation_attempts_of_a_reselected_operation(encryption_key):
+def test_reports_refuse_stale_generation_attempts_of_a_reselected_operation(encryption_key):
     clock = _FakeClock()
     coordinator = _coordinator(clock)
     accepted, claim = _submit_and_claim(coordinator, "reselected")
@@ -1035,9 +1034,8 @@ def test_reports_settle_stale_generation_attempts_of_a_reselected_operation(encr
         ledger=ledger, target_authority=_RecordingTargetAuthority()
     )
 
-    result = service.report("owner-a", accepted.operation_id,
-                            _report(attempt, "confirmed_not_applied"))
-    assert result["operation_state"] == OperationState.RUNNING.value
+    with pytest.raises(ReconciliationRefused, match="reconcile_report_stale"):
+        service.report("owner-a", accepted.operation_id, _report(attempt, "confirmed_not_applied"))
     assert next_fence.execution_generation > attempt.execution_generation
 
 
@@ -1254,3 +1252,90 @@ def test_probe_failures_fail_closed_to_preservation(encryption_key):
     )
     report = recovery.recover_expired_executors()
     assert report.count(RecoveryDisposition.PRESERVED_UNCERTAIN) == 1
+
+
+def test_corrupt_unresolved_row_never_clears_other_nonapplication(encryption_key):
+    clock = _FakeClock()
+    coordinator = _coordinator(clock)
+    repository = _FakeCredentialRepository()
+    ledger = _ledger(clock, coordinator, repository)
+    accepted, claim = _submit_and_claim(coordinator, "incomplete")
+    first = ledger.bind(claim.fence, target_kind="mesh_member", target_id="member-1",
+                        argument_digest=_digest("first"))
+    second = ledger.bind(claim.fence, target_kind="mesh_member", target_id="member-2",
+                         argument_digest=_digest("second"))
+    ledger.settle(partition="owner-a", operation_id=accepted.operation_id,
+                  nonce=first.attempt_nonce, outcome=AttemptOutcome.NOT_APPLIED,
+                  outcome_digest=None)
+    repository._rows[("owner-a", "work.effect-attempts.v1", second.attempt_nonce)].encrypted_value = "broken"
+    assert ledger.resolution_probe(_record(coordinator, accepted.operation_id)) != "cleared"
+
+
+def test_uncertainty_refines_to_conclusive_owner_attestation(encryption_key, monkeypatch):
+    monkeypatch.setattr("orchestrator.work_reconciliation._now_ms", lambda: 1000)
+    clock = _FakeClock()
+    coordinator = _coordinator(clock)
+    ledger = _ledger(clock, coordinator, _FakeCredentialRepository())
+    accepted, claim = _submit_and_claim(coordinator, "refine")
+    attempt = ledger.bind(claim.fence, target_kind="mesh_member", target_id="member-1",
+                          argument_digest=_digest("first"))
+    clock.advance(timedelta(seconds=31))
+    coordinator.expire_execution_leases()
+    service = EffectReconciliationService(ledger=ledger, target_authority=_RecordingTargetAuthority())
+    service.report("owner-a", accepted.operation_id, _report(attempt, "uncertain"))
+    result = service.report("owner-a", accepted.operation_id, _report(attempt, "confirmed_applied"))
+    assert result["applied"] is True
+    settled = ledger.read(partition="owner-a", operation_id=accepted.operation_id, nonce=attempt.attempt_nonce)
+    assert settled.revision > attempt.revision
+
+
+@pytest.mark.parametrize("field,value", [
+    ("version", 3), ("version", True), ("execution_generation", 0),
+    ("execution_generation", "1"), ("argument_digest", "bad"),
+    ("attempt_nonce", "a" * 32), ("target_kind", "unbounded!"),
+    ("target_id", "bad target"), ("target_id", 42),
+    ("argument_digest", int("1" * 64)), ("state", "applied"),
+    ("outcome", "applied"), ("outcome_digest", "a" * 64),
+    ("settled_at", None), ("revision", 0), ("recorded_at", -1),
+])
+def test_semantically_invalid_inventory_cannot_resolve_or_bind(encryption_key, field, value):
+    clock = _FakeClock()
+    coordinator = _coordinator(clock)
+    repository = _FakeCredentialRepository()
+    ledger = _ledger(clock, coordinator, repository)
+    accepted, claim = _submit_and_claim(coordinator, "invalid-record")
+    attempt = ledger.bind(claim.fence, target_kind="mesh_member", target_id="member-1",
+                          argument_digest=_digest("arguments"))
+    ledger.settle(partition="owner-a", operation_id=accepted.operation_id, nonce=attempt.attempt_nonce,
+                  outcome=AttemptOutcome.NOT_APPLIED, outcome_digest=None)
+    row = repository._rows[("owner-a", "work.effect-attempts.v1", attempt.attempt_nonce)]
+    value_record = me._decode_record(row.encrypted_value)
+    value_record[field] = value
+    row.encrypted_value = me._encode_record(value_record)
+    assert ledger.resolution_probe(_record(coordinator, accepted.operation_id)) is None
+    assert ledger.preservation_probe(_record(coordinator, accepted.operation_id)) == "uncertain"
+    with pytest.raises(ReconciliationRefused, match="attempt_inventory_invalid"):
+        ledger.bind(claim.fence, target_kind="mesh_member", target_id="member-2",
+                    argument_digest=_digest("next"))
+    assert len(repository._rows) == 1
+
+
+def test_mixed_applied_and_unresolved_attempts_never_imply_complete_resolution(encryption_key):
+    clock = _FakeClock()
+    coordinator = _coordinator(clock)
+    ledger = _ledger(clock, coordinator, _FakeCredentialRepository())
+    accepted, claim = _submit_and_claim(coordinator, "mixed")
+    attempt = ledger.bind(claim.fence, target_kind="mesh_member", target_id="member-1",
+                          argument_digest=_digest("arguments"))
+    ledger.bind(claim.fence, target_kind="mesh_member", target_id="member-2",
+                argument_digest=_digest("arguments"))
+    ledger.settle(partition="owner-a", operation_id=accepted.operation_id, nonce=attempt.attempt_nonce,
+                  outcome=AttemptOutcome.APPLIED, outcome_digest=_digest("result"))
+    assert ledger.resolution_probe(_record(coordinator, accepted.operation_id)) is None
+    assert ledger.preservation_probe(_record(coordinator, accepted.operation_id)) == "uncertain"
+    coordinator.update_phase(claim.fence, "running")
+    clock.advance(timedelta(seconds=31))
+    recovery = ExecutorRecoveryService(coordinator, stop_gate=lambda record: False,
+        uncertainty_probe=ledger.preservation_probe, mode=ExecutorRecoveryMode.ADMISSION_METADATA_ONLY)
+    report = recovery.recover_expired_executors()
+    assert report.recovered[0].disposition is RecoveryDisposition.PRESERVED_UNCERTAIN

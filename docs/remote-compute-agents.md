@@ -243,3 +243,13 @@ The FR-052 live-verification checklist for a candidate image lives in
 The broader service posture, Keycloak setup, TLS, readiness, and rollback
 entry points remain in the
 [production deployment guide](production-deployment.md).
+
+## Qualified SSH effect reconciliation
+
+`make_directory` and `remove_path` require bundled in-process dispatch from a current USER operation with a live execution lease, a registered foreground web socket, and its signed, current encrypted session. The selected machine must already have a pinned SSH host key. Bearer-only sockets, background workers without a selected-session bridge, and external agent transport return a nonretrying unavailable result for these two mutators. Other remote verbs retain their existing contracts and do not acquire this reconciliation guarantee.
+
+After SSH authentication and immediately before sending the command, the server commits one encrypted attempt and its audit event. The identity includes the original selected arguments, final command arguments, operation generation, lease identity, selected-call identity and machine authority incarnation. Each deliberate selection receives a distinct identity; replaying a selection never sends again. Credential replacement, credential deletion, host retrust, machine deletion and owner credential purge rotate authority under the same owner lock. Revocation before reservation prevents admission. Revocation after reservation cannot cancel an already dispatched command, but prevents new admission and conclusive settlement under the retired authority.
+
+A complete successful result on the pinned SSH channel can confirm that command's requested postcondition. Nonzero exit, lost reply, timeout, cancellation and incomplete output remain uncertain because commands can partially mutate a machine. Uncertainty survives later progress updates and parent completion attempts. Corrupt, unreadable or overflowing attempt inventories never establish nonapplication, and cleanup does not erase unreadable evidence.
+
+The owner effect-reconciliation API accepts authenticated **owner attestation**, not independently verified executor proof. An uncertain attempt can later become conclusively applied or not applied after current owner and target authority checks. Conclusive outcomes are immutable. No report authorizes automatic re-execution, including a report of nonapplication; resolving an individual effect does not prove that the entire operation completed. The initial qualified placement does not provide exactly-once execution for arbitrary tools.

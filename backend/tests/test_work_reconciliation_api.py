@@ -8,7 +8,8 @@ import base64
 import json
 import os
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -50,7 +51,8 @@ BODY = {
 
 def _service():
     service = MagicMock()
-    service.report.return_value = {
+    service.report_current = AsyncMock()
+    service.report_current.return_value = {
         "operation_id": "task-1",
         "attempt_nonce": "a" * 32,
         "outcome": "confirmed_not_applied",
@@ -58,6 +60,12 @@ def _service():
         "operation_state": "retryable",
     }
     return service
+
+
+@pytest.fixture(autouse=True)
+def current_human(monkeypatch):
+    monkeypatch.setattr("orchestrator.human_request_authority.authenticate_current_human_request",
+                        AsyncMock(return_value=SimpleNamespace(owner_id=OWNER)))
 
 
 def _app(service) -> TestClient:
@@ -81,10 +89,10 @@ def test_owner_report_is_reconciled_through_the_service_boundary():
     )
     assert response.status_code == 200
     assert response.json()["applied"] is False
-    assert service.report.call_count == 1
-    assert service.report.call_args.args[0] == OWNER
-    assert service.report.call_args.args[1] == "task-1"
-    assert service.report.call_args.args[2].attempt_nonce == "a" * 32
+    assert service.report_current.call_count == 1
+    assert service.report_current.call_args.args[0].owner_id == OWNER
+    assert service.report_current.call_args.args[1] == "task-1"
+    assert service.report_current.call_args.args[2].attempt_nonce == "a" * 32
 
 
 def test_malformed_reports_fail_closed_as_invalid():
@@ -114,9 +122,29 @@ def test_malformed_reports_fail_closed_as_invalid():
 ])
 def test_refusals_map_to_their_typed_status(code, status, detail):
     service = MagicMock()
-    service.report.side_effect = ReconciliationRefused(code, status=status)
+    service.report_current = AsyncMock()
+    service.report_current.side_effect = ReconciliationRefused(code, status=status)
     response = _app(service).post(
         "/api/async-tasks/task-1/effect-reconcile", json=BODY, headers=_auth(OWNER)
     )
     assert response.status_code == status
     assert response.json()["detail"] == detail
+
+
+def test_current_human_owner_must_match_route_identity():
+    service = _service()
+    response = _app(service).post("/api/async-tasks/task-1/effect-reconcile",
+                                  json=BODY, headers=_auth(STRANGER))
+    assert response.status_code == 404
+    assert response.json()["detail"] == "work_not_found"
+    service.report_current.assert_not_called()
+
+
+def test_current_human_transaction_refusal_preserves_typed_error():
+    from persistent_agents.models import AssignmentError
+    service = _service()
+    service.report_current.side_effect = AssignmentError("current_session_required", 403)
+    response = _app(service).post("/api/async-tasks/task-1/effect-reconcile",
+                                  json=BODY, headers=_auth(OWNER))
+    assert response.status_code == 403
+    assert response.json()["detail"] == "current_session_required"

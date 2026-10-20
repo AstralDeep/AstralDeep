@@ -688,6 +688,9 @@ class WorkAdmissionCoordinator:
             retention=self._operation_retention,
         )
 
+    def set_completion_guard(self, guard):
+        self._completion_guard = guard
+
     def terminalize(
         self,
         fence: ExecutionFence,
@@ -698,6 +701,15 @@ class WorkAdmissionCoordinator:
         retry_after_ms: int | None,
         transaction: Any | None = None,
     ) -> OperationRecord:
+        guard = getattr(self, "_completion_guard", None)
+        if state in {OperationState.COMPLETED, OperationState.FAILED} and guard is not None:
+            if transaction is None:
+                with self.fenced_transaction(fence) as transaction:
+                    return self.terminalize(fence, state=state, terminal_code=terminal_code,
+                        safe_summary=safe_summary, retry_after_ms=retry_after_ms, transaction=transaction)
+            if guard(transaction, fence):
+                state, terminal_code = OperationState.RETRYABLE, "effect_uncertain"
+                safe_summary, retry_after_ms = "Effect outcome requires reconciliation", None
         if state not in _TERMINAL_STATES:
             raise ValueError("terminalize requires a terminal state")
         if state is not OperationState.COMPLETED and terminal_code is None:

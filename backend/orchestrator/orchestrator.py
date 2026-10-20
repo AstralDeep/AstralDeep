@@ -1367,6 +1367,7 @@ class Orchestrator:
             ),
             audit_repository=self.audit_repo,
         )
+        self.work_admission.set_completion_guard(self.effect_attempts.completion_uncertain)
         self.effect_reconciliation = EffectReconciliationService(
             ledger=self.effect_attempts,
             target_authority=MeshTargetAuthority(
@@ -1378,7 +1379,7 @@ class Orchestrator:
         self.work_recovery = ExecutorRecoveryService(
             self.work_admission,
             stop_gate=owner_stop_gate(self.emergency_stop_store),
-            uncertainty_probe=self.effect_attempts.resolution_probe,
+            uncertainty_probe=self.effect_attempts.preservation_probe,
             mode=ExecutorRecoveryService.Mode.PRESERVE_UNSUPPORTED,
         )
 
@@ -17965,6 +17966,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         if parent_token is not None
                         else self._protected_dispatch_channel(websocket)
                     ),
+                    effect_original_arguments=stream_params,
                     audit_correlation_id=_audit_ctx.correlation_id,
                     audit_actor_user_id=getattr(
                         _audit_ctx, "actor_user_id", user_id
@@ -18955,7 +18957,26 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             }
         return result
 
-    async def _execute_with_retry(
+    async def _execute_with_retry(self, websocket, agent_id, tool_name, args, *positional, **kwargs):
+        from orchestrator.remote_effect_execution import select_effect, selected_effect
+        from orchestrator.work_reconciliation import ReconciliationRefused
+        try:
+            selection = await select_effect(self, websocket, agent_id, tool_name,
+                kwargs.pop("effect_original_arguments", args), kwargs.get("user_id"))
+        except Exception as exc:
+            code = exc.code if isinstance(exc, ReconciliationRefused) else "effect_current_authority_unavailable"
+            return MCPResponse(error={"code": code, "message": code, "retryable": False})
+        with selected_effect(selection):
+            if selection is not None:
+                kwargs["max_retries"] = 1
+                positional = ()
+            result = await self._execute_with_retry_loop(
+                websocket, agent_id, tool_name, args, *positional, **kwargs)
+            if selection is not None and result is not None and result.error:
+                result.error["retryable"] = False
+            return result
+
+    async def _execute_with_retry_loop(
         self, websocket, agent_id: str, tool_name: str, args: Dict,
         max_retries: int = None, *, user_id: Optional[str] = None,
         channel: Optional[str] = None,
@@ -19153,6 +19174,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         refusal = self._terminal_dispatch_refusal(agent_id)
         if refusal is not None:
             return refusal
+        from orchestrator.remote_effect_execution import qualified_tool
+        if qualified_tool(agent_id, tool_name) and agent_id not in self.local_agents:
+            return MCPResponse(error={"code": "effect_placement_unsupported",
+                "message": "effect_placement_unsupported", "retryable": False})
         from orchestrator.agent_identity import required_identity_claims
 
         stop = getattr(self, "emergency_stop", None)

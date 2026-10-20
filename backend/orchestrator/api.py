@@ -2496,10 +2496,10 @@ class EffectReconcileRequest(BaseModel):
 
 @async_task_router.post(
     "/{task_id}/effect-reconcile",
-    summary="Reconcile a late cross-node effect result",
+    summary="Record an owner attestation about a late effect outcome",
     description=(
-        "Reconciles one bound cross-node effect attempt with an authenticated late "
-        "result report; ambiguous outcomes stay preserved and are never re-executed."
+        "Records authenticated owner attestation, not independent executor proof, for one "
+        "effect attempt. Ambiguous outcomes stay preserved; no report authorizes re-execution."
     ),
 )
 async def reconcile_async_task_effect(
@@ -2510,6 +2510,7 @@ async def reconcile_async_task_effect(
 ):
     from orchestrator.work_reconciliation import LateResultReport, ReconciliationRefused
     from pydantic import ValidationError
+    from persistent_agents.models import AssignmentError
 
     orch = _get_orchestrator(request)
     try:
@@ -2517,11 +2518,17 @@ async def reconcile_async_task_effect(
     except ValidationError:
         raise HTTPException(status_code=422, detail="reconcile_report_invalid") from None
     try:
-        return await asyncio.to_thread(
-            orch.effect_reconciliation.report, user_id, task_id, report
-        )
+        from orchestrator.human_request_authority import authenticate_current_human_request
+        caller = await authenticate_current_human_request(request, boundary=orch.human_request_boundary)
+        if caller.owner_id != user_id:
+            raise ReconciliationRefused("work_not_found", status=404)
+        return await orch.effect_reconciliation.report_current(
+            caller, task_id, report, orchestrator=orch)
     except ReconciliationRefused as exc:
         raise HTTPException(status_code=exc.status, detail=exc.code) from None
+
+    except AssignmentError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from None
 
 
 export_router = APIRouter(prefix="/api/export", tags=["Export"])

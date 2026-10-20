@@ -167,8 +167,8 @@ class ExecutorRecoveryService:
                 operation_id=current.operation_id,
                 disposition=RecoveryDisposition.PRESERVED_STOPPED,
             )
-        if current.phase_code in self._uncertain_phases:
-            resolved = self._probe_resolution(current)
+        resolved = self._probe_resolution(current)
+        if current.phase_code in self._uncertain_phases or resolved is not None:
             if resolved == "applied":
                 return RecoveredOperation(
                     operation_id=current.operation_id,
