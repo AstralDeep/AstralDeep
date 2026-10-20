@@ -94,3 +94,14 @@ async def test_source_preview_bound_is_explicit_to_the_user():
     view = await service.open_source(owner_id="owner", ref={"kind": "memory", "memory_id": "m"})
     assert len(view.text) == federated_search.MAX_SOURCE_CHARS and not view.complete
     assert "shortened" in str(search._source_components(view, {}))
+
+
+@pytest.mark.asyncio
+async def test_search_uses_existing_chrome_form_dispatch_instead_of_a_chat_template():
+    html = await search.render(None, "owner", [], {})
+    assert 'data-ui-form="true"' in html
+    assert 'data-ui-action="chrome_open"' in html
+    assert 'data-ui-collect="true"' in html
+    assert "astral-pp-submit" not in html
+    for field in ("q", "source", "type", "project_id"):
+        assert f'name="{field}"' in html

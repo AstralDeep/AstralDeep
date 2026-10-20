@@ -11,7 +11,8 @@ from personalization.federated_search import (
     SOURCES, SOURCE_LABELS, SearchQueryInvalid, get_search_service, known_types,
 )
 from personalization.source_search import error_message, form_params
-from webrender import render as render_components
+from astralprojection.chrome import render_html
+from astralprojection.models import ChromeViewModel, ComponentView
 from webrender.chrome.surfaces import _sdui
 
 logger = logging.getLogger("Orchestrator.Chrome.Search")
@@ -121,11 +122,9 @@ async def components(orch, user_id, roles, params):
     for hit in outcome.hits:
         card = _sdui.card(hit.title, [_sdui.badge(SOURCE_LABELS[hit.source]), _sdui.text(hit.snippet),
             _navigation(_OPEN_LABELS[hit.source], dict(params, open=dict(hit.ref)))])
-        card["role"] = "listitem"
         cards.append(card)
     if cards:
-        results = _sdui.card("", cards)
-        results.update({"role": "list", "aria-label": "Search results"})
+        results = _sdui.card("Search results", cards)
         output.append(results)
     if outcome.next_cursor:
         output.append(_navigation("More results", dict(params, cursor=outcome.next_cursor)))
@@ -133,4 +132,8 @@ async def components(orch, user_id, roles, params):
 
 
 async def render(orch, user_id, roles, params):
-    return render_components(await components(orch, user_id, roles, params))
+    definitions = await components(orch, user_id, roles, params)
+    view = ChromeViewModel(SURFACE_KEY, TITLE, tuple(
+        ComponentView(node["type"], {key: value for key, value in node.items() if key != "type"})
+        for node in definitions))
+    return render_html(view)

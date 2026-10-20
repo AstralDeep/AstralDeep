@@ -147,7 +147,7 @@ async def test_intro_and_authenticated_dispatch_use_projection_renderer(surface)
     delivered, _, caller = await dispatch(surface, {})
     assert delivered and caller.owner_id == fixture_owners(surface)[0]
     assert "Search your conversations" in last_frame(surface)["html"]
-    assert "astral-param-picker" in last_frame(surface)["html"]
+    assert 'data-ui-form="true"' in last_frame(surface)["html"]
 
 
 async def test_all_four_sources_share_controls_and_audited_current_source_opening(surface, runtime):
@@ -282,7 +282,8 @@ async def test_sanitization_allowed_primitives_and_form_fields_through_dispatch(
                                                        "type": "conversation", "project_id": ""})
     html = last_frame(surface)["html"]
     assert delivered and "needle &amp; ordinary" in html and "<img src=x" not in html
-    assert 'role="list"' in html and 'role="listitem"' in html
+    assert '<section aria-label="Search results">' in html
+    assert 'data-ui-collect="true"' in html
     delivered, _, _ = await dispatch(surface, {}, fields={"q": "x" * 201})
     assert "200 characters" in last_frame(surface)["html"]
 
