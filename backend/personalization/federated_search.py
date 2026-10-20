@@ -557,19 +557,20 @@ class FederatedSearchService:
                                                         len(hits[:MAX_HITS_PER_SOURCE]))
 
     def _memory_items(self, owner_id: str, project_id: str | None):
-        from personalization import living_memory as lm
-        from personalization import memory_guard
-
         if self.repo is None:
             raise SourceUnavailable("memory_unavailable")
         scope = GLOBAL_MEMORY_PROJECT if project_id == "-" else project_id
         items = list(self.repo.list_memory(owner_id, project_id=scope) or ())
         raw_count = len(items)
+        return self._apply_memory_policy(items), raw_count
+
+    @staticmethod
+    def _apply_memory_policy(items):
+        from personalization import living_memory as lm
+        from personalization import memory_guard
+
         if lm.temporal_enabled():
-            try:
-                items = lm.as_of(items, int(time.time() * 1000))
-            except Exception:
-                logger.debug("federated_search_temporal_filter_failed", exc_info=True)
+            items = lm.as_of(items, int(time.time() * 1000))
         if memory_guard.guard_enabled():
             kept = []
             for item in items:
@@ -579,7 +580,7 @@ class FederatedSearchService:
                     continue
                 kept.append(item)
             items = kept
-        return items, raw_count
+        return items
 
     def _scan_memory(self, owner_id: str, query: str, types: tuple[str, ...],
                      project_id: str | None) -> tuple[list[SearchHit], SourceReport]:
@@ -779,7 +780,7 @@ class FederatedSearchService:
             return False
         if parse_envelope(record.get("value")) is not None:
             return False
-        return True
+        return bool(self._apply_memory_policy([record]))
 
     def _recheck_conversation(self, hit: SearchHit, owner_id: str) -> bool:
         context = self._history_context()

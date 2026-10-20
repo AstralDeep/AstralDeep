@@ -308,6 +308,121 @@ def _client(orchestrator, owner):
     return TestClient(app), identity
 
 
+@pytest.mark.parametrize("change", ["expiry", "revocation", "future", "supersession",
+                                    "deletion", "tamper"])
+def test_http_search_omits_memory_invalidated_after_scan(
+    plane_runtime, repository, orchestrator, monkeypatch, change
+):
+    from personalization import federated_search as search
+
+    monkeypatch.setenv("FF_MEMORY_TEMPORAL", "true")
+    monkeypatch.delenv("FF_MEMORY_GUARD", raising=False)
+    monkeypatch.setenv("MEMORY_HMAC_KEY", "federated-search-test-key")
+    clock = [1.0]
+    monkeypatch.setattr(search, "time", SimpleNamespace(time=lambda: clock[0]))
+    owner = f"search-owner-{uuid4().hex}"
+    term = f"race{uuid4().hex[:8]}"
+    project = f"project-{uuid4().hex}"
+    survivor = repository.create_memory(
+        owner, "preference", f"{term} eligible", project_id=project,
+    )
+    target = repository.create_memory(
+        owner, "preference", f"{term} captured", project_id=project,
+    )
+    assert repository.set_validity(owner, target["id"], valid_to=2000)
+    repository.create_memory(
+        f"other-{owner}", "preference", f"{term} private", project_id=project,
+    )
+    repository.create_memory(owner, "goal", f"{term} goal", project_id=project)
+    repository.create_memory(owner, "preference", f"{term} elsewhere", project_id="elsewhere")
+    scan = FederatedSearchService._scan_memory
+
+    def scan_then_change(service, *args):
+        result = scan(service, *args)
+        assert {hit.ref["memory_id"] for hit in result[0]} == {
+            survivor["id"], target["id"],
+        }
+        if change == "expiry":
+            clock[0] = 2.0
+        elif change == "revocation":
+            assert repository.set_validity(owner, target["id"], valid_to=1)
+        elif change == "future":
+            assert repository.set_validity(owner, target["id"], valid_from=2000)
+        elif change == "supersession":
+            assert repository.supersede_memory(owner, target["id"], survivor["id"])
+        elif change == "deletion":
+            assert repository.delete_memory(owner, target["id"])
+        else:
+            current = repository.get_memory(owner, target["id"])
+            with plane_runtime.transaction() as transaction:
+                plane_runtime.repositories.preferences.personalization.update_memory_value(
+                    transaction, owner_id=owner, memory_id=target["id"],
+                    value=f"{term} modified", signature=current["signature"],
+                    expected_updated_at=current["updated_at"],
+                    updated_at=current["updated_at"] + 1,
+                )
+        return result
+
+    monkeypatch.setattr(FederatedSearchService, "_scan_memory", scan_then_change)
+    client, _ = _client(orchestrator, owner)
+    with client:
+        response = client.get("/api/search", params={
+            "q": term, "source": "memory", "type": "preference", "project_id": project,
+        })
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [hit["ref"]["memory_id"] for hit in body["hits"]] == [survivor["id"]]
+    assert "captured" not in response.text and "modified" not in response.text
+    assert body["count"] == body["total"] == 1 and body["next_cursor"] is None
+    assert body["reports"] == [{
+        "source": "memory", "available": True, "complete": True, "scanned": 3,
+        "matched": 1, "returned": 1, "stale": 1,
+    }]
+
+
+@pytest.mark.parametrize("temporal,guard,expected", [
+    ("false", "false", 1), ("true", "false", 0),
+    ("false", "true", 0), ("true", "true", 0),
+])
+def test_http_search_memory_policy_flags_control_delivery(
+    plane_runtime, repository, orchestrator, monkeypatch, temporal, guard, expected
+):
+    monkeypatch.setenv("FF_MEMORY_TEMPORAL", temporal)
+    monkeypatch.setenv("FF_MEMORY_GUARD", guard)
+    monkeypatch.setenv("MEMORY_HMAC_KEY", "federated-search-test-key")
+    owner = f"search-owner-{uuid4().hex}"
+    term = f"flags{uuid4().hex[:8]}"
+    target = repository.create_memory(owner, "preference", f"{term} captured")
+    scan = FederatedSearchService._scan_memory
+
+    def scan_then_change(service, *args):
+        result = scan(service, *args)
+        assert [hit.ref["memory_id"] for hit in result[0]] == [target["id"]]
+        assert repository.set_validity(owner, target["id"], valid_to=1)
+        current = repository.get_memory(owner, target["id"])
+        with plane_runtime.transaction() as transaction:
+            plane_runtime.repositories.preferences.personalization.update_memory_value(
+                transaction, owner_id=owner, memory_id=target["id"],
+                value=f"{term} modified", signature=current["signature"],
+                expected_updated_at=current["updated_at"],
+                updated_at=current["updated_at"] + 1,
+            )
+        return result
+
+    monkeypatch.setattr(FederatedSearchService, "_scan_memory", scan_then_change)
+    client, _ = _client(orchestrator, owner)
+    with client:
+        response = client.get("/api/search", params={"q": term, "source": "memory"})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["count"] == body["total"] == expected
+    assert body["reports"][0]["stale"] == 1 - expected
+    assert body["partial"] is False
+    if expected:
+        assert [hit["ref"]["memory_id"] for hit in body["hits"]] == [target["id"]]
+        assert body["hits"][0]["snippet"] == f"preference {term} captured"
+
+
 def test_http_search_filters_pages_denies_wrong_owner_cursor_and_audits(
     plane_runtime, credential_manager, repository, atlas, orchestrator, audit_repo
 ):

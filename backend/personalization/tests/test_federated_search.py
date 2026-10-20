@@ -361,6 +361,112 @@ def _bare_service(**attributes):
     return service
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["expiry", "revocation", "future", "supersession",
+                                    "deletion", "tamper"])
+async def test_memory_delivery_rejects_newly_ineligible_records(monkeypatch, change):
+    from personalization import memory_guard
+
+    monkeypatch.setenv("FF_MEMORY_TEMPORAL", "true")
+    monkeypatch.setenv("FF_MEMORY_GUARD", "true")
+    monkeypatch.setenv("MEMORY_HMAC_KEY", "federated-search-test-key")
+    clock = [1.0]
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=lambda: clock[0]))
+    record = {"id": "m1", "user_id": "owner", "category": "preference",
+              "value": "concise result", "source": "explicit", "updated_at": 1,
+              "superseded_at": None, "valid_from": None, "valid_to": 2000}
+    record["signature"] = memory_guard.sign_fields(
+        "m1", "owner", "preference", "concise result", "explicit")
+    current = [record]
+    service = _bare_service(repo=SimpleNamespace(
+        list_memory=lambda owner, **kwargs: [dict(record)],
+        get_memory=lambda owner, memory_id: current[0],
+    ))
+    scan = service._scan_source
+
+    async def scan_then_change(*args):
+        result = await scan(*args)
+        assert len(result[0]) == 1
+        if change == "expiry":
+            clock[0] = 2.0
+        elif change == "revocation":
+            record["valid_to"] = 1
+        elif change == "future":
+            record["valid_from"] = 2000
+        elif change == "supersession":
+            record["superseded_at"] = 1000
+        elif change == "deletion":
+            current[0] = None
+        else:
+            record["value"] = "mutated without resigning"
+        return result
+
+    monkeypatch.setattr(service, "_scan_source", scan_then_change)
+    outcome = await service.search(owner_id="owner", query="concise", sources="memory")
+    assert outcome.hits == ()
+    assert outcome.total == 0 and outcome.next_cursor is None
+    assert outcome.reports == (SourceReport("memory", True, True, 1, 0, 0, 1),)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["scan", "delivery"])
+@pytest.mark.parametrize("policy", ["temporal", "integrity"])
+async def test_memory_policy_failure_makes_source_unavailable(monkeypatch, phase, policy):
+    from personalization import living_memory, memory_guard
+
+    monkeypatch.setenv("FF_MEMORY_TEMPORAL", "true")
+    monkeypatch.setenv("FF_MEMORY_GUARD", "true")
+    record = {"id": "m1", "user_id": "owner", "category": "preference",
+              "value": "concise result", "source": "explicit", "updated_at": 1}
+    service = _bare_service(repo=SimpleNamespace(
+        list_memory=lambda owner, **kwargs: [dict(record)],
+        get_memory=lambda owner, memory_id: dict(record),
+    ))
+
+    def unavailable(*args):
+        raise ValueError("policy unavailable")
+
+    def fail_policy():
+        if policy == "temporal":
+            monkeypatch.setattr(living_memory, "is_valid_at", unavailable)
+        else:
+            monkeypatch.setattr(memory_guard, "trust_of", unavailable)
+
+    if phase == "scan":
+        fail_policy()
+    else:
+        scan = service._scan_source
+
+        async def scan_then_fail(*args):
+            result = await scan(*args)
+            assert len(result[0]) == 1
+            fail_policy()
+            return result
+
+        monkeypatch.setattr(service, "_scan_source", scan_then_fail)
+    outcome = await service.search(owner_id="owner", query="concise", sources="memory")
+    assert outcome.hits == () and outcome.total == 0
+    assert not outcome.any_available and outcome.partial
+    assert not outcome.reports[0].available
+
+
+@pytest.mark.asyncio
+async def test_memory_disabled_policies_preserve_legacy_delivery(monkeypatch):
+    monkeypatch.setenv("FF_MEMORY_TEMPORAL", "false")
+    monkeypatch.setenv("FF_MEMORY_GUARD", "false")
+    monkeypatch.setenv("MEMORY_HMAC_KEY", "federated-search-test-key")
+    record = {"id": "m1", "user_id": "owner", "category": "preference",
+              "value": "concise result", "source": "explicit", "updated_at": 1,
+              "valid_to": 1, "signature": "invalid"}
+    service = _bare_service(repo=SimpleNamespace(
+        list_memory=lambda owner, **kwargs: [dict(record)],
+        get_memory=lambda owner, memory_id: dict(record),
+    ))
+    outcome = await service.search(owner_id="owner", query="concise", sources="memory")
+    assert [hit.snippet for hit in outcome.hits] == ["preference concise result"]
+    assert outcome.reports == (SourceReport("memory", True, True, 1, 1, 1, 0),)
+
+
 def test_note_scan_unavailable_and_note_recheck_branches():
     service = _bare_service()
     with pytest.raises(module.SourceUnavailable):
