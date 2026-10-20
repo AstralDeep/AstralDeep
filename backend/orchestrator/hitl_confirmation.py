@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import hashlib
 import json
 import logging
 import re
@@ -106,6 +107,28 @@ def matching_approval(orch, owner, chat, agent, tool, args) -> bool:
             and call.arguments == _arguments(args))
 
 
+def current_approval(orch, owner, chat, agent, tool, args) -> Approval | None:
+    approval = _APPROVAL.get()
+    if not isinstance(approval, Approval) or approval.orchestrator is not orch:
+        return None
+    call = approval.call
+    if (not approval.consumed or approval.effect_started or call.expires <= time.monotonic()
+            or (call.owner, call.chat, call.agent, call.tool) != (owner, chat, agent, tool)):
+        return None
+    if not isinstance(args, dict):
+        return None
+    original = json.loads(call.arguments)
+    compared = {key: value for key, value in args.items()
+                if key in original or key not in _SERVER_ARGUMENTS}
+    for key, expected in (("user_id", owner), ("session_id", chat)):
+        if key not in original and compared.get(key) == expected:
+            compared.pop(key)
+    try:
+        return approval if _arguments(compared) == call.arguments else None
+    except (TypeError, ValueError):
+        return None
+
+
 def approved_call(orch, owner, chat, agent, tool) -> bool:
     approval = _APPROVAL.get()
     return (isinstance(approval, Approval) and approval.orchestrator is orch
@@ -137,16 +160,29 @@ async def _audit(orch, call: PendingCall, transition: str) -> None:
     from audit.schemas import AuditEventCreate
 
     try:
-        await orch.audit_recorder.record(AuditEventCreate(
+        receipt = await orch.audit_recorder.record(AuditEventCreate(
             actor_user_id=call.owner, auth_principal=call.owner,
             event_class="agent_tool_call", action_type=f"hitl.{transition}",
             description=f"{transition}: {call.tool}", correlation_id=call.request_id,
             conversation_id=call.chat, outcome="success",
-            inputs_meta={"agent_id": call.agent, "tool": call.tool, "risks": list(call.risks)},
+            inputs_meta={"agent_id": call.agent, "tool": call.tool,
+                         "risks": list(call.risks),
+                         "arguments_sha256": hashlib.sha256(
+                             call.arguments.encode("utf-8")).hexdigest()},
             started_at=now_utc(), completed_at=now_utc(),
         ))
+        if "source_bound" in call.risks and receipt is None:
+            raise RuntimeError("audit receipt unavailable")
     except Exception:
+        if "source_bound" in call.risks:
+            raise
         logger.debug("HITL audit unavailable", exc_info=True)
+
+
+async def audit_pre_effect(orch, call: PendingCall) -> None:
+    if "source_bound" not in call.risks:
+        raise ValueError("source-bound approval required")
+    await _audit(orch, call, "effect_started")
 
 
 def _refused(message: str) -> MCPResponse:
@@ -231,7 +267,10 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
                 return _refused("This confirmation is no longer valid for the active session.")
             if approval.call.risks == tuple(sorted(risks)):
                 approval.consumed = True
-                await _audit(orch, approval.call, "consumed")
+                try:
+                    await _audit(orch, approval.call, "consumed")
+                except Exception:
+                    return _refused("Action audit is unavailable. The action was not run.")
                 if not _current_session(orch, websocket, approval.call):
                     return _refused("This confirmation expired or the active session changed. Reissue the action.")
                 return None
@@ -259,7 +298,11 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             call = PendingCall(secrets.token_urlsafe(24), owner, chat, agent, tool,
                                encoded, tuple(sorted(risks)), time.monotonic() + TTL_SECONDS)
             pending[call.request_id] = call
-            await _audit(orch, call, "proposed")
+            try:
+                await _audit(orch, call, "proposed")
+            except Exception:
+                pending.pop(call.request_id, None)
+                return _refused("Action audit is unavailable. The action was not proposed.")
         if not _current_session(orch, websocket, call):
             getattr(orch, "_hitl_pending_calls", {}).pop(call.request_id, None)
             return _refused("This confirmation is no longer valid for the active conversation.")
@@ -329,7 +372,11 @@ async def handle_decision(orch, websocket, owner, payload) -> None:
         await _audit(orch, call, "declined")
         await _finish_card(orch, websocket, call, "Declined", "Declined — the action was not run.")
         return
-    await _audit(orch, call, "approved")
+    try:
+        await _audit(orch, call, "approved")
+    except Exception:
+        await _finish_card(orch, websocket, call, "Unavailable", "Action audit is unavailable. The action was not run.")
+        return
     if not _current_session(orch, websocket, call):
         await _finish_card(orch, websocket, call, "Unavailable", "The session changed or this confirmation expired. Reissue the action.")
         return
