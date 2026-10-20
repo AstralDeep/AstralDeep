@@ -38,7 +38,10 @@ from shared.a2a_bridge import (
     make_text_part,
     make_data_part,
 )
+from shared.a2a_publication import A2APublicationRegistry
 from shared.a2a_security import A2ASecurityValidator
+from orchestrator.a2a_publication_policy import A2APublicationPolicy
+from orchestrator.a2a_publication_wiring import attach_publication_registry
 from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
 
 logger = logging.getLogger("OrchestratorA2AExecutor")
@@ -259,6 +262,25 @@ class OrchestratorA2AExecutor(AgentExecutor):
             )
             return
 
+        policy = _publication_policy(self.orchestrator)
+        if policy is not None:
+            admission = policy.admit(projected.agent_id)
+            if admission is None:
+                policy.record_denial(
+                    actor=str(claims.get("sub") or ""),
+                    agent_id=projected.agent_id,
+                    reason="not_published",
+                )
+                await updater.failed(
+                    message=self._msg(TOOL_UNAVAILABLE, context.task_id)
+                )
+                return
+            logger.debug(
+                "A2A admission publication=%s agent=%s",
+                admission.publication_id,
+                admission.agent_id,
+            )
+
         if projected.agent_id == FRAMEWORK_WORK_AGENT_ID:
             from orchestrator.mcp_server_endpoint import _dispatch_work_tool
 
@@ -318,6 +340,9 @@ class OrchestratorA2AExecutor(AgentExecutor):
         projected = await asyncio.to_thread(
             project_tools, self.orchestrator, claims["sub"], claims
         )
+        policy = _publication_policy(self.orchestrator)
+        if policy is not None:
+            projected = policy.filter_projected_tools(projected)
         tools = []
         for tool in projected:
             card = self.orchestrator.agent_cards.get(tool.agent_id)
@@ -368,6 +393,28 @@ def public_catalog_agent_ids(orchestrator) -> List[str]:
     ]
 
 
+def _publication_registry(orchestrator) -> Optional[A2APublicationRegistry]:
+    registry = getattr(orchestrator, "a2a_publications", None)
+    return registry if isinstance(registry, A2APublicationRegistry) else None
+
+
+def _publication_policy(orchestrator) -> Optional[A2APublicationPolicy]:
+    policy = getattr(orchestrator, "a2a_publication_policy", None)
+    if isinstance(policy, A2APublicationPolicy):
+        return policy
+    registry = _publication_registry(orchestrator)
+    if registry is None:
+        return None
+    policy = A2APublicationPolicy(
+        orchestrator,
+        registry,
+        catalog=lambda: public_catalog_agent_ids(orchestrator),
+        managed=lambda: FIRST_PARTY_PUBLIC_AGENT_IDS,
+    )
+    orchestrator.a2a_publication_policy = policy
+    return policy
+
+
 def _public_url() -> str:
     base = (os.getenv("PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
     if base:
@@ -379,10 +426,18 @@ def _public_url() -> str:
 
 def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
     authority = os.getenv("KEYCLOAK_AUTHORITY", "")
+    registry = _publication_registry(orchestrator)
+    policy = _publication_policy(orchestrator)
+    if policy is not None:
+        published_ids = list(policy.published_agent_ids())
+    else:
+        published_ids = public_catalog_agent_ids(orchestrator)
 
     skills: List[A2AAgentSkill] = []
-    for agent_id in public_catalog_agent_ids(orchestrator):
+    for agent_id in published_ids:
         card = orchestrator.agent_cards.get(agent_id)
+        if card is None:
+            continue
         skills.append(A2AAgentSkill(
             id=agent_id,
             name=str(getattr(card, "name", None) or agent_id),
@@ -404,11 +459,14 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
                 open_id_connect_url=f"{authority}/.well-known/openid-configuration",
             )
         )
-        security_requirements.append(SecurityRequirement(schemes={
-            "keycloak_oidc": StringList(list=[
-                "tools:read", "tools:write", "tools:search", "tools:system",
-            ]),
-        }))
+        if registry is not None:
+            advertised = list(registry.advertised_audiences()) if registry.available else []
+        else:
+            advertised = ["tools:read", "tools:write", "tools:search", "tools:system"]
+        if advertised:
+            security_requirements.append(SecurityRequirement(schemes={
+                "keycloak_oidc": StringList(list=advertised),
+            }))
 
     return A2AAgentCard(
         name="AstralDeep Orchestrator",
@@ -454,6 +512,7 @@ def setup_orchestrator_a2a(app, orchestrator):
     from a2a.server.tasks.inmemory_task_store import InMemoryTaskStore
     from a2a.server.routes import create_jsonrpc_routes, create_agent_card_routes
 
+    attach_publication_registry(orchestrator)
     initial_card = build_orchestrator_a2a_card(orchestrator)
 
     executor = OrchestratorA2AExecutor(orchestrator)

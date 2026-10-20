@@ -23560,6 +23560,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(chrome_router)
         from orchestrator.lets_health_api import lets_router
         app.include_router(lets_router)
+        from orchestrator.a2a_publication_api import publication_router
+        app.include_router(publication_router)
         app.include_router(export_router)
         app.include_router(share_router)
         app.include_router(auth_router)
@@ -23609,7 +23611,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     "A2A JSON-RPC endpoint mounted at /a2a/ (FF_A2A_SERVER=true). "
                     "POST /a2a requires a first-party Keycloak bearer and "
                     "dispatches through the tool authorization gate; the "
-                    "anonymous agent card lists only the public safe catalog. "
+                    "anonymous agent card lists only capabilities the owner "
+                    "explicitly published for A2A. "
                     "Keep the reverse proxy rule for /a2a closed until the "
                     "owner opens it."
                 )
