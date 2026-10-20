@@ -218,7 +218,7 @@ class OpenAICompletionProvider(CompletionProvider):
                 cost = None
                 raise ValueError("usage cost overflow")
             return ProviderReply(text=_message_text(response),
-                                 model_identity=getattr(response, "model", None) or self.config.model, cost=cost)
+                                 model_identity=getattr(response, "model", None) or "unknown", cost=cost)
         except (ValueError, TypeError, OverflowError, ProducerError) as exc:
             raise ProducerError("provider returned a malformed response", completed_cost=cost) from exc
 

@@ -423,3 +423,37 @@ def test_cli_loads_only_the_closed_nonsecret_model_observation(tmp_path, monkeyp
         "--http-uri", "https://backend.invalid", "--astral-model-observation", str(path)]) == 0
     assert selected[0].model_observation.model == "observed-model"
     assert "synthetic-token" not in json.dumps(DispatcherProducer(selected[0]).to_dict())
+
+
+@pytest.mark.parametrize("returned_model", [None, "", "observed-model"])
+def test_absent_returned_model_stays_unknown_in_actual_run_records(
+        tmp_path, monkeypatch, returned_model):
+    import clinical_diagnostic.runner as runner
+    from clinical_diagnostic.provider import CompletionConfig, OpenAICompletionProvider
+    from clinical_diagnostic.tests.test_provider import _Choice, _patch_client
+
+    payload = dict(choices=[_Choice("fact")])
+    if returned_model is not None:
+        payload["model"] = returned_model
+    _patch_client(monkeypatch, SimpleNamespace(**payload))
+    answer_provider = OpenAICompletionProvider(CompletionConfig(
+        base_url="https://provider.invalid/v1", model="requested-answer"))
+    grader_provider = OpenAICompletionProvider(CompletionConfig(
+        base_url="https://provider.invalid/v1", model="requested-grader"))
+    original = grader_provider._reply
+
+    def grade_reply(response):
+        response.choices = [_Choice('{"assessments":[{"criterion_id":"criterion","met":true}]}')]
+        return original(response)
+
+    monkeypatch.setattr(grader_provider, "complete", lambda messages: grade_reply(SimpleNamespace(**payload)))
+    before = runner._provider_config(BareModelProducer(answer_provider))
+    outcome = public_run(tmp_path, monkeypatch, BareModelProducer(answer_provider), CallableGrader(grader_provider))
+    assert outcome.exit_code == 0
+    record = json.loads(open(outcome.record_path).read())
+    expected = returned_model or "unknown"
+    assert record["results"][0]["model_identity"] == expected
+    assert record["results"][0]["grader_identity"] == expected
+    assert record["identity"]["config"]["producer_configs"]["bare_model"]["model"] == "requested-answer"
+    assert record["identity"]["config"]["grader_config"]["model"] == "requested-grader"
+    assert runner._provider_config(BareModelProducer(answer_provider)) == before

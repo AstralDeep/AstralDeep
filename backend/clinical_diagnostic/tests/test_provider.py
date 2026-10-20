@@ -171,7 +171,7 @@ def test_openai_provider_returns_text_and_costs(monkeypatch):
     reply = provider.complete([{"role": "user", "content": "q"}])
     assert reply.text == "Synthetic answer."
     assert reply.cost == pytest.approx(0.2)
-    assert reply.model_identity == "m"
+    assert reply.model_identity == "unknown"
 
 
 def test_openai_provider_maps_rate_limit_timeout_and_other_failures(monkeypatch):
