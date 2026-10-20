@@ -223,6 +223,18 @@ async def register_built_ins(orch) -> List[str]:
                 RegisterAgent(agent_card=agent.card, api_key=os.getenv("AGENT_API_KEY") or None),
             )
             orch.local_agents[agent.card.agent_id] = agent
+            if dir_name == "general":
+                from orchestrator.source_bound import READ_ONLY_GENERAL_FILE_TOOLS
+
+                file_tools = {skill.id for skill in agent.card.skills
+                              if skill.scope == "tools:files"}
+                if file_tools == READ_ONLY_GENERAL_FILE_TOOLS:
+                    host_reads = set(getattr(orch, "_source_bound_read_tools", ()))
+                    host_reads.update((agent.card.agent_id, tool)
+                                      for tool in file_tools)
+                    orch._source_bound_read_tools = host_reads
+                else:
+                    logger.error("General file tool effects changed; read exemption disabled")
             if dir_name == "terminal_shell":
                 from orchestrator.terminal_host_review import review_registered_terminal
 

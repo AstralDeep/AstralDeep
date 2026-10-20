@@ -56,6 +56,7 @@ class InjecAgentAdapter(BenchmarkAdapter):
 
     def load_cases(self, limit: Optional[int] = None) -> List[BenchmarkCase]:
         if os.getenv("ASTRAL_BENCH_LOAD_REAL") == "1":
-            self.corpus_version = "injecagent-real"
+            raise RuntimeError(
+                "InjecAgent external corpus has no qualified AstralDeep mapping")
         cases = _sample_cases()
         return cases[:limit] if limit else cases

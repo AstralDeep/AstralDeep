@@ -5,13 +5,11 @@
 # backend/shared) — the isolation_check guard asserts this and gates CI.
 # DO NOT add any of these to backend/requirements.txt (Constitution V).
 #
-# The harness core (adjudicator, envelope, report, synthetic driver) needs NONE
-# of these — it runs on the standard library, so CI's isolation + ablation gates
-# work with an empty install. The packages below are needed only to load the
-# REAL external corpora (ASTRAL_BENCH_LOAD_REAL=1) and for property generators.
+# The legacy diagnostic runner needs no packages here. The external corpus
+# mapping is not qualified; requesting it currently fails closed.
 
-# Real benchmark corpora (optional; sample cases ship in-repo for offline/CI runs)
-agentdojo ; extra == "corpora"
+# Evaluation research only; this pin does not enable an external gate.
+agentdojo==0.1.35 ; extra == "corpora"  # PyPI wheel SHA256 364bea4219716b716bf639f504d195943f7f6a5535d312ca41d7098704a2affd
 # agent-security-bench and injecagent are installed from their upstream repos
 # (no PyPI wheel pinned here); see README for the corpus-load instructions.
 
