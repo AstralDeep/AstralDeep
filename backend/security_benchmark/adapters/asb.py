@@ -46,15 +46,8 @@ class ASBAdapter(BenchmarkAdapter):
     corpus_version = "sample-1"
 
     def load_cases(self, limit: Optional[int] = None) -> List[BenchmarkCase]:
-        if os.getenv("ASTRAL_BENCH_LOAD_REAL") == "1" and self._real_available():
-            self.corpus_version = "asb-real"
+        if os.getenv("ASTRAL_BENCH_LOAD_REAL") == "1":
+            raise RuntimeError(
+                "ASB external corpus has no qualified AstralDeep mapping")
         cases = _sample_cases()
         return cases[:limit] if limit else cases
-
-    @staticmethod
-    def _real_available() -> bool:  # pragma: no cover
-        try:
-            import agent_security_bench  # noqa: F401
-            return True
-        except Exception:
-            return False
