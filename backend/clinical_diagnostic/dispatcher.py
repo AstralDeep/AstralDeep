@@ -26,6 +26,8 @@ MAX_ANSWER_CHARS = 64 * 1024
 MAX_JSON_DEPTH = 64
 MAX_JSON_NODES = 20_000
 _TEXT_FIELDS = ("text", "content", "label", "title", "message")
+_ANSWER_TEXT_FIELDS = {"text": ("content",), "card": ("title",),
+                       "alert": ("title", "message"), "container": ()}
 _DENIAL_MARKERS = (
     "restricted for this agent",
     "permission denied",
@@ -473,30 +475,32 @@ def _extract_components(components: object, parts: List[str], chat_id: str) -> N
     kind = components.get("type")
     if kind in ("button", "icon", "spacer", "divider"):
         return
-    if kind not in ("text", "card", "alert", "markdown", "container", "row", "column", "notification"):
+    if not isinstance(kind, str) or kind not in _ANSWER_TEXT_FIELDS:
         raise DispatcherError("committed answer component is unsupported")
     if components.get("hidden") is True or components.get("visible") is False:
         return
     title = components.get("title", "")
-    identity = components.get("id") or components.get("component_id", "")
-    if isinstance(identity, str) and identity.startswith("doc_"):
-        if not isinstance(title, str):
-            raise DispatcherError("promoted document title is invalid")
-        digest = hashlib.sha1(f"{chat_id}|{title}".encode("utf-8")).hexdigest()[:12]
-        if kind != "card" or identity != f"doc_{digest}":
-            raise DispatcherError("promoted document identity does not match this chat")
+    for key in ("id", "component_id"):
+        identity = components.get(key)
+        if isinstance(identity, str) and identity.startswith("doc_"):
+            if not isinstance(title, str):
+                raise DispatcherError("promoted document title is invalid")
+            digest = hashlib.sha1(f"{chat_id}|{title}".encode("utf-8")).hexdigest()[:12]
+            if kind != "card" or identity != f"doc_{digest}":
+                raise DispatcherError("promoted document identity does not match this chat")
     for key in _TEXT_FIELDS:
         value = components.get(key)
         if isinstance(value, str):
-            if value.strip():
+            if key in _ANSWER_TEXT_FIELDS[kind] and value.strip():
                 parts.append(value.strip())
         elif value is not None:
-            if key != "content" or not isinstance(value, list):
+            if key != "content" or kind not in ("card", "container") or not isinstance(value, list):
                 raise DispatcherError("committed component text field is invalid")
-    for key in ("content", "components", "children", "items"):
-        value = components.get(key)
-        if value is not None and not isinstance(value, str):
-            _extract_components(value, parts, chat_id)
+    if kind in ("card", "container"):
+        children = components.get("children") or components.get("content") or []
+        if not isinstance(children, list):
+            raise DispatcherError("committed component children are invalid")
+        _extract_components(children, parts, chat_id)
 
 
 def _collect_denials(frame: Mapping[str, object], denials: List[str]) -> None:

@@ -624,7 +624,7 @@ def test_complete_structured_answer_keeps_nested_content_and_excludes_provenance
     adapter, _ = scoped_dispatcher([
         committed_answer(canvas=[{"type": "card", "title": "Assessment", "content": [
             {"type": "text", "content": "Full finding."},
-            {"type": "container", "children": [{"type": "text", "text": "Safety detail."}]},
+            {"type": "container", "children": [{"type": "text", "content": "Safety detail."}]},
             {"type": "text", "_source_correlation_id": "tool-call", "content": "Tool preview."},
             {"type": "card", "_source_agent": "tool", "content": [{"type": "text", "content": "Tool descendant."}]},
             {"type": "text", "intermediate": True, "content": "Intermediate."},
@@ -742,3 +742,90 @@ def test_final_assistant_component_part_retains_its_nested_answer_text():
         return frame
     adapter, _ = scoped_dispatcher([structured, completed_turn()])
     assert adapter.answer(case()).text == "Final assessment\nComplete structured conclusion."
+
+
+def test_collected_card_text_matches_visible_renderer_fields_and_child_branch():
+    from webrender.renderer import render_one
+
+    document = {"type": "card", "title": "Visible title.", "label": "Unused label.",
+        "text": "Unused card text.", "message": "Unused card message.",
+        "children": [{"type": "text", "content": "Visible child.", "text": "Unused text alias.",
+            "children": [{"type": "text", "content": "Unused text descendant."}]}],
+        "content": [{"type": "text", "content": "Shadowed content."}],
+        "components": [{"type": "text", "content": "Unused components."}],
+        "items": [{"type": "text", "content": "Unused items."}]}
+    html = render_one(document)
+    assert "Visible title." in html and "Visible child." in html
+    assert "Unused" not in html and "Shadowed" not in html
+    adapter, _ = scoped_dispatcher([committed_answer(canvas=[document]), completed_turn()])
+    assert adapter.answer(case()).text == "Final answer.\nVisible title.\nVisible child."
+
+
+@pytest.mark.parametrize("kind", ["card", "container"])
+def test_empty_children_fall_back_to_visible_content_without_container_labels(kind):
+    component = {"type": kind, "title": "Title.", "label": "Unused label.",
+        "children": [], "content": [{"type": "text", "content": "Visible fallback."}]}
+    adapter, _ = scoped_dispatcher([committed_answer(canvas=[component]), completed_turn()])
+    expected = "Final answer.\nTitle.\nVisible fallback." if kind == "card" else "Final answer.\nVisible fallback."
+    assert adapter.answer(case()).text == expected
+
+
+def test_alert_collects_only_visible_title_and_message():
+    adapter, _ = scoped_dispatcher([committed_answer(canvas=[{
+        "type": "alert", "title": "Visible alert.", "message": "Visible message.",
+        "content": "Unused content.", "label": "Unused label.",
+        "children": [{"type": "text", "content": "Unused alert descendant."}],
+    }]), completed_turn()])
+    assert adapter.answer(case()).text == "Final answer.\nVisible alert.\nVisible message."
+
+
+@pytest.mark.parametrize("kind", ["markdown", "row", "column", "notification"])
+def test_unrendered_answer_component_vocabulary_fails_closed(kind):
+    adapter, transport = scoped_dispatcher([
+        committed_answer(canvas=[{"type": kind, "content": "Invisible answer."}]), completed_turn()])
+    with pytest.raises(DispatcherError, match="unsupported"):
+        adapter.answer(case())
+    assert transport.closed
+
+
+@pytest.mark.parametrize("identities", [
+    {"id": "ordinary-author-id", "component_id": "doc_foreign_invalid"},
+    {"id": "doc_0957faa0c8a7", "component_id": "doc_foreign_invalid"},
+])
+def test_every_present_promoted_identity_must_match_the_current_chat(identities):
+    adapter, transport = scoped_dispatcher([committed_answer(canvas=[{
+        "type": "card", **identities, "title": "Document",
+        "content": [{"type": "text", "content": "Synthetic promoted body."}],
+    }]), completed_turn()])
+    with pytest.raises(DispatcherError, match="identity"):
+        adapter.answer(case())
+    assert transport.closed
+
+
+def test_promoted_document_keeps_server_id_and_semantic_component_id():
+    import hashlib
+
+    identity = "doc_" + hashlib.sha1(b"chat-1|Document").hexdigest()[:12]
+    adapter, _ = scoped_dispatcher([committed_answer(canvas=[{
+        "type": "card", "id": identity, "component_id": "au_" + identity, "title": "Document",
+        "content": [{"type": "text", "content": "Full promoted answer."}],
+    }]), completed_turn()])
+    assert adapter.answer(case()).text == "Final answer.\nDocument\nFull promoted answer."
+
+
+@pytest.mark.parametrize("kind", [[], {}])
+def test_malformed_component_type_is_a_protocol_failure(kind):
+    adapter, transport = scoped_dispatcher([
+        committed_answer(canvas=[{"type": kind, "content": "Invalid type."}]), completed_turn()])
+    with pytest.raises(DispatcherError, match="unsupported"):
+        adapter.answer(case())
+    assert transport.closed
+
+
+@pytest.mark.parametrize("children", ["Unstructured body.", {"type": "text", "content": "Unlisted child."}])
+def test_unstructured_selected_children_fail_closed(children):
+    adapter, transport = scoped_dispatcher([
+        committed_answer(canvas=[{"type": "card", "children": children}]), completed_turn()])
+    with pytest.raises(DispatcherError, match="children"):
+        adapter.answer(case())
+    assert transport.closed
