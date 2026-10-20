@@ -6,15 +6,19 @@ refusal, generated-import unavailability, bounded results, and audit evidence.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+from contextlib import contextmanager
 from dataclasses import asdict
 import os
 import sys
 import time
+from threading import Event, Thread, get_ident
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
+import httpx
 import pytest
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -30,7 +34,8 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from orchestrator.credential_manager import CredentialManager  # noqa: E402
 from personalization import phi_gate  # noqa: E402
-from personalization.atlas_service import AtlasPageService  # noqa: E402
+from personalization.atlas_promotions import PromotionSourceInput  # noqa: E402
+from personalization.atlas_service import AtlasPageService, AtlasUnavailable  # noqa: E402
 from personalization.explicit_notes import ExplicitNoteMetadata  # noqa: E402
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
@@ -465,6 +470,96 @@ def _seed_note(service, owner, *, value, category="preference"):
             preparation=prepared,
             record=ExplicitNoteRecord(**asdict(encrypted.metadata), ciphertext=encrypted.ciphertext),
         )
+
+
+@pytest.mark.parametrize("operation", ["propose", "propose_alias", "approve", "apply_alias"])
+@pytest.mark.parametrize("storage_failure", [False, True])
+def test_promotion_http_transaction_keeps_the_serving_loop_available(
+    client, plane_runtime, credential_manager, monkeypatch, operation, storage_failure
+):
+    service = _service(plane_runtime, credential_manager)
+    note = _seed_note(service, OWNER_A, value="Retain this reviewed source.")
+    slug = f"thread-promotion-{uuid4().hex[:10]}"
+    body = {"source": {"kind": "note", "id": note.note_id}, "slug": slug}
+    path = "/api/atlas/projects/atlas-api/promotions"
+    if operation == "propose_alias":
+        path += "/propose"
+    elif operation in {"approve", "apply_alias"}:
+        proposal = service.propose_promotion(
+            owner_id=OWNER_A, project_id="atlas-api",
+            sources=(PromotionSourceInput("note", note.note_id),),
+            slug=slug,
+        )
+        path += f"/{proposal.proposal_id}/{'apply' if operation == 'apply_alias' else 'approve'}"
+        body = {"approval_token": proposal.approval_token}
+
+    entered, release, progressed = Event(), Event(), Event()
+    transaction_threads = []
+    observations = {}
+    transaction = plane_runtime.transaction
+
+    @contextmanager
+    def blocked_transaction(*args, **kwargs):
+        with transaction(*args, **kwargs) as current:
+            transaction_threads.append(get_ident())
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("transaction controller did not release")
+            try:
+                if storage_failure:
+                    raise AtlasUnavailable("controlled_storage_failure")
+                yield current
+            finally:
+                transaction_threads.append(get_ident())
+
+    monkeypatch.setattr(plane_runtime, "transaction", blocked_transaction)
+
+    async def request():
+        loop = asyncio.get_running_loop()
+        loop_thread = get_ident()
+
+        def control():
+            if not entered.wait(5):
+                release.set()
+                return
+            loop.call_soon_threadsafe(progressed.set)
+            if transaction_threads[0] != loop_thread:
+                observations["progress_before_release"] = progressed.wait(5)
+            else:
+                observations["progress_before_release"] = False
+            release.set()
+
+        controller = Thread(target=control, name="atlas-route-transaction-controller")
+        controller.start()
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=client.app), base_url="http://testserver"
+            ) as http:
+                response = await http.post(path, json=body, headers=AUTH_A)
+        finally:
+            release.set()
+            controller.join(5)
+        assert not controller.is_alive()
+        assert entered.is_set()
+        assert transaction_threads[0] != loop_thread
+        assert len(set(transaction_threads)) == 1
+        assert len(transaction_threads) == 2
+        assert observations["progress_before_release"] is True
+        return response
+
+    response = asyncio.run(request())
+    if storage_failure:
+        assert response.status_code == 503
+        assert response.json()["detail"] == "atlas_unavailable"
+    elif operation in {"propose", "propose_alias"}:
+        assert response.status_code == 201, response.text
+        assert response.json()["source"]["id"] == note.note_id
+        assert response.json()["destination"]["slug"] == slug
+    else:
+        assert response.status_code == 200, response.text
+        assert response.json()["applied"] is True
+        assert response.json()["revision"] == 1
+        assert "Retain this reviewed source." in response.json()["body"]
 
 
 def test_promotion_workflow_over_http_is_owner_bound_and_single_use(

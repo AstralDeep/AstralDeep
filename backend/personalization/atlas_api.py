@@ -6,6 +6,7 @@ mapping lifecycle failures to precise HTTP outcomes.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Literal
 
@@ -358,7 +359,8 @@ async def propose_promotion(
 ):
     service = _service(request)
     try:
-        proposal = service.propose_promotion(
+        proposal = await asyncio.to_thread(
+            service.propose_promotion,
             owner_id=user_id,
             project_id=_project_scope(project_id),
             sources=body.source_inputs(),
@@ -392,7 +394,8 @@ async def approve_promotion(
 ):
     service = _service(request)
     try:
-        applied = service.approve_promotion(
+        applied = await asyncio.to_thread(
+            service.approve_promotion,
             owner_id=user_id,
             project_id=_project_scope(project_id),
             proposal_id=proposal_id,
