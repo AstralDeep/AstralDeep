@@ -721,8 +721,16 @@ def test_invalid_utf8_dispatcher_frame_is_a_protocol_failure():
 
 
 def test_deadline_and_response_byte_limits_close_the_transport():
-    ticks = iter([0, 2])
-    adapter, transport = scoped_dispatcher([], timeout_seconds=1, clock=lambda: next(ticks))
+    now = [0]
+    adapter, transport = scoped_dispatcher([], timeout_seconds=1, clock=lambda: now[0])
+    original_send = transport.send
+
+    def send(text):
+        original_send(text)
+        if len(transport.sent) == 2:
+            now[0] = 2
+
+    transport.send = send
     with pytest.raises(DispatcherTimeout):
         adapter.answer(case())
     assert transport.closed

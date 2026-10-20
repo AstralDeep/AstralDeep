@@ -110,5 +110,3 @@ class RunRecord:
             json.dump(self.to_dict(), handle, indent=2, sort_keys=True)
             handle.write("\n")
         return path
-
-

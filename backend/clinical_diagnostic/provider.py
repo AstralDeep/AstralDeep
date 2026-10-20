@@ -7,10 +7,14 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass, field
+import sys
+from dataclasses import asdict, dataclass, field
 from typing import Callable, Mapping, Optional, Sequence
 
 from clinical_diagnostic.models import AnswerSource, CaseAnswer, ClinicalCase, FailureCode
+from clinical_diagnostic.budget import BudgetExhausted, RunCancelled, current_control, operation_control
+from clinical_diagnostic.execution import supervise
+from clinical_diagnostic.identity import public_url
 
 MAX_COMPLETION_CHARS = 64 * 1024
 DEFAULT_MAX_TOKENS = 900
@@ -19,11 +23,16 @@ DEFAULT_TIMEOUT_SECONDS = 120.0
 
 class ProducerError(RuntimeError):
     def __init__(self, detail: str, *, code: FailureCode = FailureCode.PROVIDER_ERROR,
-                 retryable: bool = False) -> None:
+                 retryable: bool = False, completed_cost: Optional[float] = None) -> None:
         super().__init__(detail)
         self.code = code
         self.detail = detail
         self.retryable = retryable
+        if completed_cost is not None and (isinstance(completed_cost, bool)
+                or not isinstance(completed_cost, (int, float))
+                or not math.isfinite(completed_cost) or completed_cost < 0):
+            raise ValueError("completed cost must be finite and non-negative")
+        self.completed_cost = completed_cost
 
 
 class RateLimited(ProducerError):
@@ -47,7 +56,8 @@ class ProviderReply:
             raise ValueError("provider reply text must be non-empty")
         if len(self.text) > MAX_COMPLETION_CHARS:
             raise ValueError(f"provider reply exceeds {MAX_COMPLETION_CHARS} characters")
-        if not isinstance(self.model_identity, str) or not self.model_identity.strip():
+        if (not isinstance(self.model_identity, str) or not self.model_identity.strip()
+                or len(self.model_identity) > 64):
             raise ValueError("provider reply must name its model identity")
         if isinstance(self.cost, bool) or not isinstance(self.cost, (int, float)):
             raise ValueError("provider reply cost must be a finite number")
@@ -66,7 +76,7 @@ class ProviderReply:
 class CompletionConfig:
     base_url: str
     model: str
-    api_key: str = ""
+    api_key: str = field(default="", repr=False)
     max_tokens: int = DEFAULT_MAX_TOKENS
     temperature: float = 0.0
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
@@ -90,6 +100,7 @@ class CompletionConfig:
                 raise ValueError(f"{name} must be a finite number")
             if not math.isfinite(float(value)) or float(value) < 0:
                 raise ValueError(f"{name} must be finite and non-negative")
+        public_url(self.base_url, ("http", "https"))
 
     @property
     def identity(self) -> str:
@@ -149,6 +160,10 @@ class OpenAICompletionProvider(CompletionProvider):
         self.identity = config.identity
 
     def complete(self, messages: Sequence[dict]) -> ProviderReply:
+        control = operation_control(self.config.timeout_seconds)
+        return supervise("completion", {"config": asdict(self.config), "messages": list(messages)}, control)
+
+    def _complete(self, messages: Sequence[dict]) -> ProviderReply:
         from llm_config.client_factory import build_llm_client
         from llm_config.types import CredentialSource
 
@@ -157,9 +172,12 @@ class OpenAICompletionProvider(CompletionProvider):
             model = self.config.model
             api_key = self.config.api_key
 
+        control = current_control() or operation_control(self.config.timeout_seconds)
+        client = None
+        reply = None
         try:
             client, _source, _resolved = build_llm_client(
-                _Config(), CredentialSource.USER, timeout=self.config.timeout_seconds
+                _Config(), CredentialSource.USER, timeout=control.remaining_seconds(self.config.timeout_seconds)
             )
             response = client.chat.completions.create(
                 model=self.config.model,
@@ -169,18 +187,40 @@ class OpenAICompletionProvider(CompletionProvider):
                 ],
                 max_tokens=self.config.max_tokens,
                 temperature=self.config.temperature,
+                timeout=control.remaining_seconds(self.config.timeout_seconds),
             )
-        except Exception as exc:  # noqa: BLE001
+            reply = self._reply(response)
+            return reply
+        except (BudgetExhausted, RunCancelled, ProducerError):
+            raise
+        except Exception as exc:
             raise _provider_error(exc) from exc
-        text = _message_text(response)
-        usage = getattr(response, "usage", None)
-        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
-        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
-        cost = (
-            prompt_tokens * self.config.input_cost_per_token
-            + completion_tokens * self.config.output_cost_per_token
-        )
-        return ProviderReply(text=text, model_identity=self.config.model, cost=cost)
+        finally:
+            if client is not None:
+                failure = sys.exc_info()[1]
+                try:
+                    client.close()
+                except Exception as exc:
+                    if failure is None:
+                        error = _provider_error(exc)
+                        error.completed_cost = reply.cost if reply is not None else None
+                        raise error from exc
+
+    def _reply(self, response: object) -> ProviderReply:
+        cost = None
+        try:
+            usage = getattr(response, "usage", None)
+            counts = [getattr(usage, key, 0) for key in ("prompt_tokens", "completion_tokens")]
+            if any(type(value) is not int or not 0 <= value <= 2**53 - 1 for value in counts):
+                raise ValueError("invalid usage counters")
+            cost = counts[0] * self.config.input_cost_per_token + counts[1] * self.config.output_cost_per_token
+            if not math.isfinite(cost):
+                cost = None
+                raise ValueError("usage cost overflow")
+            return ProviderReply(text=_message_text(response),
+                                 model_identity=getattr(response, "model", None) or self.config.model, cost=cost)
+        except (ValueError, TypeError, OverflowError, ProducerError) as exc:
+            raise ProducerError("provider returned a malformed response", completed_cost=cost) from exc
 
 
 class FrozenAnswerProducer:
@@ -238,7 +278,12 @@ def _provider_error(exc: Exception) -> ProducerError:
         return RateLimited()
     if "timeout" in name or "timeout" in str(exc).lower():
         return ProviderTimeout()
-    return ProducerError(type(exc).__name__)
+    from httpx import HTTPError
+    from openai import OpenAIError
+
+    code = (FailureCode.PROVIDER_ERROR if isinstance(exc, (OSError, HTTPError, OpenAIError))
+            else FailureCode.INTERNAL_ERROR)
+    return ProducerError(type(exc).__name__, code=code)
 
 
 def _message_text(response: object) -> str:

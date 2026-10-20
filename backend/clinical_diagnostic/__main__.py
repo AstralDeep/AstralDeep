@@ -13,7 +13,8 @@ import threading
 from typing import List, Optional
 
 from clinical_diagnostic import SUITE_VERSION
-from clinical_diagnostic.budget import ExecutionLimits
+from clinical_diagnostic.budget import ExecutionLimits, cancellation_event
+from clinical_diagnostic.identity import load_model_observation
 from clinical_diagnostic.healthbench import (
     AssetIdentityError,
     REVIEWED_ASSET_SHA256,
@@ -79,6 +80,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--grader-config", default=None, help="public mode: grader JSON config")
     parser.add_argument("--ws-uri", default=None, help="public mode: Astral WebSocket URL")
     parser.add_argument("--http-uri", default=None, help="public mode: Astral HTTP base URL")
+    parser.add_argument("--astral-model-observation", default=None,
+                        help="non-secret JSON observation verified against the selected backend")
     parser.add_argument(
         "--dispatcher-token-env", default="ASTRAL_CLINICAL_DISPATCHER_TOKEN",
         help="environment variable holding the bounded dispatcher bearer token",
@@ -151,13 +154,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                 ws_uri=args.ws_uri,
                 http_uri=args.http_uri,
                 timeout_seconds=min(600.0, args.max_elapsed),
+                model_observation=(load_model_observation(args.astral_model_observation)
+                                   if args.astral_model_observation else None),
             )
             config.producers = build_public_producers(bare, dispatcher)
             config.grader = grader
         except (ValueError, OSError) as exc:
             print(f"clinical public run refused: {exc}")
             return EXIT_CONFIG
-    cancellation = threading.Event()
+    cancellation = cancellation_event()
     config.cancellation = cancellation
     try:
         previous = arm_cancellation(cancellation)

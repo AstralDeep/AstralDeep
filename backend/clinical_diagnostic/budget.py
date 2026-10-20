@@ -6,8 +6,11 @@ deterministic; every exhausted limit raises instead of yielding a zero score.
 from __future__ import annotations
 
 import math
+import multiprocessing
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Callable, Optional, Protocol
 
@@ -18,6 +21,46 @@ MAX_RETRIES = 8
 MAX_CONCURRENCY = 8
 MAX_ELAPSED_SECONDS = 3600.0
 MAX_COST = 1000.0
+_CONTROL = ContextVar("clinical_execution_control", default=None)
+
+
+def cancellation_event():
+    return multiprocessing.get_context("spawn").Event()
+
+
+def current_control():
+    return _CONTROL.get()
+
+
+@contextmanager
+def use_control(control):
+    token = _CONTROL.set(control)
+    try:
+        yield control
+    finally:
+        _CONTROL.reset(token)
+
+
+class DeadlineControl:
+    def __init__(self, deadline, cancel_event, *, clock=time.monotonic):
+        self.deadline, self.cancel_event, self.clock = deadline, cancel_event, clock
+
+    def remaining_seconds(self, cap=None):
+        if self.cancel_event.is_set():
+            raise RunCancelled()
+        remaining = self.deadline - self.clock()
+        if remaining <= 0:
+            raise BudgetExhausted("elapsed budget exhausted")
+        return remaining if cap is None else min(remaining, cap)
+
+
+def operation_control(seconds):
+    parent = current_control()
+    if parent is None:
+        return DeadlineControl(time.monotonic() + seconds, cancellation_event())
+    parent.remaining_seconds()
+    return DeadlineControl(min(parent.deadline, parent.clock() + seconds),
+                           parent.cancel_event, clock=parent.clock)
 
 
 class Clock(Protocol):
@@ -100,12 +143,28 @@ class BudgetTracker:
     ) -> None:
         self.limits = limits
         self._clock = clock or time.monotonic
-        self._sleep = sleep or time.sleep
-        self._cancel = cancel_event or threading.Event()
+        self._sleep = sleep
+        self._cancel = cancel_event if cancel_event is not None else cancellation_event()
         self._lock = threading.Lock()
         self._started = self._clock()
         self._calls = 0
         self._cost = 0.0
+
+    @property
+    def deadline(self):
+        return self._started + self.limits.max_elapsed_seconds
+
+    @property
+    def clock(self):
+        return self._clock
+
+    @property
+    def cancel_event(self):
+        return self._cancel
+
+    def remaining_seconds(self, cap=None):
+        self._check_completion()
+        return DeadlineControl(self.deadline, self._cancel, clock=self._clock).remaining_seconds(cap)
 
     def request_cancel(self) -> None:
         self._cancel.set()
@@ -156,17 +215,24 @@ class BudgetTracker:
             self._calls += 1
 
     def record_cost(self, cost: float) -> None:
+        self.charge_known_cost(cost)
+        self._check_completion()
+
+    def charge_known_cost(self, cost: float) -> None:
         if isinstance(cost, bool) or not isinstance(cost, (int, float)):
             raise ValueError("call cost must be a finite number")
         if not math.isfinite(float(cost)) or float(cost) < 0:
             raise ValueError("call cost must be finite and non-negative")
         with self._lock:
             self._cost += float(cost)
-        self._check_completion()
 
     def retry_delay(self, attempt: int) -> None:
         if attempt < 0:
             raise ValueError("retry attempt must be non-negative")
         self.check()
-        self._sleep(min(2.0, 0.1 * (2 ** min(attempt, 5))))
+        delay = min(2.0, 0.1 * (2 ** min(attempt, 5)), self.remaining_seconds())
+        if self._sleep is not None:
+            self._sleep(delay)
+        else:
+            self._cancel.wait(delay)
         self.check()

@@ -12,12 +12,18 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import ssl
 from dataclasses import dataclass
 from typing import Callable, Iterable, List, Mapping, Optional, Protocol, Sequence, Tuple
 from uuid import uuid4
 
 from clinical_diagnostic.models import AnswerSource, CaseAnswer, ClinicalCase, FailureCode
 from clinical_diagnostic.provider import ProducerError
+from clinical_diagnostic.budget import (
+    BudgetExhausted, DeadlineControl, cancellation_event, current_control, operation_control, use_control,
+)
+from clinical_diagnostic.execution import supervise
+from clinical_diagnostic.identity import public_url
 
 MAX_FRAMES = 2000
 MAX_MESSAGE_BYTES = 1024 * 1024
@@ -136,13 +142,12 @@ class WebSocketDispatcher:
         transport_factory: Optional[Callable[[], WebsocketTransport]] = None,
         http: Optional[Callable[[str, str, Mapping[str, str], Optional[bytes]], HttpResponse]] = None,
         clock: Optional[Callable[[], float]] = None,
+        model_observation=None,
     ) -> None:
         if not isinstance(token, str) or not token.strip():
             raise ValueError("dispatcher requires an authenticated bearer token")
         for name, value in (("ws_uri", ws_uri), ("http_uri", http_uri)):
-            parsed = urllib.parse.urlparse(value)
-            if parsed.scheme not in ("ws", "wss", "http", "https") or not parsed.netloc:
-                raise ValueError(f"{name} must be an absolute ws(s)/http(s) URL")
+            public_url(value, ("ws", "wss") if name == "ws_uri" else ("http", "https"))
         if not 1.0 <= timeout_seconds <= 600.0:
             raise ValueError("timeout_seconds must be within 1..600")
         if not 1 <= max_frames <= MAX_FRAMES:
@@ -159,6 +164,8 @@ class WebSocketDispatcher:
         self._transport_factory = transport_factory or self._default_transport
         self._http = http or _http_request
         self._clock = clock or time.monotonic
+        self._concrete = transport_factory is None and http is None and clock is None
+        self.model_observation = model_observation
 
     def __repr__(self) -> str:
         return f"WebSocketDispatcher(identity={self.identity!r}, ws_uri={self.ws_uri!r})"
@@ -200,9 +207,41 @@ class WebSocketDispatcher:
         raise DispatcherError(f"isolation probe failed with status {response.status}")
 
     def answer(self, case: ClinicalCase) -> DispatchedAnswer:
+        parent = current_control()
+        control = (operation_control(self.timeout_seconds) if parent is not None else
+                   DeadlineControl(self._clock() + self.timeout_seconds, cancellation_event(), clock=self._clock))
+        if self._concrete:
+            return supervise("dispatcher", {"config": {
+                "token": self._token, "ws_uri": self.ws_uri, "http_uri": self.http_uri,
+                "identity": self.identity, "timeout_seconds": self.timeout_seconds,
+                "max_frames": self.max_frames, "max_message_bytes": self.max_message_bytes,
+            }, "case": case}, control)
+        with use_control(control):
+            try:
+                return self._answer(case)
+            except BudgetExhausted as exc:
+                if parent is None:
+                    raise DispatcherTimeout() from exc
+                raise
+
+    def _answer(self, case: ClinicalCase) -> DispatchedAnswer:
+        from websockets.exceptions import WebSocketException
+
+        try:
+            return self._collect_answer(case)
+        except TimeoutError as exc:
+            raise DispatcherTimeout() from exc
+        except (OSError, ssl.SSLError, WebSocketException) as exc:
+            raise DispatcherError("dispatcher connection failed") from exc
+
+    def _collect_answer(self, case: ClinicalCase) -> DispatchedAnswer:
+        control = current_control()
+        control.remaining_seconds()
         prompt = render_dispatcher_prompt(case)
         chat_id = self.create_chat()
+        control.remaining_seconds()
         self._verify_empty_chat(chat_id)
+        control.remaining_seconds()
         connection_generation = str(uuid4())
         request_generation = str(uuid4())
         submission_id = str(uuid4())
@@ -213,14 +252,15 @@ class WebSocketDispatcher:
         audit_event_ids: List[str] = []
         terminal_seen = False
         snapshot_seen = False
-        deadline = self._clock() + self.timeout_seconds
         total_bytes = 0
         try:
+            control.remaining_seconds()
             transport.send(json.dumps({
                 "type": "register_ui",
                 "token": self._token,
                 "connection_generation": connection_generation,
             }))
+            control.remaining_seconds()
             transport.send(json.dumps({
                 "type": "ui_event",
                 "action": "chat_message",
@@ -230,9 +270,7 @@ class WebSocketDispatcher:
                 "payload": {"message": prompt, "chat_id": chat_id},
             }))
             while len(frames) < self.max_frames:
-                remaining = deadline - self._clock()
-                if remaining <= 0:
-                    raise DispatcherTimeout()
+                remaining = control.remaining_seconds()
                 raw = transport.recv(remaining)
                 if isinstance(raw, bytes):
                     try:
@@ -304,6 +342,7 @@ class WebSocketDispatcher:
         base = self.http_uri + "/api/chats/" + urllib.parse.quote(chat_id, safe="")
         headers = {"Authorization": f"Bearer {self._token}"}
         for url, key in ((base, "chat"), (base + "/components", "components")):
+            current_control().remaining_seconds()
             response = self._http("GET", url, headers, None)
             if response.status in (401, 403, 404):
                 raise DispatcherDenied("new chat ownership verification was denied")
@@ -323,8 +362,8 @@ class WebSocketDispatcher:
         return _SyncWebsocketTransport(
             connect(
                 self.ws_uri,
-                open_timeout=self.timeout_seconds,
-                close_timeout=2,
+                open_timeout=(current_control() or operation_control(self.timeout_seconds)).remaining_seconds(),
+                close_timeout=0.5,
                 max_size=self.max_message_bytes,
             )
         )
@@ -370,7 +409,8 @@ def _http_request(
         url, data=body, headers=dict(headers), method=method
     )
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        control = current_control() or operation_control(60)
+        with urllib.request.urlopen(request, timeout=control.remaining_seconds(60)) as response:
             return _Response(response.status, response.read(MAX_MESSAGE_BYTES + 1))
     except urllib.error.HTTPError as exc:
         return _Response(exc.code, exc.read(MAX_MESSAGE_BYTES + 1))
@@ -564,7 +604,16 @@ class DispatcherProducer:
 
     def __init__(self, adapter: DispatcherAdapter) -> None:
         self.adapter = adapter
-        self.identity = adapter.identity
+        observation = getattr(adapter, "model_observation", None)
+        self.identity = observation.model if observation is not None else "unknown"
+        self.config = self
+
+    def to_dict(self):
+        observation = getattr(self.adapter, "model_observation", None)
+        return {"adapter": self.adapter.identity,
+                "http_uri": getattr(self.adapter, "http_uri", None),
+                "ws_uri": getattr(self.adapter, "ws_uri", None),
+                "model": observation.to_dict() if observation is not None else {"status": "unknown"}}
 
     def produce(self, case: ClinicalCase) -> CaseAnswer:
         answer = self.adapter.answer(case)
@@ -572,7 +621,7 @@ class DispatcherProducer:
             case_id=case.case_id,
             source=self.source,
             text=answer.text,
-            model_identity=self.identity,
+            model_identity=getattr(answer, "model_identity", "unknown"),
             tool_denials=answer.tool_denials,
             audit_event_ids=answer.audit_event_ids,
         )

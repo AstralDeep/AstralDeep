@@ -75,6 +75,8 @@ def summarize(results: Iterable[CaseResult], review_counts: Mapping[str, int]) -
         "by_source": by_source,
         "by_partition": by_partition,
         "by_setting": dict(by_setting),
+        "by_official_use_case": dict(Counter(
+            result.official_use_case for result in results if result.official_use_case)),
         "label_sources": dict(sorted(label_sources.items())),
         "failure_codes": dict(sorted(failure_codes.items())),
         "review_counts": dict(review_counts),
@@ -268,5 +270,3 @@ def render_markdown(record: RunRecord) -> str:
             lines.append(f"- {offender}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
-
-

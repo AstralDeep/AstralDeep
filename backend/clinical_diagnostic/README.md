@@ -106,6 +106,8 @@ every record and report. The diagnostic does not download the asset; the reviewe
 is enforced when a user supplies the licensed bundle. Source physician responses and canary metadata are validated
 within existing scalar limits, then excluded from diagnostic cases. Source rubric authorship
 does not confer independent clinician review or held-out status.
+Official `use_case` is retained verbatim as diagnostic metadata. Its setting is `unknown`
+until a semantic mapping is independently verified; it is never inferred as consultation.
 
 ## Scoring
 
@@ -133,6 +135,14 @@ maps to one of `invalid_grade`, `rate_limited`, `timeout`, `cancelled`,
 `dispatcher_denied`, or `malformed_answer`. Failed cases are listed with their code and are
 excluded from every score denominator. Cancellation marks remaining cases `cancelled`; it
 never reports success.
+Concrete HTTP, WebSocket, and completion work runs in an owned subprocess under the same
+absolute deadline and process-shared cancellation event. SDK/connect/read timeouts are capped
+by the remaining allowance; cancellation or expiry terminates and joins the local worker,
+with a bounded kill fallback. Injected deterministic doubles execute inline under the same
+control. A programmatic concrete run must use `budget.cancellation_event()` rather than a
+thread-only event. Local cleanup does not prove that an already-submitted remote turn or
+provider request stopped, and unknown failed-request charges remain unknown. Known completed
+charges are retained even when the grade is invalid; JSON records include admission/cost totals.
 
 ## Real dispatcher adapter and synthetic staging proof
 
@@ -176,7 +186,7 @@ python -m clinical_diagnostic \
   --asset-member <examples.json|examples.jsonl> \
   --bare-config bare.json --grader-config grader.json \
   --ws-uri wss://<host>/ws --http-uri https://<host> \
-  --max-cases 8 --max-calls 64 --max-cost 2.0 --max-elapsed 600
+  --limit 8 --max-calls 64 --max-cost 2.0 --max-elapsed 600
 ```
 
 `bare.json` / `grader.json` declare `base_url` and `model` (plus optional `api_key`, token
@@ -185,6 +195,17 @@ model with the final answer returned by the real dispatcher, records the model/g
 identities, and remains non-gating. It refuses selected cases that are not
 `clinician_reviewed` unless `--acknowledge-unreviewed` is explicitly passed. No patient data,
 provider call, or licensed corpus is part of required CI.
+
+The backend HTTP/WebSocket endpoints are digest-bound and must contain no URL credentials,
+query, or fragment. Without `--astral-model-observation observation.json`, the backend model
+configuration is explicitly `unknown`. The optional non-secret JSON object has exactly
+`provider`, `model`, `base_url`, and `verification_reference`: an operator must verify these
+against the selected backend's ordinary authenticated in-product configuration and reference
+that observation's receipt. The diagnostic labels this as `operator_verified_input`; it does
+not independently attest configuration or change it. Relevant returned bare/grader model
+identities are retained per result; the WebSocket contract supplies no observed model identity,
+so that result field stays `unknown`. Provider keys and the dispatcher bearer never enter the
+configuration record. The outer call budget does not bound Astral's internal model/tool calls.
 
 ## Research limits
 

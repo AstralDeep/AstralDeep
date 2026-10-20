@@ -140,9 +140,20 @@ class _Client:
     def __init__(self, response):
         self.chat = SimpleNamespace(completions=_Completion(response))
 
+    def close(self):
+        pass
+
 
 def _patch_client(monkeypatch, response):
     import llm_config.client_factory as factory
+    from clinical_diagnostic.budget import use_control
+    from clinical_diagnostic.execution import execute_inline
+
+    def inline(kind, payload, control):
+        with use_control(control):
+            return execute_inline(kind, payload)
+
+    monkeypatch.setattr("clinical_diagnostic.provider.supervise", inline)
 
     monkeypatch.setattr(factory, "build_llm_client",
                         lambda *_a, **_k: (_Client(response), object(), object()))

@@ -54,6 +54,7 @@ MAX_EXAMPLES = 5000
 MAX_METADATA_CHARS = 2000
 
 EXAMPLE_FIELDS = frozenset({
+    "official_use_case",
     "prompt_id",
     "id",
     "conversation",
@@ -307,6 +308,7 @@ def parse_example(
             review=_review(payload.get("review"), case_id, rubric_items, frozen_answers),
             frozen_answers=frozen_answers,
             example_tags=example_tags,
+            official_use_case=payload.get("official_use_case", ""),
         )
     except ValueError as exc:
         raise SchemaError(f"{case_id}: {exc}") from exc
@@ -338,6 +340,8 @@ def _normalize_official(payload: Mapping[str, Any]) -> Dict[str, Any]:
         "conversation": conversation["messages"],
         "rubric_items": normalized,
         "specialty": payload["specialty"],
+        "setting": "unknown",
+        "official_use_case": payload["use_case"],
     }
 
 
@@ -602,5 +606,3 @@ def _file_sha256(path: str, limit: int) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-

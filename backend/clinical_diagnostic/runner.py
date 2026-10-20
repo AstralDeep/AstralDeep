@@ -19,6 +19,7 @@ from clinical_diagnostic.budget import (
     BudgetTracker,
     ExecutionLimits,
     RunCancelled,
+    use_control,
 )
 from clinical_diagnostic.corpus import (
     canonical_cases,
@@ -193,6 +194,8 @@ def run(config: DiagnosticConfig) -> DiagnosticRun:
     offenders = tuple(_frozen_gate(record, producers)) if enforce_gate else ()
     record.gate_offenders = offenders
     record.summary = summarize(record.results, review_counts)
+    record.summary["accounting"] = {"admitted_calls": budget.calls, "known_cost": budget.cost,
+                                     "unknown_failed_request_cost": "unknown"}
     record_path = record.write_json(config.artifacts_root)
     report_path = _write_report(record, config.artifacts_root)
     exit_code = EXIT_OK
@@ -318,8 +321,11 @@ def _execute_one(
     attempt = 0
     while True:
         try:
-            return _attempt(producer, case, grader, budget)
+            with use_control(budget):
+                return _attempt(producer, case, grader, budget)
         except ProducerError as exc:
+            if exc.completed_cost is not None:
+                budget.charge_known_cost(exc.completed_cost)
             if exc.retryable and attempt < max_retries:
                 attempt += 1
                 try:
@@ -331,6 +337,8 @@ def _execute_one(
                 continue
             return _failure(case, producer, exc.code, exc.detail, exc.retryable)
         except GraderError as exc:
+            if exc.completed_cost is not None:
+                budget.charge_known_cost(exc.completed_cost)
             if exc.retryable and attempt < max_retries:
                 attempt += 1
                 try:
@@ -347,6 +355,9 @@ def _execute_one(
             )
         except RunCancelled as exc:
             return _failure(case, producer, FailureCode.CANCELLED, exc.detail, False)
+        except Exception as exc:
+            budget.request_cancel()
+            return _failure(case, producer, FailureCode.INTERNAL_ERROR, type(exc).__name__, False)
 
 
 def _attempt(
@@ -376,6 +387,9 @@ def _attempt(
         status="scored",
         score=score,
         agreement=agreement,
+        model_identity=answer.model_identity or "unknown",
+        grader_identity=reply.model_identity or "unknown",
+        official_use_case=case.official_use_case,
     )
 
 
@@ -396,6 +410,7 @@ def _failure(
         answer_source=AnswerSource(_source_value(producer)),
         answer_digest="",
         status="infrastructure_failure",
+        official_use_case=case.official_use_case,
         failure=InfrastructureFailure(code=code, detail=detail, retryable=retryable),
     )
 

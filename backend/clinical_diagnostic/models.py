@@ -46,6 +46,7 @@ FAILURE_CODES = (
     "asset_identity",
     "dispatcher_denied",
     "malformed_answer",
+    "internal_error",
 )
 
 
@@ -55,6 +56,7 @@ class Partition(str, Enum):
 
 
 class Setting(str, Enum):
+    UNKNOWN = "unknown"
     CONSULTATION = "consultation"
     DOCUMENTATION = "documentation"
     RESEARCH = "research"
@@ -83,6 +85,7 @@ class LabelSource(str, Enum):
 
 
 class FailureCode(str, Enum):
+    INTERNAL_ERROR = "internal_error"
     INVALID_GRADE = "invalid_grade"
     RATE_LIMITED = "rate_limited"
     TIMEOUT = "timeout"
@@ -229,10 +232,12 @@ class ClinicalCase:
     review: ReviewRecord = field(default_factory=ReviewRecord)
     frozen_answers: Mapping[str, str] = field(default_factory=dict)
     example_tags: Tuple[str, ...] = ()
+    official_use_case: str = ""
 
     def __post_init__(self) -> None:
         _require_text(self.case_id, "case_id", limit=MAX_CASE_ID_CHARS)
         _require_text(self.specialty, "specialty", limit=MAX_TAG_CHARS)
+        _require_text(self.official_use_case, "official_use_case", limit=2000, allow_empty=True)
         if not isinstance(self.partition, Partition):
             object.__setattr__(self, "partition", Partition(str(self.partition)))
         if not isinstance(self.setting, Setting):
@@ -297,6 +302,7 @@ class ClinicalCase:
             },
             "frozen_answers": dict(self.frozen_answers),
             "example_tags": list(self.example_tags),
+            "official_use_case": self.official_use_case,
         }
 
 
@@ -415,8 +421,14 @@ class CaseResult:
     score: Optional[Score] = None
     failure: Optional[InfrastructureFailure] = None
     agreement: Optional["Agreement"] = None
+    model_identity: str = "unknown"
+    grader_identity: str = "unknown"
+    official_use_case: str = ""
 
     def __post_init__(self) -> None:
+        _require_text(self.model_identity, "model_identity", limit=MAX_TAG_CHARS)
+        _require_text(self.grader_identity, "grader_identity", limit=MAX_TAG_CHARS)
+        _require_text(self.official_use_case, "official_use_case", limit=2000, allow_empty=True)
         if self.status not in ("scored", "infrastructure_failure"):
             raise ValueError(f"unknown case result status {self.status!r}")
         if (self.score is None) == (self.failure is None):
@@ -436,6 +448,9 @@ class CaseResult:
             "score": None if self.score is None else self.score.to_dict(),
             "failure": None if self.failure is None else self.failure.to_dict(),
             "agreement": None if self.agreement is None else self.agreement.to_dict(),
+            "model_identity": self.model_identity,
+            "grader_identity": self.grader_identity,
+            "official_use_case": self.official_use_case,
         }
 
 

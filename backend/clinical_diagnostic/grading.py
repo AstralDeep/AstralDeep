@@ -26,11 +26,12 @@ _WHITESPACE = re.compile(r"\s+")
 
 class GraderError(RuntimeError):
     def __init__(self, detail: str, *, code: FailureCode = FailureCode.INVALID_GRADE,
-                 retryable: bool = False) -> None:
+                 retryable: bool = False, completed_cost: float | None = None) -> None:
         super().__init__(detail)
         self.code = code
         self.detail = detail
         self.retryable = retryable
+        self.completed_cost = completed_cost
 
 
 @dataclass(frozen=True)
@@ -82,9 +83,13 @@ class CallableGrader(Grader):
             reply = self.provider.complete(grader_messages(case, answer))
         except ProducerError as exc:
             raise GraderError(
-                exc.detail, code=exc.code, retryable=exc.retryable
+                exc.detail, code=exc.code, retryable=exc.retryable, completed_cost=exc.completed_cost
             ) from exc
-        grade = parse_grader_response(reply.text, case)
+        try:
+            grade = parse_grader_response(reply.text, case)
+        except GraderError as exc:
+            exc.completed_cost = reply.cost
+            raise
         return GraderReply(
             grade=grade,
             model_identity=reply.model_identity or self.identity,
