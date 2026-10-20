@@ -87,13 +87,21 @@ def _orchestrator():
         "web-research-1": _card("web-research-1", "Web Research", [_skill("web_search", "tools:search")]),
         "draft-secret-9": _card("draft-secret-9", "Secret Draft", [_skill("exfiltrate", "tools:write")]),
     }
+    orch.a2a_agent_owners = {}
     orch.agents = {}
     orch.local_agents = {"weather-1": object(), "web-research-1": object(), "draft-secret-9": object()}
     orch.security_flags = {}
-    orch._is_draft_agent = lambda agent_id: False
+    orch._is_draft_agent = lambda agent_id: agent_id == "draft-secret-9"
     orch.tool_permissions = _Permissions(safe_ids={"weather-1"})
     orch.execute_authorized_tool = AsyncMock(
         return_value=MCPResponse(request_id="r1", result={"temp": 21})
+    )
+    from shared.a2a_publication import A2APublicationRegistry
+    from orchestrator.a2a_orchestrator_executor import public_catalog_agent_ids
+    from orchestrator.a2a_publication_wiring import registered_audiences
+    orch.a2a_publications = A2APublicationRegistry(
+        catalog=lambda: public_catalog_agent_ids(orch),
+        audiences=lambda agent_id: registered_audiences(orch, agent_id),
     )
     return orch
 
@@ -163,7 +171,23 @@ def _tool_names(body: dict) -> set:
     return {t["name"] for t in _data_part(body).get("tools", [])}
 
 
+def _publish_weather(client):
+    registry = client.orch.a2a_publications
+    intent = registry.create_intent(
+        agent_id="weather-1",
+        audiences=["tools:read"],
+        lifetime="open",
+        actor=ALICE,
+    )
+    return registry.confirm(
+        intent_id=intent.intent_id,
+        confirmation_token=intent.confirmation_token,
+        actor=ALICE,
+    )
+
+
 def test_public_card_names_only_safe_public_builtins(client):
+    _publish_weather(client)
     resp = client.get("/a2a/.well-known/agent-card.json")
     assert resp.status_code == 200
     card = resp.json()
@@ -258,28 +282,33 @@ def test_anonymous_task_scope_is_empty_and_unshared():
 
 
 def test_tools_list_data_part_returns_callers_projected_tools(client):
+    _publish_weather(client)
     alice = _send(client, _auth(ALICE), [{"data": {"method": "tools/list"}}], rpc_id="l1")
     assert alice.status_code == 200, alice.text
-    assert _tool_names(alice.json()) == {"get_weather", "web_search", "exfiltrate"}
+    assert _tool_names(alice.json()) == {"get_weather"}
 
     bob = _send(client, _auth(BOB), [{"data": {"method": "tools/list"}}], rpc_id="l2")
-    assert _tool_names(bob.json()) == {"web_search", "exfiltrate"}
+    assert _tool_names(bob.json()) == set()
 
 
 def test_empty_and_text_messages_list_per_user(client):
-    empty = _send(client, _auth(BOB), [{"text": ""}], rpc_id="e1")
-    assert _tool_names(empty.json()) == {"web_search", "exfiltrate"}
-    text = _send(client, _auth(BOB), [{"text": "what's the weather"}], rpc_id="e2")
-    assert _tool_names(text.json()) == {"web_search", "exfiltrate"}
+    _publish_weather(client)
+    empty = _send(client, _auth(ALICE), [{"text": ""}], rpc_id="e1")
+    assert _tool_names(empty.json()) == {"get_weather"}
+    text = _send(client, _auth(ALICE), [{"text": "what's the weather"}], rpc_id="e2")
+    assert _tool_names(text.json()) == {"get_weather"}
 
 
 def test_listing_mirrors_chat_visibility_gates(client):
+    _publish_weather(client)
     client.orch._is_draft_agent = lambda agent_id: agent_id == "draft-secret-9"
     resp = _send(client, _auth(ALICE), [{"data": {"method": "tools/list"}}], rpc_id="v1")
     assert "exfiltrate" not in _tool_names(resp.json())
+    assert "get_weather" in _tool_names(resp.json())
 
 
 def test_tools_call_resolves_through_projection_and_authorized_dispatch(client):
+    _publish_weather(client)
     resp = _send(
         client, _auth(ALICE),
         [{"data": {"method": "tools/call", "name": "get_weather", "arguments": {"city": "Lexington"}}}],
@@ -296,6 +325,7 @@ def test_tools_call_resolves_through_projection_and_authorized_dispatch(client):
 
 
 def test_tools_call_hidden_tool_is_non_disclosing_and_never_dispatched(client):
+    _publish_weather(client)
     resp = _send(
         client, _auth(BOB),
         [{"data": {"method": "tools/call", "name": "get_weather", "arguments": {}}}],
