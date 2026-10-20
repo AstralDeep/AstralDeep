@@ -78,10 +78,10 @@ async def test_retained_result_http_uses_real_mac_with_artifacts_only_scope(resu
     assert view["result"]["content"]["passages"] == [{"id": "p001", "text": "Public release 088"}]
     assert "requested_url" not in contents[0]["text"] and "final_url" not in contents[0]["text"]
     assert token not in response.text and caller.credential_id not in response.text
-    assert len(op.model_calls) == 1
+    assert len(op.seed_observations["model_calls"]) == 1 and op.model_calls == []
     repeated = await read_resource(orch, caller.owner_id, uri, _claims(caller))
     assert repeated["boundedViewModel"] == view
-    assert len(op.model_calls) == 1
+    assert len(op.seed_observations["model_calls"]) == 1 and op.model_calls == []
     authority = WorkResourceAuthority(orch, caller.owner_id, _claims(caller), scope="artifacts.read")
     with pytest.raises(MCPAuthError):
         await authority.list()
