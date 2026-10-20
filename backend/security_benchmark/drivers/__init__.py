@@ -1,5 +1,5 @@
-"""Driver registry mapping a driver name (synthetic, in_process, chained) to its Driver
-implementation (drivers/base.py); runner.py resolves drivers through get_driver().
+"""Resolves the legacy diagnostic ablation drivers used by runner.py.
+The signed-turn qualification driver has a separate explicit entry point.
 """
 
 from __future__ import annotations

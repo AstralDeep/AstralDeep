@@ -1,6 +1,5 @@
-"""Contract for a driver that executes one BenchmarkCase under one EnvelopeConfig and
-returns a CaseTrace; synthetic.py models enforcement deterministically while
-inprocess.py and chained.py drive the real gates.
+"""Contracts for legacy ablation drivers that return one trace per case.
+Signed-turn qualification uses the separate real_dispatch driver.
 """
 
 from __future__ import annotations

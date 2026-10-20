@@ -1,80 +1,28 @@
-# Security-Benchmark Harness (spec 047)
+# Security qualification and diagnostic ablations
 
-Measures Astral's **trust envelope** against standard adversarial agent-security
-benchmarks — **AgentDojo**, **Agent Security Bench (ASB)**, **InjecAgent** — and
-reports **Attack Success Rate (ASR)** with per-layer defense ablation. It is the
-fastest credible proof-of-progress for the evaluation chapter (Direction B).
+The required local fixture gate drives scripted proposals through signed human turns, registered agents, the ordinary orchestrator dispatch, an observable effect sink, and the audit chain. It is a **dispatch-boundary check**. The scripted proposer deliberately attempts the forbidden action; the result does not measure how often a real model would take the bait.
 
-> **Eval/test-only.** Nothing here is imported by product runtime code. The
-> `isolation_check` guard fails CI if `backend/orchestrator`, `backend/agents`,
-> or `backend/shared` ever import this package or an external benchmark corpus
-> (Constitution V, FR-009/SC-004).
-
-## Quick start (runs anywhere, no DB)
+From a clean exact candidate checkout with the repository's isolated PostgreSQL test service:
 
 ```bash
 cd backend
-python -m security_benchmark --benchmark agentdojo            # AgentDojo ASR ablation
-python -m security_benchmark --benchmark agentdojo --benchmark asb --benchmark injecagent
-python -m security_benchmark --benchmark agentdojo --asr-threshold 0.20   # CI regression gate
-python -m security_benchmark.isolation_check                  # dependency-isolation guard
+python -m pytest security_benchmark/tests/test_real_dispatch.py -q
+python -m security_benchmark --qualify-real-dispatch --out security_benchmark/_artifacts
 ```
 
-Artifacts land in `backend/security_benchmark/_artifacts/<run_id>/`
-(gitignored): per-benchmark `*.record.json` (machine-readable, reproducible) and
-`ASR_REPORT.md` (the thesis table).
+The first command is part of the backend module test group. The second writes `real-dispatch-qualification.json` and exits nonzero if any case, control, audit, candidate identity, or teardown condition is incomplete. It requires the same local Plane and signed fixture identity as the repository's backend verification harness. The test uses a test-only signed identity and a local signed token-exchange fixture. The product's permission and delegation request path runs, while the external Keycloak response is supplied in-process. Production Keycloak availability is not claimed.
 
-## Modes
+The pinned local population is twelve attack/control pairs over fixture tool results, loopback remote-agent replies, and retained conversation context. The effect oracle reads the fixture server's physical effect ledger, while the independent audit oracle verifies the owner's chain. Each control must complete a read. A withheld effect with a failed control is indeterminate, not a pass. The cases establish the host's deterministic gate; they are not a statistical prompt-injection success rate or an external benchmark score.
 
-| Mode | What it drives | Needs | CI role |
-|---|---|---|---|
-| `synthetic` (default) | deterministic scripted model of the gates | stdlib only | isolation + ablation + regression gate |
-| `in_process` | the **real** orchestrator via the `llm_config` client-factory seam (real token exchange, scope check, PHI gate, red-team verdict, audit chaining) | backend importable + Postgres | gating when a DB is present |
-| `external` | the deployed sandbox | live sandbox + Keycloak | opt-in, **non-gating** |
+The historical `synthetic` ablation runner is still available for diagnostic comparisons:
 
-The `synthetic` and `in_process` drivers share the same adapter → adjudicator →
-report core; only the source of the per-case trace differs. Synthetic assumes a
-maximally-gullible model on injected cases (worst case for the defender), so any
-ASR reduction is attributable to the **envelope**, not to model reticence;
-in-process gets real bait-taking from the model under test.
+```bash
+cd backend
+python -m security_benchmark --mode synthetic --benchmark agentdojo
+```
 
-## Defense ablation (the point)
+Its bundled AgentDojo, ASB, and InjecAgent cases are **samples inspired by those suites**. They are not imported upstream cases, and their ASR must not be used as a release qualification result. The old `in_process` runner never implemented `_drive_real_turn`; it now exits with an error instead of reporting a real result. The `external` legacy mode shares that refusal.
 
-Layers toggle independently so each mechanism's marginal ASR reduction is
-attributable (US2). Ladder: `none` → `+DAF/scopes` → `+PHI gate` →
-`+red-team verdict` → `+LLM-as-judge`. The **LLM-as-judge** layer is not built
-yet (§9.2.4); its column is present but marked *not implemented* and the harness
-starts measuring it automatically once `FF_LLM_JUDGE` lands (FR-004, US2-AS3).
+`ASTRAL_BENCH_LOAD_REAL=1` currently refuses all three external suites because the project has no qualified mapping from their tools, tasks, and outcome oracles to AstralDeep. It never falls back to sample rows or relabels them as real. AgentDojo 0.1.35 is pinned for evaluation research in `requirements-eval.txt`; its wheel digest is documented there. A supported external mapping needs a separate manifest, eligibility count, exact corpus digest, paired utility controls, and physical effect oracle before it can enter the required gate.
 
-Example (AgentDojo sample corpus, scripted model):
-
-| Envelope | ASR | Δ vs prev |
-|---|---:|---:|
-| none | 0.833 | — |
-| +DAF | 0.500 | +0.333 |
-| +DAF+PHI | 0.333 | +0.167 |
-| +DAF+PHI+RT | 0.167 | +0.167 |
-| +DAF+PHI+RT+LLM *(not impl)* | 0.167 | +0.000 |
-
-Each layer suppresses exactly the attack class it implements (DAF ⇒ out-of-scope
-tool + escalation; PHI gate ⇒ PHI egress; red-team ⇒ exfiltration), and the
-semantic-manipulation case survives until the LLM judge exists.
-
-## Reproducibility, isolation, safety
-
-- **Reproducible** — every number carries its `(model, benchmark_version, harness_version, seed)` key; re-running reproduces it (SC-006). Model nondeterminism (in-process/live) is reported as a band, never hidden.
-- **Out-of-corpus** — cases needing capabilities Astral lacks are excluded from the ASR denominator and reported separately (FR-012), never silently scored.
-- **Namespaced + synthetic + torn down** — in-process/external runs use `__bench__`-namespaced principals and synthetic data (PHI cases are synthetic only), and delete their rows on teardown so no adversarial payload settles into real memory/workspace (FR-008, SC-007).
-
-## Loading the real corpora
-
-Set `ASTRAL_BENCH_LOAD_REAL=1` and install the eval extras
-(`pip install -r security_benchmark/requirements-eval.txt`). Offline/CI runs use
-the committed representative samples so the pipeline is always exercisable.
-
-## Adding a benchmark
-
-Implement a `BenchmarkAdapter` that emits normalized `BenchmarkCase`s (mapping
-the suite's ground truth onto `AdversarialObjective`) and register it in
-`adapters/__init__.py`. No change to the adjudicator, report, or runner is needed
-(US3).
+The local fixture report records the candidate commit, policy and component digests, case population, observed effects, control outcomes, audit references, and teardown. It is diagnostic local evidence until the exact candidate's protected CI jobs pass. Apple and Android device tests are outside this server fixture; web behavior needs separate live verification.

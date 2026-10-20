@@ -1,5 +1,5 @@
 """Tests for orchestrator/taint.py: the trust lattice (effective trust = min over
-ancestors), source/sink classification, the user-supplied exemption, TaintTracker's
+ancestors), source/sink classification, no byte-equality trust promotion, TaintTracker's
 flow policy, and taint surviving multi-hop laundering.
 """
 
@@ -80,21 +80,12 @@ def test_search_then_fetch_is_not_denied():
     assert check_flow(t.effective_trust_of_args({"body": url})) == "deny"
 
 
-def test_user_supplied_is_verbatim_substring():
-    assert taint.user_supplied("https://a.example/x", "read https://a.example/x please")
-    assert taint.user_supplied("  https://a.example/x ", "read https://a.example/x")
-    assert not taint.user_supplied("https://a.example/x", "read https://A.example/x")
-    assert not taint.user_supplied("https://a.example/x", "")
-    assert not taint.user_supplied("https://a.example/x", None)
-    assert not taint.user_supplied("   ", "anything")
-
-
-def test_value_typed_by_user_is_trusted_for_the_check():
+def test_value_typed_by_user_does_not_promote_tool_data():
     t = TaintTracker()
     url = "https://example.org/article"
     t.mark(url, UNTRUSTED)
     assert t.effective_trust_of_args({"to": url}) == UNTRUSTED
-    assert t.effective_trust_of_args({"to": url}, user_text=f"send {url} to bob") == TRUSTED
+    assert t.effective_trust_of_args({"to": url}, user_text=f"send {url} to bob") == UNTRUSTED
     t.mark("leaked-secret", UNTRUSTED)
     assert t.effective_trust_of_args(
         {"to": url, "body": "leaked-secret"}, user_text=f"send {url}") == UNTRUSTED

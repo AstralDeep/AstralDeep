@@ -266,7 +266,11 @@ async def test_each_possible_physical_attempt_gets_new_operation_and_nonce() -> 
 
 
 @pytest.mark.asyncio
-async def test_transport_fallback_reenters_adapter_for_each_physical_send() -> None:
+async def test_transport_fallback_reenters_adapter_for_each_physical_send(monkeypatch) -> None:
+    from orchestrator import source_bound
+
+    monkeypatch.setattr(source_bound, "declaration", lambda _scopes, agent, tool:
+                        source_bound.ActionDeclaration(agent, tool, "tools:read", source_bound.Effect.READ))
     orchestrator = Orchestrator.__new__(Orchestrator)
     orchestrator.agents = {"agent-1": object()}
     orchestrator.local_agents = {}
@@ -591,6 +595,7 @@ async def test_push_stream_open_binds_stream_id_and_uses_typed_capability(
     orchestrator.ui_sessions = {websocket: {"sub": "owner-1"}}
     orchestrator.tool_permissions = MagicMock()
     orchestrator.tool_permissions.get_tool_scope.return_value = "tools:read"
+    orchestrator.tool_permissions.get_tool_scope_map.return_value = {"search": "tools:read"}
     orchestrator._authorize_and_prepare = AsyncMock(
         return_value=SimpleNamespace(
             args={"query": "prepared"},
@@ -654,6 +659,22 @@ async def test_push_stream_open_binds_stream_id_and_uses_typed_capability(
     request = agent.handle_mcp_request.await_args.args[1]
     assert set(request.caller_capabilities) == {LETS_CALLER_CAPABILITY}
     assert LETS_CALLER_CAPABILITY not in request.params["arguments"]
+
+
+@pytest.mark.asyncio
+async def test_effectful_stream_is_refused_before_authorization() -> None:
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.agents = {"agent-1": object()}
+    orchestrator.local_agents = {}
+    orchestrator.tool_permissions = MagicMock()
+    orchestrator.tool_permissions.get_tool_scope_map.return_value = {"send": "tools:write"}
+    orchestrator._authorize_and_prepare = AsyncMock()
+
+    with pytest.raises(PermissionError, match="Stream tool effect"):
+        await orchestrator._dispatch_stream_request(
+            "agent-1", "send", {"body": "source"}, "stream-123", "owner-1",
+            object(), "chat-1")
+    orchestrator._authorize_and_prepare.assert_not_awaited()
 
 
 @pytest.mark.asyncio

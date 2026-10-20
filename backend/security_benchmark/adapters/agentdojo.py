@@ -1,6 +1,5 @@
-"""Adapts the AgentDojo prompt-injection benchmark's cases onto
-BenchmarkCase/AdversarialObjective (adapters/base.py); loads a sample corpus by
-default, or the real one when ASTRAL_BENCH_LOAD_REAL=1.
+"""Provides diagnostic AgentDojo-shaped samples for the legacy ablation runner.
+An external corpus request fails until a supported AstralDeep mapping is present.
 """
 
 from __future__ import annotations
@@ -101,16 +100,8 @@ class AgentDojoAdapter(BenchmarkAdapter):
 
     def load_cases(self, limit: Optional[int] = None) -> List[BenchmarkCase]:
         if os.getenv("ASTRAL_BENCH_LOAD_REAL") == "1":
-            real = self._load_real()
-            if real:
-                self.corpus_version = "agentdojo-real"
-                return real[:limit] if limit else real
+            raise RuntimeError(
+                "AgentDojo external corpus has no qualified AstralDeep tool mapping; "
+                "sample cases cannot stand in for real-corpus evidence")
         cases = _sample_cases()
         return cases[:limit] if limit else cases
-
-    def _load_real(self) -> List[BenchmarkCase]:  # pragma: no cover
-        try:
-            import agentdojo  # noqa: F401
-        except Exception:
-            return []
-        return []

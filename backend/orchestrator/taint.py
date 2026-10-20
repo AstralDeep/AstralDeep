@@ -82,13 +82,6 @@ def _iter_strings(value: Any) -> Iterable[str]:
             yield from _iter_strings(v)
 
 
-def user_supplied(value: str, user_text: Optional[str]) -> bool:
-    if not user_text or not isinstance(value, str):
-        return False
-    v = value.strip()
-    return bool(v) and v in user_text
-
-
 class TaintTracker:
     def __init__(self) -> None:
         self._trust: Dict[str, int] = {}
@@ -109,9 +102,7 @@ class TaintTracker:
 
     def effective_trust_of_args(self, args: Any,
                                 user_text: Optional[str] = None) -> int:
-        return combine(
-            TRUSTED if user_supplied(s, user_text) else self.trust_of(s)
-            for s in _iter_strings(args))
+        return combine(self.trust_of(s) for s in _iter_strings(args))
 
     def record_output(self, output: Any, source_trust: int, input_trust: int) -> int:
         t = combine([source_trust, input_trust])
