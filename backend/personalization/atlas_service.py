@@ -795,10 +795,13 @@ class AtlasPageService:
         project_id: str | None,
         source: PromotionSourceInput,
         now: int,
+        for_update: bool = False,
     ) -> PromotionSource:
         record = self.notes.get_memory(
-            transaction, owner_id=owner_id, memory_id=source.source_id
+            transaction, owner_id=owner_id, memory_id=source.source_id, for_update=for_update
         )
+        if for_update:
+            now = _now_ms()
         if record is None:
             raise AtlasNotFound("promotion_source_not_found")
         if record.superseded_at is not None or record.superseded_by is not None:
@@ -829,13 +832,15 @@ class AtlasPageService:
         project_id: str | None,
         sources: tuple[PromotionSourceInput, ...],
         now: int,
+        for_update: bool = False,
     ) -> tuple[PromotionSource, ...]:
         loaded: list[PromotionSource] = []
-        for source in sources:
+        for source in sorted(sources, key=lambda item: (item.kind, item.source_id)):
             if source.kind == "note":
                 loaded.append(
                     self._load_note_source(
-                        transaction, owner_id=owner_id, source=source, now=now
+                        transaction, owner_id=owner_id, source=source,
+                        now=_now_ms() if for_update else now,
                     )
                 )
             else:
@@ -846,10 +851,12 @@ class AtlasPageService:
                         project_id=project_id,
                         source=source,
                         now=now,
+                        for_update=for_update,
                     )
                 )
         self._gate(*(source.value for source in loaded))
-        return tuple(loaded)
+        by_identity = {(source.kind, source.source_id): source for source in loaded}
+        return tuple(by_identity[(source.kind, source.source_id)] for source in sources)
 
     def _promotion_destination(
         self, transaction, *, caller: str, project_id: str | None, slug: str
@@ -1039,6 +1046,7 @@ class AtlasPageService:
             raise AtlasPageError("promotion_approval_invalid")
 
         def accept(transaction):
+            self.notes.lock_explicit_note_owner(transaction, owner_id=caller)
             if self.audit._audit.repository.get(
                 transaction, chain_id=caller, event_id=proposal_id
             ) is not None:
@@ -1049,7 +1057,10 @@ class AtlasPageService:
                 project_id=project,
                 sources=inputs,
                 now=_now_ms(),
+                for_update=True,
             )
+            if _now_ms() >= payload["expires"]:
+                raise AtlasPageError("promotion_expired")
             if len(loaded) != len(expected_sources):
                 raise AtlasConflict("promotion_source_stale")
             for source, expected in zip(loaded, expected_sources):

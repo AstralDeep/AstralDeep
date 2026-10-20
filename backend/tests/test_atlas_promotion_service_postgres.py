@@ -5,7 +5,10 @@ reconciliation, cross-owner and stale-source denial, replay protection, and roll
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, replace
+from queue import Queue
+from threading import Event
 import sys
 import time
 from pathlib import Path
@@ -620,3 +623,418 @@ def test_expired_or_missing_destination_approvals_do_not_mutate(service, monkeyp
             project_id=PROJECT,
             reference=proposal.destination.slug,
         )
+
+
+_SOURCE_MUTATIONS = ("forget", "correct", "memory_update", "memory_delete", "memory_supersede",
+                     "memory_expire")
+
+
+def _mutate_promotion_source(service, record, mutation, started, before_commit=None):
+    with service.runtime.transaction() as transaction:
+        started.put(transaction.fetch_one("SELECT pg_backend_pid() AS pid")["pid"])
+        if mutation == "forget":
+            service.notes.forget_explicit_note(
+                transaction, owner_id=record.owner_id, note_id=record.note_id,
+                expected_revision=record.revision,
+            )
+        elif mutation == "correct":
+            prepared = service.notes.prepare_explicit_note(
+                transaction, owner_id=record.owner_id, note_id=record.note_id,
+                expected_revision=record.revision,
+            )
+            metadata = ExplicitNoteMetadata(
+                **{key: value for key, value in asdict(record).items() if key != "ciphertext"}
+            )
+            encrypted = service.note_cipher.seal(
+                replace(metadata, revision=record.revision + 1,
+                        updated_at=prepared.observed_at_ms),
+                "Corrected source content.",
+            )
+            service.notes.put_explicit_note(
+                transaction, preparation=prepared,
+                record=ExplicitNoteRecord(**asdict(encrypted.metadata),
+                                          ciphertext=encrypted.ciphertext),
+            )
+        elif mutation == "memory_update":
+            service.notes.update_memory_value(
+                transaction, owner_id=record.owner_id, memory_id=record.memory_id,
+                value="Corrected source content.", signature=None,
+                updated_at=record.updated_at + 1, expected_updated_at=record.updated_at,
+            )
+        elif mutation == "memory_delete":
+            service.notes.delete_memory(
+                transaction, owner_id=record.owner_id, memory_id=record.memory_id,
+                expected_updated_at=record.updated_at,
+            )
+        elif mutation == "memory_supersede":
+            service.notes.supersede_memory(
+                transaction, owner_id=record.owner_id, memory_id=record.memory_id,
+                superseded_at=record.updated_at + 1,
+            )
+        else:
+            service.notes.set_validity(
+                transaction, owner_id=record.owner_id, memory_id=record.memory_id,
+                valid_from=None, valid_to=record.created_at, ingested_at=None,
+                updated_at=record.updated_at + 1, expected_updated_at=record.updated_at,
+            )
+
+        if before_commit is not None:
+            prepared, release = before_commit
+            prepared.set()
+            assert release.wait(10)
+
+
+def _wait_for_database_blocker(service, pending, pid, blocker):
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        row = service.runtime.fetch_one(
+            "SELECT pg_blocking_pids(%s) AS blockers", (pid,)
+        )
+        if blocker in row["blockers"]:
+            return
+        if pending.done():
+            pending.result()
+            pytest.fail("source mutation committed before promotion released its transaction")
+        time.sleep(0.01)
+    pytest.fail("source mutation did not reach its PostgreSQL lock")
+
+
+@pytest.mark.parametrize("mutation", _SOURCE_MUTATIONS)
+def test_promotion_keeps_sources_locked_through_destination_and_audit_commit(
+    service, monkeypatch, mutation,
+):
+    note = mutation in {"forget", "correct"}
+    record = _seed_note(service) if note else _seed_memory(service)
+    source = PromotionSourceInput(
+        "note" if note else "memory", record.note_id if note else record.memory_id,
+        record.revision if note else record.updated_at,
+    )
+    proposal = _proposal(service, source=source, slug=_slug("source-lock"))
+    loaded, release_load, audited, release_audit = Event(), Event(), Event(), Event()
+    approval_pid, mutation_pid = Queue(), Queue()
+    original_load = service._load_promotion_sources
+    original_audit = service._audit_promotion_in_transaction
+
+    def paused_load(transaction, **kwargs):
+        result = original_load(transaction, **kwargs)
+        approval_pid.put(transaction.fetch_one("SELECT pg_backend_pid() AS pid")["pid"])
+        loaded.set()
+        assert release_load.wait(10)
+        return result
+
+    def paused_audit(transaction, **kwargs):
+        result = original_audit(transaction, **kwargs)
+        if kwargs["action"] == "apply":
+            audited.set()
+            assert release_audit.wait(10)
+        return result
+
+    monkeypatch.setattr(service, "_load_promotion_sources", paused_load)
+    monkeypatch.setattr(service, "_audit_promotion_in_transaction", paused_audit)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        approval = workers.submit(_approve, service, proposal)
+        try:
+            assert loaded.wait(10)
+            blocker = approval_pid.get(timeout=10)
+            mutation_future = workers.submit(
+                _mutate_promotion_source, service, record, mutation, mutation_pid,
+            )
+            pid = mutation_pid.get(timeout=10)
+            assert pid != blocker
+            _wait_for_database_blocker(service, mutation_future, pid, blocker)
+            release_load.set()
+            assert audited.wait(10)
+            _wait_for_database_blocker(service, mutation_future, pid, blocker)
+        finally:
+            release_load.set()
+            release_audit.set()
+        applied = approval.result(timeout=10)
+        mutation_future.result(timeout=10)
+    assert applied.page.revision == 1
+    assert service.runtime.fetch_one(
+        "SELECT count(*) AS total FROM audit_events WHERE event_id = %s",
+        (proposal.proposal_id,),
+    )["total"] == 1
+
+
+@pytest.mark.parametrize("mutation", _SOURCE_MUTATIONS)
+def test_source_mutation_committed_before_approval_refuses_destination(service, mutation):
+    note = mutation in {"forget", "correct"}
+    record = _seed_note(service) if note else _seed_memory(service)
+    proposal = _proposal(
+        service, slug=_slug("mutation-first"),
+        source=PromotionSourceInput(
+            "note" if note else "memory", record.note_id if note else record.memory_id,
+            record.revision if note else record.updated_at,
+        ),
+    )
+    _mutate_promotion_source(service, record, mutation, Queue())
+    with pytest.raises((AtlasConflict, AtlasNotFound)):
+        _approve(service, proposal)
+    with pytest.raises(AtlasNotFound):
+        service.get_page(owner_id=OWNER_A, project_id=PROJECT,
+                         reference=proposal.destination.slug)
+    assert service.runtime.fetch_one(
+        "SELECT count(*) AS total FROM audit_events WHERE event_id = %s",
+        (proposal.proposal_id,),
+    )["total"] == 0
+
+
+@pytest.mark.parametrize("mutation", _SOURCE_MUTATIONS)
+def test_approval_waits_for_source_writer_then_refuses_its_stale_snapshot(
+    service, monkeypatch, mutation,
+):
+    note = mutation in {"forget", "correct"}
+    record = _seed_note(service) if note else _seed_memory(service)
+    proposal = _proposal(
+        service, slug=_slug("writer-first"),
+        source=PromotionSourceInput(
+            "note" if note else "memory", record.note_id if note else record.memory_id,
+            record.revision if note else record.updated_at,
+        ),
+    )
+    prepared, release = Event(), Event()
+    mutation_pid, approval_pid = Queue(), Queue()
+    original_lock = service.notes.lock_explicit_note_owner
+
+    def observed_lock(transaction, **kwargs):
+        approval_pid.put(transaction.fetch_one("SELECT pg_backend_pid() AS pid")["pid"])
+        return original_lock(transaction, **kwargs)
+
+    monkeypatch.setattr(service.notes, "lock_explicit_note_owner", observed_lock)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        mutation_future = workers.submit(
+            _mutate_promotion_source, service, record, mutation, mutation_pid, (prepared, release)
+        )
+        try:
+            assert prepared.wait(10)
+            blocker = mutation_pid.get(timeout=10)
+            approval = workers.submit(_approve, service, proposal)
+            pid = approval_pid.get(timeout=10)
+            assert pid != blocker
+            _wait_for_database_blocker(service, approval, pid, blocker)
+        finally:
+            release.set()
+        mutation_future.result(timeout=10)
+        with pytest.raises((AtlasConflict, AtlasNotFound)):
+            approval.result(timeout=10)
+    with pytest.raises(AtlasNotFound):
+        service.get_page(owner_id=OWNER_A, project_id=PROJECT,
+                         reference=proposal.destination.slug)
+    assert service.runtime.fetch_one(
+        "SELECT count(*) AS total FROM audit_events WHERE event_id = %s",
+        (proposal.proposal_id,),
+    )["total"] == 0
+
+
+def test_approval_locks_owner_before_sorted_memory_sources_and_preserves_proposal_order(
+    service, monkeypatch,
+):
+    note = _seed_note(service)
+    memories = sorted((_seed_memory(service), _seed_memory(service)),
+                      key=lambda record: record.memory_id, reverse=True)
+    inputs = (
+        PromotionSourceInput("note", note.note_id, note.revision),
+        *(PromotionSourceInput("memory", record.memory_id, record.updated_at)
+          for record in memories),
+    )
+    proposal = service.propose_promotion(
+        owner_id=OWNER_A, project_id=PROJECT, sources=inputs, slug=_slug("ordered-locks"),
+    )
+    observed = []
+    original_owner, original_memory = service.notes.lock_explicit_note_owner, service.notes.get_memory
+
+    def owner_lock(transaction, **kwargs):
+        observed.append(("owner", kwargs["owner_id"]))
+        return original_owner(transaction, **kwargs)
+
+    def memory_read(transaction, **kwargs):
+        if kwargs.get("for_update"):
+            observed.append(("memory", kwargs["memory_id"]))
+        return original_memory(transaction, **kwargs)
+
+    monkeypatch.setattr(service.notes, "lock_explicit_note_owner", owner_lock)
+    monkeypatch.setattr(service.notes, "get_memory", memory_read)
+    applied = _approve(service, proposal)
+    assert observed == [("owner", OWNER_A),
+                        *(("memory", record.memory_id) for record in reversed(memories))]
+    assert [(source.kind, source.source_id) for source in proposal.sources] == [
+        (source.kind, source.source_id) for source in inputs
+    ]
+    assert applied.sources == proposal.source_references
+
+
+@pytest.mark.parametrize("kind", ("note", "memory"))
+def test_audit_rollback_releases_source_locks_and_leaves_no_promotion(service, monkeypatch, kind):
+    record = _seed_note(service) if kind == "note" else _seed_memory(service)
+    source = PromotionSourceInput(
+        kind, record.note_id if kind == "note" else record.memory_id,
+        record.revision if kind == "note" else record.updated_at,
+    )
+    proposal = _proposal(service, source=source, slug=_slug("rollback-lock"))
+    audited, release = Event(), Event()
+    approval_pid, mutation_pid = Queue(), Queue()
+    original_audit = service._audit_promotion_in_transaction
+
+    def failed_audit(transaction, **kwargs):
+        if kwargs["action"] == "apply":
+            approval_pid.put(transaction.fetch_one("SELECT pg_backend_pid() AS pid")["pid"])
+            audited.set()
+            assert release.wait(10)
+            raise AtlasUnavailable("atlas_audit_unavailable")
+        return original_audit(transaction, **kwargs)
+
+    monkeypatch.setattr(service, "_audit_promotion_in_transaction", failed_audit)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        approval = workers.submit(_approve, service, proposal)
+        try:
+            assert audited.wait(10)
+            blocker = approval_pid.get(timeout=10)
+            mutation = workers.submit(
+                _mutate_promotion_source, service, record,
+                "correct" if kind == "note" else "memory_update", mutation_pid,
+            )
+            pid = mutation_pid.get(timeout=10)
+            _wait_for_database_blocker(service, mutation, pid, blocker)
+        finally:
+            release.set()
+        with pytest.raises(AtlasUnavailable, match="atlas_audit_unavailable"):
+            approval.result(timeout=10)
+        mutation.result(timeout=10)
+    with pytest.raises(AtlasNotFound):
+        service.get_page(owner_id=OWNER_A, project_id=PROJECT,
+                         reference=proposal.destination.slug)
+    assert service.runtime.fetch_one(
+        "SELECT count(*) AS total FROM audit_events WHERE event_id = %s",
+        (proposal.proposal_id,),
+    )["total"] == 0
+    with pytest.raises(AtlasConflict, match="promotion_source_stale"):
+        _approve(service, proposal)
+
+
+def test_source_owner_lock_does_not_block_another_owner_and_serializes_replay(service, monkeypatch):
+    source = _seed_note(service)
+    foreign = _seed_note(service, owner=OWNER_B)
+    proposal = _proposal(
+        service, slug=_slug("owner-lock"),
+        source=PromotionSourceInput("note", source.note_id, source.revision),
+    )
+    loaded, release = Event(), Event()
+    approval_pid, replay_pid = Queue(), Queue()
+    original_load = service._load_promotion_sources
+    original_lock = service.notes.lock_explicit_note_owner
+
+    def paused_load(transaction, **kwargs):
+        result = original_load(transaction, **kwargs)
+        approval_pid.put(transaction.fetch_one("SELECT pg_backend_pid() AS pid")["pid"])
+        loaded.set()
+        assert release.wait(10)
+        return result
+
+    def observed_lock(transaction, **kwargs):
+        replay_pid.put(transaction.fetch_one("SELECT pg_backend_pid() AS pid")["pid"])
+        return original_lock(transaction, **kwargs)
+
+    monkeypatch.setattr(service, "_load_promotion_sources", paused_load)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        approval = workers.submit(_approve, service, proposal)
+        try:
+            assert loaded.wait(10)
+            blocker = approval_pid.get(timeout=10)
+            workers.submit(_forget_note, service, OWNER_B, foreign).result(timeout=10)
+            monkeypatch.setattr(service.notes, "lock_explicit_note_owner", observed_lock)
+            replay = workers.submit(_approve, service, proposal)
+            pid = replay_pid.get(timeout=10)
+            _wait_for_database_blocker(service, replay, pid, blocker)
+        finally:
+            release.set()
+        approval.result(timeout=10)
+        with pytest.raises(AtlasConflict, match="promotion_already_applied"):
+            replay.result(timeout=10)
+
+
+@pytest.mark.parametrize("expired", ("note", "memory", "proposal"))
+def test_approval_rechecks_expiry_after_waiting_for_source_lock(service, monkeypatch, expired):
+    from personalization import atlas_service as service_module
+
+    memory = _seed_memory(service)
+    note = _seed_note(service, expires_after=60_000) if expired == "note" else None
+    if expired == "memory":
+        with service.runtime.transaction() as transaction:
+            memory = service.notes.set_validity(
+                transaction, owner_id=OWNER_A, memory_id=memory.memory_id,
+                valid_from=None, valid_to=memory.created_at + 60_000, ingested_at=None,
+                updated_at=memory.updated_at + 1, expected_updated_at=memory.updated_at,
+            )
+    inputs = [PromotionSourceInput("memory", memory.memory_id, memory.updated_at)]
+    if note is not None:
+        inputs.append(PromotionSourceInput("note", note.note_id, note.revision))
+    proposal = service.propose_promotion(
+        owner_id=OWNER_A, project_id=PROJECT, sources=inputs, slug=_slug("lock-expiry"),
+    )
+    clock = [service_module._now_ms()]
+    monkeypatch.setattr(service_module, "_now_ms", lambda: clock[0])
+    entered = Queue()
+    original_read = service.notes.get_memory
+
+    def observed_read(transaction, **kwargs):
+        if kwargs.get("for_update"):
+            entered.put(transaction.fetch_one("SELECT pg_backend_pid() AS pid")["pid"])
+        return original_read(transaction, **kwargs)
+
+    monkeypatch.setattr(service.notes, "get_memory", observed_read)
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        with service.runtime.transaction() as holder:
+            blocker = holder.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
+            original_read(holder, owner_id=OWNER_A, memory_id=memory.memory_id, for_update=True)
+            approval = workers.submit(_approve, service, proposal)
+            pid = entered.get(timeout=10)
+            _wait_for_database_blocker(service, approval, pid, blocker)
+            clock[0] = (note.expires_at if expired == "note" else
+                        memory.valid_to if expired == "memory" else proposal.expires_at)
+        with pytest.raises(AtlasPageError if expired == "proposal" else AtlasConflict):
+            approval.result(timeout=10)
+    with pytest.raises(AtlasNotFound):
+        service.get_page(owner_id=OWNER_A, project_id=PROJECT,
+                         reference=proposal.destination.slug)
+    assert service.runtime.fetch_one(
+        "SELECT count(*) AS total FROM audit_events WHERE event_id = %s",
+        (proposal.proposal_id,),
+    )["total"] == 0
+
+
+@pytest.mark.parametrize("failure", ("owner_lock", "memory_lock"))
+def test_source_lock_failure_rolls_back_and_allows_unchanged_proposal_retry(
+    service, monkeypatch, failure,
+):
+    memory = _seed_memory(service)
+    proposal = _proposal(
+        service, slug=_slug("failed-lock"),
+        source=PromotionSourceInput("memory", memory.memory_id, memory.updated_at),
+    )
+    original_read = service.notes.get_memory
+
+    def failed_owner(*args, **kwargs):
+        raise RuntimeError("synthetic owner lock failure")
+
+    def failed_memory(transaction, **kwargs):
+        result = original_read(transaction, **kwargs)
+        if kwargs.get("for_update"):
+            raise RuntimeError("synthetic memory lock failure")
+        return result
+
+    with monkeypatch.context() as patch:
+        if failure == "owner_lock":
+            patch.setattr(service.notes, "lock_explicit_note_owner", failed_owner)
+        else:
+            patch.setattr(service.notes, "get_memory", failed_memory)
+        with pytest.raises(AtlasUnavailable, match="atlas_storage_failed"):
+            _approve(service, proposal)
+    with pytest.raises(AtlasNotFound):
+        service.get_page(owner_id=OWNER_A, project_id=PROJECT,
+                         reference=proposal.destination.slug)
+    assert service.runtime.fetch_one(
+        "SELECT count(*) AS total FROM audit_events WHERE event_id = %s",
+        (proposal.proposal_id,),
+    )["total"] == 0
+    assert _approve(service, proposal).page.revision == 1
