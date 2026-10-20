@@ -45,8 +45,7 @@ def signing_key():
     return key, {"keys": [public_jwk]}
 
 
-@pytest.fixture
-def fixture(runtime, monkeypatch, signing_key):
+def session_fixture(runtime, monkeypatch, signing_key, *, owner=None):
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
     monkeypatch.setenv("WEB_SESSION_SECRET", "synthetic-private-cookie-key")
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
@@ -55,7 +54,7 @@ def fixture(runtime, monkeypatch, signing_key):
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-web")
     monkeypatch.setenv("KEYCLOAK_CLIENT_SECRET", "synthetic-secret")
     monkeypatch.setenv("KEYCLOAK_ALLOWED_AZP", "astral-native")
-    owner, sid = str(uuid.uuid4()), uuid.uuid4().hex
+    owner, sid = owner or str(uuid.uuid4()), uuid.uuid4().hex
     store = web_session_store(runtime)
 
     def token(**changes):
@@ -80,8 +79,14 @@ def fixture(runtime, monkeypatch, signing_key):
 
     monkeypatch.setattr(web_auth, "_exchange_session_refresh", exchange)
     monkeypatch.setattr("shared.jwks_cache.get_jwks", keys)
-    yield store, owner, sid, token, seen
-    store.delete(sid)
+    return store, owner, sid, token, seen
+
+
+@pytest.fixture
+def fixture(runtime, monkeypatch, signing_key):
+    value = session_fixture(runtime, monkeypatch, signing_key)
+    yield value
+    value[0].delete(value[2])
 
 
 def request(sid=None, *, headers=(), query=b"", method="POST"):

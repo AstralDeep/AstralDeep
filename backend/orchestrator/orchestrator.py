@@ -23605,6 +23605,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             memory_router,
         )
         from personalization.atlas_api import atlas_router
+        from personalization.search_api import search_router
         from scheduler.api import schedule_router
         from persistent_agents.api import assignment_router
         from orchestrator.emergency_stop_api import emergency_stop_router
@@ -23646,6 +23647,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(skills_router)
         app.include_router(memory_router)
         app.include_router(atlas_router)
+        app.include_router(search_router)
         app.include_router(schedule_router)
         app.include_router(assignment_router)
         app.include_router(emergency_stop_router)

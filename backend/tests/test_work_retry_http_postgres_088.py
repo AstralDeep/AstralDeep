@@ -12,7 +12,7 @@ import pytest
 
 from llm_config import research_profile as profile
 from llm_config.tests.test_research_profile_088 import reply
-from persistent_agents.runtime_values import thaw
+from persistent_agents.runtime_values import canonical, thaw
 from shared.isolated_http import IsolatedHttpError
 from tests.test_work_research_preflight_postgres_088 import research_command
 from tests.test_work_runtime_postgres_088 import (
@@ -31,6 +31,78 @@ pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.parametrize("operation", [{"tokens": 300_000}], indirect=True),
 ]
+
+
+@pytest.fixture(autouse=True)
+def controlled_runner(monkeypatch):
+    from astralplane.repositories import assignments
+    from persistent_agents.runner import AssignmentRunner
+
+    origins = []
+    clock = assignments._now
+
+    def observed_clock(transaction):
+        now = clock(transaction)
+        origins.append(now)
+        return now
+
+    async def manually_scheduled(self):
+        while not self._stopping:
+            self._wake.clear()
+            await self._wake.wait()
+
+    monkeypatch.setattr(AssignmentRunner, "run", manually_scheduled)
+    monkeypatch.setattr(assignments, "_now", observed_clock)
+    return origins
+
+
+async def tick_to_settled(runner):
+    await runner.tick()
+    await asyncio.gather(*tuple(runner._active.values()))
+    await asyncio.sleep(0)
+    assert not runner._active
+
+
+async def settle_claim(op, runner, identity):
+    await tick_to_settled(runner)
+    row, _, _ = await stored(op, identity)
+    if row["claim_token"] is not None:
+        assert row["phase"] in {"checking", "failed", "reconciliation"}
+        def expire():
+            with op.runtime.transaction() as tx:
+                current = tx.fetch_one("SELECT data FROM persistent_assignment WHERE id=%s", (identity,))
+                data = thaw(current["data"])
+                due = tx.fetch_one("SELECT clock_timestamp() - interval '1 second' AS due")["due"]
+                data["lease_expires_at"] = due.isoformat()
+                tx.execute("UPDATE persistent_assignment SET data=%s::jsonb,lease_expires_at=%s WHERE id=%s",
+                           (canonical(data), due, identity))
+        await asyncio.to_thread(expire)
+        await tick_to_settled(runner)
+
+
+async def schedule_retry(op, identity, *, due):
+    def change():
+        with op.runtime.transaction() as tx:
+            row = tx.fetch_one("SELECT data FROM persistent_assignment WHERE id=%s", (identity,))
+            data = thaw(row["data"])
+            now = tx.fetch_one("SELECT clock_timestamp() AS now")["now"]
+            selected = now + (timedelta(seconds=-1) if due else timedelta(days=1))
+            data.update(next_retry_at=selected.isoformat(), next_wake_at=selected.isoformat())
+            tx.execute("UPDATE persistent_assignment SET data=%s::jsonb,next_wake_at=%s WHERE id=%s",
+                       (canonical(data), selected, identity))
+            return selected
+    return await asyncio.to_thread(change)
+
+
+async def retry_after_early_tick(op, runner, identity, sends, first_actions):
+    await schedule_retry(op, identity, due=False)
+    await tick_to_settled(runner)
+    early, actions, _ = await stored(op, identity)
+    assert len(sends) == 1 and actions == first_actions
+    assert early["consecutive_failures"] == 1
+    due = await schedule_retry(op, identity, due=True)
+    await tick_to_settled(runner)
+    return due
 
 
 def retry_command(runner):
@@ -82,9 +154,10 @@ async def wait_for(op, identity, predicate, *, seconds=35):
 
 
 async def test_known_usage_failure_retries_same_task_with_fresh_charged_sources(
-    integrated, monkeypatch, record_testsuite_property,
+    integrated, monkeypatch, record_testsuite_property, controlled_runner,
 ):
     op, runner, client = integrated
+    assert runner._loop is not None and not runner._loop.done()
     prior_reads = len(op.physical)
     sends = []
 
@@ -99,18 +172,19 @@ async def test_known_usage_failure_retries_same_task_with_fresh_charged_sources(
     accepted = await client.post("/api/work/v1/operations", json=body)
     assert accepted.status_code == 201, accepted.text
     identity = accepted.json()["id"]
-    scheduled, first_actions, _ = await wait_for(
-        op, identity, lambda row, _actions, _now: row["next_retry_at"] is not None
-    )
-    due, backoff = timestamp(scheduled["next_retry_at"]), timedelta(seconds=5)
-    assert sends[0] + backoff <= due <= timestamp(scheduled["updated_at"]) + backoff
+    await settle_claim(op, runner, identity)
+    scheduled, first_actions, _ = await stored(op, identity)
+    due = timestamp(scheduled["next_retry_at"])
+    assert due - timedelta(seconds=5) in controlled_runner
+    assert timestamp(scheduled["next_retry_at"]) == due
+    assert scheduled["next_retry_at"] == scheduled["next_wake_at"]
     assert scheduled["consecutive_failures"] == 1
     assert len(first_actions) == 2 and len(sends) == 1
     assert scheduled["usage"]["spent"]["tokens"] == 120
     assert scheduled["usage"]["outstanding"]["tokens"] == 0
-    final, actions, _ = await wait_for(
-        op, identity, lambda row, _actions, _now: row["lifecycle"] == "completed"
-    )
+    due = await retry_after_early_tick(op, runner, identity, sends, first_actions)
+    final, actions, _ = await stored(op, identity)
+    assert final["lifecycle"] == "completed"
     assert final["operation"]["terminal_outcome"] == "completed"
     assert final["consecutive_failures"] == 1
     assert len(sends) == 2 and sends[1] >= due
@@ -143,9 +217,10 @@ async def test_known_usage_failure_retries_same_task_with_fresh_charged_sources(
 
 
 async def test_pre_send_provider_unreachable_retries_with_fresh_source(
-    integrated, monkeypatch, record_testsuite_property,
+    integrated, monkeypatch, record_testsuite_property, controlled_runner,
 ):
     op, runner, client = integrated
+    assert runner._loop is not None and not runner._loop.done()
     prior_reads = len(op.physical)
     sends = []
 
@@ -161,11 +236,12 @@ async def test_pre_send_provider_unreachable_retries_with_fresh_source(
     accepted = await client.post("/api/work/v1/operations", json=body)
     assert accepted.status_code == 201, accepted.text
     identity = accepted.json()["id"]
-    scheduled, first_actions, _ = await wait_for(
-        op, identity, lambda row, _actions, _now: row["next_retry_at"] is not None
-    )
-    due, backoff = timestamp(scheduled["next_retry_at"]), timedelta(seconds=5)
-    assert sends[0] + backoff <= due <= timestamp(scheduled["updated_at"]) + backoff
+    await settle_claim(op, runner, identity)
+    scheduled, first_actions, _ = await stored(op, identity)
+    due = timestamp(scheduled["next_retry_at"])
+    assert due - timedelta(seconds=5) in controlled_runner
+    assert timestamp(scheduled["next_retry_at"]) == due
+    assert scheduled["next_retry_at"] == scheduled["next_wake_at"]
     assert scheduled["consecutive_failures"] == 1
     assert scheduled["lifecycle"] == "active" and scheduled["phase"] == "failed"
     assert scheduled["safe_error_code"] != "assignment_action_uncertain"
@@ -179,9 +255,9 @@ async def test_pre_send_provider_unreachable_retries_with_fresh_source(
     settled = first_model["attempts"][0]["outcome"]
     assert settled["outcome"] == "failed"
     assert settled["actual"]["tokens"] == 0 and settled["actual"]["model_calls"] == 0
-    final, actions, _ = await wait_for(
-        op, identity, lambda row, _actions, _now: row["lifecycle"] == "completed"
-    )
+    due = await retry_after_early_tick(op, runner, identity, sends, first_actions)
+    final, actions, _ = await stored(op, identity)
+    assert final["lifecycle"] == "completed"
     assert final["operation"]["terminal_outcome"] == "completed"
     assert final["consecutive_failures"] == 1
     assert len(sends) == 2 and sends[1] >= due
@@ -216,6 +292,7 @@ async def test_pre_send_provider_unreachable_retries_with_fresh_source(
 @pytest.mark.parametrize("code", ["unreachable", "deadline", "cleanup_uncertain", "child_failure"])
 async def test_ambiguous_transport_loss_after_permit_stays_uncertain(integrated, monkeypatch, code):
     op, runner, client = integrated
+    assert runner._loop is not None and not runner._loop.done()
     prior_reads = len(op.physical)
 
     async def transport(method, url, **kwargs):
@@ -227,11 +304,9 @@ async def test_ambiguous_transport_loss_after_permit_stays_uncertain(integrated,
     response = await client.post("/api/work/v1/operations", json=body)
     assert response.status_code == 201, response.text
     identity = response.json()["id"]
-    row, actions, _ = await wait_for(
-        op, identity, lambda row, _actions, _now: (
-            row["phase"] == "reconciliation" and row["claim_token"] is None
-        )
-    )
+    await settle_claim(op, runner, identity)
+    row, actions, _ = await stored(op, identity)
+    assert row["phase"] == "reconciliation" and row["claim_token"] is None
     assert row["lifecycle"] == "active" and row["next_retry_at"] is None
     assert row["safe_error_code"] == "assignment_action_uncertain"
     assert row["usage"]["outstanding"]["tokens"] == profile.RESERVED_TOKENS
@@ -246,6 +321,7 @@ async def test_http_503_keeps_unknown_charge_and_never_retries_an_issued_effect(
     integrated, monkeypatch,
 ):
     op, runner, client = integrated
+    assert runner._loop is not None and not runner._loop.done()
     prior_reads = len(op.physical)
 
     async def transport(method, url, **kwargs):
@@ -259,11 +335,9 @@ async def test_http_503_keeps_unknown_charge_and_never_retries_an_issued_effect(
     response = await client.post("/api/work/v1/operations", json=body)
     assert response.status_code == 201, response.text
     identity = response.json()["id"]
-    row, actions, _ = await wait_for(
-        op, identity, lambda row, _actions, _now: (
-            row["phase"] == "reconciliation" and row["claim_token"] is None
-        )
-    )
+    await settle_claim(op, runner, identity)
+    row, actions, _ = await stored(op, identity)
+    assert row["phase"] == "reconciliation" and row["claim_token"] is None
     assert row["lifecycle"] == "active" and row["next_retry_at"] is None
     assert row["safe_error_code"] == "assignment_action_uncertain"
     assert row["usage"]["outstanding"]["tokens"] == profile.RESERVED_TOKENS
