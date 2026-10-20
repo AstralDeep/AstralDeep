@@ -139,3 +139,33 @@ def test_limits_reject_non_integer_case_and_call_bounds():
         ExecutionLimits(concurrency=False)
     with pytest.raises(ValueError, match="max_cost must be a finite number"):
         ExecutionLimits(max_cost="1")
+
+
+def test_completed_last_call_keeps_its_cost_but_cannot_start_another_call():
+    budget = BudgetTracker(ExecutionLimits(max_calls=1, max_cost=0.5))
+    budget.begin_call()
+    budget.record_cost(0.5)
+    assert budget.calls == 1
+    assert budget.cost == 0.5
+    with pytest.raises(BudgetExhausted, match="call budget"):
+        budget.begin_call()
+    with pytest.raises(BudgetExhausted, match="call budget"):
+        budget.retry_delay(0)
+
+
+@pytest.mark.parametrize("stop", ["cancel", "elapsed", "cost"])
+def test_last_call_completion_still_observes_other_limits(stop):
+    clock = FakeClock()
+    budget = BudgetTracker(ExecutionLimits(max_calls=1, max_cost=0.5,
+                                          max_elapsed_seconds=5), clock=clock)
+    budget.begin_call()
+    if stop == "cancel":
+        budget.request_cancel()
+        expected = RunCancelled
+    else:
+        expected = BudgetExhausted
+    if stop == "elapsed":
+        clock.advance(6)
+    with pytest.raises(expected, match={"cancel": "cancelled", "elapsed": "elapsed",
+                                        "cost": "cost"}[stop]):
+        budget.record_cost(0.6 if stop == "cost" else 0)

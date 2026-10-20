@@ -67,6 +67,10 @@ EXAMPLE_FIELDS = frozenset({
     "frozen_answers",
     "review",
 })
+OFFICIAL_FIELDS = frozenset({
+    "id", "conversation", "rubric_items", "use_case", "type", "difficulty",
+    "specialty", "physician_response", "canary_string",
+})
 MESSAGE_FIELDS = frozenset({"role", "content"})
 ITEM_FIELDS = frozenset({
     "criterion_id",
@@ -165,6 +169,8 @@ def parse_document(
             object_pairs_hook=_reject_duplicate_keys,
             parse_constant=_reject_constant,
         )
+    except RecursionError as exc:
+        raise SchemaError("corpus exceeds the nesting bound") from exc
     except json.JSONDecodeError as exc:
         raise SchemaError(f"corpus is not valid JSON: {exc.msg}") from exc
     entries = _example_entries(payload)
@@ -196,7 +202,7 @@ def parse_examples_jsonl(
     except UnicodeDecodeError as exc:
         raise SchemaError("corpus is not valid UTF-8") from exc
     entries: List[Mapping[str, Any]] = []
-    for line in text.splitlines():
+    for line in text.split("\n"):
         if not line.strip():
             continue
         try:
@@ -205,6 +211,8 @@ def parse_examples_jsonl(
                 object_pairs_hook=_reject_duplicate_keys,
                 parse_constant=_reject_constant,
             ))
+        except RecursionError as exc:
+            raise SchemaError("corpus exceeds the nesting bound") from exc
         except json.JSONDecodeError as exc:
             raise SchemaError(f"corpus is not valid JSON lines: {exc.msg}") from exc
         if len(entries) > MAX_EXAMPLES:
@@ -272,6 +280,8 @@ def parse_example(
 ) -> ClinicalCase:
     if not isinstance(payload, Mapping):
         raise SchemaError(f"example {index} must be an object")
+    if isinstance(payload.get("conversation"), Mapping):
+        payload = _normalize_official(payload)
     unknown = set(payload) - EXAMPLE_FIELDS
     if unknown:
         raise SchemaError(f"example {index} has unknown fields: {sorted(unknown)}")
@@ -300,6 +310,35 @@ def parse_example(
         )
     except ValueError as exc:
         raise SchemaError(f"{case_id}: {exc}") from exc
+
+
+def _normalize_official(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    if set(payload) != OFFICIAL_FIELDS:
+        raise SchemaError("official example must contain exactly its declared fields")
+    conversation = payload["conversation"]
+    if set(conversation) != {"messages"}:
+        raise SchemaError("official conversation must contain only messages")
+    case_id = _case_id(payload)
+    for name in ("use_case", "type", "difficulty", "canary_string"):
+        if not isinstance(payload[name], str) or len(payload[name]) > MAX_METADATA_CHARS:
+            raise SchemaError(f"{case_id}: {name} must be a bounded string")
+    reference = payload["physician_response"]
+    if not isinstance(reference, str) or len(reference) > MAX_MESSAGE_CHARS:
+        raise SchemaError(f"{case_id}: physician_response must be a bounded string")
+    rubric = payload["rubric_items"]
+    if not isinstance(rubric, list) or not 1 <= len(rubric) <= MAX_RUBRIC_ITEMS:
+        raise SchemaError(f"{case_id}: rubric_items must be a bounded list")
+    normalized = []
+    for entry in rubric:
+        if not isinstance(entry, Mapping) or set(entry) != {"criterion_text", "points"}:
+            raise SchemaError(f"{case_id}: official rubric must contain criterion_text and points")
+        normalized.append({"criterion": entry["criterion_text"], "points": entry["points"]})
+    return {
+        "id": case_id,
+        "conversation": conversation["messages"],
+        "rubric_items": normalized,
+        "specialty": payload["specialty"],
+    }
 
 
 def _frozen_answers(value: Any, case_id: str) -> Dict[str, str]:

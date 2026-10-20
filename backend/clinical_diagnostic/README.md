@@ -93,15 +93,19 @@ the existing synthetic strata; it implies no corpus or framework adoption.
   `a5286ead1f03d178c7f7b134a5ac16944998428303012f0921814701e0f3995e` by default;
 - rejects unreadable/invalid archives, missing members, oversized members, and
   non-`.json`/`.jsonl` members;
-- parses a JSON array, an object with `examples`, or JSON lines;
+- parses a JSON array, an object with `examples`, or literal-LF-delimited JSON lines,
+  preserving Unicode U+2028/U+2029 inside strings;
+- strictly normalizes the official `conversation.messages` and rubric
+  `criterion_text`/`points` fields while retaining the bounded synthetic extension schema;
 - rejects duplicate JSON keys, non-finite numbers, unknown fields at every level,
   duplicate case/criterion IDs, unsafe IDs, and over-bound conversations/rubrics;
 - infers criterion kind from tags/points when the asset omits our extension fields.
 
 The reviewed asset URL, license label, retrieval date, and exact digest are retained in
-every record and report. The asset was **not downloaded in the build environment** (external
-egress is restricted); the reviewed digest is enforced when a user supplies the licensed
-bundle.
+every record and report. The diagnostic does not download the asset; the reviewed digest
+is enforced when a user supplies the licensed bundle. Source physician responses and canary metadata are validated
+within existing scalar limits, then excluded from diagnostic cases. Source rubric authorship
+does not confer independent clinician review or held-out status.
 
 ## Scoring
 
@@ -134,8 +138,14 @@ never reports success.
 
 `dispatcher.WebSocketDispatcher` drives the ordinary authenticated `/ws` ingress:
 `register_ui`, `create_chat` over `POST /api/chats`, one `chat_message`, bounded frame and
-byte collection until a terminal `operation_status`/`chat_status`/completion frame. It
-records visible component text, denies on authentication/terminal failures, and exposes an
+byte collection until a matching terminal `operation_status` frame. It first verifies the
+newly created owned chat has no messages or canvas components. Only
+the committed snapshot and successful `chat_message` operation status matching the exact
+chat, connection generation, and request generation can supply a final answer. It combines
+the final assistant parts with current committed canvas text/card artifacts, validates
+promoted document identities, and excludes tool-provenance subtrees and transient previews
+within the aggregate answer bound. Unsupported or ambiguous artifacts fail closed. It
+denies on authentication/terminal failures and exposes an
 owner-isolation probe over `GET /api/chats/{id}`. It never uses the unfinished
 `security_benchmark` in-process driver as evidence.
 

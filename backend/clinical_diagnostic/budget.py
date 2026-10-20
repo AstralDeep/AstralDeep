@@ -128,16 +128,20 @@ class BudgetTracker:
     def elapsed_seconds(self) -> float:
         return max(0.0, self._clock() - self._started)
 
-    def check(self) -> None:
+    def _check_completion(self) -> None:
         if self._cancel.is_set():
             raise RunCancelled()
         if self.elapsed_seconds > self.limits.max_elapsed_seconds:
             raise BudgetExhausted("elapsed budget exhausted")
         with self._lock:
-            if self._calls >= self.limits.max_calls:
-                raise BudgetExhausted("call budget exhausted")
             if self._cost > self.limits.max_cost:
                 raise BudgetExhausted("cost budget exhausted")
+
+    def check(self) -> None:
+        self._check_completion()
+        with self._lock:
+            if self._calls >= self.limits.max_calls:
+                raise BudgetExhausted("call budget exhausted")
 
     def begin_call(self) -> None:
         if self._cancel.is_set():
@@ -158,7 +162,7 @@ class BudgetTracker:
             raise ValueError("call cost must be finite and non-negative")
         with self._lock:
             self._cost += float(cost)
-        self.check()
+        self._check_completion()
 
     def retry_delay(self, attempt: int) -> None:
         if attempt < 0:

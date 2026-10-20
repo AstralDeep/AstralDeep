@@ -419,3 +419,82 @@ def test_asset_bundle_rejects_oversized_members(tmp_path, monkeypatch):
             str(oversized), member="examples.json",
             expected_sha256=hashlib.sha256(oversized.read_bytes()).hexdigest(),
         )
+
+
+def official_example(**over):
+    payload = {
+        "id": "synthetic-official-1",
+        "conversation": {"messages": [{"role": "user", "content": "Synthetic request."}]},
+        "rubric_items": [{"criterion_text": "Synthetic criterion.", "points": 2}],
+        "use_case": "synthetic", "type": "synthetic", "difficulty": "synthetic",
+        "specialty": "synthetic", "physician_response": "Synthetic reference.",
+        "canary_string": "synthetic-marker",
+    }
+    payload.update(over)
+    return payload
+
+
+def test_official_nested_schema_normalizes_without_inventing_review_or_partition():
+    case = parse_example(official_example())
+    assert case.case_id == "synthetic-official-1"
+    assert case.conversation[0].content == "Synthetic request."
+    assert case.rubric_items[0].criterion == "Synthetic criterion."
+    assert case.rubric_items[0].points == 2
+    assert case.review.status.value == "draft"
+    assert case.partition is Partition.DEVELOPMENT
+    assert case.frozen_answers == {}
+
+
+def test_jsonl_uses_literal_lf_and_preserves_unicode_separators_in_strings():
+    first = official_example(conversation={"messages": [
+        {"role": "user", "content": "Synthetic\u2028inside\u2029request."}]})
+    second = official_example(id="synthetic-official-2")
+    data = (json.dumps(first, ensure_ascii=False) + "\n" + json.dumps(second) + "\n").encode()
+    cases = parse_examples_jsonl(data)
+    assert len(cases) == 2
+    assert cases[0].conversation[0].content == "Synthetic\u2028inside\u2029request."
+
+
+@pytest.mark.parametrize("parser", [parse_document, parse_examples_jsonl])
+def test_corpus_recursion_is_a_schema_failure(parser):
+    with pytest.raises(SchemaError, match="nesting"):
+        parser(b"[" * 4001 + b"0" + b"]" * 4001)
+
+
+@pytest.mark.parametrize("over", [
+    {"conversation": {"messages": [], "extra": 1}},
+    {"conversation": {"messages": "bad"}},
+    {"rubric_items": [{"criterion_text": "x", "criterion": "y", "points": 1}]},
+    {"rubric_items": [{"criterion_text": "x", "points": float("inf")}]},
+    {"physician_response": []}, {"canary_string": {}},
+    {"use_case": 1}, {"difficulty": ["synthetic"]}, {"type": False},
+    {"extra": "unknown"},
+])
+def test_official_schema_rejects_unknown_alias_and_invalid_metadata(over):
+    with pytest.raises(SchemaError):
+        parse_example(official_example(**over))
+
+
+@pytest.mark.parametrize("field", ["use_case", "type", "difficulty", "canary_string", "physician_response"])
+def test_official_discarded_metadata_still_obeys_existing_scalar_bounds(field, monkeypatch):
+    bound = "MAX_MESSAGE_CHARS" if field == "physician_response" else "MAX_METADATA_CHARS"
+    monkeypatch.setattr("clinical_diagnostic.healthbench." + bound, 32)
+    with pytest.raises(SchemaError, match="bounded string"):
+        parse_example(official_example(**{field: "x" * 33}))
+
+
+@pytest.mark.parametrize("value", [[], [1], [{"criterion_text": "x", "points": True}]])
+def test_official_rubric_retains_item_and_scalar_rejection(value):
+    with pytest.raises(SchemaError):
+        parse_example(official_example(rubric_items=value))
+
+
+def test_official_normalization_rejects_nested_unknown_and_duplicate_json_keys():
+    payload = official_example(conversation={"messages": [
+        {"role": "user", "content": "Synthetic.", "untrusted": "extra"}]})
+    with pytest.raises(SchemaError, match="unknown fields"):
+        parse_example(payload)
+    text = json.dumps(official_example()).replace('"criterion_text": "Synthetic criterion."',
+        '"criterion_text": "Synthetic criterion.", "criterion_text": "Another"')
+    with pytest.raises(SchemaError, match="duplicate JSON key"):
+        parse_examples_jsonl(text.encode())

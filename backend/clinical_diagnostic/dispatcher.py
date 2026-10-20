@@ -6,8 +6,8 @@ identity, tool permission, or audit gates.
 
 from __future__ import annotations
 
+import hashlib
 import json
-import re
 import time
 import urllib.error
 import urllib.parse
@@ -23,9 +23,8 @@ MAX_FRAMES = 2000
 MAX_MESSAGE_BYTES = 1024 * 1024
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_ANSWER_CHARS = 64 * 1024
-TERMINAL_TYPES = ("turn_complete", "chat_complete")
-CHAT_TARGETS = ("chat", "history")
-ASSISTANT_TEXT_TYPES = ("assistant_message", "chat_message", "message")
+MAX_JSON_DEPTH = 64
+MAX_JSON_NODES = 20_000
 _TEXT_FIELDS = ("text", "content", "label", "title", "message")
 _DENIAL_MARKERS = (
     "restricted for this agent",
@@ -34,7 +33,6 @@ _DENIAL_MARKERS = (
     "outside this unattended task",
     "system-blocked",
 )
-_HTML_TAG = re.compile(r"<[^>]+>")
 
 
 class DispatcherError(ProducerError):
@@ -202,13 +200,17 @@ class WebSocketDispatcher:
     def answer(self, case: ClinicalCase) -> DispatchedAnswer:
         prompt = render_dispatcher_prompt(case)
         chat_id = self.create_chat()
+        self._verify_empty_chat(chat_id)
         connection_generation = str(uuid4())
+        request_generation = str(uuid4())
+        submission_id = str(uuid4())
         transport = self._transport_factory()
         frames: List[dict] = []
         text_parts: List[str] = []
         denials: List[str] = []
         audit_event_ids: List[str] = []
         terminal_seen = False
+        snapshot_seen = False
         deadline = self._clock() + self.timeout_seconds
         total_bytes = 0
         try:
@@ -220,8 +222,8 @@ class WebSocketDispatcher:
             transport.send(json.dumps({
                 "type": "ui_event",
                 "action": "chat_message",
-                "submission_id": str(uuid4()),
-                "request_generation": str(uuid4()),
+                "submission_id": submission_id,
+                "request_generation": request_generation,
                 "connection_generation": connection_generation,
                 "payload": {"message": prompt, "chat_id": chat_id},
             }))
@@ -231,7 +233,10 @@ class WebSocketDispatcher:
                     raise DispatcherTimeout()
                 raw = transport.recv(remaining)
                 if isinstance(raw, bytes):
-                    raw = raw.decode("utf-8", errors="strict")
+                    try:
+                        raw = raw.decode("utf-8", errors="strict")
+                    except UnicodeDecodeError as exc:
+                        raise DispatcherError("dispatcher frame is not valid UTF-8") from exc
                 if not isinstance(raw, str):
                     raise DispatcherError("dispatcher returned a non-text frame")
                 total_bytes += len(raw.encode("utf-8"))
@@ -240,21 +245,37 @@ class WebSocketDispatcher:
                 if total_bytes > MAX_RESPONSE_BYTES:
                     raise DispatcherError("dispatcher response exceeds the size bound")
                 try:
-                    frame = json.loads(raw)
-                except json.JSONDecodeError as exc:
+                    frame = _load_json(raw)
+                except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                     raise DispatcherError("dispatcher returned invalid JSON") from exc
                 if not isinstance(frame, Mapping):
                     raise DispatcherError("dispatcher frame is not an object")
                 frames.append(dict(frame))
-                _collect_text(frame, text_parts)
-                _collect_denials(frame, denials)
-                _collect_audit_ids(frame, audit_event_ids)
-                if _denied(frame):
+                if frame.get("type") in ("auth_error", "auth_required"):
+                    raise DispatcherDenied()
+                if frame.get("type") == "submission_rejected" and frame.get("submission_id") == submission_id:
                     raise DispatcherDenied(_denial_text(frame))
+                event = frame.get("event")
+                if isinstance(event, Mapping) and event.get("conversation_id") == chat_id:
+                    _collect_audit_ids(frame, audit_event_ids)
+                if not _matches_turn(frame, chat_id, connection_generation, request_generation):
+                    continue
+                _collect_audit_ids(frame, audit_event_ids)
+                _collect_denials(frame, denials)
+                if frame.get("type") == "error":
+                    raise DispatcherDenied(_denial_text(frame))
+                if frame.get("type") == "conversation_snapshot" and frame.get("snapshot_purpose") == "commit":
+                    if snapshot_seen:
+                        raise DispatcherError("dispatcher returned ambiguous committed answers")
+                    text_parts = _committed_text(frame, prompt, chat_id)
+                    _collect_denials({"type": "ui_render", "components": frame["canvas"]["components"]}, denials)
+                    snapshot_seen = True
                 if _terminal(frame):
-                    status = str(frame.get("state") or frame.get("status") or "completed")
-                    if status.lower() in ("failed", "denied", "cancelled", "error"):
-                        raise DispatcherDenied(f"dispatcher terminal state {status!r}")
+                    status = frame.get("state")
+                    if status != "completed":
+                        raise DispatcherDenied("dispatcher did not complete the current operation")
+                    if not snapshot_seen:
+                        raise DispatcherError("dispatcher completed without a committed answer")
                     terminal_seen = True
                     break
         finally:
@@ -276,6 +297,23 @@ class WebSocketDispatcher:
             tool_denials=tuple(_dedupe(denials)),
             audit_event_ids=tuple(_dedupe(audit_event_ids)),
         )
+
+    def _verify_empty_chat(self, chat_id: str) -> None:
+        base = self.http_uri + "/api/chats/" + urllib.parse.quote(chat_id, safe="")
+        headers = {"Authorization": f"Bearer {self._token}"}
+        for url, key in ((base, "chat"), (base + "/components", "components")):
+            response = self._http("GET", url, headers, None)
+            if response.status in (401, 403, 404):
+                raise DispatcherDenied("new chat ownership verification was denied")
+            if response.status != 200:
+                raise DispatcherError("new chat verification failed")
+            payload = _bounded_json(response)
+            value = payload.get(key) if isinstance(payload, Mapping) else None
+            if key == "chat":
+                if not isinstance(value, Mapping) or value.get("id") != chat_id or value.get("messages") != []:
+                    raise DispatcherError("new chat is not an empty owned conversation")
+            elif value != []:
+                raise DispatcherError("new chat canvas is not empty")
 
     def _default_transport(self) -> WebsocketTransport:
         from websockets.sync.client import connect
@@ -344,25 +382,37 @@ def _bounded_json(response: HttpResponse) -> object:
     if len(response.body) > MAX_MESSAGE_BYTES:
         raise DispatcherError("dispatcher HTTP response exceeds the size bound")
     try:
-        return json.loads(response.body.decode("utf-8"))
+        return _load_json(response.body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise DispatcherError("dispatcher HTTP response is not valid JSON") from exc
 
 
+def _load_json(text: str) -> object:
+    try:
+        value = json.loads(text)
+    except RecursionError as exc:
+        raise DispatcherError("dispatcher JSON exceeds the nesting bound") from exc
+    stack = [(value, 0)]
+    count = 0
+    while stack:
+        node, depth = stack.pop()
+        count += 1
+        if depth > MAX_JSON_DEPTH or count > MAX_JSON_NODES:
+            raise DispatcherError("dispatcher JSON exceeds the nesting or node bound")
+        children = node.values() if isinstance(node, Mapping) else node if isinstance(node, list) else ()
+        stack.extend((child, depth + 1) for child in children)
+    return value
+
+
+def _matches_turn(frame: Mapping[str, object], chat_id: str, connection: str, request: str) -> bool:
+    return (frame.get("chat_id") == chat_id
+            and frame.get("connection_generation") == connection
+            and frame.get("request_generation") == request)
+
+
 def _terminal(frame: Mapping[str, object]) -> bool:
-    if frame.get("type") in TERMINAL_TYPES:
-        return True
-    if frame.get("type") == "operation_status" and frame.get("terminal") is True:
-        return True
-    if frame.get("type") == "chat_status":
-        return str(frame.get("status") or "").lower() in (
-            "done", "completed", "failed", "denied", "cancelled", "error"
-        )
-    return False
-
-
-def _denied(frame: Mapping[str, object]) -> bool:
-    return frame.get("type") in ("error", "auth_error", "submission_rejected")
+    return (frame.get("type") == "operation_status" and frame.get("action") == "chat_message"
+            and frame.get("terminal") is True)
 
 
 def _denial_text(frame: Mapping[str, object]) -> str:
@@ -373,47 +423,80 @@ def _denial_text(frame: Mapping[str, object]) -> str:
     return "dispatcher refused the turn"
 
 
-def _collect_text(frame: Mapping[str, object], parts: List[str]) -> None:
-    frame_type = frame.get("type")
-    target = frame.get("target")
-    if frame_type in ("ui_render", "ui_update", "ui_append"):
-        if target in CHAT_TARGETS:
-            before = len(parts)
-            _extract_components(frame.get("components"), parts)
-            html = frame.get("html")
-            if len(parts) == before and isinstance(html, str):
-                stripped = _HTML_TAG.sub(" ", html)
-                if stripped.strip():
-                    parts.append(" ".join(stripped.split()))
-        return
-    if frame_type in ASSISTANT_TEXT_TYPES:
-        role = frame.get("role")
-        if role not in (None, "assistant"):
-            return
-        for key in _TEXT_FIELDS:
-            value = frame.get(key)
-            if isinstance(value, str) and value.strip():
-                parts.append(value.strip())
+def _committed_text(frame: Mapping[str, object], prompt: str, chat_id: str) -> List[str]:
+    revision = frame.get("render_revision")
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision <= 0:
+        raise DispatcherError("committed answer has no valid render revision")
+    transcript = frame.get("transcript")
+    canvas = frame.get("canvas")
+    if not isinstance(transcript, list) or not transcript or not isinstance(canvas, Mapping):
+        raise DispatcherError("committed answer has no transcript or canvas")
+    if canvas.get("target") != "canvas" or not isinstance(canvas.get("components"), list):
+        raise DispatcherError("committed answer has an invalid canvas")
+    if any(not isinstance(message, Mapping) for message in transcript):
+        raise DispatcherError("committed transcript contains an invalid message")
+    users = [message for message in transcript if message.get("role") == "user"]
+    if len(users) != 1 or transcript[0] is not users[0] or users[0].get("parts") != [{"type": "text", "text": prompt}]:
+        raise DispatcherError("committed transcript does not match the single current request")
+    final = transcript[-1]
+    if final.get("role") != "assistant" or not isinstance(final.get("parts"), list) or not final["parts"]:
+        raise DispatcherError("committed transcript has no final assistant answer")
+    parts: List[str] = []
+    for part in final["parts"]:
+        if not isinstance(part, Mapping):
+            raise DispatcherError("committed answer part is invalid")
+        kind = part.get("type")
+        if kind == "text" and isinstance(part.get("text"), str):
+            parts.append(part["text"].strip())
+        elif kind == "components" and isinstance(part.get("components"), list):
+            _extract_components(part["components"], parts, chat_id)
+        else:
+            raise DispatcherError("committed answer part is unsupported")
+    _extract_components(canvas["components"], parts, chat_id)
+    if len("\n".join(parts)) > MAX_ANSWER_CHARS:
+        raise DispatcherError("dispatcher answer exceeds the size bound")
+    return parts
 
 
-def _extract_components(components: object, parts: List[str]) -> None:
-    if isinstance(components, str):
-        if components.strip():
-            parts.append(components.strip())
-        return
-    if isinstance(components, Mapping):
-        component_type = components.get("type")
-        if component_type in ("text", "card", "alert", "markdown", "notification"):
-            for key in _TEXT_FIELDS:
-                value = components.get(key)
-                if isinstance(value, str) and value.strip():
-                    parts.append(value.strip())
-        for key in ("components", "children", "items"):
-            _extract_components(components.get(key), parts)
-        return
-    if isinstance(components, Iterable):
+def _extract_components(components: object, parts: List[str], chat_id: str) -> None:
+    if isinstance(components, list):
         for component in components:
-            _extract_components(component, parts)
+            _extract_components(component, parts, chat_id)
+        return
+    if not isinstance(components, Mapping):
+        raise DispatcherError("committed component must be an object")
+    if any(key in components for key in ("_source_agent", "_source_tool", "_source_correlation_id")):
+        return
+    if (components.get("intermediate") is True or components.get("preview") is True
+            or components.get("phase") in ("intermediate", "preview", "queued", "running")):
+        return
+    kind = components.get("type")
+    if kind in ("button", "icon", "spacer", "divider"):
+        return
+    if kind not in ("text", "card", "alert", "markdown", "container", "row", "column", "notification"):
+        raise DispatcherError("committed answer component is unsupported")
+    if components.get("hidden") is True or components.get("visible") is False:
+        return
+    title = components.get("title", "")
+    identity = components.get("id") or components.get("component_id", "")
+    if isinstance(identity, str) and identity.startswith("doc_"):
+        if not isinstance(title, str):
+            raise DispatcherError("promoted document title is invalid")
+        digest = hashlib.sha1(f"{chat_id}|{title}".encode("utf-8")).hexdigest()[:12]
+        if kind != "card" or identity != f"doc_{digest}":
+            raise DispatcherError("promoted document identity does not match this chat")
+    for key in _TEXT_FIELDS:
+        value = components.get(key)
+        if isinstance(value, str):
+            if value.strip():
+                parts.append(value.strip())
+        elif value is not None:
+            if key != "content" or not isinstance(value, list):
+                raise DispatcherError("committed component text field is invalid")
+    for key in ("content", "components", "children", "items"):
+        value = components.get(key)
+        if value is not None and not isinstance(value, str):
+            _extract_components(value, parts, chat_id)
 
 
 def _collect_denials(frame: Mapping[str, object], denials: List[str]) -> None:

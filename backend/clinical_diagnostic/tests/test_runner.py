@@ -529,3 +529,41 @@ def test_public_review_overlay_allows_an_unacknowledged_run(tmp_path):
     report = Path(outcome.report_path).read_text(encoding="utf-8")
     assert "bare_model" in report and "astral_dispatcher" in report
     assert outcome.record.identity.models["bare_model"] == "fake-producer"
+
+
+def test_last_allowed_completed_grade_is_scored_and_next_job_is_bounded():
+    producer = _Producer()
+    budget = BudgetTracker(ExecutionLimits(max_calls=2, max_retries=0))
+    results = _execute_jobs([(producer, _case()), (producer, _case(1))],
+                            _Grader(), budget, 0)
+    assert [result.status for result in results] == ["scored", "infrastructure_failure"]
+    assert results[0].score is not None
+    assert results[1].failure.code is FailureCode.BUDGET_EXHAUSTED
+    assert budget.calls == 2
+    assert producer.calls == 1
+
+
+def test_nested_grader_json_finalizes_an_infrastructure_report(tmp_path, monkeypatch):
+    from clinical_diagnostic.grading import CallableGrader
+    from clinical_diagnostic.provider import CallableProvider
+
+    grader = CallableGrader(CallableProvider(
+        lambda _messages: ProviderReply("[" * 4001 + "0" + "]" * 4001, "nested"),
+        "nested-provider",
+    ))
+    monkeypatch.setattr("clinical_diagnostic.runner.MarkerGrader", lambda: grader)
+    outcome = run(DiagnosticConfig(run_id="nested-grade", artifacts_root=str(tmp_path),
+                                  limits=ExecutionLimits(max_cases=1)))
+    assert outcome.record.summary["scored"] == 0
+    assert outcome.record.summary["infrastructure_failures"] == 2
+    assert {result.failure.code for result in outcome.record.results} == {FailureCode.INVALID_GRADE}
+    assert (tmp_path / "nested-grade" / "CLINICAL_DIAGNOSTIC_REPORT.md").is_file()
+
+
+def test_one_case_two_producer_run_keeps_both_results_at_four_call_limit(tmp_path):
+    outcome = run(DiagnosticConfig(run_id="exact-four", artifacts_root=str(tmp_path),
+                                  limits=ExecutionLimits(max_cases=1, max_calls=4,
+                                                         max_retries=0)))
+    assert outcome.exit_code == EXIT_OK
+    assert outcome.record.summary["scored"] == 2
+    assert outcome.record.summary["infrastructure_failures"] == 0

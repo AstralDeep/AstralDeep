@@ -135,6 +135,8 @@ def parse_grader_response(text: str, case: ClinicalCase) -> Grade:
             object_pairs_hook=_reject_duplicate_keys,
             parse_constant=_reject_constant,
         )
+    except RecursionError as exc:
+        raise GraderError("grader response exceeds the nesting bound") from exc
     except json.JSONDecodeError as exc:
         raise GraderError(f"grader response is not valid JSON: {exc.msg}") from exc
     if not isinstance(payload, Mapping) or set(payload) != {"assessments"}:

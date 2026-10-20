@@ -80,6 +80,14 @@ class FakeTransport:
         self.closed = True
 
 
+def empty_chat_http(method, url, _headers, _body):
+    if method == "POST":
+        return Response(201, {"chat_id": "chat-1"})
+    if url.endswith("/components"):
+        return Response(200, {"components": []})
+    return Response(200, {"chat": {"id": "chat-1", "messages": []}})
+
+
 def dispatcher(frames, http=None, **over):
     transport = FakeTransport(frames)
     fields = dict(
@@ -87,7 +95,7 @@ def dispatcher(frames, http=None, **over):
         ws_uri="ws://127.0.0.1:8001/ws",
         http_uri="http://127.0.0.1:8001",
         transport_factory=lambda: transport,
-        http=http or (lambda *_a, **_k: Response(201, {"chat_id": "chat-1"})),
+        http=http or empty_chat_http,
         clock=lambda: 0.0,
     )
     fields.update(over)
@@ -119,24 +127,19 @@ def test_constructor_validates_required_configuration():
     assert "secret-token" not in repr(adapter)
 
 
-def test_answer_registers_chats_and_collects_visible_components():
+def test_answer_registers_chats_and_collects_committed_components():
     frames = [
-        {"type": "audit_append", "event": {"event_id": "audit-1"}},
-        {"type": "ui_render", "target": "chat", "components": [
-            {"type": "text", "text": "Required fact."},
-            {"type": "card", "title": "Safety action.", "components": [
-                {"type": "text", "content": "Cannot determine remotely."}
-            ]},
-        ]},
-        {"type": "operation_status", "terminal": True, "state": "completed"},
+        scoped_frame(type="audit_append", event={"event_id": "audit-1"}),
+        committed_answer(text="Required fact.", canvas=[
+            {"type": "card", "title": "Safety action.", "content": [
+                {"type": "text", "content": "Cannot determine remotely."}]}]),
+        completed_turn(),
     ]
-    adapter, transport = dispatcher(frames)
+    adapter, transport = scoped_dispatcher(frames)
     answer = adapter.answer(case())
-    assert "Required fact." in answer.text
-    assert "Safety action." in answer.text
-    assert "Cannot determine remotely." in answer.text
+    assert answer.text == "Required fact.\nSafety action.\nCannot determine remotely."
     assert answer.chat_id == "chat-1"
-    assert answer.frame_types == ("audit_append", "ui_render", "operation_status")
+    assert answer.frame_types == ("audit_append", "conversation_snapshot", "operation_status")
     assert answer.audit_event_ids == ("audit-1",)
     assert transport.sent[0]["type"] == "register_ui"
     assert transport.sent[0]["token"] == "secret-token"
@@ -145,55 +148,39 @@ def test_answer_registers_chats_and_collects_visible_components():
     assert transport.closed
 
 
-def test_answer_falls_back_to_rendered_html_and_assistant_messages():
-    frames = [
-        {"type": "ui_render", "target": "history", "html": "<p>History fact.</p>"},
-        {"type": "assistant_message", "role": "assistant", "content": "Assistant fact."},
-        {"type": "turn_complete"},
-    ]
-    adapter, _ = dispatcher(frames)
-    answer = adapter.answer(case())
-    assert "History fact." in answer.text
-    assert "Assistant fact." in answer.text
+def test_answer_ignores_history_html_and_transient_assistant_messages():
+    adapter, _ = scoped_dispatcher([
+        {"type": "ui_render", "target": "history", "html": "<p>Old history.</p>"},
+        {"type": "assistant_message", "role": "assistant", "content": "Tool preview."},
+        committed_answer(), completed_turn(),
+    ])
+    assert adapter.answer(case()).text == "Final answer."
 
 
-def test_answer_accepts_chat_status_terminal_frames():
-    frames = [
-        {"type": "ui_render", "target": "chat", "components": [
-            {"type": "text", "text": "Fact."}
-        ]},
-        {"type": "chat_status", "status": "done"},
-    ]
-    adapter, _ = dispatcher(frames)
-    assert "Fact." in adapter.answer(case()).text
-    adapter, _ = dispatcher([
-        {"type": "ui_render", "target": "chat", "components": [
-            {"type": "text", "text": "Fact."}
-        ]},
-        {"type": "chat_status", "status": "failed"},
+def test_answer_requires_matching_operation_terminal_after_chat_status():
+    adapter, _ = scoped_dispatcher([
+        committed_answer(), {"type": "chat_status", "status": "done"},
+        completed_turn(state="cancelled"),
     ])
     with pytest.raises(DispatcherDenied):
         adapter.answer(case())
 
 
 def test_answer_refuses_missing_terminal_and_missing_text():
-    adapter, _ = dispatcher([{"type": "ui_render", "target": "chat",
-                              "components": [{"type": "text", "text": "Fact."}]}],
-                            max_frames=1)
+    adapter, _ = scoped_dispatcher([committed_answer()], max_frames=1)
     with pytest.raises(DispatcherError, match="terminal"):
         adapter.answer(case())
-    adapter, _ = dispatcher([{"type": "operation_status", "terminal": True}])
+    adapter, _ = scoped_dispatcher([committed_answer(text=""), completed_turn()])
     with pytest.raises(DispatcherError) as caught:
         adapter.answer(case())
     assert caught.value.code is FailureCode.MALFORMED_ANSWER
 
 
 def test_answer_refuses_denials_failed_terminals_and_bad_frames():
-    adapter, _ = dispatcher([{"type": "error", "message": "authentication required"}])
+    adapter, _ = scoped_dispatcher([scoped_frame(type="error", message="authentication required")])
     with pytest.raises(DispatcherDenied):
         adapter.answer(case())
-    adapter, _ = dispatcher([{"type": "operation_status", "terminal": True,
-                              "state": "failed"}])
+    adapter, _ = scoped_dispatcher([completed_turn(state="failed")])
     with pytest.raises(DispatcherDenied):
         adapter.answer(case())
     adapter, _ = dispatcher(["not json"])
@@ -209,23 +196,15 @@ def test_answer_refuses_denials_failed_terminals_and_bad_frames():
         adapter.answer(case())
 
 
-def test_answer_marks_tool_denial_alerts_without_false_positives():
-    frames = [
-        {"type": "ui_render", "target": "chat", "components": [
-            {"type": "alert", "message": "Tool 'x' is restricted for this agent."}
-        ]},
-        {"type": "operation_status", "terminal": True},
-    ]
-    adapter, _ = dispatcher(frames)
-    answer = adapter.answer(case())
-    assert answer.tool_denials
-    frames = [
-        {"type": "ui_render", "target": "chat", "components": [
-            {"type": "text", "text": "The note is not authorized for sharing."}
-        ]},
-        {"type": "operation_status", "terminal": True},
-    ]
-    adapter, _ = dispatcher(frames)
+def test_answer_marks_committed_tool_denial_alerts_without_false_positives():
+    adapter, _ = scoped_dispatcher([
+        committed_answer(canvas=[{"type": "alert", "message": "Tool is restricted for this agent."}]),
+        completed_turn(),
+    ])
+    assert adapter.answer(case()).tool_denials
+    adapter, _ = scoped_dispatcher([
+        committed_answer(text="The note is not authorized for sharing."), completed_turn(),
+    ])
     assert adapter.answer(case()).tool_denials == ()
 
 
@@ -354,29 +333,12 @@ def test_http_request_success_http_error_and_transport_error(monkeypatch):
 def test_default_transport_uses_the_lazy_websocket_client(monkeypatch):
     from websockets.sync import client as sync_client
 
-    class Connection:
-        def __init__(self):
-            self.frames = [
-                '{"type": "ui_render", "target": "chat", '
-                '"components": [{"type": "text", "text": "Fact."}]}',
-                '{"type": "operation_status", "terminal": true}',
-            ]
-
-        def send(self, _text):
-            return None
-
-        def recv(self, timeout=None):
-            return self.frames.pop(0)
-
-        def close(self):
-            return None
-
-    monkeypatch.setattr(sync_client, "connect", lambda *_a, **_k: Connection())
+    connection = ScopedTransport([committed_answer(), completed_turn()])
+    monkeypatch.setattr(sync_client, "connect", lambda *_a, **_k: connection)
     adapter, _ = dispatcher([])
     adapter._transport_factory = adapter._default_transport
-    adapter._http = lambda *_a, **_k: Response(201, {"chat_id": "chat-1"})
-    answer = adapter.answer(case())
-    assert answer.chat_id == "chat-1"
+    assert adapter.answer(case()).text == "Final answer."
+
 
 def test_dispatched_answer_rejects_oversized_text_and_empty_audit_ids():
     with pytest.raises(ValueError, match="size bound"):
@@ -402,13 +364,12 @@ def test_create_chat_rejects_non_mapping_oversized_and_invalid_bodies():
         adapter.create_chat()
 
 
-def test_answer_accepts_byte_frames_and_string_components():
-    frames = [
-        json.dumps({"type": "ui_render", "target": "chat", "components": "Text fact."}).encode(),
-        {"type": "operation_status", "terminal": True},
-    ]
-    adapter, _ = dispatcher(frames)
-    assert adapter.answer(case()).text == "Text fact."
+def test_answer_accepts_byte_frames_with_committed_text():
+    snapshot = committed_answer()
+    adapter, _ = scoped_dispatcher([
+        lambda request: json.dumps(snapshot(request)).encode(), completed_turn(),
+    ])
+    assert adapter.answer(case()).text == "Final answer."
 
 
 def test_answer_refuses_non_text_frames():
@@ -421,17 +382,18 @@ def test_answer_refuses_non_text_frames():
         adapter.answer(case())
 
 
-def test_answer_ignores_non_assistant_message_roles():
-    adapter, _ = dispatcher([
-        {"type": "assistant_message", "role": "user", "content": "ignored"},
-        {"type": "operation_status", "terminal": True},
-    ])
-    with pytest.raises(DispatcherError, match="without visible answer"):
+def test_answer_rejects_snapshot_without_final_assistant():
+    frame = committed_answer()(dict(payload={"chat_id": "chat-1"},
+        connection_generation="c", request_generation="r"))
+    frame["transcript"] = frame["transcript"][:1]
+    adapter, _ = scoped_dispatcher([scoped_frame(**{key: value for key, value in frame.items()
+        if key not in {"chat_id", "request_generation", "connection_generation"}})])
+    with pytest.raises(DispatcherError, match="final assistant"):
         adapter.answer(case())
 
 
 def test_denial_text_falls_back_when_no_message_is_present():
-    adapter, _ = dispatcher([{"type": "error"}])
+    adapter, _ = scoped_dispatcher([scoped_frame(type="error")])
     with pytest.raises(DispatcherDenied) as caught:
         adapter.answer(case())
     assert caught.value.detail == "dispatcher refused the turn"
@@ -458,3 +420,325 @@ def test_sync_transport_maps_a_closed_connection(monkeypatch):
     with pytest.raises(DispatcherError, match="closed"):
         transport.recv(1)
     transport.close()
+
+
+def scoped_frame(**fields):
+    def build(request):
+        return {
+            "chat_id": request["payload"]["chat_id"],
+            "connection_generation": request["connection_generation"],
+            "request_generation": request["request_generation"],
+            **fields,
+        }
+    return build
+
+
+def committed_answer(*, text="Final answer.", canvas=(), **fields):
+    return scoped_frame(
+        type="conversation_snapshot", schema_version=1,
+        snapshot_id="f2b1ba2d-f16f-4d5e-a91f-708984f19381",
+        committed_at="2026-10-20T12:00:00Z", snapshot_purpose="commit", render_revision=1,
+        transcript=[
+            {"message_id": "1", "role": "user", "created_at": "2026-10-20T12:00:00Z",
+             "attachments": [], "parts": [{"type": "text", "text": render_dispatcher_prompt(case())}]},
+            {"message_id": "2", "role": "assistant", "created_at": "2026-10-20T12:00:01Z",
+             "attachments": [], "parts": [{"type": "text", "text": text}]},
+        ],
+        canvas={"target": "canvas", "components": list(canvas)},
+        **fields,
+    )
+
+
+def completed_turn(**fields):
+    return scoped_frame(**dict(type="operation_status", action="chat_message", terminal=True,
+                               state="completed", surface="chat", sequence=2, phase="completed", label="Completed",
+        operation_id="0f919b79-ec24-4a97-b927-27770be54639", retryable=False, error=None,
+        retry_after_ms=None, updated_at="2026-10-20T12:00:02Z") | fields)
+
+
+class ScopedTransport(FakeTransport):
+    def recv(self, timeout):
+        if self.frames and callable(self.frames[0]):
+            self.frames[0] = self.frames[0](self.sent[1])
+        return super().recv(timeout)
+
+
+def scoped_dispatcher(frames, **over):
+    transport = ScopedTransport(frames)
+    adapter, _ = dispatcher([], transport_factory=lambda: transport, **over)
+    return adapter, transport
+
+
+def test_current_committed_answer_includes_full_canvas_artifact_without_tool_preview():
+    full = "Synthetic full clinical answer. " * 100
+    adapter, transport = scoped_dispatcher([
+        scoped_frame(type="ui_render", target="chat", components=[
+            {"type": "text", "content": "Tool preview that must be excluded."}]),
+        committed_answer(text="Brief lead.", canvas=[
+            {"type": "card", "component_id": "final-doc", "title": "Final document",
+             "content": [{"type": "text", "content": full}]},
+            {"type": "card", "_source_tool": "lookup", "content": [
+                {"type": "text", "content": "Tool material that must be excluded."}]},
+        ]),
+        completed_turn(),
+    ])
+    answer = adapter.answer(case())
+    assert full.strip() in answer.text
+    assert "Brief lead." in answer.text
+    assert "Tool preview" not in answer.text
+    assert "Tool material" not in answer.text
+    assert transport.closed
+
+
+@pytest.mark.parametrize("field,value", [
+    ("chat_id", "foreign-chat"), ("request_generation", "stale-request"),
+    ("connection_generation", "stale-connection"),
+])
+def test_stale_snapshot_and_terminal_cannot_complete_current_request(field, value):
+    adapter, _ = scoped_dispatcher([
+        committed_answer(text="Stale answer.", **{field: value}),
+        completed_turn(**{field: value}),
+        {"type": "chat_status", "status": "done"},
+        committed_answer(text="Current final answer."), completed_turn(),
+    ])
+    answer = adapter.answer(case())
+    assert answer.text == "Current final answer."
+
+
+def test_uncommitted_chat_lead_cannot_be_scored_as_final_answer():
+    adapter, transport = scoped_dispatcher([
+        scoped_frame(type="ui_render", target="chat", components=[
+            {"type": "text", "content": "Incomplete lead."}]), completed_turn(),
+    ])
+    with pytest.raises(DispatcherError, match="committed"):
+        adapter.answer(case())
+    assert transport.closed
+
+
+def test_dispatcher_nested_json_is_bounded_protocol_failure():
+    adapter, transport = scoped_dispatcher(["[" * 4001 + "0" + "]" * 4001])
+    with pytest.raises(DispatcherError, match="nesting"):
+        adapter.answer(case())
+    assert transport.closed
+
+
+@pytest.mark.parametrize("problem", ["messages", "canvas", "foreign", "denied", "unavailable", "shape"])
+def test_answer_refuses_nonempty_or_unverified_initial_chat(problem):
+    def http(method, url, headers, body):
+        if method == "POST":
+            return empty_chat_http(method, url, headers, body)
+        if problem == "denied":
+            return Response(403, {})
+        if problem == "unavailable":
+            return Response(503, {})
+        if problem == "shape":
+            return Response(200, [])
+        if url.endswith("/components"):
+            return Response(200, {"components": [{}] if problem == "canvas" else []})
+        return Response(200, {"chat": {"id": "foreign" if problem == "foreign" else "chat-1",
+            "messages": [{}] if problem == "messages" else []}})
+
+    adapter, transport = scoped_dispatcher([], http=http)
+    with pytest.raises(DispatcherError):
+        adapter.answer(case())
+    assert transport.sent == []
+
+
+@pytest.mark.parametrize("state", ["failed", "cancelled", "retryable", "unknown"])
+def test_current_terminal_failure_never_scores_committed_answer(state):
+    adapter, transport = scoped_dispatcher([committed_answer(), completed_turn(state=state)])
+    with pytest.raises(DispatcherDenied):
+        adapter.answer(case())
+    assert transport.closed
+
+
+def test_terminal_for_another_action_cannot_complete_the_current_turn():
+    adapter, _ = scoped_dispatcher([
+        committed_answer(), completed_turn(action="chrome_open"),
+        completed_turn(state="failed"),
+    ])
+    with pytest.raises(DispatcherDenied):
+        adapter.answer(case())
+
+
+def test_prior_hydration_and_wrong_commit_cannot_supply_final_text():
+    snapshot = committed_answer()
+    def hydration(request):
+        return dict(snapshot(request), snapshot_purpose="hydration")
+    adapter, _ = scoped_dispatcher([hydration,
+        committed_answer(request_generation="another-request"), completed_turn()])
+    with pytest.raises(DispatcherError, match="committed"):
+        adapter.answer(case())
+
+
+def test_snapshot_requires_exact_current_user_prompt_and_only_one_request():
+    for problem in ("different-prompt", "multiple-users", "missing-assistant", "invalid-message"):
+        snapshot = committed_answer()
+        def invalid(request):
+            frame = snapshot(request)
+            if problem == "different-prompt":
+                frame["transcript"][0]["parts"][0]["text"] = "Foreign request."
+            elif problem == "multiple-users":
+                frame["transcript"].insert(0, {"role": "user", "parts": []})
+            elif problem == "missing-assistant":
+                frame["transcript"][-1]["role"] = "tool"
+            else:
+                frame["transcript"].append(42)
+            return frame
+        adapter, _ = scoped_dispatcher([invalid, completed_turn()])
+        with pytest.raises(DispatcherError, match="transcript"):
+            adapter.answer(case())
+
+
+@pytest.mark.parametrize("change", ["revision", "transcript", "canvas", "target", "parts", "part", "structured"])
+def test_malformed_committed_payload_is_an_infrastructure_failure(change):
+    snapshot = committed_answer()
+    def invalid(request):
+        frame = snapshot(request)
+        if change == "revision":
+            frame["render_revision"] = True
+        elif change in ("transcript", "canvas"):
+            frame[change] = None
+        elif change == "target":
+            frame["canvas"]["target"] = "foreign"
+        elif change == "parts":
+            frame["transcript"][-1]["parts"] = None
+        elif change == "part":
+            frame["transcript"][-1]["parts"] = [42]
+        else:
+            frame["transcript"][-1]["parts"] = [{"type": "structured", "plain_text": "Ambiguous"}]
+        return frame
+    adapter, transport = scoped_dispatcher([invalid, completed_turn()])
+    with pytest.raises(DispatcherError):
+        adapter.answer(case())
+    assert transport.closed
+
+
+def test_ambiguous_multiple_commit_snapshots_are_rejected():
+    adapter, _ = scoped_dispatcher([committed_answer(), committed_answer(text="Other"), completed_turn()])
+    with pytest.raises(DispatcherError, match="ambiguous"):
+        adapter.answer(case())
+
+
+def test_complete_structured_answer_keeps_nested_content_and_excludes_provenance_subtrees():
+    adapter, _ = scoped_dispatcher([
+        committed_answer(canvas=[{"type": "card", "title": "Assessment", "content": [
+            {"type": "text", "content": "Full finding."},
+            {"type": "container", "children": [{"type": "text", "text": "Safety detail."}]},
+            {"type": "text", "_source_correlation_id": "tool-call", "content": "Tool preview."},
+            {"type": "card", "_source_agent": "tool", "content": [{"type": "text", "content": "Tool descendant."}]},
+            {"type": "text", "intermediate": True, "content": "Intermediate."},
+            {"type": "text", "preview": True, "content": "Preview."},
+            {"type": "text", "phase": "intermediate", "content": "Intermediate phase."},
+            {"type": "text", "hidden": True, "content": "Hidden."},
+            {"type": "button", "label": "Action"},
+        ]}]), completed_turn(),
+    ])
+    assert adapter.answer(case()).text == "Final answer.\nAssessment\nFull finding.\nSafety detail."
+
+
+def test_promoted_document_identity_must_belong_to_the_current_chat():
+    import hashlib
+    identity = "doc_" + hashlib.sha1(b"chat-1|Document").hexdigest()[:12]
+    document = {"type": "card", "component_id": identity, "title": "Document",
+                "content": [{"type": "text", "content": "Full promoted answer."}]}
+    adapter, _ = scoped_dispatcher([committed_answer(canvas=[document]), completed_turn()])
+    assert "Full promoted answer." in adapter.answer(case()).text
+    for changed in ({"title": "Other document"}, {"type": "text"}, {"title": None}):
+        adapter, _ = scoped_dispatcher([committed_answer(canvas=[dict(document, **changed)]), completed_turn()])
+        with pytest.raises(DispatcherError):
+            adapter.answer(case())
+
+
+@pytest.mark.parametrize("component", [
+    1, {"type": "unknown", "text": "Unsupported"},
+    {"type": "text", "content": {}}, {"type": "text", "title": []},
+])
+def test_unsupported_or_invalid_final_components_fail_closed(component):
+    adapter, _ = scoped_dispatcher([committed_answer(canvas=[component]), completed_turn()])
+    with pytest.raises(DispatcherError):
+        adapter.answer(case())
+
+
+def test_aggregate_final_answer_limit_includes_canvas_text():
+    adapter, _ = scoped_dispatcher([
+        committed_answer(text="x" * 32768, canvas=[{"type": "text", "content": "y" * 32768}]),
+        completed_turn(),
+    ])
+    with pytest.raises(DispatcherError, match="size bound"):
+        adapter.answer(case())
+
+
+def test_decodable_excessive_nesting_and_node_count_are_rejected():
+    for raw in ("[" * 70 + "0" + "]" * 70, json.dumps([0] * 20001)):
+        adapter, transport = scoped_dispatcher([raw])
+        with pytest.raises(DispatcherError, match="bound"):
+            adapter.answer(case())
+        assert transport.closed
+
+
+def test_nested_http_json_is_a_protocol_failure():
+    adapter, _ = dispatcher([], http=lambda *_args: Response(200, b"[" * 4001 + b"0" + b"]" * 4001))
+    with pytest.raises(DispatcherError, match="nesting"):
+        adapter.create_chat()
+
+
+@pytest.mark.parametrize("kind", ["auth_error", "auth_required", "submission_rejected"])
+def test_authentication_or_current_submission_denial_closes_transport(kind):
+    def denied(request):
+        return {"type": kind, "submission_id": request["submission_id"]}
+    adapter, transport = scoped_dispatcher([denied])
+    with pytest.raises(DispatcherDenied):
+        adapter.answer(case())
+    assert transport.closed
+
+
+def test_audit_events_match_the_new_owned_chat_even_without_ui_frame_correlation():
+    adapter, _ = scoped_dispatcher([
+        {"type": "audit_append", "event": {"event_id": "foreign", "conversation_id": "foreign-chat"}},
+        {"type": "audit_append", "event": {"event_id": "current", "conversation_id": "chat-1"}},
+        committed_answer(), completed_turn(),
+    ])
+    assert adapter.answer(case()).audit_event_ids == ("current",)
+
+
+def test_correlated_tool_denial_preview_is_recorded_but_not_graded_as_answer():
+    adapter, _ = scoped_dispatcher([
+        scoped_frame(type="ui_render", target="chat", components=[
+            {"type": "alert", "message": "Tool permission denied during preview."}]),
+        committed_answer(), completed_turn(),
+    ])
+    answer = adapter.answer(case())
+    assert answer.text == "Final answer."
+    assert answer.tool_denials == ("permission denied",)
+
+
+def test_invalid_utf8_dispatcher_frame_is_a_protocol_failure():
+    adapter, transport = scoped_dispatcher([b"\xff"])
+    with pytest.raises(DispatcherError, match="UTF-8"):
+        adapter.answer(case())
+    assert transport.closed
+
+
+def test_deadline_and_response_byte_limits_close_the_transport():
+    ticks = iter([0, 2])
+    adapter, transport = scoped_dispatcher([], timeout_seconds=1, clock=lambda: next(ticks))
+    with pytest.raises(DispatcherTimeout):
+        adapter.answer(case())
+    assert transport.closed
+    adapter, transport = scoped_dispatcher([json.dumps({"type": "ignored", "data": "x" * 900000})] * 5)
+    with pytest.raises(DispatcherError, match="response exceeds"):
+        adapter.answer(case())
+    assert transport.closed
+
+
+def test_final_assistant_component_part_retains_its_nested_answer_text():
+    snapshot = committed_answer()
+    def structured(request):
+        frame = snapshot(request)
+        frame["transcript"][-1]["parts"] = [{"type": "components", "components": [
+            {"type": "card", "title": "Final assessment", "content": [
+                {"type": "text", "content": "Complete structured conclusion."}]}]}]
+        return frame
+    adapter, _ = scoped_dispatcher([structured, completed_turn()])
+    assert adapter.answer(case()).text == "Final assessment\nComplete structured conclusion."
