@@ -5280,11 +5280,11 @@ class Orchestrator:
                     card.agent_id, skill.id, declared_scope,
                 )
             elif not declared_scope:
-                logger.debug(
-                    "Agent %s tool %s declares no scope — defaulting to tools:read.",
+                logger.warning(
+                    "Agent %s tool %s declares no scope and cannot execute.",
                     card.agent_id, skill.id,
                 )
-            tool_scope_map[skill.id] = declared_scope or 'tools:read'
+            tool_scope_map[skill.id] = declared_scope
         self.agent_capabilities[card.agent_id] = caps
 
         self.tool_permissions.register_tool_scopes(card.agent_id, tool_scope_map)
@@ -17235,6 +17235,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 render_components=[alert.to_dict()],
                 render_target="chat")
 
+        from orchestrator import source_bound
+
+        try:
+            action = source_bound.declaration(
+                self.tool_permissions.get_tool_scope_map(agent_id), agent_id, tool_name)
+        except (AttributeError, TypeError, ValueError) as exc:
+            logger.warning("Source-bound declaration unavailable: %s", exc)
+            await self._audit_gate_denial(
+                websocket, user_id, agent_id, tool_name, chat_id, args,
+                gate="source_bound", detail="missing_or_invalid_declaration")
+            return GateRefusal(response=MCPResponse(error={
+                "code": "effect_declaration_unavailable",
+                "message": "Tool effect declaration is unavailable; ask an operator to review this tool.",
+                "retryable": False}))
+
         _session_claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
         if agent_id == "terminal-shell-1":
             from orchestrator.terminal_security import (
@@ -17417,11 +17432,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if policy.policy_enabled():
                 try:
                     decision = policy.evaluate_policy(
-                        policy.load_rules(),
+                        policy.load_rules(strict=True) if action.needs_review else policy.load_rules(),
                         {"tool": tool_name, "agent": agent_id, "user_id": user_id,
-                         "roles": self._policy_roles(websocket), "args": args})
+                         "roles": self._policy_roles(websocket), "args": args},
+                        **({"strict": True} if action.needs_review else {}))
                 except Exception:
-                    logger.debug("policy: evaluation failed — allowing", exc_info=True)
+                    if action.needs_review:
+                        logger.exception("Policy evaluation unavailable for effect")
+                        return GateRefusal(response=MCPResponse(error={
+                            "code": "effect_policy_unavailable",
+                            "message": "Action policy could not be evaluated.",
+                            "retryable": False}))
+                    logger.debug("policy: evaluation failed for read", exc_info=True)
                     decision = policy.PolicyDecision()
                 if decision.effect == policy.REQUIRE_TOKEN:
                     from orchestrator import transaction_token as _txn
@@ -17460,13 +17482,25 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if isinstance(args, dict) and "_txn_token" in args:
                     args = {k: v for k, v in args.items() if k != "_txn_token"}
 
+        if user_id and agent_id and action.needs_review:
+            from orchestrator import hitl_confirmation
+
+            pending = await hitl_confirmation.evaluate(
+                self, websocket, user_id, chat_id, agent_id, tool_name,
+                args, source_bound.review_risks(action))
+            if pending is not None:
+                return GateRefusal(response=pending)
+
         if user_id:
             from orchestrator import taint as _taint
             if _taint.taint_enabled() and _taint.is_sink(agent_id, tool_name):
                 tracker = self._taint_tracker(chat_id)
                 trust = tracker.effective_trust_of_args(
                     args, user_text=self._current_request_text(chat_id))
-                if _taint.check_flow(trust) == "deny":
+                approved_source_use = (action.needs_review
+                    and hitl_confirmation.current_approval(
+                        self, user_id, chat_id, agent_id, tool_name, args) is not None)
+                if _taint.check_flow(trust) == "deny" and not approved_source_use:
                     msg = (f"'{tool_name}' was blocked: it would send untrusted "
                            f"data (from a web/third-party source) into a "
                            f"write/egress action.")
@@ -17965,7 +17999,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     tracker = self._taint_tracker(chat_id)
                     src = _taint.classify_source(agent_id, tool_name)
                     inp = tracker.effective_trust_of_args(args)
-                    tracker.record_output(result.ui_components, src, inp)
+                    tracker.record_output((result.result, result.ui_components), src, inp)
             except Exception:
                 logger.debug("taint: output record failed", exc_info=True)
 
@@ -18471,7 +18505,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     tracker = self._taint_tracker(chat_id)
                     src = _taint.classify_source(agent_id, tool_name)
                     inp = tracker.effective_trust_of_args(args)
-                    tracker.record_output(result.ui_components, src, inp)
+                    tracker.record_output((result.result, result.ui_components), src, inp)
             except Exception:
                 logger.debug("taint: output record failed (parallel)", exc_info=True)
 
@@ -18851,6 +18885,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         async def reviewed_invoke(capabilities):
             from orchestrator import mesh_admission
+            from orchestrator import source_bound
             claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
             if mesh_admission.MEMBER_CLAIM in claims:
                 try:
@@ -18861,6 +18896,24 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 except mesh_admission.MeshAdmissionError:
                     return MCPResponse(error={"code": mesh_admission.MeshAdmissionError.code,
                         "message": "Current member authority is unavailable", "retryable": False})
+            try:
+                action = source_bound.declaration(
+                    self.tool_permissions.get_tool_scope_map(agent_id), agent_id, tool_name)
+            except (AttributeError, TypeError, ValueError):
+                return MCPResponse(error={"code": "effect_declaration_unavailable",
+                    "message": "Tool effect declaration is unavailable.", "retryable": False})
+            if action.needs_review:
+                approval = hitl_confirmation.current_approval(
+                    self, user_id, conversation_id, agent_id, tool_name, args)
+                if approval is None:
+                    return MCPResponse(error={"code": "source_bound_approval_required",
+                        "message": "This action requires exact owner review.", "retryable": False})
+                try:
+                    await hitl_confirmation.audit_pre_effect(self, approval.call)
+                except Exception:
+                    logger.exception("Source-bound pre-effect audit unavailable")
+                    return MCPResponse(error={"code": "effect_audit_unavailable",
+                        "message": "Action audit is unavailable.", "retryable": False})
             refusal = hitl_confirmation.effect_refusal(
                 self, websocket, user_id, conversation_id, agent_id, tool_name, args, start=True)
             if refusal is not None:

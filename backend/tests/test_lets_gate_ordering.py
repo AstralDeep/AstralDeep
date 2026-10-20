@@ -21,13 +21,15 @@ from orchestrator.orchestrator import GateRefusal, Orchestrator
 
 @pytest.fixture
 def gate_orchestrator(monkeypatch):
-    from orchestrator import hitl, policy, supervisor, taint
+    from orchestrator import hitl, policy, source_bound, supervisor, taint
     from shared.feature_flags import flags
 
     monkeypatch.setattr(policy, "policy_enabled", lambda: False)
     monkeypatch.setattr(taint, "taint_enabled", lambda: False)
     monkeypatch.setattr(supervisor, "supervisor_enabled", lambda: False)
     monkeypatch.setattr(hitl, "hitl_enabled", lambda: False)
+    monkeypatch.setattr(source_bound, "declaration", lambda _scopes, agent, tool:
+                        source_bound.ActionDeclaration(agent, tool, "tools:read", source_bound.Effect.READ))
     monkeypatch.setitem(flags._flags, "hook_system", False)
 
     websocket = object()
