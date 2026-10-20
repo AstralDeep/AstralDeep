@@ -120,7 +120,8 @@ def _roles(orch, websocket) -> list:
 async def _push_modal(orch, websocket, html: str):
     from shared.protocol import ChromeRender
     response = (_response_scope(orch, websocket, "safety")
-                or _response_scope(orch, websocket, "mesh"))
+                or _response_scope(orch, websocket, "mesh")
+                or _response_scope(orch, websocket, "search"))
     surface = response.surface_key if response is not None else None
     generation = response.request_generation if response is not None else None
     def current():
@@ -132,7 +133,8 @@ async def _push_modal(orch, websocket, html: str):
     if not current():
         return False
     return await orch._safe_send(websocket, ChromeRender(region="modal", html=html,
-        surface_key=surface, request_generation=generation).to_json())
+        surface_key=surface if surface != "search" else None,
+        request_generation=generation if surface != "search" else None).to_json())
 
 
 async def _verify_human_delivery(orch, websocket):
@@ -237,7 +239,7 @@ def capture_surface_request(orch, websocket, action, payload, request_generation
             and action not in {"chrome_safety_stop", "chrome_safety_resume", "chrome_safety_verify"}
             and not action.startswith("chrome_mesh_")
             and not (action == "chrome_open" and isinstance(payload, dict)
-                     and payload.get("surface") in {"safety", "mesh"})):
+                     and payload.get("surface") in {"safety", "mesh", "search"})):
         if open_surface_for(orch, websocket) in {"safety", "mesh"}:
             _note_open_surface(orch, websocket, "")
         else:
@@ -660,7 +662,7 @@ async def _handle_chrome_event(orch, websocket, action: str, payload: dict,
             owner = (_handlers().get(action) or ("", None))[0]
     response = (_OrdinarySurfaceResponse(orch, websocket, owner, request_generation)
                 if (owner or action == "chrome_close") and request_generation is not None
-                and (owner in {"safety", "mesh"} or is_native_sdui(orch, websocket)) else None)
+                and (owner in {"safety", "mesh", "search"} or is_native_sdui(orch, websocket)) else None)
     token = _ordinary_surface_response.set(response)
     try:
         if response is not None and action == "chrome_open":
