@@ -105,12 +105,22 @@ def junit_result(path: Path) -> dict:
     document = ET.parse(path).getroot()
     cases = document.findall(".//testcase")
     skipped = []
+    failed_cases = []
     for case in cases:
         skip = case.find("skipped")
         if skip is not None:
             skipped.append({
                 "test": f"{case.get('classname', '')}.{case.get('name', '')}",
                 "reason": skip.get("message", skip.text or ""),
+            })
+        failure = case.find("failure")
+        error = case.find("error")
+        if failure is not None or error is not None:
+            outcome = failure if failure is not None else error
+            failed_cases.append({
+                "test": f"{case.get('classname', '')}::{case.get('name', '')}",
+                "when": case.get("outcome") or ("error" if error is not None else "failure"),
+                "message": (outcome.get("message") or outcome.text or "")[:400],
             })
     blocked_skips = [
         item for item in skipped
@@ -125,6 +135,7 @@ def junit_result(path: Path) -> dict:
         "failures": len(document.findall(".//failure")),
         "errors": len(document.findall(".//error")),
         "skipped": skipped,
+        "failed_cases": failed_cases,
         "blocking_skips": blocked_skips,
     }
 
@@ -249,7 +260,15 @@ def run(root: Path, output: Path, *, timeout: int = SUITE_TIMEOUT_SECONDS, group
         ) else "pass"
         results.append(result)
         print(f"{name}: {result['status']}; {result.get('tests', 0)} collected; "
-              f"{len(result.get('skipped', []))} skipped", flush=True)
+              f"{len(result.get('skipped', []))} skipped; "
+              f"{result.get('failures', 0)} failures; {result.get('errors', 0)} errors",
+              flush=True)
+        for failed_case in result.get("failed_cases", [])[:40]:
+            print(f"  failed[{failed_case['when']}]: {failed_case['test']}", flush=True)
+            print(f"    {failed_case['message'].replace(chr(10), ' | ')[:400]}", flush=True)
+        if result.get("failures", 0) + result.get("errors", 0) > 40:
+            print(f"  ... {result['failures'] + result['errors'] - 40} more failing cases "
+                  f"in {junit.name}", flush=True)
     coverage_written = write_coverage_reports(root, output, environ)
     failed = not coverage_written or any(item["status"] != "pass" for item in results)
     document = {

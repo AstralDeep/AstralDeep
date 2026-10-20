@@ -266,6 +266,96 @@ def test_owner_reject_remove_rename_and_roster_reads():
                 client.rename_member("abc123", label)
 
 
+def test_member_presence_and_owner_topology_wire_contract():
+    device = mesh.MeshDevice.generate()
+    requests = []
+    member = {
+        "owner_id": "owner",
+        "member_id": "member",
+        "device_key": device.public_key,
+    }
+
+    def respond(request):
+        requests.append(request)
+        if request.url.path == "/api/mesh/nonce":
+            return httpx.Response(200, json={"nonce": "challenge.nonce"})
+        if request.url.path == "/api/mesh/session":
+            return httpx.Response(
+                200,
+                json={
+                    "token_type": "DPoP",
+                    "access_token": "proof-bound-token",
+                    "member": member,
+                },
+            )
+        if request.url.path == "/api/mesh/presence" and request.method == "POST":
+            return httpx.Response(
+                200,
+                json={"presence": {"presence": "online", "endpoint": "wss://f.example"}},
+            )
+        if request.url.path == "/api/mesh/presence":
+            return httpx.Response(
+                200,
+                json={
+                    "presence": {
+                        "presence": "offline",
+                        "reason": "unpublished",
+                        "endpoint": None,
+                    }
+                },
+            )
+        if request.url.path == "/api/mesh/topology":
+            return httpx.Response(
+                200,
+                json={"targets": [{"member_id": "member", "presence": "online"}]},
+            )
+        return httpx.Response(500)
+
+    http = httpx.Client(transport=httpx.MockTransport(respond))
+    client = mesh.MeshClient("https://host", device, client=http)
+    device.owner_id, device.member_id = member["owner_id"], member["member_id"]
+    try:
+        client.session(agent_id="reader")
+        record = client.publish_presence("wss://f.example:9000", ["archival"])
+        assert record["presence"] == "online"
+        published = requests[-1]
+        assert json.loads(published.content) == {
+            "endpoint": "wss://f.example:9000",
+            "capabilities": ["archival"],
+        }
+        assert published.headers["authorization"] == "DPoP proof-bound-token"
+        claims = json.loads(mesh._decode(published.headers["dpop"].split(".")[1]))
+        assert claims["htu"] == "https://host/api/mesh/presence"
+        assert claims["ath"] == mesh._encode(
+            mesh.hashlib.sha256(b"proof-bound-token").digest()
+        )
+        assert client.presence()["reason"] == "unpublished"
+        assert client.publish_presence("wss://f.example")["presence"] == "online"
+        assert json.loads(requests[-1].content) == {
+            "endpoint": "wss://f.example",
+            "capabilities": None,
+        }
+        for endpoint in (123, "", "x" * 256, None):
+            with pytest.raises(ValueError):
+                client.publish_presence(endpoint)
+        with pytest.raises(ValueError):
+            client.publish_presence("wss://f.example", "archival")
+        with pytest.raises(ValueError):
+            client.publish_presence("wss://f.example", ["x"] * 9)
+    finally:
+        client.close()
+
+    with httpx.Client(
+        transport=httpx.MockTransport(respond),
+        headers={"Authorization": "Bearer owner"},
+    ) as owner_http:
+        owner = mesh.MeshClient(
+            "https://host", mesh.MeshDevice.generate(), client=owner_http
+        )
+        assert owner.topology()[0]["presence"] == "online"
+        assert requests[-1].headers["authorization"] == "Bearer owner"
+
+
 def test_missing_member_session_invalid_paths_tools_and_unbound_server_response():
     client = mesh.MeshClient("https://host", mesh.MeshDevice.generate())
     try:

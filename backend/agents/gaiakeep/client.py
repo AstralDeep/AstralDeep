@@ -13,7 +13,7 @@ import re
 import tempfile
 import uuid
 from contextlib import contextmanager
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
@@ -23,7 +23,6 @@ from agents.gaiakeep.catalog import (
     ACTIONS,
     FILE_ACTIONS,
     MAX_FILE,
-    MODERN_PROTOTYPE,
     REVISION,
     relative_path,
 )
@@ -68,7 +67,10 @@ class AgentError(Exception):
 
 def native_reconciliation(value):
     if not isinstance(value, dict):
-        value = getattr(value, 'reconciliation', None) or getattr(value, 'detail', None)
+        source = value
+        value = getattr(source, 'reconciliation', None) or getattr(source, 'detail', None)
+        if not value and type(source).__name__ == 'CommitPending':
+            value = {'commit_job': getattr(source, 'job_id', None), 'vid': getattr(source, 'vid', None)}
     if not isinstance(value, dict):
         return {}
     return {key: item for key, item in value.items() if key in {'commit_job', 'job_id', 'vid'}
@@ -86,6 +88,8 @@ def publication_result(core, value):
 
 
 def observe_native_reply(transport, action, params, reply):
+    if 'seal_reply' in reply:
+        return
     status = reply.get('status')
     metadata = native_reconciliation(reply)
     if status in {16, '16'}:
@@ -152,7 +156,7 @@ def open_client(target, credentials, config=None):
     try:
         core = CoreClient(transport, config.core_address, principal=principal, key=key,
                           core_public_key=config.core_public_key, flows=2, chunk=1 << 20,
-                          window_bytes=4 << 20, redirects=2, redirect_wait=0,
+                          window_bytes=4 << 20, redirects=2, redirect_wait=0, wait_commit=False, seal='require',
                           timeouts=Timeouts(c0=RPC_TIMEOUT, c1=RPC_TIMEOUT, open=RPC_TIMEOUT,
                                             commit=RPC_TIMEOUT, commit_wait=FLOW_TIMEOUT,
                                             flow_stall=20, flow_max=FLOW_TIMEOUT,
@@ -249,9 +253,7 @@ def _certificate(core, reply, extract_id):
         raise AgentError('integrity_error', 'GaiaKeep extraction certificate failed its pinned identity check.') from exc
 
 
-def execute(core, action, params, config=None, credentials=None, sdk_loader=None):
-    if action == 'fetch':
-        raise AgentError('unsupported', 'Legacy fetch requires a separately qualified bounded receiver. Use the versioned file read tool.')
+def execute(core, action, params, config=None, sdk_loader=None):
     if action in FILE_ACTIONS:
         raise AgentError('invalid_argument', 'Use the bounded GaiaKeep file tools for encrypted transfer primitives.')
     params = prepare_params(action, params)
@@ -262,27 +264,7 @@ def execute(core, action, params, config=None, credentials=None, sdk_loader=None
     if ACTIONS[action]['legacy']:
         if config is None or not config.allow_legacy:
             raise AgentError('unsupported', 'The operator has not enabled GaiaKeep legacy actions.')
-        principal = core.signer.principal
-        if action in MODERN_PROTOTYPE:
-            identity_field = 'approver' if action == 'approvereconstruct' else 'user'
-            params[identity_field] = principal
-            status = core.transport.call(config.core_address, 'core.status', {}, RPC_TIMEOUT)
-            audience = status.get('peer_audience')
-            if not audience:
-                raise AgentError('protocol_error', 'GaiaKeep did not provide the required peer audience.')
-            signed = core.signer.sign(action, params, audience=audience)
-            reply = core.transport.call(config.core_address, action, signed, RPC_TIMEOUT)
-        else:
-            if action == 'restore':
-                root = PurePosixPath(config.restore_root)
-                if not root.is_absolute() or '..' in root.parts or str(root) == '/':
-                    raise AgentError('not_configured', 'An administrator-controlled restore root is required.')
-                params['dest_path'] = str(root / relative_path(params['dest_path']))
-                params['user'] = principal
-                token = (credentials or {}).get('GAIAKEEP_RECONSTRUCTION_TOKEN')
-                if token:
-                    params['reconstruct_token'] = token
-            reply = core.transport.call(config.core_address, action, params, RPC_TIMEOUT)
+        reply = core.transport.call(config.core_address, action, params, RPC_TIMEOUT)
         _, _, _, raise_for = (sdk_loader or load_sdk)()
         reply = raise_for(action, reply)
     else:
@@ -337,12 +319,16 @@ def failure(exc, mutation):
     name = type(exc).__name__
     if name in {'Unauthenticated', 'AuthenticationException'}:
         return 'auth_failed', 'GaiaKeep authentication failed.'
-    if name in {'IntegrityError', 'InvalidSignature'}:
+    if name == 'SealUnavailable' and not mutation:
+        return 'unavailable', 'GaiaKeep did not offer sealed requests, so nothing was sent.'
+    if name in {'IntegrityError', 'InvalidSignature', 'SealError'}:
         return 'integrity_error', 'GaiaKeep data or identity verification failed.'
     if name == 'CommitPending':
         return 'pending', 'This version is awaiting verified durable copies. Check its commit job before reading; do not republish it.'
     if name == 'StageRequired':
         return 'stage_required', STAGE_MESSAGE
+    if name == 'QuotaExceeded':
+        return 'upstream_denied', 'GaiaKeep refused the operation because the tenant quota is exhausted.'
     if name == 'CommitFailed' and type(exc).__module__ == 'gaiakeep.errors':
         return 'upstream_denied', 'GaiaKeep reported a failed commit. Inspect the retained request and native upload state before retrying.'
     if name in {'Forbidden', 'PolicyRefused', 'NotFound', 'BadRequest', 'Failed', 'StaleHead', 'RetryAfter'}:

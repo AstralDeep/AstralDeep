@@ -79,12 +79,11 @@ def _trust():
         if not 1 <= port <= 65535:
             raise ValueError
         config = GatewayConfig(address, allowed, name, ca, key, '', port,
-                               os.getenv('GAIAKEEP_ALLOW_LEGACY', '').lower() == 'true',
-                               os.getenv('GAIAKEEP_RESTORE_ROOT', ''))
+                               os.getenv('GAIAKEEP_ALLOW_LEGACY', '').lower() == 'true')
         config.tls_context()
         return config, {'core_address': address, 'allowed_peers': sorted(allowed), 'tls_name': name,
                         'ca_pem': pem, 'core_public_key': key, 'port': port,
-                        'allow_legacy': config.allow_legacy, 'restore_root': config.restore_root}
+                        'allow_legacy': config.allow_legacy}
     except (KeyError, ValueError, OSError, UnicodeError) as exc:
         raise AgentError('not_configured', 'Configure GaiaKeep gateway certificate, hostname and core identity.') from exc
 

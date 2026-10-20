@@ -131,6 +131,60 @@ _WORK_TOOL_SPECS: dict[str, dict[str, Any]] = {
                          "properties": {"expected_revision": {"type": "integer", "minimum": 1}},
                          "additionalProperties": False},
     },
+    "astral_subscribe_operation_completion": {
+        "scope": "operations.control",
+        "description": "Subscribe one owner operation (target) to wake when another owner "
+                       "operation (source) finishes; durable across completion and restart. "
+                       "The target must be owner-interactive work and the source must not "
+                       "be terminal; a repeat with the same submission_id replays unchanged.",
+        "readOnly": False,
+        "input_schema": {"type": "object",
+                         "required": ["source_operation_id", "target_operation_id",
+                                      "submission_id", "expected_revision"],
+                         "properties": {
+                             "source_operation_id": {
+                                 "description": "The operation whose completion wakes the target.",
+                                 "type": "string"},
+                             "target_operation_id": _OPERATION_ID,
+                             "submission_id": {"type": "string",
+                                               "description": "A fresh UUID4 per attempt."},
+                             "expected_revision": {"type": "integer", "minimum": 1},
+                         },
+                         "additionalProperties": False},
+    },
+    "astral_list_operation_completion_subscriptions": {
+        "scope": "operations.read",
+        "description": "List the credential owner's pending completion subscriptions with "
+                       "each target's disposition and its source's current state.",
+        "readOnly": True,
+        "input_schema": {"type": "object",
+                         "properties": {
+                             "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                             "after_id": {"type": ["string", "null"]},
+                         },
+                         "additionalProperties": False},
+    },
+    "astral_cancel_operation_completion_subscription": {
+        "scope": "operations.control",
+        "description": "Withdraw one pending completion subscription; the target operation's "
+                       "wait is released and it returns to the dispatch queue immediately. "
+                       "Cancelling an already-fired or released subscription reports "
+                       "work_not_found.",
+        "readOnly": False,
+        "input_schema": {"type": "object",
+                         "required": ["source_operation_id", "target_operation_id",
+                                      "submission_id", "expected_revision"],
+                         "properties": {
+                             "source_operation_id": {
+                                 "description": "The operation whose completion was subscribed.",
+                                 "type": "string"},
+                             "target_operation_id": _OPERATION_ID,
+                             "submission_id": {"type": "string",
+                                               "description": "A fresh UUID4 per attempt."},
+                             "expected_revision": {"type": "integer", "minimum": 1},
+                         },
+                         "additionalProperties": False},
+    },
 }
 
 

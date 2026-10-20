@@ -33,6 +33,10 @@ _COMPUTER_USE_AGENT_DIRS = (
     "computer_use",
 )
 
+_TERMINAL_SHELL_AGENT_DIRS = (
+    "terminal_shell",
+)
+
 _FHIR_AGENT_DIRS = (
     "fhir",
 )
@@ -49,9 +53,11 @@ FIRST_PARTY_PUBLIC_AGENT_IDS = (
     "web-research-1",
     "remote-compute-1",
     "computer-use-1",
+    "terminal-shell-1",
     "gaiakeep-1",
     "fhir-1",
     "evidence-1",
+    "cresco-1",
 )
 
 
@@ -154,10 +160,30 @@ async def register_built_ins(orch) -> List[str]:
     except Exception:  # noqa: BLE001
         logger.debug("Feature 076 flag check failed (non-fatal)", exc_info=True)
     try:
+        from shared.feature_flags import flags
+        if flags.is_enabled("terminal_shell"):
+            root = _agents_root()
+            for name in _TERMINAL_SHELL_AGENT_DIRS:
+                d = os.path.join(root, name)
+                if (name not in dirs and os.path.isdir(d)
+                        and os.path.exists(os.path.join(d, f"{name}_agent.py"))):
+                    dirs.append(name)
+    except Exception:  # noqa: BLE001
+        logger.debug("Terminal-shell flag check failed (non-fatal)", exc_info=True)
+    try:
         if flags.is_enabled("gaiakeep") and flags.is_enabled("cresco"):
             dirs.append("gaiakeep")
     except Exception:
         logger.debug("GaiaKeep flag check failed; agent remains disabled", exc_info=True)
+    try:
+        from shared.feature_flags import flags
+        if flags.is_enabled("cresco"):
+            root = _agents_root()
+            d = os.path.join(root, "cresco")
+            if "cresco" not in dirs and os.path.isdir(d) and os.path.exists(os.path.join(d, "cresco_agent.py")):
+                dirs.append("cresco")
+    except Exception:  # noqa: BLE001
+        logger.debug("Cresco flag check failed; agent remains disabled", exc_info=True)
     try:
         from shared.feature_flags import flags
         if flags.is_enabled("fhir"):
@@ -197,6 +223,10 @@ async def register_built_ins(orch) -> List[str]:
                 RegisterAgent(agent_card=agent.card, api_key=os.getenv("AGENT_API_KEY") or None),
             )
             orch.local_agents[agent.card.agent_id] = agent
+            if dir_name == "terminal_shell":
+                from orchestrator.terminal_host_review import review_registered_terminal
+
+                review_registered_terminal(orch)
             registered.append(agent.card.agent_id)
         except Exception:  # noqa: BLE001
             logger.exception("Feature 040: failed to load built-in agent '%s' in-process", dir_name)

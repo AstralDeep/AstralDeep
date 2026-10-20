@@ -35,6 +35,7 @@ class FeatureFlags:
             "skill_packs": self._read("FF_SKILL_PACKS", True),
             "slash_commands": self._read("FF_SLASH_COMMANDS", True),
             "user_skills": self._read("FF_USER_SKILLS", True),
+            "skill_import": self._read("FF_SKILL_IMPORT", False),
             "recursive_delegation": self._read("FF_RECURSIVE_DELEGATION", False),
             "typesafe_routing": self._read("FF_TYPESAFE_ROUTING", True),
             "first_turn_contract": self._read("FF_FIRST_TURN_CONTRACT", True),
@@ -51,6 +52,7 @@ class FeatureFlags:
             "fhir": self._read("FF_FHIR", False),
             "cresco": self._read("FF_CRESCO", False),
             "computer_use": self._read("FF_COMPUTER_USE", False),
+            "terminal_shell": self._read("FF_TERMINAL_SHELL", False),
             "mcp_server": self._read("FF_MCP_SERVER", False),
             "a2a_server": self._read("FF_A2A_SERVER", False),
             "conversational_voice": self._read(
@@ -60,6 +62,7 @@ class FeatureFlags:
             "kiosk_login": self._read("FF_KIOSK_LOGIN", False),
             "rail_caption_variant": self._read("FF_RAIL_CAPTION_VARIANT", False),
             "framework_credentials": self._read("FF_FRAMEWORK_CREDENTIALS", False),
+            "harness_profile_selection": self._read("FF_HARNESS_PROFILE_SELECTION", False),
         }
 
     @staticmethod

@@ -1,5 +1,5 @@
 {
-  "revision": "9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9",
+  "revision": "fbd957521b4b3b828371241465d3ba5438dbdad2",
   "actions": [
     {
       "action": "core.whoami",
@@ -8,7 +8,7 @@
       "system": false,
       "parameters": [],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L42"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L34"
     },
     {
       "action": "core.tenant",
@@ -19,27 +19,32 @@
         {
           "name": "tenant_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the tenant's id"
         },
         {
           "name": "legal_name",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the tenant's legal name (default: tenant_id)"
         },
         {
           "name": "sealed",
           "type": "boolean",
-          "required": false
+          "required": false,
+          "description": "nothing crosses the tenant boundary, in or out; no raw block hash leaves it (default false)"
         },
         {
           "name": "withdrawal_sensitive",
           "type": "boolean",
-          "required": false
+          "required": false,
+          "description": "consent-governed data: its collections may use only NONE or COLLECTION dedup (default false)"
         },
         {
           "name": "sealed_allow_public_reference",
           "type": "boolean",
-          "required": false
+          "required": false,
+          "description": "a sealed tenant may read GLOBAL data by reference, not only by copying it in (default false)"
         },
         {
           "name": "global_dedup_allowed",
@@ -49,7 +54,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L44"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L36"
     },
     {
       "action": "core.tenantflag",
@@ -60,7 +65,8 @@
         {
           "name": "tenant_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the tenant's id"
         },
         {
           "name": "flag",
@@ -71,11 +77,12 @@
         {
           "name": "value",
           "type": "boolean",
-          "required": true
+          "required": true,
+          "description": "the flag's new value"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L51"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L44"
     },
     {
       "action": "core.domain",
@@ -86,7 +93,8 @@
         {
           "name": "domain_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the dedup domain's id"
         },
         {
           "name": "mode",
@@ -109,16 +117,18 @@
         {
           "name": "hash",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the block hash: SHA384 (default) | SHA256"
         },
         {
           "name": "chunker",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the chunker spec, e.g. fmt:dicom@1,nifti@1,tiff@1+cdc:1048576:262144:4194304 (absent: the policy's default for the mode)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L55"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L49"
     },
     {
       "action": "core.collection",
@@ -129,12 +139,14 @@
         {
           "name": "collection_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the collection's id"
         },
         {
           "name": "tenant_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the tenant's id"
         },
         {
           "name": "domain_id",
@@ -150,15 +162,21 @@
         },
         {
           "name": "replication",
-          "type": "int",
+          "type": "integer",
           "required": false,
-          "description": "default 3"
+          "description": "full copies: replication=R is redundancy replicas:R (1 is single); absent with no redundancy, core_default_redundancy applies"
+        },
+        {
+          "name": "redundancy",
+          "type": "string",
+          "required": false,
+          "description": "the durability mode: single | replicas:R | ec:k+m (k 2..8, m 1..4; ec:2+1 is RS(2,1) across three failure domains). Default core_default_redundancy (ec:2+1; replicas:3 while core_api_deltas is off). An ec fabric needs k+m failure domains: with fewer, its writes are refused (never downgraded). Blocks under core_ec_min_block_bytes keep m+1 full copies (the same f)"
         },
         {
           "name": "durability",
           "type": "string",
           "required": false,
-          "description": "durable (default, replication >= 2) | cache (replication 1 only in retention class scratch or cache)"
+          "description": "durable (default, must survive a site loss: replication >= 2, f >= 1) | cache (replication 1 only in retention class scratch or cache)"
         },
         {
           "name": "retention",
@@ -168,7 +186,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L63"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L57"
     },
     {
       "action": "core.profile",
@@ -185,12 +203,14 @@
         {
           "name": "name",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the policy profile's name (op=create, op=get)"
         },
         {
           "name": "tenant_id",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the tenant's id"
         },
         {
           "name": "collection_id",
@@ -212,8 +232,15 @@
         },
         {
           "name": "replication",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "op=create: copies (default 3)"
+        },
+        {
+          "name": "redundancy",
+          "type": "string",
+          "required": false,
+          "description": "op=create: single | replicas:R | ec:k+m (instead of replication; an ec profile records m+1 as its replication)"
         },
         {
           "name": "durability",
@@ -230,18 +257,20 @@
         {
           "name": "global_eligible",
           "type": "boolean",
-          "required": false
+          "required": false,
+          "description": "op=create: collections under this profile may use a GLOBAL (public data) domain"
         },
         {
           "name": "description",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "op=create: what the profile is for (shown by op=list and op=get)"
         }
       ],
       "compressed_returns": [
         "profiles"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L72"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L67"
     },
     {
       "action": "core.grant",
@@ -252,12 +281,14 @@
         {
           "name": "from_domain",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the dedup domain whose blocks the grant shares"
         },
         {
           "name": "to_collection",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the collection that may reference them"
         },
         {
           "name": "on_withdrawal",
@@ -267,7 +298,7 @@
         },
         {
           "name": "expires",
-          "type": "long",
+          "type": "integer",
           "required": false,
           "description": "epoch ms, 0 = never"
         },
@@ -279,7 +310,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L80"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L82"
     },
     {
       "action": "core.revoke",
@@ -290,11 +321,12 @@
         {
           "name": "grant_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the grant's id (core.grant's)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L87"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L89"
     },
     {
       "action": "core.principal",
@@ -305,7 +337,8 @@
         {
           "name": "principal_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the principal's id"
         },
         {
           "name": "op",
@@ -333,7 +366,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L89"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L92"
     },
     {
       "action": "core.bind",
@@ -344,16 +377,18 @@
         {
           "name": "principal_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the principal's id"
         },
         {
           "name": "role",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a role: reader@<tenant>[/<collection>], writer@<tenant>[/<collection>], tenant-admin@<tenant>, auditor, custodian, system-admin, ..."
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L96"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L99"
     },
     {
       "action": "core.unbind",
@@ -364,16 +399,18 @@
         {
           "name": "principal_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the principal's id"
         },
         {
           "name": "role",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a role: reader@<tenant>[/<collection>], writer@<tenant>[/<collection>], tenant-admin@<tenant>, auditor, custodian, system-admin, ..."
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L99"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L103"
     },
     {
       "action": "core.put",
@@ -384,22 +421,26 @@
         {
           "name": "collection_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the collection's id"
         },
         {
           "name": "upload_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the upload's id, chosen by the client at its first core.put"
         },
         {
           "name": "path",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a file's path in the version"
         },
         {
           "name": "size",
-          "type": "long",
-          "required": true
+          "type": "integer",
+          "required": true,
+          "description": "the file's size in bytes (layout=blocks: the bytes of the missing blocks this upload carries)"
         },
         {
           "name": "file_nonce",
@@ -416,52 +457,62 @@
         {
           "name": "xfer",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the transfer id the client chose (16 characters); it names the GKT flow's frames"
         },
         {
           "name": "up_stream",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the dataplane stream the client sends frames on (client to core)"
         },
         {
           "name": "down_stream",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the dataplane stream the core sends frames on (core to client)"
         },
         {
           "name": "chunk",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "GKT chunk size in bytes (absent: the core's recommended chunk)"
         },
         {
           "name": "part_offset",
-          "type": "long",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "the part's first byte within the file (striped parts: 0)"
         },
         {
           "name": "part_length",
-          "type": "long",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "the bytes this part carries"
         },
         {
           "name": "part",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "this part's number, 0..parts-1"
         },
         {
           "name": "parts",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "how many parts the file is sent in"
         },
         {
           "name": "first_chunk",
-          "type": "long",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "the file's first chunk this part carries (striped: = part)"
         },
         {
           "name": "stride",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "chunks between this part's successive chunks (striped: = parts)"
         },
         {
           "name": "ingest",
@@ -531,7 +582,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L102"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L107"
     },
     {
       "action": "core.putstatus",
@@ -542,13 +593,14 @@
         {
           "name": "upload_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the upload's id, chosen by the client at its first core.put"
         }
       ],
       "compressed_returns": [
         "ranges"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L131"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L136"
     },
     {
       "action": "core.commit",
@@ -559,7 +611,8 @@
         {
           "name": "upload_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the upload's id, chosen by the client at its first core.put"
         },
         {
           "name": "request_id",
@@ -581,7 +634,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L137"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L142"
     },
     {
       "action": "core.discard",
@@ -592,11 +645,12 @@
         {
           "name": "upload_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the upload's id, chosen by the client at its first core.put"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L143"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L148"
     },
     {
       "action": "core.publish",
@@ -613,27 +667,32 @@
         {
           "name": "collection_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the collection's id"
         },
         {
           "name": "upload_id",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the upload's id, chosen by the client at its first core.put"
         },
         {
           "name": "branch",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "branch name (default main)"
         },
         {
           "name": "expected_head",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "commit only if the branch head is this vid (compare-and-set; StaleHead otherwise); absent: a branch's first version"
         },
         {
           "name": "base_vid",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "build the new version on this version instead of the branch head"
         },
         {
           "name": "deletes",
@@ -644,7 +703,8 @@
         {
           "name": "streaming",
           "type": "boolean",
-          "required": false
+          "required": false,
+          "description": "true: publish while the parts are still arriving (the publish waits for them to verify)"
         },
         {
           "name": "file_macs",
@@ -666,7 +726,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L145"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L151"
     },
     {
       "action": "core.compose",
@@ -688,7 +748,7 @@
         },
         {
           "name": "wait_ms",
-          "type": "long",
+          "type": "integer",
           "required": false,
           "description": "wait up to min(wait_ms, core_sync_rpc_max_ms - 2 s) for a small job to end inline"
         },
@@ -701,7 +761,8 @@
         {
           "name": "collection_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the collection's id"
         },
         {
           "name": "sources",
@@ -712,16 +773,18 @@
         {
           "name": "branch",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "branch name (default main)"
         },
         {
           "name": "expected_head",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "commit only if the branch head is this vid (compare-and-set; StaleHead otherwise); absent: a branch's first version"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L159"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L165"
     },
     {
       "action": "core.branch",
@@ -738,16 +801,18 @@
         {
           "name": "vid",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a version id (core.head, core.versions, or a commit or publish reply)"
         },
         {
           "name": "new_branch",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the new branch's name (must not exist yet)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L170"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L176"
     },
     {
       "action": "core.head",
@@ -758,16 +823,18 @@
         {
           "name": "collection_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the collection's id"
         },
         {
           "name": "branch",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "branch name (default main)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L175"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L181"
     },
     {
       "action": "core.chunker",
@@ -778,11 +845,12 @@
         {
           "name": "collection_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the collection's id"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L179"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L185"
     },
     {
       "action": "core.haveopen",
@@ -793,27 +861,32 @@
         {
           "name": "collection_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the collection's id"
         },
         {
           "name": "upload_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the upload's id, chosen by the client at its first core.put"
         },
         {
           "name": "path",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a file's path in the version"
         },
         {
           "name": "size",
-          "type": "long",
-          "required": true
+          "type": "integer",
+          "required": true,
+          "description": "the file's size in bytes"
         },
         {
           "name": "pages",
-          "type": "int",
-          "required": true
+          "type": "integer",
+          "required": true,
+          "description": "how many pages the manifest is sent in (at most have_page_max blocks each; core.chunker names it)"
         },
         {
           "name": "have_pub",
@@ -824,7 +897,8 @@
         {
           "name": "against_vid",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "FILE scope: a version the caller may read; the answer covers only the blocks of its hint_paths"
         },
         {
           "name": "hint_paths",
@@ -846,7 +920,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L185"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L191"
     },
     {
       "action": "core.have",
@@ -857,12 +931,14 @@
         {
           "name": "have_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the have-check's id (core.haveopen's)"
         },
         {
           "name": "page",
-          "type": "long",
-          "required": true
+          "type": "integer",
+          "required": true,
+          "description": "the page's number: 0, 1, ... in order (an identical resend of the last page gets the same answer)"
         },
         {
           "name": "blocks_enc",
@@ -872,7 +948,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L191"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L197"
     },
     {
       "action": "core.extract",
@@ -906,8 +982,9 @@
         },
         {
           "name": "ttl_ms",
-          "type": "long",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "pin lifetime in ms, within the class maximum (absent: the class default)"
         },
         {
           "name": "pin_mode",
@@ -917,13 +994,15 @@
         },
         {
           "name": "max_amplification",
-          "type": "string",
-          "required": false
+          "type": "number",
+          "required": false,
+          "description": "refuse a pin that keeps more than min(4, this) times the selected bytes alive (a number; default 4)"
         },
         {
           "name": "dry_run",
           "type": "boolean",
-          "required": false
+          "required": false,
+          "description": "true: plan and report only; nothing is journaled or changed"
         },
         {
           "name": "cut_id",
@@ -945,17 +1024,19 @@
         },
         {
           "name": "wait_ms",
-          "type": "long",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "wait up to min(wait_ms, core_sync_rpc_max_ms - 2 s) for a small job to end inline; absent: answer accepted at once"
         },
         {
           "name": "events",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "a dataplane stream for the job's signed events (GK-CJSON-1, ECDSA P-384 by core_public_key); absent: poll core.job"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L195"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L201"
     },
     {
       "action": "core.extractstatus",
@@ -966,11 +1047,12 @@
         {
           "name": "extract_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the extract's id (core.extract's result)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L207"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L214"
     },
     {
       "action": "core.extractlist",
@@ -981,16 +1063,18 @@
         {
           "name": "extract_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the extract's id (core.extract's result)"
         },
         {
           "name": "after",
-          "type": "long",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "the cursor: the previous page's next (absent: the first page)"
         },
         {
           "name": "limit",
-          "type": "int",
+          "type": "integer",
           "required": false,
           "description": "1..10000"
         }
@@ -998,7 +1082,7 @@
       "compressed_returns": [
         "leaves"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L212"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L221"
     },
     {
       "action": "core.extractproof",
@@ -1009,16 +1093,18 @@
         {
           "name": "extract_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the extract's id (core.extract's result)"
         },
         {
           "name": "leaf",
-          "type": "long",
-          "required": true
+          "type": "integer",
+          "required": true,
+          "description": "the leaf index (core.extractlist)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L215"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L224"
     },
     {
       "action": "core.extractextend",
@@ -1029,17 +1115,18 @@
         {
           "name": "extract_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the extract's id (core.extract's result)"
         },
         {
           "name": "ttl_ms",
-          "type": "long",
+          "type": "integer",
           "required": true,
           "description": "0: never expires"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L218"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L237"
     },
     {
       "action": "core.extractrelease",
@@ -1050,11 +1137,12 @@
         {
           "name": "extract_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the extract's id (core.extract's result)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L221"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L240"
     },
     {
       "action": "core.cut",
@@ -1070,18 +1158,19 @@
         },
         {
           "name": "ttl_ms",
-          "type": "long",
+          "type": "integer",
           "required": false,
           "description": "default 1 d, at most core_cut_max_ttl_ms"
         },
         {
           "name": "note",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "a note recorded with the cut (at most 512 UTF-8 bytes)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L224"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L243"
     },
     {
       "action": "core.cutinfo",
@@ -1092,11 +1181,12 @@
         {
           "name": "cut_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a cut's id (core.cut's)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L227"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L246"
     },
     {
       "action": "core.cutrelease",
@@ -1107,11 +1197,12 @@
         {
           "name": "cut_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a cut's id (core.cut's)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L230"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L249"
     },
     {
       "action": "core.transform",
@@ -1122,17 +1213,20 @@
         {
           "name": "image_vid",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the version holding the transform's image"
         },
         {
           "name": "image_path",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the image's path in image_vid"
         },
         {
           "name": "entry",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the image's entry point"
         },
         {
           "name": "determinism",
@@ -1161,31 +1255,36 @@
         {
           "name": "input_contract",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "what the transform accepts: a JSON object, at most 64 KiB"
         },
         {
           "name": "params_schema",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the schema of the transform's params: a JSON object, at most 64 KiB"
         },
         {
           "name": "statistical",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "determinism=STATISTICAL: the statistical-equivalence claim (recorded)"
         },
         {
           "name": "certification",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "NONE (certified de-identification is not built; anything else is refused)"
         },
         {
           "name": "attestation",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "NONE (attested loci are not built; anything else is refused)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L233"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L252"
     },
     {
       "action": "core.derive",
@@ -1202,36 +1301,42 @@
         {
           "name": "transform_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a registered transform's id (core.transform's)"
         },
         {
           "name": "params",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the transform's parameters: a JSON object, at most 64 KiB"
         },
         {
           "name": "codec",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the codec of the derived output (recorded)"
         },
         {
           "name": "env_class",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the class of environment the derivation runs in (recorded)"
         },
         {
           "name": "declared_shape",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the declared shape of the derived output (recorded)"
         },
         {
           "name": "purpose_id",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the purpose this derivation serves (recorded with its author)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L239"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L258"
     },
     {
       "action": "core.entail",
@@ -1242,11 +1347,12 @@
         {
           "name": "derivation_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a derivation's id (core.derive's)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L243"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L262"
     },
     {
       "action": "core.built",
@@ -1257,12 +1363,14 @@
         {
           "name": "derivation_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a derivation's id (core.derive's)"
         },
         {
           "name": "output_vid",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the version the build wrote its outputs to (the caller must be a writer on its collection)"
         },
         {
           "name": "actuals",
@@ -1273,16 +1381,18 @@
         {
           "name": "output_paths",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the output paths in output_vid (recorded as given)"
         },
         {
           "name": "receipt_id",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the runner's receipt id for this build (recorded)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L247"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L266"
     },
     {
       "action": "core.derivations",
@@ -1293,16 +1403,18 @@
         {
           "name": "tenant_id",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the tenant's id"
         },
         {
           "name": "after",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the cursor: the previous page's next (absent: the first page)"
         },
         {
           "name": "limit",
-          "type": "int",
+          "type": "integer",
           "required": false,
           "description": "1..1000, default 100"
         }
@@ -1310,7 +1422,7 @@
       "compressed_returns": [
         "derivations"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L251"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L270"
     },
     {
       "action": "core.versions",
@@ -1321,12 +1433,14 @@
         {
           "name": "collection_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the collection's id"
         },
         {
           "name": "branch",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "branch name (default main)"
         },
         {
           "name": "after",
@@ -1336,7 +1450,7 @@
         },
         {
           "name": "limit",
-          "type": "int",
+          "type": "integer",
           "required": false,
           "description": "1..1000, default 100"
         },
@@ -1356,7 +1470,7 @@
       "compressed_returns": [
         "versions"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L254"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L273"
     },
     {
       "action": "core.version",
@@ -1367,11 +1481,12 @@
         {
           "name": "vid",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a version id (core.head, core.versions, or a commit or publish reply)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L259"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L278"
     },
     {
       "action": "core.branches",
@@ -1382,7 +1497,8 @@
         {
           "name": "collection_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the collection's id"
         },
         {
           "name": "after",
@@ -1392,7 +1508,7 @@
         },
         {
           "name": "limit",
-          "type": "int",
+          "type": "integer",
           "required": false,
           "description": "1..1000, default 100"
         }
@@ -1400,7 +1516,7 @@
       "compressed_returns": [
         "branches"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L264"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L283"
     },
     {
       "action": "core.diff",
@@ -1411,12 +1527,14 @@
         {
           "name": "a_vid",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the older version"
         },
         {
           "name": "b_vid",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the newer version"
         },
         {
           "name": "after",
@@ -1426,7 +1544,7 @@
         },
         {
           "name": "limit",
-          "type": "int",
+          "type": "integer",
           "required": false,
           "description": "1..10000, default 1000; at most 1000 with detail=blocks"
         },
@@ -1439,13 +1557,14 @@
         {
           "name": "prefix",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "only paths starting with this"
         }
       ],
       "compressed_returns": [
         "changes"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L286"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L305"
     },
     {
       "action": "core.list",
@@ -1456,17 +1575,20 @@
         {
           "name": "vid",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a version id (core.head, core.versions, or a commit or publish reply)"
         },
         {
           "name": "after",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the cursor: the previous page's next (absent: the first page)"
         },
         {
           "name": "limit",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "page size"
         },
         {
           "name": "dev_hash",
@@ -1478,7 +1600,7 @@
       "compressed_returns": [
         "files"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L292"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L311"
     },
     {
       "action": "core.get",
@@ -1489,51 +1611,60 @@
         {
           "name": "vid",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a version id (core.head, core.versions, or a commit or publish reply)"
         },
         {
           "name": "path",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a file's path in the version"
         },
         {
           "name": "xfer",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the transfer id the client chose (16 characters); it names the GKT flow's frames"
         },
         {
           "name": "up_stream",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the dataplane stream the client sends frames on (client to core)"
         },
         {
           "name": "down_stream",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the dataplane stream the core sends frames on (core to client)"
         },
         {
           "name": "offset",
-          "type": "long",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "the range's first byte (default 0)"
         },
         {
           "name": "length",
-          "type": "long",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "the range's length in bytes (absent: to the end of the file; 0: the file's size and digest only)"
         },
         {
           "name": "chunk",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "GKT chunk size in bytes (absent: the core's recommended chunk)"
         },
         {
           "name": "window",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "the window the client asks for, in chunks (clamped to the core's flow budget)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L296"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L315"
     },
     {
       "action": "core.withdraw",
@@ -1549,7 +1680,7 @@
         },
         {
           "name": "wait_ms",
-          "type": "long",
+          "type": "integer",
           "required": false,
           "description": "wait up to min(wait_ms, core_sync_rpc_max_ms - 2 s) for a small job to end inline"
         },
@@ -1562,21 +1693,24 @@
         {
           "name": "collection_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the collection's id"
         },
         {
           "name": "purge",
           "type": "boolean",
-          "required": false
+          "required": false,
+          "description": "true: propose a FORGET of the whole collection instead (a lifecycle record, lc_id)"
         },
         {
           "name": "reason",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "why the collection is withdrawn (recorded; with purge, the FORGET's reason)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L309"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L328"
     },
     {
       "action": "core.forget",
@@ -1587,7 +1721,8 @@
         {
           "name": "tenant_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the tenant's id"
         },
         {
           "name": "selectors",
@@ -1633,7 +1768,7 @@
         },
         {
           "name": "wait_ms",
-          "type": "long",
+          "type": "integer",
           "required": false,
           "description": "wait up to min(wait_ms, core_sync_rpc_max_ms - 2 s) for the record to end"
         },
@@ -1647,7 +1782,7 @@
       "compressed_returns": [
         "lifecycle"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L317"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L336"
     },
     {
       "action": "core.prune",
@@ -1658,22 +1793,26 @@
         {
           "name": "collection_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the collection's id"
         },
         {
           "name": "branch",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "branch name (default main)"
         },
         {
           "name": "keep_last",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "keep at least the newest N versions of the branch"
         },
         {
           "name": "before_ms",
-          "type": "long",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "prune only versions committed before this time (epoch ms)"
         },
         {
           "name": "vids",
@@ -1684,26 +1823,30 @@
         {
           "name": "dry_run",
           "type": "boolean",
-          "required": false
+          "required": false,
+          "description": "true: plan and report only; nothing is journaled or changed"
         },
         {
           "name": "request_id",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "idempotency key, 16-64 of [A-Za-z0-9_-]: a retry with the same key answers the same job or record and never runs it twice"
         },
         {
           "name": "wait_ms",
-          "type": "long",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "wait up to min(wait_ms, core_sync_rpc_max_ms - 2 s) for a small job to end inline; absent: answer accepted at once"
         },
         {
           "name": "events",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "a dataplane stream for the job's signed events (GK-CJSON-1, ECDSA P-384 by core_public_key); absent: poll core.job"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L331"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L350"
     },
     {
       "action": "core.destroykey",
@@ -1720,7 +1863,8 @@
         {
           "name": "id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "scope DOMAIN: the domain's id; scope TENANT: the tenant's id"
         },
         {
           "name": "reason",
@@ -1743,21 +1887,24 @@
         {
           "name": "request_id",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "idempotency key, 16-64 of [A-Za-z0-9_-]: a retry with the same key answers the same job or record and never runs it twice"
         },
         {
           "name": "wait_ms",
-          "type": "long",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "wait up to min(wait_ms, core_sync_rpc_max_ms - 2 s) for a small job to end inline; absent: answer accepted at once"
         },
         {
           "name": "events",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "a dataplane stream for the job's signed events (GK-CJSON-1, ECDSA P-384 by core_public_key); absent: poll core.job"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L337"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L356"
     },
     {
       "action": "core.legalorder",
@@ -1768,7 +1915,8 @@
         {
           "name": "tenant_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the tenant's id"
         },
         {
           "name": "order_ref",
@@ -1786,7 +1934,7 @@
           "name": "action",
           "type": "string",
           "required": false,
-          "description": "erase (default) | shorten"
+          "description": "erase (default) | shorten | residue"
         },
         {
           "name": "selectors",
@@ -1844,7 +1992,7 @@
         },
         {
           "name": "wait_ms",
-          "type": "long",
+          "type": "integer",
           "required": false,
           "description": "wait up to min(wait_ms, core_sync_rpc_max_ms - 2 s) for the record to end"
         },
@@ -1858,7 +2006,7 @@
       "compressed_returns": [
         "lifecycle"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L344"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L363"
     },
     {
       "action": "core.approve",
@@ -1869,18 +2017,26 @@
         {
           "name": "lc_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a lifecycle record id (lc-...)"
         },
         {
           "name": "params_digest",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the proposal's params_digest as core.lcstatus shows it: the approval is for exactly that proposal"
+        },
+        {
+          "name": "kind",
+          "type": "string",
+          "required": false,
+          "description": "the record's kind as core.lcstatus shows it (refused when it names another); a LEGAL_ORDER approval that signs kind=LEGAL_ORDER is kept as evidence storage nodes verify before lifting their own floors (OUT-94)"
         }
       ],
       "compressed_returns": [
         "lifecycle"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L362"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L381"
     },
     {
       "action": "core.lcstatus",
@@ -1891,13 +2047,14 @@
         {
           "name": "lc_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a lifecycle record id (lc-...)"
         }
       ],
       "compressed_returns": [
         "lifecycle"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L365"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L385"
     },
     {
       "action": "core.lclist",
@@ -1908,13 +2065,26 @@
         {
           "name": "tenant_id",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the tenant's id"
+        },
+        {
+          "name": "after",
+          "type": "string",
+          "required": false,
+          "description": "the cursor: the previous page's next (absent: the first page)"
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "required": false,
+          "description": "page size, 1..1000 (default 200)"
         }
       ],
       "compressed_returns": [
         "records"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L368"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L388"
     },
     {
       "action": "core.retention",
@@ -1931,7 +2101,8 @@
         {
           "name": "class",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the retention class's name (op=define, get, assign, override)"
         },
         {
           "name": "after",
@@ -1941,34 +2112,39 @@
         },
         {
           "name": "limit",
-          "type": "int",
+          "type": "integer",
           "required": false,
           "description": "op=list: 1..1000, default 200"
         },
         {
           "name": "collection_id",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the collection's id"
         },
         {
           "name": "floor_ms",
-          "type": "long",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "op=define: minimum time a version is kept (ms); classes are only ever strengthened"
         },
         {
           "name": "ttl_ms",
-          "type": "long",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "op=define: how long a version is kept before it may expire (ms; 0: no expiry)"
         },
         {
           "name": "min_versions",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "op=define: versions of a branch always kept, however old"
         },
         {
           "name": "legal_hold",
           "type": "boolean",
-          "required": false
+          "required": false,
+          "description": "op=define: true holds everything in the class (nothing is deleted while set)"
         },
         {
           "name": "forget_conflict",
@@ -1978,20 +2154,27 @@
         },
         {
           "name": "ceiling_ms",
-          "type": "long",
+          "type": "integer",
           "required": false,
           "description": "D10 maximum retention (\"must delete by\"), 0 = none; must exceed floor_ms"
         },
         {
+          "name": "worm",
+          "type": "boolean",
+          "required": false,
+          "description": "op=define (OUT-92): true makes a new class WORM, never removed: unbounded floor, no ceiling or TTL; its collections refuse every deletion but a legal order's crypto-shred"
+        },
+        {
           "name": "request_id",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "idempotency key, 16-64 of [A-Za-z0-9_-]: a retry with the same key answers the same job or record and never runs it twice"
         }
       ],
       "compressed_returns": [
         "classes"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L371"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L391"
     },
     {
       "action": "core.lcpolicy",
@@ -2002,7 +2185,8 @@
         {
           "name": "scope",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "global (system-admin) or a tenant's id (tenant-admin@<tenant>)"
         },
         {
           "name": "policy",
@@ -2013,11 +2197,12 @@
         {
           "name": "request_id",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "idempotency key, 16-64 of [A-Za-z0-9_-]: a retry with the same key answers the same job or record and never runs it twice"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L383"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L406"
     },
     {
       "action": "core.vpin",
@@ -2028,27 +2213,30 @@
         {
           "name": "vid",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a version id (core.head, core.versions, or a commit or publish reply)"
         },
         {
           "name": "pin_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the pin's id: one version may carry several pins"
         },
         {
           "name": "reason",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "why the version is pinned (recorded)"
         },
         {
           "name": "until_ms",
-          "type": "long",
+          "type": "integer",
           "required": false,
           "description": "0 = forever"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L386"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L409"
     },
     {
       "action": "core.vunpin",
@@ -2059,16 +2247,18 @@
         {
           "name": "vid",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a version id (core.head, core.versions, or a commit or publish reply)"
         },
         {
           "name": "pin_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the pin's id: one version may carry several pins"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L389"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L413"
     },
     {
       "action": "core.metamigrate",
@@ -2077,7 +2267,7 @@
       "system": true,
       "parameters": [],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L392"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L417"
     },
     {
       "action": "core.pathtag",
@@ -2088,16 +2278,18 @@
         {
           "name": "collection_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the collection's id"
         },
         {
           "name": "path",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a file's path in the version"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L394"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L419"
     },
     {
       "action": "core.escrowattest",
@@ -2108,7 +2300,8 @@
         {
           "name": "lc_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a lifecycle record id (lc-...)"
         },
         {
           "name": "statement_digest",
@@ -2118,7 +2311,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L397"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L428"
     },
     {
       "action": "core.peerretire",
@@ -2129,16 +2322,18 @@
         {
           "name": "peer_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the core peer to retire (region:agent:plugin)"
         },
         {
           "name": "attestation_digest",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the digest of the operator's written attestation (recorded in the journal and the audit)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L399"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L431"
     },
     {
       "action": "core.sitesanitized",
@@ -2149,16 +2344,18 @@
         {
           "name": "site_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the storage site's id"
         },
         {
           "name": "attestation_digest",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the digest of the operator's written attestation (recorded in the journal and the audit)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L402"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L434"
     },
     {
       "action": "core.gc",
@@ -2174,7 +2371,7 @@
         },
         {
           "name": "wait_ms",
-          "type": "long",
+          "type": "integer",
           "required": false,
           "description": "wait up to min(wait_ms, core_sync_rpc_max_ms - 2 s) for a small job to end inline"
         },
@@ -2186,7 +2383,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L405"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L437"
     },
     {
       "action": "core.repair",
@@ -2202,7 +2399,7 @@
         },
         {
           "name": "wait_ms",
-          "type": "long",
+          "type": "integer",
           "required": false,
           "description": "wait up to min(wait_ms, core_sync_rpc_max_ms - 2 s) for a small job to end inline"
         },
@@ -2214,7 +2411,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L411"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L443"
     },
     {
       "action": "core.scrub",
@@ -2230,7 +2427,7 @@
         },
         {
           "name": "wait_ms",
-          "type": "long",
+          "type": "integer",
           "required": false,
           "description": "wait up to min(wait_ms, core_sync_rpc_max_ms - 2 s) for a small job to end inline"
         },
@@ -2242,7 +2439,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L417"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L449"
     },
     {
       "action": "core.compact",
@@ -2258,7 +2455,7 @@
         },
         {
           "name": "wait_ms",
-          "type": "long",
+          "type": "integer",
           "required": false,
           "description": "wait up to min(wait_ms, core_sync_rpc_max_ms - 2 s) for a small job to end inline"
         },
@@ -2270,7 +2467,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L423"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L455"
     },
     {
       "action": "core.rotatemaster",
@@ -2286,7 +2483,7 @@
         },
         {
           "name": "wait_ms",
-          "type": "long",
+          "type": "integer",
           "required": false,
           "description": "wait up to min(wait_ms, core_sync_rpc_max_ms - 2 s) for a small job to end inline"
         },
@@ -2305,17 +2502,30 @@
         {
           "name": "dry_run",
           "type": "boolean",
-          "required": false
+          "required": false,
+          "description": "true: plan and report only; nothing is journaled or changed"
         },
         {
           "name": "batch",
-          "type": "int",
+          "type": "integer",
           "required": false,
           "description": "roots per journal commit, 1..4096, default 256"
+        },
+        {
+          "name": "identity",
+          "type": "string",
+          "required": false,
+          "description": "api \u00a74 identity rotation: stage (journal a successor key pair, reported as next_identity_public; add it to every storage node's core_public_key and every client's pin) or activate (the staged successor becomes the core identity, endorsed by the retiring one, which stays in identity_history)"
+        },
+        {
+          "name": "expect_identity",
+          "type": "string",
+          "required": false,
+          "description": "identity=activate: the staged next identity's public key (base64url SPKI), as stage reported it"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L429"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L461"
     },
     {
       "action": "core.pin",
@@ -2326,7 +2536,8 @@
         {
           "name": "site_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the storage site's id"
         },
         {
           "name": "node_pub",
@@ -2336,7 +2547,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L439"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L475"
     },
     {
       "action": "core.node",
@@ -2376,13 +2587,13 @@
         },
         {
           "name": "limit",
-          "type": "int",
+          "type": "integer",
           "required": false,
           "description": "list: 1..1000, default 500"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L441"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L478"
     },
     {
       "action": "core.unpin",
@@ -2393,11 +2604,12 @@
         {
           "name": "site_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the storage site's id"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L448"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L493"
     },
     {
       "action": "core.stage",
@@ -2408,7 +2620,8 @@
         {
           "name": "vid",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a version id (core.head, core.versions, or a commit or publish reply)"
         },
         {
           "name": "paths",
@@ -2418,7 +2631,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L450"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L496"
     },
     {
       "action": "core.stagestatus",
@@ -2429,11 +2642,12 @@
         {
           "name": "id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the stage's id (core.stage's)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L452"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L499"
     },
     {
       "action": "core.stagecancel",
@@ -2444,11 +2658,12 @@
         {
           "name": "id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the stage's id (core.stage's)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L454"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L502"
     },
     {
       "action": "core.archive",
@@ -2459,12 +2674,14 @@
         {
           "name": "collection_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the collection's id"
         },
         {
           "name": "site",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the archive (tape) site to copy to"
         },
         {
           "name": "request_id",
@@ -2474,7 +2691,7 @@
         },
         {
           "name": "wait_ms",
-          "type": "long",
+          "type": "integer",
           "required": false,
           "description": "wait up to min(wait_ms, core_sync_rpc_max_ms - 2 s) for a small job to end inline"
         },
@@ -2486,7 +2703,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L456"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L505"
     },
     {
       "action": "core.archivestatus",
@@ -2497,11 +2714,12 @@
         {
           "name": "id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the run's id: core.archive's archive_id, or a core.archiveverify run's id"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L463"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L512"
     },
     {
       "action": "core.archiveverify",
@@ -2512,11 +2730,12 @@
         {
           "name": "site",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the archive (tape) site whose copies are read back"
         },
         {
           "name": "limit",
-          "type": "int",
+          "type": "integer",
           "required": false,
           "description": "copies to read back, 1-65536 (default 1024)"
         },
@@ -2528,7 +2747,7 @@
         },
         {
           "name": "wait_ms",
-          "type": "long",
+          "type": "integer",
           "required": false,
           "description": "wait up to min(wait_ms, core_sync_rpc_max_ms - 2 s) for a small job to end inline"
         },
@@ -2540,7 +2759,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L465"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L515"
     },
     {
       "action": "core.snapshot",
@@ -2549,7 +2768,7 @@
       "system": true,
       "parameters": [],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L472"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L533"
     },
     {
       "action": "core.site",
@@ -2565,7 +2784,7 @@
         },
         {
           "name": "wait_ms",
-          "type": "long",
+          "type": "integer",
           "required": false,
           "description": "wait up to min(wait_ms, core_sync_rpc_max_ms - 2 s) for a small job to end inline"
         },
@@ -2579,23 +2798,50 @@
           "name": "op",
           "type": "string",
           "required": true,
-          "description": "drain | lost | decommission | restore | reconcile | status"
+          "description": "drain | lost | decommission | restore | reconcile | rebuild | status | events | containers"
         },
         {
           "name": "site",
           "type": "string",
           "required": true,
-          "description": "the node address <region>:<agent>:<plugin>"
+          "description": "the node address <region>:<agent>:<plugin> (op=events: optional, one site's history)"
+        },
+        {
+          "name": "after",
+          "type": "string",
+          "required": false,
+          "description": "op=events, op=containers: the opaque cursor next from the previous page"
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "required": false,
+          "description": "op=events, op=containers: 1..1000 (default 100 events, 200 containers)"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "required": false,
+          "description": "op=rebuild only: media (default; the site's tape catalogue rebuilt from its cartridges) | survivors (a replacement site filled from the other sites)"
         },
         {
           "name": "force",
           "type": "boolean",
           "required": false,
           "description": "op=lost only; honoured only when core_site_force_allowed=true"
+        },
+        {
+          "name": "reason",
+          "type": "string",
+          "required": false,
+          "description": "why (at most 512 UTF-8 bytes): kept with the job and logged; the CLI requires one for op=lost"
         }
       ],
-      "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L474"
+      "compressed_returns": [
+        "events",
+        "containers"
+      ],
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L535"
     },
     {
       "action": "core.tapevol",
@@ -2629,7 +2875,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L484"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L555"
     },
     {
       "action": "core.maint",
@@ -2647,11 +2893,11 @@
           "name": "pass",
           "type": "string",
           "required": false,
-          "description": "op=run: repair | gc | trim | scrub"
+          "description": "op=run: repair | gc | trim | compact | scrub | deep_scrub"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L493"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L564"
     },
     {
       "action": "core.cancel",
@@ -2679,7 +2925,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L497"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L568"
     },
     {
       "action": "core.job",
@@ -2690,11 +2936,12 @@
         {
           "name": "job_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a job's id"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L500"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L571"
     },
     {
       "action": "core.recover",
@@ -2710,7 +2957,7 @@
         },
         {
           "name": "wait_ms",
-          "type": "long",
+          "type": "integer",
           "required": false,
           "description": "wait up to min(wait_ms, core_sync_rpc_max_ms - 2 s) for a small job to end inline"
         },
@@ -2722,7 +2969,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L505"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L576"
     },
     {
       "action": "core.trim",
@@ -2738,7 +2985,7 @@
         },
         {
           "name": "wait_ms",
-          "type": "long",
+          "type": "integer",
           "required": false,
           "description": "wait up to min(wait_ms, core_sync_rpc_max_ms - 2 s) for a small job to end inline"
         },
@@ -2750,12 +2997,13 @@
         },
         {
           "name": "grace_ms",
-          "type": "long",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "a copy is trimmed only once it has been surplus this long (ms; default 0)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L511"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L582"
     },
     {
       "action": "core.audit",
@@ -2765,13 +3013,15 @@
       "parameters": [
         {
           "name": "from_ts",
-          "type": "long",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "only records at or after this time (epoch ms)"
         },
         {
           "name": "to_ts",
-          "type": "long",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "only records before this time (epoch ms)"
         },
         {
           "name": "by",
@@ -2787,20 +3037,22 @@
         },
         {
           "name": "after_seq",
-          "type": "long",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "continue after this audit sequence number (the previous page's next_after_seq)"
         },
         {
           "name": "limit",
-          "type": "int",
+          "type": "integer",
           "required": false,
           "description": "max 1000"
         }
       ],
       "compressed_returns": [
-        "records"
+        "records",
+        "archived"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L518"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L589"
     },
     {
       "action": "core.auditverify",
@@ -2816,7 +3068,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L526"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L600"
     },
     {
       "action": "core.auditack",
@@ -2827,11 +3079,12 @@
         {
           "name": "reason",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "why the operator acknowledges the audit loss (recorded)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L532"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L608"
     },
     {
       "action": "core.tune",
@@ -2841,18 +3094,21 @@
       "parameters": [
         {
           "name": "frame_bytes",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "index-to-node dataplane frame size in bytes (clamped 16 KiB..the bus maximum)"
         },
         {
           "name": "persistent",
           "type": "boolean",
-          "required": false
+          "required": false,
+          "description": "broker persistence for node-leg body frames"
         },
         {
           "name": "batch_bytes",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "append batch size per site in bytes (clamped 64 KiB..64 MiB)"
         },
         {
           "name": "stream",
@@ -2862,28 +3118,31 @@
         },
         {
           "name": "write_flows",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "flows per write on the streaming node leg (clamped)"
         },
         {
           "name": "fetch_flows",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "flows per fetch on the streaming node leg (clamped)"
         },
         {
           "name": "window_bytes",
-          "type": "long",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "node-stream flow window in bytes (clamped 1 MiB..1 GiB)"
         },
         {
           "name": "max_inflight",
-          "type": "int",
+          "type": "integer",
           "required": false,
           "description": "append batches in flight per site (core side)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L535"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L611"
     },
     {
       "action": "core.benchstream",
@@ -2894,32 +3153,38 @@
         {
           "name": "site",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the site to stream with (absent: the first sites)"
         },
         {
           "name": "sites",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "how many sites to stream with at once"
         },
         {
           "name": "mb",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "megabytes to move"
         },
         {
           "name": "flows",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "parallel flows (clamped)"
         },
         {
           "name": "msg_bytes",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "bytes per message"
         },
         {
           "name": "window_bytes",
-          "type": "long",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "the flow window in bytes"
         },
         {
           "name": "cls",
@@ -2935,7 +3200,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L544"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L621"
     },
     {
       "action": "core.benchnode",
@@ -2946,22 +3211,26 @@
         {
           "name": "site",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the site to benchmark against (absent: every site)"
         },
         {
           "name": "mb",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "megabytes to move"
         },
         {
           "name": "flows",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "parallel flows (clamped)"
         },
         {
           "name": "msg_bytes",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "bytes per message"
         },
         {
           "name": "dir",
@@ -2971,7 +3240,7 @@
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L555"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L632"
     },
     {
       "action": "core.benchread",
@@ -2982,26 +3251,30 @@
         {
           "name": "vid",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a version id (core.head, core.versions, or a commit or publish reply)"
         },
         {
           "name": "path",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a file's path in the version"
         },
         {
           "name": "flows",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "parallel flows (clamped)"
         },
         {
           "name": "piece_bytes",
-          "type": "int",
-          "required": false
+          "type": "integer",
+          "required": false,
+          "description": "bytes per read piece (clamped)"
         }
       ],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L562"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L639"
     },
     {
       "action": "core.status",
@@ -3012,7 +3285,7 @@
       "compressed_returns": [
         "core_status"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L568"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L645"
     },
     {
       "action": "core.metahash",
@@ -3021,465 +3294,7 @@
       "system": false,
       "parameters": [],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L572"
-    },
-    {
-      "action": "registernode",
-      "read": false,
-      "legacy": true,
-      "system": true,
-      "parameters": [
-        {
-          "name": "site",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "roles",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "node_class",
-          "type": "string",
-          "required": false
-        },
-        {
-          "name": "pledge",
-          "type": "long",
-          "required": false
-        }
-      ],
-      "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L552"
-    },
-    {
-      "action": "listnodes",
-      "read": false,
-      "legacy": true,
-      "system": true,
-      "parameters": [],
-      "compressed_returns": [
-        "nodes"
-      ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L555"
-    },
-    {
-      "action": "listdatasets",
-      "read": false,
-      "legacy": true,
-      "system": true,
-      "parameters": [],
-      "compressed_returns": [
-        "datasets"
-      ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L557"
-    },
-    {
-      "action": "listfiles",
-      "read": false,
-      "legacy": true,
-      "system": true,
-      "parameters": [
-        {
-          "name": "dataset_id",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "user",
-          "type": "string",
-          "required": true
-        }
-      ],
-      "compressed_returns": [
-        "files"
-      ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L559"
-    },
-    {
-      "action": "createproject",
-      "read": false,
-      "legacy": true,
-      "system": true,
-      "parameters": [
-        {
-          "name": "project_id",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "user",
-          "type": "string",
-          "required": true
-        }
-      ],
-      "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L562"
-    },
-    {
-      "action": "projectmember",
-      "read": false,
-      "legacy": true,
-      "system": true,
-      "parameters": [
-        {
-          "name": "project_id",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "user",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "member",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "role",
-          "type": "string",
-          "required": false
-        },
-        {
-          "name": "op",
-          "type": "string",
-          "required": false
-        }
-      ],
-      "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L564"
-    },
-    {
-      "action": "commit",
-      "read": false,
-      "legacy": true,
-      "system": true,
-      "parameters": [
-        {
-          "name": "project_id",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "dataset_id",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "rel",
-          "type": "string",
-          "required": false
-        },
-        {
-          "name": "user",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "op",
-          "type": "string",
-          "required": false
-        }
-      ],
-      "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L566"
-    },
-    {
-      "action": "projectfiles",
-      "read": false,
-      "legacy": true,
-      "system": true,
-      "parameters": [
-        {
-          "name": "project_id",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "user",
-          "type": "string",
-          "required": true
-        }
-      ],
-      "compressed_returns": [
-        "files"
-      ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L568"
-    },
-    {
-      "action": "resolve",
-      "read": false,
-      "legacy": true,
-      "system": true,
-      "parameters": [
-        {
-          "name": "project_id",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "dataset_id",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "rel",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "user",
-          "type": "string",
-          "required": true
-        }
-      ],
-      "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L571"
-    },
-    {
-      "action": "promote",
-      "read": false,
-      "legacy": true,
-      "system": true,
-      "parameters": [
-        {
-          "name": "dataset_id",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "rel",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "user",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "k",
-          "type": "int",
-          "required": false
-        },
-        {
-          "name": "m",
-          "type": "int",
-          "required": false
-        },
-        {
-          "name": "block_size",
-          "type": "int",
-          "required": false
-        },
-        {
-          "name": "policy",
-          "type": "string",
-          "required": false
-        }
-      ],
-      "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L574"
-    },
-    {
-      "action": "objectstatus",
-      "read": false,
-      "legacy": true,
-      "system": true,
-      "parameters": [
-        {
-          "name": "object_id",
-          "type": "string",
-          "required": true
-        }
-      ],
-      "compressed_returns": [
-        "object"
-      ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L577"
-    },
-    {
-      "action": "ledger",
-      "read": false,
-      "legacy": true,
-      "system": true,
-      "parameters": [],
-      "compressed_returns": [
-        "ledger"
-      ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L579"
-    },
-    {
-      "action": "approvereconstruct",
-      "read": false,
-      "legacy": true,
-      "system": true,
-      "parameters": [
-        {
-          "name": "key_id",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "approver",
-          "type": "string",
-          "required": true
-        }
-      ],
-      "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L581"
-    },
-    {
-      "action": "reconstructauth",
-      "read": false,
-      "legacy": true,
-      "system": true,
-      "parameters": [
-        {
-          "name": "key_id",
-          "type": "string",
-          "required": true
-        }
-      ],
-      "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L583"
-    },
-    {
-      "action": "fetch",
-      "read": false,
-      "legacy": true,
-      "system": true,
-      "parameters": [
-        {
-          "name": "grant",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "ident_key",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "ident_id",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "transfer_id",
-          "type": "string",
-          "required": true
-        }
-      ],
-      "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L585"
-    },
-    {
-      "action": "restore",
-      "read": false,
-      "legacy": true,
-      "system": true,
-      "parameters": [
-        {
-          "name": "object_id",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "user",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "dest_path",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "reconstruct_token",
-          "type": "string",
-          "required": false
-        }
-      ],
-      "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L587"
-    },
-    {
-      "action": "jobstatus",
-      "read": false,
-      "legacy": true,
-      "system": true,
-      "parameters": [
-        {
-          "name": "job_id",
-          "type": "string",
-          "required": true
-        }
-      ],
-      "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L590"
-    },
-    {
-      "action": "storagesummary",
-      "read": false,
-      "legacy": true,
-      "system": true,
-      "parameters": [
-        {
-          "name": "limit",
-          "type": "int",
-          "required": false
-        },
-        {
-          "name": "nodes",
-          "type": "boolean",
-          "required": false
-        }
-      ],
-      "compressed_returns": [
-        "summary"
-      ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L592"
-    },
-    {
-      "action": "listobjects",
-      "read": false,
-      "legacy": true,
-      "system": true,
-      "parameters": [
-        {
-          "name": "state",
-          "type": "string",
-          "required": false
-        },
-        {
-          "name": "not_state",
-          "type": "string",
-          "required": false
-        },
-        {
-          "name": "site",
-          "type": "string",
-          "required": false
-        },
-        {
-          "name": "dataset_id",
-          "type": "string",
-          "required": false
-        },
-        {
-          "name": "limit",
-          "type": "int",
-          "required": false
-        }
-      ],
-      "compressed_returns": [
-        "objects"
-      ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L595"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L657"
     },
     {
       "action": "getmetrics",
@@ -3488,7 +3303,7 @@
       "system": true,
       "parameters": [],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L598"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L659"
     },
     {
       "action": "getcapabilities",
@@ -3497,7 +3312,7 @@
       "system": true,
       "parameters": [],
       "compressed_returns": [],
-      "source": "https://github.com/GaiaKeep/gfs/blob/02f7d83cc92db50968d4076da8afad2cc7a811b7/src/main/java/io/cresco/gfs/ExecutorImpl.java#L599"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L660"
     },
     {
       "action": "core.collections",
@@ -3508,7 +3323,8 @@
         {
           "name": "tenant_id",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "the tenant's id"
         },
         {
           "name": "after",
@@ -3518,7 +3334,7 @@
         },
         {
           "name": "limit",
-          "type": "int",
+          "type": "integer",
           "required": false,
           "description": "1..1000, default 200"
         }
@@ -3526,7 +3342,7 @@
       "compressed_returns": [
         "collections"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L267"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L286"
     },
     {
       "action": "core.placement",
@@ -3537,12 +3353,14 @@
         {
           "name": "vid",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a version id (core.head, core.versions, or a commit or publish reply)"
         },
         {
           "name": "path",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "a file's path in the version"
         },
         {
           "name": "after",
@@ -3552,21 +3370,21 @@
         },
         {
           "name": "limit",
-          "type": "int",
+          "type": "integer",
           "required": false,
           "description": "1..1000, default 100"
         },
         {
           "name": "tape",
-          "type": "boolean",
+          "type": "string",
           "required": false,
-          "description": "ask archive sites where each tape copy is (one locate per site per page; a failure leaves presence UNKNOWN)"
+          "description": "true | detail: ask archive sites where each tape copy is (one locate per site per page; a failure leaves presence UNKNOWN); detail adds its position on the cartridge and the cartridge type"
         }
       ],
       "compressed_returns": [
         "blocks"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L271"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L290"
     },
     {
       "action": "core.jobs",
@@ -3582,7 +3400,7 @@
         },
         {
           "name": "limit",
-          "type": "int",
+          "type": "integer",
           "required": false,
           "description": "1..1000, default 100"
         },
@@ -3602,7 +3420,7 @@
       "compressed_returns": [
         "jobs"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L278"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L297"
     },
     {
       "action": "core.principals",
@@ -3613,7 +3431,8 @@
         {
           "name": "tenant_id",
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "the tenant's id"
         },
         {
           "name": "after",
@@ -3623,7 +3442,7 @@
         },
         {
           "name": "limit",
-          "type": "int",
+          "type": "integer",
           "required": false,
           "description": "1..1000, default 200"
         }
@@ -3631,7 +3450,177 @@
       "compressed_returns": [
         "principals"
       ],
-      "source": "https://github.com/GaiaKeep/gfs/blob/9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9/src/main/java/io/cresco/gfs/ExecutorImpl.java#L282"
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L301"
+    },
+    {
+      "action": "core.redundancy",
+      "read": false,
+      "legacy": false,
+      "system": true,
+      "parameters": [
+        {
+          "name": "collection_id",
+          "type": "string",
+          "required": true,
+          "description": "the collection's id"
+        },
+        {
+          "name": "op",
+          "type": "string",
+          "required": false,
+          "description": "get (default) | set"
+        },
+        {
+          "name": "to",
+          "type": "string",
+          "required": false,
+          "description": "op=set: the new mode, single | replicas:R | ec:k+m"
+        }
+      ],
+      "compressed_returns": [],
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L76"
+    },
+    {
+      "action": "core.extractattest",
+      "read": false,
+      "legacy": false,
+      "system": false,
+      "parameters": [
+        {
+          "name": "extract_id",
+          "type": "string",
+          "required": true,
+          "description": "the extract's id (core.extract's result)"
+        },
+        {
+          "name": "wait_ms",
+          "type": "integer",
+          "required": false,
+          "description": "wait up to min(wait_ms, core_sync_rpc_max_ms - 2 s) for every voter's answer (default 5000); what arrived later is journaled all the same"
+        }
+      ],
+      "compressed_returns": [],
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L230"
+    },
+    {
+      "action": "core.deepattest",
+      "read": false,
+      "legacy": false,
+      "system": true,
+      "parameters": [
+        {
+          "name": "lc_id",
+          "type": "string",
+          "required": true,
+          "description": "a lifecycle record id (lc-...)"
+        },
+        {
+          "name": "site_id",
+          "type": "string",
+          "required": true,
+          "description": "the tape site holding the cartridge, as core.lcstatus deep.tape_volumes names it"
+        },
+        {
+          "name": "barcode",
+          "type": "string",
+          "required": true,
+          "description": "the cartridge's barcode, as core.lcstatus deep.tape_volumes names it"
+        },
+        {
+          "name": "method",
+          "type": "string",
+          "required": true,
+          "description": "how it was destroyed (shredded, degaussed, incinerated...), 1-64 plain characters"
+        },
+        {
+          "name": "statement_digest",
+          "type": "string",
+          "required": true,
+          "description": "SHA-384 hex of the operator's signed destruction statement (certificate)"
+        }
+      ],
+      "compressed_returns": [],
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L422"
+    },
+    {
+      "action": "core.quota",
+      "read": false,
+      "legacy": false,
+      "system": true,
+      "parameters": [
+        {
+          "name": "tenant_id",
+          "type": "string",
+          "required": true,
+          "description": "the tenant's id"
+        },
+        {
+          "name": "op",
+          "type": "string",
+          "required": false,
+          "description": "get (default) | set"
+        },
+        {
+          "name": "stored_max",
+          "type": "integer",
+          "required": false,
+          "description": "set: bytes, -1 = no limit"
+        },
+        {
+          "name": "staging_max",
+          "type": "integer",
+          "required": false,
+          "description": "set: declared bytes its open uploads may stage at once, -1 = no limit"
+        },
+        {
+          "name": "weight",
+          "type": "integer",
+          "required": false,
+          "description": "set: share weight 1..1000"
+        }
+      ],
+      "compressed_returns": [],
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L485"
+    },
+    {
+      "action": "core.membership",
+      "read": false,
+      "legacy": false,
+      "system": true,
+      "parameters": [
+        {
+          "name": "op",
+          "type": "string",
+          "required": true,
+          "description": "status | add | remove"
+        },
+        {
+          "name": "peer",
+          "type": "string",
+          "required": false,
+          "description": "add, remove: the core peer <region>:<agent>:<plugin>"
+        },
+        {
+          "name": "request_id",
+          "type": "string",
+          "required": false,
+          "description": "idempotency key, 16-64 of [A-Za-z0-9_-]; required for add and remove (C2)"
+        },
+        {
+          "name": "wait_ms",
+          "type": "integer",
+          "required": false,
+          "description": "wait up to min(wait_ms, core_sync_rpc_max_ms - 2 s) for the job to end inline"
+        },
+        {
+          "name": "events",
+          "type": "string",
+          "required": false,
+          "description": "a dataplane stream for the job's signed events (GK-CJSON-1, ECDSA P-384 by core_public_key)"
+        }
+      ],
+      "compressed_returns": [],
+      "source": "https://github.com/GaiaKeep/gfs/blob/fbd957521b4b3b828371241465d3ba5438dbdad2/src/main/java/io/cresco/gfs/ExecutorImpl.java#L522"
     }
   ]
 }

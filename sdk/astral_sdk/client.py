@@ -5,9 +5,13 @@ astral_sdk.models and astral_sdk.errors, only httpx at runtime.
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import math
 import re
 import time
 import uuid
+from collections.abc import AsyncIterator, Iterator
 from types import TracebackType
 from typing import Any, Optional
 
@@ -20,7 +24,10 @@ from astral_sdk.errors import (
     AstralTimeoutError,
     RetryExhaustedError,
 )
-from astral_sdk.models import Artifact, ControlResult, Event, Operation, OperationList, RetryPolicy
+from astral_sdk.models import (
+    Artifact, CompletionSubscriptionList, ControlResult, Event, Operation, OperationList,
+    RetryPolicy, TerminalOutput, TerminalSessionView,
+)
 from astral_sdk.tools import MCP_PROTOCOL_VERSION
 
 _CLIENT_INFO = {"name": "astral-sdk-python", "version": "0.1.0"}
@@ -31,6 +38,7 @@ _META = {
 }
 _CONFLICT_CODES = frozenset({
     "assignment_revision_conflict", "assignment_idempotency_conflict",
+    "assignment_event_key_conflict", "assignment_not_waiting",
     "credential_allowance_exhausted", "framework_credential_authority_unavailable",
 })
 _AUTH_CODES = frozenset({
@@ -77,6 +85,24 @@ def _challenge_error_code(www_authenticate: Optional[str]) -> Optional[str]:
     return match.group(1) if match else None
 
 
+def _terminal_response(response: httpx.Response) -> dict[str, Any]:
+    try:
+        value = response.json()
+    except ValueError as exc:
+        raise AstralHTTPError("malformed terminal response",
+                              status_code=response.status_code) from exc
+    if response.is_error:
+        code = value.get("error") if isinstance(value, dict) else None
+        detail = value.get("detail") if isinstance(value, dict) else None
+        message = code or (detail if isinstance(detail, str) else None) or "terminal request refused"
+        error_type = (AstralAuthError if response.status_code in (401, 403) else
+                      AstralConflictError if response.status_code in (409, 423) else AstralHTTPError)
+        raise error_type(message, status_code=response.status_code, code=str(code or message))
+    if not isinstance(value, dict):
+        raise AstralHTTPError("malformed terminal response", status_code=response.status_code)
+    return value
+
+
 def _raise_for_response(status_code: int, body: dict[str, Any],
                         www_authenticate: Optional[str] = None) -> dict[str, Any]:
     if "error" in body:
@@ -99,6 +125,41 @@ def _unwrap_tool_result(result: dict[str, Any]) -> dict[str, Any]:
         raise _classify_error(text)(text, code=text)
     structured = result.get("structuredContent")
     return structured if isinstance(structured, dict) else {}
+
+
+def _terminal_guard(token: str) -> None:
+    if token.startswith("afk_"):
+        raise AstralAuthError("terminal sessions require an owner Keycloak access token",
+                              status_code=401,
+                              code="terminal_owner_authentication_required")
+
+
+def _terminal_body(cols: int, rows: int, command: Optional[str]) -> dict[str, Any]:
+    body: dict[str, Any] = {"cols": cols, "rows": rows}
+    if command is not None:
+        body["command"] = command
+    return body
+
+
+def _approval_timeout(value: float) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise ValueError("approval_timeout_seconds must be a finite nonnegative number")
+
+
+def _approval_session(value: dict[str, Any]) -> Optional[dict[str, Any]]:
+    if "session_id" in value:
+        return value
+    proposal_id = value.get("proposal_id")
+    if not isinstance(proposal_id, str) or not re.fullmatch(r"[0-9a-f]{32}", proposal_id):
+        raise AstralHTTPError("malformed terminal approval", code="terminal_invalid_approval")
+    status = value.get("status")
+    if status == "succeeded" and isinstance(value.get("session"), dict) and value["session"].get("session_id"):
+        return value["session"]
+    if status in {"pending", "running"}:
+        return None
+    code = "terminal_approval_declined" if status == "declined" else (
+        str(value.get("error") or "terminal_dispatch_refused") if status == "failed" else "terminal_invalid_approval")
+    raise AstralHTTPError("terminal approval did not complete", code=code, data={"proposal_id": proposal_id})
 
 
 def _owner_response(response: httpx.Response) -> dict[str, Any]:
@@ -258,6 +319,38 @@ class AstralClient:
     def get_artifact(self, operation_id: str) -> Artifact:
         return Artifact.from_dict(self._call_tool("astral_get_artifact", {"operation_id": operation_id}))
 
+    def subscribe_operation_completion(self, *, source_operation_id: str, target_operation_id: str,
+                                       expected_revision: int,
+                                       submission_id: Optional[str] = None) -> ControlResult:
+        arguments = {
+            "source_operation_id": source_operation_id,
+            "target_operation_id": target_operation_id,
+            "submission_id": submission_id or str(uuid.uuid4()),
+            "expected_revision": expected_revision,
+        }
+        return ControlResult.from_dict(
+            self._call_tool("astral_subscribe_operation_completion", arguments))
+
+    def list_completion_subscriptions(self, *, limit: int = 50,
+                                      after_id: Optional[str] = None) -> CompletionSubscriptionList:
+        arguments: dict[str, Any] = {"limit": limit}
+        if after_id is not None:
+            arguments["after_id"] = after_id
+        return CompletionSubscriptionList.from_dict(
+            self._call_tool("astral_list_operation_completion_subscriptions", arguments))
+
+    def cancel_operation_completion_subscription(self, *, source_operation_id: str,
+                                                target_operation_id: str, expected_revision: int,
+                                                submission_id: Optional[str] = None) -> ControlResult:
+        arguments = {
+            "source_operation_id": source_operation_id,
+            "target_operation_id": target_operation_id,
+            "submission_id": submission_id or str(uuid.uuid4()),
+            "expected_revision": expected_revision,
+        }
+        return ControlResult.from_dict(
+            self._call_tool("astral_cancel_operation_completion_subscription", arguments))
+
     def emergency_status(self) -> dict[str, Any]:
         if self._token.startswith("afk_"):
             return self._call_tool("astral_emergency_status", {})
@@ -283,6 +376,87 @@ class AstralClient:
         except httpx.HTTPError as exc:
             raise AstralHTTPError("emergency stop transport unavailable") from exc
         return _owner_response(response)
+
+    def _terminal(self, method: str, path: str, body: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        _terminal_guard(self._token)
+        try:
+            response = self._http.request(method, "/api/terminals" + path, json=body,
+                headers={"Authorization": f"Bearer {self._token}", "Accept": "application/json"})
+        except httpx.TimeoutException as exc:
+            raise AstralTimeoutError("terminal request timed out") from exc
+        except httpx.HTTPError as exc:
+            raise AstralHTTPError("terminal transport unavailable") from exc
+        return _terminal_response(response)
+
+    def create_terminal_session(self, *, cols: int = 80, rows: int = 24,
+                                command: Optional[str] = None,
+                                approval_timeout_seconds: float = 120) -> TerminalSessionView:
+        _approval_timeout(approval_timeout_seconds)
+        return self._approved_terminal(
+            self._terminal("POST", "", _terminal_body(cols, rows, command)), approval_timeout_seconds)
+
+    def get_terminal_approval(self, proposal_id: str) -> dict[str, Any]:
+        if not re.fullmatch(r"[0-9a-f]{32}", proposal_id):
+            raise ValueError("invalid terminal proposal ID")
+        return self._terminal("GET", f"/approvals/{proposal_id}")
+
+    def _approved_terminal(self, value: dict[str, Any], timeout: float) -> TerminalSessionView:
+        deadline = time.monotonic() + timeout
+        while True:
+            session = _approval_session(value)
+            if session is not None:
+                return TerminalSessionView.from_dict(session)
+            if time.monotonic() >= deadline:
+                raise AstralHTTPError("Approve this request in the signed-in Astral UI, then check its status.",
+                    code="terminal_confirmation_required", data={"proposal_id": value["proposal_id"]})
+            value = self.get_terminal_approval(value["proposal_id"])
+            if value.get("status") in {"pending", "running"}:
+                time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+
+    def list_terminal_sessions(self) -> list[TerminalSessionView]:
+        sessions = self._terminal("GET", "").get("sessions", [])
+        return [TerminalSessionView.from_dict(s) for s in sessions]
+
+    def write_terminal(self, session_id: str, data: str | bytes, *,
+                       approval_timeout_seconds: float = 120) -> TerminalSessionView:
+        _approval_timeout(approval_timeout_seconds)
+        payload = data.encode("utf-8") if isinstance(data, str) else data
+        encoded = base64.b64encode(payload).decode("ascii")
+        return self._approved_terminal(
+            self._terminal("POST", f"/{session_id}/input", {"data_b64": encoded}), approval_timeout_seconds)
+
+    def resize_terminal(self, session_id: str, *, cols: int, rows: int) -> TerminalSessionView:
+        return TerminalSessionView.from_dict(
+            self._terminal("POST", f"/{session_id}/resize", {"cols": cols, "rows": rows}))
+
+    def interrupt_terminal(self, session_id: str) -> TerminalSessionView:
+        return TerminalSessionView.from_dict(self._terminal("POST", f"/{session_id}/interrupt", {}))
+
+    def read_terminal(self, session_id: str, *, offset: int = 0,
+                      wait_seconds: float = 0.0) -> TerminalOutput:
+        _terminal_guard(self._token)
+        try:
+            response = self._http.request("GET", f"/api/terminals/{session_id}/output",
+                params={"offset": offset, "wait_seconds": wait_seconds},
+                headers={"Authorization": f"Bearer {self._token}", "Accept": "application/json"})
+        except httpx.TimeoutException as exc:
+            raise AstralTimeoutError("terminal request timed out") from exc
+        except httpx.HTTPError as exc:
+            raise AstralHTTPError("terminal transport unavailable") from exc
+        return TerminalOutput.from_dict(_terminal_response(response))
+
+    def stream_terminal(self, session_id: str, *, offset: int = 0,
+                        wait_seconds: float = 1.0) -> Iterator[TerminalOutput]:
+        cursor = offset
+        while True:
+            chunk = self.read_terminal(session_id, offset=cursor, wait_seconds=wait_seconds)
+            yield chunk
+            cursor = chunk.next_offset
+            if chunk.eof:
+                return
+
+    def close_terminal(self, session_id: str) -> dict[str, Any]:
+        return self._terminal("DELETE", f"/{session_id}")
 
     def wait_for_terminal(self, operation_id: str, *, poll_interval_seconds: float = 1.0,
                           timeout_seconds: Optional[float] = None) -> Operation:
@@ -409,6 +583,39 @@ class AsyncAstralClient:
         result = await self._call_tool("astral_get_artifact", {"operation_id": operation_id})
         return Artifact.from_dict(result)
 
+    async def subscribe_operation_completion(self, *, source_operation_id: str,
+                                             target_operation_id: str, expected_revision: int,
+                                             submission_id: Optional[str] = None) -> ControlResult:
+        arguments = {
+            "source_operation_id": source_operation_id,
+            "target_operation_id": target_operation_id,
+            "submission_id": submission_id or str(uuid.uuid4()),
+            "expected_revision": expected_revision,
+        }
+        return ControlResult.from_dict(
+            await self._call_tool("astral_subscribe_operation_completion", arguments))
+
+    async def list_completion_subscriptions(self, *, limit: int = 50,
+                                            after_id: Optional[str] = None) -> CompletionSubscriptionList:
+        arguments: dict[str, Any] = {"limit": limit}
+        if after_id is not None:
+            arguments["after_id"] = after_id
+        return CompletionSubscriptionList.from_dict(
+            await self._call_tool("astral_list_operation_completion_subscriptions", arguments))
+
+    async def cancel_operation_completion_subscription(self, *, source_operation_id: str,
+                                                      target_operation_id: str,
+                                                      expected_revision: int,
+                                                      submission_id: Optional[str] = None) -> ControlResult:
+        arguments = {
+            "source_operation_id": source_operation_id,
+            "target_operation_id": target_operation_id,
+            "submission_id": submission_id or str(uuid.uuid4()),
+            "expected_revision": expected_revision,
+        }
+        return ControlResult.from_dict(
+            await self._call_tool("astral_cancel_operation_completion_subscription", arguments))
+
     async def emergency_status(self) -> dict[str, Any]:
         if self._token.startswith("afk_"):
             return await self._call_tool("astral_emergency_status", {})
@@ -434,6 +641,88 @@ class AsyncAstralClient:
         except httpx.HTTPError as exc:
             raise AstralHTTPError("emergency stop transport unavailable") from exc
         return _owner_response(response)
+
+    async def _terminal(self, method: str, path: str, body: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        _terminal_guard(self._token)
+        try:
+            response = await self._http.request(method, "/api/terminals" + path, json=body,
+                headers={"Authorization": f"Bearer {self._token}", "Accept": "application/json"})
+        except httpx.TimeoutException as exc:
+            raise AstralTimeoutError("terminal request timed out") from exc
+        except httpx.HTTPError as exc:
+            raise AstralHTTPError("terminal transport unavailable") from exc
+        return _terminal_response(response)
+
+    async def create_terminal_session(self, *, cols: int = 80, rows: int = 24,
+                                      command: Optional[str] = None,
+                                      approval_timeout_seconds: float = 120) -> TerminalSessionView:
+        _approval_timeout(approval_timeout_seconds)
+        return await self._approved_terminal(
+            await self._terminal("POST", "", _terminal_body(cols, rows, command)), approval_timeout_seconds)
+
+    async def get_terminal_approval(self, proposal_id: str) -> dict[str, Any]:
+        if not re.fullmatch(r"[0-9a-f]{32}", proposal_id):
+            raise ValueError("invalid terminal proposal ID")
+        return await self._terminal("GET", f"/approvals/{proposal_id}")
+
+    async def _approved_terminal(self, value: dict[str, Any], timeout: float) -> TerminalSessionView:
+        deadline = time.monotonic() + timeout
+        while True:
+            session = _approval_session(value)
+            if session is not None:
+                return TerminalSessionView.from_dict(session)
+            if time.monotonic() >= deadline:
+                raise AstralHTTPError("Approve this request in the signed-in Astral UI, then check its status.",
+                    code="terminal_confirmation_required", data={"proposal_id": value["proposal_id"]})
+            value = await self.get_terminal_approval(value["proposal_id"])
+            if value.get("status") in {"pending", "running"}:
+                await asyncio.sleep(min(0.5, max(0, deadline - time.monotonic())))
+
+    async def list_terminal_sessions(self) -> list[TerminalSessionView]:
+        sessions = (await self._terminal("GET", "")).get("sessions", [])
+        return [TerminalSessionView.from_dict(s) for s in sessions]
+
+    async def write_terminal(self, session_id: str, data: str | bytes, *,
+                             approval_timeout_seconds: float = 120) -> TerminalSessionView:
+        _approval_timeout(approval_timeout_seconds)
+        payload = data.encode("utf-8") if isinstance(data, str) else data
+        encoded = base64.b64encode(payload).decode("ascii")
+        return await self._approved_terminal(
+            await self._terminal("POST", f"/{session_id}/input", {"data_b64": encoded}), approval_timeout_seconds)
+
+    async def resize_terminal(self, session_id: str, *, cols: int, rows: int) -> TerminalSessionView:
+        return TerminalSessionView.from_dict(
+            await self._terminal("POST", f"/{session_id}/resize", {"cols": cols, "rows": rows}))
+
+    async def interrupt_terminal(self, session_id: str) -> TerminalSessionView:
+        return TerminalSessionView.from_dict(
+            await self._terminal("POST", f"/{session_id}/interrupt", {}))
+
+    async def read_terminal(self, session_id: str, *, offset: int = 0,
+                            wait_seconds: float = 0.0) -> TerminalOutput:
+        _terminal_guard(self._token)
+        try:
+            response = await self._http.request("GET", f"/api/terminals/{session_id}/output",
+                params={"offset": offset, "wait_seconds": wait_seconds},
+                headers={"Authorization": f"Bearer {self._token}", "Accept": "application/json"})
+        except httpx.TimeoutException as exc:
+            raise AstralTimeoutError("terminal request timed out") from exc
+        except httpx.HTTPError as exc:
+            raise AstralHTTPError("terminal transport unavailable") from exc
+        return TerminalOutput.from_dict(_terminal_response(response))
+
+    async def stream_terminal(self, session_id: str, *, offset: int = 0,
+                              wait_seconds: float = 1.0) -> AsyncIterator[TerminalOutput]:
+        cursor = offset
+        while True:
+            chunk = await self.read_terminal(session_id, offset=cursor, wait_seconds=wait_seconds)
+            yield chunk
+            cursor = chunk.next_offset
+            if chunk.eof:
+                return
+
+    async def close_terminal(self, session_id: str) -> dict[str, Any]:
+        return await self._terminal("DELETE", f"/{session_id}")
 
     async def wait_for_terminal(self, operation_id: str, *, poll_interval_seconds: float = 1.0,
                                 timeout_seconds: Optional[float] = None) -> Operation:

@@ -90,6 +90,11 @@ class TestSignatureValidation:
             with pytest.raises(ContinuationStateError):
                 continuation_signature({"google": {"thought_signature": value}})
 
+    @pytest.mark.parametrize("signature", ["\ud800", "\udfff", "opaque\ud800tail"])
+    def test_invalid_utf8_signature_is_a_typed_failure(self, signature):
+        with pytest.raises(ContinuationStateError, match="malformed_thought_signature"):
+            continuation_signature({"google": {"thought_signature": signature}})
+
     def test_empty_signature_is_malformed(self):
         with pytest.raises(ContinuationStateError):
             continuation_signature({"google": {"thought_signature": ""}})
@@ -164,6 +169,7 @@ class TestWireValidation:
     def test_malformed_state_on_wire_raises(self):
         for extra in ("sig", {"google": 1}, {"google": {"thought_signature": 5}},
                       {"google": {"thought_signature": ""}},
+                      {"google": {"thought_signature": "opaque\ud800tail"}},
                       {"google": {"thought_signature": "s" * (MAX_THOUGHT_SIGNATURE_BYTES + 1)}}):
             tc = {"id": "c", "type": "function",
                   "function": {"name": "f", "arguments": "{}"},

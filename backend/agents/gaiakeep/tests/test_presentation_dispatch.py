@@ -74,7 +74,7 @@ def test_mcp_decodes_typed_display_without_replacing_sanitized_result(server, mo
                'service_key': 'fabric-secret'}
     calls = []
 
-    def execute(core, action, params, config, credentials):
+    def execute(core, action, params, config):
         calls.append((action, deepcopy(params)))
         return deepcopy(payload)
 

@@ -106,6 +106,7 @@ def test_owner_profile_and_key_stay_remote(runtime):
     assert options['principal'] == 'owner' and options['key'] is runtime.key
     assert options['key_file'] is None and options['flows'] == 1
     assert options['timeouts']['flow_max'] == 120 and options['redirects'] == 2
+    assert options['seal'] == 'require' and options['wait_commit'] is False
     config, context = runtime.records['transports'][0]
     assert config.port == 28282 and config.service_key == 'private-service-key'
     assert context.cadata == 'fixture-ca' and context.minimum_version == ssl.TLSVersion.TLSv1_2
@@ -273,14 +274,20 @@ def test_wrong_private_curve_refused_before_network(runtime, monkeypatch):
     assert not runtime.records['transports']
 
 
-@pytest.mark.parametrize('tool,arguments', [
-    ('gaiakeep_fetch', {'machine_id': 'm', 'params': {}}),
-    ('gaiakeep_listnodes', {'machine_id': 'm', 'params': {}}),
-])
-def test_unqualified_legacy_never_loads_identity(runtime, monkeypatch, tool, arguments):
+@pytest.mark.parametrize('tool,verdict', [('gaiakeep_getmetrics', 'unsupported'), ('gaiakeep_getcapabilities', 'unsupported'),
+                                          ('gaiakeep_fetch', 'invalid_argument'), ('gaiakeep_restore', 'invalid_argument')])
+def test_unqualified_or_retired_legacy_never_loads_identity(runtime, monkeypatch, tool, verdict):
     monkeypatch.setattr(remote_runtime, '_validated_sdk', lambda: pytest.fail('identity was loaded'))
-    out = remote_runtime.run({'tool': tool, 'arguments': arguments, 'trust': runtime.trust})
-    assert out['verdict'] == 'unsupported'
+    out = remote_runtime.run({'tool': tool, 'arguments': {'machine_id': 'm', 'params': {}}, 'trust': runtime.trust})
+    assert out['verdict'] == verdict
+
+
+def test_opted_in_legacy_metrics_use_the_unsigned_gateway_call(runtime):
+    request = runtime.request()
+    request['tool'] = 'gaiakeep_getmetrics'
+    request['trust']['allow_legacy'] = True
+    out = remote_runtime.run(request)
+    assert out['ok'] and runtime.records['calls'] == [('getmetrics', {})]
 
 
 def test_verified_file_bytes_stay_outside_redaction(runtime):

@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import logging
+import time
 import uuid
 import socket
 from typing import Set, Dict, Optional, Any, List
@@ -42,6 +43,8 @@ logger = logging.getLogger("BaseA2AAgent")
 
 BASE_PORT = int(os.getenv("AGENT_PORT", "8003"))
 MAX_PORT_OFFSET = 20
+
+_STREAM_FIRST_SEEN_LIMIT = 1024
 
 
 class EndpointFilter(logging.Filter):
@@ -90,6 +93,7 @@ class BaseA2AAgent:
         self._security_validator = A2ASecurityValidator()
 
         self._active_streams: Dict[str, "tuple[asyncio.Task, Optional[StreamCtx]]"] = {}
+        self._stream_first_seen: Dict[str, float] = {}
 
         # Pinned here — asyncio only weak-refs create_task results
         self._stream_wrapper_tasks: set = set()
@@ -406,6 +410,13 @@ class BaseA2AAgent:
         agent_id = self.agent_id
         arguments = dict(msg.params.get("arguments", {}))
         credentials = arguments.pop("_credentials", {}) if "_credentials" in arguments else {}
+        now = time.monotonic()
+        first_seen = self._stream_first_seen.setdefault(stream_id, now)
+        if len(self._stream_first_seen) > _STREAM_FIRST_SEEN_LIMIT:
+            oldest = min(self._stream_first_seen, key=self._stream_first_seen.get)
+            self._stream_first_seen.pop(oldest, None)
+        # Resume, wake and retry must share the original tool duration.
+        arguments["_stream_elapsed_s"] = max(0.0, now - first_seen)
         meta = get_stream_metadata(tool_fn) or {}
         max_chunk_bytes = (
             meta.get("metadata", {}).get("max_chunk_bytes", 65536)
@@ -526,6 +537,7 @@ class BaseA2AAgent:
                     stream_id=stream_id,
                 )
                 await ws.send_text(end_msg.to_json())
+                self._stream_first_seen.pop(stream_id, None)
                 self._logger.info(
                     f"Stream {stream_id} ({tool_name}) completed naturally "
                     f"after {seq} chunks"

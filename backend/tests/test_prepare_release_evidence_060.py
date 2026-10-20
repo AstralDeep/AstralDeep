@@ -410,6 +410,8 @@ def test_failure_receipt_classifies_only_structural_missing_evidence(
         "error_message_sha256": missing["error_message_sha256"],
         "base_sha": BASE_SHA,
         "candidate_sha": contract_examples.GIT_SHA,
+        "required_targets": list(prepare.VALIDATOR.REQUIRED_TARGETS),
+        "missing_platform_reports": list(prepare.VALIDATOR.REQUIRED_TARGETS),
         "protected_release_authorization": False,
     }
     assert len(missing["error_message_sha256"]) == 64
@@ -431,7 +433,100 @@ def test_failure_receipt_classifies_only_structural_missing_evidence(
     )
     rejected = json.loads(rejected_failure.read_text(encoding="utf-8"))
     assert rejected["error_code"] == "release_evidence_rejected"
+    assert rejected["missing_platform_reports"] == ["docs"]
     assert rejected["protected_release_authorization"] is False
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_missing_target_inventory_uses_validated_current_candidate_reports(
+    prepare: Any, contract_examples: Any, matrix_helpers: Any, tmp_path: Path, wrapped: bool,
+) -> None:
+    evidence = tmp_path / "evidence"
+    reports = _write_matrix(evidence, contract_examples, matrix_helpers)
+    missing = ["windows", "ios"]
+    for platform in missing:
+        (evidence / f"{platform}.json").unlink()
+    if wrapped:
+        for path in evidence.glob("*.json"):
+            path.unlink()
+        document = prepare.assemble_evidence_set(
+            [report for report in reports if report["platform"] not in missing], [],
+            now=prepare.VALIDATOR._parse_timestamp(NOW, field="now"),
+        )
+        (evidence / "matrix.json").write_text(json.dumps(document))
+    failure = tmp_path / "failure.json"
+    assert _run(prepare, contract_examples, evidence, tmp_path / "diagnostic.json",
+                "--failure-output", str(failure)) == 2
+    diagnostic = json.loads(failure.read_text())
+    assert diagnostic["required_targets"] == ["backend", "web", "windows", "android", "macos", "ios", "watchos", "docs"]
+    assert diagnostic["missing_platform_reports"] == missing
+    assert diagnostic["protected_release_authorization"] is False
+
+
+@pytest.mark.parametrize("invalid", ["json", "schema", "candidate", "release", "duplicate", "sets",
+                                    "set-candidate", "set-release", "set-version"])
+def test_rejected_inventory_cannot_claim_platform_presence(
+    prepare: Any, contract_examples: Any, matrix_helpers: Any, tmp_path: Path, invalid: str,
+) -> None:
+    evidence = tmp_path / "evidence"
+    reports = _write_matrix(evidence, contract_examples, matrix_helpers)
+    path = evidence / "web.json"
+    if invalid == "json":
+        path.write_text("{")
+    elif invalid == "schema":
+        path.write_text(json.dumps({"document_type": "platform_evidence"}))
+    elif invalid in {"sets", "set-candidate", "set-release", "set-version"}:
+        document = prepare.assemble_evidence_set(
+            reports, [], now=prepare.VALIDATOR._parse_timestamp(NOW, field="now"),
+        )
+        if invalid == "set-candidate":
+            document["candidate_sha"] = "f" * 40
+        elif invalid == "set-release":
+            document["release_id"] = "foreign-release"
+        elif invalid == "set-version":
+            document["release_version"] = "9.9.9"
+        for index in range(2 if invalid == "sets" else 1):
+            (evidence / f"matrix-{index}.json").write_text(json.dumps(document))
+    else:
+        report = reports[1]
+        if invalid == "candidate":
+            report["candidate_sha"] = "f" * 40
+        elif invalid == "release":
+            report["release_id"] = "foreign-release"
+        else:
+            report = {**reports[0], "evidence_id": "99999999-9999-4999-8999-999999999999"}
+        path.write_text(json.dumps(report))
+    failure = tmp_path / "failure.json"
+    assert _run(prepare, contract_examples, evidence, tmp_path / "diagnostic.json",
+                "--failure-output", str(failure)) == 2
+    diagnostic = json.loads(failure.read_text())
+    assert diagnostic["missing_platform_reports"] is None
+    assert diagnostic["protected_release_authorization"] is False
+
+
+@pytest.mark.parametrize("reports_present", [False, True])
+def test_failure_inventory_does_not_turn_present_or_absent_reports_into_success(
+    prepare: Any, contract_examples: Any, matrix_helpers: Any, tmp_path: Path, reports_present: bool,
+) -> None:
+    evidence = tmp_path / "evidence"
+    if reports_present:
+        reports = _write_matrix(evidence, contract_examples, matrix_helpers)
+        report = reports[-1]
+        report["outcome"] = "failed"
+        report["checks"][0]["outcome"] = "failed"
+        report["checks"][0]["detail_code"] = "documentation_target_missing"
+        (evidence / "docs.json").write_text(json.dumps(report))
+    else:
+        evidence.mkdir()
+        (evidence / "request.json").write_text(json.dumps(_exception_request(contract_examples)))
+    failure = tmp_path / "failure.json"
+    output = tmp_path / "diagnostic.json"
+    assert _run(prepare, contract_examples, evidence, output, "--failure-output", str(failure)) == 2
+    diagnostic = json.loads(failure.read_text())
+    assert diagnostic["missing_platform_reports"] == ([] if reports_present else list(prepare.VALIDATOR.REQUIRED_TARGETS))
+    assert diagnostic["error_code"] == "release_evidence_rejected"
+    assert diagnostic["protected_release_authorization"] is False
+    assert not output.exists()
 
 
 def test_passing_matrix_emits_the_diagnostic_contract(

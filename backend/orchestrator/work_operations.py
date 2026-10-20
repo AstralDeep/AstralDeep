@@ -18,8 +18,9 @@ from astralplane.repositories.assignment_models import (
 )
 
 from orchestrator.framework_credentials import FrameworkCaller
+from orchestrator.framework_work_reads import FrameworkWorkReader
 from orchestrator.emergency_stop import EmergencyStopRefused
-from orchestrator.work_service import WorkService, _identity, _public
+from orchestrator.work_service import _identity, _public
 from orchestrator.work_submit import _invalid, _limits, _text
 from persistent_agents.models import AssignmentError, digest, validate_id
 
@@ -66,25 +67,23 @@ class FrameworkWorkOperations:
 
     async def get(self, caller: FrameworkCaller, operation_id: str) -> dict:
         _require_scope(caller, "operations.read")
-        service = WorkService(self.assignments)
-        return await service.get(caller.owner_id, _framework_claims(caller.owner_id), operation_id)
+        return await FrameworkWorkReader(self, caller, "operations.read").read("get", operation_id)
 
     async def list(self, caller: FrameworkCaller, *, limit: int = 50, after_id: Optional[str] = None) -> dict:
         _require_scope(caller, "operations.read")
-        service = WorkService(self.assignments)
-        return await service.list(caller.owner_id, _framework_claims(caller.owner_id),
-                                  limit=limit, after_id=after_id)
+        return await FrameworkWorkReader(self, caller, "operations.read").read(
+            "list", limit=limit, after_id=after_id,
+        )
 
     async def poll(self, caller: FrameworkCaller, operation_id: str, *, after_revision=None) -> dict:
         _require_scope(caller, "operations.read")
-        service = WorkService(self.assignments)
-        return await service.poll(caller.owner_id, _framework_claims(caller.owner_id), operation_id,
-                                  after_revision=after_revision)
+        return await FrameworkWorkReader(self, caller, "operations.read").read(
+            "poll", operation_id, after_revision=after_revision,
+        )
 
     async def result(self, caller: FrameworkCaller, operation_id: str) -> dict:
         _require_scope(caller, "artifacts.read")
-        service = WorkService(self.assignments)
-        return await service.result(caller.owner_id, _framework_claims(caller.owner_id), operation_id)
+        return await FrameworkWorkReader(self, caller, "artifacts.read").read("result", operation_id)
 
     async def submit(
         self,
@@ -210,6 +209,9 @@ class FrameworkWorkOperations:
             raise AssignmentError("framework_credential_authority_unavailable", 409)
 
         def _apply(transaction, repository):
+            _method(repository, "get_operation")(
+                transaction, owner_id=owner_id, assignment_id=identity, lock=True)
+            self.credentials.assert_execution(transaction, observation)
             read = _owned_operation(transaction, repository, owner_id, identity)
             receipt = _method(repository, "get_submission_receipt")(
                 transaction, owner_id=owner_id, assignment_id=identity,
@@ -217,7 +219,7 @@ class FrameworkWorkOperations:
             )
             if receipt is not None:
                 updated = _owned_operation(transaction, repository, owner_id, identity)
-                return _public(updated, owner_id), False
+                return _public(updated, owner_id), False, False
             self.credentials.assert_execution(transaction, observation)
             current = read.assignment
             result = _method(repository, "apply_control")(
@@ -228,13 +230,52 @@ class FrameworkWorkOperations:
                 control=plane_command,
             )
             updated = _owned_operation(transaction, repository, owner_id, identity)
-            return _public(updated, owner_id), result.applied
+            fired = 0
+            if result.applied and plane_command == "stop":
+                from orchestrator.work_subscriptions import fire_completions
 
-        public, applied = await self.store.transaction(_apply, bound_session_waits=True)
+                fired = fire_completions(self.assignments, transaction, repository,
+                                         owner_id=owner_id, source_id=identity,
+                                         source_revision=updated.assignment.state_version,
+                                         outcome="cancelled")
+            return _public(updated, owner_id), result.applied, fired
+
+        public, applied, _fired = await self.store.transaction(_apply, bound_session_waits=True)
         return {"operation": public, "applied": applied}
 
     async def decide(self, caller: FrameworkCaller, *_args, **_kwargs) -> dict:
         raise AssignmentError("assignment_human_required", 403)
+
+    async def subscribe(self, caller: FrameworkCaller, **arguments) -> dict:
+        from orchestrator.work_subscriptions import WorkSubscriptionService
+
+        return await WorkSubscriptionService(self.assignments, self.credentials).subscribe(
+            caller,
+            source_operation_id=arguments.get("source_operation_id"),
+            target_operation_id=arguments.get("target_operation_id"),
+            submission_id=arguments.get("submission_id"),
+            expected_revision=arguments.get("expected_revision"))
+
+    async def subscriptions(self, caller: FrameworkCaller, **arguments) -> dict:
+        from orchestrator.work_subscriptions import WorkSubscriptionService
+
+        reader = FrameworkWorkReader(self, caller, "operations.read")
+        service = WorkSubscriptionService(self.assignments, self.credentials)
+        service.store = reader.service.store
+        result = await service.subscriptions(
+            caller, limit=arguments.get("limit", 50), after_id=arguments.get("after_id"))
+        await reader.recheck()
+        return result
+
+    async def unsubscribe(self, caller: FrameworkCaller, **arguments) -> dict:
+        from orchestrator.work_subscriptions import WorkSubscriptionService
+
+        return await WorkSubscriptionService(self.assignments, self.credentials).cancel(
+            caller,
+            source_operation_id=arguments.get("source_operation_id"),
+            target_operation_id=arguments.get("target_operation_id"),
+            submission_id=arguments.get("submission_id"),
+            expected_revision=arguments.get("expected_revision"))
 
     async def reconcile(self, caller: FrameworkCaller, *_args, **_kwargs) -> dict:
         raise AssignmentError("assignment_human_required", 403)
@@ -260,7 +301,11 @@ class FrameworkWorkOperations:
 
     async def emergency_status(self, caller: FrameworkCaller) -> dict:
         _require_scope(caller, "operations.read")
-        return await self._translated(lambda: self._emergency().status(caller.owner_id))
+        reader = FrameworkWorkReader(self, caller, "operations.read")
+        await reader.recheck()
+        result = await self._translated(lambda: self._emergency().status(caller.owner_id))
+        await reader.recheck()
+        return result
 
     async def emergency_stop(self, caller: FrameworkCaller, *, reason: Optional[str] = None) -> dict:
         _require_scope(caller, "operations.control")
@@ -276,7 +321,9 @@ DISPATCHABLE_TOOL_NAMES = (
     "astral_submit_operation", "astral_get_operation", "astral_list_operations",
     "astral_get_operation_events", "astral_cancel_operation", "astral_pause_operation",
     "astral_get_artifact", "astral_emergency_status", "astral_emergency_stop",
-    "astral_emergency_resume",
+    "astral_emergency_resume", "astral_subscribe_operation_completion",
+    "astral_list_operation_completion_subscriptions",
+    "astral_cancel_operation_completion_subscription",
 )
 
 
@@ -292,6 +339,9 @@ def dispatch_name(tool_name: str) -> Optional[str]:
         "astral_emergency_status": "emergency_status",
         "astral_emergency_stop": "emergency_stop",
         "astral_emergency_resume": "emergency_resume",
+        "astral_subscribe_operation_completion": "subscribe",
+        "astral_list_operation_completion_subscriptions": "subscriptions",
+        "astral_cancel_operation_completion_subscription": "unsubscribe",
     }.get(tool_name) if tool_name in DISPATCHABLE_TOOL_NAMES else None
 
 

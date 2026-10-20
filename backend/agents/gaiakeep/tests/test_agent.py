@@ -23,7 +23,7 @@ def test_card_and_plane_bindings(monkeypatch):
     agent = gaiakeep_agent.GaiakeepAgent(port=8998, plane_runtime=runtime, plane_repositories=repos, plane_blobs=blobs)
     assert agent.card.agent_id == 'gaiakeep-1'
     assert agent.host == '127.0.0.1'
-    assert len(agent.card.skills) == 118
+    assert len(agent.card.skills) == 104
     assert agent.card.metadata['required_credentials'] == []
     assert captured[0]['plane_runtime'] is runtime
     assert agent.mcp_server.plane_source.plane_repositories is repos
@@ -119,8 +119,11 @@ async def test_normal_builtin_registration(monkeypatch, enabled):
     monkeypatch.setattr(gaiakeep_agent, 'CredentialManager', lambda **kw: object())
     monkeypatch.setattr(gaiakeep_agent.BaseA2AAgent, '_init_crypto',
                         lambda self: setattr(self, '_public_key_jwk', {'test': 'ephemeral'}))
+    from agents.cresco import cresco_agent
+    monkeypatch.setattr(cresco_agent.BaseA2AAgent, '_init_crypto',
+                        lambda self: setattr(self, '_public_key_jwk', {'test': 'ephemeral'}))
     plane = SimpleNamespace(runtime=object(), repositories=object(), blobs=object(), attachment_materializer=object())
     orch = SimpleNamespace(runtime_composition=SimpleNamespace(plane=plane), local_agents={}, register_agent=AsyncMock())
     actual = await local_agents.register_built_ins(orch)
-    assert actual == (['gaiakeep-1'] if enabled else [])
-    assert orch.register_agent.await_count == int(enabled)
+    assert actual == (['gaiakeep-1', 'cresco-1'] if enabled else [])
+    assert orch.register_agent.await_count == (2 if enabled else 0)

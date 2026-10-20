@@ -25,9 +25,11 @@ class Service:
         self.username, self.failure = username, failure
         self.logged_in = False
         self.sessions = 0
+        self.requests = []
 
     def handle(self, request):
         path = request.url.path
+        self.requests.append((request.method, path))
         status, payload, headers = 200, {}, {}
         text = None
         if path == "/auth/session":
@@ -82,11 +84,24 @@ class Service:
             if self.failure == "chat-identity":
                 payload["chat_id"] = "../outside"
         elif path == "/api/chats":
-            payload = {"chats": [{"chat_id": CHAT}] if self.username == "owner-a" else []}
+            retained = "conversation-1" if self.username == "owner-a" else "conversation-2"
+            payload = {"chats": [{"id": retained, "title": "Synthetic retained conversation"}]}
             if self.failure == "list-status":
                 status = 503
             if self.failure == "list-leak":
-                payload = {"chats": [{"chat_id": CHAT}]}
+                payload["chats"].append({"id": CHAT})
+            if self.failure == "missing-retention":
+                payload = {"chats": []}
+            if self.failure == "list-shape":
+                payload = {"chats": {"id": retained}}
+            if self.failure == "missing-list-id":
+                payload = {"chats": [{"preview": retained}]}
+            if self.failure == "preview-only-retention":
+                payload = {"chats": [{"id": "unrelated", "preview": retained}]}
+            if self.failure == "duplicate-list-id":
+                payload["chats"] *= 2
+            if self.failure == "migrated-list-leak":
+                payload["chats"].append({"id": "conversation-2" if self.username == "owner-a" else "conversation-1"})
         elif path.startswith("/api/chats/"):
             status = 200 if self.logged_in and self.username == "owner-a" else (404 if self.logged_in else 401)
             if self.failure == "owner-read":
@@ -95,6 +110,22 @@ class Service:
                 status = 200
             if self.failure == "signed-out-read" and not self.logged_in:
                 status = 200
+            if path == "/api/chats/conversation-1":
+                payload = {"chat": {"id": "conversation-1", "messages": [
+                    {"role": "user", "content": "Synthetic message A", "timestamp": 1010},
+                ]}}
+                if self.failure == "missing-message":
+                    payload["chat"]["messages"] = []
+                if self.failure == "preview-only-message":
+                    payload["chat"].update(messages=[], title="Synthetic message A")
+                if self.failure == "wrong-message":
+                    payload["chat"]["messages"][0]["content"] = "Not retained: Synthetic message A"
+                if self.failure == "wrong-message-role":
+                    payload["chat"]["messages"][0]["role"] = "assistant"
+                if self.failure == "wrong-retained-id":
+                    payload["chat"]["id"] = "conversation-2"
+                if self.failure == "migrated-foreign-read":
+                    status = 200
         elif path == "/api/upload":
             assert CONTENTS in request.content
             status = 201 if self.failure != "upload-status" else 503
@@ -133,6 +164,41 @@ def test_actual_protocol_sequence_and_evidence_excludes_tokens():
     assert report["release_authorized"] is False
     assert "synthetic-access" not in json.dumps(report)
     assert "password" not in json.dumps(report)
+
+
+def test_empty_new_chat_is_not_required_in_nonempty_history():
+    services = [Service("owner-a"), Service("owner-b")]
+    with (httpx.Client(transport=httpx.MockTransport(services[0].handle)) as owner,
+          httpx.Client(transport=httpx.MockTransport(services[1].handle)) as foreign):
+        report = probe.exercise((owner, foreign), IDENTITIES, ID)
+    assert report["chat_history_retention"] == "passed"
+    for service in services:
+        assert ("GET", "/api/chats/conversation-1") in service.requests
+
+
+@pytest.mark.parametrize("failure", ["missing-retention", "preview-only-retention", "migrated-list-leak"])
+def test_missing_or_foreign_migrated_history_cannot_pass(failure):
+    with pytest.raises(probe.ProbeError, match="history listing crossed ownership"):
+        exercise(failure)
+
+
+@pytest.mark.parametrize("failure", ["list-shape", "missing-list-id", "duplicate-list-id"])
+def test_malformed_history_inventory_cannot_pass(failure):
+    with pytest.raises(probe.ProbeError, match="history listing was malformed"):
+        exercise(failure)
+
+
+@pytest.mark.parametrize("failure", ["missing-message", "preview-only-message", "wrong-message",
+                                    "wrong-message-role", "wrong-retained-id"])
+def test_retention_requires_the_actual_migrated_message(failure):
+    with pytest.raises(probe.ProbeError, match="migrated history message was not retained"):
+        exercise(failure)
+
+
+@pytest.mark.parametrize("failure", ["missing-retention", "migrated-list-leak", "migrated-foreign-read"])
+def test_foreign_migrated_history_checks_cannot_be_omitted(failure):
+    with pytest.raises(probe.ProbeError):
+        exercise(foreign_failure=failure)
 
 
 @pytest.mark.parametrize("failure", ["session-status", "session-shape", "initial-auth", "wrong-owner",

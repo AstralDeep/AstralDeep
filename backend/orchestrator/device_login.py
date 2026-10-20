@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import secrets
+import ssl
 import time
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
@@ -147,7 +148,8 @@ def _fernet():
 
 async def _bounded_json(method, url, *, data=None):
     import httpx
-    async with httpx.AsyncClient(timeout=10.0, trust_env=False, follow_redirects=False) as client:
+    context = ssl.create_default_context(cafile=os.getenv("SSL_CERT_FILE") or None)
+    async with httpx.AsyncClient(timeout=10.0, trust_env=False, follow_redirects=False, verify=context) as client:
         async with client.stream(method, url, data=data) as response:
             raw = bytearray()
             async for chunk in response.aiter_bytes():

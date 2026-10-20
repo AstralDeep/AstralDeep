@@ -14,6 +14,8 @@ import pytest
 from orchestrator.voice_runtime import VoiceSessionRuntime
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.voice_control_binding import VoiceControlClaims
+from orchestrator.voice_backend import VoiceSpeechBackend
+from orchestrator.voice_bootstrap import _ClientLocalCapability
 
 
 DEVICE = "00000000-0000-4000-8000-000000000001"
@@ -41,15 +43,20 @@ class _Repository:
         return self.session
 
 
-def _runtime() -> tuple[VoiceSessionRuntime, _Repository, _Capability]:
+def _runtime(
+    *,
+    speech_backend: VoiceSpeechBackend = VoiceSpeechBackend.LLM_FACTORY,
+    capability: _Capability | _ClientLocalCapability | None = None,
+) -> tuple[VoiceSessionRuntime, _Repository, _Capability | _ClientLocalCapability]:
     repository = _Repository()
-    capability = _Capability()
+    capability = capability if capability is not None else _Capability()
     return (
         VoiceSessionRuntime(
             repository=repository,
             capability=capability,
             media=SimpleNamespace(),
             replica_id="voice-test-replica",
+            speech_backend=speech_backend,
         ),
         repository,
         capability,
@@ -111,6 +118,93 @@ async def test_unready_projection_maps_internal_media_reason_without_detail() ->
 
     assert frame["voice"]["state"] == "unavailable"
     assert frame["voice"]["reason"] == "media_unavailable"
+    assert frame["voice"]["controls"][0]["enabled"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("owner_device", "action"),
+    ((None, "voice_session_start"), (OTHER_DEVICE, "voice_session_takeover")),
+)
+async def test_local_readiness_offer_allows_start_or_takeover_without_capture(
+    owner_device: str | None, action: str,
+) -> None:
+    runtime, repository, _capability = _runtime(
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        capability=_ClientLocalCapability(lambda: True),
+    )
+    if owner_device is not None:
+        repository.session = _session(device_id=owner_device)
+
+    frame = await runtime.get_composer_state(
+        user_id="user-a", device_id=DEVICE, device_kind="ios",
+        connection_generation=CONNECTION, selected_chat_id=CHAT, revision=1,
+    )
+
+    voice = frame["voice"]
+    assert voice["available"] is True
+    assert [item["action"] for item in voice["controls"] if item["visible"]] == [action]
+    assert next(item for item in voice["controls"] if item["action"] == action)["enabled"] is True
+    assert voice["microphone_enabled"] is False
+    assert voice["foreground_active"] is False
+    assert repository.session is None or repository.session.device_id == OTHER_DEVICE
+    if owner_device is None:
+        assert voice["session_id"] is None
+        assert voice["owner_device"] is None
+        assert voice["generation"] is None
+    capability = await runtime.get_capability(user_id="user-a")
+    assert capability["status"] == "requires_client_readiness"
+    assert capability["reason"] == "client_readiness_required"
+
+
+@pytest.mark.asyncio
+async def test_local_feature_disabled_does_not_offer_start() -> None:
+    runtime, _repository, _capability = _runtime(
+        speech_backend=VoiceSpeechBackend.CLIENT_LOCAL,
+        capability=_ClientLocalCapability(lambda: False),
+    )
+
+    frame = await runtime.get_composer_state(
+        user_id="user-a", device_id=DEVICE, device_kind="android",
+        connection_generation=CONNECTION, selected_chat_id=CHAT, revision=1,
+    )
+
+    assert frame["voice"]["available"] is False
+    assert frame["voice"]["state"] == "unavailable"
+    assert frame["voice"]["reason"] == "feature_disabled"
+    assert frame["voice"]["controls"][0]["enabled"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("backend", "status", "reason"),
+    (
+        (VoiceSpeechBackend.CLIENT_LOCAL, "ready", "ready"),
+        (VoiceSpeechBackend.LLM_FACTORY, "requires_client_readiness", "client_readiness_required"),
+        (VoiceSpeechBackend.CLIENT_LOCAL, "unavailable", "client_readiness_required"),
+        (VoiceSpeechBackend.CLIENT_LOCAL, "requires_client_readiness", "ready"),
+        (VoiceSpeechBackend.CLIENT_LOCAL, "requires_client_readiness", "feature_disabled"),
+        (VoiceSpeechBackend.CLIENT_LOCAL, "ready", "client_readiness_required"),
+        (VoiceSpeechBackend.CLIENT_LOCAL, None, "client_readiness_required"),
+        (VoiceSpeechBackend.CLIENT_LOCAL, "requires_client_readiness", None),
+    ),
+)
+async def test_composer_rejects_mismatched_backend_readiness(
+    backend: VoiceSpeechBackend, status: str | None, reason: str | None,
+) -> None:
+    capability = _Capability()
+    capability.value = SimpleNamespace(status=status, reason=reason)
+    runtime, _repository, _capability = _runtime(
+        speech_backend=backend, capability=capability,
+    )
+
+    frame = await runtime.get_composer_state(
+        user_id="user-a", device_id=DEVICE, device_kind="web",
+        connection_generation=CONNECTION, selected_chat_id=CHAT, revision=1,
+    )
+
+    assert frame["voice"]["available"] is False
+    assert frame["voice"]["state"] == "unavailable"
     assert frame["voice"]["controls"][0]["enabled"] is False
 
 

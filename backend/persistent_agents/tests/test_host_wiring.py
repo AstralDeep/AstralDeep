@@ -50,6 +50,7 @@ async def test_actual_startup_only_starts_explicitly_enabled_assignment_runner(m
         generated_agent_publication_service=SimpleNamespace(
             recover_once=AsyncMock(return_value=SimpleNamespace(degraded_publication_ids=())), start=Mock()),
         _track_startup_background_task=background, _jwks_warm_loop=AsyncMock(),
+        _work_recovery_loop=AsyncMock(),
         _personal_agent_watchdog_task=SimpleNamespace(done=lambda: False),
         _start_phi_warm=Mock(), _monitor_agents=AsyncMock(), web_sessions=object(),
         explicit_notes=SimpleNamespace(expiry_loop=AsyncMock()),
@@ -116,12 +117,17 @@ async def test_dispatch_cannot_retry_fan_out_or_publish_uncheckpointed_ui():
     hub.MAX_RETRIES = 5
     hub.execute_tool_and_wait = AsyncMock(return_value=MCPResponse(error={"retryable": True}))
     hub._protected_dispatch_channel = lambda *a, **kw: "persistent_assignment"
+    hub.rote = SimpleNamespace(adapt=Mock(), get_profile=Mock())
+    hub._safe_send = AsyncMock()
     with bind_dispatch(context()):
         await hub._execute_with_retry(None, "reader", "read", {})
         with pytest.raises(DispatchDenied, match="unreserved_parallel"):
             await hub.execute_parallel_tools(None, [], {})
-        assert await hub.send_ui_render(None, [{"type": "text", "text": "uncommitted"}]) is None
+        assert await hub.send_ui_render(None, [{"type": "text", "text": "uncommitted"}]) is False
     hub.execute_tool_and_wait.assert_awaited_once()
+    hub.rote.adapt.assert_not_called()
+    hub.rote.get_profile.assert_not_called()
+    hub._safe_send.assert_not_awaited()
 
 
 @pytest.mark.asyncio

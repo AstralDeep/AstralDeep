@@ -154,6 +154,24 @@ The example environment runs in development mode (`ASTRAL_ENV=development`) with
 authentication (`USE_MOCK_AUTH=true`), so no Keycloak realm is needed for local work. Mock
 authentication is refused outside development.
 
+### Diagnose an installation
+
+Run `make doctor` (or `make doctor PYTHON=python3`) for a read-only diagnosis of a
+Linux, macOS or Windows source/Compose installation. The doctor checks Python, Git and
+Docker Compose v2, exact local component pins/contracts, required `.env` configuration,
+production exit-78 posture, and configured application, PostgreSQL, LiveKit and Keycloak
+health. It reports `ready` (exit 0), `repair` (exit 1) or `unsupported` (exit 2), with
+redacted findings and suggested repairs. `python scripts/install_doctor.py --json` emits
+the same report as JSON. It never starts containers, changes configuration or signs in.
+
+The supported Compose deployment uses `ROOT/.env`; diagnosing another file cannot
+establish this deployment's readiness. Missing services, invalid records or unknown app
+image/checkout identities require repair. The app image must carry its source commit in
+`org.opencontainers.image.revision` to establish freshness. Without this identity the
+doctor reports unverified artifact integrity, even if the application's health endpoint
+responds. This report is deployment diagnosis; it does not replace protected CI or
+candidate-bound staging qualification.
+
 ### Connect a language model
 
 The product ships with no LLM credential. Each user connects their own provider through the
@@ -194,6 +212,7 @@ Frequently used targets (`make help` lists them all):
 | Target | Purpose |
 |---|---|
 | `make up` / `make down` | Build and start, or stop, the stack (volumes are kept). |
+| `make doctor` | Read-only installation and readiness diagnosis with actionable outcomes. |
 | `make sync` | Rebuild and recreate the app with the current backend and exact component wheels. |
 | `make apply-config` | Recreate the app so a changed `.env` takes effect. |
 | `make logs` / `make shell` / `make psql` | Follow app logs, open a shell in the app container, or open `psql`. |

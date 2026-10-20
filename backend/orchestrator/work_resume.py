@@ -1,6 +1,6 @@
 """Resumes one owner's paused work using its original session proof and the current
-research profile; grants no execution permit by itself. Composes
-work_control_authority.py and work_controls.py for work_api.py.
+research profile, reconciling only that target's authoritative completion wait.
+Composes work_control_authority.py and work_controls.py for work_api.py.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from orchestrator.work_continuation_authority import refresh_operation_control_a
 from orchestrator.work_control_authority import WorkCallerAuthority
 from orchestrator.work_controls import WorkControlRequest, WorkControlService, _method, _owned_operation
 from orchestrator.work_service import _identity, _public
+from orchestrator.work_subscriptions import reconcile_completion_wait
 from orchestrator.work_submit import FixedResearchPreflight
 from persistent_agents.dispatch_context import DispatchDenied
 from persistent_agents.models import AssignmentError, SourceSelection, ToolReference
@@ -103,6 +104,8 @@ class WorkResumeService(WorkControlService):
                 updated = _owned_operation(tx, repository, owner, identity)
                 if result.applied:
                     self.audit.append(tx, owner_id=owner, command="resume", record=updated.assignment)
+                    if reconcile_completion_wait(self.assignments, tx, repository, updated.assignment):
+                        updated = _owned_operation(tx, repository, owner, identity)
                 composition.new_admission()
                 preflight.assert_key(prepared)
                 preflight.assert_policy(tx, runtime=self.store.plane_runtime,

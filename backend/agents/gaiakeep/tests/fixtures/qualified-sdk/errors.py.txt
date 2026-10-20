@@ -138,6 +138,22 @@ class StageRequired(RetryAfter):
         self.bytes_needed = bytes_needed
 
 
+class QuotaExceeded(RetryAfter):
+    """Status 17: the tenant's quota refuses the work (OUT-59). `quota` is "staging" (its open uploads hold their
+    share of staging: retryable after `retry_after_ms`, as they finish) or "stored" (its domains hold their
+    quota: not retryable until it frees space or an operator raises it with core.quota). `used`, `max` and
+    `asked` are bytes."""
+
+    def __init__(self, message, quota=None, tenant=None, used=None, max_bytes=None, asked=None, **kw):
+        super().__init__(message, **kw)
+        self.quota = quota
+        self.tenant = tenant
+        self.used = used
+        self.max = max_bytes
+        self.asked = asked
+        self.retryable = quota == "staging"
+
+
 class NotLeader(GaiaKeepError):
     """Status 12: this peer is not the core leader. `leader` names the leader ('' while an election runs).
     CoreClient follows the redirect itself; this escapes only when redirects are exhausted."""
@@ -203,13 +219,25 @@ class CommitFailed(GaiaKeepError):
 
 class CommitPending(GaiaKeepError):
     """Status 16: a durable dataset's version is committing to VERIFIED tape copies (gfs#8) — reads open
-    when the commit job the publish reply named (`commit_job`) finishes. Not retryable by the transport:
-    await the job, then read."""
+    when the commit job the publish reply named (`commit_job`) finishes. Nothing is wrong and nothing is lost.
+
+    CoreClient's reads (download, read, file_info) await the commit by default (OUT-102: wait_commit=True, up to
+    Timeouts.read_commit_wait) and raise this only with wait_commit=False or once that wait is spent. `job_id` names
+    the commit job when it is known (the core's reply, or this client's own put of that version): poll it with
+    core.job; `retry_after_ms` is when to read again; `vid` the version; `waited_s` how long this client waited."""
+    retryable = True
+
+    def __init__(self, message, job_id=None, retry_after_ms=None, vid=None, waited_s=None, **kw):
+        super().__init__(message, **kw)
+        self.job_id = job_id
+        self.retry_after_ms = retry_after_ms
+        self.vid = vid
+        self.waited_s = waited_s
 
 
 _BY_STATUS = {"3": Unauthenticated, "4": Forbidden, "5": InternalError, "6": Failed, "7": PolicyRefused,
               "8": BadRequest, "9": NotFound, "11": RetryAfter, "12": NotLeader, "13": Deferred,
-              "14": RetryAfter, "15": StageRequired, "16": CommitPending}
+              "14": RetryAfter, "15": StageRequired, "16": CommitPending, "17": QuotaExceeded}
 
 
 def _int(v, default=None):
@@ -331,7 +359,12 @@ def from_reply(action, reply, redact_values=()):
         return StageRequired(msg, est_ms=_int(reply.get("est_ms")), bytes_needed=_int(reply.get("bytes_needed")),
                              retry_after_ms=ra, **kw)
     if status == "16":
-        return CommitPending(msg, **kw)
+        return CommitPending(msg, job_id=reply.get("commit_job") or reply.get("job_id") or None,
+                            retry_after_ms=_int(reply.get("retry_after_ms")), vid=reply.get("vid") or None, **kw)
+    if status == "17":
+        return QuotaExceeded(msg, quota=reply.get("quota"), tenant=reply.get("quota_tenant"), used=_int(reply.get("quota_used")),
+                             max_bytes=_int(reply.get("quota_max")), asked=_int(reply.get("quota_asked")),
+                             retry_after_ms=_int(reply.get("retry_after_ms"), 0), **kw)
     if status in ("11", "14") or reply.get("retry_after_ms") is not None:
         return RetryAfter(msg, retry_after_ms=_int(reply.get("retry_after_ms"), 1000), **kw)
     if status == "7":

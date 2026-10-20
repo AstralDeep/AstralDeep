@@ -4,7 +4,9 @@
 
 **Created**: 2026-10-13
 
-**Status**: Approved — contract ratified and bounded; bridge implementation **not started** (explicitly not runtime-complete)
+**Status**: Contract ratified; bounded topology runtime prepared behind default-off gates. Generic dispatch, bounded executor completion and real-fabric acceptance remain pending.
+
+**Current authority**: [`contracts/bridge-contract.md`](contracts/bridge-contract.md) and its executable conformance cases supersede the historical absence assumptions below. The following overview, decisions and requirements preserve the original document-only child scope; their references to no runtime, old wire pins and implementation not started describe that earlier snapshot. Current runtime disposition is reconciled at the end of this record.
 
 **Input**: Issue #279: "Feature 050 planned a general Cresco bridge, but that agent/runtime is absent. The merged GaiaKeep integration is a specialized Cresco-gated archival path, not a generic topology/discovery/dispatch bridge between approved Astral deployments. This child is limited to: reconcile and bound the general cresco bridge contract."
 
@@ -68,3 +70,7 @@ Open external dependency: AstralPlane issue #67 (outside this environment; statu
 - **Builds on**: spec 050 (evaluation record), spec 092 (merged GaiaKeep boundary), Constitution v6.2.0.
 - **Depends on (external)**: AstralPlane #67 — open; no change to AstralDeep's composition pin in this feature.
 - **Out of scope / deferred**: implementing the bridge agent or wsapi client (any future implementation MUST adopt this contract and re-verify the upstream pins first); dataplane/log streaming; fabric-initiated inbound connections; a Cresco-side Java plugin.
+
+## Current runtime reconciliation (2026-10-13)
+
+The document-only feature's original snapshot predates the runtime child. Its absence checks are superseded by current conformance in `contracts/bridge-contract.md`: a present default-off bounded-topology adapter, source-verified controller/agent requests and flat responses, and unavailable generic dispatch/executor result transports. Synthetic TLS tests do not establish real-fabric acceptance or completed work. Historical evaluation and original document-only scope remain preserved.

@@ -274,6 +274,17 @@ def test_service_phase_receipt_records_only_attempted_sequence(args, monkeypatch
         assert "session-renewal" not in receipt["observed_checks"]
 
 
+def test_service_deployment_requests_the_reviewed_current_plane_fixture(args, monkeypatch):
+    calls = stub_phases(args, monkeypatch)
+    args.phase = "services"
+    receipt = producer.produce(args)
+    deployment = next(arguments for kind, arguments, *_ in calls if kind == "deploy")
+    assert deployment.fixture_sha256 == "c016d8dd30f2bdf932ba8e855bbc586826f5b0f4137b6413c61a82293ef41c1d"
+    assert deployment.plane_source == args.source / "components/AstralPlane"
+    assert deployment.plane_commit == "e" * 40
+    assert receipt["release_authorized"] is False
+
+
 @pytest.mark.parametrize("failure", [None, "gates", "gate-modules", "services", "deployment", "auth", "auth-record"])
 def test_local_pass_records_missing_acceptance_without_fake_success(args, monkeypatch, failure):
     stub_phases(args, monkeypatch, failure)

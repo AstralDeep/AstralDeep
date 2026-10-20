@@ -6,8 +6,11 @@ from __future__ import annotations
 
 import json
 import tomllib
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -43,7 +46,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
     },
     "astral-plane": {
         "distribution": "astralplane",
-        "version": "0.1.0",
+        "version": version("astralplane"),
         "path": "components/AstralPlane",
         "contract": "astralplane.contract/v1",
         "availability": "required-embedded",
@@ -163,3 +166,22 @@ def test_local_component_contract_matches_manifest_and_package_metadata() -> Non
         assert project["version"] == expected["version"]
         for extra in expected["extras"]:
             assert extra in project.get("optional-dependencies", {})
+
+
+def test_local_component_contract_rejects_installed_plane_version_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root_metadata = _toml(REPOSITORY_ROOT / "pyproject.toml")
+    root_metadata["tool"]["astraldeep"]["local-components"]["astral-plane"][
+        "version"
+    ] = version("astralplane") + ".invalid"
+    original_toml = _toml
+    monkeypatch.setitem(
+        globals(),
+        "_toml",
+        lambda path: root_metadata
+        if path == REPOSITORY_ROOT / "pyproject.toml"
+        else original_toml(path),
+    )
+    with pytest.raises(AssertionError):
+        test_local_component_contract_matches_manifest_and_package_metadata()
