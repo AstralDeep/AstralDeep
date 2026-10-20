@@ -134,10 +134,15 @@ def _terminal_guard(token: str) -> None:
                               code="terminal_owner_authentication_required")
 
 
-def _terminal_body(cols: int, rows: int, command: Optional[str]) -> dict[str, Any]:
+def _terminal_body(cols: int, rows: int, command: Optional[str],
+                   target: Optional[str], directory: Optional[str]) -> dict[str, Any]:
     body: dict[str, Any] = {"cols": cols, "rows": rows}
     if command is not None:
         body["command"] = command
+    if target is not None:
+        body["target"] = target
+    if directory is not None:
+        body["directory"] = directory
     return body
 
 
@@ -389,11 +394,13 @@ class AstralClient:
         return _terminal_response(response)
 
     def create_terminal_session(self, *, cols: int = 80, rows: int = 24,
-                                command: Optional[str] = None,
+                                command: Optional[str] = None, target: Optional[str] = None,
+                                directory: Optional[str] = None,
                                 approval_timeout_seconds: float = 120) -> TerminalSessionView:
         _approval_timeout(approval_timeout_seconds)
         return self._approved_terminal(
-            self._terminal("POST", "", _terminal_body(cols, rows, command)), approval_timeout_seconds)
+            self._terminal("POST", "", _terminal_body(cols, rows, command, target, directory)),
+            approval_timeout_seconds)
 
     def get_terminal_approval(self, proposal_id: str) -> dict[str, Any]:
         if not re.fullmatch(r"[0-9a-f]{32}", proposal_id):
@@ -654,11 +661,13 @@ class AsyncAstralClient:
         return _terminal_response(response)
 
     async def create_terminal_session(self, *, cols: int = 80, rows: int = 24,
-                                      command: Optional[str] = None,
+                                      command: Optional[str] = None, target: Optional[str] = None,
+                                      directory: Optional[str] = None,
                                       approval_timeout_seconds: float = 120) -> TerminalSessionView:
         _approval_timeout(approval_timeout_seconds)
         return await self._approved_terminal(
-            await self._terminal("POST", "", _terminal_body(cols, rows, command)), approval_timeout_seconds)
+            await self._terminal("POST", "", _terminal_body(cols, rows, command, target, directory)),
+            approval_timeout_seconds)
 
     async def get_terminal_approval(self, proposal_id: str) -> dict[str, Any]:
         if not re.fullmatch(r"[0-9a-f]{32}", proposal_id):

@@ -96,6 +96,18 @@ _ERROR_HINTS = {
         "cols must be an integer between 2 and 1000.",
         "",
     ),
+    "terminal_target_invalid": (
+        "target must be the approved machine id for this terminal runtime.",
+        "Omit target to use the current approved runtime.",
+    ),
+    "terminal_target_changed": (
+        "The approved terminal runtime no longer matches this request.",
+        "Start a new terminal against the current approved runtime.",
+    ),
+    "terminal_directory_invalid": (
+        "directory must be an absolute remote path without control characters.",
+        "Use a path such as /home/owner/project, or omit directory.",
+    ),
     "terminal_rows_invalid": (
         "rows must be an integer between 2 and 300.",
         "",
@@ -195,7 +207,8 @@ def start_terminal(**kwargs) -> Dict[str, Any]:
     try:
         require_terminal_execution(manager, user_id)
         info = manager.create(user_id, cols=kwargs.get("cols", 80), rows=kwargs.get("rows", 24),
-                              command=kwargs.get("command"), authority=kwargs["_terminal_authority"],
+                              command=kwargs.get("command"), target=kwargs.get("target"),
+                              directory=kwargs.get("directory"), authority=kwargs["_terminal_authority"],
                               runtime_binding=kwargs.get("runtime_binding"))
     except TerminalError as exc:
         return _terminal_fail(exc)
@@ -250,6 +263,8 @@ def terminal_read(**kwargs) -> Dict[str, Any]:
         "bytes": payload.get("bytes"),
         "truncated": payload.get("truncated"),
         "eof": payload.get("eof"),
+        "exit_code": payload.get("exit_code"),
+        "close_reason": payload.get("close_reason"),
         "text": text,
         "data_b64": payload.get("data_b64"),
         "session": payload.get("session"),
@@ -327,9 +342,13 @@ def close_terminal(**kwargs) -> Dict[str, Any]:
     except TerminalError as exc:
         return _terminal_fail(exc)
     reason = _sanitize(outcome.get("reason"), 60) or "owner_close"
+    exit_code = outcome.get("exit_code")
+    detail = f"Closed ({reason})."
+    if type(exit_code) is int:
+        detail = f"Closed ({reason}); exit code {exit_code}."
     return _card(f"Terminal closed — {_sanitize(session_id, 48)}",
-                 [Text(content=f"Closed ({reason}).", variant="body")],
-                 {"session_id": session_id, "closed": True, "reason": reason})
+                 [Text(content=detail, variant="body")],
+                 {"session_id": session_id, "closed": True, "reason": reason, "exit_code": exit_code})
 
 
 def _entry(fn, description: str, input_schema: Dict[str, Any], scope: str, timeout: float, destructive: str = "never"):
@@ -361,6 +380,10 @@ TOOL_REGISTRY = {
             "command": {"type": "string",
                         "description": ("Optional command to run instead of an "
                                         "interactive shell, e.g. 'df -h'.")},
+            "target": {"type": "string", "maxLength": 128,
+                       "description": "Optional approved machine id for this runtime."},
+            "directory": {"type": "string", "maxLength": 4096,
+                          "description": "Optional absolute starting directory on the approved runtime."},
             "cols": {"type": "integer", "minimum": 2, "maximum": 1000},
             "rows": {"type": "integer", "minimum": 2, "maximum": 300},
         }},

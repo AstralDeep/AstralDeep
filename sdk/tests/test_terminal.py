@@ -47,6 +47,24 @@ class TestTerminalClientContract:
             assert (session.cols, session.rows) == (120, 40)
             assert session.ring_start == 0 and session.ring_end == 0
 
+    def test_create_forwards_explicit_target_and_directory(self, fake_server):
+        with _client(fake_server) as client:
+            session = client.create_terminal_session(
+                target="a" * 32, directory="/srv/project")
+            assert session.target == "a" * 32
+            assert session.directory == "/srv/project"
+
+    def test_closed_read_reports_the_server_exit_status_without_inventing_one(self, fake_server):
+        session_id = _create(fake_server)
+        fake_server.state.terminals[session_id]["exit_code"] = 4
+        with _client(fake_server) as client:
+            closed = client.close_terminal(session_id)
+            assert closed["exit_code"] == 4
+            out = client.read_terminal(session_id, offset=0)
+            assert out.eof is True
+            assert out.exit_code == 4
+            assert out.close_reason == "owner_close"
+
     def test_write_then_read_round_trips_and_advances_the_offset(self, fake_server):
         session_id = _create(fake_server)
         with _client(fake_server) as client:
@@ -158,8 +176,12 @@ class TestTerminalAuthentication:
 class TestTerminalCLI:
     def test_create_write_read_close_round_trip_through_the_cli(self, fake_server):
         created = json.loads(_run(fake_server, "terminal-create",
-                                  "--cols", "110", "--rows", "28").stdout)
+                                  "--cols", "110", "--rows", "28",
+                                  "--target", "a" * 32,
+                                  "--directory", "/srv/project").stdout)
         assert created["cols"] == 110
+        assert created["target"] == "a" * 32
+        assert created["directory"] == "/srv/project"
         session_id = created["session_id"]
         written = _run(fake_server, "terminal-write", session_id, "--data", "cli-marker")
         assert written.returncode == 0, written.stderr

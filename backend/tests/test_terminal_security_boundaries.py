@@ -155,6 +155,17 @@ def test_safe_read_uses_full_dispatch_and_preserves_exact_binary_payload(enabled
     assert kwargs["tool_name"] == "terminal_read"
 
 
+def test_read_preserves_truthful_optional_exit_fields(enabled, monkeypatch):
+    payload = {**PAYLOAD, "eof": True, "session": None, "exit_code": 3, "close_reason": "process_exited"}
+    client, orch, calls = _client(
+        monkeypatch, dispatch=AsyncMock(return_value=MCPResponse(result=payload)))
+    response = client.get(f"/api/terminals/{SESSION}/output")
+    assert response.status_code == 200
+    assert response.json()["exit_code"] == 3
+    assert response.json()["close_reason"] == "process_exited"
+    assert response.json()["session"] is None
+
+
 def test_owner_revoked_during_dispatch_cannot_receive_retained_output(enabled, monkeypatch):
     revoked = False
 
