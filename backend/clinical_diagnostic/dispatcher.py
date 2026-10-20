@@ -252,6 +252,7 @@ class WebSocketDispatcher:
         audit_event_ids: List[str] = []
         terminal_seen = False
         snapshot_seen = False
+        submitted = False
         total_bytes = 0
         try:
             control.remaining_seconds()
@@ -260,18 +261,10 @@ class WebSocketDispatcher:
                 "token": self._token,
                 "connection_generation": connection_generation,
             }))
-            control.remaining_seconds()
-            transport.send(json.dumps({
-                "type": "ui_event",
-                "action": "chat_message",
-                "submission_id": submission_id,
-                "request_generation": request_generation,
-                "connection_generation": connection_generation,
-                "payload": {"message": prompt, "chat_id": chat_id},
-            }))
             while len(frames) < self.max_frames:
                 remaining = control.remaining_seconds()
                 raw = transport.recv(remaining)
+                control.remaining_seconds()
                 if isinstance(raw, bytes):
                     try:
                         raw = raw.decode("utf-8", errors="strict")
@@ -293,6 +286,22 @@ class WebSocketDispatcher:
                 frames.append(dict(frame))
                 if frame.get("type") in ("auth_error", "auth_required"):
                     raise DispatcherDenied()
+                if not submitted:
+                    if frame.get("type") != "rote_config":
+                        continue
+                    if len(frames) >= self.max_frames or total_bytes >= MAX_RESPONSE_BYTES:
+                        raise DispatcherError("dispatcher registration exhausted the response bound")
+                    control.remaining_seconds()
+                    transport.send(json.dumps({
+                        "type": "ui_event",
+                        "action": "chat_message",
+                        "submission_id": submission_id,
+                        "request_generation": request_generation,
+                        "connection_generation": connection_generation,
+                        "payload": {"message": prompt, "chat_id": chat_id},
+                    }))
+                    submitted = True
+                    continue
                 if frame.get("type") == "submission_rejected" and frame.get("submission_id") == submission_id:
                     raise DispatcherDenied(_denial_text(frame))
                 event = frame.get("event")

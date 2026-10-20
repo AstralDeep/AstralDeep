@@ -139,7 +139,7 @@ def test_answer_registers_chats_and_collects_committed_components():
     answer = adapter.answer(case())
     assert answer.text == "Required fact.\nSafety action.\nCannot determine remotely."
     assert answer.chat_id == "chat-1"
-    assert answer.frame_types == ("audit_append", "conversation_snapshot", "operation_status")
+    assert answer.frame_types == ("rote_config", "audit_append", "conversation_snapshot", "operation_status")
     assert answer.audit_event_ids == ("audit-1",)
     assert transport.sent[0]["type"] == "register_ui"
     assert transport.sent[0]["token"] == "secret-token"
@@ -167,7 +167,7 @@ def test_answer_requires_matching_operation_terminal_after_chat_status():
 
 
 def test_answer_refuses_missing_terminal_and_missing_text():
-    adapter, _ = scoped_dispatcher([committed_answer()], max_frames=1)
+    adapter, _ = scoped_dispatcher([committed_answer()], max_frames=2)
     with pytest.raises(DispatcherError, match="terminal"):
         adapter.answer(case())
     adapter, _ = scoped_dispatcher([committed_answer(text=""), completed_turn()])
@@ -457,6 +457,9 @@ def completed_turn(**fields):
 
 
 class ScopedTransport(FakeTransport):
+    def __init__(self, frames):
+        super().__init__([{"type": "rote_config"}, *frames])
+
     def recv(self, timeout):
         if self.frames and callable(self.frames[0]):
             self.frames[0] = self.frames[0](self.sent[1])
