@@ -7,8 +7,10 @@ refusal, generated-import unavailability, bounded results, and audit evidence.
 from __future__ import annotations
 
 import base64
+from dataclasses import asdict
 import os
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -21,11 +23,15 @@ if str(BACKEND_DIR) not in sys.path:
 
 os.environ["USE_MOCK_AUTH"] = "true"
 
+from astralplane.repositories.guidance_models import ExplicitNoteRecord  # noqa: E402
+from astralplane.repositories.preferences import MemoryRecord  # noqa: E402
 from audit.repository import AuditRepository  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from orchestrator.credential_manager import CredentialManager  # noqa: E402
 from personalization import phi_gate  # noqa: E402
+from personalization.atlas_service import AtlasPageService  # noqa: E402
+from personalization.explicit_notes import ExplicitNoteMetadata  # noqa: E402
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 OWNER_A = "atlas-api-owner-a"
@@ -423,3 +429,268 @@ def test_mounted_sub_apps_resolve_the_root_orchestrator(plane_runtime, credentia
     with TestClient(root) as mounted:
         response = mounted.get("/mounted/api/atlas/projects/atlas-api/pages", headers=AUTH_A)
         assert response.status_code == 200
+
+
+def _service(plane_runtime, credential_manager):
+    return AtlasPageService(
+        plane_runtime=plane_runtime,
+        plane_repositories=plane_runtime.repositories,
+        audit_repo=AuditRepository(
+            plane_runtime=plane_runtime, plane_repositories=plane_runtime.repositories
+        ),
+        fernet=credential_manager._fernet,
+    )
+
+
+def _seed_note(service, owner, *, value, category="preference"):
+    note_id = str(uuid4())
+    with service.runtime.transaction() as transaction:
+        prepared = service.notes.prepare_explicit_note(
+            transaction, owner_id=owner, note_id=note_id, expected_revision=0
+        )
+        now = prepared.observed_at_ms
+        metadata = ExplicitNoteMetadata(
+            owner_id=owner,
+            note_id=note_id,
+            revision=1,
+            format_version=1,
+            category=category,
+            enabled=True,
+            created_at=now,
+            updated_at=now,
+        )
+        encrypted = service.note_cipher.seal(metadata, value)
+        return service.notes.put_explicit_note(
+            transaction,
+            preparation=prepared,
+            record=ExplicitNoteRecord(**asdict(encrypted.metadata), ciphertext=encrypted.ciphertext),
+        )
+
+
+def test_promotion_workflow_over_http_is_owner_bound_and_single_use(
+    client, plane_runtime, credential_manager
+):
+    service = _service(plane_runtime, credential_manager)
+    note = _seed_note(service, OWNER_A, value="Promote this preference into Atlas.")
+    slug = f"promoted-{uuid4().hex[:10]}"
+    proposed = client.post(
+        "/api/atlas/projects/atlas-api/promotions",
+        json={
+            "sources": [
+                {"kind": "note", "id": note.note_id, "revision": note.revision}
+            ],
+            "destination": {"slug": slug, "title": "Owner instructions"},
+        },
+        headers=AUTH_A,
+    )
+    assert proposed.status_code == 201, proposed.text
+    proposal = proposed.json()
+    assert proposal["action"] == "create"
+    assert proposal["source"]["id"] == note.note_id
+    assert proposal["source"]["revision"] == note.revision
+    assert proposal["destination"]["revision"] is None
+    assert "Promote this preference into Atlas." in proposal["intended_changes"]["body"]
+    assert client.get(
+        f"/api/atlas/projects/atlas-api/pages/{slug}", headers=AUTH_A
+    ).status_code == 404
+
+    denied = client.get(
+        f"/api/atlas/projects/atlas-api/pages/{slug}", headers=AUTH_B
+    )
+    assert denied.status_code == 404
+    approved = client.post(
+        f"/api/atlas/projects/atlas-api/promotions/{proposal['proposal_id']}/approve",
+        json={
+            "approval_token": proposal["approval_token"],
+            "proposal_digest": proposal["proposal_digest"],
+        },
+        headers=AUTH_A,
+    )
+    assert approved.status_code == 200, approved.text
+    applied = approved.json()
+    assert applied["applied"] is True
+    assert applied["proposal_id"] == proposal["proposal_id"]
+    assert applied["revision"] == 1
+    assert "Promote this preference into Atlas." in applied["body"]
+    assert f"note:{note.note_id}@{note.revision}" in applied["sources"]
+
+    replay = client.post(
+        f"/api/atlas/projects/atlas-api/promotions/{proposal['proposal_id']}/approve",
+        json={"approval_token": proposal["approval_token"]},
+        headers=AUTH_A,
+    )
+    assert replay.status_code == 409
+    assert replay.json()["detail"]["error"] == "promotion_already_applied"
+    read = client.get(
+        f"/api/atlas/projects/atlas-api/pages/{slug}", headers=AUTH_A
+    )
+    assert read.status_code == 200 and read.json()["revision"] == 1
+
+    cross_owner = client.post(
+        "/api/atlas/projects/atlas-api/promotions",
+        json={
+            "source": {"kind": "note", "id": note.note_id, "revision": note.revision},
+            "slug": f"foreign-{uuid4().hex[:10]}",
+        },
+        headers=AUTH_B,
+    )
+    assert cross_owner.status_code == 404
+    assert cross_owner.json()["detail"] == "promotion_source_not_found"
+
+
+def test_http_promotion_rejects_stale_source_and_changed_destination(
+    client, plane_runtime, credential_manager
+):
+    service = _service(plane_runtime, credential_manager)
+    note = _seed_note(service, OWNER_A, value="Original source value.")
+    stale_slug = f"stale-{uuid4().hex[:10]}"
+    stale = client.post(
+        "/api/atlas/projects/atlas-api/promotions",
+        json={
+            "sources": [{"kind": "note", "id": note.note_id, "revision": note.revision}],
+            "slug": stale_slug,
+            "title": "Owner instructions",
+        },
+        headers=AUTH_A,
+    )
+    assert stale.status_code == 201, stale.text
+    stale_proposal = stale.json()
+    with service.runtime.transaction() as transaction:
+        prepared = service.notes.prepare_explicit_note(
+            transaction,
+            owner_id=OWNER_A,
+            note_id=note.note_id,
+            expected_revision=note.revision,
+        )
+        metadata = ExplicitNoteMetadata(
+            owner_id=OWNER_A,
+            note_id=note.note_id,
+            revision=note.revision + 1,
+            format_version=1,
+            category=note.category,
+            enabled=True,
+            created_at=note.created_at,
+            updated_at=prepared.observed_at_ms,
+        )
+        encrypted = service.note_cipher.seal(metadata, "Corrected source value.")
+        service.notes.put_explicit_note(
+            transaction,
+            preparation=prepared,
+            record=ExplicitNoteRecord(**asdict(encrypted.metadata), ciphertext=encrypted.ciphertext),
+        )
+    refused = client.post(
+        f"/api/atlas/projects/atlas-api/promotions/{stale_proposal['proposal_id']}/approve",
+        json={"approval_token": stale_proposal["approval_token"]},
+        headers=AUTH_A,
+    )
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["error"] == "promotion_source_stale"
+    assert client.get(
+        f"/api/atlas/projects/atlas-api/pages/{stale_slug}", headers=AUTH_A
+    ).status_code == 404
+
+    target = f"owner-target-{uuid4().hex[:10]}"
+    created = client.post(
+        "/api/atlas/projects/atlas-api/pages",
+        json={
+            "slug": target,
+            "title": "Owner instructions",
+            "body": "Owner-authored instruction.",
+        },
+        headers=AUTH_A,
+    )
+    assert created.status_code == 201, created.text
+    proposal = client.post(
+        "/api/atlas/projects/atlas-api/promotions",
+        json={
+            "source": {"kind": "note", "id": note.note_id},
+            "slug": target,
+            "mode": "append",
+        },
+        headers=AUTH_A,
+    )
+    assert proposal.status_code == 201, proposal.text
+    changed = client.put(
+        f"/api/atlas/projects/atlas-api/pages/{target}",
+        json={"expected_revision": 1, "body": "Owner changed the page before approval."},
+        headers=AUTH_A,
+    )
+    assert changed.status_code == 200
+    changed_approval = client.post(
+        f"/api/atlas/projects/atlas-api/promotions/{proposal.json()['proposal_id']}/approve",
+        json={"approval_token": proposal.json()["approval_token"]},
+        headers=AUTH_A,
+    )
+    assert changed_approval.status_code == 409
+    assert changed_approval.json()["detail"]["error"] == "promotion_destination_stale"
+    final = client.get(
+        f"/api/atlas/projects/atlas-api/pages/{target}", headers=AUTH_A
+    )
+    assert final.json()["revision"] == 2
+    assert final.json()["body"] == "Owner changed the page before approval."
+
+
+def test_http_promotion_can_append_a_memory_without_overwriting_owner_text(
+    client, plane_runtime, credential_manager
+):
+    service = _service(plane_runtime, credential_manager)
+    target = f"memory-target-{uuid4().hex[:10]}"
+    created = client.post(
+        "/api/atlas/projects/atlas-api/pages",
+        json={
+            "slug": target,
+            "title": "Owner instructions",
+            "body": "Human-authored project instruction.",
+        },
+        headers=AUTH_A,
+    )
+    assert created.status_code == 201
+    now = int(time.time() * 1000)
+    memory = MemoryRecord(
+        memory_id=str(uuid4()),
+        owner_id=OWNER_A,
+        category="goal",
+        value="A remembered project goal.",
+        source="explicit",
+        salience=0.0,
+        created_at=now,
+        updated_at=now,
+        superseded_by=None,
+        superseded_at=None,
+        keywords=None,
+        signature=None,
+        valid_from=None,
+        valid_to=None,
+        ingested_at=None,
+        recall_count=0,
+        last_recalled_at=None,
+        project_id="atlas-api",
+    )
+    with service.runtime.transaction() as transaction:
+        service.notes.create_memory(transaction, memory)
+    proposed = client.post(
+        "/api/atlas/projects/atlas-api/promotions",
+        json={
+            "sources": [
+                {"kind": "memory", "id": memory.memory_id, "revision": memory.updated_at}
+            ],
+            "slug": target,
+        },
+        headers=AUTH_A,
+    )
+    assert proposed.status_code == 201, proposed.text
+    proposal = proposed.json()
+    assert proposal["action"] == "append"
+    assert proposal["destination"]["revision"] == 1
+    approved = client.post(
+        f"/api/atlas/projects/atlas-api/promotions/{proposal['proposal_id']}/approve",
+        json={"approval_token": proposal["approval_token"]},
+        headers=AUTH_A,
+    )
+    assert approved.status_code == 200, approved.text
+    page = approved.json()
+    assert page["revision"] == 2
+    assert page["title"] == "Owner instructions"
+    assert page["body"].startswith("Human-authored project instruction.\n\n")
+    assert "A remembered project goal." in page["body"]
+    assert f"memory:{memory.memory_id}@{memory.updated_at}" in page["sources"]

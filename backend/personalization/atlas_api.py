@@ -1,19 +1,25 @@
-"""Owner-scoped REST routes for the Atlas page lifecycle: creates, reads, bounded
-revisions, backlinks, and deletions over atlas_service.py, rejecting generated-import
-payloads and mapping lifecycle failures to precise HTTP outcomes.
+"""Owner-scoped REST routes for the Atlas page lifecycle and explicit source promotion:
+creates, reads, bounded revisions, backlinks, deletions, owner-reviewed promotion proposals,
+and single-use approvals over atlas_service.py, rejecting generated-import payloads and
+mapping lifecycle failures to precise HTTP outcomes.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from audit.hooks import record_generic
 from orchestrator.auth import get_current_user_payload, require_user_id
 from personalization.atlas_pages import GLOBAL_PROJECT, AtlasPageError
+from personalization.atlas_promotions import (
+    MAX_PROMOTION_SOURCES,
+    MAX_PROMOTION_TOKEN_BYTES,
+    PromotionSourceInput,
+)
 from personalization.atlas_service import (
     AtlasConflict,
     AtlasNotFound,
@@ -57,6 +63,98 @@ class PageUpdateRequest(_NoGeneratedImports):
     body: str | None = Field(default=None, min_length=1, max_length=8192)
     sources: list[str] | None = Field(default=None, max_length=8)
     links: list[str] | None = Field(default=None, max_length=16)
+
+
+class PromotionSourceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    kind: Literal["note", "memory"] = Field(
+        validation_alias=AliasChoices("kind", "type", "source_type")
+    )
+    id: str = Field(validation_alias=AliasChoices("id", "source_id"))
+    revision: int | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices("revision", "source_revision"),
+    )
+
+
+class PromotionProposeRequest(_NoGeneratedImports):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    source: PromotionSourceRequest | None = None
+    sources: list[PromotionSourceRequest] | None = Field(
+        default=None, max_length=MAX_PROMOTION_SOURCES
+    )
+    slug: str = Field(
+        min_length=2,
+        max_length=128,
+        validation_alias=AliasChoices("slug", "destination_slug", "page_slug"),
+    )
+    title: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+        validation_alias=AliasChoices("title", "destination_title", "page_title"),
+    )
+    mode: Literal["auto", "create", "append"] = "auto"
+    expected_revision: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _flatten_destination(cls, values):
+        if not isinstance(values, dict) or "destination" not in values:
+            return values
+        values = dict(values)
+        destination = values.pop("destination")
+        if isinstance(destination, str):
+            values.setdefault("slug", destination)
+            return values
+        if not isinstance(destination, dict):
+            raise ValueError("promotion destination is invalid")
+        for key in ("slug", "title", "mode", "expected_revision"):
+            if key not in destination:
+                continue
+            if key in values and values[key] != destination[key]:
+                raise ValueError("promotion destination is ambiguous")
+            values[key] = destination[key]
+        return values
+
+    @model_validator(mode="after")
+    def _selected_sources(self):
+        values = list(self.sources or ())
+        if self.source is not None:
+            values.insert(0, self.source)
+        if not values:
+            raise ValueError("promotion source is required")
+        if len(values) > MAX_PROMOTION_SOURCES:
+            raise ValueError("too many promotion sources")
+        identities = [(item.kind, item.id) for item in values]
+        if len(identities) != len(set(identities)):
+            raise ValueError("duplicate promotion source")
+        return self
+
+    def source_inputs(self) -> tuple[PromotionSourceInput, ...]:
+        values = list(self.sources or ())
+        if self.source is not None:
+            values.insert(0, self.source)
+        return tuple(
+            PromotionSourceInput(item.kind, item.id, item.revision) for item in values
+        )
+
+
+class PromotionApproveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    approval_token: str = Field(
+        min_length=1,
+        max_length=MAX_PROMOTION_TOKEN_BYTES * 2,
+        validation_alias=AliasChoices("approval_token", "token"),
+    )
+    proposal_digest: str | None = Field(
+        default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    approved: bool = True
 
 
 def _orchestrator(request: Request):
@@ -111,6 +209,43 @@ def _summary(value) -> dict[str, Any]:
     if value.links_removed:
         payload["links_removed"] = value.links_removed
     return payload
+
+
+def _source_identity(value) -> dict[str, Any]:
+    return {
+        "kind": value.kind,
+        "id": value.source_id,
+        "revision": value.revision,
+        "category": value.category,
+        "digest": value.digest,
+    }
+
+
+def _proposal_response(value) -> dict[str, Any]:
+    sources = [_source_identity(source) for source in value.sources]
+    return {
+        "proposal_id": value.proposal_id,
+        "proposal_digest": value.proposal_digest,
+        "approval_token": value.approval_token,
+        "expires_at": value.expires_at,
+        "owner_id": value.owner_id,
+        "project_id": value.project_id,
+        "action": value.action,
+        "source": sources[0] if len(sources) == 1 else None,
+        "sources": sources,
+        "destination": {
+            "page_id": value.destination.page_id,
+            "slug": value.destination.slug,
+            "revision": value.destination.revision,
+            "fingerprint": value.destination.fingerprint,
+        },
+        "intended_changes": {
+            "title": value.title,
+            "body": value.body,
+            "sources": list(value.source_references),
+            "expected_revision": value.destination.revision,
+        },
+    }
 
 
 def _translate(exc: Exception) -> HTTPException:
@@ -205,6 +340,79 @@ async def create_page(
     ) as exc:
         raise _translate(exc) from None
     return _summary(page)
+
+
+@atlas_router.post(
+    "/projects/{project_id}/promotions", status_code=status.HTTP_201_CREATED
+)
+@atlas_router.post(
+    "/projects/{project_id}/promotions/propose",
+    status_code=status.HTTP_201_CREATED,
+    include_in_schema=False,
+)
+async def propose_promotion(
+    project_id: str,
+    body: PromotionProposeRequest,
+    request: Request,
+    user_id: str = Depends(require_user_id),
+):
+    service = _service(request)
+    try:
+        proposal = service.propose_promotion(
+            owner_id=user_id,
+            project_id=_project_scope(project_id),
+            sources=body.source_inputs(),
+            slug=body.slug,
+            title=body.title,
+            mode=body.mode,
+            expected_revision=body.expected_revision,
+        )
+    except (
+        AtlasPageError,
+        AtlasNotFound,
+        AtlasConflict,
+        AtlasRefused,
+        AtlasUnavailable,
+    ) as exc:
+        raise _translate(exc) from None
+    return _proposal_response(proposal)
+
+
+@atlas_router.post("/projects/{project_id}/promotions/{proposal_id}/approve")
+@atlas_router.post(
+    "/projects/{project_id}/promotions/{proposal_id}/apply",
+    include_in_schema=False,
+)
+async def approve_promotion(
+    project_id: str,
+    proposal_id: str,
+    body: PromotionApproveRequest,
+    request: Request,
+    user_id: str = Depends(require_user_id),
+):
+    service = _service(request)
+    try:
+        applied = service.approve_promotion(
+            owner_id=user_id,
+            project_id=_project_scope(project_id),
+            proposal_id=proposal_id,
+            approval_token=body.approval_token,
+            proposal_digest=body.proposal_digest,
+            approved=body.approved,
+        )
+    except (
+        AtlasPageError,
+        AtlasNotFound,
+        AtlasConflict,
+        AtlasRefused,
+        AtlasUnavailable,
+    ) as exc:
+        raise _translate(exc) from None
+    payload = _summary(applied.page)
+    payload["proposal_id"] = applied.proposal_id
+    payload["applied"] = True
+    payload["promotion_sources"] = list(applied.sources)
+    return payload
 
 
 @atlas_router.get("/projects/{project_id}/pages/{page_ref}")
