@@ -163,7 +163,26 @@ def _tool_names(body: dict) -> set:
     return {t["name"] for t in _data_part(body).get("tools", [])}
 
 
-def test_public_card_names_only_safe_public_builtins(client):
+def test_public_card_without_publications_lists_only_chat(client):
+    resp = client.get("/a2a/.well-known/agent-card.json")
+    assert resp.status_code == 200
+    card = resp.json()
+    ids = {s["id"] for s in card["skills"]}
+    assert ids == {"chat"}
+    blob = json.dumps(card)
+    assert "exfiltrate" not in blob
+    assert "draft-secret-9" not in blob
+
+
+def test_public_card_advertises_only_published_safe_capability(client):
+    intent = client.orch.a2a_publications.create_intent(
+        agent_id="weather-1", audiences=["tools:read"], lifetime="open", actor=ALICE,
+    )
+    client.orch.a2a_publications.confirm(
+        intent_id=intent.intent_id,
+        confirmation_token=intent.confirmation_token,
+        actor=ALICE,
+    )
     resp = client.get("/a2a/.well-known/agent-card.json")
     assert resp.status_code == 200
     card = resp.json()
@@ -173,9 +192,7 @@ def test_public_card_names_only_safe_public_builtins(client):
     assert "draft-secret-9" not in ids
     assert not ids & {"get_weather", "web_search", "exfiltrate"}
     assert "chat" in ids
-    blob = json.dumps(card)
-    assert "exfiltrate" not in blob
-    assert "draft-secret-9" not in blob
+    assert "tools:read" in json.dumps(card.get("securityRequirements")) or "tools:read" in json.dumps(card)
 
 
 def test_public_card_prefers_public_base_url(mock_env, monkeypatch):

@@ -38,6 +38,7 @@ from shared.a2a_bridge import (
     make_text_part,
     make_data_part,
 )
+from shared.a2a_publication import A2APublicationRegistry
 from shared.a2a_security import A2ASecurityValidator
 from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
 
@@ -377,11 +378,75 @@ def _public_url() -> str:
     return f"http://{host}:{port}/a2a"
 
 
+def _registered_audiences(orchestrator, agent_id: str) -> Tuple[str, ...]:
+    card = (getattr(orchestrator, "agent_cards", {}) or {}).get(agent_id)
+    scopes: list[str] = []
+    for skill in getattr(card, "skills", None) or []:
+        scope = str(getattr(skill, "scope", "") or "")
+        if scope and scope not in scopes:
+            scopes.append(scope)
+    return tuple(scopes)
+
+
+def _publication_registry(orchestrator) -> Optional[A2APublicationRegistry]:
+    registry = getattr(orchestrator, "a2a_publications", None)
+    return registry if isinstance(registry, A2APublicationRegistry) else None
+
+
+def attach_publication_registry(orchestrator) -> A2APublicationRegistry:
+    registry = _publication_registry(orchestrator)
+    if registry is None:
+        def _sink(event):
+            try:
+                from audit.recorder import get_recorder, make_correlation_id, now_utc
+                from audit.schemas import AuditEventCreate
+
+                rec = get_recorder()
+                if rec is None:
+                    return
+                action = str(event.get("action") or "transition")
+                rec.record_blocking(AuditEventCreate(
+                    actor_user_id=str(event.get("actor") or "system"),
+                    auth_principal=str(event.get("actor") or "system"),
+                    event_class="settings",
+                    action_type=f"a2a_publication.{action}",
+                    description=(
+                        f"A2A publication {action} for {event.get('agent_id')} "
+                        f"(audiences={event.get('audiences')}, lifetime={event.get('lifetime')})"
+                    ),
+                    correlation_id=make_correlation_id(),
+                    outcome="failure" if "denied" in action or "stale" in action else "success",
+                    inputs_meta={
+                        key: value for key, value in event.items()
+                        if isinstance(value, (str, int, float, bool))
+                    },
+                    started_at=now_utc(),
+                ))
+            except Exception:
+                logger.debug("a2a publication registry audit sink failed", exc_info=True)
+
+        registry = A2APublicationRegistry(
+            catalog=lambda: public_catalog_agent_ids(orchestrator),
+            audiences=lambda agent_id: _registered_audiences(orchestrator, agent_id),
+            audit_sink=_sink,
+        )
+        orchestrator.a2a_publications = registry
+    return registry
+
+
 def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
     authority = os.getenv("KEYCLOAK_AUTHORITY", "")
+    registry = _publication_registry(orchestrator)
+
+    catalog_ids = public_catalog_agent_ids(orchestrator)
+    if registry is None:
+        published_ids = catalog_ids
+    else:
+        published = set(registry.active_agent_ids())
+        published_ids = [agent_id for agent_id in catalog_ids if agent_id in published]
 
     skills: List[A2AAgentSkill] = []
-    for agent_id in public_catalog_agent_ids(orchestrator):
+    for agent_id in published_ids:
         card = orchestrator.agent_cards.get(agent_id)
         skills.append(A2AAgentSkill(
             id=agent_id,
@@ -404,11 +469,14 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
                 open_id_connect_url=f"{authority}/.well-known/openid-configuration",
             )
         )
-        security_requirements.append(SecurityRequirement(schemes={
-            "keycloak_oidc": StringList(list=[
-                "tools:read", "tools:write", "tools:search", "tools:system",
-            ]),
-        }))
+        if registry is None:
+            advertised = ["tools:read", "tools:write", "tools:search", "tools:system"]
+        else:
+            advertised = list(registry.advertised_audiences())
+        if advertised:
+            security_requirements.append(SecurityRequirement(schemes={
+                "keycloak_oidc": StringList(list=advertised),
+            }))
 
     return A2AAgentCard(
         name="AstralDeep Orchestrator",
@@ -455,6 +523,8 @@ def setup_orchestrator_a2a(app, orchestrator):
     from a2a.server.routes import create_jsonrpc_routes, create_agent_card_routes
 
     initial_card = build_orchestrator_a2a_card(orchestrator)
+
+    attach_publication_registry(orchestrator)
 
     executor = OrchestratorA2AExecutor(orchestrator)
     handler = DefaultRequestHandler(
