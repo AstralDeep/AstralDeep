@@ -34,6 +34,7 @@ class DatabaseCreationError(RuntimeError):
 class TemplateDatabase:
     server_dsn: str = field(repr=False)
     name: str
+    boot_identity: str | None = None
 
 
 class EngineReconciler:
@@ -157,12 +158,30 @@ def cloned_database(template: TemplateDatabase, *, prefix: str) -> Iterator[str]
 def engine_clone(template: TemplateDatabase) -> Iterator[tuple[PlaneRuntime, str]]:
     with cloned_database(template, prefix=ENGINE_CLONE_PREFIX) as database:
         # Plane keeps boot state per identity; this fresh clone is a byte copy of the sealed, verified template
-        runtime = _engine_runtime(template.server_dsn, database, identity=template.name)
+        runtime = _engine_runtime(template.server_dsn, database, identity=template.boot_identity or template.name)
         try:
             runtime.initialize(expected_revision=SCHEMA_REVISION)
             yield runtime, database
         finally:
             runtime.close()
+
+
+@contextmanager
+def populated_engine_template(
+    template: TemplateDatabase, populate: Callable[[PlaneRuntime], None],
+) -> Iterator[TemplateDatabase]:
+    with cloned_database(template, prefix="ad_test_result_seed") as database:
+        runtime = _engine_runtime(template.server_dsn, database,
+                                  identity=template.boot_identity or template.name)
+        try:
+            runtime.initialize(expected_revision=SCHEMA_REVISION)
+            populate(runtime)
+        finally:
+            runtime.close()
+        populated = TemplateDatabase(template.server_dsn, database,
+                                     template.boot_identity or template.name)
+        _seal(populated)
+        yield populated
 
 
 def _migrate_engine(template: TemplateDatabase) -> None:
