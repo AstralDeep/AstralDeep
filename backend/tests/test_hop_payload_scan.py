@@ -42,7 +42,14 @@ def captured(monkeypatch):
 
 
 @pytest.fixture
-def orch(orchestrator_factory):
+def orch(orchestrator_factory, monkeypatch):
+    from orchestrator import source_bound
+
+    monkeypatch.setattr(
+        source_bound, "declaration",
+        lambda scopes, agent, tool, **kwargs: source_bound.ActionDeclaration(
+            agent, tool, "tools:read", source_bound.Effect.READ),
+    )
     o = orchestrator_factory()
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)

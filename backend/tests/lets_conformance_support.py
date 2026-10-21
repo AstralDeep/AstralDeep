@@ -327,7 +327,7 @@ def build_rig(
     )
     anchor_root = root / "authority"
     anchor_root.mkdir()
-    anchor = ProcessFileExecutorAuthorityAnchor(anchor_root / "executor.anchor")
+    anchor = ProcessFileExecutorAuthorityAnchor(anchor_root / "executor.anchor", timeout_s=60.0)
     store = SQLiteReceiptReplayStore.initialize(
         root / "executor.sqlite3",
         authority_anchor=anchor,

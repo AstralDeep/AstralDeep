@@ -379,3 +379,42 @@ class TestAgentListPayload:
             f"flag should be True with one allowed tool, got payload={payload}"
         )
         assert any(a["id"] == "a-1" for a in payload["agents"])
+
+
+@pytest.mark.asyncio
+async def test_message_compaction_receives_provider_and_tool_definitions(orchestrator, monkeypatch):
+    from orchestrator import orchestrator as orchestrator_module
+    from shared.feature_flags import flags
+
+    captured = {}
+
+    async def fake_compact(messages, model_name, llm_call, **kwargs):
+        captured.update(messages=messages, model_name=model_name, kwargs=kwargs)
+        return messages, False
+
+    monkeypatch.setitem(flags._flags, "message_compaction", True)
+    monkeypatch.setitem(flags._flags, "observation_packing", False)
+    monkeypatch.setitem(flags._flags, "safe_compaction", False)
+    monkeypatch.setattr(orchestrator_module, "compact_messages", fake_compact)
+
+    async def fake_call_llm(websocket, messages, tools_desc=None, temperature=None,
+                            feature: str = "tool_dispatch"):
+        return _llm_message("Paris."), _llm_usage()
+
+    orchestrator._call_llm = fake_call_llm
+    ws = _fake_websocket(orchestrator)
+    chat_id = str(uuid.uuid4())
+    await asyncio.to_thread(
+        orchestrator.history.create_chat, chat_id, user_id="text-only-test-user")
+    try:
+        await registered_chat(
+            orchestrator, ws, "What is the capital of France?", chat_id,
+            user_id="text-only-test-user",
+        )
+    finally:
+        await asyncio.to_thread(
+            orchestrator.history.delete_chat, chat_id, user_id="text-only-test-user")
+
+    assert captured["model_name"] == "test-model"
+    assert captured["kwargs"]["provider"] == "custom"
+    assert "tools_desc" in captured["kwargs"]

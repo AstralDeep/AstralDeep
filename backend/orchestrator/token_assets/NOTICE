@@ -1,0 +1,18 @@
+OpenAI BPE encoding assets
+==========================
+
+The files in this directory are the unmodified encoding data published by
+OpenAI for tiktoken 0.12.0. They are bundled so request accounting performs no
+network access on first use.
+
+Source URLs:
+- https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken
+- https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken
+
+SHA-256 (verified by backend/orchestrator/context_token_accounting.py):
+- cl100k_base.tiktoken: 223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7
+- o200k_base.tiktoken: 446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d
+
+The encoding definitions and tokenizer implementation are provided by the
+tiktoken project, licensed under MIT:
+https://github.com/openai/tiktoken

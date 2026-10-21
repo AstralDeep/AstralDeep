@@ -125,7 +125,7 @@ async def test_register_agent_validates_skill_scopes(monkeypatch):
 
     scope_map = fake.tool_permissions.last[0][1]
     assert scope_map["bad_tool"] == "tools:bogus"
-    assert scope_map["empty_tool"] == "tools:read"
+    assert scope_map["empty_tool"] == ""
     assert scope_map["ok_tool"] == "tools:read"
 
 

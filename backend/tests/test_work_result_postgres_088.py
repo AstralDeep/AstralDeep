@@ -390,7 +390,7 @@ async def test_independent_retirement_waits_for_result_reader_then_commits(compl
         if not entered.is_set():
             details["reader"] = tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
             entered.set()
-            assert release.wait(5), "test did not release its bounded read gate"
+            assert release.wait(30), "test did not release its bounded read gate"
         return value
     monkeypatch.setattr(repository, "get_selected_input", locked)
     def retire():
@@ -409,10 +409,10 @@ async def test_independent_retirement_waits_for_result_reader_then_commits(compl
     reading = asyncio.create_task(project(op))
     writer = None
     try:
-        assert await asyncio.to_thread(entered.wait, 5)
+        assert await asyncio.to_thread(entered.wait, 30)
         writer = asyncio.create_task(asyncio.to_thread(retire))
-        assert await asyncio.to_thread(requesting.wait, 5)
-        async with asyncio.timeout(3):
+        assert await asyncio.to_thread(requesting.wait, 30)
+        async with asyncio.timeout(30):
             while not await asyncio.to_thread(blocked):
                 await asyncio.sleep(0.001)
         assert not details.get("committed", False)

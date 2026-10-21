@@ -36,9 +36,12 @@ def _history(pairs: int, chars: int) -> list[dict]:
     return out
 
 
-def test_overhead_estimator_matches_serialized_size():
+def test_overhead_estimator_counts_complete_tool_definitions_conservatively():
     tools = [{"type": "function", "function": {"name": "roll", "parameters": {}}}]
-    assert estimate_overhead_tokens(tools) == len(json.dumps(tools)) // CHARS_PER_TOKEN
+    compact = json.dumps(tools, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    assert estimate_overhead_tokens(tools) >= len(compact.encode("utf-8"))
+    assert estimate_overhead_tokens(tools) > len(json.dumps(tools)) // CHARS_PER_TOKEN
+    assert estimate_overhead_tokens(tools, "gpt-4o", "openai") > 0
     assert estimate_overhead_tokens([]) == 0
     assert estimate_overhead_tokens(None) == 0
 
@@ -55,7 +58,7 @@ async def test_tool_block_overhead_charges_the_budget():
     assert fired is False and untouched == messages
 
     compacted, fired = await compact_messages(
-        messages, "gpt-4", _fake_llm, overhead_tokens=5_000
+        messages, "gpt-4", _fake_llm, overhead_tokens=2_500
     )
     assert fired is True
     assert estimate_tokens(compacted) < estimate_tokens(messages)
@@ -78,7 +81,7 @@ async def test_protected_tail_keeps_user_turn_and_trailing_addenda():
     ]
 
     compacted, fired = await compact_messages(
-        messages, "gpt-4", _fake_llm, overhead_tokens=5_000
+        messages, "gpt-4", _fake_llm, overhead_tokens=2_500
     )
     assert fired is True
     assert compacted[-3:] == [question, datamark, recipe]
@@ -98,7 +101,7 @@ async def test_zero_overhead_behavior_unchanged_over_budget():
 
 
 @pytest.mark.asyncio
-async def test_overhead_never_produces_negative_budget_crash():
+async def test_impossible_fixed_overhead_never_fakes_a_successful_compaction():
     messages = [
         {"role": "system", "content": "sys"},
         *_history(pairs=6, chars=1_250),
@@ -107,8 +110,8 @@ async def test_overhead_never_produces_negative_budget_crash():
     compacted, fired = await compact_messages(
         messages, "gpt-4", _fake_llm, overhead_tokens=10**9
     )
-    assert fired is True
-    assert compacted[-1] == {"role": "user", "content": "current question"}
+    assert fired is False
+    assert compacted == messages
 
 
 def _inflight(rounds: int, chars: int) -> list[dict]:

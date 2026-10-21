@@ -51,7 +51,7 @@ from orchestrator.tool_permissions import ToolPermissionManager
 from orchestrator.credential_manager import CredentialManager
 from orchestrator.delegation import DelegationService
 from orchestrator.tool_security import ToolSecurityAnalyzer
-from orchestrator.compaction import compact_messages, estimate_overhead_tokens
+from orchestrator.compaction import compact_messages
 from llm_config.tool_continuation import (
     is_gemini_continuation_profile,
     merge_continuation_signature,
@@ -14930,13 +14930,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 elif flags.is_enabled("message_compaction"):
                     _user_cfg = await self._llm_store.get(user_id)
                     _sys_cfg = await self._llm_store.get_system()
+                    _compaction_cfg = (
+                        _user_cfg if getattr(_user_cfg, "model", None) else _sys_cfg
+                    )
                     messages, was_compacted = await compact_messages(
                         messages,
                         getattr(_user_cfg, "model", None)
                         or getattr(_sys_cfg, "model", None)
                         or "default",
                         self._call_llm,
-                        overhead_tokens=estimate_overhead_tokens(tools_desc),
+                        provider=getattr(_compaction_cfg, "provider", None),
+                        tools_desc=tools_desc,
                     )
                     if was_compacted:
                         logger.info("Context compacted before LLM call")

@@ -51,6 +51,9 @@ def _build_orch(*, disabled_agents=None, saved_selection=None,
 
     orch.tool_permissions = MagicMock()
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    orch.tool_permissions.get_tool_scope_map.return_value = {
+        "read_spreadsheet": "tools:read", "ocr": "tools:read",
+    }
     orch.tool_permissions.list_disabled_agents.return_value = tuple(
         disabled_agents or ()
     )
@@ -146,6 +149,9 @@ async def test_dispatch_blocked_when_agent_disabled_by_user() -> None:
 @pytest.mark.asyncio
 async def test_dispatch_unknown_tool_falls_through_to_generic_gate() -> None:
     orch = _build_orch()
+    orch.tool_permissions.get_tool_scope_map.return_value = {
+        "totally_made_up_tool": "tools:read",
+    }
     websocket = MagicMock()
     tool_to_agent = {}
     tool_call = _make_tool_call("totally_made_up_tool")

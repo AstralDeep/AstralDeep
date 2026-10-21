@@ -24,6 +24,11 @@ def orch(orchestrator_factory):
     o.audit_recorder.record = AsyncMock()
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    o.tool_permissions.get_tool_scope_map = MagicMock(return_value={
+        "delete_records": "tools:read", "search_web": "tools:read",
+        "send_email": "tools:read", "delete_account": "tools:read",
+        "get_weather": "tools:read",
+    })
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     return o

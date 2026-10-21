@@ -170,6 +170,7 @@ def _mcp_orchestrator():
     orch.tool_permissions = SimpleNamespace(
         is_tool_allowed=lambda *args: True,
         get_enabled_scope_names=lambda *args: ["tools:read"],
+        get_tool_scope_map=lambda *args: {"read_value": "tools:read"},
     )
     orch.delegation = SimpleNamespace(agent_service_client_id="astral-agent-service")
     return orch
@@ -230,6 +231,8 @@ async def test_mcp_refusal_names_signing_key_not_idp_scopes(orchestrator_factory
     orch._execute_in_process = AsyncMock(side_effect=AssertionError("must not dispatch"))
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     orch.tool_permissions.get_enabled_scope_names = MagicMock(return_value=["tools:read"])
+    orch.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value={"read_value": "tools:read"})
     orch._map_file_paths = lambda cid, a, **k: a
     orch.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
 
@@ -274,6 +277,8 @@ def gate_orch(orchestrator_factory):
     o.audit_recorder.record = AsyncMock()
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    o.tool_permissions.get_tool_scope_map = MagicMock(return_value={
+        "delete_records": "tools:read", "delete_path": "tools:read"})
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     return o

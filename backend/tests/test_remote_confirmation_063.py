@@ -488,6 +488,7 @@ def test_invalid_approval_shapes_refused_store_intact(case):
 
 @pytest.fixture
 def real_orch(monkeypatch):
+    from agents.gaiakeep.catalog import TOOLS as GAIKEEP_TOOLS
     from orchestrator.orchestrator import Orchestrator
 
     proposal_storage = _FakeDB()
@@ -507,6 +508,11 @@ def real_orch(monkeypatch):
     o.send_ui_render = AsyncMock()
     o.tool_permissions = MagicMock()
     o.tool_permissions.is_tool_allowed.return_value = True
+    o.tool_permissions.get_tool_scope_map.return_value = {
+        **{name: item["scope"] for name, item in GAIKEEP_TOOLS.items()},
+        "cancel_job": "tools:write", "remove_path": "tools:write",
+        "submit_job": "tools:system",
+    }
     o._record_hop_audit = AsyncMock()
     monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)
     return o

@@ -6,6 +6,10 @@ imported engine `plane` fixture clones.
 
 from __future__ import annotations
 
+import os
+
+os.environ.setdefault("ASTRAL_TEST_PLANE_MAX_CONNECTIONS", "8")
+
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
