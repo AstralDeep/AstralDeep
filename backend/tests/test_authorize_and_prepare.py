@@ -44,6 +44,11 @@ def orch():
     o.send_ui_render = AsyncMock()
     o.tool_permissions = MagicMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    o.tool_permissions.get_tool_scope_map.return_value = {
+        "t1": "tools:read", "delete_records": "tools:write",
+        "send_email": "tools:write", "cancel_job": "tools:write",
+        "make_directory": "tools:write",
+    }
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager = MagicMock()
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(
@@ -203,6 +208,7 @@ async def test_taint_deny_refuses(orch, monkeypatch):
 @pytest.mark.asyncio
 async def test_supervisor_blocks_unrequested_destructive(orch, monkeypatch):
     monkeypatch.setenv("FF_RUNTIME_SUPERVISOR", "true")
+    orch.tool_permissions.get_tool_scope_map.return_value["delete_records"] = "tools:read"
     orch._active_request = {"c1": "show me my dashboard"}
     out = await _auth(orch, tool="delete_records")
     assert "didn't ask for" in _msg(out)
@@ -311,6 +317,7 @@ async def test_single_path_surfaces_authorizer_refusal(orch):
 @pytest.mark.asyncio
 async def test_remote_control_confirmation_refusal_becomes_gate_refusal(orch, monkeypatch):
     from orchestrator import remote_confirmation
+    orch.tool_permissions.get_tool_scope_map.return_value["cancel_job"] = "tools:read"
     card = {"type": "card", "title": "Confirm"}
     ev = MagicMock(return_value=("confirmation_required: approve", [card]))
     monkeypatch.setattr(remote_confirmation, "evaluate", ev)
@@ -326,6 +333,7 @@ async def test_remote_control_confirmation_refusal_becomes_gate_refusal(orch, mo
 @pytest.mark.asyncio
 async def test_remote_control_confirmation_none_proceeds(orch, monkeypatch):
     from orchestrator import remote_confirmation
+    orch.tool_permissions.get_tool_scope_map.return_value["make_directory"] = "tools:read"
     ev = MagicMock(return_value=None)
     monkeypatch.setattr(remote_confirmation, "evaluate", ev)
     orch.local_agents["remote-compute-1"] = MagicMock()

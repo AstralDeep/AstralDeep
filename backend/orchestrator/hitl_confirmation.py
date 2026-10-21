@@ -13,6 +13,7 @@ import logging
 import re
 import secrets
 import time
+import uuid
 from dataclasses import dataclass
 from types import SimpleNamespace
 from urllib.parse import unquote, urlsplit
@@ -163,7 +164,8 @@ async def _audit(orch, call: PendingCall, transition: str) -> None:
         receipt = await orch.audit_recorder.record(AuditEventCreate(
             actor_user_id=call.owner, auth_principal=call.owner,
             event_class="agent_tool_call", action_type=f"hitl.{transition}",
-            description=f"{transition}: {call.tool}", correlation_id=call.request_id,
+            description=f"{transition}: {call.tool}",
+            correlation_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"astral-hitl:{call.request_id}")),
             conversation_id=call.chat,
             outcome="interrupted" if transition == "effect_uncertain" else "success",
             inputs_meta={"agent_id": call.agent, "tool": call.tool,

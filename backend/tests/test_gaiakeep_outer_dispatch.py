@@ -22,6 +22,12 @@ real_orch = _real_orch
 
 @pytest.fixture
 def outer_orch(real_orch, monkeypatch):
+    from orchestrator import source_bound
+
+    def read_declaration(scopes, agent, tool, **kwargs):
+        return source_bound.ActionDeclaration(agent, tool, "tools:read", source_bound.Effect.READ)
+
+    monkeypatch.setattr(source_bound, "declaration", read_declaration)
     real_orch.agents = {'gaiakeep-1': object()}
     real_orch.local_agents = {}
     real_orch.a2a_clients = {'gaiakeep-1': object()}

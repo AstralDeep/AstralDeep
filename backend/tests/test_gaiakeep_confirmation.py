@@ -341,8 +341,8 @@ async def test_approved_mutation_still_obeys_product_policy(real_orch, monkeypat
     _seed(real_orch.proposal_storage, 'approval', owner=USER, verb=tool, args=args, agent_id='gaiakeep-1')
     real_orch._policy_roles = lambda ws: []
     monkeypatch.setattr(policy, 'policy_enabled', lambda: True)
-    monkeypatch.setattr(policy, 'load_rules', list)
-    monkeypatch.setattr(policy, 'evaluate_policy', lambda *a: policy.PolicyDecision(effect=policy.DENY, reason='policy denial'))
+    monkeypatch.setattr(policy, 'load_rules', lambda *args, **kwargs: [])
+    monkeypatch.setattr(policy, 'evaluate_policy', lambda *a, **k: policy.PolicyDecision(effect=policy.DENY, reason='policy denial'))
     response = await real_orch.execute_single_tool(
         _WS(), _tc(tool, dict(args, _remote_op_proposal_id='approval')),
         {tool: 'gaiakeep-1'}, 'chat', user_id=USER)

@@ -19,6 +19,13 @@ from orchestrator.orchestrator import GateRefusal, PreparedDispatch  # noqa: E40
 
 @pytest.fixture
 def orch(monkeypatch, orchestrator_factory):
+    from orchestrator import source_bound
+
+    monkeypatch.setattr(
+        source_bound, "declaration",
+        lambda scopes, agent, tool, **kwargs: source_bound.ActionDeclaration(
+            agent, tool, "tools:read", source_bound.Effect.READ),
+    )
     o = orchestrator_factory()
     o.audit_recorder = MagicMock()
     o.audit_recorder.record = AsyncMock()
