@@ -106,12 +106,15 @@ def test_pending_cards_do_not_persist_replay_arguments(data):
 
 @pytest.fixture
 def orch(orchestrator_factory, monkeypatch):
+    monkeypatch.setenv("DELEGATION_REQUIRED", "false")
     instance = orchestrator_factory()
     instance.audit_recorder = MagicMock()
     instance.audit_recorder.record = AsyncMock()
     instance.send_ui_render = AsyncMock()
     instance.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     instance.tool_permissions.get_tool_scope = MagicMock(return_value="tools:read")
+    instance.tool_permissions.get_tool_scope_map = MagicMock(return_value={
+        "t1": "tools:read", "t2": "tools:read", "send_email": "tools:read"})
     instance._map_file_paths = lambda cid, args, **kwargs: args
     instance.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     instance.local_agents["a1"] = MagicMock()

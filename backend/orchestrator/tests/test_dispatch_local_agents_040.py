@@ -32,6 +32,7 @@ def _build_orch() -> Orchestrator:
     orch.agent_urls = {}
     orch.security_flags = {}
     orch.ui_sessions = {}
+    orch._source_bound_read_tools = {("general-1", "read_spreadsheet")}
 
     orch.concurrency_cap = MagicMock()
     orch.concurrency_cap.acquire = AsyncMock(return_value=True)
@@ -49,6 +50,14 @@ def _build_orch() -> Orchestrator:
     orch.history.get_file_mappings = MagicMock(return_value={})
 
     orch.tool_permissions = MagicMock()
+    orch.tool_permissions.get_tool_scope_map.return_value = {
+        "roll_dice": "tools:read",
+        "phantom_tool": "tools:read",
+        "read_spreadsheet": "tools:files",
+        "ocr": "tools:files",
+        "search": "tools:read",
+        "search_tool": "tools:read",
+    }
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     orch.credential_manager = MagicMock()
     orch.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value={})

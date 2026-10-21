@@ -11,6 +11,8 @@ from typing import Any, Dict, Optional
 
 from agents.general.file_tools import read_attachment_bytes
 from agents.general.file_tools.ocr import pdf_to_vision_images
+from agents.general.file_tools.structured_document import parse_structured_document
+from shared.feature_flags import flags
 
 logger = logging.getLogger("FileTools.read_document")
 
@@ -124,6 +126,7 @@ def read_document(
     page_range: Optional[str] = None,
     max_chars: int = 200_000,
     user_id: Optional[str] = None,
+    structured: bool = False,
     **_ignored: Any,
 ) -> Dict[str, Any]:
     att, payload, err = read_attachment_bytes(attachment_id, user_id)
@@ -134,6 +137,34 @@ def read_document(
         "filename": att.filename,
         "content_type": att.content_type,
     }
+    if structured:
+        if att.extension not in ("pdf", "docx"):
+            return {
+                **base,
+                "status": "failed",
+                "error": {
+                    "code": "unsupported",
+                    "message": f"structured reading does not support .{att.extension}",
+                },
+            }
+        if not flags.is_enabled("structured_document_parser"):
+            return {
+                **base,
+                "status": "failed",
+                "error": {
+                    "code": "structured_parser_disabled",
+                    "message": "The structured document reader is disabled.",
+                },
+            }
+        result = parse_structured_document(
+            payload,
+            att.extension,
+            page_range,
+            max(1, int(max_chars)),
+        )
+        result.setdefault("status", "failed")
+        result.setdefault("images", [])
+        return {**base, **result}
     try:
         if att.extension == "pdf":
             base.update(_read_pdf(payload, page_range, max_chars))

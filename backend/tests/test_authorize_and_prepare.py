@@ -20,11 +20,12 @@ from shared.protocol import AgentCard, AgentSkill  # noqa: E402
 
 
 @pytest.fixture
-def orch():
+def orch(monkeypatch):
     from orchestrator.concurrency_cap import ConcurrencyCap
     from orchestrator.hooks import HookManager
     from orchestrator.orchestrator import Orchestrator
 
+    monkeypatch.setenv("DELEGATION_REQUIRED", "false")
     o = Orchestrator.__new__(Orchestrator)
     o.agents = {}
     o.a2a_clients = {}
@@ -44,6 +45,15 @@ def orch():
     o.send_ui_render = AsyncMock()
     o.tool_permissions = MagicMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    o.tool_permissions.get_tool_scope = MagicMock(return_value="tools:read")
+    o.tool_permissions.get_tool_scope_map = MagicMock(return_value={
+        "t1": "tools:read",
+        "send_email": "tools:read",
+        "delete_records": "tools:read",
+        "cancel_job": "tools:read",
+        "make_directory": "tools:read",
+    })
+    o._get_delegation_token = AsyncMock(return_value=None)
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager = MagicMock()
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(

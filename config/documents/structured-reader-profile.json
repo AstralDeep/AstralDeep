@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "profile_id": "astral-document-structure-process-v1",
+  "adapter": {
+    "id": "structured-pdf-docx",
+    "version": "1.0.0",
+    "features": [
+      "pdf_text_regions",
+      "pdf_reading_order",
+      "pdf_tables",
+      "docx_block_order",
+      "docx_tables",
+      "docx_table_continuations"
+    ]
+  },
+  "platform": {
+    "os": "linux",
+    "python": "3.11",
+    "user": "non-root"
+  },
+  "containment": {
+    "profile": "host-process-v1",
+    "network": "denied",
+    "environment": "scrubbed",
+    "runtime_assets": "read-only-copy",
+    "scratch": "disposable",
+    "input_transport": "host-created-stream-file"
+  },
+  "limits": {
+    "input_bytes": 31457280,
+    "pdf_pages": 100,
+    "pdf_page_text_chars": 1000000,
+    "docx_archive_entries": 4096,
+    "docx_uncompressed_bytes": 67108864,
+    "docx_entry_bytes": 33554432,
+    "docx_compression_ratio": 100,
+    "blocks": 20000,
+    "table_rows": 5000,
+    "table_cells": 20000,
+    "warnings": 64,
+    "fragment_chars": 20000,
+    "max_chars": 400000,
+    "result_bytes": 8388608,
+    "deadline_seconds": 20.0,
+    "concurrency": 2,
+    "memory_mb": 1024,
+    "file_size_mb": 64,
+    "open_files": 128,
+    "processes": 64,
+    "cpu_seconds": 20
+  },
+  "dependencies": [
+    {"name": "pypdf", "version": "6.21.2", "license": "BSD-3-Clause"},
+    {"name": "python-docx", "version": "1.2.0", "license": "MIT"},
+    {"name": "lxml", "version": "6.1.3", "license": "BSD-3-Clause"},
+    {"name": "typing-extensions", "version": "4.16.0", "license": "PSF-2.0"},
+    {"name": "defusedxml", "version": "0.7.1", "license": "PSF-2.0"}
+  ],
+  "assets": [],
+  "enrichment": {
+    "remote_services": false,
+    "plugins": false,
+    "vlm": false,
+    "picture": false,
+    "chart": false,
+    "formula": false,
+    "code": false,
+    "audio": false,
+    "ocr": false
+  }
+}

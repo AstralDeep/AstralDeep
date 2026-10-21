@@ -555,6 +555,9 @@ class IngressRig:
         orch.agents.pop(self.agent_id, None)
         orch.agent_cards[self.agent_id] = _agent_card(self.agent_id)
         orch.security_flags.pop(self.agent_id, None)
+        orch.tool_permissions.register_tool_scopes(
+            self.agent_id, {TOOL_NAME: "tools:read"}
+        )
         orch.tool_permissions.set_agent_scopes(
             self.owner_id, self.agent_id, {"tools:read": True}
         )

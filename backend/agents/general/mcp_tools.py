@@ -1385,7 +1385,9 @@ TOOL_REGISTRY.update({
             "Read a document attachment (PDF, DOCX, RTF, ODT) the user has uploaded. "
             "Returns extracted text. PDFs without selectable text are rasterized and the "
             "page images are returned in the `images` field for the vision-capable model "
-            "to interpret directly (no OCR step)."
+            "to interpret directly (no OCR step). Set structured=true only when the host "
+            "has enabled the opt-in structured PDF/DOCX reader; it returns ordered blocks, "
+            "table rows/cells, and source page regions or DOCX element identifiers."
         ),
         "input_schema": {
             "type": "object",
@@ -1393,6 +1395,8 @@ TOOL_REGISTRY.update({
                 "attachment_id": {"type": "string", "format": "uuid"},
                 "page_range": {"type": "string", "description": "Optional. e.g. '1-5,9'. PDFs only."},
                 "max_chars": {"type": "integer", "minimum": 1, "default": 200000},
+                "structured": {"type": "boolean", "default": False,
+                               "description": "Opt in to the host-enabled structured PDF/DOCX reader."},
             },
             "required": ["attachment_id"],
         },
