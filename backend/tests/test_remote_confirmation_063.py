@@ -507,6 +507,17 @@ def real_orch(monkeypatch):
     o.send_ui_render = AsyncMock()
     o.tool_permissions = MagicMock()
     o.tool_permissions.is_tool_allowed.return_value = True
+    o.tool_permissions.get_tool_scope = MagicMock(return_value="tools:read")
+    o.tool_permissions.get_tool_scope_map.return_value = {
+        tool: "tools:read"
+        for tool in (
+            "cancel_job", "remove_path", "submit_job",
+            "gaiakeep_core_auditack", "gaiakeep_core_repair",
+            "gaiakeep_core_whoami", "gaiakeep_download_dataset",
+            "gaiakeep_summary", "gaiakeep_upload_dataset",
+            "gaiakeep_upload_file",
+        )
+    }
     o._record_hop_audit = AsyncMock()
     monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)
     return o

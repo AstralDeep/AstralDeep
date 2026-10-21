@@ -63,10 +63,14 @@ FEATURE_075_DEPENDENCY_AUTHORITIES = {
 }
 CURRENT_DEPENDENCY_AUTHORITIES = {
     **FEATURE_075_DEPENDENCY_AUTHORITIES,
-    "Dockerfile": "46737b00d717721adfe0fc2a0ff6f2e0ac26e08ec8a7310b4246f48c81c482c3",
+    "Dockerfile": "bd80b9180b1ec2fea5c2e0e4faba06739a1222727bca033c66f1a17d423ce506",
     "Dockerfile.voice": "82ffc56ab274790ea60e280852eb49608e9e8f7dbc3432fc16b4a1f3bcd21b84",
     "backend/requirements.txt": "9d5d8da9a7748b34b47da25dab67fb7b88df659d158b3bc84f9cc6e51d9ab242",
+    "backend/requirements-document-worker.txt": "28383cb135800b5415ca4c9504ea83e1514fa3e6f1d89257ab06fd5e8116508a",
     "backend/requirements-gaiakeep.txt": "87ea5ed066e8aa376f355df70a4efac295d331c7c77601d277a05c8acb37feea",
+    "backend/security_benchmark/requirements-eval.txt": (
+        "97a1d75fd45c83331e33e7029f8f23a12870593b67c7bbc8e4470d6baf2affee"
+    ),
     "backend/tests/fixtures/runtime_reliability_060/runtime-lock-contract.json": (
         "ff84f895f5b8253dff59c9581cc033452ad576a09e40d00da31b5ba7b0f4875e"
     ),

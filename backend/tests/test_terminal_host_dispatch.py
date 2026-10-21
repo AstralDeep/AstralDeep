@@ -50,6 +50,13 @@ def host(monkeypatch):
     orch.agent_cards = {AGENT: agent.card}
     authority = bind_terminal_authority(orch, socket, "owner", TOOL)
     args = {"user_id": "owner", "_terminal_authority": authority}
+
+    async def _execute_with_retry(ws, agent_id, tool_name, arguments, **kwargs):
+        return await orch._execute_in_process(
+            agent_id, tool_name, arguments, ui_websocket=ws)
+
+    orch._execute_with_retry = _execute_with_retry
+    orch.send_ui_render = AsyncMock()
     return SimpleNamespace(orch=orch, socket=socket, authority=authority, args=args, agent=agent)
 
 

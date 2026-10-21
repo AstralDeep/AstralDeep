@@ -35,6 +35,7 @@ def _build_orch(*, disabled_agents=None, saved_selection=None,
     orch.agent_urls = {}
     orch.security_flags = {}
     orch.ui_sessions = {}
+    orch._source_bound_read_tools = {("general-1", "read_spreadsheet")}
 
     orch.concurrency_cap = MagicMock()
     orch.concurrency_cap.acquire = AsyncMock(return_value=True)
@@ -50,6 +51,11 @@ def _build_orch(*, disabled_agents=None, saved_selection=None,
     orch.history.get_file_mappings = MagicMock(return_value={})
 
     orch.tool_permissions = MagicMock()
+    orch.tool_permissions.get_tool_scope_map.return_value = {
+        "read_spreadsheet": "tools:files",
+        "ocr": "tools:files",
+        "totally_made_up_tool": "tools:read",
+    }
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     orch.tool_permissions.list_disabled_agents.return_value = tuple(
         disabled_agents or ()

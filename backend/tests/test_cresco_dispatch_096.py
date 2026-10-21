@@ -36,6 +36,19 @@ def orch(orchestrator_factory, monkeypatch):
     instance.audit_recorder.record = AsyncMock()
     instance.send_ui_render = AsyncMock()
     instance.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    instance.tool_permissions.get_tool_scope = MagicMock(return_value="tools:write")
+    instance.tool_permissions.get_tool_scope_map = MagicMock(return_value={
+        "cresco_list_regions": "tools:read",
+        "cresco_list_agents": "tools:read",
+        "cresco_agent_info": "tools:read",
+        "cresco_get_sysinfo": "tools:read",
+        "cresco_dispatch_work": "tools:write",
+        "cresco_run_command": "tools:system",
+        "start_terminal": "tools:read",
+        "terminal_write": "tools:read",
+        "terminal_read": "tools:read",
+        "list_terminals": "tools:read",
+    })
     instance._map_file_paths = lambda cid, a, **k: a
     return instance
 

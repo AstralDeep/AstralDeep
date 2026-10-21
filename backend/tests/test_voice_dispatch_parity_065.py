@@ -40,6 +40,18 @@ class _Permissions:
         assert (user_id, agent_id) == (USER_ID, AGENT_ID)
         return ["tools:read"] if self.allowed else []
 
+    def get_tool_scope(self, user_id: str, agent_id: str, tool_id: str) -> str:
+        assert (user_id, agent_id) == (USER_ID, AGENT_ID)
+        return "tools:read"
+
+    def get_tool_scope_map(self, agent_id: str) -> dict[str, str]:
+        assert agent_id == AGENT_ID
+        return {
+            TOOL_ID: "tools:read",
+            "send_email": "tools:read",
+            "blocked_tool": "tools:read",
+        }
+
 
 class _Delegation:
     def __init__(self) -> None:

@@ -22,6 +22,13 @@ from orchestrator.orchestrator import Orchestrator  # noqa: E402
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture(autouse=True)
+def isolated_model_router(monkeypatch):
+    from orchestrator import model_router
+
+    monkeypatch.setattr(model_router, "router_enabled", lambda: False)
+
+
 class _Msg:
     def __init__(self, content="ok"):
         self.content = content
