@@ -46,6 +46,9 @@ def _build_orch() -> Orchestrator:
 
     orch.tool_permissions = MagicMock()
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    orch.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value={"read_spreadsheet": "tools:files", "ocr": "tools:read"})
+    orch._source_bound_read_tools = {("general-1", "read_spreadsheet")}
 
     orch.history = MagicMock()
     orch.history.db = MagicMock()

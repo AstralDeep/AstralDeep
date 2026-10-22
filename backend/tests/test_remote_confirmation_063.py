@@ -74,6 +74,15 @@ def _seed(db, pid, *, owner, verb, args, status="approved", expires_at=None,
     }
 
 
+class _ReadAnyScopeMap(dict):
+    def get(self, _key, _default=None):
+        return "tools:read"
+
+
+def _read_any_scope_map():
+    return _ReadAnyScopeMap()
+
+
 @pytest.fixture(autouse=True)
 def _reset_transport():
     yield
@@ -507,6 +516,8 @@ def real_orch(monkeypatch):
     o.send_ui_render = AsyncMock()
     o.tool_permissions = MagicMock()
     o.tool_permissions.is_tool_allowed.return_value = True
+    o.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value=_read_any_scope_map())
     o._record_hop_audit = AsyncMock()
     monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)
     return o

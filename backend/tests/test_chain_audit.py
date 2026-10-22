@@ -24,6 +24,15 @@ from shared.feature_flags import flags  # noqa: E402
 from shared.protocol import AgentHopRequest, MCPResponse  # noqa: E402
 
 
+class _ReadAnyScopeMap(dict):
+    def get(self, _key, _default=None):
+        return "tools:read"
+
+
+def _read_any_scope_map():
+    return _ReadAnyScopeMap()
+
+
 @pytest.fixture(autouse=True)
 def chaining_on(monkeypatch):
     monkeypatch.setitem(flags._flags, "recursive_delegation", True)
@@ -68,6 +77,8 @@ def orch():
     o.send_ui_render = AsyncMock()
     o.tool_permissions = MagicMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    o.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value=_read_any_scope_map())
     o.tool_permissions.get_enabled_scope_names = MagicMock(return_value=["tools:read"])
     o.tool_permissions.get_tool_scope = MagicMock(return_value="tools:read")
     o._map_file_paths = lambda cid, a, **k: a

@@ -48,6 +48,12 @@ def of_type(components, kind):
     return [component for component in components if component["type"] == kind]
 
 
+@pytest.fixture(autouse=True)
+def _cards_render_without_live_streams(monkeypatch):
+    monkeypatch.setitem(mcp_tools.flags._flags, "tool_streaming", False)
+    monkeypatch.setitem(mcp_tools.flags._flags, "stream_progress", False)
+
+
 def test_census_lists_active_stays_with_latest_vitals(connected):
     result = mcp_tools.icu_census(limit=5, session_id="s", user_id="u")
     card, components = card_of(result)

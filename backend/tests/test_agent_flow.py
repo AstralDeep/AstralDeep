@@ -52,6 +52,13 @@ async def _register(websocket) -> None:
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_ws_register_handshake():
+    import socket as _socket
+
+    host, _, port = URI.partition("ws://")[2].partition("/")[0].partition(":")
+    try:
+        await asyncio.to_thread(_socket.create_connection, (host, int(port or 8001)), 2)
+    except OSError:
+        pytest.skip(f"live orchestrator not listening at {URI}")
     last_exc: Exception | None = None
     for _attempt in range(3):
         try:

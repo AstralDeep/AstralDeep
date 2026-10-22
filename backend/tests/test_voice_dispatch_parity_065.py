@@ -40,6 +40,10 @@ class _Permissions:
         assert (user_id, agent_id) == (USER_ID, AGENT_ID)
         return ["tools:read"] if self.allowed else []
 
+    def get_tool_scope_map(self, agent_id: str) -> dict[str, str]:
+        assert agent_id == AGENT_ID
+        return {TOOL_ID: "tools:read", "send_email": "tools:write"}
+
 
 class _Delegation:
     def __init__(self) -> None:
@@ -246,7 +250,8 @@ async def test_tool_denial_and_egress_confirmation_have_identical_verdicts(
         pending = next(iter(runtime._hitl_pending_calls.values()))
         assert (pending.owner, pending.chat, pending.agent, pending.tool) == (
             USER_ID, chat_id, AGENT_ID, "send_email")
-        assert pending.risks == ("egress",)
+        assert pending.risks == (
+            "mutation_or_disclosure", "origin:unknown", "source_bound", "tools:write")
     else:
         assert confirmed[0].response.error == {
             "message": "Confirmation requires an interactive signed-in conversation. "

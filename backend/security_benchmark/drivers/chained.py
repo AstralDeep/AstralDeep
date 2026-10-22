@@ -93,6 +93,9 @@ class ChainedDriver(Driver):
         o._hop_cap_entries = {}
         o._job_context = {}
         o.tool_permissions = MagicMock()
+        o.hooks = MagicMock()
+        o.hooks.emit = AsyncMock(return_value=SimpleNamespace(
+            action=None, modified_args=None, reason=None))
         o.credential_manager = MagicMock()
         o._is_long_running_tool = lambda _agent_id, _tool_name: False
         o._tool_accepts_context_arg = lambda _agent_id, _tool_name, _arg: False
@@ -110,6 +113,8 @@ class ChainedDriver(Driver):
         o.tool_permissions.get_enabled_scope_names = MagicMock(return_value=["tools:read"])
         o.tool_permissions.get_tool_scope = MagicMock(
             return_value=case.objective.required_scope or "tools:read")
+        o.tool_permissions.get_tool_scope_map = MagicMock(
+            return_value={tool: case.objective.required_scope or "tools:read"})
         o._map_file_paths = lambda cid, a, **k: a
         o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
         o.agents["initiator-1"] = MagicMock()

@@ -633,6 +633,10 @@ def _write_bundle(tmp_path, files):
 def _run_bundle(bundle_dir, requests):
     stdin = "".join((r if isinstance(r, str) else json.dumps(r)) + "\n" for r in requests)
     child_env = os.environ.copy()
+    for name in ("ASTRAL_RUNTIME_FENCE_JSON", "ASTRAL_RUNTIME_AUTHORITY_JSON",
+                 "ASTRAL_RUNTIME_CONTRACT_VERSION", "ASTRAL_RUNTIME_BUNDLE_SHA256",
+                 "LETS_MODE"):
+        child_env.pop(name, None)
     lets_source = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "..", "..", "LETS", "src")
     )

@@ -72,6 +72,11 @@ class ProbeAgent(BaseA2AAgent):
     skill_tags = ["test"]
 
 
+class _ReadAnyScopeMap(dict):
+    def get(self, _key, _default=None):
+        return "tools:read"
+
+
 @pytest.fixture
 def probe_state():
     PROBE_STATE.clear()
@@ -113,6 +118,8 @@ async def env(push_flags, probe_state, monkeypatch):
     orch.local_agents[AGENT] = agent
     orch.tool_permissions = MagicMock()
     orch.tool_permissions.is_tool_allowed.return_value = True
+    orch.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value=_ReadAnyScopeMap())
     orch._streamable_tools[TOOL] = {
         "agent_id": AGENT, "kind": "push", "max_fps": 30, "min_fps": 5,
         "max_chunk_bytes": 65536, "default_interval": 2,
