@@ -190,7 +190,7 @@ class InProcessDriver:
                 provider="custom",
                 base_url="http://verif.invalid/v1",
                 model="verif-scripted-model",
-                api_key="verif-scripted-key",
+                api_key="verif-key",
             )
         except Exception:
             logger.warning("verification: llm config seeding failed", exc_info=True)

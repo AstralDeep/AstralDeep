@@ -42,3 +42,12 @@ d19050b3569f8ba6a2a5389998e3d23dcad8282b:scripts/typesafe_canary_scan.py:typesaf
 # branch lands or is rewritten. One historical line is excused, not a value,
 # prefix or path, and the hygiene test keeps the allowlist at the two canaries.
 3f01f0eca9255bb779fa5ff3ff67ce93716d51f1:backend/orchestrator/harness/conformance.py:typesafe-system-one-key:33
+# The verification harness and security-qualification fixture seed a scripted
+# non-routable LLM endpoint (http://verif.invalid) with a decorative api_key
+# value that is never a credential and is asserted nowhere. The scan covers
+# every fetched branch, so the sibling pi-agent/astraldeep-317 commit's
+# synthetic enum label is excused the same way: one historical line each, not
+# a value, prefix or path-wide exclusion.
+d69fb62b9586d529b1be2555c18f995806caa24c:backend/clinical_diagnostic/models.py:generic-api-key:81
+63416d6c77a1e6c18e8cd7c96f2ba5ea734bcdcc:backend/verification/drivers/in_process.py:generic-api-key:136
+d4dd8a7119f3f910a0d2075aa9599510348ed233:backend/security_benchmark/drivers/real_dispatch.py:generic-api-key:112

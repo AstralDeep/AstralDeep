@@ -59,6 +59,14 @@ REVIEWED_HARNESS_CANARY_FINGERPRINT = (
     "3f01f0eca9255bb779fa5ff3ff67ce93716d51f1:"
     "backend/orchestrator/harness/conformance.py:typesafe-system-one-key:33"
 )
+REVIEWED_SYNTHETIC_SEED_FINGERPRINTS = {
+    "d69fb62b9586d529b1be2555c18f995806caa24c:"
+    "backend/clinical_diagnostic/models.py:generic-api-key:81",
+    "63416d6c77a1e6c18e8cd7c96f2ba5ea734bcdcc:"
+    "backend/verification/drivers/in_process.py:generic-api-key:136",
+    "d4dd8a7119f3f910a0d2075aa9599510348ed233:"
+    "backend/security_benchmark/drivers/real_dispatch.py:generic-api-key:112",
+}
 WINDOWS_CANDIDATE = REPO_ROOT / ".github" / "workflows" / "build-windows-candidate.yml"
 WINDOWS_RELEASE_BRIDGE = REPO_ROOT / ".github" / "workflows" / "release-windows.yml"
 LOCK_INSTALL = (
@@ -211,13 +219,14 @@ def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     assert comments, "a baseline entry with no recorded reason is not reviewed"
     assert all(line.lstrip("#").strip() for line in comments)
     fingerprints = [line for line in lines if not line.startswith("#")]
-    assert len(fingerprints) == 26
+    assert len(fingerprints) == 29
     assert len(fingerprints) == len(set(fingerprints))
     assert REVIEWED_074_FINGERPRINTS <= set(fingerprints)
     assert REVIEWED_079_FINGERPRINT in fingerprints
     assert REVIEWED_089_FINGERPRINTS <= set(fingerprints)
     assert REVIEWED_GAIA_SDK_FINGERPRINT in fingerprints
     assert REVIEWED_HARNESS_CANARY_FINGERPRINT in fingerprints
+    assert REVIEWED_SYNTHETIC_SEED_FINGERPRINTS <= set(fingerprints)
     assert all(
         re.fullmatch(
             r"[0-9a-f]{40}:[^:]+:"
