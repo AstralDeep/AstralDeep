@@ -173,6 +173,7 @@ def real_orch(orchestrator_factory):
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     o.tool_permissions.get_tool_scope = MagicMock(return_value="tools:read")
+    o.tool_permissions.register_tool_scopes("a1", {"t1": "tools:read"})
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     o.local_agents["a1"] = MagicMock()
@@ -259,6 +260,7 @@ async def test_machine_turn_chains_attenuate(real_orch):
         real_orch.local_agents["b1"] = MagicMock()
         real_orch.agent_cards["b1"] = SimpleNamespace(
             skills=[SimpleNamespace(id="peer_tool")])
+        real_orch.tool_permissions.register_tool_scopes("b1", {"peer_tool": "tools:read"})
         real_orch.tool_permissions.get_enabled_scope_names = MagicMock(
             return_value=["tools:read"])
         real_orch.tool_permissions.get_tool_scope = MagicMock(return_value="tools:read")

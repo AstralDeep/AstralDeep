@@ -27,6 +27,8 @@ def orch(orchestrator_factory):
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     o.tool_permissions.get_tool_scope = MagicMock(return_value="tools:read")
+    o.tool_permissions.register_tool_scopes("a1", {
+        "t1": "tools:read", "create_capability": "tools:read"})
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     o.local_agents["a1"] = MagicMock()
@@ -108,10 +110,10 @@ async def test_same_refusal_on_single_and_parallel(orch, monkeypatch, violation)
 
 
 @pytest.mark.asyncio
-async def test_no_agent_refusal_matches(orch):
+async def test_unowned_agent_refusal_matches(orch):
     single_msg = await _single(orch, agent="ghost")
     parallel_msg = await _parallel(orch, agent="ghost")
-    assert "No agent available" in single_msg
+    assert "effect declaration" in single_msg
     assert single_msg == parallel_msg
 
 
@@ -178,4 +180,4 @@ async def test_meta_tool_parity_in_parallel_batch(orch, monkeypatch):
 @pytest.mark.asyncio
 async def test_real_agent_hop_cannot_reach_meta_tools(orch):
     msg = await _single(orch, tool="create_capability", agent="evil-agent-1")
-    assert "No agent available" in msg
+    assert "effect declaration" in msg

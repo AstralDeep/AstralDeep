@@ -24,6 +24,12 @@ def orch(orchestrator_factory):
     o.audit_recorder.record = AsyncMock()
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    # Read declarations keep the 097 owner-review gate out of these
+    # supervisor/HITL wiring subjects; those gates are effect-agnostic.
+    o.tool_permissions.register_tool_scopes("a1", {
+        "delete_account": "tools:read", "delete_records": "tools:read",
+        "get_weather": "tools:read", "search_web": "tools:read",
+        "send_email": "tools:read"})
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     return o

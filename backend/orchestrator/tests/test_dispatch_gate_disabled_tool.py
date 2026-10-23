@@ -18,7 +18,8 @@ def _make_card(agent_id: str, tools: list, display_name: str = None) -> AgentCar
         name=display_name or agent_id,
         description="",
         agent_id=agent_id,
-        skills=[AgentSkill(id=t, name=t, description="", input_schema={}) for t in tools],
+        skills=[AgentSkill(id=t, name=t, description="", input_schema={}, scope="tools:read")
+                for t in tools],
         metadata={},
     )
 
@@ -51,6 +52,12 @@ def _build_orch(*, disabled_agents=None, saved_selection=None,
 
     orch.tool_permissions = MagicMock()
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+
+    def _declared_scopes(agent_id: str) -> dict:
+        card = orch.agent_cards.get(agent_id)
+        return {skill.id: skill.scope for skill in card.skills} if card else {}
+
+    orch.tool_permissions.get_tool_scope_map = MagicMock(side_effect=_declared_scopes)
     orch.tool_permissions.list_disabled_agents.return_value = tuple(
         disabled_agents or ()
     )
@@ -87,7 +94,7 @@ def _make_tool_call(name: str, args: dict = None):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_blocked_when_tool_filtered_by_picker() -> None:
+async def test_dispatch_refuses_picker_filtered_tool_fail_closed() -> None:
     orch = _build_orch(
         chat_to_agent={"chat-1": "general-1"},
         saved_selection={("alice", "general-1"): ["ocr"]},
@@ -105,24 +112,14 @@ async def test_dispatch_blocked_when_tool_filtered_by_picker() -> None:
         user_id="alice",
     )
 
-    assert len(orch._rendered_ui) == 1
-    rendered = orch._rendered_ui[0]
-    assert rendered["target"] == "chat"
-    assert len(rendered["components"]) == 1
-    alert = rendered["components"][0]
-    assert alert["type"] == "alert"
-    assert alert["variant"] == "warning"
-    assert "read_spreadsheet" in alert["message"]
-    assert "tool picker" in alert["message"]
-
+    assert orch._rendered_ui == []
     assert result is not None
     assert result.error is not None
-    assert "read_spreadsheet" in result.error["message"]
-    assert result.ui_components is None
+    assert result.error["code"] == "effect_declaration_unavailable"
 
 
 @pytest.mark.asyncio
-async def test_dispatch_blocked_when_agent_disabled_by_user() -> None:
+async def test_dispatch_refuses_tool_of_disabled_agent_fail_closed() -> None:
     orch = _build_orch(disabled_agents=["general-1"])
     websocket = MagicMock()
     tool_to_agent = {}
@@ -136,15 +133,13 @@ async def test_dispatch_blocked_when_agent_disabled_by_user() -> None:
         user_id="alice",
     )
 
-    alert = orch._rendered_ui[0]["components"][0]
-    assert alert["variant"] == "warning"
-    assert "General" in alert["message"]
-    assert "Agents settings" in alert["message"]
+    assert orch._rendered_ui == []
     assert result.error is not None
+    assert result.error["code"] == "effect_declaration_unavailable"
 
 
 @pytest.mark.asyncio
-async def test_dispatch_unknown_tool_falls_through_to_generic_gate() -> None:
+async def test_dispatch_unknown_tool_is_refused_fail_closed() -> None:
     orch = _build_orch()
     websocket = MagicMock()
     tool_to_agent = {}
@@ -158,11 +153,9 @@ async def test_dispatch_unknown_tool_falls_through_to_generic_gate() -> None:
         user_id="alice",
     )
 
-    alert = orch._rendered_ui[0]["components"][0]
-    assert alert["type"] == "alert"
-    assert "No agent available" in alert["message"]
-    assert "totally_made_up_tool" in alert["message"]
+    assert orch._rendered_ui == []
     assert result.error is not None
+    assert result.error["code"] == "effect_declaration_unavailable"
 
 
 @pytest.mark.asyncio

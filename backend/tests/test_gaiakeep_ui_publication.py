@@ -178,6 +178,10 @@ async def test_real_connection_stage_commits_gaia_canvas_and_fresh_owned_hydrati
         host.agent_cards = {}
         host.tool_permissions = MagicMock()
         host.tool_permissions.is_tool_allowed.return_value = True
+        host.tool_permissions.get_tool_scope_map = MagicMock(return_value={
+            'gaiakeep_core_repair': 'tools:write', 'gaiakeep_connection_info': 'tools:read'})
+        host.credential_manager = MagicMock()
+        host.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
         monkeypatch.setattr("orchestrator.remote_machines.resolve_machine", lambda *a: {"owner_user_id": OWNER})
         monkeypatch.setattr(rc, "_machine_label", lambda *a: "registered DGX")
     else:

@@ -507,6 +507,17 @@ def real_orch(monkeypatch):
     o.send_ui_render = AsyncMock()
     o.tool_permissions = MagicMock()
     o.tool_permissions.is_tool_allowed.return_value = True
+    from agents.gaiakeep.catalog import TOOLS as _GAIAKEEP_TOOLS
+    from agents.remote_control.mcp_tools import TOOL_REGISTRY as _REMOTE_TOOLS
+    o.tool_permissions.get_tool_scope_map = MagicMock(side_effect=lambda agent_id: {
+        name: item['scope'] for name, item in
+        {**_GAIAKEEP_TOOLS, **_REMOTE_TOOLS}.items()})
+    o.credential_manager = MagicMock()
+    o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
+    o._llm_store = MagicMock()
+    o._llm_store.get = AsyncMock(return_value=None)
+    o._llm_store.get_system = AsyncMock(return_value=None)
+    o.audit_recorder = SimpleNamespace(record=AsyncMock(return_value=object()))
     o._record_hop_audit = AsyncMock()
     monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)
     return o

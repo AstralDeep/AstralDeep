@@ -2,14 +2,16 @@
 
 import asyncio
 import copy
+import json
+import time
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 import threading
 
 import pytest
 
-from orchestrator import gaiakeep_dispatch
+from orchestrator import gaiakeep_dispatch, hitl_confirmation, source_bound
 from orchestrator.governed_dispatch import GovernedFinalDispatch
 from shared.feature_flags import flags
 from shared.protocol import MCPResponse
@@ -28,10 +30,35 @@ def outer_orch(real_orch, monkeypatch):
     real_orch.agent_urls = {}
     real_orch._chat_recorders = {}
     real_orch.tool_permissions.get_tool_scope.return_value = 'tools:read'
+    real_orch.tool_permissions.get_tool_scope_map = MagicMock(return_value={
+        'gaiakeep_core_whoami': 'tools:read', 'gaiakeep_core_repair': 'tools:write'})
+    real_orch.credential_manager = MagicMock()
+    real_orch.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
+    real_orch._llm_store = MagicMock()
+    real_orch._llm_store.get = AsyncMock(return_value=None)
+    real_orch._llm_store.get_system = AsyncMock(return_value=None)
+    real_orch.audit_recorder = SimpleNamespace(record=AsyncMock(return_value=object()))
     real_orch._execute_via_a2a = AsyncMock(return_value=MCPResponse(result={'unexpected': 'fallback'}))
     monkeypatch.setitem(flags._flags, 'progress_streaming', False)
     monkeypatch.setattr(gaiakeep_dispatch, '_record', AsyncMock())
     return real_orch
+
+
+def _bind_attended_owner_review(orch, tool, arguments, *, chat='conversation'):
+    socket = object()
+    orch.ui_sessions[socket] = {'sub': USER, 'preferred_username': USER}
+    orch._ws_active_chat = {id(socket): chat}
+    compared = {key: value for key, value in arguments.items()
+                if key not in hitl_confirmation._SERVER_ARGUMENTS}
+    call = hitl_confirmation.PendingCall(
+        'bound-approval-id', USER, chat, 'gaiakeep-1', tool,
+        json.dumps(compared, sort_keys=True, separators=(",", ":")),
+        source_bound.review_risks(source_bound.declaration(
+            orch.tool_permissions.get_tool_scope_map('gaiakeep-1'), 'gaiakeep-1', tool)),
+        time.monotonic() + 900)
+    token = hitl_confirmation._APPROVAL.set(
+        hitl_confirmation.Approval(orch, call, consumed=True))
+    return socket, token
 
 
 def _governed(orch, mode, *, failure=None):
@@ -62,6 +89,9 @@ async def test_one_governed_attempt_keeps_native_identity_and_never_falls_back(
                  '_delegation_token': 'private-delegation', '_credentials': {'secret': 'private-key'}}
     original = copy.deepcopy(arguments)
     observed = []
+    socket, token = (None, None)
+    if mutation:
+        socket, token = _bind_attended_owner_review(outer_orch, tool, arguments)
 
     async def physical(*args, **kwargs):
         observed.append(copy.deepcopy(args[2]))
@@ -74,7 +104,7 @@ async def test_one_governed_attempt_keeps_native_identity_and_never_falls_back(
 
     outer_orch._execute_via_websocket = AsyncMock(side_effect=physical)
     response = await outer_orch._execute_with_retry(
-        None, 'gaiakeep-1', tool, arguments, max_retries=9, user_id=USER,
+        socket, 'gaiakeep-1', tool, arguments, max_retries=9, user_id=USER,
         channel='rest', audit_correlation_id='audit-id', audit_actor_user_id=USER,
         audit_auth_principal=USER, audit_conversation_id='conversation')
     verdict = 'unconfirmed' if mutation else 'unavailable'
@@ -93,6 +123,8 @@ async def test_one_governed_attempt_keeps_native_identity_and_never_falls_back(
         assert authorized['final_arguments'] == original
         assert authorized['context'].agent_id == 'gaiakeep-1'
         assert all(permit.released for permit in gateway.permits)
+    if token is not None:
+        hitl_confirmation._APPROVAL.reset(token)
 
 
 @pytest.mark.asyncio
@@ -183,9 +215,15 @@ async def test_late_identity_refusal_remains_predispatch_with_no_handler_or_send
         outer_orch.agents = {}
     else:
         outer_orch.agents = {'gaiakeep-1': SimpleNamespace(send_text=sender)}
+    socket, token = _bind_attended_owner_review(
+        outer_orch, 'gaiakeep_core_repair',
+        {'machine_id': 'mine', 'params': {'request_id': 'retained_native_identity'},
+         'user_id': USER})
     response = await outer_orch._execute_with_retry(
-        None, 'gaiakeep-1', 'gaiakeep_core_repair',
-        {'machine_id': 'mine', 'params': {'request_id': 'retained_native_identity'}}, user_id=USER)
+        socket, 'gaiakeep-1', 'gaiakeep_core_repair',
+        {'machine_id': 'mine', 'params': {'request_id': 'retained_native_identity'},
+         'user_id': USER}, user_id=USER, audit_conversation_id='conversation')
+    hitl_confirmation._APPROVAL.reset(token)
     assert response.error['code'] == 'required_identity_unavailable'
     assert response.error['retryable'] is False
     assert 'data' not in response.error
@@ -246,12 +284,16 @@ async def test_inprocess_outer_end_keeps_running_worker_and_records_once(outer_o
     outer_orch._register_dispatch_context = lambda *args: None
     outer_orch._dispatch_context = {}
     outer_orch.handle_agent_message = AsyncMock()
+    bounded_wait = asyncio.wait_for
     monkeypatch.setattr(asyncio, 'wait_for', controlled_wait)
-    arguments = {'machine_id': 'mine', 'params': {'request_id': 'retained_native_identity'}}
+    arguments = {'machine_id': 'mine', 'params': {'request_id': 'retained_native_identity'},
+                 'user_id': USER}
+    socket, token = _bind_attended_owner_review(outer_orch, 'gaiakeep_core_repair', arguments)
     dispatch = asyncio.create_task(outer_orch._execute_with_retry(
-        None, 'gaiakeep-1', 'gaiakeep_core_repair', arguments, user_id=USER, timeout=7.0))
+        socket, 'gaiakeep-1', 'gaiakeep_core_repair', arguments, user_id=USER,
+        timeout=7.0, audit_conversation_id='conversation'))
     try:
-        await waiting.wait()
+        await bounded_wait(waiting.wait(), timeout=30)
         if cancel:
             dispatch.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -267,6 +309,7 @@ async def test_inprocess_outer_end_keeps_running_worker_and_records_once(outer_o
         gaiakeep_dispatch._record.assert_awaited_once_with('gaiakeep_core_repair', 'unconfirmed', True, True)
         outer_orch._execute_via_a2a.assert_not_awaited()
     finally:
+        hitl_confirmation._APPROVAL.reset(token)
         release.set()
         if not dispatch.done():
             dispatch.cancel()

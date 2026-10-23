@@ -24,6 +24,8 @@ def orch(monkeypatch, orchestrator_factory):
     o.audit_recorder.record = AsyncMock()
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    o.tool_permissions.register_tool_scopes('callee', {'long_tool': 'tools:read'})
+    o.tool_permissions.register_tool_scopes('initiator', {'long_tool': 'tools:read'})
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     o.local_agents["callee"] = MagicMock()
@@ -63,9 +65,11 @@ async def test_initiator_fanout_bounded_by_own_cap(orch):
     cap = orch.concurrency_cap.max_per_user_agent
     for i in range(cap):
         orch.local_agents[f"callee{i}"] = MagicMock()
+        orch.tool_permissions.register_tool_scopes(f"callee{i}", {'long_tool': 'tools:read'})
         out = await _auth_hop(orch, callee=f"callee{i}")
         assert isinstance(out, PreparedDispatch), f"hop {i} should be admitted"
     orch.local_agents["callee-extra"] = MagicMock()
+    orch.tool_permissions.register_tool_scopes("callee-extra", {'long_tool': 'tools:read'})
     out = await _auth_hop(orch, callee="callee-extra")
     assert isinstance(out, GateRefusal)
     assert "initiator" in (out.response.error or {}).get("message", "")

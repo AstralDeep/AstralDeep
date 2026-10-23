@@ -54,7 +54,15 @@ async def test_shared_gate_refuses_destructive_mcp_before_transport_20_of_20():
         invocation: {"sub": "u1", "_invocation_channel": "mcp"}
     }
     orchestrator.security_flags = {}
-    orchestrator.tool_permissions = SimpleNamespace(is_tool_allowed=lambda *args: True)
+    orchestrator.tool_permissions = SimpleNamespace(
+        is_tool_allowed=lambda *args: True,
+        # Read declarations keep the 097 owner-review gate out of this
+        # destructive-verb classification subject; that gate is effect-agnostic.
+        get_tool_scope_map=lambda agent_id: {
+            "remove_path": "tools:read", "cancel_job": "tools:read",
+            "signal_process": "tools:read", "control_service": "tools:read",
+            "manage_package": "tools:read"})
+    orchestrator._audit_gate_denial = AsyncMock()
     transport = AsyncMock()
     orchestrator._execute_with_retry = transport
 

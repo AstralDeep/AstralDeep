@@ -113,6 +113,7 @@ async def env(push_flags, probe_state, monkeypatch):
     orch.local_agents[AGENT] = agent
     orch.tool_permissions = MagicMock()
     orch.tool_permissions.is_tool_allowed.return_value = True
+    orch.tool_permissions.get_tool_scope_map = MagicMock(return_value={TOOL: 'tools:read'})
     orch._streamable_tools[TOOL] = {
         "agent_id": AGENT, "kind": "push", "max_fps": 30, "min_fps": 5,
         "max_chunk_bytes": 65536, "default_interval": 2,
