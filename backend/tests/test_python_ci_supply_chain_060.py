@@ -211,7 +211,7 @@ def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     assert comments, "a baseline entry with no recorded reason is not reviewed"
     assert all(line.lstrip("#").strip() for line in comments)
     fingerprints = [line for line in lines if not line.startswith("#")]
-    assert len(fingerprints) == 26
+    assert len(fingerprints) == 28
     assert len(fingerprints) == len(set(fingerprints))
     assert REVIEWED_074_FINGERPRINTS <= set(fingerprints)
     assert REVIEWED_079_FINGERPRINT in fingerprints
