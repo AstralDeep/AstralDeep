@@ -45,9 +45,20 @@ d19050b3569f8ba6a2a5389998e3d23dcad8282b:scripts/typesafe_canary_scan.py:typesaf
 # The verification harness and security-qualification fixture seed a scripted
 # non-routable LLM endpoint (http://verif.invalid) with a decorative api_key
 # value that is never a credential and is asserted nowhere. The scan covers
-# every fetched branch, so the sibling pi-agent/astraldeep-317 commit's
-# synthetic enum label is excused the same way: one historical line each, not
-# a value, prefix or path-wide exclusion.
+# every fetched branch, so sibling pi-agent branch lines of the same classes
+# are excused the same way: one historical line each, not a value, prefix or
+# path-wide exclusion. These cover: a synthetic enum label, the scripted
+# endpoint seed, a public tokenizer-asset SHA-256 digest list (the same
+# public-immutable-digest class as the LETS entries above), identifier
+# assignments to in-repo constants, and a reconciliation audit field label.
 d69fb62b9586d529b1be2555c18f995806caa24c:backend/clinical_diagnostic/models.py:generic-api-key:81
 63416d6c77a1e6c18e8cd7c96f2ba5ea734bcdcc:backend/verification/drivers/in_process.py:generic-api-key:136
 d4dd8a7119f3f910a0d2075aa9599510348ed233:backend/security_benchmark/drivers/real_dispatch.py:generic-api-key:112
+a061349f7fcda21b417280679ce17ace99c27404:backend/orchestrator/token_assets/NOTICE:generic-api-key:13
+a061349f7fcda21b417280679ce17ace99c27404:backend/orchestrator/token_assets/NOTICE:generic-api-key:14
+a061349f7fcda21b417280679ce17ace99c27404:backend/orchestrator/context_token_accounting.py:generic-api-key:220
+a061349f7fcda21b417280679ce17ace99c27404:backend/orchestrator/context_token_accounting.py:generic-api-key:264
+c5ed7b93c2d14be214321dd60bc1113e72424d07:backend/orchestrator/remote_effect_execution.py:generic-api-key:183
+1349c1be1e34e98183b79733bc17622152e20925:backend/orchestrator/orchestrator.py:generic-api-key:1372
+1349c1be1e34e98183b79733bc17622152e20925:backend/orchestrator/work_reconciliation.py:generic-api-key:659
+1349c1be1e34e98183b79733bc17622152e20925:backend/orchestrator/work_reconciliation.py:generic-api-key:745

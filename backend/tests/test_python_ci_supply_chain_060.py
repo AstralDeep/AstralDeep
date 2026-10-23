@@ -66,6 +66,22 @@ REVIEWED_SYNTHETIC_SEED_FINGERPRINTS = {
     "backend/verification/drivers/in_process.py:generic-api-key:136",
     "d4dd8a7119f3f910a0d2075aa9599510348ed233:"
     "backend/security_benchmark/drivers/real_dispatch.py:generic-api-key:112",
+    "a061349f7fcda21b417280679ce17ace99c27404:"
+    "backend/orchestrator/token_assets/NOTICE:generic-api-key:13",
+    "a061349f7fcda21b417280679ce17ace99c27404:"
+    "backend/orchestrator/token_assets/NOTICE:generic-api-key:14",
+    "a061349f7fcda21b417280679ce17ace99c27404:"
+    "backend/orchestrator/context_token_accounting.py:generic-api-key:220",
+    "a061349f7fcda21b417280679ce17ace99c27404:"
+    "backend/orchestrator/context_token_accounting.py:generic-api-key:264",
+    "c5ed7b93c2d14be214321dd60bc1113e72424d07:"
+    "backend/orchestrator/remote_effect_execution.py:generic-api-key:183",
+    "1349c1be1e34e98183b79733bc17622152e20925:"
+    "backend/orchestrator/orchestrator.py:generic-api-key:1372",
+    "1349c1be1e34e98183b79733bc17622152e20925:"
+    "backend/orchestrator/work_reconciliation.py:generic-api-key:659",
+    "1349c1be1e34e98183b79733bc17622152e20925:"
+    "backend/orchestrator/work_reconciliation.py:generic-api-key:745",
 }
 WINDOWS_CANDIDATE = REPO_ROOT / ".github" / "workflows" / "build-windows-candidate.yml"
 WINDOWS_RELEASE_BRIDGE = REPO_ROOT / ".github" / "workflows" / "release-windows.yml"
@@ -219,7 +235,7 @@ def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     assert comments, "a baseline entry with no recorded reason is not reviewed"
     assert all(line.lstrip("#").strip() for line in comments)
     fingerprints = [line for line in lines if not line.startswith("#")]
-    assert len(fingerprints) == 29
+    assert len(fingerprints) == 37
     assert len(fingerprints) == len(set(fingerprints))
     assert REVIEWED_074_FINGERPRINTS <= set(fingerprints)
     assert REVIEWED_079_FINGERPRINT in fingerprints
