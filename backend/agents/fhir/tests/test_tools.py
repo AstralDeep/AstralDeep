@@ -48,7 +48,9 @@ def of_type(components, kind):
     return [component for component in components if component["type"] == kind]
 
 
-def test_census_lists_active_stays_with_latest_vitals(connected):
+def test_census_lists_active_stays_with_latest_vitals(connected, monkeypatch):
+    monkeypatch.setitem(mcp_tools.flags._flags, "tool_streaming", False)
+    monkeypatch.setitem(mcp_tools.flags._flags, "stream_progress", False)
     result = mcp_tools.icu_census(limit=5, session_id="s", user_id="u")
     card, components = card_of(result)
     data = result["_data"]
@@ -75,6 +77,9 @@ def test_census_lists_active_stays_with_latest_vitals(connected):
 
 
 def test_cards_offer_live_streams_only_when_the_platform_can_show_them(connected, monkeypatch):
+    monkeypatch.setitem(mcp_tools.flags._flags, "tool_streaming", False)
+    monkeypatch.setitem(mcp_tools.flags._flags, "stream_progress", False)
+
     def labels(result):
         return [button["label"] for button in of_type(card_of(result)[1], "button")]
 
@@ -100,7 +105,9 @@ def test_cards_offer_live_streams_only_when_the_platform_can_show_them(connected
     assert mcp_tools.live_available() is False
 
 
-def test_census_filters_by_unit_and_handles_an_empty_unit(connected):
+def test_census_filters_by_unit_and_handles_an_empty_unit(connected, monkeypatch):
+    monkeypatch.setitem(mcp_tools.flags._flags, "tool_streaming", False)
+    monkeypatch.setitem(mcp_tools.flags._flags, "stream_progress", False)
     assert mcp_tools.icu_census(unit="med-surg")["_data"]["patients_in_icu"] == 1
     empty = mcp_tools.icu_census(unit="neuro", limit="many")
     card, components = card_of(empty)
@@ -127,7 +134,9 @@ def test_census_without_vitals_or_start_times(connected):
     assert of_type(components, "table")[0]["rows"][0][5:] == ["—", "—", "—"]
 
 
-def test_patient_overview_assembles_the_whole_picture(connected):
+def test_patient_overview_assembles_the_whole_picture(connected, monkeypatch):
+    monkeypatch.setitem(mcp_tools.flags._flags, "tool_streaming", False)
+    monkeypatch.setitem(mcp_tools.flags._flags, "stream_progress", False)
     result = mcp_tools.patient_overview(patient="Patient/002-1")
     card, components = card_of(result)
     data = result["_data"]

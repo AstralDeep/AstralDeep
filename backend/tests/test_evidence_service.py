@@ -85,6 +85,9 @@ async def evidence_turn(human, bound, fixture, tmp_path, monkeypatch):
         host._dispatch_context = {}
         host._pending_cap_entries = {}
         host._job_context = {}
+        import types as _types
+        from orchestrator.orchestrator import Orchestrator as _Orchestrator
+        host._source_ledger = _types.MethodType(_Orchestrator._source_ledger, host)
         calls, releases, notices = [], [], []
         async def authorize(ws, agent, tool, args, conversation, owner, **kwargs):
             calls.append((ws, agent, tool, deepcopy(args), conversation, owner, deepcopy(kwargs)))

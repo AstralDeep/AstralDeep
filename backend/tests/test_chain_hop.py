@@ -58,6 +58,8 @@ def orch():
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     o.tool_permissions.get_enabled_scope_names = MagicMock(return_value=["tools:read"])
     o.tool_permissions.get_tool_scope = MagicMock(return_value="tools:read")
+    o.tool_permissions.get_tool_scope_map = MagicMock(return_value={})
+
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager = MagicMock()
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(
@@ -65,7 +67,8 @@ def orch():
     o.local_agents["initiator-1"] = MagicMock()
     o.local_agents["callee-1"] = MagicMock()
     o.agent_cards["callee-1"] = SimpleNamespace(
-        skills=[SimpleNamespace(id="peer_tool")])
+        skills=[SimpleNamespace(id="peer_tool", scope="tools:read")])
+    o.tool_permissions.get_tool_scope_map = MagicMock(return_value={"peer_tool": "tools:read"})
 
     o._dispatched = {}
 

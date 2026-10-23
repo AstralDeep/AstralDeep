@@ -18,7 +18,8 @@ def _make_card(agent_id: str, tools: list, display_name: str = None) -> AgentCar
         name=display_name or agent_id,
         description="",
         agent_id=agent_id,
-        skills=[AgentSkill(id=t, name=t, description="", input_schema={}) for t in tools],
+        skills=[AgentSkill(id=t, name=t, description="", input_schema={}, scope="tools:read")
+                for t in tools],
         metadata={},
     )
 
@@ -46,6 +47,12 @@ def _build_orch() -> Orchestrator:
 
     orch.tool_permissions = MagicMock()
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+
+    def _declared_scopes(agent_id: str) -> dict:
+        card = orch.agent_cards.get(agent_id)
+        return {skill.id: skill.scope for skill in card.skills} if card else {}
+
+    orch.tool_permissions.get_tool_scope_map = MagicMock(side_effect=_declared_scopes)
 
     orch.history = MagicMock()
     orch.history.db = MagicMock()

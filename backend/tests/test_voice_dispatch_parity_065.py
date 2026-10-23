@@ -40,6 +40,12 @@ class _Permissions:
         assert (user_id, agent_id) == (USER_ID, AGENT_ID)
         return ["tools:read"] if self.allowed else []
 
+    def get_tool_scope_map(self, agent_id: str) -> dict[str, str]:
+        assert agent_id == AGENT_ID
+        # Read declarations keep the 097 owner-review gate out of these
+        # typed-vs-voice parity subjects; those gates are effect-agnostic.
+        return {"read_record": "tools:read", "send_email": "tools:read"}
+
 
 class _Delegation:
     def __init__(self) -> None:
