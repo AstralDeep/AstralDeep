@@ -99,6 +99,8 @@ class InProcessDriver:
 
     async def setup(self) -> None:
         os.environ["FF_UI_DESIGNER"] = "false"
+        self._saved_delegation_required = os.environ.get("DELEGATION_REQUIRED")
+        os.environ["DELEGATION_REQUIRED"] = "false"
 
         from verification.drivers.fixture_identity import FixtureIdentity
 
@@ -188,7 +190,7 @@ class InProcessDriver:
                 provider="custom",
                 base_url="http://verif.invalid/v1",
                 model="verif-scripted-model",
-                api_key="verif-scripted-key",
+                api_key="verif-key",
             )
         except Exception:
             logger.warning("verification: llm config seeding failed", exc_info=True)
@@ -647,6 +649,11 @@ class InProcessDriver:
         error, cancellation = await _observe_task_through_cancellation(task)
         if getattr(self, "_fixture_identity", None) is not None:
             self._fixture_identity.close()
+        saved = getattr(self, "_saved_delegation_required", None)
+        if saved is None:
+            os.environ.pop("DELEGATION_REQUIRED", None)
+        else:
+            os.environ["DELEGATION_REQUIRED"] = saved
         if error is not None:
             raise error
         if cancellation is not None:

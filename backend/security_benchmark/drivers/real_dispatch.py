@@ -109,7 +109,7 @@ class RealDispatchQualification(InProcessDriver):
         await _run_sync(
             store.set_sync, user_id, provider="custom",
             base_url="http://verif.invalid/v1", model="verif-scripted-model",
-            api_key="verif-scripted-key")
+            api_key="verif-key")
 
     def _register_general_agent(self) -> None:
         self.agent_id = SOURCE_AGENT

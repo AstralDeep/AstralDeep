@@ -167,12 +167,23 @@ async def test_revocation_pauses_with_one_notification():
     assert orch.notify_user.await_count == 3
 
 
+class _ReadAnyScopeMap(dict):
+    def get(self, _key, _default=None):
+        return "tools:read"
+
+
+def _read_any_scope_map():
+    return _ReadAnyScopeMap()
+
+
 @pytest.fixture
 def real_orch(orchestrator_factory):
     o = orchestrator_factory()
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     o.tool_permissions.get_tool_scope = MagicMock(return_value="tools:read")
+    o.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value=_read_any_scope_map())
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     o.local_agents["a1"] = MagicMock()

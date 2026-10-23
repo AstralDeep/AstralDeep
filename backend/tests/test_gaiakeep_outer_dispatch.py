@@ -4,12 +4,15 @@ import asyncio
 import copy
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 import threading
+import time
 
 import pytest
 
 from orchestrator import gaiakeep_dispatch
+from orchestrator import hitl_confirmation
+from agents.gaiakeep.catalog import TOOLS as _GAIKEEP_TOOLS
 from orchestrator.governed_dispatch import GovernedFinalDispatch
 from shared.feature_flags import flags
 from shared.protocol import MCPResponse
@@ -27,7 +30,11 @@ def outer_orch(real_orch, monkeypatch):
     real_orch.a2a_clients = {'gaiakeep-1': object()}
     real_orch.agent_urls = {}
     real_orch._chat_recorders = {}
+    real_orch.audit_recorder = SimpleNamespace(record=AsyncMock(return_value=object()))
     real_orch.tool_permissions.get_tool_scope.return_value = 'tools:read'
+    real_orch.tool_permissions.get_tool_scope_map = MagicMock(side_effect=lambda agent_id: (
+        {name: info['scope'] for name, info in _GAIKEEP_TOOLS.items()}
+        if agent_id == 'gaiakeep-1' else {'other_tool': 'tools:read'}))
     real_orch._execute_via_a2a = AsyncMock(return_value=MCPResponse(result={'unexpected': 'fallback'}))
     monkeypatch.setitem(flags._flags, 'progress_streaming', False)
     monkeypatch.setattr(gaiakeep_dispatch, '_record', AsyncMock())
@@ -47,6 +54,22 @@ def _governed(orch, mode, *, failure=None):
     orch.governed_final_dispatch = GovernedFinalDispatch.active(
         gateway=gateway, plane=_Plane(), authority_repository=_Repository(), runtime_resolver=resolve)
     return gateway
+
+
+def _attended_session(orch, chat_id):
+    socket = object()
+    orch.ui_sessions[socket] = {'sub': USER}
+    orch._ws_active_chat = {id(socket): chat_id}
+    return socket
+
+
+def _approved(orch, chat_id, agent_id, tool, arguments):
+    call = hitl_confirmation.PendingCall(
+        'seeded-approval', USER, chat_id, agent_id, tool,
+        hitl_confirmation._arguments(arguments), ('source_bound',),
+        time.monotonic() + 60)
+    return hitl_confirmation._APPROVAL.set(
+        hitl_confirmation.Approval(orch, call, consumed=True))
 
 
 @pytest.mark.asyncio
@@ -73,10 +96,19 @@ async def test_one_governed_attempt_keeps_native_identity_and_never_falls_back(
                            error={'message': 'private-key private-frame', 'retryable': True})
 
     outer_orch._execute_via_websocket = AsyncMock(side_effect=physical)
-    response = await outer_orch._execute_with_retry(
-        None, 'gaiakeep-1', tool, arguments, max_retries=9, user_id=USER,
-        channel='rest', audit_correlation_id='audit-id', audit_actor_user_id=USER,
-        audit_auth_principal=USER, audit_conversation_id='conversation')
+    socket = None
+    approval_token = None
+    if mutation:
+        socket = _attended_session(outer_orch, 'conversation')
+        approval_token = _approved(outer_orch, 'conversation', 'gaiakeep-1', tool, arguments)
+    try:
+        response = await outer_orch._execute_with_retry(
+            socket, 'gaiakeep-1', tool, arguments, max_retries=9, user_id=USER,
+            channel='rest', audit_correlation_id='audit-id', audit_actor_user_id=USER,
+            audit_auth_principal=USER, audit_conversation_id='conversation')
+    finally:
+        if approval_token is not None:
+            hitl_confirmation._APPROVAL.reset(approval_token)
     verdict = 'unconfirmed' if mutation else 'unavailable'
     assert response.error['data']['verdict'] == verdict
     assert response.error['retryable'] is False
@@ -184,15 +216,15 @@ async def test_late_identity_refusal_remains_predispatch_with_no_handler_or_send
     else:
         outer_orch.agents = {'gaiakeep-1': SimpleNamespace(send_text=sender)}
     response = await outer_orch._execute_with_retry(
-        None, 'gaiakeep-1', 'gaiakeep_core_repair',
-        {'machine_id': 'mine', 'params': {'request_id': 'retained_native_identity'}}, user_id=USER)
+        None, 'gaiakeep-1', 'gaiakeep_core_whoami',
+        {'machine_id': 'mine', 'params': {}}, user_id=USER)
     assert response.error['code'] == 'required_identity_unavailable'
     assert response.error['retryable'] is False
     assert 'data' not in response.error
     handler.assert_not_awaited()
     sender.assert_not_awaited()
     outer_orch._execute_via_a2a.assert_not_awaited()
-    gaiakeep_dispatch._record.assert_awaited_once_with('gaiakeep_core_repair', 'auth_failed', False, True)
+    gaiakeep_dispatch._record.assert_awaited_once_with('gaiakeep_core_whoami', 'auth_failed', False, False)
 
 
 @pytest.mark.asyncio
@@ -248,8 +280,12 @@ async def test_inprocess_outer_end_keeps_running_worker_and_records_once(outer_o
     outer_orch.handle_agent_message = AsyncMock()
     monkeypatch.setattr(asyncio, 'wait_for', controlled_wait)
     arguments = {'machine_id': 'mine', 'params': {'request_id': 'retained_native_identity'}}
+    socket = _attended_session(outer_orch, 'conversation-gk')
+    approval_token = _approved(outer_orch, 'conversation-gk', 'gaiakeep-1',
+                               'gaiakeep_core_repair', arguments)
     dispatch = asyncio.create_task(outer_orch._execute_with_retry(
-        None, 'gaiakeep-1', 'gaiakeep_core_repair', arguments, user_id=USER, timeout=7.0))
+        socket, 'gaiakeep-1', 'gaiakeep_core_repair', arguments, user_id=USER, timeout=7.0,
+        audit_conversation_id='conversation-gk'))
     try:
         await waiting.wait()
         if cancel:
@@ -271,4 +307,5 @@ async def test_inprocess_outer_end_keeps_running_worker_and_records_once(outer_o
         if not dispatch.done():
             dispatch.cancel()
         await asyncio.gather(dispatch, *tasks, return_exceptions=True)
+        hitl_confirmation._APPROVAL.reset(approval_token)
     assert finished.is_set() and tasks[0].done()

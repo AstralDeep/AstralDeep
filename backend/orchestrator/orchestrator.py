@@ -17256,23 +17256,85 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 render_components=[alert.to_dict()],
                 render_target="chat")
 
+        _session_claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
+
+        from orchestrator.chain_authority import machine_scope_ceiling
+
+        machine_scopes = machine_scope_ceiling(_session_claims)
+        if machine_scopes is not None and agent_id:
+            try:
+                required_scope = await asyncio.to_thread(
+                    self.tool_permissions.get_tool_scope, agent_id, tool_name
+                )
+            except Exception:
+                required_scope = None
+            if (
+                _session_claims.get("sub") != user_id
+                or _session_claims.get("_machine_authority_agent") not in (None, agent_id)
+                or required_scope not in machine_scopes
+            ):
+                err_msg = (
+                    f"Tool '{tool_name}' is outside this unattended task's approved "
+                    "permissions. Approve a new schedule to change its authority."
+                )
+                await self._audit_gate_denial(
+                    websocket, user_id, agent_id, tool_name, chat_id, args,
+                    gate="machine_scope", detail="outside_consented_scopes",
+                )
+                return GateRefusal(
+                    response=MCPResponse(
+                        error={"message": err_msg, "retryable": False}
+                    ),
+                    render_components=[Alert(message=err_msg, variant="warning").to_dict()],
+                    render_target="chat",
+                )
+
+        identity_card = (
+            getattr(self, "agent_cards", {}).get(agent_id)
+            if agent_id
+            else None
+        )
+        if identity_card is not None:
+            from orchestrator.agent_identity import (
+                identity_access_message,
+                identity_requirement_satisfied,
+            )
+
+            if not identity_requirement_satisfied(identity_card, _session_claims):
+                err_msg = identity_access_message(identity_card)
+                logger.warning(
+                    "Required identity unavailable: user=%s agent=%s tool=%s",
+                    user_id,
+                    agent_id,
+                    tool_name,
+                )
+                alert = Alert(message=err_msg, variant="warning")
+                return GateRefusal(
+                    response=MCPResponse(
+                        error={"message": err_msg, "retryable": False}
+                    ),
+                    render_components=[alert.to_dict()],
+                )
+
         from orchestrator import source_bound
 
-        try:
-            action = source_bound.registered_action(
-                self.tool_permissions.get_tool_scope_map(agent_id), agent_id, tool_name,
-                getattr(self, "_source_bound_read_tools", ()))
-        except (AttributeError, TypeError, ValueError) as exc:
-            logger.warning("Source-bound declaration unavailable: %s", exc)
-            await self._audit_gate_denial(
-                websocket, user_id, agent_id, tool_name, chat_id, args,
-                gate="source_bound", detail="missing_or_invalid_declaration")
-            return GateRefusal(response=MCPResponse(error={
-                "code": "effect_declaration_unavailable",
-                "message": "Tool effect declaration is unavailable; ask an operator to review this tool.",
-                "retryable": False}))
+        action = None
+        if agent_id:
+            try:
+                action = source_bound.registered_action(
+                    self.tool_permissions.get_tool_scope_map(agent_id), agent_id, tool_name,
+                    getattr(self, "_source_bound_read_tools", ()))
+            except (AttributeError, TypeError, ValueError) as exc:
+                logger.warning("Source-bound declaration unavailable: %s", exc)
+                await self._audit_gate_denial(
+                    websocket, user_id, agent_id, tool_name, chat_id, args,
+                    gate="source_bound", detail="missing_or_invalid_declaration")
+                return GateRefusal(response=MCPResponse(error={
+                    "code": "effect_declaration_unavailable",
+                    "message": "Tool effect declaration is unavailable; ask an operator to review this tool.",
+                    "retryable": False}))
+        needs_review = action is not None and action.needs_review
 
-        _session_claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
         if agent_id == "terminal-shell-1":
             from orchestrator.terminal_security import (
                 TerminalError, assert_terminal_execution_available, assert_terminal_identity,
@@ -17307,63 +17369,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 return GateRefusal(response=MCPResponse(error={
                     "code": mesh_admission.MeshAdmissionError.code,
                     "message": "Current member authority is unavailable", "retryable": False}))
-        from orchestrator.chain_authority import machine_scope_ceiling
-
-        machine_scopes = machine_scope_ceiling(_session_claims)
-        if machine_scopes is not None and agent_id:
-            try:
-                required_scope = await asyncio.to_thread(
-                    self.tool_permissions.get_tool_scope, agent_id, tool_name
-                )
-            except Exception:
-                required_scope = None
-            if (
-                _session_claims.get("sub") != user_id
-                or _session_claims.get("_machine_authority_agent") not in (None, agent_id)
-                or required_scope not in machine_scopes
-            ):
-                err_msg = (
-                    f"Tool '{tool_name}' is outside this unattended task's approved "
-                    "permissions. Approve a new schedule to change its authority."
-                )
-                await self._audit_gate_denial(
-                    websocket, user_id, agent_id, tool_name, chat_id, args,
-                    gate="machine_scope", detail="outside_consented_scopes",
-                )
-                return GateRefusal(
-                    response=MCPResponse(
-                        error={"message": err_msg, "retryable": False}
-                    ),
-                    render_components=[Alert(message=err_msg, variant="warning").to_dict()],
-                    render_target="chat",
-                )
-        identity_card = (
-            getattr(self, "agent_cards", {}).get(agent_id)
-            if agent_id
-            else None
-        )
-        if identity_card is not None:
-            from orchestrator.agent_identity import (
-                identity_access_message,
-                identity_requirement_satisfied,
-            )
-
-            if not identity_requirement_satisfied(identity_card, _session_claims):
-                err_msg = identity_access_message(identity_card)
-                logger.warning(
-                    "Required identity unavailable: user=%s agent=%s tool=%s",
-                    user_id,
-                    agent_id,
-                    tool_name,
-                )
-                alert = Alert(message=err_msg, variant="warning")
-                return GateRefusal(
-                    response=MCPResponse(
-                        error={"message": err_msg, "retryable": False}
-                    ),
-                    render_components=[alert.to_dict()],
-                )
-
         if user_id and agent_id and not await asyncio.to_thread(
                 self.tool_permissions.is_tool_allowed, user_id, agent_id, tool_name):
             err_msg = f"Tool '{tool_name}' is restricted for this agent. Update permissions in the sidebar to enable it."
@@ -17454,12 +17459,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if policy.policy_enabled():
                 try:
                     decision = policy.evaluate_policy(
-                        policy.load_rules(strict=True) if action.needs_review else policy.load_rules(),
+                        policy.load_rules(strict=True) if needs_review else policy.load_rules(),
                         {"tool": tool_name, "agent": agent_id, "user_id": user_id,
                          "roles": self._policy_roles(websocket), "args": args},
-                        **({"strict": True} if action.needs_review else {}))
+                        **({"strict": True} if needs_review else {}))
                 except Exception:
-                    if action.needs_review:
+                    if needs_review:
                         logger.exception("Policy evaluation unavailable for effect")
                         return GateRefusal(response=MCPResponse(error={
                             "code": "effect_policy_unavailable",
@@ -17504,7 +17509,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if isinstance(args, dict) and "_txn_token" in args:
                     args = {k: v for k, v in args.items() if k != "_txn_token"}
 
-        if user_id and agent_id and action.needs_review:
+        if user_id and agent_id and needs_review:
             from orchestrator import hitl_confirmation
 
             origin = self._source_ledger(user_id, chat_id).origin_of(args)
@@ -17520,7 +17525,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 tracker = self._taint_tracker(chat_id)
                 trust = tracker.effective_trust_of_args(
                     args, user_text=self._current_request_text(chat_id))
-                approved_source_use = (action.needs_review
+                approved_source_use = (needs_review
                     and hitl_confirmation.current_approval(
                         self, user_id, chat_id, agent_id, tool_name, args) is not None)
                 if _taint.check_flow(trust) == "deny" and not approved_source_use:

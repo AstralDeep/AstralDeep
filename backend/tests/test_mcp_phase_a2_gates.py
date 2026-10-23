@@ -229,6 +229,8 @@ async def test_mcp_refusal_names_signing_key_not_idp_scopes(orchestrator_factory
     orch.local_agents["reader-1"] = MagicMock()
     orch._execute_in_process = AsyncMock(side_effect=AssertionError("must not dispatch"))
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    orch.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value=_read_any_scope_map())
     orch.tool_permissions.get_enabled_scope_names = MagicMock(return_value=["tools:read"])
     orch._map_file_paths = lambda cid, a, **k: a
     orch.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
@@ -266,6 +268,15 @@ def test_mcp_intent_text_does_not_fabricate_intent_for_listed_tools():
     )
 
 
+class _ReadAnyScopeMap(dict):
+    def get(self, _key, _default=None):
+        return "tools:read"
+
+
+def _read_any_scope_map():
+    return _ReadAnyScopeMap()
+
+
 @pytest.fixture
 def gate_orch(orchestrator_factory):
     os.environ["OPENAI_API_KEY"] = "test-key"
@@ -274,6 +285,8 @@ def gate_orch(orchestrator_factory):
     o.audit_recorder.record = AsyncMock()
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    o.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value=_read_any_scope_map())
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     return o

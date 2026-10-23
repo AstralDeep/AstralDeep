@@ -262,6 +262,7 @@ async def test_explicit_consumers_use_bound_transport(fixture, runtime, monkeypa
         assert result.claims["azp"] == CLIENT
     elif consumer == "work":
         from orchestrator import work_submit_authority as wa
+        monkeypatch.setenv("PUBLIC_BASE_URL", "https://app.invalid")
         req = request(sid, headers=[(b"origin",b"https://app.invalid"),(b"content-type",b"application/json")])
         selected = await wa.authenticate_work_submission_request(req, sessions=store, plane_runtime=runtime)
         result = await wa.refresh_work_submission_authority(selected, sessions=store)

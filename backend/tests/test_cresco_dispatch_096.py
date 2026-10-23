@@ -22,6 +22,16 @@ from shared.feature_flags import FeatureFlags, flags
 from shared.protocol import RegisterAgent
 
 
+from agents.cresco.mcp_tools import TOOL_REGISTRY as _CRESCO_REGISTRY
+
+TOOL_REGISTRY_ITEMS = {name: info["scope"] for name, info in _CRESCO_REGISTRY.items()}
+
+
+class _ScopeMapWithReadFallback(dict):
+    def get(self, key, default=None):
+        return super().get(key) or "tools:read"
+
+
 @pytest.fixture
 def cresco_agent_instance(monkeypatch):
     monkeypatch.setattr(cresco_agent.BaseA2AAgent, "_init_crypto",
@@ -36,6 +46,8 @@ def orch(orchestrator_factory, monkeypatch):
     instance.audit_recorder.record = AsyncMock()
     instance.send_ui_render = AsyncMock()
     instance.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    instance.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value=_ScopeMapWithReadFallback(TOOL_REGISTRY_ITEMS))
     instance._map_file_paths = lambda cid, a, **k: a
     return instance
 

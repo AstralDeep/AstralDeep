@@ -204,7 +204,10 @@ def _request(method, params=None, *, token="dev-mcp-token", headers=None, reques
     return body, merged
 
 
-def test_discover_and_protected_resource_metadata(endpoint):
+def test_discover_and_protected_resource_metadata(endpoint, monkeypatch):
+    from shared.feature_flags import flags
+
+    monkeypatch.setitem(flags._flags, "mcp_server", False)
     client, _ = endpoint
     metadata = client.get("/.well-known/oauth-protected-resource/mcp")
     assert metadata.status_code == 200

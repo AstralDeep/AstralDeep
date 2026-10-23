@@ -54,6 +54,9 @@ def service(runtime, fixture, monkeypatch):
         agent_cards={"web-research-1": SimpleNamespace(skills=[SimpleNamespace(id="fetch_page")])},
         _is_draft_agent=lambda _: False, security_flags={}, tool_permissions=permissions,
         history=SimpleNamespace(get_chat=lambda *_args, **_kwargs: None))
+    from orchestrator.orchestrator import Orchestrator
+
+    orch._source_ledger = Orchestrator._source_ledger.__get__(orch, Orchestrator)
     assignments = AssignmentService(orch, AssignmentStore(plane_runtime=runtime), enabled=True,
         phi_gate=PHIGate(analyzer=SimpleNamespace(analyze=lambda **_: [])))
     return WorkSubmitService(assignments, AuditRepository(plane_runtime=runtime), sessions)
