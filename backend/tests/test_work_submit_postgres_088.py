@@ -36,7 +36,7 @@ def command(**changes):
     values = {"version": 1, "caller_key": str(uuid4()), "kind": "research", "name": "Read release",
         "instructions": "Read one public release.", "source": {"url": "https://93.184.216.34/releases"},
         "limits": {"model_calls": 1, "tool_calls": 3, "tokens": 1, "elapsed_ms": 90000, "max_retries": 1},
-        "deadline_at": (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat().replace("+00:00", "Z"),
+        "deadline_at": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat().replace("+00:00", "Z"),
         "conversation_id": None}
     values.update(changes)
     return json.dumps(values, allow_nan=False).encode()
@@ -54,6 +54,9 @@ def service(runtime, fixture, monkeypatch):
         agent_cards={"web-research-1": SimpleNamespace(skills=[SimpleNamespace(id="fetch_page")])},
         _is_draft_agent=lambda _: False, security_flags={}, tool_permissions=permissions,
         history=SimpleNamespace(get_chat=lambda *_args, **_kwargs: None))
+    from orchestrator.orchestrator import Orchestrator
+
+    orch._source_ledger = Orchestrator._source_ledger.__get__(orch)
     assignments = AssignmentService(orch, AssignmentStore(plane_runtime=runtime), enabled=True,
         phi_gate=PHIGate(analyzer=SimpleNamespace(analyze=lambda **_: [])))
     return WorkSubmitService(assignments, AuditRepository(plane_runtime=runtime), sessions)

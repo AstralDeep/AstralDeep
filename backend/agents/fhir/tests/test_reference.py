@@ -486,6 +486,9 @@ async def test_normal_dispatch_denies_new_tools_when_user_revokes_permission(mon
     orchestrator.agent_cards = {"fhir-1": _make_card("fhir-1", [tool])}
     orchestrator.local_agents = {"fhir-1": MagicMock()}
     orchestrator.tool_permissions.is_tool_allowed.return_value = False
+    orchestrator.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value={tool: "tools:read" if tool == "patient_measurements"
+                      else "tools:search"})
     response = await orchestrator.execute_single_tool(
         websocket=MagicMock(), tool_call=_make_tool_call(tool), tool_to_agent={tool: "fhir-1"}, chat_id="reference-chat", user_id="alice",
     )

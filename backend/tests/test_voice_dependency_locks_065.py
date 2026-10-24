@@ -19,8 +19,12 @@ CONTRACT_INPUT = CONTRACT_ROOT / "requirements.in"
 CONTRACT_LOCK = CONTRACT_ROOT / "requirements.lock.txt"
 FEATURE_075_BASE_COMMIT = "6d9931dbc43c6c9ff2f0435000c91dd1106e9409"
 FEATURE_075_DEPENDENCY_AUTHORITIES = {
-    "Dockerfile": "292dbb485a05b3af0734a18d7822fbc8b574d0bf22e8a8b85e1047860d2364fe",
-    "Dockerfile.voice": "86c246452f4c2d720f70a49b26d57f1ddd47e53d506173f87e316a6f7a83e943",
+    "Dockerfile": (
+        "292dbb485a05b3af0734a18d7822fbc8b574d0bf22e8a8b85e1047860d2364fe"
+    ),
+    "Dockerfile.voice": (
+        "86c246452f4c2d720f70a49b26d57f1ddd47e53d506173f87e316a6f7a83e943"
+    ),
     "backend/requirements.txt": (
         "6cb717ba80c99dfe33728b247e835ad68d38cbce94ddf51c56cdcbe590a753ff"
     ),
@@ -65,11 +69,10 @@ CURRENT_DEPENDENCY_AUTHORITIES = {
     **FEATURE_075_DEPENDENCY_AUTHORITIES,
     "Dockerfile": "46737b00d717721adfe0fc2a0ff6f2e0ac26e08ec8a7310b4246f48c81c482c3",
     "Dockerfile.voice": "82ffc56ab274790ea60e280852eb49608e9e8f7dbc3432fc16b4a1f3bcd21b84",
-    "backend/requirements.txt": "9d5d8da9a7748b34b47da25dab67fb7b88df659d158b3bc84f9cc6e51d9ab242",
+    "backend/requirements.txt": "ca175f088a11ad1832b8750edfb403c88b5cfeea097a45a69ef573b83a8baa37",
+    "backend/security_benchmark/requirements-eval.txt": "97a1d75fd45c83331e33e7029f8f23a12870593b67c7bbc8e4470d6baf2affee",
     "backend/requirements-gaiakeep.txt": "87ea5ed066e8aa376f355df70a4efac295d331c7c77601d277a05c8acb37feea",
-    "backend/tests/fixtures/runtime_reliability_060/runtime-lock-contract.json": (
-        "ff84f895f5b8253dff59c9581cc033452ad576a09e40d00da31b5ba7b0f4875e"
-    ),
+    "backend/tests/fixtures/runtime_reliability_060/runtime-lock-contract.json": "ff84f895f5b8253dff59c9581cc033452ad576a09e40d00da31b5ba7b0f4875e",
     "pyproject.toml": "c90e8e9e1245c95abfd9f8ad36f42a337adbcebfaa97e5ce1c9e8cae17b8793f",
     "tooling/backend-ci/requirements.in": "6fc8c8dd178365a4c3102506b6f7b8a64ec7088c9b4484746ace40b9f3883fdf",
     "tooling/backend-ci/requirements.lock.txt": "57378601b70a65fd6db1bca2ebcd452c3dfa85b1edffac3137f609a9b796b860",

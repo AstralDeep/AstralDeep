@@ -13,6 +13,15 @@ from orchestrator.orchestrator import Orchestrator
 from shared.protocol import AgentCard, AgentSkill
 
 
+@pytest.fixture(autouse=True)
+def _pin_ambient_gates(monkeypatch):
+    from orchestrator import policy
+
+    monkeypatch.setattr(policy, "policy_enabled", lambda: False)
+    for flag in ("FF_HITL_HIGHRISK", "FF_TAINT_TRACKING", "FF_RUNTIME_SUPERVISOR"):
+        monkeypatch.setenv(flag, "false")
+
+
 def _make_card(agent_id: str, tools: list, display_name: str = None) -> AgentCard:
     return AgentCard(
         name=display_name or agent_id,
@@ -46,6 +55,8 @@ def _build_orch() -> Orchestrator:
 
     orch.tool_permissions = MagicMock()
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    orch.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value={"read_spreadsheet": "tools:read", "ocr": "tools:read"})
 
     orch.history = MagicMock()
     orch.history.db = MagicMock()

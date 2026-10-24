@@ -51,6 +51,7 @@ class FeatureFlags:
             "gaiakeep": self._read("FF_GAIAKEEP", False),
             "fhir": self._read("FF_FHIR", False),
             "cresco": self._read("FF_CRESCO", False),
+            "push_delivery": self._read("FF_PUSH_DELIVERY", False),
             "computer_use": self._read("FF_COMPUTER_USE", False),
             "terminal_shell": self._read("FF_TERMINAL_SHELL", False),
             "mcp_server": self._read("FF_MCP_SERVER", False),

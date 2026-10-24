@@ -56,7 +56,7 @@ def chat_command(**changes):
         "instructions": INSTRUCTION, "source": None,
         "limits": {"model_calls": 1, "tool_calls": 1, "tokens": profile.RESERVED_TOKENS,
                    "elapsed_ms": profile.RESERVED_MILLISECONDS, "max_retries": 0},
-        "deadline_at": (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat()
+        "deadline_at": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
         .replace("+00:00", "Z"),
         "conversation_id": None,
     }

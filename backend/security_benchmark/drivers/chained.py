@@ -98,7 +98,11 @@ class ChainedDriver(Driver):
         o._tool_accepts_context_arg = lambda _agent_id, _tool_name, _arg: False
         o._auto_subscribe_stream_artifacts = AsyncMock()
         o._is_user_agent = lambda _agent_id: False
+        o.hooks = SimpleNamespace(emit=AsyncMock(return_value=SimpleNamespace(
+            action=None, modified_args=None, reason=None)))
         tool = case.objective.target_tool or "peer_tool"
+        o.tool_permissions.get_tool_scope_map = MagicMock(
+            return_value={tool: case.objective.required_scope or "tools:read"})
         kind = case.objective.kind
         is_control = case.meta.get("control") == "1"
 

@@ -169,6 +169,7 @@ def _mcp_orchestrator():
     orch.security_flags = {}
     orch.tool_permissions = SimpleNamespace(
         is_tool_allowed=lambda *args: True,
+        get_tool_scope_map=lambda *args: {"read_value": "tools:read"},
         get_enabled_scope_names=lambda *args: ["tools:read"],
     )
     orch.delegation = SimpleNamespace(agent_service_client_id="astral-agent-service")
@@ -230,6 +231,8 @@ async def test_mcp_refusal_names_signing_key_not_idp_scopes(orchestrator_factory
     orch._execute_in_process = AsyncMock(side_effect=AssertionError("must not dispatch"))
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     orch.tool_permissions.get_enabled_scope_names = MagicMock(return_value=["tools:read"])
+    orch.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value={"read_value": "tools:read"})
     orch._map_file_paths = lambda cid, a, **k: a
     orch.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
 
@@ -274,6 +277,10 @@ def gate_orch(orchestrator_factory):
     o.audit_recorder.record = AsyncMock()
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    o.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value={"delete_records": "tools:read", "send-email": "tools:write",
+                      "drop_table": "tools:execute", "purge.cache": "tools:write",
+                      "pay_invoice": "tools:write", "read_value": "tools:read"})
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     return o
@@ -329,6 +336,7 @@ async def test_mcp_destructive_remote_compute_refusal_survives_supervisor_change
     monkeypatch.setattr(
         remote_confirmation, "is_destructive_unattended", lambda tool, args, agent: True
     )
+    gate_orch.tool_permissions.get_tool_scope_map.return_value["delete_path"] = "tools:write"
     resp = await gate_orch.execute_mcp_tool(
         claims={"sub": "u1", "realm_access": {"roles": ["user"]}},
         user_id="u1",

@@ -317,6 +317,7 @@ async def test_feature_off_preserves_provider_arguments_and_emits_no_context_eve
 def dispatch_host():
     host = _build_orch()
     host._execute_with_retry = Orchestrator._execute_with_retry.__get__(host)
+    host._source_ledger = Orchestrator._source_ledger.__get__(host)
     host._dispatch_context = {}
     host.pending_requests = {}
     host.pending_ui_sockets = {}

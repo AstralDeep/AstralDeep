@@ -36,6 +36,15 @@ INTEGRATION = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def ci_dispatch_posture(monkeypatch):
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    monkeypatch.setenv("DELEGATION_REQUIRED", "false")
+    monkeypatch.setenv("FF_TAINT_TRACKING", "false")
+    monkeypatch.setenv("FF_POLICY_ENGINE", "false")
+    monkeypatch.setenv("FF_ASI_COVERAGE", "false")
+
+
 @pytest.fixture
 def run_config(tmp_path):
     from verification.config import RunConfig

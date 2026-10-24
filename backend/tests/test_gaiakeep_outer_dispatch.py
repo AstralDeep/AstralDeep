@@ -4,7 +4,7 @@ import asyncio
 import copy
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 import threading
 
 import pytest
@@ -28,6 +28,10 @@ def outer_orch(real_orch, monkeypatch):
     real_orch.agent_urls = {}
     real_orch._chat_recorders = {}
     real_orch.tool_permissions.get_tool_scope.return_value = 'tools:read'
+    real_orch.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value={'gaiakeep_core_repair': 'tools:read',
+                      'gaiakeep_core_whoami': 'tools:read',
+                      'gaiakeep_core_auditack': 'tools:read'})
     real_orch._execute_via_a2a = AsyncMock(return_value=MCPResponse(result={'unexpected': 'fallback'}))
     monkeypatch.setitem(flags._flags, 'progress_streaming', False)
     monkeypatch.setattr(gaiakeep_dispatch, '_record', AsyncMock())
