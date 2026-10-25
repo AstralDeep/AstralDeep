@@ -755,6 +755,80 @@ def test_protected_merger_copy_matches_initialized_projection_exact_bytes():
     )
 
 
+_HOSTED_MAC_WARNINGS = (
+    ("GuidanceRenderer088Tests.swift", 19, "Accessing FocusState's value outside of the body of a View. This will result in a constant Binding of the initial value and will not update."),
+    ("ConsoleShellPresentationTests.swift", 563, "[Internal] Thread running at User-interactive quality-of-service class waiting on a lower QoS thread running at Default quality-of-service class. Investigate ways to avoid priority inversions"),
+)
+
+
+def _mac_warning_metadata(warning, lane="unit"):
+    device = {"deviceId": "hosted-mac", "architecture": "arm64", "platform": "macOS"}
+    summary = {"result": "Passed", "totalTestCount": 1, "passedTests": 1,
+               "failedTests": 0, "skippedTests": 0, "expectedFailures": 0,
+               "devicesAndConfigurations": [{"device": device.copy()}]}
+    case = {"nodeType": "Test Case", "nodeIdentifier": "HostedTests/testWarning()",
+            "result": "Passed", "children": [warning]}
+    bundle = {"name": "AstralAppTests" if lane == "unit" else "AstralAppUITests",
+              "nodeType": "Unit test bundle", "result": "Passed", "children": [case]}
+    tests = {"devices": [device], "testNodes": [{"name": "AstralApp", "nodeType": "Test Plan",
+             "result": "Passed", "children": [bundle]}]}
+    return summary, tests
+
+
+@pytest.mark.parametrize("filename,line,message", _HOSTED_MAC_WARNINGS)
+@pytest.mark.parametrize("structured_location", [False, True])
+def test_deep_merger_policy_accepts_hosted_known_warning_source_prefixes(filename, line, message, structured_location):
+    policy = merger._native_domain_policy()
+    warning = {"nodeType": "Runtime Warning", "name": f"{filename}:{line}: {message}"}
+    if structured_location:
+        warning["sourceLocation"] = {"filePath": "/checkout/" + filename, "lineNumber": line}
+    summary, tests = _mac_warning_metadata(warning)
+    policy.test_identity(summary, tests, "unit", platform="macos", architecture="arm64")
+
+
+@pytest.mark.parametrize("mutation", [
+    "unknown_source", "wrong_pair", "absolute_path", "traversal", "zero", "negative",
+    "leading_zero", "oversized", "unknown_message", "message_suffix", "nested_prefix",
+    "location_source", "location_line", "location_field", "location_control", "failure", "ui",
+])
+def test_deep_merger_policy_refuses_untrusted_prefixed_warning_evidence(mutation):
+    policy = merger._native_domain_policy()
+    filename, line, message = _HOSTED_MAC_WARNINGS[0]
+    if mutation == "unknown_source":
+        filename = "UnreviewedTests.swift"
+    elif mutation == "wrong_pair":
+        filename = _HOSTED_MAC_WARNINGS[1][0]
+    elif mutation == "absolute_path":
+        filename = "/checkout/" + filename
+    elif mutation == "traversal":
+        filename = "../" + filename
+    elif mutation in {"zero", "negative", "leading_zero", "oversized"}:
+        line = {"zero": 0, "negative": -1, "leading_zero": "019", "oversized": 1000001}[mutation]
+    elif mutation == "unknown_message":
+        message = "Unreviewed runtime warning"
+    elif mutation == "message_suffix":
+        message += " Additional failure"
+    elif mutation == "nested_prefix":
+        message = f"{filename}:{line}: {message}"
+    warning = {"nodeType": "Runtime Warning", "name": f"{filename}:{line}: {message}"}
+    if mutation.startswith("location_"):
+        warning["sourceLocation"] = {"filePath": "/checkout/" + filename, "lineNumber": line}
+        if mutation == "location_source":
+            warning["sourceLocation"]["filePath"] = "/checkout/UnreviewedTests.swift"
+        elif mutation == "location_line":
+            warning["sourceLocation"]["lineNumber"] = 20
+        elif mutation == "location_field":
+            warning["sourceLocation"]["untrusted"] = "hidden failure"
+        else:
+            warning["sourceLocation"]["filePath"] = "/checkout/\n" + filename
+    elif mutation == "failure":
+        warning["nodeType"] = "Failure Message"
+    lane = "ui" if mutation == "ui" else "unit"
+    summary, tests = _mac_warning_metadata(warning, lane)
+    with pytest.raises(policy.DomainError):
+        policy.test_identity(summary, tests, lane, platform="macos", architecture="arm64")
+
+
 def test_isolated_import_uses_only_the_policy_sibling_exporter(tmp_path, monkeypatch):
     import builtins
     import runpy
