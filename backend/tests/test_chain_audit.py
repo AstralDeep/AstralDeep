@@ -80,6 +80,7 @@ def orch():
     o.tool_permissions.get_tool_scope_map = MagicMock(
         return_value=_read_any_scope_map())
     o.tool_permissions.get_enabled_scope_names = MagicMock(return_value=["tools:read"])
+    o.tool_permissions.get_tool_scope_map = MagicMock(return_value={"peer_tool": "tools:read"})
     o.tool_permissions.get_tool_scope = MagicMock(return_value="tools:read")
     o.tool_permissions.get_tool_scope_map = MagicMock(return_value={"peer_tool": "tools:read"})
     o._map_file_paths = lambda cid, a, **k: a

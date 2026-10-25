@@ -66,6 +66,7 @@ def orch(orchestrator_factory):
     o.local_agents["callee-1"] = MagicMock()
     o.tool_permissions.register_tool_scopes("callee-1", {"peer_tool": "tools:read"})
     o.agent_cards["callee-1"] = SimpleNamespace(skills=[SimpleNamespace(id="peer_tool")])
+    o.tool_permissions.register_tool_scopes("callee-1", {"peer_tool": "tools:read"})
     return o
 
 

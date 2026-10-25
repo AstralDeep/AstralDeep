@@ -38,6 +38,7 @@ HOST_SURFACES = frozenset(
         "remote_machines",
         "safety",
         "saved_results",
+        "search",
         "theme",
         "tour",
         "workspace_timeline",
