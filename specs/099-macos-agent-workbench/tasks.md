@@ -52,6 +52,7 @@
 - [ ] T025 [US5] Qualify the fresh runtime dependency closure and adapt demonstrated stale baseline dispatch/ledger/identity fixtures without weakening declarations, write classifications, approvals, PHI or CI gates; rebuild the exact candidate and complete all three whole backend groups. Retain failed baseline/candidate evidence and the precise public-digest scanner exclusions.
 - [ ] T026 [US1] Repair installed-app permission-request feedback and activation refresh, inspect raw OS permission facts, complete normal macOS authorization and real sign-in/physical consent, and verify takeover/Stop through the signed candidate. No TCC or authentication bypass.
 - [x] T027 [US1] Stamp the existing canonical submission/request identities and captured registration generation on every native host control envelope; exercise real server-ingress code with actual producer frames and authenticated-owner fixtures, including announce, replies during approval, session events and malformed/stale/flag-off denials. Keep payloads closed, delivery nonqueued and backend admission strict. Real-IAM/native registration acceptance remains in T023.
+- [ ] T028 [US5] Replace the demonstrated prohibited registry soak with bounded concurrent coherence/immutability proof, repair operator-private staging env-file placement, retain failure/coverage evidence and finish fresh whole groups. Qualify supported representative-data staging while keeping unavailable historical paired-recovery input and human native acceptance explicitly open.
 
 ## Dependencies and Parallel Work
 

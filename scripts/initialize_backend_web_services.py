@@ -408,7 +408,7 @@ def initialize(
         [
             *start("iam-pg", "ad-bwq-iam-pg"),
             "--env-file",
-            str(material_root / "keycloak/postgres.env"),
+            str(material_root / "operator/keycloak-postgres.env"),
             "-v",
             prefix + "-iam-pg:/var/lib/postgresql/data",
             POSTGRES_IMAGE,
@@ -419,7 +419,7 @@ def initialize(
         [
             *start("keycloak", "ad-bwq-keycloak"),
             "--env-file",
-            str(material_root / "keycloak/runtime.env"),
+            str(material_root / "operator/keycloak-runtime.env"),
             "-v",
             prefix + "-iam-data:/opt/keycloak/data",
             *bind("keycloak", "/materials"),

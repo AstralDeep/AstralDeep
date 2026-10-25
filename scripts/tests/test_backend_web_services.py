@@ -208,6 +208,36 @@ def test_materials_bind_real_tls_owner_subjects_scopes_and_fresh_keys(generated)
     assert "proxy_buffering off" in (root / "proxy/nginx.conf").read_text()
 
 
+def test_host_env_files_are_private_and_traversable_by_the_operator(generated):
+    root, _, ownership_changes = generated
+    owners = {path: (uid, gid) for path, uid, gid in ownership_changes}
+    owners[root] = (1234, 1234)
+    for path in root.rglob("*.env"):
+        assert owners[path] == (1234, 1234)
+        assert path.stat().st_mode & 0o777 == 0o600
+        for directory in path.parents:
+            assert owners[directory] == (1234, 1234), str(directory.relative_to(root))
+            assert directory.stat().st_mode & 0o777 == 0o700
+            if directory == root:
+                break
+    operator = root / "operator"
+    assert {path.name for path in operator.iterdir()} == {
+        "keycloak-postgres.env", "keycloak-runtime.env",
+    }
+    runtime = dict(line.split("=", 1) for line in (operator / "keycloak-runtime.env").read_text().splitlines())
+    postgres = dict(line.split("=", 1) for line in (operator / "keycloak-postgres.env").read_text().splitlines())
+    assert runtime["KC_DB_PASSWORD"] == postgres["POSTGRES_PASSWORD"]
+    assert runtime["KC_HTTPS_CERTIFICATE_FILE"] == "/materials/server-cert.pem"
+    assert runtime["KC_HTTPS_CERTIFICATE_KEY_FILE"] == "/materials/server-key.pem"
+    assert not list((root / "keycloak").rglob("*.env"))
+    for directory in (root / "keycloak", root / "keycloak/import"):
+        assert owners[directory] == (1000, 1000)
+        assert directory.stat().st_mode & 0o777 == 0o700
+    for path in (root / "keycloak").rglob("*"):
+        assert owners[path] == (1000, 1000)
+        assert path.stat().st_mode & 0o777 == (0o700 if path.is_dir() else 0o600)
+
+
 @pytest.mark.parametrize(
     "qid,uid,message",
     [
@@ -359,6 +389,31 @@ def test_initializer_uses_only_new_labelled_private_resources_and_never_claims_a
     assert report["livekit"]["node_ipv4"] == "172.30.0.254"
     assert report["livekit"]["turn_tls"] == "ad-bwq-turn.invalid:443"
     assert report["infrastructure"]["application_acceptance"] is False
+
+
+def test_initializer_keeps_host_keycloak_env_files_out_of_container_mounts(setup):
+    kwargs, calls, _ = setup
+    services.initialize(**kwargs)
+    root = kwargs["material_root"]
+    running = {call[call.index("--network-alias") + 1]: call
+               for call in calls if call[:3] == ["docker", "run", "-d"]}
+    postgres = running["ad-bwq-iam-pg"]
+    keycloak = running["ad-bwq-keycloak"]
+    assert postgres[postgres.index("--env-file") + 1] == str(root / "operator/keycloak-postgres.env")
+    assert keycloak[keycloak.index("--env-file") + 1] == str(root / "operator/keycloak-runtime.env")
+    mounts = [keycloak[index + 1] for index, value in enumerate(keycloak) if value == "--mount"]
+    assert mounts == [
+        f"type=bind,src={root / 'keycloak'},dst=/materials,readonly",
+        f"type=bind,src={root / 'keycloak/import'},dst=/opt/keycloak/data/import,readonly",
+    ]
+    for call in running.values():
+        for index, value in enumerate(call):
+            if value != "--mount":
+                continue
+            fields = dict(item.split("=", 1) for item in call[index + 1].split(",") if "=" in item)
+            source = Path(fields["src"])
+            assert source != root and not source.is_relative_to(root / "operator")
+            assert not (root / "operator").is_relative_to(source)
 
 
 @pytest.mark.parametrize(
