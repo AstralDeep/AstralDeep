@@ -12,9 +12,11 @@ import json
 import os
 import re
 import secrets
+import stat
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -30,6 +32,7 @@ LABEL = "com.astraldeep.backend-web-qualification"
 SERVICES_LABEL = "com.astraldeep.backend-web-services"
 APP_LIMITS = ["--cpus", "2", "--memory", "4g", "--pids-limit", "512"]
 POSTGRES_LIMITS = ["--cpus", "2", "--memory", "2g", "--pids-limit", "256"]
+MAX_BLOB_ARCHIVE_BYTES = 4 * 1024 ** 3
 
 
 class QualificationError(ValueError):
@@ -177,6 +180,51 @@ def validate_material(root: Path, qualification_id: str) -> Path:
     return root.resolve()
 
 
+@contextmanager
+def _private_copied_file(path: Path, *, maximum: int | None, kind: str):
+    descriptor = None
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        metadata = os.fstat(descriptor)
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+                or metadata.st_size <= 0 or (maximum is not None and metadata.st_size > maximum)):
+            raise QualificationError(f"copied {kind} must be bounded, regular and operator-owned")
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            yield stream, metadata.st_size
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise QualificationError(f"copied {kind} is unavailable") from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _read_state_output(path: Path) -> dict[str, Any]:
+    with _private_copied_file(path, maximum=65536, kind="state report") as (stream, size):
+        payload = stream.read(65537)
+        if len(payload) != size or len(payload) > 65536:
+            raise QualificationError("copied state report changed while reading")
+        observed = json.loads(payload)
+        if not isinstance(observed, dict):
+            raise QualificationError("copied state report must be an object")
+        return observed
+
+
+def _copied_file_digest(path: Path, *, maximum: int | None = None) -> str:
+    with _private_copied_file(path, maximum=maximum, kind="paired backup") as (stream, size):
+        digest = hashlib.sha256()
+        remaining = size
+        while remaining:
+            chunk = stream.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise QualificationError("copied paired backup changed while reading")
+            digest.update(chunk)
+            remaining -= len(chunk)
+        if stream.read(1):
+            raise QualificationError("copied paired backup changed while reading")
+        return digest.hexdigest()
+
+
 # DB recovery never rewinds LETS replay/authority volumes
 def _state_rehearsal(
     args: argparse.Namespace, *, prefix: str, network: str, app_env: Path, pg_env: Path,
@@ -199,17 +247,20 @@ def _state_rehearsal(
     def state(image: str, phase: str, selected: dict[str, str], checkpoint: str | None = None,
               forbidden_audit_event: str | None = None) -> dict[str, Any]:
         name = f"{prefix}-{phase}"
+        output = evidence / f"{phase}.json"
+        if output.exists() or output.is_symlink():
+            raise QualificationError("state report destination must be new")
         command = [
             "docker", "create", *APP_LIMITS, "--name", name, "--label", label, "--network", network,
             "--env-file", str(app_env), "--entrypoint", "python3",
             "--mount", f"type=bind,src={helper},dst=/qualification-state.py,readonly",
-            "--mount", f"type=bind,src={evidence},dst=/qualification-evidence",
+            "--mount", f"type=bind,src={evidence},dst=/qualification-evidence,readonly",
             "--mount", f"type=bind,src={material},dst=/run/astral-bwq,readonly",
             "--mount", f"type=volume,src={prefix}-lets-replay,dst=/var/lib/astral-lets-replay",
             "--mount", f"type=volume,src={prefix}-lets-authority,dst=/var/lib/astral-lets-authority",
             *mounts(selected), image, "/qualification-state.py",
             "--qualification-id", args.qualification_id,
-            "--output", f"/qualification-evidence/{phase}.json",
+            "--output", f"/tmp/{phase}.json",
         ]
         if checkpoint:
             command += ["--checkpoint", f"/qualification-evidence/{checkpoint}", "--append"]
@@ -220,7 +271,10 @@ def _state_rehearsal(
         run(["docker", "start", "--attach", name])
         if run(["docker", "inspect", "--format", "{{.State.ExitCode}}", name]).stdout.strip() != "0":
             raise QualificationError("synthetic state rehearsal process failed")
-        observed = json.loads((evidence / f"{phase}.json").read_text(encoding="utf-8"))
+        if output.exists() or output.is_symlink():
+            raise QualificationError("state report destination must be new")
+        run(["docker", "cp", f"{name}:/tmp/{phase}.json", str(output)])
+        observed = _read_state_output(output)
         if (observed.get("synthetic_only") is not True or observed.get("release_authorized") is not False
                 or any(observed.get(key) != "pass" for key in (
                     "credential_decryption", "conversation_retention", "owner_denials", "authenticated_audit_continuity", "blob_retention",
@@ -240,29 +294,31 @@ def _state_rehearsal(
     run(["docker", "exec", f"{prefix}-pg", "pg_dump", "-U", "qualification", "-d", database,
          "--format=custom", "--file=/tmp/backend-web-baseline.dump"])
     run(["docker", "cp", f"{prefix}-pg:/tmp/backend-web-baseline.dump", str(dump)])
+    archive_name = f"{prefix}-baseline-blob-archive"
+    if archive.exists() or archive.is_symlink():
+        raise QualificationError("blob archive destination must be new")
     run([
-        "docker", "run", *APP_LIMITS, "--rm", "--label", label, "--network", "none", "--entrypoint", "tar",
-        "--mount", f"type=bind,src={evidence},dst=/qualification-evidence", *mounts(roots, readonly=True),
-        args.candidate_image, "--directory=/", "--create", "--file=/qualification-evidence/baseline-blobs.tar",
+        "docker", "create", *APP_LIMITS, "--name", archive_name, "--label", label, "--network", "none", "--entrypoint", "tar",
+        *mounts(roots, readonly=True),
+        args.candidate_image, "--directory=/", "--create", "--file=/tmp/baseline-blobs.tar",
         *(f"app/backend/{name}" for name in roots),
     ])
-    for path in (dump, archive):
-        if path.is_symlink() or not path.is_file() or not path.stat().st_size:
-            raise QualificationError("paired backup is incomplete")
-        path.chmod(0o600)
-    backups = {}
-    for path in (dump, archive):
-        with path.open("rb") as stream:
-            backups[path.name] = hashlib.file_digest(stream, "sha256").hexdigest()
+    run(["docker", "start", "--attach", archive_name])
+    if run(["docker", "inspect", "--format", "{{.State.ExitCode}}", archive_name]).stdout.strip() != "0":
+        raise QualificationError("blob archive process failed")
+    if archive.exists() or archive.is_symlink():
+        raise QualificationError("blob archive destination must be new")
+    run(["docker", "cp", f"{archive_name}:/tmp/baseline-blobs.tar", str(archive)])
+    backups = {dump.name: _copied_file_digest(dump),
+               archive.name: _copied_file_digest(archive, maximum=MAX_BLOB_ARCHIVE_BYTES)}
     migrated = state(args.candidate_image, "candidate-state", roots, "baseline-state.json")
     appended = migrated.get("appended_event_id")
     if (not isinstance(appended, str) or str(UUID(appended)) != appended
             or appended in seeded["checkpoint"]["audit_event_ids"]):
         raise QualificationError("candidate audit append identity is invalid")
     for path in (dump, archive):
-        with path.open("rb") as stream:
-            if hashlib.file_digest(stream, "sha256").hexdigest() != backups[path.name]:
-                raise QualificationError("paired backup bytes changed before recovery")
+        if _copied_file_digest(path, maximum=MAX_BLOB_ARCHIVE_BYTES if path == archive else None) != backups[path.name]:
+            raise QualificationError("paired backup bytes changed before recovery")
     # Fresh cluster required; --clean can't add missing tables
     network = f"{prefix}-recovery-network"
     recovered_pg = f"{prefix}-recovered-pg"
@@ -365,7 +421,7 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
         if existing:
             raise QualificationError("qualification identity already owns Docker resources")
     for kind, suffixes in (
-        ("container", ("pg", "app", "baseline-state", "candidate-state", "recovered-state", "recovered-pg")),
+        ("container", ("pg", "app", "baseline-state", "baseline-blob-archive", "candidate-state", "recovered-state", "recovered-pg")),
         ("network", ("network", "recovery-network")),
         ("volume", ("pg", "data", "tmp", "knowledge", "agents", "lets-replay", "lets-authority",
                     "recovered-data", "recovered-tmp", "recovered-knowledge", "recovered-agents", "recovered-pg")),

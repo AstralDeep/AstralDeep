@@ -5,6 +5,7 @@ component identity, fail-closed Docker failures, and baseline/recovery binding.
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 import subprocess
@@ -227,7 +228,10 @@ def test_material_binding_and_paths(args):
         driver.validate_material(args.material_root, args.qualification_id)
 
 
-@pytest.mark.parametrize("fault", [None, "ownership", "tamper", "state", "exit", "blob", "schema", "append", "discard", "checkpoint"])
+@pytest.mark.parametrize("fault", [None, "ownership", "tamper", "state", "exit", "blob", "schema", "append", "discard", "checkpoint",
+                                   "output-exists", "output-symlink", "output-directory", "copy-failure",
+                                   "archive-exit", "archive-output-exists", "archive-output-symlink",
+                                   "archive-output-directory", "archive-copy-failure", "archive-tamper", "archive-late-output"])
 def test_exact_baseline_state_and_paired_recovery_never_rewind_lets(args, monkeypatch, fault):
     args.baseline_deep_image = PRODUCTION_IMAGE
     evidence = args.output.parent / "state"
@@ -235,10 +239,15 @@ def test_exact_baseline_state_and_paired_recovery_never_rewind_lets(args, monkey
     prefix = "ad-bwq-" + args.qualification_id
     checkpoint = {"owner": "synthetic-recovery-owner", "audit_event_ids": ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"]}
     candidate_event = "00000000-0000-4000-8000-000000000003"
+    container_outputs = {}
     def command(command, *, check=True):
         calls.append(command)
         stdout = ""
-        if command[:3] == ["docker", "start", "--attach"]:
+        if command[:3] == ["docker", "start", "--attach"] and command[-1] == prefix + "-baseline-blob-archive":
+            container_outputs[command[-1] + ":/tmp/baseline-blobs.tar"] = b"synthetic paired blob archive"
+            if fault == "archive-late-output":
+                (evidence / "baseline-blobs.tar").write_bytes(b"preserve original")
+        elif command[:3] == ["docker", "start", "--attach"]:
             phase = command[-1].removeprefix(prefix + "-")
             report = {"checkpoint": checkpoint, "synthetic_only": True, "release_authorized": False,
                       "credential_decryption": "pass", "conversation_retention": "pass",
@@ -258,17 +267,35 @@ def test_exact_baseline_state_and_paired_recovery_never_rewind_lets(args, monkey
                 report["pre_append_audit_event_ids"].append(candidate_event)
             if fault == "checkpoint" and phase == "recovered-state":
                 report["checkpoint"] = {"owner": "changed-owner"}
-            (evidence / f"{phase}.json").write_text(json.dumps(report))
+            container_outputs[f"{command[-1]}:/tmp/{phase}.json"] = json.dumps(report)
+            if fault == "output-exists":
+                (evidence / f"{phase}.json").write_text("preserve existing report")
+            if fault == "output-symlink":
+                (evidence / f"{phase}.json").symlink_to(evidence / "baseline-image.json")
+            if fault == "output-directory":
+                (evidence / f"{phase}.json").mkdir()
             if phase == "candidate-state" and fault == "tamper":
                 (evidence / "baseline.dump").write_bytes(b"changed")
+            if phase == "candidate-state" and fault == "archive-tamper":
+                (evidence / "baseline-blobs.tar").write_bytes(b"changed")
+            if phase == "baseline-state":
+                if fault == "archive-output-exists":
+                    (evidence / "baseline-blobs.tar").write_bytes(b"preserve original")
+                elif fault == "archive-output-symlink":
+                    (evidence / "baseline-blobs.tar").symlink_to(evidence / "baseline-image.json")
+                elif fault == "archive-output-directory":
+                    (evidence / "baseline-blobs.tar").mkdir()
         elif command[:3] == ["docker", "inspect", "--format"]:
-            stdout = "1" if fault == "exit" else "0"
+            stdout = "1" if fault == "exit" or (fault == "archive-exit" and command[-1].endswith("-baseline-blob-archive")) else "0"
         elif command[:3] == ["docker", "container", "inspect"]:
             stdout = json.dumps([{"Config": {"Labels": {driver.LABEL: "wrong" if fault == "ownership" else args.qualification_id}}}])
         elif command[:2] == ["docker", "cp"] and command[-1] == str(evidence / "baseline.dump"):
             (evidence / "baseline.dump").write_bytes(b"synthetic complete backup")
-        elif "--create" in command:
-            (evidence / "baseline-blobs.tar").write_bytes(b"synthetic paired blob archive")
+        elif command[:2] == ["docker", "cp"] and command[2] in container_outputs:
+            if fault == "copy-failure" or (fault == "archive-copy-failure" and command[2].endswith("/baseline-blobs.tar")):
+                raise driver.QualificationError("copy failed")
+            value = container_outputs[command[2]]
+            Path(command[-1]).write_bytes(value if isinstance(value, bytes) else value.encode())
         return subprocess.CompletedProcess(command, 0, stdout, "")
     monkeypatch.setattr(driver, "run", command)
     kwargs = dict(prefix=prefix, network=prefix + "-network", app_env=args.runtime_env, pg_env=args.runtime_env,
@@ -279,11 +306,22 @@ def test_exact_baseline_state_and_paired_recovery_never_rewind_lets(args, monkey
             driver._state_rehearsal(args, **kwargs)
         if fault not in {"discard", "checkpoint"}:
             assert not any("pg_restore" in call for call in calls)
+        if fault in {"exit", "output-exists", "output-symlink", "output-directory"}:
+            assert not any(call[:2] == ["docker", "cp"] and call[2] in container_outputs for call in calls)
+        if fault == "output-exists":
+            assert (evidence / "baseline-state.json").read_text() == "preserve existing report"
+        if fault.startswith("archive-output-") or fault in {"archive-exit", "archive-late-output"}:
+            assert not any(call[:2] == ["docker", "cp"] and call[2].endswith(":/tmp/baseline-blobs.tar") for call in calls)
+        if fault.startswith("archive-output-"):
+            assert not any(call[:2] == ["docker", "create"] and prefix + "-baseline-blob-archive" in call for call in calls)
+        if fault in {"archive-output-exists", "archive-late-output"}:
+            assert (evidence / "baseline-blobs.tar").read_bytes() == b"preserve original"
         return
     report, roots = driver._state_rehearsal(args, **kwargs)
     assert report["status"] == "synthetic-state-and-paired-recovery-passed"
     assert report["lets_replay_authority_rewound"] is False
     assert set(report["backup_sha256"]) == {"baseline.dump", "baseline-blobs.tar"}
+    assert report["backup_sha256"]["baseline-blobs.tar"] == hashlib.sha256(b"synthetic paired blob archive").hexdigest()
     assert roots == {name: prefix + "-recovered-" + name for name in ("data", "tmp", "knowledge", "agents")}
     restore = next(call for call in calls if "pg_restore" in call)
     assert "--single-transaction" in restore and "--exit-on-error" in restore
@@ -292,6 +330,27 @@ def test_exact_baseline_state_and_paired_recovery_never_rewind_lets(args, monkey
     assert "--network-alias" in fresh and prefix + "-pg" in fresh
     assert report["restore_target"] == "new-empty-postgres-cluster"
     assert report["candidate_schema_changed"] is False
+    archived = next(call for call in calls if call[:2] == ["docker", "create"] and prefix + "-baseline-blob-archive" in call)
+    assert "--network" in archived and archived[archived.index("--network") + 1] == "none"
+    assert "--user" not in archived and driver.LABEL + "=" + args.qualification_id in archived
+    assert "--file=/tmp/baseline-blobs.tar" in archived
+    archive_mounts = [archived[index + 1] for index, value in enumerate(archived) if value == "--mount"]
+    assert len(archive_mounts) == 4 and all(mount.startswith("type=volume,") and mount.endswith(",readonly") for mount in archive_mounts)
+    archive_copy = ["docker", "cp", prefix + "-baseline-blob-archive:/tmp/baseline-blobs.tar", str(evidence / "baseline-blobs.tar")]
+    archive_exit = ["docker", "inspect", "--format", "{{.State.ExitCode}}", prefix + "-baseline-blob-archive"]
+    assert calls.index(archive_exit) < calls.index(archive_copy)
+    assert (evidence / "baseline-blobs.tar").stat().st_uid == os.getuid()
+    assert (evidence / "baseline-blobs.tar").stat().st_mode & 0o777 == 0o600
+    for phase in ("baseline-state", "candidate-state", "recovered-state"):
+        created = next(call for call in calls if "create" in call and prefix + "-" + phase in call)
+        assert f"type=bind,src={evidence},dst=/qualification-evidence,readonly" in created
+        assert created[created.index("--output") + 1] == f"/tmp/{phase}.json"
+        assert "--user" not in created
+        copied = ["docker", "cp", f"{prefix}-{phase}:/tmp/{phase}.json", str(evidence / f"{phase}.json")]
+        inspected = ["docker", "inspect", "--format", "{{.State.ExitCode}}", prefix + "-" + phase]
+        assert calls.index(inspected) < calls.index(copied)
+        assert (evidence / f"{phase}.json").stat().st_mode & 0o777 == 0o600
+        assert (evidence / f"{phase}.json").stat().st_uid == os.getuid()
     recovered = next(call for call in calls if "create" in call and prefix + "-recovered-state" in call)
     assert recovered[recovered.index("--forbid-audit-event") + 1] == candidate_event
     baseline = next(call for call in calls if "create" in call and prefix + "-baseline-state" in call)
@@ -304,6 +363,123 @@ def test_exact_baseline_state_and_paired_recovery_never_rewind_lets(args, monkey
     assert any(prefix + "-candidate-state" in call and "--attach" in call for call in before_restore)
     assert not any("lets-replay" in part or "lets-authority" in part for call in calls if "tar" in call for part in call)
     assert_resource_limits(calls)
+
+
+def test_preexisting_state_output_refuses_before_creating_a_container(args, monkeypatch):
+    evidence = args.output.parent / "state"
+    original = Path.mkdir
+    def mkdir(path, *values, **kwargs):
+        original(path, *values, **kwargs)
+        if path == evidence:
+            (path / "baseline-state.json").write_text("preserve original")
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    calls = []
+    monkeypatch.setattr(driver, "run", lambda *args, **kwargs: calls.append(args))
+    args.baseline_deep_image = PRODUCTION_IMAGE
+    with pytest.raises(driver.QualificationError, match="destination must be new"):
+        driver._state_rehearsal(args, prefix="ad-bwq-" + args.qualification_id, network="private-network",
+            app_env=args.runtime_env, pg_env=args.runtime_env, material=args.material_root,
+            evidence=evidence, database="astralplane_qualification_" + args.qualification_id,
+            baseline_profile=driver.load_recovery_baseline())
+    assert calls == []
+    assert (evidence / "baseline-state.json").read_text() == "preserve original"
+
+
+def test_blob_archive_container_collision_refuses_before_resource_creation(args, monkeypatch):
+    calls = fake_docker(args, monkeypatch)
+    original = driver.run
+    def command(command, **kwargs):
+        if command[:3] == ["docker", "container", "inspect"] and command[-1].endswith("-baseline-blob-archive"):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return original(command, **kwargs)
+    monkeypatch.setattr(driver, "run", command)
+    with pytest.raises(driver.QualificationError, match="already exists"):
+        driver.deploy(args)
+    assert not any(call[:3] in (["docker", "network", "create"], ["docker", "volume", "create"])
+                   or call[:2] == ["docker", "create"] for call in calls)
+
+
+@pytest.mark.parametrize("fault", ["empty", "oversized", "symlink", "directory", "wrong-owner", "changed-size", "malformed", "encoding", "non-object", "missing"])
+def test_copied_state_output_rejects_unsafe_ownership_shape_or_bytes(tmp_path, monkeypatch, fault):
+    path = tmp_path / "state.json"
+    path.write_text('{"synthetic_only":true}')
+    if fault == "empty":
+        path.write_bytes(b"")
+    elif fault == "oversized":
+        with path.open("wb") as stream:
+            stream.truncate(65537)
+    elif fault == "symlink":
+        target = tmp_path / "original.json"
+        path.rename(target)
+        path.symlink_to(target)
+    elif fault == "directory":
+        path.unlink()
+        path.mkdir()
+    elif fault in {"wrong-owner", "changed-size"}:
+        original = os.fstat
+        def metadata(descriptor):
+            value = original(descriptor)
+            return SimpleNamespace(st_mode=value.st_mode,
+                st_uid=value.st_uid + 1 if fault == "wrong-owner" else value.st_uid,
+                st_size=value.st_size - 1 if fault == "changed-size" else value.st_size)
+        monkeypatch.setattr(os, "fstat", metadata)
+    elif fault == "malformed":
+        path.write_bytes(b"{invalid")
+    elif fault == "encoding":
+        path.write_bytes(b"\xff")
+    elif fault == "non-object":
+        path.write_text("[]")
+    else:
+        path.unlink()
+    with pytest.raises(driver.QualificationError, match="copied state report"):
+        driver._read_state_output(path)
+
+
+def test_copied_state_output_is_read_from_owned_descriptor_and_made_private(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text('{"synthetic_only":true}')
+    path.chmod(0o644)
+    assert driver._read_state_output(path) == {"synthetic_only": True}
+    assert path.stat().st_uid == os.getuid()
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_archive_hash_streams_more_than_one_json_report_or_chunk(tmp_path):
+    path = tmp_path / "baseline-blobs.tar"
+    payload = b"synthetic archive block" * 65536
+    path.write_bytes(payload)
+    path.chmod(0o644)
+    assert driver._copied_file_digest(path, maximum=driver.MAX_BLOB_ARCHIVE_BYTES) == hashlib.sha256(payload).hexdigest()
+    assert path.stat().st_uid == os.getuid() and path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("fault", ["empty", "oversized", "symlink", "directory", "wrong-owner", "grew", "shrunk"])
+def test_copied_archive_refuses_unsafe_owner_path_size_or_mutation(tmp_path, monkeypatch, fault):
+    path = tmp_path / "baseline-blobs.tar"
+    path.write_bytes(b"archive")
+    maximum = None
+    if fault == "empty":
+        path.write_bytes(b"")
+    elif fault == "oversized":
+        maximum = 6
+    elif fault == "symlink":
+        original = tmp_path / "original.tar"
+        path.rename(original)
+        path.symlink_to(original)
+    elif fault == "directory":
+        path.unlink()
+        path.mkdir()
+    else:
+        original = os.fstat
+        def metadata(descriptor):
+            value = original(descriptor)
+            return SimpleNamespace(st_mode=value.st_mode,
+                st_uid=value.st_uid + 1 if fault == "wrong-owner" else value.st_uid,
+                st_size=value.st_size + (1 if fault == "shrunk" else -1) if fault in {"grew", "shrunk"} else value.st_size)
+        monkeypatch.setattr(os, "fstat", metadata)
+    with pytest.raises(driver.QualificationError, match="copied paired backup"):
+        driver._copied_file_digest(path, maximum=maximum)
 
 
 def assert_resource_limits(calls):

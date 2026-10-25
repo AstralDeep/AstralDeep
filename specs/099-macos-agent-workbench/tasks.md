@@ -56,6 +56,10 @@
 
 - [ ] T029 [US5] Bind staging recovery to a trusted-policy-only exact current-production image profile, preserve the fixed synthetic predecessor migration, verify restored encrypted key/chat/audit/blob bytes and owner denials, prove candidate-only audit appends absent, version and validate complete evidence, independently review and run the actual paired rehearsal. Candidate-policy diagnostics do not authorize promotion.
 
+- [ ] T030 [US1] Exercise actual native adapter decisions through internal raw-OS IO boundaries, preserving live-only defaults, public APIs, per-effect authority checks and physical-consent rules. Add deterministic AX/display/event/file/control positives and denials, retain real syscall/CGEvent semantics, and qualify at least 90% changed-code coverage without exclusions or fabricated line maps. Diagnostic unhosted runs do not replace app/native/physical acceptance.
+- [ ] T031 [US5] Bind macOS coverage extents to pinned compiler/native-binary/source geometry through an explicit native domain and owning denial tests. Reject stale/truncated/mismatched evidence; do not pad trailing source rows or grant a generic tail exemption.
+- [ ] T032 [US5] Collect actual missing nonnative producer reports through existing isolated gates, preserve exact provider/source/report identities and validate the complete strict matrix before promotion.
+
 ## Dependencies and Parallel Work
 
 T001–T004 precede implementation; T005→T006→T007 precede host integration. Host/native/files work is one Projection owner. Deep T011/T015/T016 can proceed independently with one backend owner. UI T018/T019 can proceed in distinct view files; coordinate AppModel/RootView control hooks with the host owner. T012/T014/T017/T020 need a built functioning pair. T021 precedes T022; all live gates precede T024. T025 closes demonstrated runtime/fixture prerequisites for T021–T023; T026 precedes every physical host acceptance task.
