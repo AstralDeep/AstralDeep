@@ -10200,6 +10200,15 @@ class Orchestrator:
                                 "first-run LLM dialog push failed (refusals "
                                 "still enforce the gate)", exc_info=True)
 
+                    try:
+                        from orchestrator import connection_guide
+                        await connection_guide.maybe_push_on_register(
+                            self, websocket, user_id)
+                    except Exception:
+                        logger.debug(
+                            "connection guide push failed (non-fatal)",
+                            exc_info=True)
+
                     if (
                         not _resume_requested
                         and msg.session_id
@@ -23884,6 +23893,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(chrome_router)
         from orchestrator.lets_health_api import lets_router
         app.include_router(lets_router)
+        from orchestrator.connection_guide import connection_router
+        app.include_router(connection_router)
         from orchestrator.a2a_publication_api import publication_router
         app.include_router(publication_router)
         app.include_router(export_router)

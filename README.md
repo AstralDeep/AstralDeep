@@ -154,6 +154,17 @@ The example environment runs in development mode (`ASTRAL_ENV=development`) with
 authentication (`USE_MOCK_AUTH=true`), so no Keycloak realm is needed for local work. Mock
 authentication is refused outside development.
 
+### First connection and service verification
+
+After signing in, the app guides the first connection: it shows the endpoint you reached
+and whether it matches an address this deployment publishes, real readiness for the
+database, authentication, voice workers, agent publication, and the optional LETS warden
+(each with an actionable fix when not ready), and the sign-in/key rules — sign-in is
+completed by you on the server's own sign-in page, and provider keys are entered only in
+the encrypted in-product LLM setup, never typed by agents. The same report is available
+at `GET /api/connection/status` (HTTP 503 when a required service is not ready), and the
+server pushes this guide when a required service is down at registration.
+
 ### Diagnose an installation
 
 Run `make doctor` (or `make doctor PYTHON=python3`) for a read-only diagnosis of a
