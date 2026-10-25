@@ -727,3 +727,268 @@ def test_actual_retained_native_header_metadata_and_core_region_golden():
         "native_last_line": 69,
         "geometry_sha256": "16a1333d776af34fbd9ce55c87fe73188398f2d6a73e4168be3d7b2f8c50e6bb",
     }
+
+
+def _mac_macho(architecture="arm64", commands=None, **changes):
+    commands = (
+        commands
+        if commands is not None
+        else [struct.pack("<6I", 0x32, 24, 1, 0x0E0000, 0x1A0600, 0)]
+    )
+    payload = b"".join(commands)
+    fields = [
+        0xFEEDFACF,
+        0x0100000C if architecture == "arm64" else 0x01000007,
+        0 if architecture == "arm64" else 3,
+        6,
+        len(commands),
+        len(payload),
+        0,
+        0,
+    ]
+    for key, value in changes.items():
+        fields[int(key.removeprefix("word"))] = value
+    return struct.pack("<8I", *fields) + payload
+
+
+def _mac_metadata(lane="unit", architecture="arm64", skip=False):
+    summary, tests = _metadata(lane)
+    for device in (summary["devicesAndConfigurations"][0]["device"], tests["devices"][0]):
+        device.update(platform="macOS", architecture=architecture)
+    if skip:
+        case, reason = {
+            "unit": (
+                "AppModelChromeSurfaceTests/testEvidenceHostedSurfaceRetiresItsActualTimerAndRejectsLateReplay()",
+                "Hosted SwiftUI evidence coverage uses the isolated iOS test destination",
+            ),
+            "ui": (
+                "Accessibility060UITests/testMainComposerUsesSystemKeyboardWithoutApplicationDrawnDoneAccessory()",
+                "The system-IME contract (on-screen keyboard, keyboard-anchored send, interactive dismissal) has no macOS analogue — macOS input is a hardware keyboard with no Keyboard element in the AX tree.",
+            ),
+        }[lane]
+        tests["testNodes"][0]["children"][0]["children"][0]["children"].append(
+            {
+                "nodeType": "Test Case",
+                "nodeIdentifier": case,
+                "result": "Skipped",
+                "children": [{"nodeType": "Failure Message", "name": "Test skipped - " + reason}],
+            }
+        )
+        summary.update(totalTestCount=2, skippedTests=1)
+    return summary, tests
+
+
+def _mac_witness(lane="unit", architecture="arm64"):
+    return domain.make_domain(
+        geometry=_geometry(lane=lane),
+        source_bytes=lambda _: SOURCE,
+        binary={
+            "member": "Products/Debug/AstralDeep.app/Contents/MacOS/AstralDeep.debug.dylib",
+            "sha256": domain.sha256(_mac_macho(architecture)),
+            "artifact_member": f"coverage/native-binaries/apple-macos-{lane}.zip",
+            "artifact_sha256": domain.sha256(b"retained Mac native binary"),
+        },
+        observed_sources=[APP],
+        prefix="",
+        lane=lane,
+        platform="macos",
+        architecture=architecture,
+    )
+
+
+@pytest.mark.parametrize("architecture", ["arm64", "x86_64"])
+@pytest.mark.parametrize("lane", ["unit", "ui", "staging"])
+def test_mac_profile_binds_actual_thin_architecture_and_native_platform(architecture, lane):
+    assert domain.macos_macho(_mac_macho(architecture), lane) == architecture
+    domain.test_identity(
+        *_mac_metadata(lane, architecture), lane, platform="macos", architecture=architecture
+    )
+    witness = _mac_witness(lane, architecture)
+    assert witness["format"] == "astral.xccov-domain-macos/v1"
+    report = domain.native_report({APP: _rows()}, {lane: witness})
+    assert report["format"] == "astral.xccov-native-macos/v1" and report["platform"] == "macos"
+    assert domain.parse_native_report(report) == report
+
+
+@pytest.mark.parametrize("lane", ["unit", "ui"])
+def test_mac_profile_retains_only_exact_existing_lane_skip_dispositions(lane):
+    domain.test_identity(
+        *_mac_metadata(lane, skip=True), lane, platform="macos", architecture="arm64"
+    )
+    for mutation in ["case", "reason", "count", "architecture", "platform"]:
+        summary, tests = _mac_metadata(lane, skip=True)
+        if mutation == "case":
+            tests["testNodes"][0]["children"][0]["children"][0]["children"][1]["nodeIdentifier"] = (
+                "Unknown/testSkipped()"
+            )
+        elif mutation == "reason":
+            tests["testNodes"][0]["children"][0]["children"][0]["children"][1]["children"][0][
+                "name"
+            ] = "Test skipped - unavailable"
+        elif mutation == "count":
+            summary["skippedTests"] = 0
+        else:
+            tests["devices"][0][mutation] = (
+                "x86_64" if mutation == "architecture" else "iOS Simulator"
+            )
+        with pytest.raises(domain.DomainError):
+            domain.test_identity(summary, tests, lane, platform="macos", architecture="arm64")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        _macho(),
+        _mac_macho(word0=0xCAFEBABE),
+        _mac_macho(word1=7),
+        _mac_macho(word2=2),
+        _mac_macho("x86_64", word2=8),
+        _mac_macho(word3=2),
+        _mac_macho(commands=[]),
+        _mac_macho(commands=[struct.pack("<6I", 0x32, 24, 1, 1, 1, 0)] * 2),
+        _mac_macho(commands=[struct.pack("<6I", 0x32, 24, 7, 1, 1, 0)]),
+        _mac_macho(commands=[struct.pack("<4I", 0x24, 16, 1, 1)]),
+    ],
+)
+def test_mac_profile_refuses_foreign_fat_ambiguous_or_wrong_native_binary(raw):
+    with pytest.raises(domain.DomainError):
+        domain.macos_macho(raw, "unit")
+
+
+@pytest.mark.parametrize(
+    "mutation", ["format", "member", "archive", "architecture", "lane", "mixed"]
+)
+def test_mac_native_union_refuses_relabelled_platform_binary_lane_or_architecture(mutation):
+    witness = _mac_witness()
+    if mutation == "format":
+        witness["format"] = domain.DOMAIN_FORMAT
+    elif mutation == "member":
+        witness["binary"]["member"] = domain.BINARY_MEMBERS["app"]
+    elif mutation == "archive":
+        witness["binary"]["artifact_member"] = "coverage/native-binaries/apple-ios-unit.zip"
+    elif mutation == "architecture":
+        witness["architecture"] = "arm64e"
+    elif mutation == "lane":
+        witness["lane"] = "core"
+    if mutation == "mixed":
+        with pytest.raises(domain.DomainError):
+            domain.native_report(
+                {APP: _rows()}, {"unit": witness, "ui": _mac_witness("ui", "x86_64")}
+            )
+    else:
+        with pytest.raises(domain.DomainError):
+            domain.validate_domain(witness)
+
+
+_QOS_WARNING = "[Internal] Thread running at User-interactive quality-of-service class waiting on a lower QoS thread running at Default quality-of-service class. Investigate ways to avoid priority inversions"
+_FOCUS_WARNING = "Accessing FocusState's value outside of the body of a View. This will result in a constant Binding of the initial value and will not update."
+
+
+@pytest.mark.parametrize("text", [_QOS_WARNING, _FOCUS_WARNING])
+@pytest.mark.parametrize(
+    "location",
+    [
+        None,
+        {
+            "filePath": "/checkout/apple-clients/AstralApp/AstralAppTests/ExampleTests.swift",
+            "lineNumber": 19,
+        },
+    ],
+)
+def test_mac_unit_passed_diagnostic_leaf_is_not_a_test_or_skip(text, location):
+    summary, tests = _mac_metadata("unit")
+    warning = {"nodeType": "Runtime Warning", "name": text}
+    if location is not None:
+        warning["sourceLocation"] = location
+    _case(tests)["children"] = [warning]
+    domain.test_identity(summary, tests, "unit", platform="macos", architecture="arm64")
+    summary, tests = _metadata("unit")
+    _case(tests)["children"] = [warning]
+    domain.test_identity(summary, tests, "unit")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "name",
+        "name_type",
+        "result",
+        "nested",
+        "field",
+        "location_field",
+        "location_line",
+        "location_path",
+        "location_control",
+        "not_list",
+        "too_many",
+        "lane",
+    ],
+)
+def test_mac_diagnostic_acceptance_does_not_hide_unknown_failure_or_nested_result(mutation):
+    summary, tests = _mac_metadata("unit")
+    warning = {"nodeType": "Runtime Warning", "name": _QOS_WARNING}
+    lane = "unit"
+    if mutation == "name":
+        warning["name"] = "Unknown warning"
+    elif mutation == "name_type":
+        warning["name"] = ["Unknown warning"]
+    elif mutation == "result":
+        warning["result"] = "Passed"
+    elif mutation == "nested":
+        warning["children"] = [{"nodeType": "Failure Message", "name": "hidden failure"}]
+    elif mutation == "field":
+        warning["other"] = 1
+    elif mutation.startswith("location"):
+        warning["sourceLocation"] = {"filePath": "/checkout/Example.swift", "lineNumber": 19}
+        if mutation == "location_field":
+            warning["sourceLocation"]["other"] = 1
+        elif mutation == "location_line":
+            warning["sourceLocation"]["lineNumber"] = True
+        else:
+            warning["sourceLocation"]["filePath"] = (
+                "/checkout/../Example.swift"
+                if mutation == "location_path"
+                else "/checkout/\nExample.swift"
+            )
+    elif mutation == "lane":
+        lane = "ui"
+        summary, tests = _mac_metadata(lane)
+    _case(tests)["children"] = (
+        warning if mutation == "not_list" else [warning] * (17 if mutation == "too_many" else 1)
+    )
+    with pytest.raises(domain.DomainError):
+        domain.test_identity(summary, tests, lane, platform="macos", architecture="arm64")
+
+
+@pytest.mark.parametrize(
+    "lane,expected",
+    [
+        ("core", "b77453d77cc68b8d88571d53729a2373c8b270d020fef27191c081c083c52e04"),
+        ("unit", "8fba6ffa4011a4400d146677ecd373fa168fae1a5bbe4ec95a12b6ed69c40ea1"),
+        ("ui", "da7809ec5f18a98a0f5a50d2ac6f5e09a9bef6552981f85bf815df4b67492b32"),
+        ("staging", "5245fcb61b7204e04c68034925ec05abbed81f4f2db6294c811ec24a35bcbfe0"),
+    ],
+)
+def test_ios_v1_native_envelope_retains_existing_exact_bytes(lane, expected):
+    path = CORE if lane == "core" else APP
+    value = domain.native_report({path: _rows()}, {lane: _witness(lane)})
+    assert domain.sha256(domain.canonical(value)) == expected
+
+
+@pytest.mark.parametrize("field", ["passedTests", "failedTests", "skippedTests", "expectedFailures"])
+def test_mac_raw_configuration_counts_must_match_the_whole_observation(field):
+    summary, tests = _mac_metadata("unit")
+    summary["devicesAndConfigurations"][0][field] = summary[field]
+    domain.test_identity(summary, tests, "unit", platform="macos", architecture="arm64")
+    summary["devicesAndConfigurations"][0][field] += 1
+    with pytest.raises(domain.DomainError):
+        domain.test_identity(summary, tests, "unit", platform="macos", architecture="arm64")
+
+
+@pytest.mark.parametrize("extra", ["children", "result", "other"])
+def test_mac_named_skip_reason_is_an_exact_leaf_record(extra):
+    summary, tests = _mac_metadata("unit", skip=True)
+    skipped = tests["testNodes"][0]["children"][0]["children"][0]["children"][-1]
+    skipped["children"][0][extra] = [] if extra == "children" else "Passed"
+    with pytest.raises(domain.DomainError):
+        domain.test_identity(summary, tests, "unit", platform="macos", architecture="arm64")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Binds native iOS coverage extents to LLVM's compiler-emitted function-region geometry
+"""Binds native Apple coverage extents to LLVM's compiler-emitted function-region geometry
 from an Xcode export, keeping xccov's line arrays as the sole execution-count source;
 consumed by apple_coverage_artifacts.py.
 """
@@ -38,6 +38,21 @@ BINARY_MEMBERS = {
 }
 
 
+MACOS_DOMAIN_FORMAT = "astral.xccov-domain-macos/v1"
+MACOS_REPORT_FORMAT = "astral.xccov-native-macos/v1"
+MACOS_LANES = ("unit", "ui", "staging")
+MACOS_ARCHITECTURES = ("arm64", "x86_64")
+MACOS_BINARY_MEMBER = "Products/Debug/AstralDeep.app/Contents/MacOS/AstralDeep.debug.dylib"
+MACOS_SKIP_DISPOSITIONS = {
+    "unit": {
+        "AppModelChromeSurfaceTests/testEvidenceHostedSurfaceRetiresItsActualTimerAndRejectsLateReplay()": "Hosted SwiftUI evidence coverage uses the isolated iOS test destination"
+    },
+    "ui": {
+        "Accessibility060UITests/testMainComposerUsesSystemKeyboardWithoutApplicationDrawnDoneAccessory()": "The system-IME contract (on-screen keyboard, keyboard-anchored send, interactive dismissal) has no macOS analogue — macOS input is a hardware keyboard with no Keyboard element in the AX tree."
+    },
+}
+
+
 class DomainError(ValueError):
     pass
 
@@ -48,9 +63,9 @@ def require(condition: Any) -> None:
 
 
 def canonical(value: Any) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
 
 
 def sha256(value: bytes) -> str:
@@ -94,10 +109,7 @@ def _text(value: Any) -> str:
         size = len(value.encode("utf-8", "strict"))
     except UnicodeError as exc:
         raise DomainError("native_xccov_domain_invalid") from exc
-    require(
-        0 < size <= MAX_TEXT
-        and not any(ord(char) < 32 or ord(char) == 127 for char in value)
-    )
+    require(0 < size <= MAX_TEXT and not any(ord(char) < 32 or ord(char) == 127 for char in value))
     return value
 
 
@@ -111,9 +123,7 @@ def source_path(path: Any, prefix: str) -> str:
     path = _text(path)
     require(path.startswith(prefix) and "\\" not in path)
     pure = PurePosixPath(path)
-    require(
-        not pure.is_absolute() and pure.as_posix() == path and ".." not in pure.parts
-    )
+    require(not pure.is_absolute() and pure.as_posix() == path and ".." not in pure.parts)
     local = path.removeprefix(prefix)
     require(local.endswith(".swift") and local.startswith((CORE_ROOT, APP_ROOT)))
     return path
@@ -128,8 +138,8 @@ def source_facts(raw: bytes) -> dict[str, Any]:
 
 def ios_macho(raw: bytes, lane: str) -> None:
     require(lane in LANES and isinstance(raw, bytes) and len(raw) >= 32)
-    magic, cpu, subtype, kind, commands, command_bytes, _flags, reserved = (
-        struct.unpack_from("<8I", raw)
+    magic, cpu, subtype, kind, commands, command_bytes, _flags, reserved = struct.unpack_from(
+        "<8I", raw
     )
     require(
         magic == 0xFEEDFACF
@@ -149,15 +159,169 @@ def ios_macho(raw: bytes, lane: str) -> None:
         if command == 0x32:  # LC_BUILD_VERSION
             require(size >= 24)
             platform, minimum, sdk, tools = struct.unpack_from("<4I", raw, offset + 8)
-            require(
-                size == 24 + tools * 8 and platform == 7 and minimum > 0 and sdk > 0
-            )
+            require(size == 24 + tools * 8 and platform == 7 and minimum > 0 and sdk > 0)
             versions.append(platform)
-        require(
-            command not in {0x24, 0x25, 0x2F, 0x30}
-        )
+        require(command not in {0x24, 0x25, 0x2F, 0x30})
         offset += size
     require(offset == 32 + command_bytes and versions == [7])
+
+
+def binary_member(platform: str, lane: str) -> str:
+    require(platform in ("ios", "macos"))
+    require(lane in (LANES if platform == "ios" else MACOS_LANES))
+    return (
+        BINARY_MEMBERS["core" if lane == "core" else "app"]
+        if platform == "ios"
+        else MACOS_BINARY_MEMBER
+    )
+
+
+def macos_macho(raw: bytes, lane: str) -> str:
+    require(lane in MACOS_LANES and isinstance(raw, bytes) and len(raw) >= 32)
+    magic, cpu, subtype, kind, commands, command_bytes, _flags, reserved = struct.unpack_from(
+        "<8I", raw
+    )
+    architecture = {(0x0100000C, 0): "arm64", (0x01000007, 3): "x86_64"}.get((cpu, subtype))
+    require(
+        magic == 0xFEEDFACF
+        and architecture is not None
+        and kind == 6
+        and reserved == 0
+        and 0 < commands <= 4096
+        and commands * 8 <= command_bytes <= len(raw) - 32
+    )
+    offset = 32
+    versions = []
+    for _ in range(commands):
+        require(offset + 8 <= 32 + command_bytes)
+        command, size = struct.unpack_from("<II", raw, offset)
+        require(size >= 8 and size % 8 == 0 and offset + size <= 32 + command_bytes)
+        if command == 0x32:
+            require(size >= 24)
+            platform, minimum, sdk, tools = struct.unpack_from("<4I", raw, offset + 8)
+            require(size == 24 + tools * 8 and platform == 1 and minimum > 0 and sdk > 0)
+            versions.append(platform)
+        require(command not in {0x24, 0x25, 0x2F, 0x30})
+        offset += size
+    require(offset == 32 + command_bytes and versions == [1])
+    return architecture
+
+
+MACOS_UNIT_WARNINGS = frozenset(
+    {
+        "[Internal] Thread running at User-interactive quality-of-service class waiting on a lower QoS thread running at Default quality-of-service class. Investigate ways to avoid priority inversions",
+        "Accessing FocusState's value outside of the body of a View. This will result in a constant Binding of the initial value and will not update.",
+    }
+)
+
+
+def macos_case_warnings(children: Any, lane: str) -> None:
+    require(isinstance(children, list) and len(children) <= 16)
+    require(not children or lane == "unit")
+    for warning in children:
+        require(
+            isinstance(warning, dict)
+            and set(warning) in ({"nodeType", "name"}, {"nodeType", "name", "sourceLocation"})
+        )
+        require(warning["nodeType"] == "Runtime Warning" and _text(warning["name"]) in MACOS_UNIT_WARNINGS)
+        if "sourceLocation" in warning:
+            location = warning["sourceLocation"]
+            require(isinstance(location, dict) and set(location) == {"filePath", "lineNumber"})
+            name = _text(location["filePath"])
+            path = PurePosixPath(name)
+            require(
+                path.is_absolute()
+                and path.as_posix() == name
+                and ".." not in path.parts
+                and "\\" not in name
+                and name.endswith(".swift")
+            )
+            _integer(location["lineNumber"], minimum=1)
+
+
+def _macos_test_identity(summary: Any, tests: Any, lane: str, architecture: str) -> None:
+    require(
+        lane in MACOS_LANES
+        and architecture in MACOS_ARCHITECTURES
+        and isinstance(summary, dict)
+        and isinstance(tests, dict)
+    )
+    require(summary.get("result") == "Passed")
+    total = _integer(summary.get("totalTestCount"), minimum=1, maximum=50_000)
+    passed = _integer(summary.get("passedTests"), minimum=1, maximum=50_000)
+    skipped = _integer(summary.get("skippedTests"), maximum=1)
+    require(passed + skipped == total)
+    for field in ("failedTests", "expectedFailures"):
+        require(type(summary.get(field)) is int and summary[field] == 0)
+    configurations, devices = summary.get("devicesAndConfigurations"), tests.get("devices")
+    require(
+        isinstance(configurations, list)
+        and len(configurations) == 1
+        and isinstance(configurations[0], dict)
+    )
+    device = configurations[0].get("device")
+    require(
+        isinstance(device, dict)
+        and device.get("platform") == "macOS"
+        and device.get("architecture") == architecture
+    )
+    _text(device.get("deviceId"))
+    require(
+        isinstance(devices, list)
+        and len(devices) == 1
+        and isinstance(devices[0], dict)
+        and devices[0].get("deviceId") == device["deviceId"]
+        and devices[0].get("platform") == "macOS"
+        and devices[0].get("architecture") == architecture
+    )
+    for field in ("passedTests", "failedTests", "skippedTests", "expectedFailures"):
+        if field in configurations[0]:
+            require(
+                type(configurations[0][field]) is int and configurations[0][field] == summary[field]
+            )
+    nodes = tests.get("testNodes")
+    require(isinstance(nodes, list) and len(nodes) == 1 and isinstance(nodes[0], dict))
+    plan = nodes[0]
+    require(
+        plan.get("name") == "AstralApp"
+        and plan.get("nodeType") == "Test Plan"
+        and plan.get("result") == "Passed"
+    )
+    bundles = plan.get("children")
+    require(isinstance(bundles, list) and len(bundles) == 1 and isinstance(bundles[0], dict))
+    require(
+        bundles[0].get("name") == ("AstralAppTests" if lane == "unit" else "AstralAppUITests")
+        and bundles[0].get("result") == "Passed"
+    )
+    pending, cases, dispositions, seen = [bundles[0]], set(), {}, 0
+    while pending:
+        node = pending.pop()
+        seen += 1
+        require(seen <= 50_000 and isinstance(node, dict))
+        children = node.get("children", [])
+        require(isinstance(children, list))
+        if node.get("nodeType") == "Test Case":
+            identifier = _text(node.get("nodeIdentifier"))
+            require(identifier not in cases)
+            cases.add(identifier)
+            if node.get("result") == "Skipped":
+                reason = MACOS_SKIP_DISPOSITIONS.get(lane, {}).get(identifier)
+                require(
+                    reason is not None
+                    and len(children) == 1
+                    and isinstance(children[0], dict)
+                    and set(children[0]) == {"name", "nodeType"}
+                    and children[0].get("nodeType") == "Failure Message"
+                    and children[0].get("name") == "Test skipped - " + reason
+                )
+                dispositions[identifier] = reason
+            else:
+                require(node.get("result") == "Passed")
+                macos_case_warnings(children, lane)
+        pending.extend(children)
+    require(len(cases) == total and len(dispositions) == skipped)
+    staging = "ReleaseEvidenceUITests/testReleaseEvidenceProducesPlatformReport()"
+    require(cases == {staging} and skipped == 0 if lane == "staging" else staging not in cases)
 
 
 def mapping_geometry(
@@ -274,9 +438,7 @@ def mapping_geometry(
             if kind == 1:
                 expansion_path = source_names[expansion]
                 require(expansion_path is not None)
-            regions[path].append(
-                [name, line, column, end_line, end_column, kind, expansion_path]
-            )
+            regions[path].append([name, line, column, end_line, end_column, kind, expansion_path])
     result = {}
     for path in sorted(regions):
         values = sorted(regions[path], key=canonical)
@@ -309,10 +471,20 @@ def validate_domain(value: Any) -> dict[str, Any]:
             "sources",
             "observed_sources",
         }
-        and value["format"] == DOMAIN_FORMAT
-        and value["platform"] == "ios"
-        and value["architecture"] == "arm64"
-        and value["lane"] in LANES
+        and (
+            (
+                value["format"] == DOMAIN_FORMAT
+                and value["platform"] == "ios"
+                and value["architecture"] == "arm64"
+                and value["lane"] in LANES
+            )
+            or (
+                value["format"] == MACOS_DOMAIN_FORMAT
+                and value["platform"] == "macos"
+                and value["architecture"] in MACOS_ARCHITECTURES
+                and value["lane"] in MACOS_LANES
+            )
+        )
         and value["source_prefix"] in SOURCE_PREFIXES
         and value["llvm_version"] == LLVM_VERSION
         and value["llvm_format"] == LLVM_FORMAT
@@ -323,26 +495,31 @@ def validate_domain(value: Any) -> dict[str, Any]:
     require(
         isinstance(binary, dict)
         and set(binary) == {"member", "sha256", "artifact_member", "artifact_sha256"}
-        and binary["member"] == BINARY_MEMBERS["core" if lane == "core" else "app"]
+        and binary["member"] == binary_member(value["platform"], lane)
     )
     _digest(binary["sha256"])
     _digest(binary["artifact_sha256"])
     artifact = _text(binary["artifact_member"])
     require(
         artifact
-        in {
-            "coverage/raw/apple-ios-core_products.zip"
-            if lane == "core"
-            else "coverage/raw/apple-ios-products.zip",
-            f"coverage/native-binaries/apple-ios-{lane}.zip",
-        }
+        in (
+            {
+                "coverage/raw/apple-ios-core_products.zip"
+                if lane == "core"
+                else "coverage/raw/apple-ios-products.zip",
+                f"coverage/native-binaries/apple-ios-{lane}.zip",
+            }
+            if value["platform"] == "ios"
+            else {
+                "coverage/raw/apple-macos-products.zip",
+                f"coverage/native-binaries/apple-macos-{lane}.zip",
+            }
+        )
     )
     sources, observed = value["sources"], value["observed_sources"]
     require(isinstance(sources, dict) and 0 < len(sources) <= MAX_FILES)
     require(
-        isinstance(observed, list)
-        and observed
-        and all(isinstance(path, str) for path in observed)
+        isinstance(observed, list) and observed and all(isinstance(path, str) for path in observed)
     )
     require(observed == sorted(set(observed)))
     require(set(observed) <= set(sources))
@@ -365,30 +542,25 @@ def validate_domain(value: Any) -> dict[str, Any]:
         if lane == "core":
             require(path.removeprefix(prefix).startswith(CORE_ROOT))
     required_root = CORE_ROOT if lane == "core" else APP_ROOT
-    required = {
-        path for path in sources if path.removeprefix(prefix).startswith(required_root)
-    }
+    required = {path for path in sources if path.removeprefix(prefix).startswith(required_root)}
     require(required and required <= set(observed))
     return value
 
 
-def native_report(
-    coverage: Mapping[str, Any], domains: Mapping[str, Any]
-) -> dict[str, Any]:
-    require(
-        isinstance(coverage, dict)
-        and coverage
-        and isinstance(domains, dict)
-        and domains
-    )
+def native_report(coverage: Mapping[str, Any], domains: Mapping[str, Any]) -> dict[str, Any]:
+    require(isinstance(coverage, dict) and coverage and isinstance(domains, dict) and domains)
     require(set(domains) <= set(LANES))
     seen: set[str] = set()
     facts_by_path: dict[str, Any] = {}
     prefixes: set[str] = set()
+    platforms: set[str] = set()
+    architectures: set[str] = set()
     for lane, value in domains.items():
         domain = validate_domain(value)
         require(domain["lane"] == lane)
         prefixes.add(domain["source_prefix"])
+        platforms.add(domain["platform"])
+        architectures.add(domain["architecture"])
         seen.update(domain["observed_sources"])
         for path, facts in domain["sources"].items():
             require(path not in facts_by_path or facts_by_path[path] == facts)
@@ -396,33 +568,32 @@ def native_report(
         for path in domain["observed_sources"]:
             rows = coverage.get(path)
             require(
-                isinstance(rows, list)
-                and len(rows) == domain["sources"][path]["native_last_line"]
+                isinstance(rows, list) and len(rows) == domain["sources"][path]["native_last_line"]
             )
             require(
-                all(
-                    isinstance(row, dict) and type(row.get("line")) is int
-                    for row in rows
-                )
+                all(isinstance(row, dict) and type(row.get("line")) is int for row in rows)
                 and [row.get("line") for row in rows if isinstance(row, dict)]
                 == list(range(1, len(rows) + 1))
             )
-    require(len(prefixes) == 1 and seen == set(coverage))
+    require(len(prefixes) == len(platforms) == len(architectures) == 1 and seen == set(coverage))
+    platform = next(iter(platforms))
     return {
-        "format": REPORT_FORMAT,
-        "platform": "ios",
+        "format": REPORT_FORMAT if platform == "ios" else MACOS_REPORT_FORMAT,
+        "platform": platform,
         "coverage": coverage,
         "domains": domains,
     }
 
 
 def parse_native_report(value: Any) -> dict[str, Any]:
+    require(isinstance(value, dict) and set(value) == {"format", "platform", "coverage", "domains"})
     require(
-        isinstance(value, dict)
-        and set(value) == {"format", "platform", "coverage", "domains"}
+        (value["format"], value["platform"])
+        in ((REPORT_FORMAT, "ios"), (MACOS_REPORT_FORMAT, "macos"))
     )
-    require(value["format"] == REPORT_FORMAT and value["platform"] == "ios")
-    return native_report(value["coverage"], value["domains"])
+    report = native_report(value["coverage"], value["domains"])
+    require(report["format"] == value["format"] and report["platform"] == value["platform"])
+    return report
 
 
 def make_domain(
@@ -433,16 +604,18 @@ def make_domain(
     observed_sources: Sequence[str],
     prefix: str,
     lane: str,
+    platform: str = "ios",
+    architecture: str = "arm64",
 ) -> dict[str, Any]:
     sources = {}
     for path, mapping in geometry.items():
         sources[path] = {**source_facts(source_bytes(path)), **mapping}
     return validate_domain(
         {
-            "format": DOMAIN_FORMAT,
-            "platform": "ios",
+            "format": DOMAIN_FORMAT if platform == "ios" else MACOS_DOMAIN_FORMAT,
+            "platform": platform,
             "lane": lane,
-            "architecture": "arm64",
+            "architecture": architecture,
             "source_prefix": prefix,
             "llvm_version": LLVM_VERSION,
             "llvm_format": LLVM_FORMAT,
@@ -454,7 +627,14 @@ def make_domain(
     )
 
 
-def test_identity(summary: Any, tests: Any, lane: str) -> None:
+def test_identity(
+    summary: Any, tests: Any, lane: str, *, platform: str = "ios", architecture: str = "arm64"
+) -> None:
+    require(platform in ("ios", "macos"))
+    if platform == "macos":
+        _macos_test_identity(summary, tests, lane, architecture)
+        return
+    require(architecture == "arm64")
     require(lane in LANES and isinstance(summary, dict) and isinstance(tests, dict))
     require(summary.get("result") == "Passed")
     total = _integer(summary.get("totalTestCount"), minimum=1, maximum=50_000)
@@ -462,9 +642,7 @@ def test_identity(summary: Any, tests: Any, lane: str) -> None:
     for field in ("failedTests", "skippedTests", "expectedFailures"):
         require(type(summary.get(field)) is int and summary[field] == 0)
     values = summary.get("devicesAndConfigurations")
-    require(
-        isinstance(values, list) and len(values) == 1 and isinstance(values[0], dict)
-    )
+    require(isinstance(values, list) and len(values) == 1 and isinstance(values[0], dict))
     device = values[0].get("device")
     require(
         isinstance(device, dict)
@@ -487,12 +665,8 @@ def test_identity(summary: Any, tests: Any, lane: str) -> None:
     require(plan.get("name") == ("AstralCore" if lane == "core" else "AstralApp"))
     require(plan.get("nodeType") == "Test Plan" and plan.get("result") == "Passed")
     bundles = plan.get("children")
-    require(
-        isinstance(bundles, list) and len(bundles) == 1 and isinstance(bundles[0], dict)
-    )
-    expected = {"core": "AstralCoreTests", "unit": "AstralAppTests"}.get(
-        lane, "AstralAppUITests"
-    )
+    require(isinstance(bundles, list) and len(bundles) == 1 and isinstance(bundles[0], dict))
+    expected = {"core": "AstralCoreTests", "unit": "AstralAppTests"}.get(lane, "AstralAppUITests")
     require(bundles[0].get("name") == expected and bundles[0].get("result") == "Passed")
     cases = []
     pending = [bundles[0]]
@@ -525,9 +699,13 @@ def collect_domain(
     run: Callable[[Sequence[str], int], bytes],
     summary: Any,
     tests: Any,
+    platform: str = "ios",
 ) -> dict[str, Any]:
-    test_identity(summary, tests, lane)
-    ios_macho(binary_bytes, lane)
+    require(platform in ("ios", "macos"))
+    architecture = "arm64" if platform == "ios" else macos_macho(binary_bytes, lane)
+    test_identity(summary, tests, lane, platform=platform, architecture=architecture)
+    if platform == "ios":
+        ios_macho(binary_bytes, lane)
     require(sha256(binary_bytes) == binary_identity.get("sha256"))
     require(binary_path.is_file() and not binary_path.is_symlink())
     before = binary_path.lstat()
@@ -542,9 +720,7 @@ def collect_domain(
         run(["/usr/bin/xcodebuild", "-version"], 4096).decode().strip()
         == "Xcode 26.6\nBuild version " + XCODE_BUILD
     )
-    version = (
-        run(["/usr/bin/xcrun", "llvm-cov", "--version"], 4096).decode().splitlines()
-    )
+    version = run(["/usr/bin/xcrun", "llvm-cov", "--version"], 4096).decode().splitlines()
     require(version and version[0] == LLVM_VERSION)
     raw = run(
         [
@@ -552,7 +728,7 @@ def collect_domain(
             "llvm-cov",
             "export",
             "--empty-profile",
-            "--arch=arm64",
+            "--arch=" + architecture,
             str(binary_path),
         ],
         MAX_MAPPING_BYTES,
@@ -572,4 +748,6 @@ def collect_domain(
         observed_sources=sorted(geometry),
         prefix=prefix,
         lane=lane,
+        platform=platform,
+        architecture=architecture,
     )
