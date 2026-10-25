@@ -50,7 +50,7 @@ def _incarnation(runtime, transaction, owner_id, key, *, rotate=False, initializ
     receipt = audit.insert_in_transaction(AuditEventCreate(
         event_id=str(uuid.uuid4()), actor_user_id=owner_id, auth_principal=owner_id,
         event_class="agent_lifecycle", action_type="remote_machine.authority_rotated",
-        description="SSH machine authority changed", correlation_id=incarnation,
+        description="SSH machine authority changed", correlation_id=str(uuid.UUID(incarnation)),
         inputs_meta={"target": key}, outcome="success", started_at=datetime.now(UTC)),
         transaction=transaction, plane_runtime=runtime)
     if not isinstance(receipt, AuditEventDTO):

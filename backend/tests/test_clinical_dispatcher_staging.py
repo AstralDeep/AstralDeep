@@ -215,10 +215,11 @@ async def test_real_tool_permission_gate_refuses_without_transport(staging):
         agent_id=RESTRICTED_AGENT,
         skills=[AgentSkill(
             name="search", description="search the public web",
-            id=RESTRICTED_TOOL, input_schema={"type": "object"},
+            id=RESTRICTED_TOOL, scope="tools:read", input_schema={"type": "object"},
         )],
     )
     orch.agents[RESTRICTED_AGENT] = object()
+    orch.tool_permissions.register_tool_scopes(RESTRICTED_AGENT, {RESTRICTED_TOOL: "tools:read"})
     orch.tool_permissions.is_tool_allowed = lambda *_args, **_kwargs: False
     transported = []
 
