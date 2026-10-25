@@ -76,6 +76,7 @@ async def evidence_turn(human, bound, fixture, tmp_path, monkeypatch):
         host.cancelled_sessions = {}
         host.agent_cards[AGENT] = AgentCard("Reader", "Reads authorized sources", AGENT,
             skills=[AgentSkill("Read source", "Reads one source", TOOL, scope="tools:read")])
+        host.tool_permissions.register_tool_scopes(AGENT, {TOOL: "tools:read"})
         adapter = EvidenceAgent(host, port=0)
         host.local_agents = getattr(host, "local_agents", {})
         host.local_agents[adapter.agent_id] = adapter
@@ -83,6 +84,7 @@ async def evidence_turn(human, bound, fixture, tmp_path, monkeypatch):
         host._policy_roles = lambda _: ["user"]
         host._hitl_pending_calls = {}
         host._dispatch_context = {}
+        host._source_ledger = Orchestrator._source_ledger.__get__(host)
         host._pending_cap_entries = {}
         host._job_context = {}
         calls, releases, notices = [], [], []

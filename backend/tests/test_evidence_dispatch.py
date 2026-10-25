@@ -324,6 +324,7 @@ def dispatch_host():
     host._chain_budgets = {}
     host._safe_send = AsyncMock()
     host.tool_permissions.get_tool_scope.return_value = "tools:read"
+    host.tool_permissions.get_tool_scope_map.return_value = {"roll_dice": "tools:read"}
     host.tool_permissions.get_enabled_scope_names.return_value = ["tools:read"]
     socket = object()
     host.ui_sessions[socket] = {"sub": "alice", "preferred_username": "Alice"}

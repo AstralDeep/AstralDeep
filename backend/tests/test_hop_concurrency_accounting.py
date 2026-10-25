@@ -19,11 +19,13 @@ from orchestrator.orchestrator import GateRefusal, PreparedDispatch  # noqa: E40
 
 @pytest.fixture
 def orch(monkeypatch, orchestrator_factory):
+    monkeypatch.delenv("DELEGATION_REQUIRED", raising=False)
     o = orchestrator_factory()
     o.audit_recorder = MagicMock()
     o.audit_recorder.record = AsyncMock()
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    o.tool_permissions.get_tool_scope_map = MagicMock(return_value={"long_tool": "tools:read"})
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     o.local_agents["callee"] = MagicMock()

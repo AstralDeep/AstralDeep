@@ -17,13 +17,17 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 @pytest.fixture
-def orch(orchestrator_factory):
+def orch(orchestrator_factory, monkeypatch):
+    monkeypatch.delenv("DELEGATION_REQUIRED", raising=False)
     os.environ["OPENAI_API_KEY"] = "test-key"
     o = orchestrator_factory()
     o.audit_recorder = MagicMock()
     o.audit_recorder.record = AsyncMock()
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    o.tool_permissions.get_tool_scope_map = MagicMock(return_value={
+        "delete_account": "tools:read", "delete_records": "tools:read",
+        "get_weather": "tools:read", "search_web": "tools:read", "send_email": "tools:read"})
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     return o

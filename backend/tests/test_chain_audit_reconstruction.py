@@ -93,6 +93,8 @@ def orch():
     skills = [SimpleNamespace(id="tool_b"), SimpleNamespace(id="tool_c")]
     o.agent_cards["agent-b"] = SimpleNamespace(skills=skills)
     o.agent_cards["agent-c"] = SimpleNamespace(skills=skills)
+    o.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value={"tool_b": "tools:read", "tool_c": "tools:read"})
     o._execute_with_retry = AsyncMock(return_value=MCPResponse(result="ok"))
     return o
 

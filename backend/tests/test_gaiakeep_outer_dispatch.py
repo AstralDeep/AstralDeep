@@ -10,6 +10,7 @@ import threading
 import pytest
 
 from orchestrator import gaiakeep_dispatch
+from orchestrator import source_bound
 from orchestrator.governed_dispatch import GovernedFinalDispatch
 from shared.feature_flags import flags
 from shared.protocol import MCPResponse
@@ -28,6 +29,8 @@ def outer_orch(real_orch, monkeypatch):
     real_orch.agent_urls = {}
     real_orch._chat_recorders = {}
     real_orch.tool_permissions.get_tool_scope.return_value = 'tools:read'
+    monkeypatch.setattr(source_bound, "declaration", lambda _scopes, agent, tool:
+                        source_bound.ActionDeclaration(agent, tool, "tools:read", source_bound.Effect.READ))
     real_orch._execute_via_a2a = AsyncMock(return_value=MCPResponse(result={'unexpected': 'fallback'}))
     monkeypatch.setitem(flags._flags, 'progress_streaming', False)
     monkeypatch.setattr(gaiakeep_dispatch, '_record', AsyncMock())

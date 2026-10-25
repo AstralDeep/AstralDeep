@@ -11,14 +11,8 @@ import os
 
 import pytest
 
-_AMBIENT_FLAG_PREFIXES = ("FF_UI_DESIGNER_",)
-_AMBIENT_FLAGS = (
-    "FF_ADAPTIVE_OBJECTIVES",
-    "FF_MOA_DEBATE",
-    "FF_HITL_HIGHRISK",
-    "FF_HOOK_SYSTEM",
-    "FF_RECURSIVE_DELEGATION",
-)
+_AMBIENT_FLAG_PREFIXES = ("FF_",)
+_AMBIENT_FLAGS = ()
 
 
 def _strip_ambient_flags() -> None:

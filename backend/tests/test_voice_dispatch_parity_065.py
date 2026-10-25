@@ -40,6 +40,10 @@ class _Permissions:
         assert (user_id, agent_id) == (USER_ID, AGENT_ID)
         return ["tools:read"] if self.allowed else []
 
+    def get_tool_scope_map(self, agent_id: str) -> dict[str, str]:
+        assert agent_id == AGENT_ID
+        return {tool: "tools:read" for tool in (TOOL_ID, "send_email", "blocked_tool")}
+
 
 class _Delegation:
     def __init__(self) -> None:
@@ -218,6 +222,10 @@ async def test_tool_denial_and_egress_confirmation_have_identical_verdicts(
 
     monkeypatch.setenv("FF_RUNTIME_SUPERVISOR", "false")
     monkeypatch.setenv("FF_HITL_HIGHRISK", "true")
+    from personalization.phi_gate import PHIGate
+
+    monkeypatch.setattr("personalization.phi_gate.get_phi_gate",
+                        lambda: PHIGate(analyzer=SimpleNamespace(analyze=lambda **_: [])))
     chat_id = "voice-parity-chat" if chat_bound else None
     runtime._ws_active_chat = {id(socket): chat_id for socket in (typed, voice)}
     runtime._map_file_paths = lambda chat, args, **kwargs: args

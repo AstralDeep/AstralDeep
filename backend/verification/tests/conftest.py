@@ -36,6 +36,11 @@ INTEGRATION = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def development_dispatch_posture(monkeypatch):
+    monkeypatch.delenv("DELEGATION_REQUIRED", raising=False)
+
+
 @pytest.fixture
 def run_config(tmp_path):
     from verification.config import RunConfig

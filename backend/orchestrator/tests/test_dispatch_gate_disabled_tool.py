@@ -61,6 +61,9 @@ def _build_orch(*, disabled_agents=None, saved_selection=None,
     )
     orch.credential_manager = MagicMock()
     orch.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value={})
+    orch.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value={skill.id: skill.scope or "tools:read"
+                      for card in orch.agent_cards.values() for skill in card.skills})
     orch._llm_store = MagicMock()
     orch._llm_store.get = AsyncMock(return_value=None)
     orch._llm_store.get_system = AsyncMock(return_value=None)
@@ -158,11 +161,9 @@ async def test_dispatch_unknown_tool_falls_through_to_generic_gate() -> None:
         user_id="alice",
     )
 
-    alert = orch._rendered_ui[0]["components"][0]
-    assert alert["type"] == "alert"
-    assert "No agent available" in alert["message"]
-    assert "totally_made_up_tool" in alert["message"]
-    assert result.error is not None
+    assert result is not None and result.error is not None
+    assert result.error.get("code") == "effect_declaration_unavailable"
+    assert orch._rendered_ui == []
 
 
 @pytest.mark.asyncio

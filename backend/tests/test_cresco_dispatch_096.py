@@ -31,11 +31,16 @@ def cresco_agent_instance(monkeypatch):
 
 @pytest.fixture
 def orch(orchestrator_factory, monkeypatch):
+    monkeypatch.delenv("DELEGATION_REQUIRED", raising=False)
     instance = orchestrator_factory()
     instance.audit_recorder = MagicMock()
     instance.audit_recorder.record = AsyncMock()
     instance.send_ui_render = AsyncMock()
     instance.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    from agents.cresco.mcp_tools import TOOL_REGISTRY
+
+    instance.tool_permissions.register_tool_scopes(
+        "cresco-1", {name: info["scope"] for name, info in TOOL_REGISTRY.items()})
     instance._map_file_paths = lambda cid, a, **k: a
     return instance
 

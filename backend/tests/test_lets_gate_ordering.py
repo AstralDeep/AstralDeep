@@ -159,6 +159,10 @@ async def test_egress_hitl_denial_precedes_lets(gate_orchestrator, monkeypatch) 
     from orchestrator import hitl
 
     orchestrator, websocket = gate_orchestrator
+    from personalization.phi_gate import PHIGate
+
+    monkeypatch.setattr("personalization.phi_gate.get_phi_gate",
+                        lambda: PHIGate(analyzer=SimpleNamespace(analyze=lambda **_: [])))
     monkeypatch.setattr(hitl, "hitl_enabled", lambda: True)
     monkeypatch.setattr(hitl, "assess_risk", lambda *_args, **_kwargs: ("egress",))
     monkeypatch.setattr(hitl, "requires_confirmation", lambda _risks: True)

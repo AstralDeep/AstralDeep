@@ -82,6 +82,17 @@ class RealDispatchQualification(InProcessDriver):
     async def setup(self) -> None:
         await super().setup()
         self.orch.delegation._exchange_via_keycloak = self._fixture_exchange
+        from personalization import phi_gate
+        from personalization.phi_gate import PHIGate
+
+        self._live_phi_gate = phi_gate.get_phi_gate()
+        phi_gate.set_phi_gate(PHIGate(analyzer=SimpleNamespace(analyze=lambda **_: [])))
+
+    async def teardown(self) -> None:
+        from personalization import phi_gate
+
+        phi_gate.set_phi_gate(getattr(self, "_live_phi_gate", None))
+        await super().teardown()
 
     async def _fixture_exchange(self, user_token, agent_id, allowed_tools,
                                 enabled_scopes):

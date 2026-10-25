@@ -5,6 +5,7 @@ rows through the explicit Plane repository double.
 
 from __future__ import annotations
 
+
 import os
 import sys
 import time
@@ -327,3 +328,18 @@ def insert_sample(repo, *, user_id: str, category: str = "document",
     )
     time.sleep(0.001)
     return aid
+
+
+@pytest.fixture(autouse=True)
+def deterministic_phi_gate():
+    from personalization import phi_gate
+    from personalization.phi_gate import PHIGate
+
+    class _StaticAnalyzer:
+        def analyze(self, **_):
+            return []
+
+    live = phi_gate.get_phi_gate()
+    phi_gate.set_phi_gate(PHIGate(analyzer=_StaticAnalyzer()))
+    yield
+    phi_gate.set_phi_gate(live)

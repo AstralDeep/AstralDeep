@@ -484,6 +484,8 @@ async def test_normal_dispatch_denies_new_tools_when_user_revokes_permission(mon
     orchestrator = _build_orch()
     orchestrator.audit_recorder = isolated_recorder
     orchestrator.agent_cards = {"fhir-1": _make_card("fhir-1", [tool])}
+    orchestrator.tool_permissions.get_tool_scope_map.return_value = {
+        name: info["scope"] for name, info in mcp_tools.TOOL_REGISTRY.items()}
     orchestrator.local_agents = {"fhir-1": MagicMock()}
     orchestrator.tool_permissions.is_tool_allowed.return_value = False
     response = await orchestrator.execute_single_tool(

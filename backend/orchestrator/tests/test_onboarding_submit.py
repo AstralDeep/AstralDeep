@@ -6,6 +6,7 @@ import asyncio
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 if str(BACKEND_DIR) not in sys.path:
@@ -66,7 +67,11 @@ def test_detection():
     assert not onboarding_submit.is_onboarding_submit("hello there")
 
 
-def test_profile_submit_persists():
+def test_profile_submit_persists(monkeypatch):
+    from personalization.phi_gate import PHIGate
+
+    monkeypatch.setattr("personalization.phi_gate.get_phi_gate",
+                        lambda: PHIGate(analyzer=SimpleNamespace(analyze=lambda **_: [])))
     repo, tp = _FakeRepo(), _FakeTP()
     orch = _fake_orch(repo, tp)
     handled = asyncio.run(onboarding_submit.handle_submit(

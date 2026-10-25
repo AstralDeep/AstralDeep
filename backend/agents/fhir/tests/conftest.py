@@ -35,6 +35,13 @@ def isolated_audit_queue(monkeypatch, tmp_path):
         monkeypatch.setattr(existing, "_retry_path", path)
 
 
+@pytest.fixture(autouse=True)
+def ambient_streaming_flag_defaults(monkeypatch):
+    for name, env in (("tool_streaming", "FF_TOOL_STREAMING"), ("stream_progress", "FF_STREAM_PROGRESS")):
+        monkeypatch.delenv(env, raising=False)
+        monkeypatch.setitem(mcp_tools.flags._flags, name, False)
+
+
 def at(minutes_ago: float) -> str:
     return (NOW - timedelta(minutes=minutes_ago)).isoformat(timespec="seconds")
 

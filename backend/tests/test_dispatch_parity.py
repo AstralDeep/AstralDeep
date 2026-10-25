@@ -20,13 +20,16 @@ from shared.protocol import MCPResponse  # noqa: E402
 
 
 @pytest.fixture
-def orch(orchestrator_factory):
+def orch(orchestrator_factory, monkeypatch):
+    monkeypatch.delenv("DELEGATION_REQUIRED", raising=False)
     o = orchestrator_factory()
     o.audit_recorder = MagicMock()
     o.audit_recorder.record = AsyncMock()
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     o.tool_permissions.get_tool_scope = MagicMock(return_value="tools:read")
+    o.tool_permissions.get_tool_scope_map = MagicMock(return_value={
+        "t1": "tools:read", "delete_records": "tools:write", "send_email": "tools:write"})
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     o.local_agents["a1"] = MagicMock()
@@ -177,5 +180,7 @@ async def test_meta_tool_parity_in_parallel_batch(orch, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_real_agent_hop_cannot_reach_meta_tools(orch):
-    msg = await _single(orch, tool="create_capability", agent="evil-agent-1")
-    assert "No agent available" in msg
+    single_msg = await _single(orch, tool="create_capability", agent="evil-agent-1")
+    parallel_msg = await _parallel(orch, tool="create_capability", agent="evil-agent-1")
+    assert single_msg == parallel_msg
+    assert "Tool effect declaration is unavailable" in single_msg

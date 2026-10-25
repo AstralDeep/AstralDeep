@@ -18,6 +18,15 @@ from tests.test_cresco_dispatch_096 import orch as orch
 from tests.test_terminal_ssh_runtime import isolated as isolated
 
 
+@pytest.fixture(autouse=True)
+def registered_terminal_scopes(orch, monkeypatch):
+    monkeypatch.delenv("AGENT_API_KEY", raising=False)
+    from agents.terminal_shell.mcp_tools import TOOL_REGISTRY
+
+    orch.tool_permissions.register_tool_scopes(
+        "terminal-shell-1", {name: info["scope"] for name, info in TOOL_REGISTRY.items()})
+
+
 @pytest.mark.parametrize("tool", ["start_terminal", "terminal_write"])
 def test_terminal_execution_requires_confirmation_and_is_a_taint_sink(tool):
     assert remote_confirmation.classification_for(tool, "terminal-shell-1") == "always"
