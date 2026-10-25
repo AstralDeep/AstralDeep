@@ -51,6 +51,11 @@ def _build_orch(*, disabled_agents=None, saved_selection=None,
 
     orch.tool_permissions = MagicMock()
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    # Declared general-1 tools keep the undeclared-effect gate from shadowing the
+    # disabled-tool alert seam under test.
+    orch.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value={"read_spreadsheet": "tools:read", "ocr": "tools:read",
+                      "totally_made_up_tool": "tools:read"})
     orch.tool_permissions.list_disabled_agents.return_value = tuple(
         disabled_agents or ()
     )

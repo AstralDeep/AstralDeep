@@ -44,8 +44,12 @@ def test_noninteractive_claims_cannot_approve_terminal_execution(channel):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enabled,expected", [(False, "terminal_disabled"), (True, "terminal_isolation_unavailable")])
 async def test_real_dispatch_refuses_execution_before_approval_or_transport(orch, monkeypatch, enabled, expected):
+    from agents.terminal_shell.mcp_tools import TOOL_REGISTRY
+
     monkeypatch.setitem(flags._flags, "terminal_shell", enabled)
     monkeypatch.setenv("FF_TERMINAL_SHELL", "true" if enabled else "false")
+    orch.tool_permissions.register_tool_scopes(
+        "terminal-shell-1", {name: info["scope"] for name, info in TOOL_REGISTRY.items()})
     socket = MagicMock()
     orch.ui_sessions[socket] = {"sub": "u1", "exp": time.time() + 600,
                                 "realm_access": {"roles": ["user"]}}
@@ -78,8 +82,10 @@ async def test_gate_binds_fresh_host_authority_after_normal_permission_checks(or
     monkeypatch.setenv("DELEGATION_REQUIRED", "false")
     monkeypatch.setattr(TerminalShellAgent, "_init_crypto",
                         lambda self: setattr(self, "_public_key_jwk", {"test": "ephemeral"}))
+    monkeypatch.setenv("AGENT_API_KEY", "synthetic-registration-key")
     agent = TerminalShellAgent(orchestrator=orch)
-    await orch.register_agent(None, RegisterAgent(agent_card=agent.card))
+    await orch.register_agent(None, RegisterAgent(agent_card=agent.card,
+                                                  api_key="synthetic-registration-key"))
     orch.local_agents[agent.agent_id] = agent
     socket = object()
     orch.ui_sessions[socket] = {"sub": "u1", "exp": time.time() + 600,
@@ -103,7 +109,7 @@ async def test_gate_binds_fresh_host_authority_after_normal_permission_checks(or
 @pytest.mark.asyncio
 @pytest.mark.parametrize("loss,code", [("profile", "terminal_profile_invalid"),
                                        ("target", "terminal_target_unavailable")])
-async def test_real_gate_types_terminal_loss_between_permission_and_confirmation(orch, isolated, loss, code):
+async def test_real_gate_types_terminal_loss_between_permission_and_confirmation(orch, isolated, monkeypatch, loss, code):
     from dataclasses import replace
     from orchestrator.terminal_sessions import TerminalSessionManager
 
@@ -111,6 +117,15 @@ async def test_real_gate_types_terminal_loss_between_permission_and_confirmation
     orch.ui_sessions[socket] = {"sub": "owner", "exp": time.time() + 600,
                                 "realm_access": {"roles": ["user"]}}
     orch.terminal_sessions = TerminalSessionManager(orchestrator=orch)
+    from agents.terminal_shell.terminal_shell_agent import TerminalShellAgent
+
+    monkeypatch.setattr(TerminalShellAgent, "_init_crypto",
+                        lambda self: setattr(self, "_public_key_jwk", {"test": "ephemeral"}))
+    monkeypatch.setenv("AGENT_API_KEY", "synthetic-registration-key")
+    agent = TerminalShellAgent(orchestrator=orch)
+    await orch.register_agent(None, RegisterAgent(agent_card=agent.card,
+                                                  api_key="synthetic-registration-key"))
+    orch.local_agents[agent.agent_id] = agent
     orch.security_flags["terminal-shell-1"] = {"start_terminal": {"blocked": False}}
 
     def permission(*args):
@@ -132,6 +147,8 @@ async def test_real_gate_types_terminal_loss_between_permission_and_confirmation
 @pytest.mark.asyncio
 async def test_terminal_confirmation_catch_does_not_reclassify_another_agent_failure(orch, monkeypatch):
     from orchestrator.terminal_security import TerminalError
+
+    orch.tool_permissions.register_tool_scopes("cresco-1", {"cresco_list_regions": "tools:read"})
 
     def failure(*args):
         raise TerminalError("terminal_profile_invalid", 503)

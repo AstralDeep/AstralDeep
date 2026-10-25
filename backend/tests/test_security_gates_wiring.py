@@ -24,6 +24,12 @@ def orch(orchestrator_factory):
     o.audit_recorder.record = AsyncMock()
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    # Every gate under test classifies by name or flag, so read declarations keep the
+    # effect-review gate from shadowing the seam each assertion targets.
+    o.tool_permissions.register_tool_scopes("a1", {
+        "delete_records": "tools:read", "search_web": "tools:read",
+        "send_email": "tools:read", "delete_account": "tools:read",
+        "get_weather": "tools:read"})
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     return o

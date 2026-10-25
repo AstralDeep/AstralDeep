@@ -507,6 +507,10 @@ def real_orch(monkeypatch):
     o.send_ui_render = AsyncMock()
     o.tool_permissions = MagicMock()
     o.tool_permissions.is_tool_allowed.return_value = True
+    from agents.remote_compute import mcp_tools as _rc_tools
+
+    o.tool_permissions.get_tool_scope_map.return_value = {
+        name: info["scope"] for name, info in _rc_tools.TOOL_REGISTRY.items()}
     o._record_hop_audit = AsyncMock()
     monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)
     return o

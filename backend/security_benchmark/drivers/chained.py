@@ -110,6 +110,9 @@ class ChainedDriver(Driver):
         o.tool_permissions.get_enabled_scope_names = MagicMock(return_value=["tools:read"])
         o.tool_permissions.get_tool_scope = MagicMock(
             return_value=case.objective.required_scope or "tools:read")
+        # The hop re-enters the real gate stack, whose source-bound gate needs the card's declared effect.
+        o.tool_permissions.get_tool_scope_map = MagicMock(
+            return_value={tool: case.objective.required_scope or "tools:read"})
         o._map_file_paths = lambda cid, a, **k: a
         o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
         o.agents["initiator-1"] = MagicMock()

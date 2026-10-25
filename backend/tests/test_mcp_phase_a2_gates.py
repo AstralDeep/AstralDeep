@@ -230,6 +230,7 @@ async def test_mcp_refusal_names_signing_key_not_idp_scopes(orchestrator_factory
     orch._execute_in_process = AsyncMock(side_effect=AssertionError("must not dispatch"))
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     orch.tool_permissions.get_enabled_scope_names = MagicMock(return_value=["tools:read"])
+    orch.tool_permissions.register_tool_scopes("reader-1", {"read_value": "tools:read"})
     orch._map_file_paths = lambda cid, a, **k: a
     orch.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
 
@@ -274,6 +275,11 @@ def gate_orch(orchestrator_factory):
     o.audit_recorder.record = AsyncMock()
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    # Supervisor classification is name-based, so a read declaration keeps the
+    # effect-review gate from shadowing the seams these tests target.
+    o.tool_permissions.register_tool_scopes("a1", {"delete_records": "tools:read"})
+    o.tool_permissions.register_tool_scopes("reader-1", {"read_value": "tools:read"})
+    o.tool_permissions.register_tool_scopes("remote-compute-1", {"delete_path": "tools:read"})
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     return o

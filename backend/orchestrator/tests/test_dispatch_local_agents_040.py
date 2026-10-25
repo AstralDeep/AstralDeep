@@ -50,6 +50,10 @@ def _build_orch() -> Orchestrator:
 
     orch.tool_permissions = MagicMock()
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    # Declared phantom_tool keeps the undeclared-effect gate from shadowing the
+    # no-agent alert seam under test.
+    orch.tool_permissions.get_tool_scope_map = MagicMock(return_value={
+        "roll_dice": "tools:read", "phantom_tool": "tools:read"})
     orch.credential_manager = MagicMock()
     orch.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value={})
     orch._llm_store = MagicMock()

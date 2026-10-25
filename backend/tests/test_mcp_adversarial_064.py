@@ -54,7 +54,12 @@ async def test_shared_gate_refuses_destructive_mcp_before_transport_20_of_20():
         invocation: {"sub": "u1", "_invocation_channel": "mcp"}
     }
     orchestrator.security_flags = {}
-    orchestrator.tool_permissions = SimpleNamespace(is_tool_allowed=lambda *args: True)
+    from agents.remote_compute import mcp_tools as _rc_tools
+
+    orchestrator.tool_permissions = SimpleNamespace(
+        is_tool_allowed=lambda *args: True,
+        get_tool_scope_map=lambda _agent: {
+            name: info["scope"] for name, info in _rc_tools.TOOL_REGISTRY.items()})
     transport = AsyncMock()
     orchestrator._execute_with_retry = transport
 

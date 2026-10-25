@@ -18,6 +18,15 @@ from tests.test_remote_confirmation_063 import _WS, USER, _FakeDB, _orch, _seed,
 from tests.test_remote_confirmation_063 import real_orch as _real_orch
 
 real_orch = _real_orch
+
+
+def _declare_gaiakeep_tools(orch):
+    from agents.gaiakeep.catalog import TOOLS
+
+    orch.tool_permissions.get_tool_scope_map.return_value.update(
+        {name: info["scope"] for name, info in TOOLS.items()})
+    return orch
+
 gaia_server = _gaia_server
 
 
@@ -204,6 +213,7 @@ def test_upload_approval_preserves_the_selected_request_identity_mode(monkeypatc
 @pytest.mark.asyncio
 @pytest.mark.parametrize('mode', ['single', 'parallel'])
 async def test_normal_dispatch_requires_approval_and_binds_owner(real_orch, monkeypatch, mode):
+    _declare_gaiakeep_tools(real_orch)
     monkeypatch.setattr(rc, '_machine_label', lambda *a: 'registered DGX')
     tool = 'gaiakeep_core_auditack'
     tool_call = _tc(tool, {'machine_id': 'mine', 'params': {'reason': 'requested'}, 'user_id': 'attacker'})
@@ -228,6 +238,7 @@ async def test_normal_dispatch_requires_approval_and_binds_owner(real_orch, monk
 @pytest.mark.parametrize('case', ['invalid-arguments', 'foreign-machine', 'machine-lookup-failure',
                                  'unattended', 'stale-approval', 'changed-approval', 'permission'])
 async def test_normal_gaia_denial_remains_an_error_without_pending_result(real_orch, monkeypatch, mode, case):
+    _declare_gaiakeep_tools(real_orch)
     from orchestrator import remote_machines
     tool = 'gaiakeep_core_auditack'
     args = {'machine_id': 'mine', 'params': {'reason': 'requested'}, 'user_id': USER}
@@ -312,6 +323,7 @@ def test_only_complete_issued_approval_cards_are_pending_results(case):
 
 @pytest.mark.asyncio
 async def test_normal_dispatch_permission_denial_precedes_proposal(real_orch):
+    _declare_gaiakeep_tools(real_orch)
     real_orch.tool_permissions.is_tool_allowed.return_value = False
     tool = 'gaiakeep_core_auditack'
     response = await real_orch.execute_single_tool(
@@ -323,6 +335,7 @@ async def test_normal_dispatch_permission_denial_precedes_proposal(real_orch):
 
 @pytest.mark.asyncio
 async def test_normal_dispatch_mcp_mutation_denied(real_orch):
+    _declare_gaiakeep_tools(real_orch)
     ws = _WS()
     real_orch.ui_sessions[ws] = {'_invocation_channel': 'mcp'}
     tool = 'gaiakeep_core_auditack'
@@ -335,14 +348,15 @@ async def test_normal_dispatch_mcp_mutation_denied(real_orch):
 
 @pytest.mark.asyncio
 async def test_approved_mutation_still_obeys_product_policy(real_orch, monkeypatch):
+    _declare_gaiakeep_tools(real_orch)
     from orchestrator import policy
     tool = 'gaiakeep_core_auditack'
     args = {'machine_id': 'mine', 'params': {'reason': 'requested'}, 'user_id': USER}
     _seed(real_orch.proposal_storage, 'approval', owner=USER, verb=tool, args=args, agent_id='gaiakeep-1')
     real_orch._policy_roles = lambda ws: []
     monkeypatch.setattr(policy, 'policy_enabled', lambda: True)
-    monkeypatch.setattr(policy, 'load_rules', list)
-    monkeypatch.setattr(policy, 'evaluate_policy', lambda *a: policy.PolicyDecision(effect=policy.DENY, reason='policy denial'))
+    monkeypatch.setattr(policy, 'load_rules', lambda *a, **k: [])
+    monkeypatch.setattr(policy, 'evaluate_policy', lambda *a, **k: policy.PolicyDecision(effect=policy.DENY, reason='policy denial'))
     response = await real_orch.execute_single_tool(
         _WS(), _tc(tool, dict(args, _remote_op_proposal_id='approval')),
         {tool: 'gaiakeep-1'}, 'chat', user_id=USER)
@@ -352,6 +366,7 @@ async def test_approved_mutation_still_obeys_product_policy(real_orch, monkeypat
 
 @pytest.mark.asyncio
 async def test_prepared_dispatch_context_reaches_agent(real_orch, gaia_server, monkeypatch):
+    _declare_gaiakeep_tools(real_orch)
     from orchestrator.orchestrator import PreparedDispatch
     from shared.feature_flags import flags
     from shared.protocol import MCPRequest
@@ -505,6 +520,7 @@ async def test_gaia_delivery_requires_its_socket_conversation_and_agent(approved
 
 @pytest.mark.asyncio
 async def test_approved_gaia_permission_denial_still_prevents_result_publication(real_orch):
+    _declare_gaiakeep_tools(real_orch)
     real_orch.tool_permissions.is_tool_allowed.return_value = False
     real_orch._send_or_replace_components = AsyncMock()
     real_orch._execute_with_retry = AsyncMock()
