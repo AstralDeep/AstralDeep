@@ -26,4 +26,31 @@ The first rollout stopped at the user-file preservation guard because a knowledg
 
 The second attempt deployed the selected server at `2026-10-25T12:55:51Z`: container `bdecc21648a43b242a10da2b44f0f345de704fd7fa94587333e15cbc6db2c762`, exact image `580bd01d0cb3…`, clean host source `9117730b`, preserved mounts and all 118 non-cache untracked files unchanged before startup. No other observed running container changed. HTTPS readiness is 200, persistence/publication report healthy, LETS remains enforce/healthy, and the container has zero restarts. Host-local private backup/rollback inputs are retained; no schema change, database downgrade, ledger rewind or key rotation occurred.
 
-Live unauthenticated HTTP smoke at `2026-10-25T12:58:34Z`: `/healthz` and `/readyz` return 200; `/` redirects to sign-in (302); `/api/chats`, `/api/chrome/menu` and `/lets/health` return 401. Native owner acceptance stays pending, and a missing informational registration log line is under investigation rather than counted as successful agent registration.
+Live unauthenticated HTTP smoke at `2026-10-25T12:58:34Z`: `/healthz` and `/readyz` return 200; `/` redirects to sign-in (302); `/api/chats`, `/api/chrome/menu` and `/lets/health` return 401. Native owner acceptance stays pending. The live public A2A catalog subsequently verifies connected, safe-marked `computer-use-1`; the missing informational success log is expected at the production WARNING level.
+
+## Final operational checks
+
+At `2026-10-25T13:12:43Z`, more than 16 minutes after initial readiness, the exact candidate container is healthy with zero restarts, HTTPS readiness 200, PostgreSQL/publication healthy and LETS enforce/healthy. The host tracked source stays clean. The live external `/a2a/.well-known/agent-card.json` contains connected `computer-use-1`; anonymous WebSocket `register_ui` receives only `auth_required`, and verified-TLS discovery from the configured real Keycloak issuer returns 200 with an exact issuer match. No user sign-in or application effect was performed by these probes.
+
+The actual quiesced PostgreSQL backup restores successfully in a separate network-none PostgreSQL 17 instance: backup SHA-256 `1d692f2277e7ab0e9dd4be2fcad73a71dcfc4cb8249d5ffef850eec365d8763d`. Both temporary verification containers were removed. Host-local private backup and rollback files stay under `/home/sam/astral099-production-20261025-attempt2`; these are operational rollback inputs rather than an independent disaster-recovery copy.
+
+The ordinary `/opt/AstralDeep/docker-compose.override.yml` now persists the exact selected image, `FF_COMPUTER_USE=true`, and `pull_policy: never`. Docker Compose independently renders it equal to the previously validated candidate configuration apart from that explicit local-image pull policy. Its SHA-256 is `9fca56deb1f1f417be65ebeb630125a256b3347e0bdbcc5c15198cbe5cc2c6cc`; mode/owner and all other semantic configuration remain unchanged. This convergence required no restart. The same image also has the local retention tag `astraldeep/astraldeep:production-099-9117730b`; it has not been published to a registry or released.
+
+A guarded operator rollback script is saved privately on the host. Its default/check mode passed without mutations:
+
+```text
+python3 /home/sam/astral099-production-20261025-attempt2/rollback.py --check
+```
+
+An explicit `--apply` restores the saved application source/image/ordinary override and verifies readiness. It refuses intervening source/configuration changes and never restores PostgreSQL, blobs or LETS authority. The script SHA-256 is `5c8d81299a321d1c37a497e4ed334255b360beadf853c75f8977e133b971d563`; this final script's apply mode has not been executed against the healthy deployment. The first rollout's automatic old-image recovery is separately live-verified.
+
+Host storage remains tight: the final observation has 10,899,771,392 bytes free against the previously computed 9,696,796,704-byte LETS reserve. Retain the active image; avoid large builds or unscoped cleanup on this filesystem.
+
+## Owner return
+
+1. Unlock the Mac normally and open `/Applications/AstralDeep.app`.
+2. Complete ordinary single sign-on if requested, open Computer controls with Command–Shift–C, refresh permissions and physically enable **Allow computer tasks on this Mac**.
+3. Select the intended workspace folders for file tasks.
+4. Complete the remaining live browser, exact reviewed Terminal, selected-folder round-trip, generated-UI, takeover and Pause/Stop/disconnect checks through the ordinary signed-in dispatcher.
+
+Those live checks remain required to establish actual Mac functionality and harness comparisons. The installed binary is signature-verified, with no claim of notarization, canonical CI qualification or complete harness parity.
