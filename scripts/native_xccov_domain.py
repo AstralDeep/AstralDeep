@@ -207,12 +207,11 @@ def macos_macho(raw: bytes, lane: str) -> str:
     return architecture
 
 
-MACOS_UNIT_WARNINGS = frozenset(
-    {
-        "[Internal] Thread running at User-interactive quality-of-service class waiting on a lower QoS thread running at Default quality-of-service class. Investigate ways to avoid priority inversions",
-        "Accessing FocusState's value outside of the body of a View. This will result in a constant Binding of the initial value and will not update.",
-    }
-)
+MACOS_UNIT_WARNING_SOURCES = {
+    "ConsoleShellPresentationTests.swift": "[Internal] Thread running at User-interactive quality-of-service class waiting on a lower QoS thread running at Default quality-of-service class. Investigate ways to avoid priority inversions",
+    "GuidanceRenderer088Tests.swift": "Accessing FocusState's value outside of the body of a View. This will result in a constant Binding of the initial value and will not update.",
+}
+MACOS_UNIT_WARNINGS = frozenset(MACOS_UNIT_WARNING_SOURCES.values())
 
 
 def macos_case_warnings(children: Any, lane: str) -> None:
@@ -223,7 +222,15 @@ def macos_case_warnings(children: Any, lane: str) -> None:
             isinstance(warning, dict)
             and set(warning) in ({"nodeType", "name"}, {"nodeType", "name", "sourceLocation"})
         )
-        require(warning["nodeType"] == "Runtime Warning" and _text(warning["name"]) in MACOS_UNIT_WARNINGS)
+        require(warning["nodeType"] == "Runtime Warning")
+        message = _text(warning["name"])
+        source = None
+        if message not in MACOS_UNIT_WARNINGS:
+            prefix = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*\.swift):([1-9][0-9]{0,6}): (.+)", message)
+            require(prefix is not None)
+            source, line, message = prefix.groups()
+            require(MACOS_UNIT_WARNING_SOURCES.get(source) == message)
+            line = _integer(int(line), minimum=1, maximum=MAX_LINES)
         if "sourceLocation" in warning:
             location = warning["sourceLocation"]
             require(isinstance(location, dict) and set(location) == {"filePath", "lineNumber"})
@@ -237,6 +244,8 @@ def macos_case_warnings(children: Any, lane: str) -> None:
                 and name.endswith(".swift")
             )
             _integer(location["lineNumber"], minimum=1)
+            if source is not None:
+                require(path.name == source and location["lineNumber"] == line)
 
 
 def _macos_test_identity(summary: Any, tests: Any, lane: str, architecture: str) -> None:
