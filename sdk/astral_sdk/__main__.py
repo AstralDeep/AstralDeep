@@ -207,7 +207,12 @@ def _attach(client: AstralClient, session_id: str) -> int:
             if data is None:
                 stdin_open = False
                 break
-            client.write_terminal(session_id, data)
+            try:
+                client.write_terminal(session_id, data)
+            except AstralHTTPError as exc:
+                if exc.code in ("terminal_session_closed", "terminal_session_not_found"):
+                    return 0
+                raise
         try:
             out = client.read_terminal(session_id, offset=offset, wait_seconds=0.5)
         except AstralHTTPError as exc:

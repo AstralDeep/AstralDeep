@@ -50,9 +50,13 @@ def service(runtime, fixture, monkeypatch):
     permissions = ToolPermissionManager(plane_runtime=runtime)
     permissions.register_tool_scopes("web-research-1", {"fetch_page": "tools:read"})
     permissions.set_agent_scopes(owner, "web-research-1", {"tools:read": True})
+    from orchestrator.source_bound import SourceLedger
+
+    ledgers = {}
     orch = SimpleNamespace(agents={"web-research-1": object()}, local_agents={},
         agent_cards={"web-research-1": SimpleNamespace(skills=[SimpleNamespace(id="fetch_page")])},
         _is_draft_agent=lambda _: False, security_flags={}, tool_permissions=permissions,
+        _source_ledger=lambda user_id, chat_id: ledgers.setdefault((user_id, chat_id), SourceLedger()),
         history=SimpleNamespace(get_chat=lambda *_args, **_kwargs: None))
     assignments = AssignmentService(orch, AssignmentStore(plane_runtime=runtime), enabled=True,
         phi_gate=PHIGate(analyzer=SimpleNamespace(analyze=lambda **_: [])))

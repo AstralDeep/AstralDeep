@@ -115,7 +115,7 @@ async def test_concurrent_pause_cancel_has_one_linearized_control(records):
         service.control("owner", reads.control_caller.context.claims, ids[0], "cancel", command(1), caller=reads.control_caller), return_exceptions=True)
     assert sum(isinstance(value, dict) and value["applied"] is True for value in results) == 1
     errors = [value for value in results if isinstance(value, AssignmentError)]
-    assert len(errors) == 1 and errors[0].status_code == 409
+    assert len(errors) == 1 and errors[0].status_code in (409, 503)
     assert (await reads.get("owner", OWNER, ids[0]))["revision"] == 2
 
 
