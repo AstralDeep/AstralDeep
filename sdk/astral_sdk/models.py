@@ -169,9 +169,13 @@ class TerminalSessionView:
     idle_seconds: float
     ring_start: int
     ring_end: int
+    target: Optional[str] = None
+    directory: Optional[str] = None
+    exit_code: Optional[int] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TerminalSessionView":
+        exit_code = data.get("exit_code")
         return cls(
             session_id=data["session_id"],
             cols=int(data.get("cols", 0)),
@@ -180,6 +184,9 @@ class TerminalSessionView:
             idle_seconds=float(data.get("idle_seconds", 0.0)),
             ring_start=int(data.get("ring_start", 0)),
             ring_end=int(data.get("ring_end", 0)),
+            target=data.get("target") if isinstance(data.get("target"), str) else None,
+            directory=data.get("directory") if isinstance(data.get("directory"), str) else None,
+            exit_code=exit_code if type(exit_code) is int else None,
         )
 
 
@@ -192,10 +199,14 @@ class TerminalOutput:
     truncated: bool
     eof: bool
     session: Optional[TerminalSessionView]
+    exit_code: Optional[int] = None
+    close_reason: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TerminalOutput":
         session = data.get("session")
+        exit_code = data.get("exit_code")
+        reason = data.get("close_reason")
         return cls(
             session_id=data["session_id"],
             offset=int(data.get("offset", 0)),
@@ -204,6 +215,8 @@ class TerminalOutput:
             truncated=bool(data.get("truncated")),
             eof=bool(data.get("eof")),
             session=TerminalSessionView.from_dict(session) if session else None,
+            exit_code=exit_code if type(exit_code) is int else None,
+            close_reason=reason if isinstance(reason, str) else None,
         )
 
 

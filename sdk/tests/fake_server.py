@@ -144,7 +144,9 @@ class _Handler(BaseHTTPRequestHandler):
         output = session["output"]
         return {"session_id": session["session_id"], "cols": session["cols"],
                 "rows": session["rows"], "created_at_monotonic": session["created"],
-                "idle_seconds": 0.0, "ring_start": 0, "ring_end": len(output)}
+                "idle_seconds": 0.0, "ring_start": 0, "ring_end": len(output),
+                "target": session.get("target"), "directory": session.get("directory"),
+                "exit_code": session.get("exit_code")}
 
     def _terminal_api(self, method: str) -> None:
         if not self._terminal_authorized():
@@ -160,7 +162,9 @@ class _Handler(BaseHTTPRequestHandler):
                 session_id = str(uuid.uuid4())
                 session = {"session_id": session_id, "cols": body.get("cols", 80),
                            "rows": body.get("rows", 24), "output": bytearray(),
-                           "closed": False, "created": 1.0}
+                           "closed": False, "created": 1.0,
+                           "target": body.get("target"), "directory": body.get("directory"),
+                           "exit_code": None}
                 state.terminals[session_id] = session
                 self._send_json(200, self._terminal_describe(session))
                 return
@@ -207,6 +211,8 @@ class _Handler(BaseHTTPRequestHandler):
                         "next_offset": offset + len(chunk),
                         "data_b64": base64.b64encode(chunk).decode("ascii"),
                         "bytes": len(chunk), "truncated": False, "eof": session["closed"],
+                        "exit_code": session.get("exit_code"),
+                        "close_reason": "owner_close" if session["closed"] else None,
                         "session": None if session["closed"] else self._terminal_describe(session)})
                     return
             if method == "DELETE" and len(parts) == 3:
@@ -215,8 +221,11 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send_json(404, {"error": "terminal_session_not_found"})
                     return
                 session["closed"] = True
-                self._send_json(200, {"session_id": session["session_id"],
-                                      "closed": True, "reason": "owner_close"})
+                closed = {"session_id": session["session_id"],
+                          "closed": True, "reason": "owner_close"}
+                if session.get("exit_code") is not None:
+                    closed["exit_code"] = session["exit_code"]
+                self._send_json(200, closed)
                 return
         self._send_json(404, {"error": "not found"})
 

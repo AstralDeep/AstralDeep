@@ -22,7 +22,8 @@ _REQUEST = ContextVar("terminal_approval_request", default=None)
 _EFFECT = ContextVar("terminal_approval_effect", default=None)
 _LOCK = threading.RLock()
 _SESSION_FIELDS = frozenset({"session_id", "cols", "rows", "created_at_monotonic",
-                             "idle_seconds", "ring_start", "ring_end"})
+                             "idle_seconds", "ring_start", "ring_end", "target",
+                             "directory", "exit_code"})
 
 
 def review_context_current(orch, websocket, owner_id, registration, scope_maps):
@@ -118,7 +119,7 @@ class PendingTerminalRequest:
             session = raw.get("session") if isinstance(raw, dict) else None
             if isinstance(session, dict) and isinstance(session.get("session_id"), str):
                 clean = {key: value for key, value in session.items() if key in _SESSION_FIELDS}
-                if all(type(value) in {str, int, float} for value in clean.values()):
+                if all(value is None or type(value) in {str, int, float} for value in clean.values()):
                     self.session, self.status = clean, "succeeded"
                     return
         self.status = "failed"

@@ -104,6 +104,22 @@ def test_ring_bounds_binary_chunks_offsets_and_closed_output(retained, monkeypat
     assert closed["eof"] and closed["session"] is None
 
 
+def test_local_exit_status_reports_only_the_actual_process_result(retained):
+    process = RetainedProcess()
+    process.done = True
+    finished, _ = retained.add(ident="finished", process=process)
+    finished.capture_exit()
+    finished.capture_exit()
+    assert finished.exit_code == 0
+    running, _ = retained.add(ident="running")
+    running.capture_exit()
+    assert running.exit_code is None
+    unavailable, _ = retained.add(ident="unavailable")
+    unavailable.remote = SimpleNamespace(exit_status=Mock(side_effect=RuntimeError("private detail")))
+    unavailable.capture_exit()
+    assert unavailable.exit_code is None
+
+
 @pytest.mark.parametrize("offset", [True, -1, "0"])
 def test_invalid_read_offsets_are_refused(retained, offset):
     retained.add()

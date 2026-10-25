@@ -32,6 +32,8 @@ class TerminalCreateRequest(BaseModel):
     cols: int = Field(default=80, ge=2, le=1000)
     rows: int = Field(default=24, ge=2, le=300)
     command: Optional[str] = Field(default=None, max_length=512)
+    target: Optional[str] = Field(default=None, max_length=128)
+    directory: Optional[str] = Field(default=None, max_length=4096)
 
 
 class TerminalInputRequest(BaseModel):
@@ -71,7 +73,8 @@ def _refused(exc: TerminalError) -> JSONResponse:
 
 
 async def _dispatch(request: Request, claims: dict, tool_name: str, arguments: dict, *,
-                    unwrap_session: bool = False, fields: tuple[str, ...] | None = None):
+                    unwrap_session: bool = False, fields: tuple[str, ...] | None = None,
+                    optional_fields: tuple[str, ...] = ()):
     pending = None
     review_sockets = []
     try:
@@ -207,7 +210,9 @@ async def _dispatch(request: Request, claims: dict, tool_name: str, arguments: d
         if fields is not None:
             if any(key not in data for key in fields):
                 raise TerminalError("terminal_invalid_result", 503)
-            data = {key: data[key] for key in fields}
+            selected = {key: data[key] for key in fields}
+            selected.update({key: data[key] for key in optional_fields if key in data})
+            data = selected
         return _json(data)
     except TerminalError as exc:
         if pending is not None and pending.status == "pending":
@@ -274,6 +279,7 @@ async def read_output(request: Request, session_id: str, offset: int = Query(def
     return await _dispatch(
         request, claims, "terminal_read", {"session_id": session_id, "offset": offset, "wait_seconds": wait_seconds},
         fields=("session_id", "offset", "next_offset", "data_b64", "bytes", "truncated", "eof", "session"),
+        optional_fields=("exit_code", "close_reason"),
     )
 
 
