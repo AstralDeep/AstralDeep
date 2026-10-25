@@ -84,6 +84,8 @@ async def evidence_turn(human, bound, fixture, tmp_path, monkeypatch):
         host.local_agents = getattr(host, "local_agents", {})
         host.local_agents[adapter.agent_id] = adapter
         host.agent_cards[adapter.agent_id] = adapter.card
+        host._source_ledger = lambda *args: SimpleNamespace(
+            record_tool_output=lambda *values: None)
         host._policy_roles = lambda _: ["user"]
         host._hitl_pending_calls = {}
         host._dispatch_context = {}

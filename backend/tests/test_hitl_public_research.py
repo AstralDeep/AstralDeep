@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+import uuid
 from dataclasses import replace
 from importlib import import_module
 from types import SimpleNamespace
@@ -91,6 +93,20 @@ async def test_registered_public_research_runs_without_second_confirmation(runti
     assert response.error is None and response.result["_data"]["ok"]
     orch._execute_with_retry.assert_awaited_once()
     assert not getattr(orch, "_hitl_pending_calls", {})
+
+
+async def test_source_bound_hitl_audit_uses_a_stable_uuid_correlation(runtime):
+    orch, _ = runtime
+    call = hc.PendingCall(
+        "opaque-non-uuid-request", "owner-a", "chat-a", "agent-a", "send_email",
+        "{}", ("source_bound",), time.monotonic() + 60,
+    )
+    await hc._audit(orch, call, "proposed")
+    event = orch.audit_recorder.record.await_args.args[0]
+    assert str(uuid.UUID(event.correlation_id)) == event.correlation_id
+    await hc._audit(orch, call, "consumed")
+    repeated = orch.audit_recorder.record.await_args.args[0]
+    assert repeated.correlation_id == event.correlation_id
 
 
 async def test_fetched_untrusted_public_url_still_reads(runtime, monkeypatch):
