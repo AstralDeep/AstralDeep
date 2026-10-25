@@ -192,7 +192,7 @@ def exercise(orch, *, owner: str, checkpoint: dict | None, append: bool = False,
     if orch.history.get_chat(chat_id, user_id=foreign) is not None:
         raise ValueError("foreign conversation owner was admitted")
     _verify_blob(orch, owner, checkpoint["blob"])
-    rows, cursor = orch.audit_repo.list_for_user(owner, limit=1000)
+    rows, cursor = orch.audit_repo.list_for_user(owner, limit=200)
     observed = {row.event_id for row in rows}
     if (cursor is not None or not set(checkpoint["audit_event_ids"]) <= observed
             or orch.audit_repo.verify_chain(owner) is not None):
@@ -207,7 +207,7 @@ def exercise(orch, *, owner: str, checkpoint: dict | None, append: bool = False,
     appended = None
     if append:
         appended = orch.audit_repo.insert(_event(owner, "candidate_continuity")).event_id
-        after, cursor = orch.audit_repo.list_for_user(owner, limit=1000)
+        after, cursor = orch.audit_repo.list_for_user(owner, limit=200)
         if (cursor is not None or {row.event_id for row in after} != observed | {appended}
                 or orch.audit_repo.verify_chain(owner) is not None):
             raise ValueError("candidate audit append did not preserve the authenticated chain")

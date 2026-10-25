@@ -119,7 +119,10 @@ class Stores:
         return row
 
     def list_events(self, owner, **kwargs):
-        return self.events.get(owner, []), self.cursor
+        limit = kwargs.get("limit", 50)
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise ValueError("limit must be between 1 and 200")
+        return self.events.get(owner, [])[:limit], self.cursor
 
     def get_event(self, owner, event_id):
         if self.audit_leak:
