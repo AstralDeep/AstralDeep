@@ -701,13 +701,20 @@ class WorkAdmissionCoordinator:
         retry_after_ms: int | None,
         transaction: Any | None = None,
     ) -> OperationRecord:
+        observed_terminal = None
         guard = getattr(self, "_completion_guard", None)
         if state in {OperationState.COMPLETED, OperationState.FAILED} and guard is not None:
             if transaction is None:
-                with self.fenced_transaction(fence) as transaction:
-                    return self.terminalize(fence, state=state, terminal_code=terminal_code,
-                        safe_summary=safe_summary, retry_after_ms=retry_after_ms, transaction=transaction)
-            if guard(transaction, fence):
+                try:
+                    with self.fenced_transaction(fence) as transaction:
+                        return self.terminalize(fence, state=state, terminal_code=terminal_code,
+                            safe_summary=safe_summary, retry_after_ms=retry_after_ms, transaction=transaction)
+                except StaleExecutionFenceError:
+                    observed_terminal = self._repository.get_operation_for_administration(fence.operation_id)
+                    if (observed_terminal is None or observed_terminal.state not in _TERMINAL_STATES
+                            or observed_terminal.execution_generation != fence.execution_generation):
+                        raise
+            if observed_terminal is None and guard(transaction, fence):
                 state, terminal_code = OperationState.RETRYABLE, "effect_uncertain"
                 safe_summary, retry_after_ms = "Effect outcome requires reconciliation", None
         if state not in _TERMINAL_STATES:
@@ -718,6 +725,8 @@ class WorkAdmissionCoordinator:
             _validate_safe_code(terminal_code, "terminal_code")
         _validate_safe_summary(safe_summary)
         _validate_retry_after(state, retry_after_ms)
+        if observed_terminal is not None:
+            return observed_terminal
         return self._repository.terminalize(
             fence,
             state=state,
