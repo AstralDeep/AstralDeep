@@ -42,3 +42,10 @@ d19050b3569f8ba6a2a5389998e3d23dcad8282b:scripts/typesafe_canary_scan.py:typesaf
 # branch lands or is rewritten. One historical line is excused, not a value,
 # prefix or path, and the hygiene test keeps the allowlist at the two canaries.
 3f01f0eca9255bb779fa5ff3ff67ce93716d51f1:backend/orchestrator/harness/conformance.py:typesafe-system-one-key:33
+# Provider-aware context token accounting (pi-agent/astraldeep-316-5ee4844f):
+# backend/orchestrator/token_assets/NOTICE records the verified SHA-256 of the
+# downloaded public OpenAI tiktoken vocabulary files. The two digests below are
+# the published cl100k_base/o200k_base constants, not credentials; the default
+# generic-api-key rule fires only because "tiktoken" contains "token".
+a061349f7fcda21b417280679ce17ace99c27404:backend/orchestrator/token_assets/NOTICE:generic-api-key:13
+a061349f7fcda21b417280679ce17ace99c27404:backend/orchestrator/token_assets/NOTICE:generic-api-key:14
