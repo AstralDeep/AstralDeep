@@ -34,6 +34,8 @@ def _build_orch() -> Orchestrator:
     orch.agent_urls = {}
     orch.security_flags = {}
     orch.ui_sessions = {}
+    orch.security_flags = {}
+    orch.ui_sessions = {}
     orch.credential_manager = MagicMock()
     orch.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value={})
 
@@ -46,6 +48,8 @@ def _build_orch() -> Orchestrator:
 
     orch.tool_permissions = MagicMock()
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    orch.tool_permissions.get_tool_scope_map = MagicMock(return_value={
+        "read_spreadsheet": "tools:read", "ocr": "tools:read"})
 
     orch.history = MagicMock()
     orch.history.db = MagicMock()
@@ -55,6 +59,8 @@ def _build_orch() -> Orchestrator:
     orch._llm_store = MagicMock()
     orch._llm_store.get = AsyncMock(return_value=None)
     orch._llm_store.get_system = AsyncMock(return_value=None)
+    orch.hooks = MagicMock()
+    orch.hooks.emit = AsyncMock(return_value=SimpleNamespace(action=None, modified_args=None, reason=None))
 
     orch._rendered_ui = []
 

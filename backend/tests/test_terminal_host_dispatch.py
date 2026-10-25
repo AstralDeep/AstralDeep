@@ -35,6 +35,7 @@ def host(monkeypatch):
     orch.ui_sessions = {socket: {"sub": "owner", "exp": time.time() + 600, "realm_access": {"roles": ["user"]}}}
     orch.security_flags = {}
     orch.tool_permissions = SimpleNamespace(is_tool_allowed=Mock(return_value=True), get_tool_scope=Mock(return_value="tools:read"))
+    orch.tool_permissions.get_tool_scope_map = Mock(return_value={TOOL: "tools:read"})
     orch.terminal_sessions = SimpleNamespace(list_sessions=Mock(return_value=[]))
     orch.pending_requests = {}
     orch._pending_request_agent = {}

@@ -19,6 +19,7 @@ from orchestrator.orchestrator import GateRefusal, PreparedDispatch  # noqa: E40
 
 @pytest.fixture
 def orch(monkeypatch, orchestrator_factory):
+    monkeypatch.setenv("DELEGATION_REQUIRED", "false")
     o = orchestrator_factory()
     o.audit_recorder = MagicMock()
     o.audit_recorder.record = AsyncMock()
@@ -28,6 +29,7 @@ def orch(monkeypatch, orchestrator_factory):
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     o.local_agents["callee"] = MagicMock()
     o.local_agents["initiator"] = MagicMock()
+    o.tool_permissions.register_tool_scopes("callee", {"long_tool": "tools:read"})
     monkeypatch.setattr(o, "_is_long_running_tool", lambda a, t: True)
     return o
 
@@ -63,9 +65,11 @@ async def test_initiator_fanout_bounded_by_own_cap(orch):
     cap = orch.concurrency_cap.max_per_user_agent
     for i in range(cap):
         orch.local_agents[f"callee{i}"] = MagicMock()
+        orch.tool_permissions.register_tool_scopes(f"callee{i}", {"long_tool": "tools:read"})
         out = await _auth_hop(orch, callee=f"callee{i}")
         assert isinstance(out, PreparedDispatch), f"hop {i} should be admitted"
     orch.local_agents["callee-extra"] = MagicMock()
+    orch.tool_permissions.register_tool_scopes("callee-extra", {"long_tool": "tools:read"})
     out = await _auth_hop(orch, callee="callee-extra")
     assert isinstance(out, GateRefusal)
     assert "initiator" in (out.response.error or {}).get("message", "")

@@ -45,7 +45,8 @@ def push_flags():
 
 
 @pytest.fixture
-async def env(push_flags):
+async def env(push_flags, monkeypatch):
+    monkeypatch.setenv("DELEGATION_REQUIRED", "false")
     from orchestrator.orchestrator import Orchestrator
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     try:
@@ -71,6 +72,7 @@ async def env(push_flags):
     agent = HoldOpenAgent()
     orch.local_agents[AGENT] = agent
     orch.tool_permissions = MagicMock()
+    orch.tool_permissions.get_tool_scope_map = MagicMock(return_value={"live_fake_feed": "tools:read"})
     orch.tool_permissions.is_tool_allowed.return_value = True
     orch._streamable_tools[TOOL] = {
         "agent_id": AGENT, "kind": "push", "max_fps": 30, "min_fps": 5,

@@ -71,7 +71,8 @@ def test_https_agent_is_not_dialled_over_plaintext():
     assert "ws://panatlas" not in url
 
 
-def test_a2a_server_flag_defaults_off():
+def test_a2a_server_flag_defaults_off(monkeypatch):
+    monkeypatch.delenv("FF_A2A_SERVER", raising=False)
     from shared.feature_flags import FeatureFlags
 
     assert FeatureFlags().is_enabled("a2a_server") is False

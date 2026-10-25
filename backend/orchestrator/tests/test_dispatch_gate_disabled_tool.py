@@ -51,6 +51,8 @@ def _build_orch(*, disabled_agents=None, saved_selection=None,
 
     orch.tool_permissions = MagicMock()
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    orch.tool_permissions.get_tool_scope_map = MagicMock(return_value={
+        "read_spreadsheet": "tools:read", "ocr": "tools:read"})
     orch.tool_permissions.list_disabled_agents.return_value = tuple(
         disabled_agents or ()
     )
@@ -144,7 +146,7 @@ async def test_dispatch_blocked_when_agent_disabled_by_user() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dispatch_unknown_tool_falls_through_to_generic_gate() -> None:
+async def test_dispatch_unknown_tool_is_refused_fail_closed() -> None:
     orch = _build_orch()
     websocket = MagicMock()
     tool_to_agent = {}
@@ -158,11 +160,9 @@ async def test_dispatch_unknown_tool_falls_through_to_generic_gate() -> None:
         user_id="alice",
     )
 
-    alert = orch._rendered_ui[0]["components"][0]
-    assert alert["type"] == "alert"
-    assert "No agent available" in alert["message"]
-    assert "totally_made_up_tool" in alert["message"]
     assert result.error is not None
+    assert result.error["code"] == "effect_declaration_unavailable"
+    assert orch._rendered_ui == []
 
 
 @pytest.mark.asyncio

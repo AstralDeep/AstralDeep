@@ -19,14 +19,23 @@ import audit.hooks as audit_hooks  # noqa: E402
 from shared.protocol import MCPResponse  # noqa: E402
 
 
+class _AnyToolScopes(dict):
+    def get(self, key, default=None):
+        return "tools:read"
+
+
 @pytest.fixture
-def orch(orchestrator_factory):
+def orch(orchestrator_factory, monkeypatch):
+    monkeypatch.setenv("DELEGATION_REQUIRED", "false")
     o = orchestrator_factory()
     o.audit_recorder = MagicMock()
     o.audit_recorder.record = AsyncMock()
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     o.tool_permissions.get_tool_scope = MagicMock(return_value="tools:read")
+    o.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value=_AnyToolScopes())
+
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     o.local_agents["a1"] = MagicMock()

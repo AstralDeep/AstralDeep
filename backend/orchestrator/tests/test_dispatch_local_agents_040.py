@@ -50,6 +50,7 @@ def _build_orch() -> Orchestrator:
 
     orch.tool_permissions = MagicMock()
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    orch.tool_permissions.get_tool_scope_map = MagicMock(return_value={"roll_dice": "tools:read"})
     orch.credential_manager = MagicMock()
     orch.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value={})
     orch._llm_store = MagicMock()
@@ -114,7 +115,7 @@ async def test_single_tool_dispatch_reaches_in_process_agent(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
-async def test_unknown_tool_still_gets_no_agent_alert(monkeypatch) -> None:
+async def test_unknown_tool_is_refused_without_agent_dispatch(monkeypatch) -> None:
     _pin_gates_off(monkeypatch)
     orch = _build_orch()
     orch._find_tool_owner = MagicMock(return_value=None)
@@ -125,5 +126,9 @@ async def test_unknown_tool_still_gets_no_agent_alert(monkeypatch) -> None:
         chat_id="chat-1",
         user_id="alice",
     )
-    assert result.error and "No agent available" in result.error["message"]
+    assert result.error and result.error["code"] == "effect_declaration_unavailable"
     assert orch._execute_with_retry.await_count == 0
+    assert all(
+        "No agent available" not in json.dumps(r["components"])
+        for r in orch._rendered_ui
+    )
