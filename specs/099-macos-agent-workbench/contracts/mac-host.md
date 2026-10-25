@@ -6,6 +6,8 @@ Use register_ui.computer_host, computer_request/response/event/session/host; no 
 
 Requests have type,request_id,session_id,verb,args,deadline_ms. IDs are creq_[0-9a-f]{32}; session canonical UUID4. Deadline is local receipt-relative, not a signed issue timestamp. Events/responses go through current authenticated channel only; never offline queue/replay. Existing heartbeat30s has no assumed periodic acknowledgment.
 
+Host control UI-event envelopes carry fresh top-level canonical UUID4 `submission_id` and `request_generation` and the exact `connection_generation` from the current `register_ui`. Keep these correlation fields outside the closed verb/event payload. Bind them after owner/channel checks, reject partial/conflicting metadata, and recheck the registered generation immediately before sending. Host events/responses never enter the generic reconnect queue. These are existing connection-envelope fields, not a new frame vocabulary or a grant of effect authority.
+
 ## Admission
 
 Require execution-capable distribution, default-off consent, live OS permissions, current owner/server/channel, active matching session, valid implemented verb, bounded args, unexpired receive deadline and unseen ID. Bind ticket to epochs/args; recheck before each effect/chunk/response. Pause/Stop/lock/permission/root/connection changes invalidate pending work. At most4096 request IDs/live epoch and32 waiting operations; reject capacity, do not evict live replay identities. Bound retired-session ledger128, fail closed rather than resurrecting an old session. Existing2h hard cap.
