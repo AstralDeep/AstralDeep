@@ -139,6 +139,20 @@ def _retry_delay(attempt: int) -> int:
     return min(BASE_RETRY_SECONDS * (2 ** max(0, attempt - 1)), MAX_RETRY_SECONDS)
 
 
+def _delivery_key(owner_id: str, notification_id: str, device_id: str) -> str:
+    identity = json.dumps([owner_id, notification_id, device_id], separators=(",", ":"))
+    return "push:" + hashlib.sha256(identity.encode()).hexdigest()
+
+
+def _queued_event_id(owner_id: str, notification_id: str, device_id: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, _delivery_key(owner_id, notification_id, device_id)))
+
+
+def _attempt_event_id(canonical: dict[str, Any], attempt: int, state: str) -> str:
+    key = _delivery_key(canonical["owner_id"], canonical["notification_id"], canonical["device_id"])
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{key}:{attempt}:{state}"))
+
+
 class PushDeliveryCoordinator:
     def __init__(
         self,
@@ -198,11 +212,12 @@ class PushDeliveryCoordinator:
         action: str,
         outcome: str,
         meta: dict[str, Any],
+        event_id: str | None = None,
     ) -> None:
         if self._audit is None:
             raise PushDeliveryError("durable push delivery audit unavailable")
         event = AuditEventCreate(
-            event_id=str(uuid.uuid4()),
+            event_id=event_id or str(uuid.uuid4()),
             actor_user_id=owner_id,
             auth_principal=f"owner:{owner_id}",
             event_class="agent_lifecycle",
@@ -227,9 +242,9 @@ class PushDeliveryCoordinator:
         ):
             raise PushDeliveryError("durable push delivery audit unavailable")
 
-    def _audit_transition(self, transaction, *, owner_id, action, meta) -> None:
+    def _audit_transition(self, transaction, *, owner_id, action, meta, event_id=None) -> None:
         event = AuditEventCreate(
-            event_id=str(uuid.uuid4()),
+            event_id=event_id or str(uuid.uuid4()),
             actor_user_id=owner_id,
             auth_principal=f"owner:{owner_id}",
             event_class="agent_lifecycle",
@@ -277,7 +292,7 @@ class PushDeliveryCoordinator:
         available_at = _utc_now()
         queued = 0
         for target in targets:
-            idempotency_key = f"push:{identity}:{target['device_id']}"
+            idempotency_key = _delivery_key(user_id, identity, target["device_id"])
             entry_id = "push-" + hashlib.sha256(idempotency_key.encode()).hexdigest()
             canonical = {
                 "notification_id": identity,
@@ -316,10 +331,12 @@ class PushDeliveryCoordinator:
                         transaction,
                         owner_id=user_id,
                         action="push.delivery.queued",
+                        event_id=_queued_event_id(user_id, identity, target["device_id"]),
                         meta={
                             "notification_id": identity,
                             "device_id": target["device_id"],
                             "provider": target["provider"],
+                            "token_fingerprint": target["token_fingerprint"],
                         },
                     )
                     queued += 1
@@ -336,7 +353,7 @@ class PushDeliveryCoordinator:
                 topics=(OUTBOX_TOPIC,),
                 now=moment,
                 lease_duration=LEASE_DURATION,
-                limit=self._batch_limit,
+                limit=min(1, self._batch_limit),
             )
         processed = 0
         for item in claimed:
@@ -353,6 +370,82 @@ class PushDeliveryCoordinator:
             else:
                 processed += 1
         return processed
+
+    async def _start_attempt(self, claimed, canonical) -> bool:
+        if self._audit is None:
+            raise PushDeliveryError("durable push delivery audit unavailable")
+        for attempt in range(1, min(claimed.attempt, MAX_DELIVERY_ATTEMPTS + 1)):
+            started = await asyncio.to_thread(
+                self._audit.get_for_user,
+                canonical["owner_id"],
+                _attempt_event_id(canonical, attempt, "started"),
+            )
+            if started is None:
+                continue
+            delivered = await asyncio.to_thread(
+                self._audit.get_for_user,
+                canonical["owner_id"],
+                _attempt_event_id(canonical, attempt, "delivered"),
+            )
+            if (
+                isinstance(delivered, AuditEventDTO)
+                and delivered.action_type == "push.delivery.delivered"
+                and delivered.outcome == "success"
+            ):
+                self._fence(self._outbox.ack, claimed)
+                return False
+            failed = await asyncio.to_thread(
+                self._audit.get_for_user,
+                canonical["owner_id"],
+                _attempt_event_id(canonical, attempt, "failed"),
+            )
+            if (
+                isinstance(failed, AuditEventDTO)
+                and failed.action_type in {"push.delivery.unavailable", "push.delivery.failed"}
+                and failed.outcome == "failure"
+            ):
+                continue
+            self._audit_outcome(
+                owner_id=canonical["owner_id"],
+                action="push.delivery.failed",
+                outcome="interrupted",
+                meta={
+                    "notification_id": canonical["notification_id"],
+                    "device_id": canonical["device_id"],
+                    "attempt": claimed.attempt,
+                    "error_code": "effect_uncertain",
+                    "delivery_outcome": "effect_uncertain",
+                },
+            )
+            self._fence(self._outbox.dead_letter, claimed, error_code="effect_uncertain")
+            return False
+        if claimed.attempt > MAX_DELIVERY_ATTEMPTS:
+            self._audit_outcome(
+                owner_id=canonical["owner_id"],
+                action="push.delivery.failed",
+                outcome="failure",
+                meta={
+                    "notification_id": canonical["notification_id"],
+                    "device_id": canonical["device_id"],
+                    "attempt": claimed.attempt,
+                    "error_code": "attempts_exhausted",
+                    "delivery_outcome": OUTCOME_FAILED,
+                },
+            )
+            self._fence(self._outbox.dead_letter, claimed, error_code="attempts_exhausted")
+            return False
+        self._audit_outcome(
+            owner_id=canonical["owner_id"],
+            action="push.delivery.attempting",
+            outcome="success",
+            event_id=_attempt_event_id(canonical, claimed.attempt, "started"),
+            meta={
+                "notification_id": canonical["notification_id"],
+                "device_id": canonical["device_id"],
+                "attempt": claimed.attempt,
+            },
+        )
+        return True
 
     async def _deliver(self, claimed: ClaimedOutboxEntry) -> None:
         entry = claimed.entry
@@ -372,6 +465,8 @@ class PushDeliveryCoordinator:
             return
         if target["token_fingerprint"] != canonical.get("token_fingerprint"):
             self._suppress_stale(claimed, canonical, "token_rotated")
+            return
+        if not await self._start_attempt(claimed, canonical):
             return
         adapter = self._adapters.get(canonical.get("provider"))
         try:
@@ -395,6 +490,7 @@ class PushDeliveryCoordinator:
             owner_id=owner_id,
             action="push.delivery.delivered",
             outcome="success",
+            event_id=_attempt_event_id(canonical, claimed.attempt, "delivered"),
             meta={
                 "notification_id": notification_id,
                 "device_id": device_id,
@@ -426,6 +522,7 @@ class PushDeliveryCoordinator:
                 owner_id=canonical["owner_id"],
                 action="push.delivery.unavailable",
                 outcome="failure",
+                event_id=_attempt_event_id(canonical, claimed.attempt, "failed"),
                 meta={
                     "notification_id": canonical["notification_id"],
                     "device_id": canonical["device_id"],
@@ -454,6 +551,7 @@ class PushDeliveryCoordinator:
             owner_id=canonical["owner_id"],
             action="push.delivery.failed",
             outcome="failure",
+            event_id=_attempt_event_id(canonical, claimed.attempt, "failed"),
             meta={
                 "notification_id": canonical["notification_id"],
                 "device_id": canonical["device_id"],
@@ -478,6 +576,7 @@ class PushDeliveryCoordinator:
                 canonical["owner_id"],
                 canonical["device_id"],
                 reason="token_unregistered",
+                expected_token_fingerprint=canonical["token_fingerprint"],
             )
 
     def _fence(
@@ -532,7 +631,7 @@ class PushDeliveryCoordinator:
             except Exception:
                 logger.warning("push delivery dispatch pass failed", exc_info=True)
                 processed = 0
-            if processed < self._batch_limit:
+            if processed == 0:
                 await self._sleep(self._poll_seconds)
 
     async def acknowledge(
@@ -571,6 +670,30 @@ class PushDeliveryCoordinator:
                 meta={"device_id": device_id, "reason": "destination_revoked"},
             )
             raise AckDestinationRevoked("destination is revoked")
+        if self._audit is None:
+            raise PushDeliveryError("durable push delivery audit unavailable")
+        queued = await asyncio.to_thread(
+            self._audit.get_for_user,
+            owner_id,
+            _queued_event_id(owner_id, notification_id, device_id),
+        )
+        target = await asyncio.to_thread(self._destinations.delivery_target, owner_id, device_id)
+        if (
+            not isinstance(queued, AuditEventDTO)
+            or queued.action_type != "push.delivery.queued"
+            or queued.outcome != "success"
+            or queued.inputs_meta.get("notification_id") != notification_id
+            or queued.inputs_meta.get("device_id") != device_id
+            or target is None
+            or queued.inputs_meta.get("token_fingerprint") != target["token_fingerprint"]
+        ):
+            self._audit_outcome(
+                owner_id=owner_id,
+                action="push.delivery.ack_denied",
+                outcome="failure",
+                meta={"device_id": device_id, "reason": "delivery_unknown"},
+            )
+            raise AckRejected("notification is unknown for this owner and destination")
         self._audit_outcome(
             owner_id=owner_id,
             action="push.delivery.client_acked",

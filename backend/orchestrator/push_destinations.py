@@ -13,10 +13,13 @@ import os
 import re
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
+from astralplane.contracts import IsolationLevel
+from astralplane.repositories import RepositoryConflictError
 
 from audit.schemas import AuditEventCreate, AuditEventDTO
 from orchestrator.plane_repository_context import (
@@ -57,6 +60,11 @@ class DestinationNotFound(PushDestinationError):
 class DestinationCapacity(PushDestinationError):
     status = 409
     code = "destination_capacity"
+
+
+class DestinationConflict(PushDestinationError):
+    status = 409
+    code = "destination_conflict"
 
 
 class DestinationStoreUnavailable(PushDestinationError):
@@ -176,6 +184,41 @@ class PushDestinationStore:
         )
         self._audit = audit_repository
 
+    @contextmanager
+    def _enrollment_transaction(self):
+        try:
+            with self._credentials.plane_runtime.transaction(
+                isolation=IsolationLevel.SERIALIZABLE
+            ) as transaction:
+                yield transaction
+        except Exception as exc:
+            cause = exc
+            for _ in range(4):
+                if getattr(cause, "pgcode", None) in {"40001", "40P01"}:
+                    raise DestinationConflict("destination inventory changed") from None
+                cause = cause.__cause__ or cause.__context__
+                if cause is None:
+                    break
+            raise
+
+    def _write_record(self, transaction, owner_id, record, *, expected_updated_at=None):
+        values = {
+            "owner_id": owner_id,
+            "agent_id": DESTINATION_NAMESPACE,
+            "credential_key": record["device_id"],
+            "encrypted_value": _encode_record(record),
+            "updated_at": record["updated_at"],
+        }
+        try:
+            if expected_updated_at is None:
+                self._credentials.repository.upsert_credential(transaction, **values)
+            else:
+                self._credentials.repository.compare_and_set_ciphertext(
+                    transaction, expected_updated_at=expected_updated_at, **values
+                )
+        except RepositoryConflictError:
+            raise DestinationConflict("destination revision changed") from None
+
     def _get_record(self, transaction, owner_id: str, device_id: str) -> dict | None:
         row = self._credentials.repository.get_credential(
             transaction,
@@ -259,8 +302,10 @@ class PushDestinationStore:
         normalize_label(label)
         fingerprint = token_fingerprint(token)
         now = _now_ms()
-        with self._credentials.transaction() as transaction:
+        with self._enrollment_transaction() as transaction:
             existing = self._get_record(transaction, owner_id, device_id)
+            if existing is not None:
+                now = max(now, existing["updated_at"] + 1)
             if existing is not None and (
                 existing.get("status") == STATUS_REVOKED
                 or existing.get("token_fingerprint") != fingerprint
@@ -274,7 +319,8 @@ class PushDestinationStore:
                 for record in self._list_records(transaction, owner_id)
                 if record.get("status") == STATUS_ACTIVE
             )
-            if existing is None and active_count >= MAX_DESTINATIONS_PER_OWNER:
+            needs_slot = existing is None or existing.get("status") != STATUS_ACTIVE
+            if needs_slot and active_count >= MAX_DESTINATIONS_PER_OWNER:
                 self._audit_transition(
                     transaction,
                     owner_id,
@@ -308,13 +354,11 @@ class PushDestinationStore:
                 "revoked_at": None,
                 "token_generation": (existing or {}).get("token_generation", 0) + 1,
             }
-            self._credentials.repository.upsert_credential(
+            self._write_record(
                 transaction,
-                owner_id=owner_id,
-                agent_id=DESTINATION_NAMESPACE,
-                credential_key=device_id,
-                encrypted_value=_encode_record(record),
-                updated_at=now,
+                owner_id,
+                record,
+                expected_updated_at=existing["updated_at"] if existing else None,
             )
             self._audit_transition(
                 transaction,
@@ -346,26 +390,38 @@ class PushDestinationStore:
             raise DestinationNotFound("destination is unknown for this owner")
         return public_destination(record)
 
-    def revoke(self, owner_id: str, device_id: str, *, reason: str = "logout") -> dict[str, Any]:
+    def revoke(
+        self,
+        owner_id: str,
+        device_id: str,
+        *,
+        reason: str = "logout",
+        expected_token_fingerprint: str | None = None,
+    ) -> dict[str, Any]:
         validate_device_id(device_id)
         now = _now_ms()
         with self._credentials.transaction() as transaction:
             record = self._get_record(transaction, owner_id, device_id)
             if record is None:
                 raise DestinationNotFound("destination is unknown for this owner")
+            if (
+                expected_token_fingerprint is not None
+                and record.get("token_fingerprint") != expected_token_fingerprint
+            ):
+                return public_destination(record)
             if record.get("status") == STATUS_REVOKED:
                 return public_destination(record)
+            expected_updated_at = record["updated_at"]
+            now = max(now, expected_updated_at + 1)
             record["status"] = STATUS_REVOKED
             record["revoked_at"] = now
             record["updated_at"] = now
             record["revoke_reason"] = reason
-            self._credentials.repository.upsert_credential(
+            self._write_record(
                 transaction,
-                owner_id=owner_id,
-                agent_id=DESTINATION_NAMESPACE,
-                credential_key=device_id,
-                encrypted_value=_encode_record(record),
-                updated_at=now,
+                owner_id,
+                record,
+                expected_updated_at=expected_updated_at,
             )
             self._audit_transition(
                 transaction,

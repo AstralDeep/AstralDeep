@@ -412,6 +412,7 @@ async def test_acknowledge_records_client_ack_and_stale_denials(
 ):
     store.enroll(owner, device_id="device-ack-01", platform="android", token="tok-1")
     push = coordinator({"fcm": FakeAdapter()})
+    await push.enqueue_notification(owner, _notification(notification_id="sched-20260101-a"))
     await push.acknowledge(owner, "device-ack-01", "sched-20260101-a")
     assert "push.delivery.client_acked" in _actions(audit_events)
     with pytest.raises(AckInvalid):
@@ -689,3 +690,158 @@ def test_push_delivery_metric_helper_without_observability():
     assert orch.runtime_observability.calls == [
         ("push_delivery_outcome_total", {"outcome": "failed"})
     ]
+
+
+async def test_explicit_notification_identity_cannot_collide_across_owners(
+    plane_runtime, store, coordinator, owner
+):
+    other = f"push-owner-{uuid.uuid4().hex[:12]}"
+    for principal in (owner, other):
+        store.enroll(principal, device_id="device-shared-01", platform="android", token=principal)
+    push = coordinator({"fcm": FakeAdapter()})
+    payload = _notification(notification_id="same-notification")
+    assert await push.enqueue_notification(owner, payload) == 1
+    assert await push.enqueue_notification(other, payload) == 1
+    assert len(_owner_rows(plane_runtime, owner)) == 1
+    assert len(_owner_rows(plane_runtime, other)) == 1
+
+
+async def test_acknowledgment_requires_a_notification_queued_for_the_owner_and_device(
+    store, coordinator, owner
+):
+    store.enroll(owner, device_id="device-forged-01", platform="android", token="token")
+    push = coordinator({"fcm": FakeAdapter()})
+    with pytest.raises(AckRejected):
+        await push.acknowledge(owner, "device-forged-01", "never-enqueued-id")
+
+
+async def test_acknowledgment_cannot_borrow_another_owners_or_devices_delivery(
+    store, coordinator, owner
+):
+    other = f"push-owner-{uuid.uuid4().hex[:12]}"
+    store.enroll(owner, device_id="device-owner-01", platform="android", token="first")
+    push = coordinator({"fcm": FakeAdapter()})
+    await push.enqueue_notification(owner, _notification(notification_id="owner-bound-id"))
+    store.enroll(owner, device_id="device-owner-02", platform="android", token="second")
+    store.enroll(other, device_id="device-owner-01", platform="android", token="third")
+    with pytest.raises(AckRejected):
+        await push.acknowledge(owner, "device-owner-02", "owner-bound-id")
+    with pytest.raises(AckRejected):
+        await push.acknowledge(other, "device-owner-01", "owner-bound-id")
+    await push.acknowledge(owner, "device-owner-01", "owner-bound-id")
+    store.enroll(owner, device_id="device-owner-01", platform="android", token="rotated")
+    with pytest.raises(AckRejected):
+        await push.acknowledge(owner, "device-owner-01", "owner-bound-id")
+
+
+async def test_stale_provider_rejection_cannot_revoke_a_rotated_destination(
+    store, coordinator, owner
+):
+    device = "device-race-01"
+    store.enroll(owner, device_id=device, platform="android", token="old-token")
+
+    class RotatingAdapter(FakeAdapter):
+        def send(self, **kwargs):
+            store.enroll(owner, device_id=device, platform="android", token="new-token")
+            raise PushProviderError(transient=False, code="token_unregistered")
+
+    push = coordinator({"fcm": RotatingAdapter()})
+    await push.enqueue_notification(owner, _notification())
+    await push.dispatch_once()
+    destination = store.delivery_target(owner, device)
+    assert destination is not None
+    assert destination["push_token"] == "new-token"
+
+
+async def test_exhausted_claim_cannot_contact_the_provider(
+    plane_runtime, store, coordinator, owner
+):
+    store.enroll(owner, device_id="device-limit-01", platform="android", token="token")
+    adapter = FakeAdapter()
+    push = coordinator({"fcm": adapter})
+    await push.enqueue_notification(owner, _notification())
+    plane_runtime.execute(
+        "UPDATE astralplane_outbox SET attempt_count = %s WHERE topic = %s",
+        (pde.MAX_DELIVERY_ATTEMPTS, pde.OUTBOX_TOPIC),
+    )
+    await push.dispatch_once()
+    assert adapter.calls == []
+    assert _outbox_row(plane_runtime, owner)["status"] == "dead_letter"
+
+
+async def test_success_followed_by_audit_outage_cannot_be_resent_after_lease_expiry(
+    plane_runtime, store, coordinator, owner, audit_repository, monkeypatch
+):
+    from datetime import timedelta
+
+    store.enroll(owner, device_id="device-uncertain-01", platform="android", token="token")
+    adapter = FakeAdapter()
+    push = coordinator({"fcm": adapter})
+    await push.enqueue_notification(owner, _notification())
+    original_insert = audit_repository.insert
+    moment = pde._utc_now()
+
+    def fail_after_success(event):
+        if event.action_type == "push.delivery.delivered":
+            raise RuntimeError("audit chain unavailable after provider acceptance")
+        return original_insert(event)
+
+    monkeypatch.setattr(audit_repository, "insert", fail_after_success)
+    assert await push.dispatch_once(now=moment) == 0
+    assert len(adapter.calls) == 1
+    monkeypatch.setattr(audit_repository, "insert", original_insert)
+    await push.dispatch_once(now=moment + pde.LEASE_DURATION + timedelta(seconds=1))
+    assert len(adapter.calls) == 1
+    row = _outbox_row(plane_runtime, owner)
+    assert row["status"] == "dead_letter"
+    assert row["last_error_code"] == "effect_uncertain"
+
+
+async def test_waiting_deliveries_do_not_hold_a_lease_during_another_send(
+    plane_runtime, store, coordinator, owner
+):
+    for index in range(2):
+        store.enroll(owner, device_id=f"device-lease-{index:02d}", platform="android", token=str(index))
+
+    class LeaseObservingAdapter(FakeAdapter):
+        def __init__(self):
+            super().__init__()
+            self.claim_counts = []
+
+        def send(self, **kwargs):
+            rows = _owner_rows(plane_runtime, owner)
+            self.claim_counts.append(sum(row["status"] == "claimed" for row in rows))
+            return super().send(**kwargs)
+
+    adapter = LeaseObservingAdapter()
+    push = coordinator({"fcm": adapter})
+    await push.enqueue_notification(owner, _notification())
+    assert await push.dispatch_once() == 1
+    assert adapter.claim_counts == [1]
+    assert sorted(row["status"] for row in _owner_rows(plane_runtime, owner)) == ["pending", "succeeded"]
+    assert await push.dispatch_once() == 1
+    assert adapter.claim_counts == [1, 1]
+
+
+async def test_durable_provider_success_reconciles_a_lost_ack_without_resending(
+    plane_runtime, store, coordinator, owner, monkeypatch
+):
+    from datetime import timedelta
+
+    store.enroll(owner, device_id="device-reconcile", platform="android", token="token")
+    adapter = FakeAdapter()
+    push = coordinator({"fcm": adapter})
+    await push.enqueue_notification(owner, _notification())
+    original_ack = push._outbox.ack
+    moment = pde._utc_now()
+
+    def lost_ack(*args, **kwargs):
+        raise RuntimeError("acknowledgment unavailable")
+
+    monkeypatch.setattr(push._outbox, "ack", lost_ack)
+    assert await push.dispatch_once(now=moment) == 1
+    assert _outbox_row(plane_runtime, owner)["status"] == "claimed"
+    monkeypatch.setattr(push._outbox, "ack", original_ack)
+    await push.dispatch_once(now=moment + pde.LEASE_DURATION + timedelta(seconds=1))
+    assert len(adapter.calls) == 1
+    assert _outbox_row(plane_runtime, owner)["status"] == "succeeded"

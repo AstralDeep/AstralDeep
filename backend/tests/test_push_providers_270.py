@@ -6,7 +6,7 @@ and provider outages.
 
 from __future__ import annotations
 
-
+from contextlib import contextmanager
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives import serialization
@@ -402,6 +402,10 @@ class _FakeHttpxResponse:
     def text(self):
         return self._text
 
+    def iter_bytes(self, *, chunk_size):
+        for offset in range(0, len(self.content), chunk_size):
+            yield self.content[offset:offset + chunk_size]
+
 
 class _FakeHttpxClient:
     def __init__(self, response=None, error=None, **kwargs):
@@ -421,6 +425,10 @@ class _FakeHttpxClient:
         if self._error is not None:
             raise self._error
         return self._response
+
+    @contextmanager
+    def stream(self, method, url, **kwargs):
+        yield self.request(method, url, **kwargs)
 
 
 @pytest.fixture()
@@ -528,3 +536,37 @@ def test_request_http2_validates_egress(monkeypatch):
     with pytest.raises(eh.EgressBlockedError):
         eh.request_http2("POST", "http://127.0.0.1:9000/exfiltrate")
     assert checked == ["http://127.0.0.1:9000/exfiltrate"]
+
+
+def test_request_http2_stops_reading_at_the_response_size_bound(monkeypatch, no_egress_check):
+    import httpx
+    import shared.external_http as eh
+
+    class LargeStream(httpx.SyncByteStream):
+        def __init__(self):
+            self.reads = 0
+            self.closed = False
+
+        def __iter__(self):
+            for _ in range(100):
+                self.reads += 1
+                yield b"x" * 65536
+
+        def close(self):
+            self.closed = True
+
+    stream = LargeStream()
+    client_type = httpx.Client
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=stream))
+
+    def make_client(**kwargs):
+        kwargs["http2"] = False
+        return client_type(transport=transport, **kwargs)
+
+    monkeypatch.setattr(eh.httpx, "Client", make_client)
+    with pytest.raises(eh.ResponseTooLargeError):
+        eh.request_http2(
+            "POST", "https://api.push.apple.com/3/device/token", max_response_bytes=65536
+        )
+    assert stream.closed
+    assert stream.reads <= 2
