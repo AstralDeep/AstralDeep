@@ -20,7 +20,8 @@ from shared.protocol import AgentCard, AgentSkill  # noqa: E402
 
 
 @pytest.fixture
-def orch():
+def orch(monkeypatch):
+    monkeypatch.setenv("DELEGATION_REQUIRED", "false")
     from orchestrator.concurrency_cap import ConcurrencyCap
     from orchestrator.hooks import HookManager
     from orchestrator.orchestrator import Orchestrator

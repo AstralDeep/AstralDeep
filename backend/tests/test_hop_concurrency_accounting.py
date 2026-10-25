@@ -19,6 +19,7 @@ from orchestrator.orchestrator import GateRefusal, PreparedDispatch  # noqa: E40
 
 @pytest.fixture
 def orch(monkeypatch, orchestrator_factory):
+    monkeypatch.setenv("DELEGATION_REQUIRED", "false")
     o = orchestrator_factory()
     o.audit_recorder = MagicMock()
     o.audit_recorder.record = AsyncMock()

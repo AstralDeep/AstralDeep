@@ -133,3 +133,7 @@ async def test_unknown_tool_refuses_missing_effect_declaration(monkeypatch) -> N
     assert result.error["retryable"] is False
     assert orch._rendered_ui == []
     assert orch._execute_with_retry.await_count == 0
+    assert all(
+        "No agent available" not in json.dumps(r["components"])
+        for r in orch._rendered_ui
+    )

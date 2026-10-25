@@ -19,8 +19,14 @@ import audit.hooks as audit_hooks  # noqa: E402
 from shared.protocol import MCPResponse  # noqa: E402
 
 
+class _AnyToolScopes(dict):
+    def get(self, key, default=None):
+        return "tools:read"
+
+
 @pytest.fixture
-def orch(orchestrator_factory):
+def orch(orchestrator_factory, monkeypatch):
+    monkeypatch.setenv("DELEGATION_REQUIRED", "false")
     o = orchestrator_factory()
     o.audit_recorder = MagicMock()
     o.audit_recorder.record = AsyncMock()

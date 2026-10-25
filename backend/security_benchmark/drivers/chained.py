@@ -94,6 +94,8 @@ class ChainedDriver(Driver):
         o._job_context = {}
         o.tool_permissions = MagicMock()
         o.credential_manager = MagicMock()
+        o.hooks = MagicMock()
+        o.hooks.emit = AsyncMock(return_value=SimpleNamespace(action=None, modified_args=None, reason=None))
         o._is_long_running_tool = lambda _agent_id, _tool_name: False
         o._tool_accepts_context_arg = lambda _agent_id, _tool_name, _arg: False
         o._auto_subscribe_stream_artifacts = AsyncMock()

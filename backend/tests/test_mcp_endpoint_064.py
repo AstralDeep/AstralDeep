@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 from fastapi.testclient import TestClient
 
+from shared.feature_flags import flags
 from orchestrator.mcp_server_endpoint import (
     _admitted_request,
     _decode_name_header,
@@ -181,6 +182,7 @@ def endpoint(monkeypatch):
     monkeypatch.setenv("ASTRAL_ENV", "development")
     monkeypatch.setenv("USE_MOCK_AUTH", "true")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.test/realms/astral")
+    monkeypatch.setitem(flags._flags, "mcp_server", False)
     orchestrator = _Orchestrator()
     app = FastAPI()
     install_mcp_server(app, orchestrator, public_base_url=BASE)

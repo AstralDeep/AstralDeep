@@ -486,6 +486,28 @@ def test_invalid_approval_shapes_refused_store_intact(case):
     assert o.execute_single_tool.calls == []
 
 
+class _ReviewableScopes(dict):
+    def __init__(self):
+        super().__init__({
+            "gaiakeep_core_whoami": "tools:read",
+            "gaiakeep_core_auditack": "tools:system",
+            "gaiakeep_core_repair": "tools:system",
+            "gaiakeep_upload_file": "tools:write",
+            "gaiakeep_upload_dataset": "tools:write",
+            "gaiakeep_download_dataset": "tools:write",
+            "remove_path": "tools:write",
+            "submit_job": "tools:write",
+            "cancel_job": "tools:write",
+            "list_queue": "tools:read",
+            "job_status": "tools:read",
+            "host_facts": "tools:read",
+            "list_processes": "tools:read",
+        })
+
+    def get(self, key, default=None):
+        return super().get(key, "tools:read")
+
+
 @pytest.fixture
 def real_orch(monkeypatch):
     from orchestrator.orchestrator import Orchestrator

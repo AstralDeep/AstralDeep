@@ -43,6 +43,7 @@ def _orchestrator():
             "read": "tools:read", "write": "tools:write",
         }[tool]),
         get_enabled_scope_names=MagicMock(return_value=["tools:read", "tools:write"]),
+        get_tool_scope_map=MagicMock(return_value={"read": "tools:read", "write": "tools:write"}),
     )
     orch.delegation = SimpleNamespace(
         exchange_token_for_agent=AsyncMock(return_value={"access_token": "delegated"}),

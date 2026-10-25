@@ -109,6 +109,8 @@ async def evidence_turn(human, bound, fixture, tmp_path, monkeypatch):
         archive = EvidenceArchive(clock=clock, monotonic_clock=clock.monotonic)
         evidence = module.EvidenceContext(host, archive=archive, clock=clock)
         host._evidence_context = evidence
+        host._source_ledger = lambda *ledger_args, **ledger_kwargs: SimpleNamespace(
+            record_tool_output=lambda *output_args: None)
         lease = await capture_context_authority(orchestrator=host, websocket=socket, chat_id=chat)
         state = SimpleNamespace(host=host, socket=socket, chat=chat, owner=fixture[1], binding=binding,
             evidence=evidence, archive=archive, clock=clock, policy=policy_path, calls=calls,

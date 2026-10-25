@@ -28,7 +28,8 @@ def flag_off(monkeypatch):
 
 
 @pytest.fixture
-def orch():
+def orch(monkeypatch):
+    monkeypatch.setenv("DELEGATION_REQUIRED", "false")
     from orchestrator.concurrency_cap import ConcurrencyCap
     from orchestrator.hooks import HookManager
     from orchestrator.orchestrator import Orchestrator
@@ -56,6 +57,8 @@ def orch():
     )
     o.send_ui_render = AsyncMock()
     o.tool_permissions = MagicMock()
+    o.tool_permissions.get_tool_scope_map = MagicMock(return_value={"t1": "tools:read"})
+    o.local_agents["callee-1"] = MagicMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     o.tool_permissions.get_tool_scope_map = MagicMock(return_value={"t1": "tools:read"})
     o._map_file_paths = lambda cid, a, **k: a
