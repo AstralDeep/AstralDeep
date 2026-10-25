@@ -1383,6 +1383,23 @@ class Orchestrator:
             mode=ExecutorRecoveryService.Mode.PRESERVE_UNSUPPORTED,
         )
 
+        from orchestrator.push_destinations import PushDestinationStore
+        from orchestrator.push_delivery import PushDeliveryCoordinator
+        from orchestrator.push_providers import adapters_from_env
+        self.push_destinations = PushDestinationStore(
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+            audit_repository=self.audit_repo,
+        )
+        self.push_delivery = PushDeliveryCoordinator(
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+            destinations=self.push_destinations,
+            adapters=adapters_from_env(),
+            audit_repository=self.audit_repo,
+            metrics=self._push_delivery_metric,
+        )
+
         from orchestrator.human_request_authority import HumanRequestBoundary
         self.human_request_boundary = HumanRequestBoundary(self)
         from personalization.explicit_note_service import ExplicitNoteService
@@ -13124,6 +13141,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         )
         return summary or "Your scheduled task finished."
 
+    def _push_delivery_metric(self, name: str, labels: Dict[str, str]) -> None:
+        observability = getattr(self, "runtime_observability", None)
+        if observability is None:
+            return
+        observability.record(name, labels=labels)
+
     async def notify_user(self, user_id: str, payload: Dict[str, Any]) -> None:
         try:
             data = json.dumps(payload)
@@ -13143,6 +13166,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             "notify_user.delivered",
             extra={"user_id": user_id, "sockets": sent, "kind": payload.get("type")},
         )
+        if flags.is_enabled("push_delivery"):
+            try:
+                await self.push_delivery.enqueue_notification(user_id, payload)
+            except Exception:
+                logger.warning("notify_user: push enqueue failed", exc_info=True)
 
     async def _send_to_user_sockets(self, user_id: str, frame: Dict[str, Any]) -> int:
         try:
@@ -23484,6 +23512,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             self._remote_job_poll_task = asyncio.create_task(
                 self._remote_job_poll_loop(), name="remote-cluster-job-poller")
 
+        if flags.is_enabled("push_delivery"):
+            self._track_startup_background_task(
+                self.push_delivery.run_loop(), name="push-delivery-dispatcher",
+            )
+
         self._start_phi_warm()
 
         try:
@@ -23823,6 +23856,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator.api import chat_router, component_router, agent_router, dashboard_router, draft_router, voice_router, task_router, async_task_router, user_router, chrome_router, export_router, share_router, operation_router
         from orchestrator.auth import auth_router
         from orchestrator.mesh_api import mesh_router
+        from orchestrator.push_api import push_router
         from orchestrator.web_auth import web_auth_router
         from orchestrator.attachments.router import attachments_router
         from audit.api import audit_router
@@ -23858,6 +23892,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator.mesh_web import mesh_web_router
         app.include_router(mesh_router)
         app.include_router(mesh_web_router)
+        app.include_router(push_router)
         app.include_router(web_auth_router)
         if flags.is_enabled("kiosk_login"):
             from orchestrator.web_auth import kiosk_router

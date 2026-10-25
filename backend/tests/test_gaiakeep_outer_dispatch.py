@@ -118,12 +118,14 @@ def _governed(orch, mode, *, failure=None):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('mode', ['off', 'shadow', 'enforce'])
+@pytest.mark.parametrize('mutation', [False, True])
 @pytest.mark.parametrize('outcome', ['timeout-response', 'raised', 'none'])
 async def test_one_governed_attempt_keeps_native_identity_and_never_falls_back(
-        outer_orch, mode, outcome):
+        outer_orch, mode, mutation, outcome):
     gateway = _governed(outer_orch, mode)
-    tool = 'gaiakeep_core_whoami'
-    arguments = {'machine_id': 'owned-machine', 'params': {}, 'user_id': USER,
+    tool = 'gaiakeep_core_repair' if mutation else 'gaiakeep_core_whoami'
+    params = {'request_id': 'retained_native_identity'} if mutation else {}
+    arguments = {'machine_id': 'owned-machine', 'params': params, 'user_id': USER,
                  '_delegation_token': 'private-delegation', '_credentials': {'secret': 'private-key'}}
     original = copy.deepcopy(arguments)
     observed = []
@@ -149,41 +151,19 @@ async def test_one_governed_attempt_keeps_native_identity_and_never_falls_back(
     verdict = 'unconfirmed' if mutation else 'unavailable'
     assert response.error['data']['verdict'] == verdict
     assert response.error['retryable'] is False
+    if mutation:
+        assert response.error['data']['reconciliation'] == {'request_id': 'retained_native_identity'}
     assert arguments == original and observed == [original]
     assert 'private-key' not in str(response) and 'private-frame' not in str(response)
     outer_orch._execute_via_websocket.assert_awaited_once()
     outer_orch._execute_via_a2a.assert_not_awaited()
-    gaiakeep_dispatch._record.assert_awaited_once_with(tool, verdict, True, False)
+    gaiakeep_dispatch._record.assert_awaited_once_with(tool, verdict, True, mutation)
     if gateway:
         assert len(gateway.calls) == 1
         authorized = gateway.calls[0]
         assert authorized['final_arguments'] == original
         assert authorized['context'].agent_id == 'gaiakeep-1'
         assert all(permit.released for permit in gateway.permits)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('mode', ['off', 'shadow', 'enforce'])
-@pytest.mark.parametrize('outcome', ['timeout-response', 'raised', 'none'])
-async def test_headless_governed_mutation_is_refused_before_dispatch(
-        outer_orch, mode, outcome):
-    _governed(outer_orch, mode)
-    arguments = {'machine_id': 'owned-machine', 'params': {'request_id': 'retained_native_identity'},
-                 'user_id': USER, '_delegation_token': 'private-delegation',
-                 '_credentials': {'secret': 'private-key'}}
-    original = copy.deepcopy(arguments)
-    outer_orch._execute_via_websocket = AsyncMock()
-    response = await outer_orch._execute_with_retry(
-        None, 'gaiakeep-1', 'gaiakeep_core_repair', arguments, max_retries=9, user_id=USER,
-        channel='rest', audit_correlation_id='audit-id', audit_actor_user_id=USER,
-        audit_auth_principal=USER, audit_conversation_id='conversation')
-    assert response.error['code'] == 'source_bound_approval_required'
-    assert response.error['retryable'] is False
-    assert arguments == original
-    assert 'private-key' not in str(response) and 'private-frame' not in str(response)
-    outer_orch._execute_via_websocket.assert_not_awaited()
-    outer_orch._execute_via_a2a.assert_not_awaited()
-    gaiakeep_dispatch._record.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -288,7 +268,7 @@ async def test_late_identity_refusal_remains_predispatch_with_no_handler_or_send
     handler.assert_not_awaited()
     sender.assert_not_awaited()
     outer_orch._execute_via_a2a.assert_not_awaited()
-    gaiakeep_dispatch._record.assert_awaited_once_with('gaiakeep_core_whoami', 'auth_failed', False, False)
+    gaiakeep_dispatch._record.assert_awaited_once_with('gaiakeep_core_repair', 'auth_failed', False, True)
 
 
 @pytest.mark.asyncio
@@ -306,9 +286,36 @@ async def test_governed_authorization_refusal_never_enters_gaia_wrapper(outer_or
 
 
 @pytest.mark.asyncio
-async def test_inprocess_headless_mutation_is_refused_before_any_worker(outer_orch):
+@pytest.mark.parametrize('cancel', [False, True])
+async def test_inprocess_outer_end_keeps_running_worker_and_records_once(outer_orch, monkeypatch, cancel):
+    started, waiting, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    release = threading.Event()
+    tasks = []
+    loop = asyncio.get_running_loop()
+
+    def process():
+        loop.call_soon_threadsafe(started.set)
+        release.wait()
+        loop.call_soon_threadsafe(finished.set)
+        return MCPResponse(result={'verdict': 'ok'})
+
+    async def handle(socket, request):
+        tasks.append(asyncio.current_task())
+        response = await asyncio.to_thread(process)
+        response.request_id = request.request_id
+        await socket.send_text(response.to_json())
+
+    async def controlled_wait(future, *, timeout):
+        assert timeout == 7.0
+        await started.wait()
+        waiting.set()
+        if cancel:
+            return await future
+        future.cancel()
+        raise TimeoutError
+
     outer_orch.agents = {}
-    outer_orch.local_agents = {'gaiakeep-1': SimpleNamespace(handle_mcp_request=AsyncMock())}
+    outer_orch.local_agents = {'gaiakeep-1': SimpleNamespace(handle_mcp_request=handle)}
     outer_orch.pending_requests = {}
     outer_orch.pending_ui_sockets = {}
     outer_orch._pending_request_agent = {}
