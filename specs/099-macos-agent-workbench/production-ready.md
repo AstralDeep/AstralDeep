@@ -49,8 +49,18 @@ Host storage remains tight: the final observation has 10,899,771,392 bytes free 
 ## Owner return
 
 1. Unlock the Mac normally and open `/Applications/AstralDeep.app`.
-2. Complete ordinary single sign-on if requested, open Computer controls with Command–Shift–C, refresh permissions and physically enable **Allow computer tasks on this Mac**.
+2. Complete ordinary single sign-on if requested and open Computer controls with Command–Shift–C. The updated client remembers the choice for this account/server. New opt-ins and local Resume after suspension still require a physical click.
 3. Select the intended workspace folders for file tasks.
 4. Complete the remaining live browser, exact reviewed Terminal, selected-folder round-trip, generated-UI, takeover and Pause/Stop/disconnect checks through the ordinary signed-in dispatcher.
 
 Those live checks remain required to establish actual Mac functionality and harness comparisons. The installed binary is signature-verified, with no claim of notarization, canonical CI qualification or complete harness parity.
+
+## Remembered computer-access setting — 2026-10-25
+
+The owner requests persistence across app close/reopen. Projection `229e62724b874cd6f724097cf821fae7f286e079` fixes the cold-start desktop gate and separates remembered scoped consent from live access. Lock/permission loss still immediately invalidates work and requires local rearm within that process; first enable and local Resume retain hardware-input proof. Only explicit uncheck clears the saved choice. Saved sessions, requests, queue entries and Terminal grants are never restored. A connection epoch check also prevents an obsolete desktop probe from altering a newer owner's monitor.
+
+Verification: the six initial regressions fail against the old implementation with 11 expected assertions; the additional reentrant owner/signout regression fails twice before its fence repair. Final actual host/OS fixtures pass all 118 tests. The complete Core suite passes 364; the Mac app suite passes 556 with one existing skip before the final fence repair; the final Xcode host suite passes all 22 against the final source. DirectDownload build and deep strict code-signature/designated-requirement verification pass. Local Xcode 27.1's formatter required a temporary completed host schema; every repository format setting is retained and strict lint passes, with no repository formatter-policy change. None of these results is represented as canonical CI qualification.
+
+The signed update is installed at `/Applications/AstralDeep.app`, executable SHA-256 `5173bd08c735bca423ce3b57f59a41757f3b9eafd8dae2efd74e266e56fd83eb`; prior source63 app is retained privately. The installer does not modify preferences, credentials or system permissions. The existing saved opt-in remains present. The launched app currently requests normal Keycloak sign-in, so actual checkbox quit/reopen verification is waiting for the owner to sign in. It is not yet counted as live-verified.
+
+This change is client-only: Projection `src`, `backend` and `contracts` bytes are identical to source63 and the deployed source170 server package. No server update, migration, protocol change or dependency addition is required. The local preparation branch pins the new component, while production remains the verified immutable server image `580bd01d0cb3`.

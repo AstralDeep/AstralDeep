@@ -174,3 +174,7 @@ As a user or developer, I navigate chats, work in the conversation alongside gen
 - Critical product intent is clear. Distribution, native APIs, internal module structure, and test fixture design are implementation decisions, not unasked user approvals.
 
 - The user explicitly permits replacing the Mac UI and downloading the harnesses for layout comparisons; FR-018/019 preserve shared semantics while allowing a new native arrangement.
+
+## Owner clarification — 2026-10-25
+
+The owner requests that **Allow computer tasks on this Mac** remain selected across app close/reopen. The saved opt-in is bound to the same account/server and survives temporary desktop/permission unavailability; explicit uncheck revokes it persistently. A fresh authenticated process may restore only that remembered choice after distribution, unlocked-desktop, permission and monitoring checks. Lock or permission loss still immediately ends live authority, sessions, work queues and Terminal grants; same-process reconnect/refresh cannot bypass the local rearm latch. The checkbox represents the saved choice, and a separate local Resume action handles temporary suspension. First enable and local Resume retain genuine local-input checks.
