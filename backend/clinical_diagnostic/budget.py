@@ -1,0 +1,238 @@
+"""Bounds one diagnostic run's cases, provider and grader calls, retries, elapsed time,
+cost, concurrency, and cancellation with an injectable monotonic clock so tests stay
+deterministic; every exhausted limit raises instead of yielding a zero score.
+"""
+
+from __future__ import annotations
+
+import math
+import multiprocessing
+import threading
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Callable, Optional, Protocol
+
+from clinical_diagnostic.models import MAX_CASES, FailureCode
+
+MAX_CALLS = 10_000
+MAX_RETRIES = 8
+MAX_CONCURRENCY = 8
+MAX_ELAPSED_SECONDS = 3600.0
+MAX_COST = 1000.0
+_CONTROL = ContextVar("clinical_execution_control", default=None)
+
+
+def cancellation_event():
+    return multiprocessing.get_context("spawn").Event()
+
+
+def current_control():
+    return _CONTROL.get()
+
+
+@contextmanager
+def use_control(control):
+    token = _CONTROL.set(control)
+    try:
+        yield control
+    finally:
+        _CONTROL.reset(token)
+
+
+class DeadlineControl:
+    def __init__(self, deadline, cancel_event, *, clock=time.monotonic):
+        self.deadline, self.cancel_event, self.clock = deadline, cancel_event, clock
+
+    def remaining_seconds(self, cap=None):
+        if self.cancel_event.is_set():
+            raise RunCancelled()
+        remaining = self.deadline - self.clock()
+        if remaining <= 0:
+            raise BudgetExhausted("elapsed budget exhausted")
+        return remaining if cap is None else min(remaining, cap)
+
+
+def operation_control(seconds):
+    parent = current_control()
+    if parent is None:
+        return DeadlineControl(time.monotonic() + seconds, cancellation_event())
+    parent.remaining_seconds()
+    return DeadlineControl(min(parent.deadline, parent.clock() + seconds),
+                           parent.cancel_event, clock=parent.clock)
+
+
+class Clock(Protocol):
+    def __call__(self) -> float:
+        ...
+
+
+@dataclass(frozen=True)
+class ExecutionLimits:
+    max_cases: int = MAX_CASES
+    max_calls: int = 400
+    max_retries: int = 2
+    max_elapsed_seconds: float = 900.0
+    max_cost: float = 5.0
+    concurrency: int = 1
+
+    def __post_init__(self) -> None:
+        if isinstance(self.max_cases, bool) or not isinstance(self.max_cases, int):
+            raise ValueError("max_cases must be an integer")
+        if not 1 <= self.max_cases <= MAX_CASES:
+            raise ValueError(f"max_cases must be within 1..{MAX_CASES}")
+        if isinstance(self.max_calls, bool) or not isinstance(self.max_calls, int):
+            raise ValueError("max_calls must be an integer")
+        if not 1 <= self.max_calls <= MAX_CALLS:
+            raise ValueError(f"max_calls must be within 1..{MAX_CALLS}")
+        if isinstance(self.max_retries, bool) or not isinstance(self.max_retries, int):
+            raise ValueError("max_retries must be an integer")
+        if not 0 <= self.max_retries <= MAX_RETRIES:
+            raise ValueError(f"max_retries must be within 0..{MAX_RETRIES}")
+        if isinstance(self.concurrency, bool) or not isinstance(self.concurrency, int):
+            raise ValueError("concurrency must be an integer")
+        if not 1 <= self.concurrency <= MAX_CONCURRENCY:
+            raise ValueError(f"concurrency must be within 1..{MAX_CONCURRENCY}")
+        for name, value in (
+            ("max_elapsed_seconds", self.max_elapsed_seconds),
+            ("max_cost", self.max_cost),
+        ):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{name} must be a finite number")
+            if not math.isfinite(float(value)) or float(value) < 0:
+                raise ValueError(f"{name} must be finite and non-negative")
+        if self.max_elapsed_seconds > MAX_ELAPSED_SECONDS:
+            raise ValueError(f"max_elapsed_seconds must not exceed {MAX_ELAPSED_SECONDS}")
+        if self.max_cost > MAX_COST:
+            raise ValueError(f"max_cost must not exceed {MAX_COST}")
+
+    def to_dict(self) -> dict:
+        return {
+            "max_cases": self.max_cases,
+            "max_calls": self.max_calls,
+            "max_retries": self.max_retries,
+            "max_elapsed_seconds": float(self.max_elapsed_seconds),
+            "max_cost": float(self.max_cost),
+            "concurrency": self.concurrency,
+        }
+
+
+class BudgetExhausted(RuntimeError):
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.code = FailureCode.BUDGET_EXHAUSTED
+        self.detail = detail
+
+
+class RunCancelled(RuntimeError):
+    def __init__(self, detail: str = "run cancelled") -> None:
+        super().__init__(detail)
+        self.code = FailureCode.CANCELLED
+        self.detail = detail
+
+
+class BudgetTracker:
+    def __init__(
+        self,
+        limits: ExecutionLimits,
+        *,
+        clock: Optional[Clock] = None,
+        sleep: Optional[Callable[[float], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> None:
+        self.limits = limits
+        self._clock = clock or time.monotonic
+        self._sleep = sleep
+        self._cancel = cancel_event if cancel_event is not None else cancellation_event()
+        self._lock = threading.Lock()
+        self._started = self._clock()
+        self._calls = 0
+        self._cost = 0.0
+
+    @property
+    def deadline(self):
+        return self._started + self.limits.max_elapsed_seconds
+
+    @property
+    def clock(self):
+        return self._clock
+
+    @property
+    def cancel_event(self):
+        return self._cancel
+
+    def remaining_seconds(self, cap=None):
+        self._check_completion()
+        return DeadlineControl(self.deadline, self._cancel, clock=self._clock).remaining_seconds(cap)
+
+    def request_cancel(self) -> None:
+        self._cancel.set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancel.is_set()
+
+    @property
+    def calls(self) -> int:
+        with self._lock:
+            return self._calls
+
+    @property
+    def cost(self) -> float:
+        with self._lock:
+            return self._cost
+
+    @property
+    def elapsed_seconds(self) -> float:
+        return max(0.0, self._clock() - self._started)
+
+    def _check_completion(self) -> None:
+        if self._cancel.is_set():
+            raise RunCancelled()
+        if self.elapsed_seconds > self.limits.max_elapsed_seconds:
+            raise BudgetExhausted("elapsed budget exhausted")
+        with self._lock:
+            if self._cost > self.limits.max_cost:
+                raise BudgetExhausted("cost budget exhausted")
+
+    def check(self) -> None:
+        self._check_completion()
+        with self._lock:
+            if self._calls >= self.limits.max_calls:
+                raise BudgetExhausted("call budget exhausted")
+
+    def begin_call(self) -> None:
+        if self._cancel.is_set():
+            raise RunCancelled()
+        with self._lock:
+            if self.elapsed_seconds > self.limits.max_elapsed_seconds:
+                raise BudgetExhausted("elapsed budget exhausted")
+            if self._calls >= self.limits.max_calls:
+                raise BudgetExhausted("call budget exhausted")
+            if self._cost > self.limits.max_cost:
+                raise BudgetExhausted("cost budget exhausted")
+            self._calls += 1
+
+    def record_cost(self, cost: float) -> None:
+        self.charge_known_cost(cost)
+        self._check_completion()
+
+    def charge_known_cost(self, cost: float) -> None:
+        if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+            raise ValueError("call cost must be a finite number")
+        if not math.isfinite(float(cost)) or float(cost) < 0:
+            raise ValueError("call cost must be finite and non-negative")
+        with self._lock:
+            self._cost += float(cost)
+
+    def retry_delay(self, attempt: int) -> None:
+        if attempt < 0:
+            raise ValueError("retry attempt must be non-negative")
+        self.check()
+        delay = min(2.0, 0.1 * (2 ** min(attempt, 5)), self.remaining_seconds())
+        if self._sleep is not None:
+            self._sleep(delay)
+        else:
+            self._cancel.wait(delay)
+        self.check()

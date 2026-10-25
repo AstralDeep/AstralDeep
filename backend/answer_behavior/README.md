@@ -119,9 +119,10 @@ patterns and motivation only* — the sources reviewed on 2026-10-06 (see
 - Expected verdicts are declared per case and cross-checked by the frozen gate and by
   the test suite; a rubric/corpus disagreement fails the run instead of silently
   re-scoring.
-- The suite coordinates with (but does not duplicate) the HealthBench clinical
-  diagnostic: dimensions, verdicts, and the receipts rule are the shared rubric
-  interface; corpus and runner remain separate.
+- The suite coordinates with (but does not duplicate) the bounded HealthBench
+  Professional clinical diagnostic in `backend/clinical_diagnostic/`: dimensions,
+  verdicts, and the receipts rule are the shared rubric interface; corpus and runner
+  remain separate.
 
 ## Isolation
 

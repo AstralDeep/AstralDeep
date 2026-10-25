@@ -127,4 +127,5 @@ These sources motivate diagnostic categories; they do not demonstrate clinical
 benefit for Astral. This suite evaluates observable structured outputs and receipt
 consistency, not hidden chain of thought. Passing it is neither clinical safety
 certification, prompt-injection immunity, real authorization qualification nor
-permission to deploy. The HealthBench corpus/runner remains separate work.
+permission to deploy. The bounded HealthBench Professional clinical diagnostic lives in
+`backend/clinical_diagnostic/`; it does not use this driver as success evidence.
