@@ -6,6 +6,7 @@ machine and verdict, and that no audit row ever carries a secret.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 from cryptography.fernet import Fernet
@@ -181,11 +182,11 @@ async def test_register_emits_registered_row_and_connection_verdict(env):
     _assert_actor_label_outcome(reg)
     assert reg.inputs_meta.get("machine_id") == mid
     assert reg.inputs_meta.get("cred_type") == "ssh_key"
-    assert reg.correlation_id == mid
+    assert reg.correlation_id == str(UUID(mid))
     (conn,) = _rows(env, "remote_machine.connection")
     _assert_actor_label_outcome(conn)
     assert conn.inputs_meta.get("verdict") == "ok"
-    assert conn.correlation_id == mid
+    assert conn.correlation_id == str(UUID(mid))
 
 
 async def test_probe_emits_connection_attempt_with_verdict(env):
