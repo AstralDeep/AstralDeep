@@ -127,6 +127,19 @@ class Stores:
         return next((row for row in self.events.get(owner, []) if row.event_id == event_id), None)
 
 
+
+def test_rehearsal_events_use_distinct_canonical_database_correlations():
+    from uuid import UUID
+
+    first = state._event(OWNER, "baseline_created")
+    second = state._event(OWNER, "baseline_retained")
+    assert str(UUID(first.correlation_id)) == first.correlation_id
+    assert str(UUID(second.correlation_id)) == second.correlation_id
+    assert first.correlation_id != second.correlation_id
+    assert first.action_type == "qualification.baseline_created"
+    assert second.action_type == "qualification.baseline_retained"
+
+
 def test_seed_verify_and_append_keep_keys_out_of_report():
     stores = Stores()
     result = state.exercise(stores, owner=OWNER, checkpoint=None)

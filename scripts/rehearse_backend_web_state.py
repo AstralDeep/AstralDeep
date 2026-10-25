@@ -69,7 +69,7 @@ def _event(owner: str, phase: str):
     return AuditEventCreate(
         actor_user_id=owner, auth_principal=owner, event_class="settings",
         action_type=f"qualification.{phase}", description="Synthetic recovery verification",
-        correlation_id=phase, outcome="success", started_at=datetime.now(timezone.utc),
+        correlation_id=str(uuid4()), outcome="success", started_at=datetime.now(timezone.utc),
     )
 
 
