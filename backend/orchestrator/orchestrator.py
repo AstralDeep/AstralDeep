@@ -6775,6 +6775,43 @@ class Orchestrator:
             return None
         return self._canonical_uuid4(supplied)
 
+    def _hitl_decision_envelope(self, websocket, event):
+        payload = dict(event.payload)
+        fields = {"submission_id", "request_generation", "connection_generation"}
+        context = getattr(self, "_connection_contexts", {}).get(id(websocket))
+        active = _CONNECTION_OPERATION_CONTEXT.get()
+        if context is None or active is None:
+            return (None, None) if fields.intersection(payload) else (payload, None)
+        operation = active.get("operation")
+        work = context.operations.get(getattr(operation, "operation_id", None))
+        if work is None:
+            return None, None
+        connection = context.connection_generation
+        fence = work.fence
+        claims = self.ui_sessions.get(websocket)
+        original_claims = copy.deepcopy(claims)
+        expected = {"submission_id": work.frame.submission_id,
+                    "request_generation": work.frame.request_generation,
+                    "connection_generation": connection}
+
+        def current():
+            return (self._connection_contexts.get(id(websocket)) is context
+                    and context.websocket is websocket and context.registered and not context.closing
+                    and _CONNECTION_OPERATION_CONTEXT.get() is active
+                    and context.operations.get(work.operation_id) is work
+                    and not work.lease_lost and fence is not None and work.fence == fence
+                    and active.get("execution_fence") == fence and active.get("owner") == work.owner
+                    and active.get("connection_generation") == connection == context.connection_generation
+                    and active.get("request_generation") == expected["request_generation"] == work.frame.request_generation
+                    and self.ui_sessions.get(websocket) is claims and claims == original_claims)
+
+        if not current() or any(
+                (name in payload and payload[name] != str(value))
+                or (getattr(event, name) is not None and getattr(event, name) != str(value))
+                for name, value in expected.items()):
+            return None, None
+        return {key: value for key, value in payload.items() if key not in fields}, current
+
     @staticmethod
     def _matching_frame_value(
         field_name: str, *sources: dict[str, Any]
@@ -11294,8 +11331,9 @@ class Orchestrator:
                 elif msg.action == "authorize_action":
                     if "hitl_request_id" in (msg.payload or {}):
                         from orchestrator import hitl_confirmation
+                        decision, admission_check = self._hitl_decision_envelope(websocket, msg)
                         await hitl_confirmation.handle_decision(
-                            self, websocket, user_id, msg.payload or {})
+                            self, websocket, user_id, decision, admission_check=admission_check)
                         return
                     _p = msg.payload or {}
                     _aid, _tool = _p.get("agent_id"), _p.get("tool")

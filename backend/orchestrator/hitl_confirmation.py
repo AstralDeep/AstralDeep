@@ -486,15 +486,37 @@ async def _finish_card(orch, websocket, call, title, message, components=None):
     await orch.send_ui_render(websocket, [Alert(message=message, variant="info").to_dict()], target="chat")
 
 
-async def handle_decision(orch, websocket, owner, payload) -> None:
+async def handle_decision(orch, websocket, owner, payload, *, admission_check=None) -> None:
     pending = _pending(orch)
     request_id = payload.get("hitl_request_id") if isinstance(payload, dict) else None
     call = pending.get(request_id) if isinstance(request_id, str) else None
     resume_requested = isinstance(payload, dict) and payload.get("decision") == "approve_and_resume"
-    if (call is None or call.owner != owner or not _attended(orch, websocket, owner)
+    valid = not (call is None or call.owner != owner or not _attended(orch, websocket, owner)
             or getattr(orch, "_ws_active_chat", {}).get(id(websocket)) != call.chat
-            or set(payload) != {"hitl_request_id", "decision"}
-            or payload.get("decision") not in ("approve", "approve_and_resume", "decline")):
+            or not {"hitl_request_id", "decision"}.issubset(payload)
+            or set(payload) - {"hitl_request_id", "decision", "chat_id", "component_id"}
+            or payload.get("decision") not in ("approve", "approve_and_resume", "decline")
+            or "chat_id" in payload and payload["chat_id"] != call.chat
+            or admission_check is not None and not admission_check())
+    if valid and "component_id" in payload:
+        try:
+            expected = orch.workspace.resolve_identity({"id": f"hitl_{call.request_id}"})
+            if not isinstance(payload["component_id"], str) or payload["component_id"] != expected:
+                valid = False
+            else:
+                row = await orch.workspace.aget_by_component_id(call.chat, owner, expected)
+                component = (row or {}).get("component_data", {})
+                valid = (isinstance(component, dict) and component.get("type") == "card"
+                    and component.get("id") == f"hitl_{call.request_id}"
+                    and any(isinstance(item, dict) and item.get("type") == "button"
+                        and item.get("action") == "authorize_action" and item.get("disabled") is not True
+                        and item.get("payload") == {"hitl_request_id": request_id, "decision": payload["decision"]}
+                        for item in component.get("content", [])))
+        except Exception:
+            valid = False
+    pending = _pending(orch)
+    if (not valid or pending.get(request_id) is not call
+            or admission_check is not None and not admission_check()):
         await orch.send_ui_render(websocket, [Alert(message="This confirmation is unavailable in this conversation. "
             "It may have expired or already been handled.", variant="warning").to_dict()], target="chat")
         return
@@ -516,6 +538,9 @@ async def handle_decision(orch, websocket, owner, payload) -> None:
     if not owned_chat:
         await _finish_card(orch, websocket, call, "Unavailable", "Conversation access could not be verified. Reissue the action.")
         return
+    if admission_check is not None and not admission_check():
+        await _finish_card(orch, websocket, call, "Unavailable", "The connection changed. Reissue the action.")
+        return
     if not _current_session(orch, websocket, call, allow_local_pause=resume_requested or payload["decision"] == "decline"):
         await _finish_card(orch, websocket, call, "Unavailable", "The session changed or this confirmation expired. Reissue the action.")
         return
@@ -528,7 +553,8 @@ async def handle_decision(orch, websocket, owner, payload) -> None:
     except Exception:
         await _finish_card(orch, websocket, call, "Unavailable", "Action audit is unavailable. The action was not run.")
         return
-    if not _current_session(orch, websocket, call, allow_local_pause=resume_requested):
+    if (not _current_session(orch, websocket, call, allow_local_pause=resume_requested)
+            or admission_check is not None and not admission_check()):
         await _finish_card(orch, websocket, call, "Unavailable", "The session changed or this confirmation expired. Reissue the action.")
         return
     if resume_requested:

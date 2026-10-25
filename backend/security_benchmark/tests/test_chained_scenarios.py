@@ -94,6 +94,22 @@ def test_fixture_preserves_writer_and_missing_scope_denials(tool, scope, execute
         assert trace.tool_calls[0].blocked_by == LAYER_CHAINED_DELEGATION
 
 
+def test_missing_registered_effect_declaration_still_blocks_benign_hop(monkeypatch):
+    from orchestrator import source_bound
+
+    original = source_bound.registered_action
+
+    def unavailable(_scopes, agent, tool, host_reads=()):
+        return original({}, agent, tool, host_reads)
+
+    monkeypatch.setattr(source_bound, "registered_action", unavailable)
+    case = next(c for c in get_adapter("chained").load_cases()
+                if c.category == "benign_inscope_hop")
+    trace = _real_trace(case, chaining_on())
+    assert not trace.tool_calls[0].executed
+    assert not trace.adversarial_calls
+
+
 def test_attack_not_attemptable_when_chaining_off():
     case = next(c for c in get_adapter("chained").load_cases()
                if c.category == "confused_deputy")

@@ -1,27 +1,36 @@
-"""Admin REST controls for selective A2A publication: approved-capability catalog,
-publish intent/confirmation, sanitized inventory, and withdrawal; wired into the
-orchestrator's FastAPI app and the Admin Tools chrome surface.
+"""Authenticated owner/admin REST controls for A2A publication: approved catalog,
+proposal intent, explicit confirmation, expiry-aware inventory, and withdrawal. Wired
+into the orchestrator API and enforced by the shared publication policy.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from orchestrator.auth import verify_admin
+from orchestrator.auth import get_current_user_payload
 from shared.a2a_publication import (
     A2APublicationError,
     A2APublicationRegistry,
     AlreadyWithdrawnError,
     ConfirmationMismatchError,
     InvalidAudienceError,
+    InvalidLifetimeError,
     LIFETIMES,
+    NotEligibleError,
+    PublicationCapacityError,
+    PublicationForbiddenError,
+    PublicationStoreConflict,
+    PublicationStoreUnavailable,
     StaleIntentError,
+    UnknownCapabilityError,
     UnknownPublicationError,
 )
+from shared.a2a_security import token_roles
 
 logger = logging.getLogger("Orchestrator.A2APublicationAPI")
 
@@ -35,11 +44,39 @@ def registry_for(orch) -> Optional[A2APublicationRegistry]:
     return registry if isinstance(registry, A2APublicationRegistry) else None
 
 
-def _registry_or_404(orch) -> A2APublicationRegistry:
+def _registry_or_409(orch) -> A2APublicationRegistry:
     registry = registry_for(orch)
     if registry is None:
         raise HTTPException(status_code=409, detail=_A2A_DISABLED)
+    if not registry.refresh():
+        raise HTTPException(
+            status_code=503, detail="A2A publication state is unavailable"
+        )
     return registry
+
+
+def _policy(orch):
+    from orchestrator.a2a_publication_policy import A2APublicationPolicy
+
+    policy = getattr(orch, "a2a_publication_policy", None)
+    if isinstance(policy, A2APublicationPolicy):
+        return policy
+    registry = registry_for(orch)
+    if registry is None:
+        return None
+    from orchestrator.a2a_orchestrator_executor import public_catalog_agent_ids
+    from orchestrator.a2a_publication_wiring import owner_lookup
+    from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
+
+    policy = A2APublicationPolicy(
+        orch,
+        registry,
+        catalog=lambda: public_catalog_agent_ids(orch),
+        owner_lookup=owner_lookup(orch),
+        managed=lambda: FIRST_PARTY_PUBLIC_AGENT_IDS,
+    )
+    orch.a2a_publication_policy = policy
+    return policy
 
 
 async def record_publication_event(
@@ -49,15 +86,15 @@ async def record_publication_event(
     from audit.recorder import get_recorder, make_correlation_id, now_utc
     from audit.schemas import AuditEventCreate
 
-    rec = get_recorder()
-    if rec is None or not user_id:
+    recorder = get_recorder()
+    if recorder is None or not user_id:
         return
     inputs_meta: Dict[str, Any] = {}
     for key, value in (detail or {}).items():
         if isinstance(value, (str, int, float, bool)):
             inputs_meta[key] = value
     try:
-        await rec.record(AuditEventCreate(
+        await recorder.record(AuditEventCreate(
             actor_user_id=user_id,
             auth_principal=user_id,
             event_class="settings",
@@ -82,18 +119,31 @@ class ConfirmPublishRequest(BaseModel):
     confirmation_token: str = Field(min_length=1, max_length=256)
 
 
-def _actor(admin: dict) -> str:
-    return str((admin or {}).get("sub") or "unknown")
+def _actor(payload: dict) -> tuple[str, set[str], bool]:
+    sub = str((payload or {}).get("sub") or "")
+    emails = {
+        str(value) for value in (
+            sub,
+            (payload or {}).get("email"),
+            (payload or {}).get("preferred_username"),
+        ) if value
+    }
+    roles = set(token_roles(payload or {}))
+    return sub, emails, "admin" in roles
 
 
 def _error_status(exc: A2APublicationError) -> int:
     if isinstance(exc, UnknownPublicationError):
         return 404
-    if isinstance(exc, (ConfirmationMismatchError,)):
+    if isinstance(exc, (ConfirmationMismatchError, PublicationForbiddenError)):
         return 403
-    if isinstance(exc, (StaleIntentError, AlreadyWithdrawnError)):
+    if isinstance(exc, (StaleIntentError, AlreadyWithdrawnError, PublicationStoreConflict,
+                        PublicationCapacityError)):
         return 409
-    if isinstance(exc, InvalidAudienceError):
+    if isinstance(exc, PublicationStoreUnavailable):
+        return 503
+    if isinstance(exc, (UnknownCapabilityError, NotEligibleError, InvalidAudienceError,
+                        InvalidLifetimeError)):
         return 400
     return 400
 
@@ -101,17 +151,18 @@ def _error_status(exc: A2APublicationError) -> int:
 @publication_router.get(
     "",
     summary="List A2A publications",
-    description="Admin inventory of current and recent A2A capability publications and pending confirmations.",
+    description="Owner inventory of current and recent A2A capability publications and pending confirmations.",
 )
 async def list_publications(
     request: Request,
-    admin: dict = Depends(verify_admin),
+    payload: dict = Depends(get_current_user_payload),
 ):
-    orch = _orchestrator(request)
-    registry = _registry_or_404(orch)
+    sub, _emails, is_admin = _actor(payload)
+    registry = await asyncio.to_thread(_registry_or_409, _orchestrator(request))
+    actor = None if is_admin else sub
     return {
-        "publications": list(registry.inventory()),
-        "pending": list(registry.pending_intents()),
+        "publications": list(await asyncio.to_thread(registry.inventory, actor=actor)),
+        "pending": list(await asyncio.to_thread(registry.pending_intents, actor=actor)),
         "lifetimes": [{"key": key, "seconds": seconds} for key, seconds in LIFETIMES],
     }
 
@@ -119,17 +170,23 @@ async def list_publications(
 @publication_router.get(
     "/catalog",
     summary="List A2A-publishable capabilities",
-    description="Approved capabilities eligible for A2A publication with their registered audiences.",
+    description="Approved capabilities the caller may publish, with their registered audiences.",
 )
 async def get_catalog(
     request: Request,
-    admin: dict = Depends(verify_admin),
+    payload: dict = Depends(get_current_user_payload),
 ):
+    _sub, emails, is_admin = _actor(payload)
     orch = _orchestrator(request)
-    registry = _registry_or_404(orch)
-    catalog = []
+    registry = await asyncio.to_thread(_registry_or_409, orch)
+    policy = await asyncio.to_thread(_policy, orch)
+    if policy is None:
+        raise HTTPException(status_code=409, detail=_A2A_DISABLED)
     cards = getattr(orch, "agent_cards", {}) or {}
-    for agent_id, audiences, published in registry.eligible_catalog():
+    catalog = []
+    for agent_id, audiences, published in await asyncio.to_thread(registry.eligible_catalog):
+        if not await asyncio.to_thread(policy.can_manage, emails, agent_id, is_admin=is_admin):
+            continue
         card = cards.get(agent_id)
         catalog.append({
             "agent_id": agent_id,
@@ -137,6 +194,7 @@ async def get_catalog(
             "description": str(getattr(card, "description", None) or ""),
             "audiences": list(audiences),
             "published": published,
+            "owner": await asyncio.to_thread(policy.owner_of, agent_id),
         })
     return {"capabilities": catalog, "lifetimes": [key for key, _ in LIFETIMES]}
 
@@ -149,30 +207,41 @@ async def get_catalog(
 async def create_intent(
     request: Request,
     body: PublishIntentRequest,
-    admin: dict = Depends(verify_admin),
+    payload: dict = Depends(get_current_user_payload),
 ):
-    user_id = _actor(admin)
+    sub, emails, is_admin = _actor(payload)
     orch = _orchestrator(request)
-    registry = _registry_or_404(orch)
+    registry = await asyncio.to_thread(_registry_or_409, orch)
+    policy = await asyncio.to_thread(_policy, orch)
+    if not is_admin and (
+        policy is None or not await asyncio.to_thread(policy.can_manage, emails, body.agent_id, is_admin=False)
+    ):
+        await record_publication_event(
+            user_id=sub, action="intent_denied",
+            description="A2A publication intent refused: capability is not managed by this owner",
+            outcome="failure", detail={"agent_id": body.agent_id},
+        )
+        raise HTTPException(status_code=403, detail="Capability is not managed by this owner")
     try:
-        intent = registry.create_intent(
+        owner = await asyncio.to_thread(policy.owner_of, body.agent_id)
+        intent = await asyncio.to_thread(
+            registry.create_intent,
             agent_id=body.agent_id,
             audiences=body.audiences,
             lifetime=body.lifetime,
-            actor=user_id,
+            actor=sub,
+            owner=owner,
+            authorize=lambda agent_id: (policy.can_manage(emails, agent_id, is_admin=is_admin)
+                and policy.owner_matches(agent_id, owner)),
         )
     except A2APublicationError as exc:
         await record_publication_event(
-            user_id=user_id, action="intent_denied",
+            user_id=sub, action="intent_denied",
             description=f"A2A publication intent refused: {exc}",
             outcome="failure", detail={"agent_id": body.agent_id},
         )
         raise HTTPException(status_code=_error_status(exc), detail=str(exc))
-    await record_publication_event(
-        user_id=user_id, action="intent_created",
-        detail={"agent_id": intent.agent_id, "audiences": ",".join(intent.audiences),
-                "lifetime": intent.lifetime, "intent_id": intent.intent_id},
-    )
+
     return {
         "intent_id": intent.intent_id,
         "agent_id": intent.agent_id,
@@ -193,29 +262,43 @@ async def confirm_intent(
     request: Request,
     intent_id: str,
     body: ConfirmPublishRequest,
-    admin: dict = Depends(verify_admin),
+    payload: dict = Depends(get_current_user_payload),
 ):
-    user_id = _actor(admin)
+    sub, emails, is_admin = _actor(payload)
     orch = _orchestrator(request)
-    registry = _registry_or_404(orch)
+    registry = await asyncio.to_thread(_registry_or_409, orch)
+    policy = await asyncio.to_thread(_policy, orch)
+    intent = await asyncio.to_thread(registry.get_intent, intent_id)
+    owner_allowed = bool(
+        intent is not None
+        and policy is not None
+        and await asyncio.to_thread(policy.can_manage, emails, intent.agent_id, is_admin=False)
+    )
+    if intent is not None and not is_admin and not owner_allowed:
+        await record_publication_event(
+            user_id=sub, action="confirm_denied",
+            description="A2A publication confirmation refused: foreign owner",
+            outcome="failure", detail={"intent_id": intent_id},
+        )
+        raise HTTPException(status_code=403, detail="Only the proposing owner can confirm")
     try:
-        record = registry.confirm(
+        record = await asyncio.to_thread(
+            registry.confirm,
             intent_id=intent_id,
             confirmation_token=body.confirmation_token,
-            actor=user_id,
+            actor=sub,
+            privileged=is_admin or owner_allowed,
+            authorize=lambda agent_id: (policy.can_manage(emails, agent_id, is_admin=is_admin)
+                and (intent is not None and policy.owner_matches(agent_id, intent.owner))),
         )
     except A2APublicationError as exc:
         await record_publication_event(
-            user_id=user_id, action="confirm_denied",
+            user_id=sub, action="confirm_denied",
             description=f"A2A publication confirmation refused: {exc}",
             outcome="failure", detail={"intent_id": intent_id},
         )
         raise HTTPException(status_code=_error_status(exc), detail=str(exc))
-    await record_publication_event(
-        user_id=user_id, action="published",
-        detail={"publication_id": record.publication_id, "agent_id": record.agent_id,
-                "audiences": ",".join(record.audiences), "lifetime": record.lifetime},
-    )
+
     return _publication_body(record)
 
 
@@ -228,28 +311,42 @@ async def withdraw_publication(
     request: Request,
     publication_id: str,
     reason: str = "",
-    admin: dict = Depends(verify_admin),
+    payload: dict = Depends(get_current_user_payload),
 ):
-    user_id = _actor(admin)
+    sub, emails, is_admin = _actor(payload)
     orch = _orchestrator(request)
-    registry = _registry_or_404(orch)
+    registry = await asyncio.to_thread(_registry_or_409, orch)
+    policy = await asyncio.to_thread(_policy, orch)
+    existing = await asyncio.to_thread(registry.get, publication_id)
+    owner_allowed = bool(
+        existing is not None
+        and policy is not None
+        and await asyncio.to_thread(lambda: any(policy.owner_matches(existing.agent_id, email) for email in emails))
+    )
+    if existing is not None and not is_admin and not owner_allowed:
+        await record_publication_event(
+            user_id=sub, action="withdraw_denied",
+            description="A2A withdrawal refused: foreign owner",
+            outcome="failure", detail={"publication_id": publication_id},
+        )
+        raise HTTPException(status_code=403, detail="Only the publishing owner can withdraw")
     try:
-        record = registry.withdraw(
+        record = await asyncio.to_thread(
+            registry.withdraw,
             publication_id=publication_id,
-            actor=user_id,
+            actor=sub,
             reason=str(reason or "")[:200],
+            privileged=is_admin or owner_allowed,
+            authorize=lambda agent_id: is_admin or any(policy.owner_matches(agent_id, email) for email in emails),
         )
     except A2APublicationError as exc:
         await record_publication_event(
-            user_id=user_id, action="withdraw_denied",
+            user_id=sub, action="withdraw_denied",
             description=f"A2A withdrawal refused: {exc}",
             outcome="failure", detail={"publication_id": publication_id},
         )
         raise HTTPException(status_code=_error_status(exc), detail=str(exc))
-    await record_publication_event(
-        user_id=user_id, action="withdrawn",
-        detail={"publication_id": record.publication_id, "agent_id": record.agent_id},
-    )
+
     return _publication_body(record)
 
 
@@ -262,6 +359,9 @@ def _publication_body(record) -> Dict[str, Any]:
         "status": record.status,
         "published_at": record.published_at,
         "expires_at": record.expires_at,
+        "withdrawn_at": record.withdrawn_at,
+        "created_by": record.created_by,
+        "owner": record.owner,
     }
 
 

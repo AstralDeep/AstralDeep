@@ -57,7 +57,9 @@ def runtime(gate_orchestrator, monkeypatch):  # noqa: F811
     orch._llm_context_user_id = lambda _ws: "owner-a"
     orch._llm_store = SimpleNamespace(get=AsyncMock(return_value=None))
     orch._execute_with_retry = AsyncMock(return_value=MCPResponse(result={"_data": {"ok": True}}))
-    orch.workspace = SimpleNamespace(aupsert=AsyncMock(return_value=[{"op": "upsert"}]))
+    from orchestrator.workspace import WorkspaceManager
+    orch.workspace = SimpleNamespace(aupsert=AsyncMock(return_value=[{"op": "upsert"}]),
+        resolve_identity=WorkspaceManager.__new__(WorkspaceManager).resolve_identity)
     orch.send_ui_upsert = AsyncMock()
 
     async def mutate(**kwargs):

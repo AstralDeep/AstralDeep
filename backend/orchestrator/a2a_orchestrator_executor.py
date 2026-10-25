@@ -40,6 +40,8 @@ from shared.a2a_bridge import (
 )
 from shared.a2a_publication import A2APublicationRegistry
 from shared.a2a_security import A2ASecurityValidator
+from orchestrator.a2a_publication_policy import A2APublicationPolicy
+from orchestrator.a2a_publication_wiring import attach_publication_registry, owner_lookup
 from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
 
 logger = logging.getLogger("OrchestratorA2AExecutor")
@@ -260,6 +262,25 @@ class OrchestratorA2AExecutor(AgentExecutor):
             )
             return
 
+        policy = await asyncio.to_thread(_publication_policy, self.orchestrator)
+        if policy is not None:
+            admission = await asyncio.to_thread(policy.admit, projected.agent_id, projected.skill_id)
+            if admission is None:
+                await asyncio.to_thread(policy.record_denial,
+                    actor=str(claims.get("sub") or ""),
+                    agent_id=projected.agent_id,
+                    reason="not_published",
+                )
+                await updater.failed(
+                    message=self._msg(TOOL_UNAVAILABLE, context.task_id)
+                )
+                return
+            logger.debug(
+                "A2A admission publication=%s agent=%s",
+                admission.publication_id,
+                admission.agent_id,
+            )
+
         if projected.agent_id == FRAMEWORK_WORK_AGENT_ID:
             from orchestrator.mcp_server_endpoint import _dispatch_work_tool
 
@@ -319,6 +340,9 @@ class OrchestratorA2AExecutor(AgentExecutor):
         projected = await asyncio.to_thread(
             project_tools, self.orchestrator, claims["sub"], claims
         )
+        policy = await asyncio.to_thread(_publication_policy, self.orchestrator)
+        if policy is not None:
+            projected = await asyncio.to_thread(policy.filter_projected_tools, projected)
         tools = []
         for tool in projected:
             card = self.orchestrator.agent_cards.get(tool.agent_id)
@@ -369,6 +393,29 @@ def public_catalog_agent_ids(orchestrator) -> List[str]:
     ]
 
 
+def _publication_registry(orchestrator) -> Optional[A2APublicationRegistry]:
+    registry = getattr(orchestrator, "a2a_publications", None)
+    return registry if isinstance(registry, A2APublicationRegistry) else None
+
+
+def _publication_policy(orchestrator) -> Optional[A2APublicationPolicy]:
+    policy = getattr(orchestrator, "a2a_publication_policy", None)
+    if isinstance(policy, A2APublicationPolicy):
+        return policy
+    registry = _publication_registry(orchestrator)
+    if registry is None:
+        return None
+    policy = A2APublicationPolicy(
+        orchestrator,
+        registry,
+        catalog=lambda: public_catalog_agent_ids(orchestrator),
+        owner_lookup=owner_lookup(orchestrator),
+        managed=lambda: FIRST_PARTY_PUBLIC_AGENT_IDS,
+    )
+    orchestrator.a2a_publication_policy = policy
+    return policy
+
+
 def _public_url() -> str:
     base = (os.getenv("PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
     if base:
@@ -378,76 +425,21 @@ def _public_url() -> str:
     return f"http://{host}:{port}/a2a"
 
 
-def _registered_audiences(orchestrator, agent_id: str) -> Tuple[str, ...]:
-    card = (getattr(orchestrator, "agent_cards", {}) or {}).get(agent_id)
-    scopes: list[str] = []
-    for skill in getattr(card, "skills", None) or []:
-        scope = str(getattr(skill, "scope", "") or "")
-        if scope and scope not in scopes:
-            scopes.append(scope)
-    return tuple(scopes)
-
-
-def _publication_registry(orchestrator) -> Optional[A2APublicationRegistry]:
-    registry = getattr(orchestrator, "a2a_publications", None)
-    return registry if isinstance(registry, A2APublicationRegistry) else None
-
-
-def attach_publication_registry(orchestrator) -> A2APublicationRegistry:
-    registry = _publication_registry(orchestrator)
-    if registry is None:
-        def _sink(event):
-            try:
-                from audit.recorder import get_recorder, make_correlation_id, now_utc
-                from audit.schemas import AuditEventCreate
-
-                rec = get_recorder()
-                if rec is None:
-                    return
-                action = str(event.get("action") or "transition")
-                rec.record_blocking(AuditEventCreate(
-                    actor_user_id=str(event.get("actor") or "system"),
-                    auth_principal=str(event.get("actor") or "system"),
-                    event_class="settings",
-                    action_type=f"a2a_publication.{action}",
-                    description=(
-                        f"A2A publication {action} for {event.get('agent_id')} "
-                        f"(audiences={event.get('audiences')}, lifetime={event.get('lifetime')})"
-                    ),
-                    correlation_id=make_correlation_id(),
-                    outcome="failure" if "denied" in action or "stale" in action else "success",
-                    inputs_meta={
-                        key: value for key, value in event.items()
-                        if isinstance(value, (str, int, float, bool))
-                    },
-                    started_at=now_utc(),
-                ))
-            except Exception:
-                logger.debug("a2a publication registry audit sink failed", exc_info=True)
-
-        registry = A2APublicationRegistry(
-            catalog=lambda: public_catalog_agent_ids(orchestrator),
-            audiences=lambda agent_id: _registered_audiences(orchestrator, agent_id),
-            audit_sink=_sink,
-        )
-        orchestrator.a2a_publications = registry
-    return registry
-
-
 def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
     authority = os.getenv("KEYCLOAK_AUTHORITY", "")
     registry = _publication_registry(orchestrator)
-
-    catalog_ids = public_catalog_agent_ids(orchestrator)
-    if registry is None:
-        published_ids = catalog_ids
+    policy = _publication_policy(orchestrator)
+    if policy is not None:
+        publications = policy.published_records()
+        published_ids = list(dict.fromkeys(record.agent_id for record in publications))
     else:
-        published = set(registry.active_agent_ids())
-        published_ids = [agent_id for agent_id in catalog_ids if agent_id in published]
+        published_ids = public_catalog_agent_ids(orchestrator)
 
     skills: List[A2AAgentSkill] = []
     for agent_id in published_ids:
         card = orchestrator.agent_cards.get(agent_id)
+        if card is None:
+            continue
         skills.append(A2AAgentSkill(
             id=agent_id,
             name=str(getattr(card, "name", None) or agent_id),
@@ -469,10 +461,14 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
                 open_id_connect_url=f"{authority}/.well-known/openid-configuration",
             )
         )
-        if registry is None:
-            advertised = ["tools:read", "tools:write", "tools:search", "tools:system"]
+        if policy is not None:
+            advertised = list(dict.fromkeys(scope for record in publications
+                             for scope in record.audiences
+                             if scope in policy._registered_scopes(record.agent_id)))
+        elif registry is not None:
+            advertised = list(registry.advertised_audiences()) if registry.available else []
         else:
-            advertised = list(registry.advertised_audiences())
+            advertised = ["tools:read", "tools:write", "tools:search", "tools:system"]
         if advertised:
             security_requirements.append(SecurityRequirement(schemes={
                 "keycloak_oidc": StringList(list=advertised),
@@ -522,9 +518,8 @@ def setup_orchestrator_a2a(app, orchestrator):
     from a2a.server.tasks.inmemory_task_store import InMemoryTaskStore
     from a2a.server.routes import create_jsonrpc_routes, create_agent_card_routes
 
-    initial_card = build_orchestrator_a2a_card(orchestrator)
-
     attach_publication_registry(orchestrator)
+    initial_card = build_orchestrator_a2a_card(orchestrator)
 
     executor = OrchestratorA2AExecutor(orchestrator)
     handler = DefaultRequestHandler(
@@ -535,7 +530,7 @@ def setup_orchestrator_a2a(app, orchestrator):
     validator = executor.security_validator
 
     async def refresh_card(_card):
-        return build_orchestrator_a2a_card(orchestrator)
+        return await asyncio.to_thread(build_orchestrator_a2a_card, orchestrator)
 
     def _gated(endpoint):
         async def gated_endpoint(request):
