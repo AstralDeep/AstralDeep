@@ -707,7 +707,9 @@ def _plane_schema_literal_import(
     for index, item in enumerate(items):
         if (stem in {"selected_input", "scheduler_policy", "framework_credential",
                      "typesafe_credential", "mesh", "stop", "completion_wake",
-                     "notification", "atlas_page"}
+                     "notification", "atlas_page", "atlas_revision", "atlas_link",
+                     "capability_publication", "harness_binding", "push_delivery",
+                     "observation"}
                 and isinstance(item, ast.Call)
                 and not item.args and not item.keywords
                 and isinstance(item.func, ast.Attribute) and item.func.attr == "strip"
@@ -739,6 +741,12 @@ def _plane_migration_digest(component_root: Path) -> str:
         ("completion_wake", "COMPLETION_WAKE_SCHEMA_STATEMENTS"),
         ("notification", "NOTIFICATION_SCHEMA_STATEMENTS"),
         ("atlas_page", "ATLAS_PAGE_SCHEMA_STATEMENTS"),
+        ("atlas_revision", "ATLAS_REVISION_SCHEMA_STATEMENTS"),
+        ("atlas_link", "ATLAS_LINK_SCHEMA_STATEMENTS"),
+        ("capability_publication", "CAPABILITY_PUBLICATION_SCHEMA_STATEMENTS"),
+        ("harness_binding", "HARNESS_BINDING_SCHEMA_STATEMENTS"),
+        ("push_delivery", "PUSH_DELIVERY_SCHEMA_STATEMENTS"),
+        ("observation", "OBSERVATION_SCHEMA_STATEMENTS"),
     ):
         reviewed_literals.update(_plane_schema_literal_import(
             component_root, tree, stem=stem, symbol=symbol))

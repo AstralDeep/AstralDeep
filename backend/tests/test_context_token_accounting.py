@@ -163,6 +163,18 @@ def test_unknown_provider_or_model_never_borrows_openai_encoding_or_window():
     assert resolve_model_profile("openai", None) is None
     assert resolve_model_profile("openai", "  ") is None
     assert get_context_window("gpt-4o", provider="openrouter") == FALLBACK_CONTEXT_WINDOW
+
+
+@pytest.mark.parametrize("kind", ["file", "input_file", "image_url", "input_audio", "audio"])
+def test_unknown_route_multimodal_payload_retains_utf8_byte_bound(kind):
+    accountant = TokenAccountant(fallback_profile("custom", "synthetic-model"))
+    small = [{"role": "user", "content": [{"type": kind, "data": "ok"}]}]
+    large = [{"role": "user", "content": [{"type": kind, "data": "界" * 10_000}]}]
+    small_estimate = accountant.account_request(small)
+    large_estimate = accountant.account_request(large)
+    assert large_estimate.multimodal_tokens >= 30_000
+    assert large_estimate.total_tokens > large_estimate.context_window
+    assert large_estimate.total_tokens > small_estimate.total_tokens
     assert get_context_window("cl100k_base") == FALLBACK_CONTEXT_WINDOW
     assert get_context_window("my-gpt-4o-compatible-model") == FALLBACK_CONTEXT_WINDOW
     assert get_context_window("gpt-4o", provider="openai") == 128_000

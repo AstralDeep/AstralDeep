@@ -268,10 +268,14 @@ async def _audit(orch, call: PendingCall, transition: str) -> None:
     from audit.schemas import AuditEventCreate
 
     try:
+        correlation = str(uuid.UUID(call.request_id))
+    except (ValueError, TypeError, AttributeError):
+        correlation = str(uuid.uuid5(uuid.NAMESPACE_URL, f"hitl:{call.request_id}"))
+    try:
         receipt = await orch.audit_recorder.record(AuditEventCreate(
             actor_user_id=call.owner, auth_principal=call.owner,
             event_class="agent_tool_call", action_type=f"hitl.{transition}",
-            description=f"{transition}: {call.tool}", correlation_id=call.request_id,
+            description=f"{transition}: {call.tool}", correlation_id=correlation,
             conversation_id=call.chat,
             outcome="interrupted" if transition == "effect_uncertain" else "success",
             inputs_meta={"agent_id": call.agent, "tool": call.tool,
@@ -469,8 +473,8 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
 
 async def _finish_card(orch, websocket, call, title, message, components=None):
     try:
-        cid = f"hitl_{call.request_id}"
-        component = Card(id=cid, title=title, content=[Text(content=message)]).to_dict()
+        component = Card(id=f"hitl_{call.request_id}", title=title, content=[Text(content=message)]).to_dict()
+        cid = orch.workspace.resolve_identity(component)
 
         async def mutation():
             ops = await orch.workspace.aupsert(call.chat, call.owner, [component], force_component_id=cid)
@@ -516,6 +520,8 @@ async def handle_decision(orch, websocket, owner, payload, *, admission_check=No
             valid = False
     pending = _pending(orch)
     if (not valid or pending.get(request_id) is not call
+            or not _current_session(orch, websocket, call,
+                allow_local_pause=resume_requested or payload["decision"] == "decline")
             or admission_check is not None and not admission_check()):
         await orch.send_ui_render(websocket, [Alert(message="This confirmation is unavailable in this conversation. "
             "It may have expired or already been handled.", variant="warning").to_dict()], target="chat")

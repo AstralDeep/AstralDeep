@@ -63,16 +63,14 @@ FEATURE_075_DEPENDENCY_AUTHORITIES = {
 }
 CURRENT_DEPENDENCY_AUTHORITIES = {
     **FEATURE_075_DEPENDENCY_AUTHORITIES,
-    "Dockerfile": "46737b00d717721adfe0fc2a0ff6f2e0ac26e08ec8a7310b4246f48c81c482c3",
+    "Dockerfile": "bd80b9180b1ec2fea5c2e0e4faba06739a1222727bca033c66f1a17d423ce506",
     "Dockerfile.voice": "82ffc56ab274790ea60e280852eb49608e9e8f7dbc3432fc16b4a1f3bcd21b84",
     "backend/requirements.txt": "972e495db9602454b29d55880ca7096269d71c913e44f27389aff913b9dbd459",
-        "97a1d75fd45c83331e33e7029f8f23a12870593b67c7bbc8e4470d6baf2affee"
-    ),
     "backend/requirements-gaiakeep.txt": "87ea5ed066e8aa376f355df70a4efac295d331c7c77601d277a05c8acb37feea",
     "backend/tests/fixtures/runtime_reliability_060/runtime-lock-contract.json": (
         "ff84f895f5b8253dff59c9581cc033452ad576a09e40d00da31b5ba7b0f4875e"
     ),
-    "pyproject.toml": "dd7bdee3a17abef230e097754e152bd9444393f7a9a89089ae762aa29d73d6ad",
+    "pyproject.toml": "63c6d30783bbed0c1372d56012e67d84a0be831c720e5dac182810c158f00943",
     "tooling/backend-ci/requirements.in": "6fc8c8dd178365a4c3102506b6f7b8a64ec7088c9b4484746ace40b9f3883fdf",
     "tooling/backend-ci/requirements.lock.txt": "57378601b70a65fd6db1bca2ebcd452c3dfa85b1edffac3137f609a9b796b860",
     "tooling/requirements-gaiakeep-tests.txt": "86c94aaf151b3920dbcdb1b682fbb9401d1b3ddb64adcd508444bc86acd5d21c",

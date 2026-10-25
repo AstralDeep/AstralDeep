@@ -376,6 +376,8 @@ class TokenAccountant:
                 kind = value.get("type") if value is not None else None
                 allowance = _MULTIMODAL_ALLOWANCES.get(kind) if isinstance(kind, str) else None
                 if allowance is not None:
+                    if not self.qualified_encoding:
+                        allowance = max(allowance, self._fallback_text_tokens(_json_text(value)))
                     multimodal_tokens += allowance + CONTENT_PART_FRAMING_TOKENS
                     part_text = value.get("text")
                     if isinstance(part_text, str):
