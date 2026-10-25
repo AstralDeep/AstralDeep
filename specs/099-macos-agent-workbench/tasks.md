@@ -49,10 +49,12 @@
 - [ ] T022 [US5] Adopt only the exact qualified Projection revision and digest in Deep config/astral-composition.json and component gitlink; run composition/backend/module/client gates with>=90%changed Python coverage.
 - [ ] T023 [US5] Qualify exact candidate staging against real IAM/PG/LETS and installed Mac client; record all positive/denial checks and rollback in specs/099-macos-agent-workbench/qualification.md.
 - [ ] T024 [US5] Deploy only the qualified immutable server/client pair, preserve existing data, verify production health and real native/browser/terminal/file/Stop paths; update specs/099-macos-agent-workbench/qualification.md and curated vault checkpoint.
+- [ ] T025 [US5] Qualify the fresh runtime dependency closure and adapt demonstrated stale baseline dispatch/ledger/identity fixtures without weakening declarations, write classifications, approvals, PHI or CI gates; rebuild the exact candidate and complete all three whole backend groups. Retain failed baseline/candidate evidence and the precise public-digest scanner exclusions.
+- [ ] T026 [US1] Repair installed-app permission-request feedback and activation refresh, inspect raw OS permission facts, complete normal macOS authorization and real sign-in/physical consent, and verify takeover/Stop through the signed candidate. No TCC or authentication bypass.
 
 ## Dependencies and Parallel Work
 
-T001–T004 precede implementation; T005→T006→T007 precede host integration. Host/native/files work is one Projection owner. Deep T011/T015/T016 can proceed independently with one backend owner. UI T018/T019 can proceed in distinct view files; coordinate AppModel/RootView control hooks with the host owner. T012/T014/T017/T020 need a built functioning pair. T021 precedes T022; all live gates precede T024.
+T001–T004 precede implementation; T005→T006→T007 precede host integration. Host/native/files work is one Projection owner. Deep T011/T015/T016 can proceed independently with one backend owner. UI T018/T019 can proceed in distinct view files; coordinate AppModel/RootView control hooks with the host owner. T012/T014/T017/T020 need a built functioning pair. T021 precedes T022; all live gates precede T024. T025 closes demonstrated runtime/fixture prerequisites for T021–T023; T026 precedes every physical host acceptance task.
 
 ## Coverage and Strategy
 

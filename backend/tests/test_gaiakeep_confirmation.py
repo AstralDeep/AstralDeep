@@ -15,9 +15,13 @@ from orchestrator import taint
 from shared.protocol import MCPRequest, MCPResponse
 
 from tests.test_remote_confirmation_063 import _WS, USER, _FakeDB, _orch, _seed, _tc
-from tests.test_remote_confirmation_063 import real_orch as _real_orch
+from tests.test_remote_confirmation_063 import real_orch as _real_orch  # noqa: F401
 
-real_orch = _real_orch
+@pytest.fixture
+def real_orch(_real_orch):  # noqa: F811
+    _real_orch.tool_permissions.get_tool_scope_map.return_value.update({
+        name: entry["scope"] for name, entry in TOOLS.items()})
+    return _real_orch
 gaia_server = _gaia_server
 
 
@@ -341,8 +345,8 @@ async def test_approved_mutation_still_obeys_product_policy(real_orch, monkeypat
     _seed(real_orch.proposal_storage, 'approval', owner=USER, verb=tool, args=args, agent_id='gaiakeep-1')
     real_orch._policy_roles = lambda ws: []
     monkeypatch.setattr(policy, 'policy_enabled', lambda: True)
-    monkeypatch.setattr(policy, 'load_rules', list)
-    monkeypatch.setattr(policy, 'evaluate_policy', lambda *a: policy.PolicyDecision(effect=policy.DENY, reason='policy denial'))
+    monkeypatch.setattr(policy, 'load_rules', lambda **kwargs: [])
+    monkeypatch.setattr(policy, 'evaluate_policy', lambda *a, **kwargs: policy.PolicyDecision(effect=policy.DENY, reason='policy denial'))
     response = await real_orch.execute_single_tool(
         _WS(), _tc(tool, dict(args, _remote_op_proposal_id='approval')),
         {tool: 'gaiakeep-1'}, 'chat', user_id=USER)

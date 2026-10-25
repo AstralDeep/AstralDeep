@@ -74,6 +74,7 @@ async def evidence_turn(human, bound, fixture, tmp_path, monkeypatch):
         host.ui_sessions = {socket: {"sub": fixture[1], "_raw_token": binding.origin.token,
                                     "realm_access": {"roles": ["user"]}}}
         host.cancelled_sessions = {}
+        host._source_ledger = Orchestrator._source_ledger.__get__(host)
         host.agent_cards[AGENT] = AgentCard("Reader", "Reads authorized sources", AGENT,
             skills=[AgentSkill("Read source", "Reads one source", TOOL, scope="tools:read")])
         adapter = EvidenceAgent(host, port=0)

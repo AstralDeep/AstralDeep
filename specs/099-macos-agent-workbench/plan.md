@@ -9,7 +9,7 @@ Deliver a native Mac computer executor and a clearer workbench using Astral's ex
 ## Technical Context
 
 **Language/Version**: Python 3.11; AstralCore retains its Swift tools 5.9 manifest and Swift 5 language mode. The app retains its existing Swift 5 language mode, MainActor default isolation and pinned Xcode 26.6/build 17F113 compiler floor; this does not promise compilation with the older Swift 5.9 compiler. Local Xcode 27.1 versus CI 26.6 is recorded, not equated.
-**Primary Dependencies**: Existing FastAPI/ASGI, Keycloak, astralprims/Projection/Plane; SwiftUI/AppKit, ApplicationServices/CoreGraphics, ScreenCaptureKit and Foundation. No new third-party baseline runtime.
+**Primary Dependencies**: Existing FastAPI/ASGI, Keycloak, astralprims/Projection/Plane; SwiftUI/AppKit, ApplicationServices/CoreGraphics, ScreenCaptureKit and Foundation. No new third-party baseline runtime. Fresh image qualification constrains existing transitive preshed to 3.0.13 after a reproduced 3.0.14 tokenizer regression; retain real PHI enforcement and qualify the exact rebuilt closure.
 **Storage**: Existing Plane data only. Local consent/root bookmarks are owner/server-bound; requests, screenshots, window handles and authority are ephemeral.
 **Testing**: pytest computer/source-bound/HITL suites and measured changed-line coverage; SwiftPM/XCTest/direct-download builds; Projection protocol/provenance/architecture gates; actual authenticated native/browser/file/terminal acceptance.
 **Target Platform**: Direct-download macOS host; other clients retain controllers. Store/release stays author-only. No new primitive or push type.

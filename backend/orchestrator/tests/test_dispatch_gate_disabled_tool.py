@@ -18,7 +18,8 @@ def _make_card(agent_id: str, tools: list, display_name: str = None) -> AgentCar
         name=display_name or agent_id,
         description="",
         agent_id=agent_id,
-        skills=[AgentSkill(id=t, name=t, description="", input_schema={}) for t in tools],
+        skills=[AgentSkill(id=t, name=t, description="", input_schema={},
+                           scope={"read_spreadsheet": "tools:files", "ocr": "tools:read"}[t]) for t in tools],
         metadata={},
     )
 
@@ -51,6 +52,9 @@ def _build_orch(*, disabled_agents=None, saved_selection=None,
 
     orch.tool_permissions = MagicMock()
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    orch.tool_permissions.get_tool_scope_map.side_effect = lambda agent_id: {
+        skill.id: skill.scope for skill in getattr(orch.agent_cards.get(agent_id), "skills", ())}
+    orch._source_bound_read_tools = {("general-1", "read_spreadsheet")}
     orch.tool_permissions.list_disabled_agents.return_value = tuple(
         disabled_agents or ()
     )
@@ -67,6 +71,7 @@ def _build_orch(*, disabled_agents=None, saved_selection=None,
     orch.hooks = MagicMock()
     orch.hooks.emit = AsyncMock(return_value=SimpleNamespace(action=None, modified_args=None, reason=None))
 
+    orch._execute_with_retry = AsyncMock()
     orch._rendered_ui = []
 
     async def _capture_render(websocket, components, target=None):
@@ -105,11 +110,12 @@ async def test_dispatch_blocked_when_tool_filtered_by_picker() -> None:
         user_id="alice",
     )
 
-    assert len(orch._rendered_ui) == 1
-    rendered = orch._rendered_ui[0]
-    assert rendered["target"] == "chat"
-    assert len(rendered["components"]) == 1
-    alert = rendered["components"][0]
+    assert result.error["code"] == "effect_declaration_unavailable"
+    assert result.error["retryable"] is False
+    assert orch._rendered_ui == []
+    orch._execute_with_retry.assert_not_awaited()
+    diagnostic = orch._diagnose_disabled_tool("read_spreadsheet", "alice", "chat-1")
+    alert = orch._alert_for_disabled_tool(diagnostic, "read_spreadsheet").to_dict()
     assert alert["type"] == "alert"
     assert alert["variant"] == "warning"
     assert "read_spreadsheet" in alert["message"]
@@ -117,7 +123,6 @@ async def test_dispatch_blocked_when_tool_filtered_by_picker() -> None:
 
     assert result is not None
     assert result.error is not None
-    assert "read_spreadsheet" in result.error["message"]
     assert result.ui_components is None
 
 
@@ -136,7 +141,12 @@ async def test_dispatch_blocked_when_agent_disabled_by_user() -> None:
         user_id="alice",
     )
 
-    alert = orch._rendered_ui[0]["components"][0]
+    assert result.error["code"] == "effect_declaration_unavailable"
+    assert result.error["retryable"] is False
+    assert orch._rendered_ui == []
+    orch._execute_with_retry.assert_not_awaited()
+    diagnostic = orch._diagnose_disabled_tool("read_spreadsheet", "alice", "chat-1")
+    alert = orch._alert_for_disabled_tool(diagnostic, "read_spreadsheet").to_dict()
     assert alert["variant"] == "warning"
     assert "General" in alert["message"]
     assert "Agents settings" in alert["message"]
@@ -144,7 +154,7 @@ async def test_dispatch_blocked_when_agent_disabled_by_user() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dispatch_unknown_tool_falls_through_to_generic_gate() -> None:
+async def test_dispatch_unknown_tool_refuses_missing_effect_declaration() -> None:
     orch = _build_orch()
     websocket = MagicMock()
     tool_to_agent = {}
@@ -158,11 +168,11 @@ async def test_dispatch_unknown_tool_falls_through_to_generic_gate() -> None:
         user_id="alice",
     )
 
-    alert = orch._rendered_ui[0]["components"][0]
-    assert alert["type"] == "alert"
-    assert "No agent available" in alert["message"]
-    assert "totally_made_up_tool" in alert["message"]
     assert result.error is not None
+    assert result.error["code"] == "effect_declaration_unavailable"
+    assert result.error["retryable"] is False
+    assert orch._rendered_ui == []
+    orch._execute_with_retry.assert_not_awaited()
 
 
 @pytest.mark.asyncio
