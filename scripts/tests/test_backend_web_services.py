@@ -297,6 +297,8 @@ def test_private_directory_requires_exact_owner_mode_and_no_existing_state(monke
 
 @pytest.fixture
 def setup(tmp_path, ownership, monkeypatch):
+    operator_uid = tmp_path.stat().st_uid
+    monkeypatch.setattr(os, "getuid", lambda: operator_uid)
     source = tmp_path / "source"
     (source / "components/LETS").mkdir(parents=True)
     (source / "scripts").mkdir()
@@ -324,6 +326,8 @@ def setup(tmp_path, ownership, monkeypatch):
             "missing_ok"
         ):
             output = json.dumps([network_details()]).encode()
+        elif args[:3] == ["docker", "container", "inspect"] and not kwargs.get("missing_ok"):
+            output = json.dumps([proxy_details()]).encode()
         elif "inspect" in args:
             status = 1
         elif "/policy/scripts/backend_web_service_materials.py" in args:
@@ -333,6 +337,7 @@ def setup(tmp_path, ownership, monkeypatch):
             (target / "runtime-fragment.env").write_text(
                 "VOICE_CONTROL_SECRET=" + "s" * 64 + "\n"
             )
+            (target / "runtime-fragment.env").chmod(0o600)
             (target / "livekit").mkdir()
         elif "/wait.py" in args:
             output = json.dumps(
@@ -677,12 +682,331 @@ def test_policy_identity_and_private_material_location_fail_before_mutation(setu
 
 def network_details():
     return {
+        "Id": "d" * 64,
         "Name": "ad-bwq-services-" + QID,
         "Labels": {services.LABEL: QID},
         "Driver": "bridge",
         "IPAM": {"Config": [{"Subnet": "172.30.0.0/24", "Gateway": "172.30.0.1"}]},
         "Containers": {},
     }
+
+
+def proxy_details():
+    network = "ad-bwq-services-" + QID
+    return {
+        "Id": "e" * 64,
+        "Name": "/" + network + "-proxy",
+        "State": {"Running": True},
+        "Config": {"Labels": {services.LABEL: QID}},
+        "HostConfig": {"NetworkMode": network},
+        "NetworkSettings": {
+            "Networks": {
+                network: {
+                    "NetworkID": "d" * 64,
+                    "IPAddress": "172.30.0.7",
+                    "IPPrefixLen": 24,
+                    "Gateway": "172.30.0.1",
+                    "GlobalIPv6Address": "",
+                }
+            }
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "peer,scheme",
+    [
+        ("172.30.0.7", "https"),
+        ("172.30.0.8", "http"),
+        ("192.168.2.3", "http"),
+        ("127.0.0.1", "http"),
+    ],
+)
+def test_initialized_proxy_trust_preserves_https_callback_only_for_the_owned_peer(
+    setup, monkeypatch, peer, scheme
+):
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse, RedirectResponse
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+    from uvicorn import Config
+
+    kwargs, _, _ = setup
+    services.initialize(**kwargs)
+    fragment = dict(
+        line.split("=", 1)
+        for line in (kwargs["material_root"] / "runtime-fragment.env")
+        .read_text()
+        .splitlines()
+    )
+    monkeypatch.delenv("FORWARDED_ALLOW_IPS", raising=False)
+    if "FORWARDED_ALLOW_IPS" in fragment:
+        monkeypatch.setenv("FORWARDED_ALLOW_IPS", fragment["FORWARDED_ALLOW_IPS"])
+
+    async def login(request):
+        return RedirectResponse(request.url_for("callback"))
+
+    async def callback(_):
+        return PlainTextResponse("unused")
+
+    app = Starlette(
+        routes=[
+            Route("/auth/login", login),
+            Route("/auth/callback", callback, name="callback"),
+        ]
+    )
+    config = Config(app, log_config=None, lifespan="off")
+    config.load()
+    with TestClient(
+        config.loaded_app, base_url="http://ad-bwq-web:9443", client=(peer, 12345)
+    ) as client:
+        response = client.get(
+            "/auth/login",
+            follow_redirects=False,
+            headers={
+                "x-forwarded-proto": "https",
+                "x-forwarded-for": "172.30.0.7",
+            },
+        )
+    assert response.status_code == 307
+    assert response.headers["location"] == scheme + "://ad-bwq-web:9443/auth/callback"
+
+
+def test_initializer_pins_exact_forwarding_peer_after_the_proxy_starts(setup):
+    kwargs, calls, _ = setup
+    report = services.initialize(**kwargs)
+    fragment = kwargs["material_root"] / "runtime-fragment.env"
+    values = dict(line.split("=", 1) for line in fragment.read_text().splitlines())
+    assert values.get("FORWARDED_ALLOW_IPS") == "172.30.0.7"
+    assert values["VOICE_CONTROL_SECRET"] == "s" * 64
+    assert fragment.stat().st_mode & 0o777 == 0o600
+    assert fragment.stat().st_uid == os.getuid()
+    query = ["docker", "container", "inspect", "ad-bwq-services-" + QID + "-proxy"]
+    start = next(
+        call
+        for call in calls
+        if call[:3] == ["docker", "run", "-d"] and services.PROXY_IMAGE in call
+    )
+    queries = [index for index, call in enumerate(calls) if call == query]
+    assert len(queries) == 2
+    assert queries[0] < calls.index(start) < queries[1]
+    assert report["status"] == "started-acceptance-pending"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "empty",
+        "multiple",
+        "non-object",
+        "invalid-json",
+        "name",
+        "label",
+        "labels-null",
+        "stopped",
+        "mode",
+        "missing-networks",
+        "networks-null",
+        "multiple-networks",
+        "foreign-network",
+        "network-id",
+        "missing-ip",
+        "invalid-ip",
+        "public-ip",
+        "loopback",
+        "ipv6",
+        "subnet",
+        "outside-bridge",
+        "gateway",
+        "network-address",
+        "broadcast",
+        "endpoint-null",
+        "numeric-ip",
+    ],
+)
+def test_forwarded_proxy_identity_failures_never_publish_trust_or_continue_services(
+    setup, monkeypatch, mutation
+):
+    kwargs, calls, execute = setup
+    network = "ad-bwq-services-" + QID
+
+    def altered(command, **options):
+        result = execute(command, **options)
+        if command[:3] != ["docker", "container", "inspect"] or options.get(
+            "missing_ok"
+        ):
+            return result
+        details = proxy_details()
+        endpoints = details["NetworkSettings"]["Networks"]
+        endpoint = endpoints[network]
+        if mutation == "empty":
+            payload = []
+        elif mutation == "multiple":
+            payload = [details, details]
+        elif mutation == "non-object":
+            payload = [None]
+        else:
+            if mutation == "name":
+                details["Name"] += "-foreign"
+            elif mutation == "label":
+                details["Config"]["Labels"][services.LABEL] = "foreign"
+            elif mutation == "labels-null":
+                details["Config"]["Labels"] = None
+            elif mutation == "stopped":
+                details["State"]["Running"] = False
+            elif mutation == "mode":
+                details["HostConfig"]["NetworkMode"] = "host"
+            elif mutation == "missing-networks":
+                endpoints.clear()
+            elif mutation == "networks-null":
+                details["NetworkSettings"]["Networks"] = None
+            elif mutation == "multiple-networks":
+                endpoints["foreign"] = dict(endpoint)
+            elif mutation == "foreign-network":
+                endpoints["foreign"] = endpoints.pop(network)
+            elif mutation == "network-id":
+                endpoint["NetworkID"] = "f" * 64
+            elif mutation == "missing-ip":
+                endpoint.pop("IPAddress")
+            elif mutation == "endpoint-null":
+                endpoints[network] = None
+            elif mutation == "numeric-ip":
+                endpoint["IPAddress"] = 2887647239
+            elif mutation != "invalid-json":
+                endpoint["IPAddress"] = {
+                    "invalid-ip": "invalid",
+                    "public-ip": "8.8.8.8",
+                    "loopback": "127.0.0.1",
+                    "ipv6": "fd00::1",
+                    "subnet": "172.30.0.7/24",
+                    "outside-bridge": "172.31.0.7",
+                    "gateway": "172.30.0.1",
+                    "network-address": "172.30.0.0",
+                    "broadcast": "172.30.0.255",
+                }[mutation]
+            payload = [details]
+        result.stdout = (
+            b"{invalid" if mutation == "invalid-json" else json.dumps(payload).encode()
+        )
+        return result
+
+    monkeypatch.setattr(services, "command", altered)
+    with pytest.raises(ValueError):
+        services.initialize(**kwargs)
+    assert (
+        "FORWARDED_ALLOW_IPS="
+        not in (kwargs["material_root"] / "runtime-fragment.env").read_text()
+    )
+    assert not any(
+        call[:3] == ["docker", "run", "-d"] and services.LIVEKIT_IMAGE in call
+        for call in calls
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "symlink",
+        "directory",
+        "missing",
+        "public-mode",
+        "wrong-owner",
+        "oversized",
+        "encoding",
+        "already-trusted",
+    ],
+)
+def test_forwarded_proxy_trust_requires_an_unchanged_private_operator_fragment(
+    setup, monkeypatch, mutation
+):
+    kwargs, _, execute = setup
+
+    def altered(command, **options):
+        result = execute(command, **options)
+        if "/policy/scripts/backend_web_service_materials.py" in command:
+            fragment = kwargs["material_root"] / "runtime-fragment.env"
+            if mutation == "symlink":
+                fragment.rename(fragment.with_suffix(".original"))
+                fragment.symlink_to(fragment.with_suffix(".original"))
+            elif mutation == "directory":
+                fragment.unlink()
+                fragment.mkdir()
+            elif mutation == "missing":
+                fragment.unlink()
+            elif mutation == "public-mode":
+                fragment.chmod(0o644)
+            elif mutation == "oversized":
+                fragment.write_bytes(b"X=" + b"x" * 65536)
+            elif mutation == "encoding":
+                fragment.write_bytes(b"\xff")
+            elif mutation == "already-trusted":
+                fragment.write_text("FORWARDED_ALLOW_IPS=*\n")
+        return result
+
+    if mutation == "wrong-owner":
+        operator = os.getuid()
+        monkeypatch.setattr(services.os, "getuid", lambda: operator + 1)
+    monkeypatch.setattr(services, "command", altered)
+    with pytest.raises(ValueError):
+        services.initialize(**kwargs)
+    if mutation == "symlink":
+        assert (
+            "FORWARDED_ALLOW_IPS"
+            not in (kwargs["material_root"] / "runtime-fragment.original").read_text()
+        )
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "*",
+        "172.30.0.0/24",
+        "127.0.0.1",
+        "8.8.8.8",
+        "fd00::1",
+        "172.30.0.7\nBAD=1",
+        "",
+        None,
+        2887647239,
+    ],
+)
+def test_forwarded_proxy_append_cannot_accept_a_broader_or_malformed_trust_value(
+    tmp_path, address
+):
+    path = tmp_path / "runtime.env"
+    original = "ASTRAL_ENV=production\n"
+    path.write_text(original)
+    path.chmod(0o600)
+    with pytest.raises(ValueError):
+        services.append_proxy_trust(path, address)
+    assert path.read_text() == original
+
+
+def test_forwarded_proxy_append_separates_the_original_final_line(tmp_path):
+    path = tmp_path / "runtime.env"
+    path.write_text("ASTRAL_ENV=production")
+    path.chmod(0o600)
+    services.append_proxy_trust(path, "172.30.0.7")
+    assert path.read_text() == "ASTRAL_ENV=production\nFORWARDED_ALLOW_IPS=172.30.0.7\n"
+
+
+def test_forwarded_proxy_append_denies_a_fragment_that_grows_after_inspection(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "runtime.env"
+    path.write_text("ASTRAL_ENV=production\n")
+    path.chmod(0o600)
+    fstat = os.fstat
+
+    def changed(descriptor):
+        metadata = fstat(descriptor)
+        path.write_text("ASTRAL_ENV=production\nCHANGED=1\n")
+        return metadata
+
+    monkeypatch.setattr(services.os, "fstat", changed)
+    with pytest.raises(ValueError, match="changed while reading"):
+        services.append_proxy_trust(path, "172.30.0.7")
+    assert "FORWARDED_ALLOW_IPS=" not in path.read_text()
 
 
 @pytest.mark.parametrize(
