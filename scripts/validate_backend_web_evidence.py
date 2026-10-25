@@ -205,10 +205,17 @@ def validate_bundle(root: Path, *, candidate: str, base: str, image: str,
         _require(report["schema"]["revision"] == plane["schema_revision"]
                  and report["schema"]["migration_sha256"] == plane["migration_sha256"],
                  "evidence schema differs from candidate composition")
-    _require(report["baseline"]["schema_revision"] == "088.003"
-             and report["baseline"]["migration_sha256"] == "a3d3ac43bee48b0ca6832cca1e4a347db0a3f838af908b8545edb11e7e94272a"
-             and report["baseline"]["plane_commit"] == "4a07d59a448c1960ce2ae3f35e605f4d78c4a3f9",
-             "qualification must rehearse the inventoried live baseline")
+    profile = _json(ROOT / "config/backend-web-recovery-baseline.json")
+    expected = {key: profile[key] for key in (
+        "deep_commit", "image_config", "platform", "composition_sha256", "plane_commit", "schema_revision", "migration_sha256")}
+    expected["image"] = profile["image_ref"]
+    _require({key: value for key, value in report["baseline"].items() if key != "inventory_sha256"} == expected,
+             "qualification must rehearse the trusted current production baseline")
+    _require(report["synthetic_predecessor"] == {
+        "plane_commit": "4a07d59a448c1960ce2ae3f35e605f4d78c4a3f9", "schema_revision": "088.003",
+        "migration_sha256": "a3d3ac43bee48b0ca6832cca1e4a347db0a3f838af908b8545edb11e7e94272a",
+        "fixture_sha256": "c016d8dd30f2bdf932ba8e855bbc586826f5b0f4137b6413c61a82293ef41c1d",
+    }, "synthetic predecessor codec and migration identity differ")
     files = report["files"]
     _require(files and len(files) <= 4096, "raw evidence file inventory is empty or excessive")
     actual = set()
@@ -221,6 +228,10 @@ def validate_bundle(root: Path, *, candidate: str, base: str, image: str,
     _require(actual == set(files) | {"evidence.json"}, "raw evidence tree differs from its inventory")
     for name, digest in files.items():
         _require(hashlib.sha256(_read(_file(root, name))).hexdigest() == digest, "raw evidence digest differs")
+    inventories = [name for name in report["checks"]["live-baseline-inventory"]["artifacts"]
+                   if files.get(name) == report["baseline"]["inventory_sha256"]]
+    _require(len(inventories) == 1 and _json(_file(root, inventories[0])) == profile,
+             "current production baseline lacks its exact bound inventory")
     referenced = set()
     observed_dispositions = []
     _require(set(report["suite_inventory"]) == SUITES, "complete suite inventory is incomplete")

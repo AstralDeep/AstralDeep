@@ -7,6 +7,16 @@ import json
 import logging
 from typing import List, Dict, Tuple, Callable
 
+from orchestrator.context_token_accounting import (
+    FALLBACK_CONTEXT_WINDOW,
+    IMAGE_TOKEN_ALLOWANCE,
+    TokenAccountant,
+    TokenAccountingError,
+    build_model_profile,
+    fallback_profile,
+    get_context_window as _qualified_context_window,
+)
+
 logger = logging.getLogger("Orchestrator.Compaction")
 
 CHARS_PER_TOKEN = 4
@@ -19,57 +29,80 @@ SUMMARY_PREFIX = "[Summary of prior conversation]"
 
 _SYNTHETIC_USER_PREFIX = "SYSTEM RECOVERY ERROR:"
 
-_MODEL_CONTEXT_WINDOWS: Dict[str, int] = {
-    "gpt-4o": 128_000,
-    "gpt-4-turbo": 128_000,
-    "gpt-4": 8_192,
-    "gpt-3.5": 16_384,
-    "llama-3.2-90b": 131_072,
-    "llama-3.1": 131_072,
-    "llama-3": 8_192,
-    "deepseek": 65_536,
-    "qwen": 32_768,
-    "mistral": 32_768,
-    "mixtral": 32_768,
-}
-
-_DEFAULT_CONTEXT_WINDOW = 32_768
-_IMAGE_PART_CHARS = 1_500 * CHARS_PER_TOKEN
+_DEFAULT_CONTEXT_WINDOW = FALLBACK_CONTEXT_WINDOW
+_IMAGE_PART_CHARS = IMAGE_TOKEN_ALLOWANCE * CHARS_PER_TOKEN
 
 
-def estimate_tokens(messages: List[Dict]) -> int:
-    total_chars = 0
-    for msg in messages:
-        if isinstance(msg, dict):
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                total_chars += len(content)
-            elif isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict) and part.get("type") == "image_url":
-                        total_chars += _IMAGE_PART_CHARS
-                    else:
-                        total_chars += len(json.dumps(part))
-        else:
-            total_chars += len(str(msg))
-    return total_chars // CHARS_PER_TOKEN
+def _accountant(
+    model_name: str | None,
+    provider: str | None,
+    *,
+    context_window: int | None = None,
+    encoding_name: str | None = None,
+    reserved_output_tokens: int | None = None,
+    assets_dir: str | None = None,
+) -> TokenAccountant:
+    profile = build_model_profile(
+        provider,
+        model_name,
+        context_window=context_window,
+        encoding=encoding_name,
+        reserved_output_tokens=reserved_output_tokens,
+    ) or fallback_profile(provider, model_name)
+    return TokenAccountant(profile, assets_dir=assets_dir)
 
 
-def estimate_overhead_tokens(tools_desc: List[Dict] | None) -> int:
-    if not tools_desc:
-        return 0
-    try:
-        return len(json.dumps(tools_desc, default=str)) // CHARS_PER_TOKEN
-    except (TypeError, ValueError):
-        return 0
+def estimate_tokens(
+    messages: List[Dict],
+    model_name: str | None = None,
+    provider: str | None = None,
+    *,
+    assets_dir: str | None = None,
+) -> int:
+    return _accountant(model_name, provider, assets_dir=assets_dir).count_messages(messages)
 
 
-def get_context_window(model_name: str) -> int:
-    model_lower = model_name.lower()
-    for keyword, size in _MODEL_CONTEXT_WINDOWS.items():
-        if keyword in model_lower:
-            return size
-    return _DEFAULT_CONTEXT_WINDOW
+def estimate_overhead_tokens(
+    tools_desc: List[Dict] | None,
+    model_name: str | None = None,
+    provider: str | None = None,
+    *,
+    assets_dir: str | None = None,
+) -> int:
+    return _accountant(model_name, provider, assets_dir=assets_dir).count_tools(tools_desc)
+
+
+def estimate_request_tokens(
+    messages: List[Dict],
+    tools_desc: List[Dict] | None = None,
+    model_name: str | None = None,
+    provider: str | None = None,
+    *,
+    context_window: int | None = None,
+    encoding_name: str | None = None,
+    reserved_output_tokens: int | None = None,
+    assets_dir: str | None = None,
+) -> int:
+    accountant = _accountant(
+        model_name,
+        provider,
+        context_window=context_window,
+        encoding_name=encoding_name,
+        reserved_output_tokens=reserved_output_tokens,
+        assets_dir=assets_dir,
+    )
+    return accountant.account_request(
+        messages, tools_desc, reserved_output_tokens=reserved_output_tokens
+    ).total_tokens
+
+
+def get_context_window(
+    model_name: str | None,
+    provider: str | None = None,
+    *,
+    context_window: int | None = None,
+) -> int:
+    return _qualified_context_window(model_name, provider, context_window=context_window)
 
 
 def _identify_turns(messages: List[Dict]) -> List[List[int]]:
@@ -136,14 +169,50 @@ async def compact_messages(
     budget_ratio: float = DEFAULT_CONTEXT_BUDGET_RATIO,
     min_recent_turns: int = 4,
     overhead_tokens: int = 0,
+    *,
+    provider: str | None = None,
+    tools_desc: List[Dict] | None = None,
+    reserved_output_tokens: int | None = None,
+    context_window: int | None = None,
+    encoding_name: str | None = None,
+    assets_dir: str | None = None,
 ) -> Tuple[List[Dict], bool]:
     if not messages:
         return messages, False
 
-    context_window = get_context_window(model_name)
+    try:
+        accountant = _accountant(
+            model_name,
+            provider,
+            context_window=context_window,
+            encoding_name=encoding_name,
+            reserved_output_tokens=reserved_output_tokens,
+            assets_dir=assets_dir,
+        )
+    except TokenAccountingError:
+        return messages, False
+    context_window = accountant.profile.context_window
+    reserved_output = (
+        accountant.profile.reserved_output_tokens
+        if reserved_output_tokens is None
+        else reserved_output_tokens
+    )
+    accounted_overhead = max(0, overhead_tokens) + accountant.count_tools(tools_desc)
+    fixed_overhead = accounted_overhead + reserved_output
+    if fixed_overhead >= context_window:
+        logger.info(
+            "Compaction cannot fit fixed request overhead of %d tokens in a %d-token window",
+            fixed_overhead,
+            context_window,
+        )
+        return messages, False
+    safe_history_capacity = context_window - fixed_overhead
     floor_tokens = int(context_window * MIN_HISTORY_BUDGET_RATIO)
-    budget_tokens = max(floor_tokens, int(context_window * budget_ratio) - overhead_tokens)
-    current_tokens = estimate_tokens(messages)
+    budget_tokens = min(
+        max(floor_tokens, int(context_window * budget_ratio) - fixed_overhead),
+        safe_history_capacity,
+    )
+    current_tokens = accountant.count_messages(messages)
 
     if current_tokens <= budget_tokens:
         return messages, False
@@ -175,7 +244,8 @@ async def compact_messages(
     logger.info(
         f"Compaction triggered: {current_tokens} tokens > {budget_tokens} budget "
         f"(model={model_name}, window={context_window}, "
-        f"overhead={overhead_tokens})"
+        f"overhead={accounted_overhead}, reserved_output={reserved_output}, "
+        f"encoding={accountant.profile.encoding or 'fallback'})"
     )
 
     compact_indices = {
@@ -235,7 +305,7 @@ async def compact_messages(
 
     compacted = [system_msg, summary_msg, *kept]
 
-    new_tokens = estimate_tokens(compacted)
+    new_tokens = accountant.count_messages(compacted)
     if new_tokens >= current_tokens:
         logger.info(
             "Compaction made no progress (%d -> %d tokens); keeping original",

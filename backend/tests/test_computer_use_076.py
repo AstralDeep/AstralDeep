@@ -46,11 +46,19 @@ class _Rote:
         return SimpleNamespace(device_type=SimpleNamespace(value="android"))
 
 
+def _registered_context(websocket):
+    from orchestrator.orchestrator import ConnectionContext
+
+    return ConnectionContext(websocket=websocket, connection_scope_id=uuid.uuid4(),
+        registration_deadline=time.monotonic() + 5, registered=True, connection_generation=uuid.uuid4())
+
+
 class _FakeOrch:
     def __init__(self):
         self.ui_clients: list = []
         self.ui_sessions: dict = {}
         self._ws_active_chat: dict = {}
+        self._connection_contexts: dict = {}
         self.rote = _Rote()
         self.computer_hosts = ComputerHostRegistry(self)
         self.computer_sessions = ComputerSessionManager(self, self.computer_hosts)
@@ -58,6 +66,7 @@ class _FakeOrch:
     def add(self, ws: _WS):
         self.ui_clients.append(ws)
         self.ui_sessions[ws] = {"sub": ws.user}
+        self._connection_contexts[id(ws)] = _registered_context(ws)
         if ws.chat:
             self._ws_active_chat[id(ws)] = ws.chat
         return ws
@@ -442,7 +451,7 @@ def test_attended_input_verbs_pass_and_consequential_verbs_get_a_card():
     assert r1[1][0]["type"] == "card" and r2[1][0]["type"] == "card"
 
 
-async def test_approval_runs_the_verb_then_resumes_the_task():
+async def test_approval_runs_the_verb_without_a_second_unfenced_continuation():
     db = _FakeDB()
     orch = _gate_orch(db)
     ws = _Hashable()
@@ -452,7 +461,7 @@ async def test_approval_runs_the_verb_then_resumes_the_task():
 
     async def _execute_single_tool(websocket, tc, mapping, chat_id, user_id=None):
         calls.append((tc.function.name, json.loads(tc.function.arguments), mapping, chat_id, user_id))
-        return SimpleNamespace(result={"_data": {"exit_code": 0, "stdout": "Wednesday"}}, error=None)
+        return SimpleNamespace(result={"_data": {"exit_code": 0, "stdout": "Wednesday"}}, error=None, ui_components=None)
 
     from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
     # __main__ gets separate module globals from a normal import
@@ -479,6 +488,9 @@ async def test_approval_runs_the_verb_then_resumes_the_task():
     host_ws, host = await _online_host(fake)
     orch.computer_hosts = fake.computer_hosts
     grant_session = await _session(fake, host, fake.add(_WS(chat="chat-1")))
+    grant_session.controller_ws_id = id(ws)
+    orch._connection_contexts = {id(ws): _registered_context(ws)}
+    orch._ws_active_chat = {id(ws): "chat-1"}
     assert grant_session.terminal_ok is False
     assert rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "powershell", "computer": "RyzenRoll"},
                        "chat-1", OWNER) is not None
@@ -495,17 +507,15 @@ async def test_approval_runs_the_verb_then_resumes_the_task():
         del sys.modules[__name__]._CONNECTION_OPERATION_CONTEXT
     assert calls and calls[0][0] == "open_app" and calls[0][1]["app"] == "powershell"
     assert calls[0][1][rc._MARKER] == proposal_id
-    assert renders and renders[0][1] == "chat-1" and renders[0][2].startswith("✓ Approved")
-    assert renders[0][4] == (None, None)
+    assert not renders
     assert grant_session.terminal_ok is True
-    assert "Wednesday" in renders[0][0] and "open_app" in renders[0][0]
     assert len(db.rows) == 1
     out2 = rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "powershell", "computer": "RyzenRoll"},
                        "chat-1", OWNER)
     assert out2[1][0]["type"] == "card" and len(db.rows) == 2
 
 
-async def test_approved_verb_that_could_not_run_keeps_its_approval_for_one_retry():
+async def test_failed_computer_action_requires_fresh_review_and_never_auto_continues():
     rc._PENDING_CARDS.clear()
     db = _FakeDB()
     orch = _gate_orch(db)
@@ -515,7 +525,7 @@ async def test_approved_verb_that_could_not_run_keeps_its_approval_for_one_retry
 
     async def _execute_single_tool(websocket, tc, mapping, chat_id, user_id=None):
         return SimpleNamespace(result={"_data": {"ok": False, "code": "paused",
-                                                 "message": "RyzenRoll is paused (local_input)"}}, error=None)
+                                                 "message": "RyzenRoll is paused (local_input)"}}, error=None, ui_components=None)
 
     async def _serialized_chat(websocket, message, chat_id, display_message=None, *, user_id=None, **kw):
         renders.append(message)
@@ -530,15 +540,16 @@ async def test_approved_verb_that_could_not_run_keeps_its_approval_for_one_retry
     orch.computer_sessions = fake.computer_sessions
     host_ws, host = await _online_host(fake)
     orch.computer_hosts = fake.computer_hosts
-    await _session(fake, host, fake.add(_WS(chat="chat-1")))
+    session = await _session(fake, host, fake.add(_WS(chat="chat-1")))
+    session.controller_ws_id = id(ws)
+    orch._connection_contexts = {id(ws): _registered_context(ws)}
+    orch._ws_active_chat = {id(ws): "chat-1"}
     args = {"app": "powershell", "computer": "RyzenRoll"}
     assert rc.evaluate(orch, ws, "computer-use-1", "open_app", dict(args), "chat-1", OWNER) is not None
     proposal_id = next(iter(db.rows))
     await rc.handle_decision(orch, ws, OWNER, {"proposal_id": proposal_id, "decision": "approve"})
     await asyncio.sleep(0.05)
-    assert renders and "could NOT run yet" in renders[0] and "EXACTLY the same arguments" in renders[0]
-    assert rc.evaluate(orch, ws, "computer-use-1", "open_app", dict(args), "chat-1", OWNER) is None
-    assert len(db.rows) == 1
+    assert not renders and not session.terminal_ok
     assert rc.evaluate(orch, ws, "computer-use-1", "open_app", dict(args), "chat-1", OWNER) is not None
     assert len(db.rows) == 2
     rc._RETRY_GRACE[(OWNER, "computer-use-1", "open_app", rc._fingerprint(args))] = ("x", time.time() + 60)

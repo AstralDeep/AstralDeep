@@ -45,6 +45,8 @@ def fixture(runtime, monkeypatch, signing_key):
     monkeypatch.setattr(og, "OFFLINE_GRANT_ENC_KEY", key)
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("MOCK_AUTH", "false")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://app.invalid")
+    monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://app.invalid")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", ISSUER)
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-web")
     monkeypatch.setenv("KEYCLOAK_CLIENT_SECRET", "synthetic-confidential-secret")
@@ -262,6 +264,8 @@ async def test_explicit_consumers_use_bound_transport(fixture, runtime, monkeypa
         assert result.claims["azp"] == CLIENT
     elif consumer == "work":
         from orchestrator import work_submit_authority as wa
+        monkeypatch.setenv("PUBLIC_BASE_URL", "https://app.invalid")
+        monkeypatch.delenv("BACKEND_PUBLIC_URL", raising=False)
         req = request(sid, headers=[(b"origin",b"https://app.invalid"),(b"content-type",b"application/json")])
         selected = await wa.authenticate_work_submission_request(req, sessions=store, plane_runtime=runtime)
         result = await wa.refresh_work_submission_authority(selected, sessions=store)

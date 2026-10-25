@@ -312,7 +312,7 @@ def generate_materials(
     }
     document("keycloak/import/" + realm["realm"] + "-realm.json", realm, 1000)
     output(
-        "keycloak/runtime.env",
+        "operator/keycloak-runtime.env",
         "\n".join(
             [
                 "KC_DB=postgres",
@@ -328,7 +328,7 @@ def generate_materials(
         + "\n",
     )
     output(
-        "keycloak/postgres.env",
+        "operator/keycloak-postgres.env",
         "POSTGRES_USER=qualification\nPOSTGRES_DB=keycloak\nPOSTGRES_PASSWORD="
         + pg_password
         + "\n",

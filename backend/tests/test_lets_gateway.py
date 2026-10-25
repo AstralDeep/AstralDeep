@@ -162,7 +162,7 @@ def _gateway(tmp_path: Path):
     )
     anchor_dir = tmp_path / "authority"
     anchor_dir.mkdir()
-    anchor = ProcessFileExecutorAuthorityAnchor(anchor_dir / "executor.anchor")
+    anchor = ProcessFileExecutorAuthorityAnchor(anchor_dir / "executor.anchor", timeout_s=60.0)
     store = SQLiteReceiptReplayStore.initialize(
         tmp_path / "executor.sqlite3",
         authority_anchor=anchor,

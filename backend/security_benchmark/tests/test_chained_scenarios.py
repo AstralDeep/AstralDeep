@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import replace
 
 import pytest
 
@@ -70,6 +71,43 @@ def test_benign_inscope_hop_is_not_blocked():
     trace = _real_trace(case, chaining_on())
     assert not trace.adversarial_calls
     assert trace.tool_calls[0].executed, trace.notes
+
+
+@pytest.mark.parametrize("tool,scope,executed", [
+    ("peer_tool", "tools:read", True),
+    ("peer_tool", None, True),
+    ("peer_tool", "", False),
+    ("peer_tool", "tools:bogus", False),
+    ("write_records", "tools:write", False),
+    ("write_records", None, False),
+    ("admin_transfer", "tools:system", False),
+    ("undeclared_tool", None, False),
+])
+def test_fixture_preserves_writer_and_missing_scope_denials(tool, scope, executed):
+    control = next(case for case in get_adapter("chained").load_cases()
+                   if case.category == "benign_inscope_hop")
+    case = replace(control, objective=replace(control.objective, target_tool=tool, required_scope=scope))
+    trace = _real_trace(case, chaining_on())
+    assert len(trace.tool_calls) == 1
+    assert trace.tool_calls[0].executed is executed
+    if not executed:
+        assert trace.tool_calls[0].blocked_by == LAYER_CHAINED_DELEGATION
+
+
+def test_missing_registered_effect_declaration_still_blocks_benign_hop(monkeypatch):
+    from orchestrator import source_bound
+
+    original = source_bound.registered_action
+
+    def unavailable(_scopes, agent, tool, host_reads=()):
+        return original({}, agent, tool, host_reads)
+
+    monkeypatch.setattr(source_bound, "registered_action", unavailable)
+    case = next(c for c in get_adapter("chained").load_cases()
+                if c.category == "benign_inscope_hop")
+    trace = _real_trace(case, chaining_on())
+    assert not trace.tool_calls[0].executed
+    assert not trace.adversarial_calls
 
 
 def test_attack_not_attemptable_when_chaining_off():

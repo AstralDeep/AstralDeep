@@ -1,0 +1,253 @@
+{
+  "contract": "specs/100-mesh-availability-topology/contracts/availability-contract.md",
+  "topology": "T1 single-durable-authority recover-in-place",
+  "status": "specification-decided — the topology decision below is ratified for review and its conformance cases are executable; no deployment, release, live-failover, or measured-availability claim is made anywhere in this document.",
+  "matrix": [
+    {
+      "id": "F-1",
+      "failure": "orchestrator_process_loss",
+      "detection": "clients lose transport; process manager observes exit",
+      "consistency": "committed state intact under the single durable authority; in-flight work holds only its durable lease",
+      "rpo": "0 for committed durable state",
+      "rto": "restart + boot: composition pin, migrations, and health gate verified before readiness",
+      "degraded_state": "admission_unavailable while down; uncertain attempts remain honestly unresolved after restart",
+      "recovery": "process manager restart; expire_execution_leases + re-claim resume interruptible work; uncertain effects go to owner reconcile"
+    },
+    {
+      "id": "F-2",
+      "failure": "executor_loss",
+      "detection": "poller observes missing or stale tracked-job state; orphan and fail thresholds",
+      "consistency": "job records durable; wake events delivered through durable waiters and outbox",
+      "rpo": "0",
+      "rto": "bounded by poll cadence and fail thresholds (design constants, no wall-clock promise)",
+      "degraded_state": "effect_unconfirmed: owner sees orphaned or unconfirmed, never silent completed",
+      "recovery": "owner decides via digest-bound reconcile (confirmed_applied or confirmed_not_applied); rescheduling without the decision is forbidden"
+    },
+    {
+      "id": "F-3",
+      "failure": "postgres_loss",
+      "detection": "pool and connect failures; boot health gate refuses readiness; all write paths fail",
+      "consistency": "no partial availability: the deployment is down, not inconsistent; no fallback store and no degraded read mode",
+      "rpo": "backup cadence (operator-managed) — the only non-zero RPO",
+      "rto": "operator-bounded: restore, attestation, boot",
+      "degraded_state": "durable_unavailable: full stop, admission closed, nothing claims success",
+      "recovery": "restore named backup; verify schema revision and migration digest; run post-restore session retirement; boot"
+    },
+    {
+      "id": "F-4",
+      "failure": "blob_loss",
+      "detection": "store read or close errors; materialization failures surface as unavailable",
+      "consistency": "durable metadata stays authoritative; content unavailability never rewrites records",
+      "rpo": "blob-root backup cadence (operator-managed)",
+      "rto": "restore blob root; affected surfaces return when content returns",
+      "degraded_state": "blob_unavailable on attachment and artifact surfaces; honest per-surface, no silent regeneration",
+      "recovery": "operator restores the blob root from backup; materializations fail closed until then"
+    },
+    {
+      "id": "F-5",
+      "failure": "mesh_member_loss",
+      "detection": "presence TTL expiry (default 300 s, clamped 30-3600 s); resolver reasons stale_observation or unpublished",
+      "consistency": "enrollment and membership durable; presence is ephemeral advertisement, not durable truth",
+      "rpo": "n/a — presence is TTL-bounded advertisement",
+      "rto": "a member stops being advertised live at most one TTL after its last observation",
+      "degraded_state": "honest offline or unavailable presence with a stated reason; no false online",
+      "recovery": "member republishes a possession-bound presence observation; membership needs no recovery"
+    },
+    {
+      "id": "F-6",
+      "failure": "delivery_failure",
+      "detection": "outbox lease expiry; reclaim_expired returns entries to claimable state",
+      "consistency": "at-least-once delivery; fence inputs bind entry, worker identity, and expected version; consumers absorb duplicates via submission receipts and event-key waits",
+      "rpo": "0 until explicit dead-letter; dead-letter is visible, never a silent drop",
+      "rto": "next claim cycle redelivers",
+      "degraded_state": "delivery_delayed until reclaimed; duplicate delivery possible by design and absorbed idempotently",
+      "recovery": "redelivery on reclaim; retry and dead_letter bound the loop explicitly"
+    },
+    {
+      "id": "F-7",
+      "failure": "disaster_restore",
+      "detection": "operator-initiated; never automatic",
+      "consistency": "restored catalog must match the current schema revision and migration digest exactly or admission stays closed",
+      "rpo": "backup cadence",
+      "rto": "operator-bounded restore time plus boot verification",
+      "degraded_state": "post-restore: all sessions retired; every client re-authenticates",
+      "recovery": "retire_restored_sessions refuses incompatible attestation before any connection; boot re-verifies the full catalog"
+    }
+  ],
+  "promises": [
+    {
+      "id": "P-1",
+      "promise": "Committed durable work survives orchestrator or executor loss and is resumed or surfaced honestly, never silently dropped.",
+      "required_evidence": "executable cases C-03, C-04, C-06 now; staging lease-expiry and re-claim drill against a real database before any availability claim",
+      "status": "specified"
+    },
+    {
+      "id": "P-2",
+      "promise": "No external effect is reported applied while its outcome is uncertain; only the owner's digest-bound reconcile decision settles it.",
+      "required_evidence": "executable cases C-05, C-06 now; staging uncertain-attempt drill on the real dispatch path including the denial case",
+      "status": "specified"
+    },
+    {
+      "id": "P-3",
+      "promise": "Loss of the durable authority fails closed: the deployment stops rather than degrading silently, and composition drift refuses to boot.",
+      "required_evidence": "executable cases C-02, C-08 now; CI boot smoke plus a staging PostgreSQL-stop drill",
+      "status": "specified"
+    },
+    {
+      "id": "P-4",
+      "promise": "Delivery is at-least-once with fenced redelivery; duplicates are absorbable; dead-letter is explicit and visible.",
+      "required_evidence": "executable case C-07 now; staging outbox reclaim drill with a duplicate-consuming consumer",
+      "status": "specified"
+    },
+    {
+      "id": "P-5",
+      "promise": "No mesh member is advertised live beyond its published observation; presence states and reasons are honest.",
+      "required_evidence": "executable case C-11 now; live presence-expiry observation on an enrolled device against the running backend",
+      "status": "specified"
+    },
+    {
+      "id": "P-6",
+      "promise": "After an operator restore, the restored catalog is attested and all sessions are retired before admission reopens; clients re-authenticate.",
+      "required_evidence": "executable case C-09 now; full restore drill on representative data including the refusal path",
+      "status": "specified"
+    }
+  ],
+  "cases": [
+    {
+      "id": "C-01",
+      "kind": "case_registry",
+      "title": "Case registry is wellformed and bound to the contract and tests",
+      "expect": {"case_count": 13}
+    },
+    {
+      "id": "C-02",
+      "kind": "durable_authority_boundary",
+      "title": "Single durable authority boundary holds",
+      "expect": {
+        "legacy_database_module": "backend/shared/database.py",
+        "composition_manifest": "config/astral-composition.json",
+        "requirements_manifest": "backend/requirements.txt",
+        "forbidden_drivers": ["cockroach", "etcd", "cassandra", "redis", "pymongo", "mysql", "yugabyte", "rabbitmq", "kafka"],
+        "deferred_marker": "remains an open design question"
+      }
+    },
+    {
+      "id": "C-03",
+      "kind": "lease_fencing_surface",
+      "title": "Lease and fence recovery mechanics exist",
+      "expect": {
+        "coordinator": "WorkAdmissionCoordinator",
+        "slot_lease_seconds": 30,
+        "methods": ["expire_execution_leases", "reselect_execution", "assert_current_execution", "assert_current_execution_lease"],
+        "plane_error": "StaleWorkExecutionFenceError"
+      }
+    },
+    {
+      "id": "C-04",
+      "kind": "stale_fence_invalidated",
+      "title": "Stale execution fences cannot terminalize and reselection issues a new generation",
+      "expect": {"coordinator_slot_lease_seconds": 30, "stale_error": "StaleExecutionFenceError", "stale_generation": 4, "reselected_generation": 5}
+    },
+    {
+      "id": "C-05",
+      "kind": "uncertain_effect_owner_decision",
+      "title": "Uncertain effects settle only by owner decision bound to the prior-result digest",
+      "expect": {
+        "model": "WorkReconcileRequest",
+        "decisions": ["confirmed_applied", "confirmed_not_applied"],
+        "digest_hex": 64,
+        "valid": {"expected_revision": 3, "submission_id": "0f8fad5b-d9cb-469f-a165-70867728950e", "prior_result_digest": "ab16", "decision": "confirmed_not_applied"},
+        "invalid_decisions": ["auto_apply", "", "confirmed"]
+      }
+    },
+    {
+      "id": "C-06",
+      "kind": "executor_loss_honest_outcome",
+      "title": "Executor loss yields honest unconfirmed outcomes",
+      "expect": {
+        "module": "remote_jobs",
+        "confirmed_completed": "completed",
+        "unconfirmed_completed": "unconfirmed",
+        "orphaned": "orphaned",
+        "wake_prefix": "remote-job:",
+        "handlers": ["_orphan", "_touch_fail", "poll_once"]
+      }
+    },
+    {
+      "id": "C-07",
+      "kind": "outbox_fenced_redelivery",
+      "title": "Outbox redelivery is lease-based and fenced",
+      "expect": {
+        "store": "PostgresOutboxStore",
+        "methods": ["claim", "ack", "retry", "dead_letter", "reclaim_expired"],
+        "claim_params": ["worker_id", "topics", "now", "lease_duration", "limit"],
+        "fence_fields": ["entry_id", "worker_id", "expected_version"],
+        "bad_version_raises": true
+      }
+    },
+    {
+      "id": "C-08",
+      "kind": "postgres_loss_fails_closed",
+      "title": "Composition drift fails closed with named reasons",
+      "expect": {
+        "manifest": "config/astral-composition.json",
+        "tampered_field": "schema_revision",
+        "tampered_value": "000.000",
+        "expected_reason": "schema_revision_mismatch"
+      }
+    },
+    {
+      "id": "C-09",
+      "kind": "restore_attestation_gate",
+      "title": "Restore requires operator attestation and refuses incompatible input before connecting",
+      "expect": {
+        "function": "retire_restored_sessions",
+        "keyword_only_params": ["database_url", "expected_database", "expected_schema", "expected_schema_revision", "expected_migration_digest"],
+        "incompatible_revision": "000.000",
+        "error": "SessionRetirementError"
+      }
+    },
+    {
+      "id": "C-10",
+      "kind": "blob_root_fail_closed",
+      "title": "Blob root resolution fails closed",
+      "expect": {
+        "resolver": "resolve_plane_blob_root",
+        "env": "ATTACHMENT_UPLOAD_ROOT",
+        "default_dir": "tmp",
+        "invalid": ["relative/path", ""]
+      }
+    },
+    {
+      "id": "C-11",
+      "kind": "presence_honest_staleness",
+      "title": "Presence is TTL-bounded and honest",
+      "expect": {
+        "module": "mesh_presence",
+        "default_ttl": 300,
+        "min_ttl": 30,
+        "max_ttl": 3600,
+        "offline": "offline",
+        "unavailable": "unavailable",
+        "stale_reason": "stale_observation",
+        "unpublished_reason": "unpublished",
+        "non_numeric_env": "not-a-number"
+      }
+    },
+    {
+      "id": "C-12",
+      "kind": "recovery_promise_evidence",
+      "title": "Every recovery promise carries required evidence and specified status",
+      "expect": {"promise_count": 6, "status": "specified"}
+    },
+    {
+      "id": "C-13",
+      "kind": "failure_matrix_completeness",
+      "title": "Failure matrix is complete and referenced",
+      "expect": {
+        "failure_classes": ["F-1", "F-2", "F-3", "F-4", "F-5", "F-6", "F-7"],
+        "required_fields": ["failure", "detection", "consistency", "rpo", "rto", "degraded_state", "recovery"]
+      }
+    }
+  ]
+}

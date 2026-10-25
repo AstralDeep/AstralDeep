@@ -1112,6 +1112,37 @@ def test_reviewed_assignment_schema_import_matches_canonical_digest_without_exec
     assert composition._plane_migration_digest(root) == expected
 
 
+@pytest.mark.parametrize("stem", [
+    "atlas_revision", "atlas_link", "capability_publication", "harness_binding",
+    "push_delivery", "observation",
+])
+@pytest.mark.parametrize("mutation", ["valid", "rebound", "executable"])
+def test_composed_schema_edges_retain_static_literal_admission(tmp_path, stem, mutation):
+    symbol = f"{stem.upper()}_SCHEMA_STATEMENTS"
+    source = (f"from astralplane.database.{stem}_schema import {symbol}\n"
+              f'ALIAS = {symbol}\n'
+              'M = Migration(name="plane-composed", source_revisions=("089.006",), '
+              'target_revision="089.007", checksum=_statements_checksum(ALIAS), operation=_apply)\n'
+              'MIGRATION_REGISTRY = MigrationRegistry((M,))\n')
+    if mutation == "rebound":
+        source += f'{symbol} = ("SELECT 2",)\n'
+    root = _write_migration(tmp_path / "AstralPlane", source)
+    schema = f'{symbol} = (" SELECT 1 ".strip(),)\n'
+    if mutation == "executable":
+        schema += 'raise AssertionError("must never execute")\n'
+    _write(root / f"src/astralplane/database/{stem}_schema.py", schema)
+    if mutation != "valid":
+        with pytest.raises(composition.CompositionError):
+            composition._plane_migration_digest(root)
+        return
+    checksum = hashlib.sha256(b'["SELECT 1"]').hexdigest()
+    manifest = [{"name": "plane-composed", "source_revisions": ["089.006"],
+                 "target_revision": "089.007", "checksum": checksum}]
+    expected = hashlib.sha256(json.dumps(manifest, sort_keys=True, ensure_ascii=True,
+                                        separators=(",", ":")).encode("ascii")).hexdigest()
+    assert composition._plane_migration_digest(root) == expected
+
+
 @pytest.mark.parametrize("import_source", [
     "from unreviewed.assignment_schema import ASSIGNMENT_SCHEMA_STATEMENTS\n",
     "from .assignment_schema import ASSIGNMENT_SCHEMA_STATEMENTS\n",

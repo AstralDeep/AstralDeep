@@ -62,6 +62,7 @@ class MachineTarget:
     secret: str = ""
     passphrase: Optional[str] = None
     host_key_fingerprint: Optional[str] = None
+    authority_digest: Optional[str] = None
 
 
 @dataclass
@@ -311,20 +312,34 @@ class ParamikoTransport:
 
     def run(self, target: MachineTarget, argv: List[str], *, timeout: float,
             retryable: bool = False) -> RemoteResult:
+        from orchestrator.remote_effect_execution import current_effect
+        from orchestrator.work_reconciliation import ReconciliationRefused
         command = build_login_command(argv)
+        selection = current_effect()
         client = None
         try:
             client, _ = self._connect(target, timeout)
+            if selection is not None:
+                selection.reserve(target, argv)
+                selection.before_send(target)
             _stdin, stdout, _stderr = client.exec_command(command, timeout=timeout)
             chan = stdout.channel
             out, truncated = self._read_bounded(chan, timeout)
             exit_status = self._await_exit(chan, timeout, truncated)
             stderr_text = "" if truncated else self._drain_stderr(chan)
+            if selection is not None:
+                selection.settle(target, applied=not truncated and exit_status == 0,
+                    result={"exit_status": exit_status, "stdout": out.decode("utf-8", "replace"),
+                            "stderr": stderr_text})
             return RemoteResult(verdict=Verdict.OK, machine=target.label,
                                 stdout=out.decode("utf-8", "replace"), stderr=stderr_text,
                                 exit_status=exit_status, retryable=retryable,
                                 data={"truncated": truncated})
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
+            if selection is not None:
+                code = exc.code if isinstance(exc, ReconciliationRefused) else "effect_uncertain"
+                return RemoteResult(verdict=Verdict.UNCONFIRMED, machine=target.label,
+                                    next_action=code, retryable=False)
             return self._result_for_exception(target, exc, retryable=retryable)
         finally:
             if client is not None:

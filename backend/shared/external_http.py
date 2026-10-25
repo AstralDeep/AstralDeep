@@ -10,6 +10,7 @@ import socket
 from typing import Any, Dict, Iterable, Optional
 from urllib.parse import urlparse, urlunparse
 
+import httpx
 import requests
 
 # Private import on purpose: keeps both SSRF guards in sync
@@ -205,6 +206,62 @@ def request(
         resp.close()
     resp._content = b"".join(chunks)
     resp._content_consumed = True
+
+    status = resp.status_code
+    if status in (401, 403):
+        raise AuthFailedError(f"Authentication failed ({status})")
+    if status == 429:
+        snippet = (resp.text or "")[:500]
+        raise RateLimitedError(f"Rate-limited by upstream ({status}): {snippet}")
+    if 500 <= status < 600:
+        snippet = (resp.text or "")[:500]
+        raise RateLimitedError(f"Upstream server error ({status}): {snippet}")
+    if 400 <= status < 500:
+        snippet = (resp.text or "")[:500]
+        raise BadRequestError(f"Upstream returned {status}: {snippet}")
+    return resp
+
+
+def request_http2(
+    method: str,
+    url: str,
+    *,
+    api_key: str = "",
+    json_body: Any = None,
+    extra_headers: Optional[Dict[str, str]] = None,
+    timeout: int = DEFAULT_TIMEOUT,
+    max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+) -> httpx.Response:
+    validate_egress_url(url)
+    try:
+        client = httpx.Client(http2=True, follow_redirects=False, timeout=timeout)
+    except ImportError:
+        raise ExternalHttpError("http2 transport is unavailable") from None
+    headers: Dict[str, str] = {}
+    if isinstance(api_key, str) and api_key.strip():
+        headers["Authorization"] = f"Bearer {api_key}"
+    if extra_headers:
+        headers.update(extra_headers)
+    try:
+        with client:
+            with client.stream(
+                method.upper(),
+                url,
+                json=json_body,
+                headers=headers,
+            ) as resp:
+                chunks = []
+                total = 0
+                for chunk in resp.iter_bytes(chunk_size=min(64 * 1024, max_response_bytes + 1)):
+                    total += len(chunk)
+                    if total > max_response_bytes:
+                        raise ResponseTooLargeError(
+                            f"Response exceeded {max_response_bytes} bytes"
+                        )
+                    chunks.append(chunk)
+                resp._content = b"".join(chunks)
+    except httpx.HTTPError as e:
+        raise ServiceUnreachableError(f"Could not reach {url}: {e}") from e
 
     status = resp.status_code
     if status in (401, 403):

@@ -34,7 +34,9 @@ def host(monkeypatch):
     socket = object()
     orch.ui_sessions = {socket: {"sub": "owner", "exp": time.time() + 600, "realm_access": {"roles": ["user"]}}}
     orch.security_flags = {}
-    orch.tool_permissions = SimpleNamespace(is_tool_allowed=Mock(return_value=True), get_tool_scope=Mock(return_value="tools:read"))
+    orch.tool_permissions = SimpleNamespace(is_tool_allowed=Mock(return_value=True),
+        get_tool_scope=Mock(return_value="tools:read"), get_tool_scope_map=Mock(return_value={
+            name: tool["scope"] for name, tool in mcp_tools.TOOL_REGISTRY.items()}))
     orch.terminal_sessions = SimpleNamespace(list_sessions=Mock(return_value=[]))
     orch.pending_requests = {}
     orch._pending_request_agent = {}
@@ -50,6 +52,13 @@ def host(monkeypatch):
     orch.agent_cards = {AGENT: agent.card}
     authority = bind_terminal_authority(orch, socket, "owner", TOOL)
     args = {"user_id": "owner", "_terminal_authority": authority}
+
+    async def _execute_with_retry(ws, agent_id, tool_name, arguments, **kwargs):
+        return await orch._execute_in_process(
+            agent_id, tool_name, arguments, ui_websocket=ws)
+
+    orch._execute_with_retry = _execute_with_retry
+    orch.send_ui_render = AsyncMock()
     return SimpleNamespace(orch=orch, socket=socket, authority=authority, args=args, agent=agent)
 
 

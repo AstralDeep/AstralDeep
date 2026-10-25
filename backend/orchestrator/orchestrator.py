@@ -51,7 +51,7 @@ from orchestrator.tool_permissions import ToolPermissionManager
 from orchestrator.credential_manager import CredentialManager
 from orchestrator.delegation import DelegationService
 from orchestrator.tool_security import ToolSecurityAnalyzer
-from orchestrator.compaction import compact_messages, estimate_overhead_tokens
+from orchestrator.compaction import compact_messages
 from llm_config.tool_continuation import (
     is_gemini_continuation_profile,
     merge_continuation_signature,
@@ -1145,11 +1145,6 @@ class Orchestrator:
             submission_gate=emergency_submission_gate(self),
             execution_gate=self.emergency_stop_store.assert_running,
         )
-        self.work_recovery = ExecutorRecoveryService(
-            self.work_admission,
-            stop_gate=owner_stop_gate(self.emergency_stop_store),
-            mode=ExecutorRecoveryService.Mode.PRESERVE_UNSUPPORTED,
-        )
         from orchestrator.agent_generator import (
             BYO_RUNTIME_CONTRACT_VERSION,
             BYO_RUNTIME_LOCK_SHA256,
@@ -1349,6 +1344,61 @@ class Orchestrator:
         self._owned_audit_recorder = self.audit_recorder
         self.audit_recorder.set_publisher(make_publish_callable(self))
         set_recorder(self.audit_recorder)
+
+        from orchestrator.plane_repository_context import (
+            PlaneRepositoryContext,
+            repository_from,
+        )
+        from orchestrator.work_reconciliation import (
+            EffectAttemptLedger,
+            EffectReconciliationService,
+            MeshTargetAuthority,
+        )
+        credentials_repository, _ = repository_from(
+            "credentials",
+            plane_runtime=self.runtime_composition.plane.runtime,
+            repositories=self.runtime_composition.plane.repositories,
+        )
+        self.effect_attempts = EffectAttemptLedger(
+            coordinator=self.work_admission,
+            source=PlaneRepositoryContext(
+                repository=credentials_repository,
+                plane_runtime=self.runtime_composition.plane.runtime,
+            ),
+            audit_repository=self.audit_repo,
+        )
+        self.work_admission.set_completion_guard(self.effect_attempts.completion_uncertain)
+        self.effect_reconciliation = EffectReconciliationService(
+            ledger=self.effect_attempts,
+            target_authority=MeshTargetAuthority(
+                plane_runtime=self.runtime_composition.plane.runtime,
+                plane_repositories=self.runtime_composition.plane.repositories,
+                audit_repository=self.audit_repo,
+            ),
+        )
+        self.work_recovery = ExecutorRecoveryService(
+            self.work_admission,
+            stop_gate=owner_stop_gate(self.emergency_stop_store),
+            uncertainty_probe=self.effect_attempts.preservation_probe,
+            mode=ExecutorRecoveryService.Mode.PRESERVE_UNSUPPORTED,
+        )
+
+        from orchestrator.push_destinations import PushDestinationStore
+        from orchestrator.push_delivery import PushDeliveryCoordinator
+        from orchestrator.push_providers import adapters_from_env
+        self.push_destinations = PushDestinationStore(
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+            audit_repository=self.audit_repo,
+        )
+        self.push_delivery = PushDeliveryCoordinator(
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+            destinations=self.push_destinations,
+            adapters=adapters_from_env(),
+            audit_repository=self.audit_repo,
+            metrics=self._push_delivery_metric,
+        )
 
         from orchestrator.human_request_authority import HumanRequestBoundary
         self.human_request_boundary = HumanRequestBoundary(self)
@@ -1674,9 +1724,16 @@ class Orchestrator:
         return candidates[0] if candidates else None
 
     async def _register_computer_host(self, websocket, owner_sub: str, descriptor) -> None:
+        host_id = descriptor.host_id if hasattr(descriptor, "host_id") else descriptor["host_id"]
+        displaced = (self.computer_hosts.get(owner_sub, host_id), self.computer_hosts.host_for_socket(websocket))
         host, superseded = self.computer_hosts.register(owner_sub, websocket, descriptor)
-        if superseded is not None:
-            await self.computer_sessions.end_all_for_host(owner_sub, host.host_id, "host_superseded")
+        ended = set()
+        for previous in (*displaced, superseded):
+            if previous is None or (previous.owner_sub, previous.host_id) in ended:
+                continue
+            ended.add((previous.owner_sub, previous.host_id))
+            await self.computer_sessions.end_all_for_host(
+                previous.owner_sub, previous.host_id, "host_superseded")
         await self.computer_hosts.push_presence(host, "online")
 
     async def _teardown_computer_host(self, websocket) -> None:
@@ -6768,6 +6825,43 @@ class Orchestrator:
             return None
         return self._canonical_uuid4(supplied)
 
+    def _hitl_decision_envelope(self, websocket, event):
+        payload = dict(event.payload)
+        fields = {"submission_id", "request_generation", "connection_generation"}
+        context = getattr(self, "_connection_contexts", {}).get(id(websocket))
+        active = _CONNECTION_OPERATION_CONTEXT.get()
+        if context is None or active is None:
+            return (None, None) if fields.intersection(payload) else (payload, None)
+        operation = active.get("operation")
+        work = context.operations.get(getattr(operation, "operation_id", None))
+        if work is None:
+            return None, None
+        connection = context.connection_generation
+        fence = work.fence
+        claims = self.ui_sessions.get(websocket)
+        original_claims = copy.deepcopy(claims)
+        expected = {"submission_id": work.frame.submission_id,
+                    "request_generation": work.frame.request_generation,
+                    "connection_generation": connection}
+
+        def current():
+            return (self._connection_contexts.get(id(websocket)) is context
+                    and context.websocket is websocket and context.registered and not context.closing
+                    and _CONNECTION_OPERATION_CONTEXT.get() is active
+                    and context.operations.get(work.operation_id) is work
+                    and not work.lease_lost and fence is not None and work.fence == fence
+                    and active.get("execution_fence") == fence and active.get("owner") == work.owner
+                    and active.get("connection_generation") == connection == context.connection_generation
+                    and active.get("request_generation") == expected["request_generation"] == work.frame.request_generation
+                    and self.ui_sessions.get(websocket) is claims and claims == original_claims)
+
+        if not current() or any(
+                (name in payload and payload[name] != str(value))
+                or (getattr(event, name) is not None and getattr(event, name) != str(value))
+                for name, value in expected.items()):
+            return None, None
+        return {key: value for key, value in payload.items() if key not in fields}, current
+
     @staticmethod
     def _matching_frame_value(
         field_name: str, *sources: dict[str, Any]
@@ -8615,6 +8709,30 @@ class Orchestrator:
         except Exception:
             logger.exception("UI control frame failed")
 
+    async def _run_computer_control(self, context: ConnectionContext, raw: str, parsed: dict) -> None:
+        if (not flags.is_enabled("computer_use") or context.closing or not context.registered
+                or self._connection_contexts.get(id(context.websocket)) is not context
+                or not (self.ui_sessions.get(context.websocket) or {}).get("sub")
+                or self.computer_hosts.over_size_cap(len(raw.encode("utf-8")))):
+            return
+        try:
+            message = Message.from_json(raw)
+            if (not isinstance(message, UIEvent) or not isinstance(message.payload, dict)
+                    or self._connection_frame(context, raw, parsed) is None):
+                return
+            if message.action == "computer_response":
+                await self._handle_computer_response(context.websocket, message)
+            elif message.action == "computer_event" and message.payload.get("event") in {
+                    "announce", "withdraw", "heartbeat", "paused", "resumed", "stopped"}:
+                host = self.computer_hosts.host_for_socket(context.websocket)
+                if message.payload["event"] != "announce" and (
+                        host is None or host.owner_sub != self.ui_sessions[context.websocket].get("sub")
+                        or message.payload.get("host_id", host.host_id) != host.host_id):
+                    return
+                await self._handle_computer_event(context.websocket, message)
+        except (ProtocolValidationError, TypeError, ValueError):
+            logger.warning("Malformed computer host control frame refused")
+
     async def _run_ui_registration(
         self,
         context: ConnectionContext,
@@ -8644,6 +8762,10 @@ class Orchestrator:
         raw: str,
     ) -> bool:
         parsed = self._parsed_ui_frame(raw)
+        if ((parsed or {}).get("type") == "ui_event"
+                and (parsed or {}).get("action") in {"computer_response", "computer_event"}):
+            await self._run_computer_control(context, raw, parsed)
+            return True
         control = self._ui_control_kind(parsed)
         if control in {"register_ui", "close"}:
             from orchestrator.chrome_events import _note_open_surface
@@ -10412,6 +10534,20 @@ class Orchestrator:
 
                 elif msg.action == "cancel_task":
                     self.cancelled_sessions[id(websocket)] = True
+                    computer_sessions = getattr(self, "computer_sessions", None)
+                    active_chat = self._ws_active_chat.get(id(websocket))
+                    if user_id and user_id != "legacy" and active_chat:
+                        from orchestrator import hitl_confirmation
+
+                        hitl_confirmation.cancel_pending(self, websocket, user_id, active_chat)
+                        origins = getattr(self, "_hitl_task_origins", {})
+                        origin = origins.get((user_id, active_chat))
+                        if origin is not None and origin[0] is websocket:
+                            origins.pop((user_id, active_chat), None)
+                        if computer_sessions is not None:
+                            for session in computer_sessions.live_for_owner(user_id):
+                                if session.chat_id == active_chat and session.controller_ws_id == id(websocket):
+                                    await computer_sessions.end(session, "user_stop")
                     recorder = self._chat_recorders.get(id(websocket))
                     if recorder is not None:
                         try:
@@ -11245,8 +11381,9 @@ class Orchestrator:
                 elif msg.action == "authorize_action":
                     if "hitl_request_id" in (msg.payload or {}):
                         from orchestrator import hitl_confirmation
+                        decision, admission_check = self._hitl_decision_envelope(websocket, msg)
                         await hitl_confirmation.handle_decision(
-                            self, websocket, user_id, msg.payload or {})
+                            self, websocket, user_id, decision, admission_check=admission_check)
                         return
                     _p = msg.payload or {}
                     _aid, _tool = _p.get("agent_id"), _p.get("tool")
@@ -12553,12 +12690,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         attachments=None,
         operation_context=None,
         voice_dispatch=None,
+        continuation_guard=None,
     ):
         ws_id = id(websocket)
+        started = False
         try:
+            from orchestrator import hitl_confirmation
+
+            if continuation_guard is not None and not continuation_guard():
+                return
             if operation_context is None:
                 operation_context = _CONNECTION_OPERATION_CONTEXT.get()
             if voice_dispatch is not None:
+                if continuation_guard is None:
+                    hitl_confirmation.begin_task(self, websocket, user_id, chat_id)
+                started = True
                 await self.handle_chat_message(
                     websocket, message, chat_id, display_message,
                     user_id=user_id, draft_agent_id=draft_agent_id,
@@ -12577,6 +12723,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         chat_id, asyncio.Lock()
                     )
                     async with workspace_lock:
+                        if continuation_guard is not None and not continuation_guard():
+                            return
+                        if continuation_guard is None:
+                            hitl_confirmation.begin_task(self, websocket, user_id, chat_id)
+                        started = True
                         await self.handle_chat_message(
                             websocket, message, chat_id, display_message,
                             user_id=user_id, draft_agent_id=draft_agent_id,
@@ -12611,7 +12762,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if type(e) is SkillCatalogError:
                 raise
         finally:
-            self._chat_recorders.pop(ws_id, None)
+            if started:
+                self._chat_recorders.pop(ws_id, None)
 
     def _drop_chat_locks(self, websocket) -> None:
         ws_id = id(websocket)
@@ -12989,6 +13141,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         )
         return summary or "Your scheduled task finished."
 
+    def _push_delivery_metric(self, name: str, labels: Dict[str, str]) -> None:
+        observability = getattr(self, "runtime_observability", None)
+        if observability is None:
+            return
+        observability.record(name, labels=labels)
+
     async def notify_user(self, user_id: str, payload: Dict[str, Any]) -> None:
         try:
             data = json.dumps(payload)
@@ -13008,6 +13166,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             "notify_user.delivered",
             extra={"user_id": user_id, "sockets": sent, "kind": payload.get("type")},
         )
+        if flags.is_enabled("push_delivery"):
+            try:
+                await self.push_delivery.enqueue_notification(user_id, payload)
+            except Exception:
+                logger.warning("notify_user: push enqueue failed", exc_info=True)
 
     async def _send_to_user_sockets(self, user_id: str, frame: Dict[str, Any]) -> int:
         try:
@@ -14930,13 +15093,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 elif flags.is_enabled("message_compaction"):
                     _user_cfg = await self._llm_store.get(user_id)
                     _sys_cfg = await self._llm_store.get_system()
+                    _compaction_cfg = (
+                        _user_cfg if getattr(_user_cfg, "model", None) else _sys_cfg
+                    )
                     messages, was_compacted = await compact_messages(
                         messages,
                         getattr(_user_cfg, "model", None)
                         or getattr(_sys_cfg, "model", None)
                         or "default",
                         self._call_llm,
-                        overhead_tokens=estimate_overhead_tokens(tools_desc),
+                        provider=getattr(_compaction_cfg, "provider", None),
+                        tools_desc=tools_desc,
                     )
                     if was_compacted:
                         logger.info("Context compacted before LLM call")
@@ -17505,12 +17672,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     args = {k: v for k, v in args.items() if k != "_txn_token"}
 
         if user_id and agent_id and action.needs_review:
-            from orchestrator import hitl_confirmation
+            from orchestrator import hitl as _hitl, hitl_confirmation
 
             origin = self._source_ledger(user_id, chat_id).origin_of(args)
+            review_risks = [*source_bound.review_risks(action), f"origin:{origin.value}"]
+            if agent_id == "computer-use-1" and tool_name in {"type_text", "press_keys"} and "terminal_app" in args:
+                review_risks.append("terminal_input")
+            if _hitl.hitl_enabled():
+                from orchestrator import taint as _taint
+                trust = (_taint.trust_name(self._taint_tracker(chat_id).effective_trust_of_args(
+                    args, user_text=self._current_request_text(chat_id))) if _taint.taint_enabled() else "trusted")
+                review_risks.extend(_hitl.assess_risk(tool_name, args, actor_principal=user_id,
+                    trust=trust, agent_id=agent_id,
+                    public_reader=_hitl.registered_public_reader(self, agent_id, tool_name)))
             pending = await hitl_confirmation.evaluate(
                 self, websocket, user_id, chat_id, agent_id, tool_name,
-                args, (*source_bound.review_risks(action), f"origin:{origin.value}"))
+                args, tuple(set(review_risks)))
             if pending is not None:
                 return GateRefusal(response=pending)
 
@@ -17577,8 +17754,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if _hitl.requires_confirmation(risks) or _typesafe_confirms:
                     logger.warning("hitl.confirm user=%s tool=%s risks=%s", user_id, tool_name, risks)
                     from orchestrator import hitl_confirmation
-                    pending = await hitl_confirmation.evaluate(
-                        self, websocket, user_id, chat_id, agent_id, tool_name, args, risks)
+                    approved = hitl_confirmation.current_approval(
+                        self, user_id, chat_id, agent_id, tool_name, args)
+                    pending = (None if approved is not None and "source_bound" in approved.call.risks
+                               and set(risks).issubset(approved.call.risks) else await hitl_confirmation.evaluate(
+                                   self, websocket, user_id, chat_id, agent_id, tool_name, args, risks))
                     if pending is not None:
                         return GateRefusal(
                             response=pending,
@@ -17990,6 +18170,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         if parent_token is not None
                         else self._protected_dispatch_channel(websocket)
                     ),
+                    effect_original_arguments=stream_params,
                     audit_correlation_id=_audit_ctx.correlation_id,
                     audit_actor_user_id=getattr(
                         _audit_ctx, "actor_user_id", user_id
@@ -18958,7 +19139,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         result = MCPResponse(error={"message": exc.code, "retryable": False})
                 else:
                     result = await invoke(capabilities)
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 if action.needs_review:
                     try:
                         await hitl_confirmation.audit_effect_outcome(
@@ -19025,7 +19206,26 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             }
         return result
 
-    async def _execute_with_retry(
+    async def _execute_with_retry(self, websocket, agent_id, tool_name, args, *positional, **kwargs):
+        from orchestrator.remote_effect_execution import select_effect, selected_effect
+        from orchestrator.work_reconciliation import ReconciliationRefused
+        try:
+            selection = await select_effect(self, websocket, agent_id, tool_name,
+                kwargs.pop("effect_original_arguments", args), kwargs.get("user_id"))
+        except Exception as exc:
+            code = exc.code if isinstance(exc, ReconciliationRefused) else "effect_current_authority_unavailable"
+            return MCPResponse(error={"code": code, "message": code, "retryable": False})
+        with selected_effect(selection):
+            if selection is not None:
+                kwargs["max_retries"] = 1
+                positional = ()
+            result = await self._execute_with_retry_loop(
+                websocket, agent_id, tool_name, args, *positional, **kwargs)
+            if selection is not None and result is not None and result.error:
+                result.error["retryable"] = False
+            return result
+
+    async def _execute_with_retry_loop(
         self, websocket, agent_id: str, tool_name: str, args: Dict,
         max_retries: int = None, *, user_id: Optional[str] = None,
         channel: Optional[str] = None,
@@ -19223,6 +19423,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         refusal = self._terminal_dispatch_refusal(agent_id)
         if refusal is not None:
             return refusal
+        from orchestrator.remote_effect_execution import qualified_tool
+        if qualified_tool(agent_id, tool_name) and agent_id not in self.local_agents:
+            return MCPResponse(error={"code": "effect_placement_unsupported",
+                "message": "effect_placement_unsupported", "retryable": False})
         from orchestrator.agent_identity import required_identity_claims
 
         stop = getattr(self, "emergency_stop", None)
@@ -23167,6 +23371,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 report.count(RecoveryDisposition.PRESERVED_CANCELLED)
                 + report.count(RecoveryDisposition.PRESERVED_STOPPED)
                 + report.count(RecoveryDisposition.PRESERVED_UNCERTAIN)
+                + report.count(RecoveryDisposition.RESOLVED_APPLIED)
                 + report.count(RecoveryDisposition.PRESERVED_EXHAUSTED)
             )
             if report.expired or rescheduled or replayed or refused or preserved:
@@ -23306,6 +23511,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         ):
             self._remote_job_poll_task = asyncio.create_task(
                 self._remote_job_poll_loop(), name="remote-cluster-job-poller")
+
+        if flags.is_enabled("push_delivery"):
+            self._track_startup_background_task(
+                self.push_delivery.run_loop(), name="push-delivery-dispatcher",
+            )
 
         self._start_phi_warm()
 
@@ -23646,6 +23856,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator.api import chat_router, component_router, agent_router, dashboard_router, draft_router, voice_router, task_router, async_task_router, user_router, chrome_router, export_router, share_router, operation_router
         from orchestrator.auth import auth_router
         from orchestrator.mesh_api import mesh_router
+        from orchestrator.push_api import push_router
         from orchestrator.web_auth import web_auth_router
         from orchestrator.attachments.router import attachments_router
         from audit.api import audit_router
@@ -23673,12 +23884,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(chrome_router)
         from orchestrator.lets_health_api import lets_router
         app.include_router(lets_router)
+        from orchestrator.a2a_publication_api import publication_router
+        app.include_router(publication_router)
         app.include_router(export_router)
         app.include_router(share_router)
         app.include_router(auth_router)
         from orchestrator.mesh_web import mesh_web_router
         app.include_router(mesh_router)
         app.include_router(mesh_web_router)
+        app.include_router(push_router)
         app.include_router(web_auth_router)
         if flags.is_enabled("kiosk_login"):
             from orchestrator.web_auth import kiosk_router
@@ -23723,7 +23937,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     "A2A JSON-RPC endpoint mounted at /a2a/ (FF_A2A_SERVER=true). "
                     "POST /a2a requires a first-party Keycloak bearer and "
                     "dispatches through the tool authorization gate; the "
-                    "anonymous agent card lists only the public safe catalog. "
+                    "anonymous agent card lists only capabilities the owner "
+                    "explicitly published for A2A. "
                     "Keep the reverse proxy rule for /a2a closed until the "
                     "owner opens it."
                 )

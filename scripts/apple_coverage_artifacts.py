@@ -33,6 +33,7 @@ UI_SUITES = frozenset(
         "Accessibility060UITests",
         "ConversationContinuityUITests",
         "LLMFirstLoginUITests",
+        "SettingsControlsUITests",
         "VoiceConversationUITests",
         "WorkspaceActionsUITests",
         "WorkspacePresentationUITests",
@@ -674,19 +675,52 @@ def xcresult_json(result, operation, *, deadline):
         )
 
 
-def observation_cases(summary, tests, lane):
-    require(lane in {"core", "unit", "ui", "staging"})
+def observation_cases(summary, tests, lane, platform="ios"):
+    require(platform in {"ios", "macos"})
+    require(
+        lane
+        in (
+            {"core", "unit", "ui", "staging"}
+            if platform == "ios"
+            else {"unit", "ui", "staging"}
+        )
+    )
+    policy = _native_policy("native_xccov_domain") if platform == "macos" else None
+    if policy is not None:
+        devices = tests.get("devices") if isinstance(tests, dict) else None
+        require(
+            isinstance(devices, list)
+            and len(devices) == 1
+            and isinstance(devices[0], dict)
+        )
+        policy.test_identity(
+            summary,
+            tests,
+            lane,
+            platform=platform,
+            architecture=devices[0].get("architecture"),
+        )
     require(isinstance(summary, dict) and isinstance(tests, dict))
     require(summary.get("result") == "Passed" and summary.get("testFailures") == [])
-    for key in ("failedTests", "skippedTests", "expectedFailures"):
+    for key in (
+        ("failedTests", "skippedTests", "expectedFailures")
+        if platform == "ios"
+        else ("failedTests", "expectedFailures")
+    ):
         require(type(summary.get(key)) is int and summary[key] == 0)
     total = summary.get("totalTestCount")
     require(type(total) is int and 0 < total <= MAX_TEST_NODES)
-    require(type(summary.get("passedTests")) is int and summary["passedTests"] == total)
+    require(
+        type(summary.get("passedTests")) is int
+        and summary["passedTests"]
+        == total - (summary["skippedTests"] if platform == "macos" else 0)
+    )
     devices = tests.get("devices")
     require(isinstance(devices, list) and len(devices) == 1)
     require(
-        isinstance(devices[0], dict) and devices[0].get("platform") == "iOS Simulator"
+        isinstance(devices[0], dict)
+        and devices[0].get("platform")
+        == ("iOS Simulator" if platform == "ios" else "macOS")
     )
     configs = tests.get("testPlanConfigurations")
     require(isinstance(configs, list) and len(configs) == 1)
@@ -729,8 +763,18 @@ def observation_cases(summary, tests, lane):
         require(isinstance(children, list) and 0 < len(children) <= MAX_TEST_NODES)
         for case in children:
             require(isinstance(case, dict) and case.get("nodeType") == "Test Case")
-            require(case.get("result") == "Passed")
-            require("children" not in case or case["children"] == [])
+            if platform == "macos" and case.get("result") == "Skipped":
+                require(
+                    policy is not None
+                    and case.get("nodeIdentifier")
+                    in policy.MACOS_SKIP_DISPOSITIONS.get(lane, {})
+                )
+            else:
+                require(case.get("result") == "Passed")
+                if platform == "macos":
+                    policy.macos_case_warnings(case.get("children", []), lane)
+                else:
+                    require("children" not in case or case["children"] == [])
             method = case.get("name")
             require(
                 isinstance(method, str)
@@ -745,19 +789,31 @@ def observation_cases(summary, tests, lane):
             require(len(cases) <= MAX_TEST_NODES)
     require(len(cases) == total)
     if lane == "ui":
-        require(names == UI_SUITES and CONTINUITY_CASE in cases)
+        require(
+            names
+            == (
+                UI_SUITES
+                if platform == "ios"
+                else UI_SUITES - {"WorkspaceActionsUITests", "SettingsControlsUITests"}
+            )
+            and CONTINUITY_CASE in cases
+        )
     elif lane == "staging":
         require(cases == {STAGING_CASE})
     return sorted(cases)
 
 
 def validate_observations(repo, platform, output):
-    require(platform == "ios")
+    require(platform in {"ios", "macos"})
     validate(repo, platform, output)
     roots, digests, observations, snapshots = set(), set(), {}, {}
     deadline = time.monotonic() + 120
-    for lane in ("core", "unit", "ui", "staging"):
-        result = output / "coverage/raw" / f"apple-ios-{lane}.xcresult"
+    for lane in (
+        ("core", "unit", "ui", "staging")
+        if platform == "ios"
+        else ("unit", "ui", "staging")
+    ):
+        result = output / "coverage/raw" / f"apple-{platform}-{lane}.xcresult"
         within(repo, result)
         before = tree(result)
         snapshots[result] = before
@@ -780,6 +836,7 @@ def validate_observations(repo, platform, output):
             xcresult_json(result, "summary", deadline=deadline),
             xcresult_json(result, "tests", deadline=deadline),
             lane,
+            platform=platform,
         )
         require(tree(result) == before)
         observations[lane] = {
@@ -792,7 +849,14 @@ def validate_observations(repo, platform, output):
 
 
 def _native_policy(name):
-    require(name in {"native_xccov_domain", "export_xccov_line_coverage", "merge_xccov_line_coverage"})
+    require(
+        name
+        in {
+            "native_xccov_domain",
+            "export_xccov_line_coverage",
+            "merge_xccov_line_coverage",
+        }
+    )
     path = Path(__file__).resolve().with_name(name + ".py")
     require(path.is_file() and not path.is_symlink())
     spec = importlib.util.spec_from_file_location("_apple_native_" + name, path)
@@ -803,30 +867,39 @@ def _native_policy(name):
 
 
 # Candidate cannot choose or supply the coverage domain
-def native_domain(repo, output, lane, archive_root):
-    require(lane in {"core", "unit", "ui", "staging"})
-    state = validate(repo, "ios", output)
+def native_domain(repo, output, lane, archive_root, platform="ios"):
+    require(
+        platform in {"ios", "macos"}
+        and lane
+        in (
+            {"core", "unit", "ui", "staging"}
+            if platform == "ios"
+            else {"unit", "ui", "staging"}
+        )
+    )
+    state = validate(repo, platform, output)
     policy = _native_policy("native_xccov_domain")
     exporter = _native_policy("export_xccov_line_coverage")
     kind = "core_products" if lane == "core" else "products"
-    member = policy.BINARY_MEMBERS["core" if lane == "core" else "app"]
+    member = policy.binary_member(platform, lane)
     name = member.removeprefix("Products/")
     require(name in state[kind] and stat.S_ISREG(state[kind][name]["mode"]))
-    archive_member = f"coverage/raw/apple-ios-{kind}.zip"
+    archive_member = f"coverage/raw/apple-{platform}-{kind}.zip"
     archive = output / archive_member
     with zipfile.ZipFile(archive) as bundle:
         raw = bundle.read(member)
     require(digest(raw) == state[kind][name]["sha256"])
-    result = output / "coverage/raw" / f"apple-ios-{lane}.xcresult"
+    result = output / "coverage/raw" / f"apple-{platform}-{lane}.xcresult"
     within(repo, result)
     require(result.is_dir() and not result.is_symlink())
     deadline = time.monotonic() + 15 * 60
     summary = xcresult_json(result, "summary", deadline=deadline)
     tests = xcresult_json(result, "tests", deadline=deadline)
-    observation_cases(summary, tests, lane)
+    observation_cases(summary, tests, lane, platform=platform)
     prefix = COMPONENT + "/"
     tracked = {
-        path for path in state["sources"]
+        path
+        for path in state["sources"]
         if path.endswith(".swift")
         and path.removeprefix(prefix).startswith((policy.CORE_ROOT, policy.APP_ROOT))
     }
@@ -837,47 +910,82 @@ def native_domain(repo, output, lane, archive_root):
         require(digest(raw_source) == state["sources"][path]["sha256"])
         return raw_source
 
-    with tempfile.TemporaryDirectory(prefix="apple-native-domain-", dir=output.parent) as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="apple-native-domain-", dir=output.parent
+    ) as directory:
         binary = Path(directory) / "mapping-binary"
         write_new(binary, raw)
         domain = policy.collect_domain(
-            binary_path=binary, binary_bytes=raw,
+            binary_path=binary,
+            binary_bytes=raw,
             binary_identity={
-                "member": member, "sha256": digest(raw),
+                "member": member,
+                "sha256": digest(raw),
                 "artifact_member": archive_member,
                 "artifact_sha256": state["build_archives"][kind],
             },
-            archive_root=archive_root, prefix=prefix, lane=lane,
-            tracked=tracked, source_bytes=source_bytes,
+            archive_root=archive_root,
+            prefix=prefix,
+            lane=lane,
+            tracked=tracked,
+            source_bytes=source_bytes,
             run=lambda command, bound: exporter._bounded_command(
-                command, cwd=repo, max_stdout_bytes=bound, export_deadline=deadline,
+                command,
+                cwd=repo,
+                max_stdout_bytes=bound,
+                export_deadline=deadline,
             ),
-            summary=summary, tests=tests,
+            summary=summary,
+            tests=tests,
+            platform=platform,
         )
-    require(validate(repo, "ios", output) == state)
+    require(validate(repo, platform, output) == state)
     return domain
 
 
-def verify_native_domains(repo, output, report, archive_root):
+def verify_native_domains(repo, output, report, archive_root, platform="ios"):
     within(repo, report)
     policy = _native_policy("native_xccov_domain")
     actual = policy.parse_native_report(document(report))
-    require(set(actual["domains"]) == {"core", "unit", "ui", "staging"})
+    lanes = (
+        ("core", "unit", "ui", "staging")
+        if platform == "ios"
+        else ("unit", "ui", "staging")
+    )
+    require(
+        platform in {"ios", "macos"}
+        and actual["platform"] == platform
+        and set(actual["domains"]) == set(lanes)
+    )
     exporter = _native_policy("export_xccov_line_coverage")
     merger = _native_policy("merge_xccov_line_coverage")
-    with tempfile.TemporaryDirectory(prefix="apple-native-recheck-", dir=output.parent) as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="apple-native-recheck-", dir=output.parent
+    ) as directory:
         inputs = {}
-        for lane in ("core", "unit", "ui", "staging"):
+        for lane in lanes:
             destination = Path(directory) / (lane + ".json")
             exporter.export_xccov(
-                repo=repo, xcresult=output / "coverage/raw" / f"apple-ios-{lane}.xcresult",
-                output=destination, platform="ios", archive_repo_root=archive_root,
-                native_domain=native_domain(repo, output, lane, archive_root),
+                repo=repo,
+                xcresult=output / "coverage/raw" / f"apple-{platform}-{lane}.xcresult",
+                output=destination,
+                platform=platform,
+                archive_repo_root=archive_root,
+                native_domain=native_domain(
+                    repo,
+                    output,
+                    lane,
+                    archive_root,
+                    **({} if platform == "ios" else {"platform": platform}),
+                ),
             )
             inputs[lane] = destination
         regenerated = merger.merge_xccov_reports(
-            repo=repo, inputs=inputs, output=Path(directory) / "union.json",
-            platform="ios", profile="release",
+            repo=repo,
+            inputs=inputs,
+            output=Path(directory) / "union.json",
+            platform=platform,
+            profile="release",
         )
         require(actual == regenerated)
 
@@ -885,7 +993,15 @@ def verify_native_domains(repo, output, report, archive_root):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "operation", choices=("prepare", "verify", "validate", "validate-observations", "native-domain", "verify-native-domains")
+        "operation",
+        choices=(
+            "prepare",
+            "verify",
+            "validate",
+            "validate-observations",
+            "native-domain",
+            "verify-native-domains",
+        ),
     )
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--platform", choices=("ios", "macos"), required=True)
@@ -908,13 +1024,29 @@ def main(argv=None):
                 args.output,
             )
         elif args.operation == "native-domain":
-            require(args.platform == "ios" and args.lane is not None and args.domain_output is not None)
+            require(args.lane is not None and args.domain_output is not None)
             within(args.repo, args.domain_output)
-            value = native_domain(args.repo, args.output, args.lane, args.archive_repo_root)
-            write_new(args.domain_output, json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+            value = native_domain(
+                args.repo,
+                args.output,
+                args.lane,
+                args.archive_repo_root,
+                **({} if args.platform == "ios" else {"platform": args.platform}),
+            )
+            write_new(
+                args.domain_output,
+                json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+                + b"\n",
+            )
         elif args.operation == "verify-native-domains":
-            require(args.platform == "ios" and args.report is not None)
-            verify_native_domains(args.repo, args.output, args.report, args.archive_repo_root)
+            require(args.report is not None)
+            verify_native_domains(
+                args.repo,
+                args.output,
+                args.report,
+                args.archive_repo_root,
+                **({} if args.platform == "ios" else {"platform": args.platform}),
+            )
         elif args.operation == "validate-observations":
             validate_observations(args.repo, args.platform, args.output)
         else:

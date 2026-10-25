@@ -6,7 +6,9 @@ runs async tests via run_async().
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -15,6 +17,26 @@ import pytest
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_runtime_roots():
+    root = tempfile.mkdtemp(prefix="verification-roots-")
+    previous = {
+        name: os.environ.get(name)
+        for name in ("PERSONAL_AGENT_ARTIFACT_ROOT", "ATTACHMENT_UPLOAD_ROOT", "DELEGATION_REQUIRED")
+    }
+    os.environ["PERSONAL_AGENT_ARTIFACT_ROOT"] = os.path.join(root, "agent-artifacts")
+    os.environ["ATTACHMENT_UPLOAD_ROOT"] = os.path.join(root, "blobs")
+    os.environ["DELEGATION_REQUIRED"] = "false"
+    try:
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def _db_ok() -> bool:
@@ -34,6 +56,15 @@ INTEGRATION = [
     pytest.mark.integration,
     pytest.mark.skipif(not _db_ok(), reason="Postgres unavailable"),
 ]
+
+
+@pytest.fixture(autouse=True)
+def ci_dispatch_posture(monkeypatch):
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    monkeypatch.setenv("DELEGATION_REQUIRED", "false")
+    monkeypatch.setenv("FF_TAINT_TRACKING", "false")
+    monkeypatch.setenv("FF_POLICY_ENGINE", "false")
+    monkeypatch.setenv("FF_ASI_COVERAGE", "false")
 
 
 @pytest.fixture

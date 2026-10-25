@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "astraldeep.backend-web-evidence/v1",
+  "$id": "astraldeep.backend-web-evidence/v2",
   "title": "Protected backend and browser release qualification",
   "type": "object",
   "additionalProperties": false,
@@ -24,11 +24,12 @@
     "coverage",
     "responsive",
     "suite_inventory",
-    "dispositions"
+    "dispositions",
+    "synthetic_predecessor"
   ],
   "properties": {
     "schema_version": {
-      "const": 1
+      "const": 2
     },
     "scope": {
       "const": "backend-web"
@@ -101,7 +102,10 @@
         "plane_commit",
         "schema_revision",
         "migration_sha256",
-        "inventory_sha256"
+        "inventory_sha256",
+        "image_config",
+        "platform",
+        "composition_sha256"
       ],
       "properties": {
         "deep_commit": {
@@ -126,6 +130,17 @@
           "pattern": "^[0-9a-f]{64}$"
         },
         "inventory_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "image_config": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "platform": {
+          "const": "linux/amd64"
+        },
+        "composition_sha256": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         }
@@ -434,6 +449,34 @@
           }
         },
         "additionalProperties": false
+      }
+    },
+    "synthetic_predecessor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plane_commit",
+        "schema_revision",
+        "migration_sha256",
+        "fixture_sha256"
+      ],
+      "properties": {
+        "plane_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "schema_revision": {
+          "type": "string",
+          "pattern": "^[0-9]{3}\\.[0-9]{3}$"
+        },
+        "migration_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "fixture_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
       }
     }
   }

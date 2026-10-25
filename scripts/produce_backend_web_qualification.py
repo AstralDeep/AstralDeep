@@ -22,7 +22,6 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE_PLANE = "4a07d59a448c1960ce2ae3f35e605f4d78c4a3f9"
-BASELINE_IMAGE = "sha256:0061eecdbdc516f900a0d77221d806ac6f4d0c7e74cfa743eb5e0ce7b430c634"
 FIXTURE = "c016d8dd30f2bdf932ba8e855bbc586826f5b0f4137b6413c61a82293ef41c1d"
 POSTGRES = "postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73"
 PHASES = ("all", "gate", "services", "assemble")
@@ -231,6 +230,7 @@ def authenticate(args, identifier, initialized, material, destination):
 
 def services_phase(args, driver, destination):
     services = module("initialize_backend_web_services")
+    recovery_baseline = driver.load_recovery_baseline()
     identifier = uuid.uuid4().hex
     observations = []
     completed = set()
@@ -253,9 +253,17 @@ def services_phase(args, driver, destination):
             plane_source=args.source / "components/AstralPlane", baseline_plane_source=args.baseline_plane_source,
             fixture_sha256=FIXTURE, runtime_env=Path(initialized["runtime_fragment"]),
             material_root=Path(initialized["material_root"]), service_network=initialized["service_network"],
-            port=args.port, output=args.private_root / "deployment.json", baseline_deep_image=BASELINE_IMAGE,
+            port=args.port, output=args.private_root / "deployment.json", baseline_deep_image=recovery_baseline["image_ref"],
         )
-        deployed_ok, _ = attempt(observations, deploy_name, lambda: driver.deploy(deployment_args))
+        def deploy_recovery():
+            report = driver.deploy(deployment_args)
+            if (report.get("schema_version") != 2 or report.get("production_baseline") != recovery_baseline
+                    or not isinstance(report.get("state_rehearsal"), dict)
+                    or report["state_rehearsal"].get("status") != "synthetic-state-and-paired-recovery-passed"
+                    or report.get("release_authorized") is not False):
+                raise ValueError("current production recovery proof is incomplete")
+            return report
+        deployed_ok, _ = attempt(observations, deploy_name, deploy_recovery)
         if deployed_ok:
             completed.update(deploy_checks)
             authenticated_ok, _ = attempt(observations, authenticate_name, lambda: authenticate(

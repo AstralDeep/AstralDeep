@@ -486,6 +486,28 @@ def test_invalid_approval_shapes_refused_store_intact(case):
     assert o.execute_single_tool.calls == []
 
 
+class _ReviewableScopes(dict):
+    def __init__(self):
+        super().__init__({
+            "gaiakeep_core_whoami": "tools:read",
+            "gaiakeep_core_auditack": "tools:system",
+            "gaiakeep_core_repair": "tools:system",
+            "gaiakeep_upload_file": "tools:write",
+            "gaiakeep_upload_dataset": "tools:write",
+            "gaiakeep_download_dataset": "tools:write",
+            "remove_path": "tools:write",
+            "submit_job": "tools:write",
+            "cancel_job": "tools:write",
+            "list_queue": "tools:read",
+            "job_status": "tools:read",
+            "host_facts": "tools:read",
+            "list_processes": "tools:read",
+        })
+
+    def get(self, key, default=None):
+        return super().get(key, "tools:read")
+
+
 @pytest.fixture
 def real_orch(monkeypatch):
     from orchestrator.orchestrator import Orchestrator
@@ -507,6 +529,10 @@ def real_orch(monkeypatch):
     o.send_ui_render = AsyncMock()
     o.tool_permissions = MagicMock()
     o.tool_permissions.is_tool_allowed.return_value = True
+    from agents.remote_compute.mcp_tools import TOOL_REGISTRY
+    o.tool_permissions.get_tool_scope_map.return_value = {
+        name: entry["scope"] for name, entry in TOOL_REGISTRY.items()
+    }
     o._record_hop_audit = AsyncMock()
     monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)
     return o

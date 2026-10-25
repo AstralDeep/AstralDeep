@@ -52,6 +52,13 @@ async def _register(websocket) -> None:
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_ws_register_handshake():
+    import socket as _socket
+
+    host, _, port = URI.partition("ws://")[2].partition("/")[0].partition(":")
+    try:
+        await asyncio.to_thread(_socket.create_connection, (host, int(port or 8001)), 2)
+    except OSError:
+        pytest.skip(f"live orchestrator not listening at {URI}")
     last_exc: Exception | None = None
     for _attempt in range(3):
         try:
@@ -63,6 +70,8 @@ async def test_ws_register_handshake():
         except (OSError, websockets.exceptions.WebSocketException) as exc:
             last_exc = exc
             await asyncio.sleep(2)
+    if isinstance(last_exc, OSError) and "Errno 111" in str(last_exc):
+        pytest.skip(f"live orchestrator not reachable at {URI}: {last_exc}")
     pytest.fail(f"Could not complete WS registration at {URI} after 3 attempts: {last_exc}")
 
 

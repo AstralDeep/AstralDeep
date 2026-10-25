@@ -94,11 +94,16 @@ class ChainedDriver(Driver):
         o._job_context = {}
         o.tool_permissions = MagicMock()
         o.credential_manager = MagicMock()
+        o.hooks = MagicMock()
+        o.hooks.emit = AsyncMock(return_value=SimpleNamespace(action=None, modified_args=None, reason=None))
         o._is_long_running_tool = lambda _agent_id, _tool_name: False
         o._tool_accepts_context_arg = lambda _agent_id, _tool_name, _arg: False
         o._auto_subscribe_stream_artifacts = AsyncMock()
         o._is_user_agent = lambda _agent_id: False
         tool = case.objective.target_tool or "peer_tool"
+        scope = case.objective.required_scope
+        if scope is None and tool == "peer_tool":
+            scope = "tools:read"
         kind = case.objective.kind
         is_control = case.meta.get("control") == "1"
 
@@ -109,13 +114,15 @@ class ChainedDriver(Driver):
         o.tool_permissions.is_tool_allowed = MagicMock(side_effect=_allowed)
         o.tool_permissions.get_enabled_scope_names = MagicMock(return_value=["tools:read"])
         o.tool_permissions.get_tool_scope = MagicMock(
-            return_value=case.objective.required_scope or "tools:read")
+            return_value=scope)
+        o.tool_permissions.get_tool_scope_map = MagicMock(side_effect=lambda agent_id: {
+            tool: scope} if agent_id == "callee-1" else {})
         o._map_file_paths = lambda cid, a, **k: a
         o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
         o.agents["initiator-1"] = MagicMock()
         o.agents["callee-1"] = MagicMock()
         o.agent_cards["callee-1"] = SimpleNamespace(
-            skills=[SimpleNamespace(id=tool)],
+            skills=[SimpleNamespace(id=tool, scope=scope)],
         )
 
         executed = {"v": False}

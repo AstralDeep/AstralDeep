@@ -18,6 +18,7 @@ from orchestrator.plane_repository_context import (
     repository_from,
 )
 from orchestrator.remote_transport import MachineTarget
+from orchestrator.remote_effect_authority import lock_owner, rotate_authority
 
 logger = logging.getLogger("RemoteMachines")
 
@@ -151,22 +152,25 @@ def resolve_machine(db, owner_user_id: str, ref: str) -> Optional[Dict]:
 
 def delete_machine(db, owner_user_id: str, machine_id: str) -> bool:
     context = _remote_context(db)
-    return context.call(
-        context.repository.delete_machine,
-        owner_id=owner_user_id,
-        machine_id=machine_id,
-    )
+    with context.transaction() as transaction:
+        lock_owner(context.plane_runtime, transaction, owner_user_id)
+        if context.repository.get_machine(transaction, owner_id=owner_user_id, machine_id=machine_id) is None:
+            return False
+        rotate_authority(context.plane_runtime, transaction, owner_user_id, machine_id)
+        return context.repository.delete_machine(
+            transaction, owner_id=owner_user_id, machine_id=machine_id)
 
 
 def purge_user_remote_compute(db, owner_user_id: str, credential_manager=None) -> Dict[str, int]:
     if credential_manager is None:
         from orchestrator.credential_manager import CredentialManager
         credential_manager = CredentialManager(db=db)
-    credentials = credential_manager.remove_machine_credentials_for_user(owner_user_id)
-
     remote = _remote_context(db)
     tracked = _tracked_context(db)
     with remote.transaction() as transaction:
+        rotate_authority(remote.plane_runtime, transaction, owner_user_id)
+        credentials = remote.plane_runtime.repositories.credentials.delete_owner_machine_credentials(
+            transaction, owner_id=owner_user_id)
         jobs = tracked.repository.delete_owner(transaction, owner_id=owner_user_id)
         machines = remote.repository.delete_owner(transaction, owner_id=owner_user_id)
     return {"credentials": credentials, "machines": machines, "jobs": jobs}
@@ -214,68 +218,71 @@ def audit_machine_event(owner_user_id: Optional[str], action_type: str, descript
 def record_probe(db, owner_user_id: str, machine_id: str, verdict: str,
                  host_key: Optional[Dict] = None) -> None:
     now = _now_ms()
-    row = get_machine(db, owner_user_id, machine_id)
-    if row is None:
-        return
-    audit_machine_event(
-        owner_user_id, "remote_machine.connection",
-        f"connection to {row['label']}: {verdict}",
-        machine_id=machine_id, label=row["label"], verdict=verdict,
-        outcome="success" if verdict in _CONNECTED_VERDICTS else "failure",
-    )
     context = _remote_context(db)
-    context.call(
-        context.repository.record_probe,
-        owner_id=owner_user_id,
-        machine_id=machine_id,
-        expected_updated_at=int(row["updated_at"]),
-        verdict=verdict,
-        checked_at=max(now, int(row["updated_at"]) + 1),
-        host_key_type=(
-            host_key.get("type")
-            if host_key and not row.get("host_key_fingerprint")
-            else None
-        ),
-        host_key_fingerprint=(
-            host_key.get("fingerprint")
-            if host_key and not row.get("host_key_fingerprint")
-            else None
-        ),
-        host_key_blob=(
-            host_key.get("blob_b64")
-            if host_key and not row.get("host_key_fingerprint")
-            else None
-        )
-    )
+    with context.transaction() as transaction:
+        lock_owner(context.plane_runtime, transaction, owner_user_id)
+        record = context.repository.get_machine(transaction, owner_id=owner_user_id, machine_id=machine_id)
+        if record is None:
+            return
+        row = _machine_dict(record)
+        trust = host_key if host_key and not row.get("host_key_fingerprint") else {}
+        if trust:
+            rotate_authority(context.plane_runtime, transaction, owner_user_id, machine_id)
+        context.repository.record_probe(transaction, owner_id=owner_user_id, machine_id=machine_id,
+            expected_updated_at=int(row["updated_at"]), verdict=verdict,
+            checked_at=max(now, int(row["updated_at"]) + 1), host_key_type=trust.get("type"),
+            host_key_fingerprint=trust.get("fingerprint"), host_key_blob=trust.get("blob_b64"))
+    audit_machine_event(owner_user_id, "remote_machine.connection",
+        f"connection to {row['label']}: {verdict}", machine_id=machine_id,
+        label=row["label"], verdict=verdict,
+        outcome="success" if verdict in _CONNECTED_VERDICTS else "failure")
 
 
 def retrust_host_key(db, owner_user_id: str, machine_id: str) -> None:
-    row = get_machine(db, owner_user_id, machine_id)
-    if row is None:
-        return
     context = _remote_context(db)
-    context.call(
-        context.repository.clear_host_trust,
-        owner_id=owner_user_id,
-        machine_id=machine_id,
-        expected_updated_at=int(row["updated_at"]),
-        updated_at=max(_now_ms(), int(row["updated_at"]) + 1),
-    )
+    with context.transaction() as transaction:
+        lock_owner(context.plane_runtime, transaction, owner_user_id)
+        row = context.repository.get_machine(transaction, owner_id=owner_user_id, machine_id=machine_id)
+        if row is None:
+            return
+        rotate_authority(context.plane_runtime, transaction, owner_user_id, machine_id)
+        context.repository.clear_host_trust(transaction, owner_id=owner_user_id, machine_id=machine_id,
+            expected_updated_at=row.updated_at, updated_at=max(_now_ms(), row.updated_at + 1))
 
 
 def build_target(db, credmgr, owner_user_id: str, machine_id: str) -> MachineTarget:
+    from orchestrator.remote_effect_execution import selection_requires_target
+    if selection_requires_target(owner_user_id):
+        return build_effect_target(db, credmgr, owner_user_id, machine_id)
     row = get_machine(db, owner_user_id, machine_id)
     if row is None:
         raise MachineNotFound(machine_id)
-    cred = credmgr.get_machine_credential(
-        machine_id,
-        owner_user_id,
-    )
+    cred = credmgr.get_machine_credential(machine_id, owner_user_id)
     if cred is None:
         raise CredentialNotConfigured(machine_id)
+    return MachineTarget(machine_id=row["machine_id"], label=row["label"], address=row["address"],
+        port=int(row["port"]), username=row["username"], cred_type=cred["cred_type"],
+        secret=cred["secret"], passphrase=cred["passphrase"],
+        host_key_fingerprint=row.get("host_key_fingerprint"))
+
+
+def build_effect_target(db, credmgr, owner_user_id: str, machine_id: str) -> MachineTarget:
+    from orchestrator.remote_effect_authority import authority_digest
+    context = _remote_context(db)
+    with context.transaction() as transaction:
+        lock_owner(context.plane_runtime, transaction, owner_user_id)
+        record = context.repository.get_machine(transaction, owner_id=owner_user_id, machine_id=machine_id)
+        if record is None:
+            raise MachineNotFound(machine_id)
+        row = _machine_dict(record)
+        cred = credmgr.get_machine_credential(machine_id, owner_user_id, transaction=transaction)
+        if cred is None:
+            raise CredentialNotConfigured(machine_id)
+        authority = (authority_digest(context.plane_runtime, transaction, owner_user_id, machine_id)
+                     if row.get("host_key_fingerprint") else None)
     return MachineTarget(
         machine_id=row["machine_id"], label=row["label"], address=row["address"],
         port=int(row["port"]), username=row["username"], cred_type=cred["cred_type"],
         secret=cred["secret"], passphrase=cred["passphrase"],
-        host_key_fingerprint=row.get("host_key_fingerprint"),
+        host_key_fingerprint=row.get("host_key_fingerprint"), authority_digest=authority,
     )

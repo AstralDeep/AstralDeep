@@ -2,10 +2,8 @@
 #
 # The security_benchmark/ package is EVAL-ONLY and isolation-guarded
 # (isolation_check.py CI-enforces that no product-runtime module imports it,
-# Constitution V/XI). It runs in its own `security_benchmark/tests` suite, NOT
-# in the product test invocations that produce coverage.xml — so measuring it
-# as product code reports a spurious 0%. It is legitimately excluded from the
-# product changed-line coverage gate; its own suite (green in CI) covers it.
+# Constitution V/XI). Its own suite runs inside the whole-suite set, so its
+# measured lines land in the merged product report; the changed-line gate
+# requires every changed non-test file to be mapped, so the package stays
+# measurable rather than omitted.
 [run]
-omit =
-    */security_benchmark/*

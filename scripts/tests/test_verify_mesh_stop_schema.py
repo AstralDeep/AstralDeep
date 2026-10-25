@@ -1,4 +1,4 @@
-"""Verifies that mesh and stop schema inputs remain bounded static data in the
+"""Verifies that reviewed schema inputs remain bounded static data in the
 composition reader. Untrusted imports, expressions and executable source never
 run while computing their migration digests.
 """
@@ -12,7 +12,12 @@ import pytest
 from test_verify_composition import _write, _write_migration, composition
 
 
-@pytest.fixture(params=[("mesh", "089.001", "089.002"), ("stop", "089.002", "089.003")])
+@pytest.fixture(params=[
+    ("mesh", "089.001", "089.002"),
+    ("stop", "089.002", "089.003"),
+    ("notification", "089.004", "089.005"),
+    ("atlas_page", "089.005", "089.006"),
+])
 def schema(request):
     stem, predecessor, revision = request.param
     symbol = stem.upper() + "_SCHEMA_STATEMENTS"

@@ -9,6 +9,7 @@ import json
 import os
 import re
 import select
+import shlex
 import socket
 import stat
 import time
@@ -140,7 +141,7 @@ class SSHPTY:
 
     @classmethod
     def open(cls, target: MachineTarget, cols: int, rows: int, command: str | None,
-             check: Callable[[], None]):
+             check: Callable[[], None], directory: str | None = None):
         client = channel = None
         try:
             check()
@@ -151,7 +152,10 @@ class SSHPTY:
             check()
             channel.get_pty(term="xterm", width=cols, height=rows)
             check()
-            if command is None:
+            if directory is not None:
+                entrypoint = "exec \"${SHELL:-/bin/sh}\" -l" if command is None else command
+                channel.exec_command(f"cd {shlex.quote(directory)} && {entrypoint}")
+            elif command is None:
                 channel.invoke_shell()
             else:
                 channel.exec_command(command)
@@ -190,6 +194,16 @@ class SSHPTY:
 
     def resize(self, cols: int, rows: int) -> None:
         self.channel.resize_pty(width=cols, height=rows)
+
+    def exit_status(self) -> int | None:
+        try:
+            event = getattr(self.channel, "status_event", None)
+            if not self.channel.exit_status_ready() or (event is not None and not event.is_set()):
+                return None
+            value = getattr(self.channel, "exit_status", None)
+            return value if type(value) is int and value >= 0 else None
+        except Exception:
+            return None
 
     def close(self) -> None:
         try:

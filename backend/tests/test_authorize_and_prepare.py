@@ -20,7 +20,8 @@ from shared.protocol import AgentCard, AgentSkill  # noqa: E402
 
 
 @pytest.fixture
-def orch():
+def orch(monkeypatch):
+    monkeypatch.setenv("DELEGATION_REQUIRED", "false")
     from orchestrator.concurrency_cap import ConcurrencyCap
     from orchestrator.hooks import HookManager
     from orchestrator.orchestrator import Orchestrator
@@ -44,6 +45,10 @@ def orch():
     o.send_ui_render = AsyncMock()
     o.tool_permissions = MagicMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    o.tool_permissions.get_tool_scope_map = MagicMock(side_effect=lambda agent_id: {
+        "a1": {"t1": "tools:read", "delete_records": "tools:write", "send_email": "tools:write"},
+        "remote-compute-1": {"cancel_job": "tools:write", "make_directory": "tools:write"},
+    }.get(agent_id, {}))
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager = MagicMock()
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(
@@ -201,28 +206,46 @@ async def test_taint_deny_refuses(orch, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_supervisor_blocks_unrequested_destructive(orch, monkeypatch):
+async def test_unrequested_destructive_action_stops_at_exact_source_review(orch, monkeypatch):
     monkeypatch.setenv("FF_RUNTIME_SUPERVISOR", "true")
     orch._active_request = {"c1": "show me my dashboard"}
-    out = await _auth(orch, tool="delete_records")
-    assert "didn't ask for" in _msg(out)
+    ws = object()
+    orch.ui_sessions[ws] = {"sub": "u1"}
+    orch._ws_active_chat = {id(ws): "c1"}
+    orch._execute_with_retry = AsyncMock()
+    out = await _auth(orch, tool="delete_records", ws=ws)
+    assert isinstance(out, GateRefusal)
+    assert out.response.result["_data"]["status"] == "confirmation_required"
+    call, = orch._hitl_pending_calls.values()
+    assert (call.tool, call.owner, call.chat) == ("delete_records", "u1", "c1")
+    assert {"source_bound", "mutation_or_disclosure", "tools:write"}.issubset(call.risks)
+    orch._execute_with_retry.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_hitl_blocks_egress(orch, monkeypatch):
     monkeypatch.setenv("FF_HITL_HIGHRISK", "true")
     orch._active_request = {"c1": "email bob"}
-    out = await _auth(orch, tool="send_email")
-    assert "confirm" in _msg(out).lower()
+    ws = object()
+    orch.ui_sessions[ws] = {"sub": "u1"}
+    orch._ws_active_chat = {id(ws): "c1"}
+    orch._execute_with_retry = AsyncMock()
+    out = await _auth(orch, tool="send_email", ws=ws)
+    assert isinstance(out, GateRefusal)
+    assert out.response.result["_data"]["status"] == "confirmation_required"
+    call, = orch._hitl_pending_calls.values()
+    assert {"source_bound", "egress", "tools:write"}.issubset(call.risks)
+    orch._execute_with_retry.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_unregistered_agent_refuses(orch):
     out = await _auth(orch, agent="ghost-agent")
-    assert "No agent available" in _msg(out)
-    assert out.render_target == "chat"
+    assert out.response.error["code"] == "effect_declaration_unavailable"
+    assert out.response.error["retryable"] is False
+    assert out.render_target is None
     assert out.response.ui_components is None
-    assert out.render_components
+    assert out.render_components is None
 
 
 @pytest.mark.asyncio
@@ -325,13 +348,26 @@ async def test_remote_control_confirmation_refusal_becomes_gate_refusal(orch, mo
 
 @pytest.mark.asyncio
 async def test_remote_control_confirmation_none_proceeds(orch, monkeypatch):
-    from orchestrator import remote_confirmation
+    from orchestrator import hitl_confirmation, remote_confirmation
+    from shared.protocol import MCPResponse
     ev = MagicMock(return_value=None)
     monkeypatch.setattr(remote_confirmation, "evaluate", ev)
     orch.local_agents["remote-compute-1"] = MagicMock()
-    out = await _auth(orch, tool="make_directory", agent="remote-compute-1", args={"path": "/x"})
-    assert isinstance(out, PreparedDispatch)
-    ev.assert_called_once()
+    ws = object()
+    orch.ui_sessions[ws] = {"sub": "u1"}
+    orch._ws_active_chat = {id(ws): "c1"}
+    orch.history = SimpleNamespace(get_chat=lambda chat, *, user_id: {"id": chat, "owner": user_id})
+    orch._execute_with_retry = AsyncMock(return_value=MCPResponse(result={"ok": True}))
+    out = await _auth(orch, tool="make_directory", agent="remote-compute-1", args={"path": "/x"}, ws=ws)
+    assert isinstance(out, GateRefusal)
+    assert out.response.result["_data"]["status"] == "confirmation_required"
+    orch._execute_with_retry.assert_not_awaited()
+    call, = orch._hitl_pending_calls.values()
+    await hitl_confirmation.handle_decision(orch, ws, "u1", {"hitl_request_id": call.request_id, "decision": "approve"})
+    assert not orch._hitl_pending_calls
+    orch._execute_with_retry.assert_awaited_once()
+    assert orch._execute_with_retry.await_args.args[1:3] == ("remote-compute-1", "make_directory")
+    assert ev.call_count == 2
 
 
 @pytest.mark.asyncio

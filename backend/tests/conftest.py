@@ -11,13 +11,9 @@ import os
 
 import pytest
 
-_AMBIENT_FLAG_PREFIXES = ("FF_UI_DESIGNER_",)
+_AMBIENT_FLAG_PREFIXES = ("FF_",)
 _AMBIENT_FLAGS = (
-    "FF_ADAPTIVE_OBJECTIVES",
-    "FF_MOA_DEBATE",
-    "FF_HITL_HIGHRISK",
-    "FF_HOOK_SYSTEM",
-    "FF_RECURSIVE_DELEGATION",
+    "DELEGATION_REQUIRED",
 )
 
 
@@ -36,6 +32,9 @@ def _strip_ambient_flags() -> None:
 
 
 _strip_ambient_flags()
+os.environ.setdefault("DB_POOL_MIN", "1")
+os.environ.setdefault("DB_POOL_MAX", "1")
+os.environ.setdefault("ASTRAL_TEST_PLANE_MAX_CONNECTIONS", "4")
 
 
 @pytest.fixture
@@ -84,6 +83,18 @@ def user_skills_disabled(monkeypatch):
     from shared.feature_flags import flags
 
     monkeypatch.setitem(flags._flags, "user_skills", False)
+
+
+@pytest.fixture(autouse=True)
+def _lightweight_default_phi_analyzer(monkeypatch):
+    from types import SimpleNamespace
+
+    from personalization import phi_gate
+    monkeypatch.setattr(
+        phi_gate,
+        "_build_presidio_analyzer",
+        lambda: SimpleNamespace(analyze=lambda **_kwargs: []),
+    )
 
 
 from tests.plugins.event_loop_guard import event_loop_guard  # noqa: E402,F401

@@ -36,6 +36,9 @@ def orch(orchestrator_factory, monkeypatch):
     instance.audit_recorder.record = AsyncMock()
     instance.send_ui_render = AsyncMock()
     instance.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    instance.tool_permissions.get_tool_scope_map = MagicMock(side_effect=lambda agent_id: {
+        name: entry["scope"] for name, entry in mcp_tools.TOOL_REGISTRY.items()
+    } if agent_id == "cresco-1" else {})
     instance._map_file_paths = lambda cid, a, **k: a
     return instance
 
@@ -123,6 +126,8 @@ async def test_executor_is_system_blocked_in_the_real_gate_stack(orch, monkeypat
 @pytest.mark.asyncio
 async def test_dispatch_requires_a_confirmation_card_through_the_real_gate_stack(orch, monkeypatch):
     monkeypatch.setitem(flags._flags, "cresco", True)
+    orch.tool_permissions.register_tool_scopes(
+        "cresco-1", {name: info["scope"] for name, info in mcp_tools.TOOL_REGISTRY.items()})
     response = await orch.execute_single_tool(
         MagicMock(), _tc("cresco_dispatch_work",
                          {"target": "r1_a1", "work_kind": "status", "work_payload": "hello"}),
@@ -153,6 +158,8 @@ def test_confirmation_policy_classifies_every_registered_tool():
 @pytest.mark.asyncio
 async def test_unattended_mcp_channel_cannot_run_cresco_effects(orch, monkeypatch):
     monkeypatch.setitem(flags._flags, "cresco", True)
+    orch.tool_permissions.register_tool_scopes(
+        "cresco-1", {name: info["scope"] for name, info in mcp_tools.TOOL_REGISTRY.items()})
     ws = MagicMock()
     orch.ui_sessions[ws] = {"_invocation_channel": "mcp", "sub": "u1"}
     response = await orch.execute_single_tool(

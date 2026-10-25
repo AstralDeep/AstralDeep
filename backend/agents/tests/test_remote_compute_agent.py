@@ -214,7 +214,7 @@ def test_tools_call_routes_into_the_read_library(monkeypatch):
     assert resp.ui_components[0]["type"] == "card"
 
 
-def test_tools_call_routes_into_the_mutating_library(monkeypatch):
+def test_unbound_mutating_call_is_refused_before_transport(monkeypatch):
     monkeypatch.setattr("orchestrator.remote_machines.resolve_machine",
                         lambda db, uid, ref: {"machine_id": "m1", "label": "dgx"})
     monkeypatch.setattr("orchestrator.remote_machines.build_target",
@@ -225,9 +225,9 @@ def test_tools_call_routes_into_the_mutating_library(monkeypatch):
     resp = _call(_agent().mcp_server, "make_directory",
                  user_id=USER, machine_id="m1", path="/scratch/out")
 
-    assert resp.error is None and resp.result["path"] == "/scratch/out"
-    assert ["mkdir", "-p", "/scratch/out"] in [c["argv"] for c in transport.calls
-                                               if c["op"] == "run"]
+    assert resp.error["retryable"] is False
+    assert "effect_current_authority_unavailable" in resp.error["message"]
+    assert transport.calls == []
 
 
 def test_error_variant_component_becomes_an_error_response():

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+import uuid
 from dataclasses import replace
 from importlib import import_module
 from types import SimpleNamespace
@@ -40,8 +42,11 @@ def _register(orch, agent, tool):
 
 @pytest.fixture
 def runtime(gate_orchestrator, monkeypatch):  # noqa: F811
+    from audit import hooks
+
     orch, ws = gate_orchestrator
     monkeypatch.setattr(hitl, "hitl_enabled", lambda: True)
+    monkeypatch.setattr(hooks, "get_recorder", lambda: None)
     monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)
     monkeypatch.setattr("personalization.phi_gate.get_phi_gate",
                         lambda: SimpleNamespace(contains_phi=lambda _text: False))
@@ -54,7 +59,9 @@ def runtime(gate_orchestrator, monkeypatch):  # noqa: F811
     orch._llm_context_user_id = lambda _ws: "owner-a"
     orch._llm_store = SimpleNamespace(get=AsyncMock(return_value=None))
     orch._execute_with_retry = AsyncMock(return_value=MCPResponse(result={"_data": {"ok": True}}))
-    orch.workspace = SimpleNamespace(aupsert=AsyncMock(return_value=[{"op": "upsert"}]))
+    from orchestrator.workspace import WorkspaceManager
+    orch.workspace = SimpleNamespace(aupsert=AsyncMock(return_value=[{"op": "upsert"}]),
+        resolve_identity=WorkspaceManager.__new__(WorkspaceManager).resolve_identity)
     orch.send_ui_upsert = AsyncMock()
 
     async def mutate(**kwargs):
@@ -86,6 +93,20 @@ async def test_registered_public_research_runs_without_second_confirmation(runti
     assert response.error is None and response.result["_data"]["ok"]
     orch._execute_with_retry.assert_awaited_once()
     assert not getattr(orch, "_hitl_pending_calls", {})
+
+
+async def test_source_bound_hitl_audit_uses_a_stable_uuid_correlation(runtime):
+    orch, _ = runtime
+    call = hc.PendingCall(
+        "opaque-non-uuid-request", "owner-a", "chat-a", "agent-a", "send_email",
+        "{}", ("source_bound",), time.monotonic() + 60,
+    )
+    await hc._audit(orch, call, "proposed")
+    event = orch.audit_recorder.record.await_args.args[0]
+    assert str(uuid.UUID(event.correlation_id)) == event.correlation_id
+    await hc._audit(orch, call, "consumed")
+    repeated = orch.audit_recorder.record.await_args.args[0]
+    assert repeated.correlation_id == event.correlation_id
 
 
 async def test_fetched_untrusted_public_url_still_reads(runtime, monkeypatch):

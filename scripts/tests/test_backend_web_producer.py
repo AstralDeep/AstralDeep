@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from scripts import produce_backend_web_qualification as producer
+from scripts.run_backend_web_qualification import load_recovery_baseline
 
 
 AUTH_KEYS = ("real_application_keycloak_login_pkce", "login_state_denial", "application_session_renewal",
@@ -40,7 +41,8 @@ def args(tmp_path, monkeypatch):
 
 
 def driver_stub():
-    return SimpleNamespace(verify_source=lambda *_: None, IMAGE=re.compile(r"sha256:[0-9a-f]{64}"))
+    return SimpleNamespace(verify_source=lambda *_: None, IMAGE=re.compile(r"sha256:[0-9a-f]{64}"),
+                           load_recovery_baseline=load_recovery_baseline)
 
 
 def protected_environment(monkeypatch, args, job):
@@ -66,7 +68,9 @@ def stub_phases(args, monkeypatch, failure=None):
         calls.append(("deploy", arguments))
         if failure == "deployment":
             raise RuntimeError("sensitive deployment error")
-        return {"status": "started"}
+        return {"schema_version": 2, "status": "started", "release_authorized": False,
+                "production_baseline": load_recovery_baseline(),
+                "state_rehearsal": None if failure == "incomplete-recovery" else {"status": "synthetic-state-and-paired-recovery-passed"}}
 
     def load(name):
         if name == "validate_backend_web_evidence":
@@ -252,13 +256,14 @@ def test_gate_phase_runs_exactly_its_whole_suite_group(args, monkeypatch, group)
     assert not args.private_root.exists()
 
 
-@pytest.mark.parametrize("failure", [None, "services", "deployment", "auth", "auth-record"])
+@pytest.mark.parametrize("failure", [None, "services", "deployment", "incomplete-recovery", "auth", "auth-record"])
 def test_service_phase_receipt_records_only_attempted_sequence(args, monkeypatch, failure):
     calls = stub_phases(args, monkeypatch, failure)
     args.phase = "services"
     receipt = producer.produce(args)
     statuses = [row["status"] for row in receipt["phase_observations"]]
     assert statuses == {None: ["executed"] * 3, "services": ["failed"], "deployment": ["executed", "failed"],
+                        "incomplete-recovery": ["executed", "failed"],
                         "auth": ["executed", "executed", "failed"], "auth-record": ["executed", "executed", "failed"]}[failure]
     assert receipt["qualification_namespace_retained"] is (failure != "services")
     assert "sensitive" not in json.dumps(receipt)
@@ -282,6 +287,7 @@ def test_service_deployment_requests_the_reviewed_current_plane_fixture(args, mo
     assert deployment.fixture_sha256 == "c016d8dd30f2bdf932ba8e855bbc586826f5b0f4137b6413c61a82293ef41c1d"
     assert deployment.plane_source == args.source / "components/AstralPlane"
     assert deployment.plane_commit == "e" * 40
+    assert deployment.baseline_deep_image == "ghcr.io/astraldeep/astraldeep:sha-ca822e68d5477fb60fa9076107a4dab4138eeda6@sha256:802244a5eb1a715dff4fa587a0e7d447b9eb425f1b674fc48cf0e685ced18aa2"
     assert receipt["release_authorized"] is False
 
 

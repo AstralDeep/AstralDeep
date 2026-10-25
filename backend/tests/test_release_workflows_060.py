@@ -2495,6 +2495,7 @@ def test_apple_raw_jobs_instrument_before_archiving_and_never_rebuild_afterward(
         "VoiceConversationUITests",
         "WorkspacePresentationUITests",
         "WorkspaceActionsUITests",
+        "SettingsControlsUITests",
         f"ConversationContinuityUITests/{RELAUNCH_PROOF}",
     }
     assert re.findall(r"-only-testing:AstralAppUITests/(\S+)", ios) == []
@@ -2632,7 +2633,7 @@ def _assert_ios_native_domains_are_protected_and_reconstructed(text):
         "python3 -I protected-policy/scripts/apple_coverage_artifacts.py native-domain"
     )
     verify = "python3 -I protected-policy/scripts/apple_coverage_artifacts.py verify-native-domains"
-    assert text.count(collect) == text.count(verify) == 1
+    assert text.count(collect) == text.count(verify) == 2
     assert text.index("validate-observations") < text.index(collect)
     assert text.index('if [ -e "$final" ] || [ -L "$final" ]') < text.index(collect)
     assert (
@@ -2655,6 +2656,91 @@ def test_ios_native_mapping_policy_is_byte_bound_and_independently_reconstructed
     _assert_ios_native_domains_are_protected_and_reconstructed(
         _workflow_text(APPLE_NORMALIZER)
     )
+
+
+def _assert_mac_native_domains_are_protected_and_reconstructed(text):
+    mac = text.split('elif [[ "$PRODUCER_PLATFORM" == macos ]]; then')[-1]
+    assert "for lane in unit ui staging; do" in mac
+    assert '--platform macos --output "$raw" --lane "$lane"' in mac
+    assert '--native-domain "$final/coverage/native-domains/apple-macos-${lane}.json"' in mac
+    assert '--xcresult "$raw/coverage/raw/apple-macos-${lane}.xcresult"' in mac
+    assert "--platform macos --profile release" in mac
+    for lane in ("unit", "ui", "staging"):
+        assert f'--{lane}-input "$final/coverage/lanes/apple-macos-{lane}-xccov.json"' in mac
+    verify = "python3 -I protected-policy/scripts/apple_coverage_artifacts.py verify-native-domains"
+    assert verify in mac
+    assert '--repo "$PWD" --platform macos --output "$raw" --report "$report"' in mac
+    assert text.index('validate-observations \\\n              --repo "$PWD" --platform "$PRODUCER_PLATFORM"') < text.index("native-domain ")
+
+
+def test_mac_native_mapping_is_reconstructed_from_three_distinct_raw_lanes():
+    _assert_mac_native_domains_are_protected_and_reconstructed(_workflow_text(APPLE_NORMALIZER))
+
+
+@pytest.mark.parametrize("remove", [
+    '--native-domain "$final/coverage/native-domains/apple-macos-${lane}.json"',
+    '--staging-input "$final/coverage/lanes/apple-macos-staging-xccov.json"',
+    '--repo "$PWD" --platform macos --output "$raw" --report "$report"',
+])
+def test_mac_native_mapping_guard_rejects_missing_lane_or_independent_verification(remove):
+    text = _workflow_text(APPLE_NORMALIZER)
+    assert remove in text
+    with pytest.raises(AssertionError):
+        _assert_mac_native_domains_are_protected_and_reconstructed(text.replace(remove, "", 1))
+
+
+def test_mac_producer_uses_the_prepared_binaries_for_unit_ui_and_staging():
+    mac = _workflow_job(_workflow_text(READINESS), "macos-raw-producer")
+    jobs = _workflow_jobs(READINESS)
+    step = next(step for step in jobs["macos-raw-producer"]["steps"] if step.get("name") == "Run complete macOS unit and UI lanes from the prepared binaries")
+    assert "env" not in step and "secrets." not in step["run"]
+    assert mac.count("build-for-testing") == 1
+    assert mac.index("scripts/apple_coverage_artifacts.py prepare") < mac.index(step["name"]) < mac.index("Produce macOS release evidence against staging")
+    assert "for lane in unit ui; do" in step["run"]
+    assert "test-without-building" in step["run"]
+    assert 'apple-macos-${lane}.xcresult' in step["run"]
+    assert '-only-testing:AstralAppTests' in step["run"]
+    assert set(re.findall(r"-only-testing:AstralAppUITests/(\S+)", step["run"])) == {
+        "Accessibility060UITests", "LLMFirstLoginUITests", "VoiceConversationUITests",
+        "WorkspacePresentationUITests", f"ConversationContinuityUITests/{RELAUNCH_PROOF}",
+    }
+    assert 'apple-${PRODUCER_PLATFORM}-staging.xcresult' in mac
+
+
+@pytest.mark.parametrize("failure", [None, "unit", "ui"])
+def test_mac_whole_lanes_stop_on_failure_without_rebuilding_or_rerunning(tmp_path, failure):
+    steps = _workflow_jobs(READINESS)["macos-raw-producer"]["steps"]
+    script = next(step["run"] for step in steps if step.get("name") == "Run complete macOS unit and UI lanes from the prepared binaries")
+    recorder = tmp_path / "recorder.py"
+    recorder.write_text(
+        "import json, os, pathlib, sys\n"
+        "with open(os.environ['COMMAND_RECORD'], 'a') as stream:\n"
+        "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "if sys.argv[1] == 'xcodebuild':\n"
+        "    path = pathlib.Path(sys.argv[sys.argv.index('-resultBundlePath') + 1])\n"
+        "    path.mkdir(parents=True)\n"
+        "    if path.name == 'apple-macos-' + os.environ['FAIL_LANE'] + '.xcresult':\n"
+        "        raise SystemExit(65)\n"
+    )
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(recorder))}"
+    prefix = "\n".join(f'{name}() {{ {command} {name} "$@"; }}' for name in ("xcodebuild", "python3")) + "\n"
+    record = tmp_path / "commands.jsonl"
+    result = subprocess.run(
+        ["/bin/bash", "-c", prefix + script], cwd=tmp_path,
+        env={**os.environ, "COMMAND_RECORD": str(record), "FAIL_LANE": failure or "none",
+             "APP_PROJECT": "Owned Project.xcodeproj", "PRODUCER_SCHEME": "AstralApp",
+             "DESTINATION": "platform=macOS"}, capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == (65 if failure else 0), result.stderr
+    calls = [json.loads(line) for line in record.read_text().splitlines()]
+    native = [call for call in calls if call[0] == "xcodebuild"]
+    assert len(native) == (1 if failure == "unit" else 2)
+    assert all(call[-1] == "test-without-building" for call in native)
+    assert [call[call.index("-resultBundlePath") + 1] for call in native] == [
+        f"build/060/release-evidence/coverage/raw/apple-macos-{lane}.xcresult"
+        for lane in (("unit",) if failure == "unit" else ("unit", "ui"))
+    ]
+    assert len([call for call in calls if call[0] == "python3"]) == (2 if failure is None else 0 if failure == "unit" else 1)
 
 
 @pytest.mark.parametrize(
@@ -2683,7 +2769,7 @@ EXPLICIT_EXISTENCE_REFUSAL = re.compile(
 )
 RESULT_BUNDLE_REFUSALS = {
     READINESS: {
-        "macos-raw-producer": ['"$result"'],
+        "macos-raw-producer": ['"$result"', '"$result"'],
         "ios-build": ['"$state"'],
         "ios-lane": ["build", '"$result"'],
         "ios-raw-producer": ["build", '"$result"', '"$result"'],

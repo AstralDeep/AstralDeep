@@ -178,9 +178,12 @@ class _Orchestrator:
 
 @pytest.fixture
 def endpoint(monkeypatch):
+    from shared.feature_flags import flags
+
     monkeypatch.setenv("ASTRAL_ENV", "development")
     monkeypatch.setenv("USE_MOCK_AUTH", "true")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.test/realms/astral")
+    monkeypatch.setitem(flags._flags, "mcp_server", False)
     orchestrator = _Orchestrator()
     app = FastAPI()
     install_mcp_server(app, orchestrator, public_base_url=BASE)
@@ -204,7 +207,10 @@ def _request(method, params=None, *, token="dev-mcp-token", headers=None, reques
     return body, merged
 
 
-def test_discover_and_protected_resource_metadata(endpoint):
+def test_discover_and_protected_resource_metadata(endpoint, monkeypatch):
+    from shared.feature_flags import flags
+
+    monkeypatch.setitem(flags._flags, "mcp_server", False)
     client, _ = endpoint
     metadata = client.get("/.well-known/oauth-protected-resource/mcp")
     assert metadata.status_code == 200
@@ -225,6 +231,18 @@ def test_discover_and_protected_resource_metadata(endpoint):
     assert result["supportedVersions"] == ["2026-07-28"]
     assert result["capabilities"] == {"tools": {}}
     assert result["ttlMs"] == 60_000
+
+
+def test_discover_advertises_resources_when_the_surface_is_enabled(endpoint, monkeypatch):
+    from shared.feature_flags import flags
+
+    monkeypatch.setitem(flags._flags, "mcp_server", True)
+    client, _ = endpoint
+    body, headers = _request("server/discover")
+    response = client.post("/mcp", json=body, headers=headers)
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result["capabilities"] == {"tools": {}, "resources": {}}
     assert result["cacheScope"] == "private"
     assert "extensions" not in result["capabilities"]
 

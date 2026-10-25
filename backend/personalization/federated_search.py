@@ -49,6 +49,7 @@ CONVERSATION_SCAN_LIMIT = 40
 MESSAGE_SCAN_LIMIT = 400
 ATLAS_SCAN_LIMIT = 500
 MAX_CURSOR_BYTES = 2048
+MAX_SOURCE_CHARS = 64 * 1024
 _SNIPPET_CHARS = 180
 _CONTEXT_CHARS = 40
 _TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
@@ -109,6 +110,15 @@ class SearchOutcome:
     @property
     def partial(self) -> bool:
         return any(not report.available or not report.complete for report in self.reports)
+
+
+@dataclass(frozen=True, slots=True)
+class SearchSource:
+    source: str
+    ref: dict[str, Any]
+    title: str
+    text: str
+    complete: bool
 
 
 def normalize_query(value: object) -> str:
@@ -364,6 +374,61 @@ class FederatedSearchService:
         self.repo = getattr(service, "repo", None) if service is not None else None
         self.credentials = getattr(orchestrator, "credential_manager", None)
         self.atlas = getattr(orchestrator, "atlas_pages", None)
+
+    async def open_source(self, *, owner_id: str, ref: object) -> SearchSource | None:
+        if not isinstance(owner_id, str) or not owner_id.strip() or not isinstance(ref, dict):
+            raise SearchQueryInvalid("search_source_reference_invalid")
+        definitions = {
+            "note": ("notes", "note_id", {"expected_revision"}),
+            "memory": ("memory", "memory_id", set()),
+            "conversation": ("conversations", "conversation_id", {"message_id"}),
+            "atlas_page": ("atlas", "page_id", {"project_id", "revision"}),
+        }
+        definition = definitions.get(ref.get("kind")) if isinstance(ref.get("kind"), str) else None
+        if definition is None:
+            raise SearchQueryInvalid("search_source_reference_invalid")
+        source, identity, extra = definition
+        value = ref.get(identity)
+        if (set(ref) - {"kind", identity, *extra} or not isinstance(value, str)
+                or not 1 <= len(value) <= 512 or any(unicodedata.category(c).startswith("C") for c in value)):
+            raise SearchQueryInvalid("search_source_reference_invalid")
+        for key in ("expected_revision", "revision"):
+            if key in extra and (type(ref.get(key)) is not int or not 1 <= ref[key] <= 2**53 - 1):
+                raise SearchQueryInvalid("search_source_reference_invalid")
+        if "message_id" in ref and ref["message_id"] is not None and (
+                type(ref["message_id"]) is not int or ref["message_id"] < 1):
+            raise SearchQueryInvalid("search_source_reference_invalid")
+        if "project_id" in ref:
+            normalize_project_filter(ref["project_id"])
+        copied = dict(ref)
+        hit = SearchHit(source, "", copied, "", "", 0, 0, ())
+        return await asyncio.to_thread(self._open_source, hit, owner_id)
+
+    def _open_source(self, hit, owner_id):
+        if hit.source == "notes":
+            current = self._current_note(hit, owner_id)
+            if current is None:
+                return None
+            metadata, opened = current
+            title, text = metadata.category, opened.value
+        elif hit.source == "memory":
+            current = self._current_memory(hit, owner_id)
+            if current is None:
+                return None
+            title, text = str(current.get("category") or "Memory"), str(current.get("value") or "")
+        elif hit.source == "conversations":
+            current = self._current_conversation(hit, owner_id)
+            if current is None:
+                return None
+            chat, message = current
+            title = str(getattr(chat, "title", "") or "Conversation")
+            text = _message_text(message.content) if message is not None else title
+        else:
+            current = self._current_atlas(hit, owner_id)
+            if current is None:
+                return None
+            title, text = current.title, current.body or ""
+        return SearchSource(hit.source, dict(hit.ref), title, text[:MAX_SOURCE_CHARS], len(text) <= MAX_SOURCE_CHARS)
 
     async def search(self, *, owner_id: str, query: object, sources: object = None,
                      types: object = None, project_id: object = None,
@@ -751,6 +816,9 @@ class FederatedSearchService:
         return await asyncio.to_thread(self._recheck_atlas, hit, owner_id)
 
     def _recheck_note(self, hit: SearchHit, owner_id: str) -> bool:
+        return self._current_note(hit, owner_id) is not None
+
+    def _current_note(self, hit: SearchHit, owner_id: str):
         cipher = self._note_cipher()
         repository = self._note_repository()
         if cipher is None or repository is None:
@@ -761,46 +829,55 @@ class FederatedSearchService:
                 include_disabled=True,
             )
         if record is None:
-            return False
+            return None
         try:
             metadata = ExplicitNoteMetadata(**{
                 key: value for key, value in asdict(record).items() if key != "ciphertext"
             })
-            cipher.open(EncryptedExplicitNote(metadata, record.ciphertext),
-                        owner_id=owner_id, now_ms=time.time_ns() // 1_000_000,
-                        require_enabled=False)
+            opened = cipher.open(EncryptedExplicitNote(metadata, record.ciphertext),
+                                 owner_id=owner_id, now_ms=time.time_ns() // 1_000_000,
+                                 require_enabled=False)
         except (ExplicitNoteUnavailable, TypeError, ValueError):
-            return False
-        return metadata.revision == hit.ref.get("expected_revision")
+            return None
+        return (metadata, opened) if metadata.revision == hit.ref.get("expected_revision") else None
 
     def _recheck_memory(self, hit: SearchHit, owner_id: str) -> bool:
+        return self._current_memory(hit, owner_id) is not None
+
+    def _current_memory(self, hit: SearchHit, owner_id: str):
         if self.repo is None:
             raise SourceUnavailable("memory_unavailable")
         record = self.repo.get_memory(owner_id, str(hit.ref.get("memory_id") or ""))
         if not isinstance(record, dict) or record.get("superseded_at") is not None:
-            return False
+            return None
         if parse_envelope(record.get("value")) is not None:
-            return False
-        return bool(self._apply_memory_policy([record]))
+            return None
+        return record if self._apply_memory_policy([record]) else None
 
     def _recheck_conversation(self, hit: SearchHit, owner_id: str) -> bool:
+        return self._current_conversation(hit, owner_id) is not None
+
+    def _current_conversation(self, hit: SearchHit, owner_id: str):
         context = self._history_context()
         chat_id = str(hit.ref.get("conversation_id") or "")
         chat = context.call(context.repository.conversations.get,
                             owner_id=owner_id, conversation_id=chat_id)
         if chat is None:
-            return False
+            return None
         message_id = hit.ref.get("message_id")
         if message_id is None:
-            return True
+            return chat, None
         if type(message_id) is not int:
-            return False
+            return None
         message = context.call(context.repository.messages.get,
                                owner_id=owner_id, conversation_id=chat_id,
                                message_id=message_id)
-        return message is not None
+        return (chat, message) if message is not None else None
 
     def _recheck_atlas(self, hit: SearchHit, owner_id: str) -> bool:
+        return self._current_atlas(hit, owner_id) is not None
+
+    def _current_atlas(self, hit: SearchHit, owner_id: str):
         from personalization.atlas_service import AtlasNotFound
 
         service = self._atlas_service()
@@ -810,8 +887,16 @@ class FederatedSearchService:
                 reference=str(hit.ref.get("page_id") or ""),
             )
         except AtlasNotFound:
-            return False
-        return page.revision == hit.ref.get("revision")
+            return None
+        return page if page.revision == hit.ref.get("revision") else None
+
+
+def get_search_service(orchestrator) -> FederatedSearchService:
+    service = getattr(orchestrator, "_federated_search_service", None)
+    if service is None:
+        service = FederatedSearchService(orchestrator)
+        orchestrator._federated_search_service = service
+    return service
 
 
 def _category_types(source: str) -> frozenset[str]:

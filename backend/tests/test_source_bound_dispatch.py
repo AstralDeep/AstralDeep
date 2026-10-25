@@ -118,7 +118,8 @@ async def test_physical_effect_requires_one_current_exact_approval(runtime):
                           json.dumps(args, sort_keys=True, separators=(",", ":")),
                           source_bound.review_risks(strict_declaration(
                               {"send_email": "tools:write"}, "agent-a", "send_email")),
-                          time.monotonic() + 60)
+                          time.monotonic() + 60, websocket=ws,
+                          cancellation=hc.cancellation_witness(orch, ws, "owner-a", "chat-a", create=True))
     approval = hc.Approval(orch, call, consumed=True)
     token = hc._APPROVAL.set(approval)
     try:
@@ -137,7 +138,8 @@ async def test_pre_effect_audit_failure_has_zero_effect(runtime):
     args = {"to": "a@example.org"}
     call = hc.PendingCall("id", "owner-a", "chat-a", "agent-a", "send_email",
                           json.dumps(args, sort_keys=True, separators=(",", ":")),
-                          ("source_bound",), time.monotonic() + 60)
+                          ("source_bound",), time.monotonic() + 60, websocket=ws,
+                          cancellation=hc.cancellation_witness(orch, ws, "owner-a", "chat-a", create=True))
     token = hc._APPROVAL.set(hc.Approval(orch, call, consumed=True))
     effects = []
 
@@ -161,11 +163,12 @@ async def test_pre_effect_audit_failure_has_zero_effect(runtime):
 
 
 def test_expired_or_revoked_approval_cannot_reach_physical_effect(runtime):
-    orch, _ws = runtime
+    orch, ws = runtime
     args = {"to": "a@example.org"}
     call = hc.PendingCall("id", "owner-a", "chat-a", "agent-a", "send_email",
                           json.dumps(args, sort_keys=True, separators=(",", ":")),
-                          ("source_bound",), time.monotonic() - 1)
+                          ("source_bound",), time.monotonic() - 1, websocket=ws,
+                          cancellation=hc.cancellation_witness(orch, ws, "owner-a", "chat-a", create=True))
     token = hc._APPROVAL.set(hc.Approval(orch, call, consumed=True))
     try:
         assert hc.current_approval(
@@ -181,7 +184,8 @@ async def test_missing_completion_audit_reports_uncertain_outcome(runtime):
     args = {"to": "a@example.org"}
     call = hc.PendingCall("id", "owner-a", "chat-a", "agent-a", "send_email",
                           json.dumps(args, sort_keys=True, separators=(",", ":")),
-                          ("source_bound",), time.monotonic() + 60)
+                          ("source_bound",), time.monotonic() + 60, websocket=ws,
+                          cancellation=hc.cancellation_witness(orch, ws, "owner-a", "chat-a", create=True))
     token = hc._APPROVAL.set(hc.Approval(orch, call, consumed=True))
     effects = []
 

@@ -22,6 +22,13 @@ from orchestrator.orchestrator import Orchestrator  # noqa: E402
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture(autouse=True)
+def isolated_model_router(monkeypatch):
+    from orchestrator import model_router
+
+    monkeypatch.setattr(model_router, "router_enabled", lambda: False)
+
+
 class _Msg:
     def __init__(self, content="ok"):
         self.content = content
@@ -66,7 +73,9 @@ class _FakeClient:
         self.chat = types.SimpleNamespace(completions=completions)
 
 
-def _bare_orch(completions, *, default_effort=None):
+def _bare_orch(completions, *, default_effort=None, monkeypatch=None):
+    if monkeypatch is not None:
+        monkeypatch.delenv("FF_MODEL_ROUTER", raising=False)
     orch = Orchestrator.__new__(Orchestrator)
     orch._llm_unsupported_params = {}
     orch.llm_reasoning_effort = default_effort
@@ -135,7 +144,8 @@ async def test_no_effort_means_no_param():
     assert "reasoning_effort" not in comp.calls[0]
 
 
-async def test_unsupported_effort_is_stripped_and_retried():
+async def test_unsupported_effort_is_stripped_and_retried(monkeypatch):
+    monkeypatch.delenv("FF_MODEL_ROUTER", raising=False)
     def fail_on(kw):
         return "400 unknown parameter: reasoning_effort" if "reasoning_effort" in kw else None
 

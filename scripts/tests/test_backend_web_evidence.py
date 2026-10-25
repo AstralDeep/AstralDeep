@@ -42,14 +42,16 @@ def member(root, document, name, content):
 
 @pytest.fixture
 def bundle(tmp_path):
+    profile = json.loads((validator.ROOT / "config/backend-web-recovery-baseline.json").read_text())
     report = {
-        "schema_version": 1, "scope": "backend-web", "candidate_sha": CANDIDATE,
+        "schema_version": 2, "scope": "backend-web", "candidate_sha": CANDIDATE,
         "base_sha": BASE, "candidate_image": IMAGE,
         "components": {name: "d" * 40 for name in validator.COMPONENTS},
         "schema": {"revision": "089.001", "migration_sha256": "e" * 64},
-        "baseline": {"deep_commit": "013a06922759ae737b24b20ab02705e35614789d", "image": IMAGE,
-                     "plane_commit": "4a07d59a448c1960ce2ae3f35e605f4d78c4a3f9", "schema_revision": "088.003",
-                     "migration_sha256": "a3d3ac43bee48b0ca6832cca1e4a347db0a3f838af908b8545edb11e7e94272a", "inventory_sha256": "f" * 64},
+        "baseline": {key: value for key, value in profile.items() if key not in {"schema_version", "image_ref"}},
+        "synthetic_predecessor": {"plane_commit": "4a07d59a448c1960ce2ae3f35e605f4d78c4a3f9", "schema_revision": "088.003",
+                                 "migration_sha256": "a3d3ac43bee48b0ca6832cca1e4a347db0a3f838af908b8545edb11e7e94272a",
+                                 "fixture_sha256": "c016d8dd30f2bdf932ba8e855bbc586826f5b0f4137b6413c61a82293ef41c1d"},
         "source_run_id": "12", "source_run_attempt": 1,
         "started_at": "2026-09-21T16:00:00Z", "finished_at": "2026-09-21T16:30:00Z",
         "environment": {"astral_env": "production", "mock_auth": False, "lets_mode": "enforce",
@@ -60,11 +62,15 @@ def bundle(tmp_path):
         "responsive": [{"width_css_px": width, "text_percent": percent, "status": "passed"}
                        for width, percent in [(320, 200), (390, 100), (768, 200), (1024, 100), (1440, 100)]],
     }
+    report["baseline"]["image"] = profile["image_ref"]
     for name in validator.CHECKS:
         path = f"raw/{name}.xml" if name in validator.SUITES else f"raw/{name}.log"
         content = '<testsuite tests="1" failures="0" errors="0" skipped="0"><testcase classname="qualification.synthetic" name="executed"/></testsuite>' if name in validator.SUITES else "executed qualification check\n"
         member(tmp_path, report, path, content)
         report["checks"][name] = {"status": "passed", "exit_code": 0, "command": ["protected-producer", name], "artifacts": [path]}
+        if name == "live-baseline-inventory":
+            member(tmp_path, report, path, json.dumps(profile))
+            report["baseline"]["inventory_sha256"] = report["files"][path]
         if name in validator.SUITES:
             inventory = f"raw/{name}-inventory.json"
             source = "d" * 40 if name in {"plane-postgresql", "projection-python", "browser"} else CANDIDATE
@@ -98,6 +104,25 @@ def test_complete_backend_web_bundle_and_candidate_composition(bundle):
     composition["components"]["astral-plane"]["commit"] = "f" * 40
     with pytest.raises(validator.EvidenceError, match="components"):
         validate(bundle, composition=composition)
+
+
+@pytest.mark.parametrize("change", ["v1", "predecessor", "missing-predecessor", "baseline-image", "inventory"])
+def test_recovery_anchors_cannot_be_conflated_or_substituted(bundle, change):
+    root, report = bundle
+    if change == "v1":
+        report["schema_version"] = 1
+    elif change == "missing-predecessor":
+        report.pop("synthetic_predecessor")
+    elif change == "predecessor":
+        report["synthetic_predecessor"]["plane_commit"] = report["baseline"]["plane_commit"]
+    elif change == "baseline-image":
+        report["baseline"]["image"] = IMAGE
+    else:
+        path = report["checks"]["live-baseline-inventory"]["artifacts"][0]
+        member(root, report, path, '{}')
+        report["baseline"]["inventory_sha256"] = report["files"][path]
+    with pytest.raises((validator.EvidenceError, validator.POLICY.ReleaseEvidenceError)):
+        validate(bundle)
 
 
 @pytest.mark.parametrize("mutation", ["candidate", "base", "image", "checks", "native", "skip", "exit", "stale", "future", "timing", "baseline", "mock", "lets", "voice", "responsive", "coverage-closure", "unbound", "extra"])

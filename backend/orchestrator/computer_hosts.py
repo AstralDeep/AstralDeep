@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from shared.protocol import COMPUTER_HOST_VERBS, ComputerHostDescriptor
+from orchestrator.computer_use_policy import OBSERVE_VERBS
 
 logger = logging.getLogger("ComputerHosts")
 
@@ -74,7 +75,7 @@ class ComputerHostRegistry:
         self._hosts: Dict[Tuple[str, str], ComputerHost] = {}
         self._by_ws: Dict[int, Tuple[str, str]] = {}
         self._offline: Dict[Tuple[str, str], ComputerHost] = {}
-        self._pending: Dict[str, Tuple[asyncio.Future, str, str, int]] = {}
+        self._pending: Dict[str, Tuple[asyncio.Future, str, str, bool]] = {}
         self._dropped_frames = 0
 
     def register(self, owner_sub: str, websocket, descriptor: ComputerHostDescriptor | Dict[str, Any]
@@ -83,12 +84,14 @@ class ComputerHostRegistry:
         key = (owner_sub, str(desc["host_id"]))
         superseded = None
         previous = self._hosts.get(key)
-        if previous is not None and previous.websocket is not websocket:
+        if previous is not None:
             superseded = previous
             self._by_ws.pop(id(previous.websocket), None)
+            self._fail_pending(key)
         stale_key = self._by_ws.get(id(websocket))
         if stale_key is not None and stale_key != key:
-            self._hosts.pop(stale_key, None)
+            superseded = self._hosts.pop(stale_key, None) or superseded
+            self._fail_pending(stale_key)
         host = ComputerHost(owner_sub=owner_sub, host_id=key[1], websocket=websocket, descriptor=desc)
         self._hosts[key] = host
         self._by_ws[id(websocket)] = key
@@ -97,11 +100,19 @@ class ComputerHostRegistry:
                     owner_sub, key[1][:8], host.name, len(host.verbs))
         return host, superseded
 
+    def _fail_pending(self, key) -> None:
+        for fut, owner, host_id, effectful in list(self._pending.values()):
+            if (owner, host_id) == key and not fut.done():
+                fut.set_exception(ComputerHostError(
+                    "outcome_uncertain" if effectful else "host_offline",
+                    "Host authority changed after delivery; inspect current state before retrying"))
+
     def withdraw(self, owner_sub: str, host_id: str) -> Optional[ComputerHost]:
         key = (owner_sub, host_id)
         host = self._hosts.pop(key, None)
         if host is not None:
             self._by_ws.pop(id(host.websocket), None)
+            self._fail_pending(key)
         self._offline.pop(key, None)
         return host
 
@@ -117,9 +128,7 @@ class ComputerHostRegistry:
             return None
         host.last_seen = time.time()
         self._offline[key] = host
-        for request_id, (fut, owner, host_id, _size) in list(self._pending.items()):
-            if (owner, host_id) == key and not fut.done():
-                fut.set_exception(ComputerHostError("host_offline", f"{host.name} went offline"))
+        self._fail_pending(key)
         logger.info("076: computer host offline owner=%s host=%s", key[0], key[1][:8])
         return host
 
@@ -182,6 +191,9 @@ class ComputerHostRegistry:
 
     async def request(self, host: ComputerHost, session_id: str, verb: str,
                       args: Dict[str, Any], timeout: float) -> Dict[str, Any]:
+        if (self._hosts.get((host.owner_sub, host.host_id)) is not host
+                or (self._orch.ui_sessions.get(host.websocket) or {}).get("sub") != host.owner_sub):
+            raise ComputerHostError("host_offline", "The selected host connection is no longer current")
         if verb not in COMPUTER_HOST_VERBS:
             raise ComputerHostError("unsupported", f"{verb!r} is not a host verb")
         if verb not in host.verbs:
@@ -189,7 +201,7 @@ class ComputerHostRegistry:
         loop = asyncio.get_running_loop()
         request_id = f"creq_{uuid.uuid4().hex}"
         fut: asyncio.Future = loop.create_future()
-        self._pending[request_id] = (fut, host.owner_sub, host.host_id, 0)
+        self._pending[request_id] = (fut, host.owner_sub, host.host_id, verb not in OBSERVE_VERBS)
         frame = json.dumps({
             "type": "computer_request",
             "request_id": request_id,
@@ -199,13 +211,18 @@ class ComputerHostRegistry:
             "deadline_ms": int(timeout * 1000),
         })
         try:
-            sent = await self._orch._safe_send(host.websocket, frame)
+            try:
+                sent = await self._orch._safe_send(host.websocket, frame)
+            except Exception:
+                sent = False
             if sent is False:
-                raise ComputerHostError("host_offline", f"{host.name} is not reachable")
+                raise ComputerHostError("host_offline" if verb in OBSERVE_VERBS else "outcome_uncertain",
+                    f"Delivery to {host.name} could not be confirmed; inspect current state before retrying")
             try:
                 payload = await asyncio.wait_for(fut, timeout=timeout)
             except asyncio.TimeoutError:
-                raise ComputerHostError("timeout", f"{host.name} did not answer {verb} within {int(timeout)} s")
+                code = "timeout" if verb in OBSERVE_VERBS else "outcome_uncertain"
+                raise ComputerHostError(code, f"{host.name} did not answer {verb}; inspect current state before retrying") from None
         finally:
             self._pending.pop(request_id, None)
         host.last_seen = time.time()

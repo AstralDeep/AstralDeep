@@ -69,22 +69,31 @@ async def evidence_turn(human, bound, fixture, tmp_path, monkeypatch):
     monkeypatch.setattr(phi_gate, "get_phi_gate", lambda: gate)
     async with admitted_turn(human, bound, fixture, operation=True) as turn:
         host, socket, chat, binding = turn
+        if not hasattr(host, "_source_ledger"):
+            host._source_ledger = lambda *args, **kwargs: SimpleNamespace(
+                record_tool_output=lambda *args, **kwargs: None)
         host.history = HistoryManager(str(tmp_path / "history"), plane_runtime=binding.origin.binding.runtime)
         await asyncio.to_thread(host.history.create_chat, chat, fixture[1])
         host.ui_sessions = {socket: {"sub": fixture[1], "_raw_token": binding.origin.token,
                                     "realm_access": {"roles": ["user"]}}}
         host.cancelled_sessions = {}
+        host._source_ledger = Orchestrator._source_ledger.__get__(host)
         host.agent_cards[AGENT] = AgentCard("Reader", "Reads authorized sources", AGENT,
             skills=[AgentSkill("Read source", "Reads one source", TOOL, scope="tools:read")])
         adapter = EvidenceAgent(host, port=0)
         host.local_agents = getattr(host, "local_agents", {})
         host.local_agents[adapter.agent_id] = adapter
         host.agent_cards[adapter.agent_id] = adapter.card
+        host._source_ledger = lambda *args: SimpleNamespace(
+            record_tool_output=lambda *values: None)
         host._policy_roles = lambda _: ["user"]
         host._hitl_pending_calls = {}
         host._dispatch_context = {}
         host._pending_cap_entries = {}
         host._job_context = {}
+        import types as _types
+        from orchestrator.orchestrator import Orchestrator as _Orchestrator
+        host._source_ledger = _types.MethodType(_Orchestrator._source_ledger, host)
         calls, releases, notices = [], [], []
         async def authorize(ws, agent, tool, args, conversation, owner, **kwargs):
             calls.append((ws, agent, tool, deepcopy(args), conversation, owner, deepcopy(kwargs)))
@@ -108,6 +117,8 @@ async def evidence_turn(human, bound, fixture, tmp_path, monkeypatch):
         archive = EvidenceArchive(clock=clock, monotonic_clock=clock.monotonic)
         evidence = module.EvidenceContext(host, archive=archive, clock=clock)
         host._evidence_context = evidence
+        host._source_ledger = lambda *ledger_args, **ledger_kwargs: SimpleNamespace(
+            record_tool_output=lambda *output_args: None)
         lease = await capture_context_authority(orchestrator=host, websocket=socket, chat_id=chat)
         state = SimpleNamespace(host=host, socket=socket, chat=chat, owner=fixture[1], binding=binding,
             evidence=evidence, archive=archive, clock=clock, policy=policy_path, calls=calls,

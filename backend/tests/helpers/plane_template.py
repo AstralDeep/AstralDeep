@@ -54,12 +54,14 @@ def database_dsn(server_dsn: str, database: str) -> str:
 def _engine_runtime(server_dsn: str, database: str, *, identity: str) -> PlaneRuntime:
     from psycopg2.extensions import make_dsn
 
+    maximum_connections = int(os.environ.get("ASTRAL_TEST_PLANE_MAX_CONNECTIONS", "8"))
     return create_postgres_runtime(
         make_dsn(server_dsn, dbname=database,
                  options=f"-csearch_path={ENGINE_SCHEMA},pg_catalog"),
         identity=identity,
         reconcilers=(EngineReconciler(),),
-        maximum_connections=8,
+        minimum_connections=1,
+        maximum_connections=maximum_connections,
     )
 
 

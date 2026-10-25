@@ -13,25 +13,27 @@ from orchestrator.orchestrator import Orchestrator
 from shared.protocol import AgentCard, AgentSkill, MCPResponse
 
 
-def _make_card(agent_id: str, tools: list) -> AgentCard:
+def _make_card(agent_id: str, tools: list, scopes: dict | None = None) -> AgentCard:
     return AgentCard(
         name=agent_id,
         description="",
         agent_id=agent_id,
-        skills=[AgentSkill(id=t, name=t, description="", input_schema={}) for t in tools],
+        skills=[AgentSkill(id=t, name=t, description="", input_schema={},
+                           scope=(scopes or {}).get(t, "")) for t in tools],
         metadata={},
     )
 
 
 def _build_orch() -> Orchestrator:
     orch = Orchestrator.__new__(Orchestrator)
-    orch.agent_cards = {"dice-roller-1": _make_card("dice-roller-1", ["roll_dice"])}
+    orch.agent_cards = {"dice-roller-1": _make_card("dice-roller-1", ["roll_dice"], {"roll_dice": "tools:read"})}
     orch.agents = {}
     orch.a2a_clients = {}
     orch.local_agents = {"dice-roller-1": MagicMock()}
     orch.agent_urls = {}
     orch.security_flags = {}
     orch.ui_sessions = {}
+    orch._source_bound_read_tools = {("general-1", "read_spreadsheet")}
 
     orch.concurrency_cap = MagicMock()
     orch.concurrency_cap.acquire = AsyncMock(return_value=True)
@@ -49,7 +51,17 @@ def _build_orch() -> Orchestrator:
     orch.history.get_file_mappings = MagicMock(return_value={})
 
     orch.tool_permissions = MagicMock()
+    orch.tool_permissions.get_tool_scope_map.return_value = {
+        "roll_dice": "tools:read",
+        "phantom_tool": "tools:read",
+        "read_spreadsheet": "tools:files",
+        "ocr": "tools:files",
+        "search": "tools:read",
+        "search_tool": "tools:read",
+    }
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    orch.tool_permissions.get_tool_scope_map.side_effect = lambda agent_id: {
+        skill.id: skill.scope for skill in getattr(orch.agent_cards.get(agent_id), "skills", ())}
     orch.credential_manager = MagicMock()
     orch.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value={})
     orch._llm_store = MagicMock()
@@ -114,7 +126,7 @@ async def test_single_tool_dispatch_reaches_in_process_agent(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
-async def test_unknown_tool_still_gets_no_agent_alert(monkeypatch) -> None:
+async def test_unknown_tool_refuses_missing_effect_declaration(monkeypatch) -> None:
     _pin_gates_off(monkeypatch)
     orch = _build_orch()
     orch._find_tool_owner = MagicMock(return_value=None)
@@ -125,5 +137,12 @@ async def test_unknown_tool_still_gets_no_agent_alert(monkeypatch) -> None:
         chat_id="chat-1",
         user_id="alice",
     )
-    assert result.error and "No agent available" in result.error["message"]
+    assert result.error is not None
+    assert result.error["code"] == "effect_declaration_unavailable"
+    assert result.error["retryable"] is False
+    assert orch._rendered_ui == []
     assert orch._execute_with_retry.await_count == 0
+    assert all(
+        "No agent available" not in json.dumps(r["components"])
+        for r in orch._rendered_ui
+    )

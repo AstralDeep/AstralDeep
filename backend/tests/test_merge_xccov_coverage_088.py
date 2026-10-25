@@ -644,7 +644,7 @@ def test_ios_closed_profiles_keep_actual_counts_and_require_every_lane(
         )
 
 
-def test_ios_cannot_fall_back_to_old_two_lane_inputs_and_macos_cannot_claim_release(
+def test_ios_requires_core_and_macos_release_requires_staging(
     tmp_path,
 ):
     repo = _repo(tmp_path)
@@ -656,7 +656,7 @@ def test_ios_cannot_fall_back_to_old_two_lane_inputs_and_macos_cannot_claim_rele
         merge_xccov_reports(
             repo=repo, platform="ios", inputs=inputs, output=repo / "build/ios.json"
         )
-    with pytest.raises(MergeError, match="unsupported platform coverage profile"):
+    with pytest.raises(MergeError, match="mandatory"):
         merge_xccov_reports(
             repo=repo,
             platform="macos",
@@ -937,3 +937,21 @@ def test_native_merge_refuses_missing_policy_or_unreadable_mapped_source(
             repo=repo, platform="ios", inputs=inputs, output=repo / "build/refused.json"
         )
     assert not (repo / "build/refused.json").exists()
+
+
+@pytest.mark.parametrize("profile,lanes", [("ci", ("unit", "ui")), ("release", ("unit", "ui", "staging"))])
+def test_macos_native_union_retains_distinct_observation_lanes(tmp_path, profile, lanes):
+    from scripts import native_xccov_domain as policy
+    repo = _repo(tmp_path)
+    documents = {}
+    for lane in lanes:
+        value = _domain_report(repo, lane, {SOURCE: _observations(1, 2)}, [SOURCE])
+        declaration = value["domains"][lane]
+        declaration.update(format=policy.MACOS_DOMAIN_FORMAT, platform="macos", architecture="x86_64")
+        declaration["binary"].update(member=policy.MACOS_BINARY_MEMBER, artifact_member=f"coverage/native-binaries/apple-macos-{lane}.zip")
+        value.update(format=policy.MACOS_REPORT_FORMAT, platform="macos")
+        documents[lane] = _report(repo, lane + ".json", value)
+    result = merge_xccov_reports(repo=repo, platform="macos", profile=profile, inputs=documents, output=repo / "build/mac-union.json")
+    assert result["format"] == policy.MACOS_REPORT_FORMAT
+    assert set(result["domains"]) == set(lanes)
+    assert result["coverage"] == {SOURCE: _observations(len(lanes), 2 * len(lanes))}

@@ -28,6 +28,9 @@ class FeatureFlags:
             "memory_chat": self._read("FF_MEMORY_CHAT", True),
             "desktop_codegen": self._read("FF_DESKTOP_CODEGEN", True),
             "attachment_autoparse": self._read("FF_ATTACHMENT_AUTOPARSE", True),
+            "structured_document_parser": self._read(
+                "FF_STRUCTURED_DOCUMENT_PARSER", False
+            ),
             "context_engineering": self._read("FF_CONTEXT_ENGINEERING", False),
             "datamarking": self._read("FF_DATAMARKING", True),
             "inprocess_agents": self._read("FF_INPROCESS_AGENTS", True),
@@ -51,6 +54,7 @@ class FeatureFlags:
             "gaiakeep": self._read("FF_GAIAKEEP", False),
             "fhir": self._read("FF_FHIR", False),
             "cresco": self._read("FF_CRESCO", False),
+            "push_delivery": self._read("FF_PUSH_DELIVERY", False),
             "computer_use": self._read("FF_COMPUTER_USE", False),
             "terminal_shell": self._read("FF_TERMINAL_SHELL", False),
             "mcp_server": self._read("FF_MCP_SERVER", False),

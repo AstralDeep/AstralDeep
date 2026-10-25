@@ -19,15 +19,19 @@ from orchestrator.orchestrator import GateRefusal, PreparedDispatch  # noqa: E40
 
 @pytest.fixture
 def orch(monkeypatch, orchestrator_factory):
+    monkeypatch.setenv("DELEGATION_REQUIRED", "false")
     o = orchestrator_factory()
     o.audit_recorder = MagicMock()
     o.audit_recorder.record = AsyncMock()
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    o.tool_permissions.get_tool_scope_map = MagicMock(return_value={"long_tool": "tools:read"})
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     o.local_agents["callee"] = MagicMock()
     o.local_agents["initiator"] = MagicMock()
+    for agent in ("callee", "initiator"):
+        o.tool_permissions.register_tool_scopes(agent, {"long_tool": "tools:read"})
     monkeypatch.setattr(o, "_is_long_running_tool", lambda a, t: True)
     return o
 
@@ -50,6 +54,30 @@ async def test_hop_charges_both_slots(orch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("declaration", [{}, {"long_tool": ""}, {"long_tool": "tools:unknown"}])
+async def test_missing_or_invalid_effect_reserves_no_hop_slots(orch, declaration):
+    orch.tool_permissions.register_tool_scopes("callee", declaration)
+    out = await _auth_hop(orch)
+    assert isinstance(out, GateRefusal)
+    assert out.response.error["code"] == "effect_declaration_unavailable"
+    assert orch.concurrency_cap.inflight_count("u1", "callee") == 0
+    assert orch.concurrency_cap.inflight_count("u1", "initiator") == 0
+    assert not orch._pending_cap_entries and not orch._hop_cap_entries
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["tools:write", "tools:execute", "tools:system"])
+async def test_effectful_hop_without_attended_review_reserves_no_slots(orch, scope):
+    orch.tool_permissions.register_tool_scopes("callee", {"long_tool": scope})
+    out = await _auth_hop(orch)
+    assert isinstance(out, GateRefusal)
+    assert "interactive signed-in conversation" in out.response.error["message"]
+    assert orch.concurrency_cap.inflight_count("u1", "callee") == 0
+    assert orch.concurrency_cap.inflight_count("u1", "initiator") == 0
+    assert not orch._pending_cap_entries and not orch._hop_cap_entries
+
+
+@pytest.mark.asyncio
 async def test_direct_call_charges_only_executing_slot(orch):
     out = await orch._authorize_and_prepare(
         MagicMock(), "callee", "long_tool", {}, "c1", "u1")
@@ -63,9 +91,11 @@ async def test_initiator_fanout_bounded_by_own_cap(orch):
     cap = orch.concurrency_cap.max_per_user_agent
     for i in range(cap):
         orch.local_agents[f"callee{i}"] = MagicMock()
+        orch.tool_permissions.register_tool_scopes(f"callee{i}", {"long_tool": "tools:read"})
         out = await _auth_hop(orch, callee=f"callee{i}")
         assert isinstance(out, PreparedDispatch), f"hop {i} should be admitted"
     orch.local_agents["callee-extra"] = MagicMock()
+    orch.tool_permissions.register_tool_scopes("callee-extra", {"long_tool": "tools:read"})
     out = await _auth_hop(orch, callee="callee-extra")
     assert isinstance(out, GateRefusal)
     assert "initiator" in (out.response.error or {}).get("message", "")

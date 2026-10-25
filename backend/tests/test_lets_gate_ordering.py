@@ -156,8 +156,13 @@ async def test_confirmation_denial_precedes_lets(
 
 @pytest.mark.asyncio
 async def test_egress_hitl_denial_precedes_lets(gate_orchestrator, monkeypatch) -> None:
-    from orchestrator import hitl
+    from types import SimpleNamespace
 
+    from orchestrator import hitl
+    from personalization import phi_gate
+
+    monkeypatch.setattr(phi_gate, "get_phi_gate",
+                        lambda: SimpleNamespace(contains_phi=lambda _text: False))
     orchestrator, websocket = gate_orchestrator
     monkeypatch.setattr(hitl, "hitl_enabled", lambda: True)
     monkeypatch.setattr(hitl, "assess_risk", lambda *_args, **_kwargs: ("egress",))

@@ -25,14 +25,25 @@ TOPIC_BASE = "https://example.org/fhir/SubscriptionTopic"
 
 
 @pytest.fixture(autouse=True)
+def isolated_stream_flags(monkeypatch):
+    from shared.feature_flags import flags
+
+    monkeypatch.setitem(flags._flags, "tool_streaming", False)
+    monkeypatch.setitem(flags._flags, "stream_progress", False)
+
+
+@pytest.fixture(autouse=True)
 def isolated_audit_queue(monkeypatch, tmp_path):
     from audit import recorder
+    from shared.feature_flags import flags
 
     path = tmp_path / "pending.jsonl"
     monkeypatch.setattr(recorder, "_retry_queue_path", lambda: path)
     existing = recorder.get_recorder()
     if existing is not None and hasattr(existing, "_retry_path"):
         monkeypatch.setattr(existing, "_retry_path", path)
+    for flag in ("tool_streaming", "stream_progress"):
+        monkeypatch.setitem(flags._flags, flag, False)
 
 
 def at(minutes_ago: float) -> str:

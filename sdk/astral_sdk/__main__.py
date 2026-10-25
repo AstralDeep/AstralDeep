@@ -129,6 +129,10 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Seconds to wait for approval in the signed-in Astral UI")
     tcreate.add_argument("--shell-command", dest="shell_command", default=None,
                          help="Run one command instead of an interactive shell")
+    tcreate.add_argument("--target", default=None,
+                         help="Approved machine id for the terminal runtime (defaults to the current profile)")
+    tcreate.add_argument("--directory", default=None,
+                         help="Absolute starting directory on the approved runtime")
 
     tlist = sub.add_parser("terminal-list", help="List your open terminal sessions")
     _add_common(tlist)
@@ -207,7 +211,12 @@ def _attach(client: AstralClient, session_id: str) -> int:
             if data is None:
                 stdin_open = False
                 break
-            client.write_terminal(session_id, data)
+            try:
+                client.write_terminal(session_id, data)
+            except AstralHTTPError as exc:
+                if exc.code in ("terminal_session_closed", "terminal_session_not_found"):
+                    return 0
+                raise
         try:
             out = client.read_terminal(session_id, offset=offset, wait_seconds=0.5)
         except AstralHTTPError as exc:
@@ -267,7 +276,8 @@ def run(argv: Optional[list[str]] = None) -> int:
             value = client.emergency_resume(expected_revision=args.expected_revision)
         elif args.command == "terminal-create":
             value = client.create_terminal_session(cols=args.cols, rows=args.rows,
-                command=args.shell_command, approval_timeout_seconds=args.approval_timeout)
+                command=args.shell_command, target=args.target, directory=args.directory,
+                approval_timeout_seconds=args.approval_timeout)
         elif args.command == "terminal-list":
             value = client.list_terminal_sessions()
         elif args.command == "terminal-write":

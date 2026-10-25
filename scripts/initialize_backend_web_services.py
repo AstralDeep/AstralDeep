@@ -11,6 +11,7 @@ import ipaddress
 import json
 import os
 import re
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -104,6 +105,109 @@ def livekit_address(details: dict, qualification_id: str) -> str:
     if str(candidate) in reserved:
         raise ValueError("reserved LiveKit address is already allocated")
     return str(candidate)
+
+
+def proxy_address(inventory: list, bridge: dict, qualification_id: str) -> str:
+    network = "ad-bwq-services-" + qualification_id
+    try:
+        if (
+            not isinstance(inventory, list)
+            or len(inventory) != 1
+            or bridge["Name"] != network
+            or bridge["Labels"][LABEL] != qualification_id
+            or bridge["Driver"] != "bridge"
+            or not re.fullmatch(r"[0-9a-f]{64}", bridge["Id"])
+        ):
+            raise ValueError
+        details = inventory[0]
+        endpoints = details["NetworkSettings"]["Networks"]
+        if (
+            details["Name"] != "/" + network + "-proxy"
+            or details["Config"]["Labels"][LABEL] != qualification_id
+            or details["State"]["Running"] is not True
+            or details["HostConfig"]["NetworkMode"] != network
+            or not isinstance(endpoints, dict)
+            or set(endpoints) != {network}
+            or endpoints[network]["NetworkID"] != bridge["Id"]
+        ):
+            raise ValueError
+        raw_address = endpoints[network]["IPAddress"]
+        if not isinstance(raw_address, str):
+            raise ValueError
+        address = ipaddress.IPv4Address(raw_address)
+        subnets = [
+            ipaddress.ip_network(item["Subnet"]) for item in bridge["IPAM"]["Config"]
+        ]
+        ipv4 = [subnet for subnet in subnets if subnet.version == 4]
+        if (
+            len(ipv4) != 1
+            or address not in ipv4[0]
+            or address in {ipv4[0].network_address, ipv4[0].broadcast_address}
+            or str(address)
+            in {item.get("Gateway") for item in bridge["IPAM"]["Config"]}
+            or not any(
+                address in ipaddress.ip_network(block)
+                for block in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+            )
+        ):
+            raise ValueError
+        return str(address)
+    except (KeyError, TypeError, ValueError):
+        raise ValueError(
+            "forwarded proxy must be the exact running container on its owned private bridge"
+        ) from None
+
+
+def append_proxy_trust(path: Path, address: str) -> None:
+    try:
+        if not isinstance(address, str):
+            raise ValueError
+        parsed = ipaddress.IPv4Address(address)
+        if not any(
+            parsed in ipaddress.ip_network(block)
+            for block in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+        ):
+            raise ValueError
+    except (TypeError, ValueError):
+        raise ValueError(
+            "forwarded proxy trust requires one private IPv4 address"
+        ) from None
+    try:
+        descriptor = os.open(
+            path, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+        )
+        with os.fdopen(descriptor, "r+", encoding="utf-8", newline="") as stream:
+            metadata = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.getuid()
+                or metadata.st_mode & 0o077
+                or not 0 < metadata.st_size <= 65536
+            ):
+                raise ValueError(
+                    "forwarded proxy requires a private operator-owned runtime fragment"
+                )
+            content = stream.read(65537)
+            if len(content.encode("utf-8")) != metadata.st_size:
+                raise ValueError(
+                    "forwarded proxy runtime fragment changed while reading"
+                )
+            if any(
+                line.partition("=")[0].strip() == "FORWARDED_ALLOW_IPS"
+                for line in content.splitlines()
+            ):
+                raise ValueError(
+                    "forwarded proxy runtime trust must not already be configured"
+                )
+            stream.seek(0, os.SEEK_END)
+            stream.write(
+                ("" if content.endswith("\n") else "\n")
+                + "FORWARDED_ALLOW_IPS="
+                + address
+                + "\n"
+            )
+    except (OSError, UnicodeError):
+        raise ValueError("forwarded proxy runtime fragment is unavailable") from None
 
 
 def livekit_profile(address: str) -> dict:
@@ -363,10 +467,8 @@ def initialize(
     ):
         raise ValueError("material marker mismatch")
     command(["docker", "network", "create", "--label", label, network])
-    address = livekit_address(
-        json.loads(command(["docker", "network", "inspect", network]).stdout)[0],
-        qualification_id,
-    )
+    bridge = json.loads(command(["docker", "network", "inspect", network]).stdout)[0]
+    address = livekit_address(bridge, qualification_id)
     profile = livekit_profile(address)
     profile_path = material_root / "livekit/config.json"
     with profile_path.open("x", encoding="utf-8") as stream:
@@ -408,7 +510,7 @@ def initialize(
         [
             *start("iam-pg", "ad-bwq-iam-pg"),
             "--env-file",
-            str(material_root / "keycloak/postgres.env"),
+            str(material_root / "operator/keycloak-postgres.env"),
             "-v",
             prefix + "-iam-pg:/var/lib/postgresql/data",
             POSTGRES_IMAGE,
@@ -419,7 +521,7 @@ def initialize(
         [
             *start("keycloak", "ad-bwq-keycloak"),
             "--env-file",
-            str(material_root / "keycloak/runtime.env"),
+            str(material_root / "operator/keycloak-runtime.env"),
             "-v",
             prefix + "-iam-data:/opt/keycloak/data",
             *bind("keycloak", "/materials"),
@@ -550,6 +652,14 @@ def initialize(
             "daemon off;",
         ]
     )
+    proxy = proxy_address(
+        json.loads(
+            command(["docker", "container", "inspect", prefix + "-proxy"]).stdout
+        ),
+        bridge,
+        qualification_id,
+    )
+    append_proxy_trust(material_root / "runtime-fragment.env", proxy)
     command(
         [
             *start("livekit", "ad-bwq-livekit-node"),

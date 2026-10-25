@@ -69,6 +69,7 @@ MAX_FILES = 10_000
 REQUIRED_PRODUCERS = ("unit", "ui")
 PROFILES = {
     ("macos", "ci"): REQUIRED_PRODUCERS,
+    ("macos", "release"): ("unit", "ui", "staging"),
     ("ios", "ci"): ("core", "unit", "ui"),
     ("ios", "release"): ("core", "unit", "ui", "staging"),
 }
@@ -286,8 +287,8 @@ def merge_xccov_reports(
             except ExportError as exc:
                 _raise_export_error(exc)
             try:
-                native_policy.require(platform == "ios")
                 envelope = native_policy.parse_native_report(document)
+                native_policy.require(platform == envelope["platform"])
                 native_policy.require(set(envelope["domains"]) == {producer})
                 domain = envelope["domains"][producer]
                 for path, facts in domain["sources"].items():

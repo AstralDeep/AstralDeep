@@ -50,11 +50,12 @@ RUN apt-get update \
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-COPY backend/requirements.txt ./backend/
-RUN pip install --no-cache-dir -r backend/requirements.txt
+COPY backend/requirements.txt backend/requirements-document-worker.txt ./backend/
+RUN pip install --no-cache-dir -r backend/requirements.txt -r backend/requirements-document-worker.txt
 
 COPY --from=component-builder /build/pyproject.toml /build/.gitmodules ./
 COPY --from=component-builder /build/config/astral-composition.json ./config/astral-composition.json
+COPY config/documents/ ./config/documents/
 COPY --from=component-builder /build/scripts/install_local_components.py ./scripts/install_local_components.py
 COPY --from=component-builder /component-wheels/ /opt/astral-component-wheels/
 RUN python scripts/install_local_components.py install \

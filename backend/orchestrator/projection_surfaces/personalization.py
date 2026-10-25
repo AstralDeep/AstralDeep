@@ -190,6 +190,18 @@ def _tab_bar(active: str) -> str:
         f'data-ui-action="chrome_open" data-ui-payload=\'{mesh_payload}\'>'
         "Mesh devices</button>"
     )
+    atlas_payload = _payload_attr({"surface": "atlas", "params": {}})
+    parts.append(
+        f'<button type="button" role="tab" aria-selected="false" class="{_BTN_GHOST}" '
+        f'data-ui-action="chrome_open" data-ui-payload=\'{atlas_payload}\'>'
+        "Atlas</button>"
+    )
+    search_payload = _payload_attr({"surface": "search", "params": {}})
+    parts.append(
+        f'<button type="button" role="tab" aria-selected="false" class="{_BTN_GHOST}" '
+        f'data-ui-action="chrome_open" data-ui-payload=\'{search_payload}\'>'
+        "Search everything</button>"
+    )
     inner = "".join(parts)
     return (
         f'<div class="flex flex-wrap gap-1 border-b border-white/10 pb-2" '
@@ -589,7 +601,11 @@ async def components(orch, user_id, roles, params):
                       variant="primary" if key == tab else "secondary")
          for key, label in _TABS]
         + [_sdui.button("Mesh devices", "chrome_open",
-                        {"surface": "mesh", "params": {}}, variant="secondary")],
+                        {"surface": "mesh", "params": {}}, variant="secondary"),
+           _sdui.button("Atlas", "chrome_open",
+                        {"surface": "atlas", "params": {}}, variant="secondary"),
+           _sdui.button("Search everything", "chrome_open",
+                        {"surface": "search", "params": {}}, variant="secondary")],
         direction="row",
     )
     if tab == "soul":

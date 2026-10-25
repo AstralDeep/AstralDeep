@@ -85,6 +85,8 @@ def orch():
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     o.tool_permissions.get_enabled_scope_names = MagicMock(return_value=["tools:read"])
     o.tool_permissions.get_tool_scope = MagicMock(return_value="tools:read")
+    o.tool_permissions.get_tool_scope_map = MagicMock(return_value={
+        "tool_b": "tools:read", "tool_c": "tools:read"})
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager = MagicMock()
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
@@ -93,6 +95,8 @@ def orch():
     skills = [SimpleNamespace(id="tool_b"), SimpleNamespace(id="tool_c")]
     o.agent_cards["agent-b"] = SimpleNamespace(skills=skills)
     o.agent_cards["agent-c"] = SimpleNamespace(skills=skills)
+    o.tool_permissions.get_tool_scope_map = MagicMock(return_value={
+        "tool_b": "tools:read", "tool_c": "tools:read"})
     o._execute_with_retry = AsyncMock(return_value=MCPResponse(result="ok"))
     return o
 

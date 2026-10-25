@@ -50,7 +50,9 @@ class ComputerSession:
     last_heartbeat_at: float = field(default_factory=time.time)
     images_supported: bool = True
     last_screenshot: Optional[Dict[str, Any]] = None
+    window_labels: Dict[int, str] = field(default_factory=dict)
     terminal_ok_until: float = 0.0
+    authority_generation: int = 0
     acked: asyncio.Event = field(default_factory=asyncio.Event)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     verbs_run: int = 0
@@ -61,7 +63,7 @@ class ComputerSession:
 
     @property
     def terminal_ok(self) -> bool:
-        return self.terminal_ok_until > time.time()
+        return self.state == ACTIVE and self.terminal_ok_until > time.time()
 
     def grant_terminal(self, seconds: float) -> None:
         self.terminal_ok_until = time.time() + float(seconds)
@@ -133,6 +135,10 @@ class ComputerSessionManager:
         existing = self.live_for_host(owner_sub, host.host_id)
         if existing is not None:
             if existing.controller_ws_id == id(websocket):
+                if chat_id and existing.chat_id != chat_id:
+                    existing.terminal_ok_until = 0.0
+                    existing.authority_generation += 1
+                    existing.window_labels.clear()
                 existing.chat_id = chat_id or existing.chat_id
                 self.touch(existing)
                 return existing
@@ -142,6 +148,9 @@ class ComputerSessionManager:
                     f"{host.name} is already being controlled from your {existing.controller_label}; "
                     "stop that session first")
             existing.controller_ws_id = id(websocket)
+            existing.terminal_ok_until = 0.0
+            existing.authority_generation += 1
+            existing.window_labels.clear()
             existing.controller_label = self._controller_label(websocket)
             existing.controller_device_id = self._device_id(websocket)
             existing.chat_id = chat_id or existing.chat_id
@@ -179,9 +188,11 @@ class ComputerSessionManager:
         return session
 
     async def pause(self, session: ComputerSession, reason: str, *, push: bool = True) -> None:
-        if session.state != ACTIVE:
+        if session.state == ENDED or session.state == PAUSED and session.pause_reason == reason:
             return
         session.state = PAUSED
+        session.terminal_ok_until = 0.0
+        session.authority_generation += 1
         session.pause_reason = reason
         session.last_activity_at = time.time()
         await self._audit(session, "computer_session.paused", f"paused ({reason})")
@@ -192,6 +203,7 @@ class ComputerSessionManager:
         if session.state != PAUSED:
             return
         session.state = ACTIVE
+        session.authority_generation += 1
         session.pause_reason = None
         session.last_activity_at = time.time()
         await self._audit(session, "computer_session.resumed", "resumed")
@@ -204,6 +216,8 @@ class ComputerSessionManager:
         if reason not in END_REASONS:
             reason = "user_stop"
         session.state = ENDED
+        session.terminal_ok_until = 0.0
+        session.authority_generation += 1
         session.reason = reason
         session.last_activity_at = time.time()
         self._sessions.pop(session.session_id, None)

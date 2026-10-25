@@ -1,0 +1,48 @@
+{
+  "registration_text": "{\"session_id\":null,\"capabilities\":[\"render\",\"stream\",\"guidance_selection_v1\",\"computer_host_capable\",\"mac_workbench_v1\"],\"resumed\":false,\"token\":\"synthetic-local-only\",\"connection_generation\":\"33333333-3333-4333-8333-333333333333\",\"type\":\"register_ui\",\"device\":{\"pixel_ratio\":2,\"has_camera\":false,\"device_type\":\"macos\",\"connection_type\":\"unknown\",\"full_duplex\":true,\"console_contract\":\"console\\/v2\",\"pointer_type\":\"fine\",\"has_touch\":false,\"screen_height\":800,\"has_file_system\":true,\"microphone_permission\":\"not_determined\",\"supported_types\":[\"action_group\",\"alert\",\"badge\",\"bar_chart\",\"button\",\"card\",\"chat_history\",\"code\",\"collapsible\",\"color_picker\",\"container\",\"divider\",\"donut_chart\",\"download_card\",\"file_download\",\"file_upload\",\"gauge\",\"grid\",\"hero\",\"image\",\"input\",\"keyvalue\",\"line_chart\",\"list\",\"metric\",\"param_picker\",\"pie_chart\",\"pipeline_stepper\",\"plotly_chart\",\"progress\",\"radar_chart\",\"rating\",\"skeleton\",\"stat_group\",\"table\",\"tabs\",\"text\",\"theme_apply\",\"timeline\"],\"has_audio_output\":true,\"viewport_height\":800,\"viewport_width\":1000,\"mac_workbench_v1\":true,\"reduced_motion\":false,\"user_agent\":\"AstralDeep-macOS\\/0.1\",\"has_microphone\":true,\"voice_transport\":\"livekit\",\"screen_width\":1000}}",
+  "messages": [
+    {
+      "wire_text": "{\"type\":\"ui_event\",\"submission_id\":\"25fe19d9-2693-4c19-99b0-99677ad7e054\",\"action\":\"computer_event\",\"connection_generation\":\"33333333-3333-4333-8333-333333333333\",\"request_generation\":\"5f5616ea-3fbb-444a-a2b5-1daf362528f4\",\"payload\":{\"host_id\":\"11111111-1111-4111-8111-111111111111\",\"host\":{\"name\":\"Synthetic Mac\",\"screens\":[{\"width\":1000,\"scale\":2,\"height\":800,\"index\":0,\"primary\":true}],\"client_version\":\"1.8.0\",\"host_id\":\"11111111-1111-4111-8111-111111111111\",\"verbs\":[\"screenshot\",\"type_text\"],\"platform\":\"macos\",\"protocol\":1},\"event\":\"announce\"}}",
+      "old_text": "{\"type\":\"ui_event\",\"action\":\"computer_event\",\"payload\":{\"host_id\":\"11111111-1111-4111-8111-111111111111\",\"host\":{\"name\":\"Synthetic Mac\",\"screens\":[{\"index\":0,\"primary\":true,\"height\":800,\"scale\":2,\"width\":1000}],\"client_version\":\"1.8.0\",\"host_id\":\"11111111-1111-4111-8111-111111111111\",\"verbs\":[\"screenshot\",\"type_text\"],\"platform\":\"macos\",\"protocol\":1},\"event\":\"announce\"}}",
+      "kind": "announce"
+    },
+    {
+      "wire_text": "{\"submission_id\":\"1e7cf6e8-df16-49a8-9f47-64e8a699f56a\",\"type\":\"ui_event\",\"action\":\"computer_response\",\"connection_generation\":\"33333333-3333-4333-8333-333333333333\",\"request_generation\":\"e154ff48-2de1-4a4c-aced-eb593619ba38\",\"payload\":{\"ok\":true,\"result\":{\"synthetic\":true},\"request_id\":\"creq_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}",
+      "old_text": "{\"type\":\"ui_event\",\"action\":\"computer_response\",\"payload\":{\"ok\":true,\"result\":{\"synthetic\":true},\"request_id\":\"creq_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}",
+      "kind": "response_ok"
+    },
+    {
+      "wire_text": "{\"submission_id\":\"0152b1c7-4fc7-4a12-8e7e-39228032c1bc\",\"type\":\"ui_event\",\"action\":\"computer_response\",\"connection_generation\":\"33333333-3333-4333-8333-333333333333\",\"request_generation\":\"9f8c1a12-fc61-4ad2-ac36-df87154b8d72\",\"payload\":{\"error\":{\"message\":\"Synthetic denial\",\"code\":\"interrupted\"},\"ok\":false,\"request_id\":\"creq_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}}",
+      "old_text": "{\"type\":\"ui_event\",\"action\":\"computer_response\",\"payload\":{\"error\":{\"message\":\"Synthetic denial\",\"code\":\"interrupted\"},\"ok\":false,\"request_id\":\"creq_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}}",
+      "kind": "response_error"
+    },
+    {
+      "wire_text": "{\"submission_id\":\"2d4c588c-a164-4f52-8b43-e22d4b095e84\",\"type\":\"ui_event\",\"action\":\"computer_event\",\"connection_generation\":\"33333333-3333-4333-8333-333333333333\",\"payload\":{\"host_id\":\"11111111-1111-4111-8111-111111111111\",\"session_id\":\"22222222-2222-4222-8222-222222222222\",\"event\":\"paused\"},\"request_generation\":\"80a237e7-d198-450a-8859-78075766a9a7\"}",
+      "old_text": "{\"type\":\"ui_event\",\"action\":\"computer_event\",\"payload\":{\"host_id\":\"11111111-1111-4111-8111-111111111111\",\"session_id\":\"22222222-2222-4222-8222-222222222222\",\"event\":\"paused\"}}",
+      "kind": "paused"
+    },
+    {
+      "wire_text": "{\"submission_id\":\"dc89f847-671c-44ba-90e1-01ed5a78602c\",\"type\":\"ui_event\",\"action\":\"computer_event\",\"connection_generation\":\"33333333-3333-4333-8333-333333333333\",\"payload\":{\"host_id\":\"11111111-1111-4111-8111-111111111111\",\"session_id\":\"22222222-2222-4222-8222-222222222222\",\"event\":\"resumed\"},\"request_generation\":\"5eb14ced-6f93-4a3b-8086-ba93c0579243\"}",
+      "old_text": "{\"type\":\"ui_event\",\"action\":\"computer_event\",\"payload\":{\"host_id\":\"11111111-1111-4111-8111-111111111111\",\"session_id\":\"22222222-2222-4222-8222-222222222222\",\"event\":\"resumed\"}}",
+      "kind": "resumed"
+    },
+    {
+      "wire_text": "{\"submission_id\":\"8f913fa1-8b6a-409c-a340-7b455f2acbc1\",\"type\":\"ui_event\",\"action\":\"computer_event\",\"connection_generation\":\"33333333-3333-4333-8333-333333333333\",\"payload\":{\"host_id\":\"11111111-1111-4111-8111-111111111111\",\"session_id\":\"22222222-2222-4222-8222-222222222222\",\"event\":\"heartbeat\"},\"request_generation\":\"3286b075-f275-44b5-aa05-22734ad6d6f7\"}",
+      "old_text": "{\"type\":\"ui_event\",\"action\":\"computer_event\",\"payload\":{\"host_id\":\"11111111-1111-4111-8111-111111111111\",\"session_id\":\"22222222-2222-4222-8222-222222222222\",\"event\":\"heartbeat\"}}",
+      "kind": "heartbeat"
+    },
+    {
+      "wire_text": "{\"submission_id\":\"98ee9bf9-53e6-46c1-bde2-b3bde288ebcc\",\"type\":\"ui_event\",\"action\":\"computer_event\",\"connection_generation\":\"33333333-3333-4333-8333-333333333333\",\"payload\":{\"host_id\":\"11111111-1111-4111-8111-111111111111\",\"session_id\":\"22222222-2222-4222-8222-222222222222\",\"event\":\"stopped\"},\"request_generation\":\"ed04394c-f87f-4911-b827-5f23699981b2\"}",
+      "old_text": "{\"type\":\"ui_event\",\"action\":\"computer_event\",\"payload\":{\"host_id\":\"11111111-1111-4111-8111-111111111111\",\"session_id\":\"22222222-2222-4222-8222-222222222222\",\"event\":\"stopped\"}}",
+      "kind": "stopped"
+    },
+    {
+      "wire_text": "{\"submission_id\":\"4e6206d7-6134-4253-8edc-b8e7a24980e8\",\"type\":\"ui_event\",\"action\":\"computer_event\",\"connection_generation\":\"33333333-3333-4333-8333-333333333333\",\"payload\":{\"host_id\":\"11111111-1111-4111-8111-111111111111\",\"event\":\"withdraw\"},\"request_generation\":\"067d12c4-0c8c-4e47-b6ef-e7ac458a848f\"}",
+      "old_text": "{\"type\":\"ui_event\",\"action\":\"computer_event\",\"payload\":{\"host_id\":\"11111111-1111-4111-8111-111111111111\",\"event\":\"withdraw\"}}",
+      "kind": "withdraw"
+    }
+  ],
+  "host_id": "11111111-1111-4111-8111-111111111111",
+  "session_id": "22222222-2222-4222-8222-222222222222",
+  "connection_generation": "33333333-3333-4333-8333-333333333333"
+}

@@ -23,9 +23,10 @@ from orchestrator.work_admission import (
     RetryableOperationCursor,
     WorkAdmissionCoordinator,
 )
+from orchestrator.work_reconciliation import EFFECT_DISPATCHED_PHASE
 
 RECOVERY_IDEMPOTENCY_NAMESPACE = "work.executor_recovery.v1"
-DEFAULT_UNCERTAIN_PHASES = frozenset({"awaiting_tool"})
+DEFAULT_UNCERTAIN_PHASES = frozenset({"awaiting_tool", EFFECT_DISPATCHED_PHASE})
 _EXPIRED_TERMINAL_CODE = "execution_lease_expired"
 
 
@@ -35,6 +36,7 @@ class RecoveryDisposition(str, Enum):
     PRESERVED_CANCELLED = "preserved_cancelled"
     PRESERVED_STOPPED = "preserved_stopped"
     PRESERVED_UNCERTAIN = "preserved_uncertain"
+    RESOLVED_APPLIED = "resolved_applied"
     PRESERVED_EXHAUSTED = "preserved_exhausted"
     UNAVAILABLE = "unavailable"
     RESCHEDULE_REFUSED = "reschedule_refused"
@@ -50,6 +52,7 @@ class StopEpochReader(Protocol):
 
 
 StopGate = Callable[[OperationRecord], bool]
+UncertaintyProbe = Callable[[OperationRecord], str | None]
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,7 @@ class ExecutorRecoveryService:
         *,
         stop_gate: StopGate,
         uncertain_phases: frozenset[str] = DEFAULT_UNCERTAIN_PHASES,
+        uncertainty_probe: UncertaintyProbe | None = None,
         max_recovery_depth: int = 1,
         idempotency_namespace: str = RECOVERY_IDEMPOTENCY_NAMESPACE,
         page_size: int = 100,
@@ -98,6 +102,7 @@ class ExecutorRecoveryService:
         self._coordinator = coordinator
         self._stop_gate = stop_gate
         self._uncertain_phases = frozenset(uncertain_phases)
+        self._uncertainty_probe = uncertainty_probe
         self._max_recovery_depth = max_recovery_depth
         self._idempotency_namespace = idempotency_namespace
         self._page_size = page_size
@@ -129,6 +134,14 @@ class ExecutorRecoveryService:
     def reschedule_interrupted(self, record: OperationRecord) -> RecoveredOperation:
         return self._recover_one(record)
 
+    def _probe_resolution(self, record: OperationRecord) -> str | None:
+        if self._uncertainty_probe is None:
+            return None
+        try:
+            return self._uncertainty_probe(record)
+        except Exception:
+            return None
+
     def _recover_one(self, record: OperationRecord) -> RecoveredOperation:
         current = self._coordinator.repository.get_operation_for_administration(
             record.operation_id
@@ -154,11 +167,18 @@ class ExecutorRecoveryService:
                 operation_id=current.operation_id,
                 disposition=RecoveryDisposition.PRESERVED_STOPPED,
             )
-        if current.phase_code in self._uncertain_phases:
-            return RecoveredOperation(
-                operation_id=current.operation_id,
-                disposition=RecoveryDisposition.PRESERVED_UNCERTAIN,
-            )
+        resolved = self._probe_resolution(current)
+        if current.phase_code in self._uncertain_phases or resolved is not None:
+            if resolved == "applied":
+                return RecoveredOperation(
+                    operation_id=current.operation_id,
+                    disposition=RecoveryDisposition.RESOLVED_APPLIED,
+                )
+            if resolved != "cleared":
+                return RecoveredOperation(
+                    operation_id=current.operation_id,
+                    disposition=RecoveryDisposition.PRESERVED_UNCERTAIN,
+                )
         if self._expired_ancestor_depth(current) >= self._max_recovery_depth:
             return RecoveredOperation(
                 operation_id=current.operation_id,

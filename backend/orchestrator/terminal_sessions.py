@@ -44,6 +44,8 @@ RETAINED_SESSION_LIMIT = 256
 COLS_RANGE = (2, 1000)
 ROWS_RANGE = (2, 300)
 DEFAULT_COLS, DEFAULT_ROWS = 80, 24
+TARGET_MAX_BYTES = 128
+DIRECTORY_MAX_BYTES = 4096
 
 _READ_CHUNK = 4096
 _POLL_SLICE_S = 0.2
@@ -53,7 +55,8 @@ _POLL_SLICE_S = 0.2
 class TerminalSession:
     def __init__(self, session_id: str, owner_id: str, master_fd: int,
                  process: subprocess.Popen, cwd: str, *,
-                 now: Callable[[], float] = time.monotonic, remote=None, binding=None, authority=None) -> None:
+                 now: Callable[[], float] = time.monotonic, remote=None, binding=None, authority=None,
+                 target: Optional[str] = None, directory: Optional[str] = None) -> None:
         self.session_id = session_id
         self.owner_id = owner_id
         self.master_fd = master_fd
@@ -62,6 +65,9 @@ class TerminalSession:
         self.remote = remote
         self.binding = binding
         self.authority = authority
+        self.target = target
+        self.directory = directory
+        self.exit_code: Optional[int] = None
         self.effect_lock = threading.RLock()
         self.cols, self.rows = DEFAULT_COLS, DEFAULT_ROWS
         self.created_at = now()
@@ -130,6 +136,7 @@ class TerminalSession:
                 if data is None:
                     continue
                 if not data:
+                    self.capture_exit()
                     self.close("process_exited")
                     return
                 self.append_output(data)
@@ -141,6 +148,7 @@ class TerminalSession:
                 break
             if not ready:
                 if self.exited():
+                    self.capture_exit()
                     self.close("process_exited")
                     break
                 continue
@@ -152,12 +160,23 @@ class TerminalSession:
                 self.close("process_exited")
                 break
             if not data:
+                self.capture_exit()
                 self.close("process_exited")
                 break
             self.append_output(data)
 
     def touch(self) -> None:
         self.last_activity_at = self._now()
+
+    def capture_exit(self) -> None:
+        if self.exit_code is not None:
+            return
+        try:
+            value = self.remote.exit_status() if self.remote is not None else self.process.poll()
+        except Exception:
+            value = None
+        if type(value) is int:
+            self.exit_code = value
 
     def close(self, reason: str) -> None:
         if self.closed:
@@ -166,6 +185,7 @@ class TerminalSession:
         self.close_reason = reason
         if self.remote is not None:
             with self.effect_lock:
+                self.capture_exit()
                 try:
                     self.remote.close()
                 except Exception:
@@ -179,6 +199,7 @@ class TerminalSession:
                            self.session_id, self.process.pid)
         except OSError:
             pass
+        self.capture_exit()
         try:
             os.close(self.master_fd)
         except OSError:
@@ -287,10 +308,14 @@ class TerminalSessionManager:
             "idle_seconds": round(max(0.0, self._clock() - session.last_activity_at), 3),
             "ring_start": session.ring_start,
             "ring_end": session.ring_end,
+            "target": session.target,
+            "directory": session.directory,
+            "exit_code": session.exit_code,
         }
 
     def create(self, owner_id: str, *, cols: int = DEFAULT_COLS, rows: int = DEFAULT_ROWS,
-               command: Optional[str] = None, authority=None, runtime_binding=None) -> Dict[str, Any]:
+               command: Optional[str] = None, target: Optional[str] = None,
+               directory: Optional[str] = None, authority=None, runtime_binding=None) -> Dict[str, Any]:
         require_terminal_execution(self, owner_id)
         self._check_authority(authority, owner_id, "start_terminal")
         if runtime_binding != self.runtime_binding(owner_id):
@@ -300,6 +325,8 @@ class TerminalSessionManager:
         if command is not None and (not isinstance(command, str) or not command.strip()
                                     or len(command) > 512 or "\x00" in command):
             raise TerminalError("terminal_command_invalid", 422)
+        requested_target = None if target is None else _bounded_target(target)
+        directory = None if directory is None else _bounded_directory(directory)
         with self._lock:
             pending_total = sum(self._pending.values())
             closed = sorted((session for session in self._sessions.values() if session.closed),
@@ -319,8 +346,10 @@ class TerminalSessionManager:
         try:
             from orchestrator.terminal_ssh import SSHPTY
 
-            binding, target = self.require_execution(owner_id)
+            binding, ssh_target = self.require_execution(owner_id)
             if runtime_binding != self._binding_digest(binding):
+                raise TerminalError("terminal_target_changed", 409)
+            if requested_target is not None and requested_target != binding.machine_id:
                 raise TerminalError("terminal_target_changed", 409)
 
             def check():
@@ -329,12 +358,13 @@ class TerminalSessionManager:
                 if current != binding or self._sweeper_stop.is_set():
                     raise TerminalError("terminal_target_changed", 409)
 
-            remote = SSHPTY.open(target, cols, rows, command, check)
+            remote = SSHPTY.open(ssh_target, cols, rows, command, check, directory=directory)
             check()
             session = TerminalSession(uuid.uuid4().hex, owner_id, -1, None, "", now=self._clock,
                                       remote=remote, binding=binding, authority=replace(
                                           authority, _execution_fence=None, _admission=None,
-                                          _runtime=None, _request_check=None))
+                                          _runtime=None, _request_check=None),
+                                      target=binding.machine_id, directory=directory)
             session.cols, session.rows = cols, rows
             with self._lock:
                 check()
@@ -476,6 +506,8 @@ class TerminalSessionManager:
                     "bytes": len(chunk),
                     "truncated": truncated,
                     "eof": eof,
+                    "exit_code": session.exit_code,
+                    "close_reason": session.close_reason,
                     "session": None if eof else self.describe(session),
                 }
             self._wait_readable(session, min(_POLL_SLICE_S, deadline - self._clock()))
@@ -489,7 +521,10 @@ class TerminalSessionManager:
             session.close("owner_close")
             audit_machine_event(owner_id, "terminal_session_close",
                                "interactive terminal session closed", machine_id=session_id)
-        return {"session_id": session_id, "closed": True, "reason": session.close_reason}
+        outcome = {"session_id": session_id, "closed": True, "reason": session.close_reason}
+        if session.exit_code is not None:
+            outcome["exit_code"] = session.exit_code
+        return outcome
 
     def close_all_for_owner(self, owner_id: str, reason: str) -> int:
         with self._lock:
@@ -580,6 +615,22 @@ def _bounded_dimension(value: Any, bounds: Tuple[int, int], code: str) -> int:
     return value
 
 
+def _bounded_target(value: Any) -> str:
+    if (not isinstance(value, str) or not value or value != value.strip()
+            or len(value.encode("utf-8")) > TARGET_MAX_BYTES
+            or any(ord(char) < 32 or ord(char) == 127 for char in value)):
+        raise TerminalError("terminal_target_invalid", 422)
+    return value
+
+
+def _bounded_directory(value: Any) -> str:
+    if (not isinstance(value, str) or not value.startswith("/")
+            or len(value.encode("utf-8")) > DIRECTORY_MAX_BYTES
+            or any(ord(char) < 32 or ord(char) == 127 for char in value)):
+        raise TerminalError("terminal_directory_invalid", 422)
+    return value
+
+
 def _bounded_wait(value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
         raise TerminalError("terminal_wait_invalid", 422)
@@ -604,4 +655,5 @@ __all__ = [
     "INPUT_CHUNK_MAX", "OUTPUT_RING_BYTES", "OUTPUT_CHUNK_MAX",
     "SESSIONS_PER_OWNER", "IDLE_TIMEOUT_S", "MAX_LIFETIME_S", "READ_WAIT_MAX_S",
     "COLS_RANGE", "ROWS_RANGE", "DEFAULT_COLS", "DEFAULT_ROWS",
+    "TARGET_MAX_BYTES", "DIRECTORY_MAX_BYTES",
 ]

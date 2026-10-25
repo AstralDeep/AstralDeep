@@ -634,6 +634,18 @@ def test_observation_requires_successful_expected_target_and_suite(lane):
     assert len(helper.observation_cases(summary, tests, lane)) == summary["passedTests"]
 
 
+def test_ios_ui_observation_retains_the_required_settings_controls_suite():
+    summary, tests = observation("ui")
+    suites = tests["testNodes"][0]["children"][0]["children"]
+    assert "SettingsControlsUITests" in {suite["name"] for suite in suites}
+    helper.observation_cases(summary, tests, "ui")
+    suites[:] = [suite for suite in suites if suite["name"] != "SettingsControlsUITests"]
+    summary["totalTestCount"] -= 1
+    summary["passedTests"] -= 1
+    with pytest.raises(helper.ArtifactError):
+        helper.observation_cases(summary, tests, "ui")
+
+
 @pytest.mark.parametrize("destination", ["unit", "staging", "core"])
 def test_relabelled_ui_result_cannot_supply_other_lane(destination):
     summary, tests = observation("ui")
@@ -738,7 +750,8 @@ def test_test_tree_refuses_missing_wrong_or_ambiguous_observations(change):
     elif change == "unsafe_name":
         suites[0]["name"] = "../Other"
     elif change == "count_mismatch":
-        summary.update(totalTestCount=7, passedTests=7)
+        summary["totalTestCount"] += 1
+        summary["passedTests"] += 1
     elif change == "empty_tree":
         tests["testNodes"] = []
     elif change == "extra_target":
@@ -789,10 +802,11 @@ def test_failed_skipped_or_missing_status_is_never_a_pass(level, status):
 
 def raw_observations(built, monkeypatch):
     data = {}
-    for lane in ("core", "unit", "ui", "staging"):
-        path = built["output"] / "coverage/raw" / f"apple-ios-{lane}.xcresult"
+    platform = built["platform"]
+    for lane in (("core", "unit", "ui", "staging") if platform == "ios" else ("unit", "ui", "staging")):
+        path = built["output"] / "coverage/raw" / f"apple-{platform}-{lane}.xcresult"
         write(path / "Info.plist", lane.encode())
-        summary, tests = observation(lane)
+        summary, tests = observation(lane) if platform == "ios" else mac_observation(lane, lane != "staging")
         data[lane] = {
             "summary": summary,
             "tests": tests,
@@ -804,7 +818,7 @@ def raw_observations(built, monkeypatch):
 
     def query(result, operation, *, deadline):
         assert deadline > helper.time.monotonic()
-        lane = result.name.removeprefix("apple-ios-").removesuffix(".xcresult")
+        lane = result.name.removeprefix(f"apple-{platform}-").removesuffix(".xcresult")
         return data[lane][operation]
 
     monkeypatch.setattr(helper, "xcresult_json", query)
@@ -818,9 +832,7 @@ def test_final_observation_operation_is_separate_from_build_preparation(
     assert helper.main(args(built, "verify")) == 0
     assert helper.main(args(built, "validate-observations")) == 2
     raw_observations(built, monkeypatch)
-    assert helper.main(args(built, "validate-observations")) == (
-        0 if built["platform"] == "ios" else 2
-    )
+    assert helper.main(args(built, "validate-observations")) == 0
 
 
 @pytest.mark.parametrize(
@@ -838,15 +850,15 @@ def test_final_observation_operation_is_separate_from_build_preparation(
 def test_raw_lane_identity_and_stability_refuse_substitution(
     built, monkeypatch, change
 ):
-    if built["platform"] != "ios":
-        return
     assert helper.main(args(built, "prepare")) == 0
     data = raw_observations(built, monkeypatch)
-    path = built["output"] / "coverage/raw/apple-ios-unit.xcresult/Info.plist"
+    platform = built["platform"]
+    other = "core" if platform == "ios" else "ui"
+    path = built["output"] / f"coverage/raw/apple-{platform}-unit.xcresult/Info.plist"
     if change == "same_root":
-        data["unit"]["metadata"]["rootId"] = data["core"]["metadata"]["rootId"]
+        data["unit"]["metadata"]["rootId"] = data[other]["metadata"]["rootId"]
     elif change == "same_bytes":
-        path.write_bytes(b"core")
+        path.write_bytes(other.encode())
     elif change == "external":
         data["unit"]["metadata"]["externalLocations"] = ["file:///private/source"]
     elif change == "missing_root":
@@ -863,7 +875,7 @@ def test_raw_lane_identity_and_stability_refuse_substitution(
 
         def mutate(result, operation, *, deadline):
             value = old(result, operation, deadline=deadline)
-            if result.name == "apple-ios-unit.xcresult" and operation == "tests":
+            if result.name == f"apple-{platform}-unit.xcresult" and operation == "tests":
                 path.write_bytes(b"changed")
             return value
 
@@ -1066,7 +1078,7 @@ def test_private_result_copy_rejects_unsafe_unbounded_or_changed_input(tmp_path,
             pytest.fail("unsafe evidence must never reach a native query")
 
 
-def native_fixture(tmp_path):
+def native_fixture(tmp_path, platform="ios", architecture="arm64"):
     from backend.tests.test_native_xccov_domain_088 import _macho, _mapping, _metadata
     from scripts import native_xccov_domain as domain
 
@@ -1093,11 +1105,15 @@ def native_fixture(tmp_path):
         },
         "build_archives": {},
     }
-    for role in ("core", "app"):
+    for role in (("core", "app") if platform == "ios" else ("app",)):
         kind = "core_products" if role == "core" else "products"
-        member = domain.BINARY_MEMBERS[role]
-        raw = _macho("core" if role == "core" else "ui")
-        archive = output / f"coverage/raw/apple-ios-{kind}.zip"
+        member = domain.BINARY_MEMBERS[role] if platform == "ios" else domain.MACOS_BINARY_MEMBER
+        if platform == "ios":
+            raw = _macho("core" if role == "core" else "ui")
+        else:
+            from backend.tests.test_native_xccov_domain_088 import _mac_macho
+            raw = _mac_macho(architecture)
+        archive = output / f"coverage/raw/apple-{platform}-{kind}.zip"
         archive.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(archive, "x") as stream:
             stream.writestr(member, raw)
@@ -1108,8 +1124,8 @@ def native_fixture(tmp_path):
             }
         }
         state["build_archives"][kind] = helper.digest(archive.read_bytes())
-    for lane in domain.LANES:
-        result = output / f"coverage/raw/apple-ios-{lane}.xcresult"
+    for lane in (domain.LANES if platform == "ios" else domain.MACOS_LANES):
+        result = output / f"coverage/raw/apple-{platform}-{lane}.xcresult"
         write(result / "fixture", lane.encode())
     return repo, output, state, paths, _mapping, _metadata
 
@@ -1184,18 +1200,19 @@ def test_native_domain_reconstructs_selected_retained_binary_and_exact_sources(
     assert not list(output.parent.glob("apple-native-domain-*"))
 
 
+@pytest.mark.parametrize("platform", ["ios", "macos"])
 @pytest.mark.parametrize("forgery", [False, True])
 def test_protected_reconstruction_refuses_self_asserted_reduced_mapping_domain(
-    tmp_path, monkeypatch, forgery
+    tmp_path, monkeypatch, forgery, platform
 ):
     from scripts import native_xccov_domain as domain
     from scripts import export_xccov_line_coverage as exporter
     from scripts import merge_xccov_line_coverage as merger
 
-    repo, output, state, paths, _mapping, _metadata = native_fixture(tmp_path)
+    repo, output, state, paths, _mapping, _metadata = native_fixture(tmp_path, platform)
     prefix = helper.COMPONENT + "/"
 
-    def witness(_repo, _output, lane, _archive_root):
+    def witness(_repo, _output, lane, _archive_root, platform="ios"):
         selected = [paths["core"]] if lane == "core" else list(paths.values())
         return domain.make_domain(
             geometry={
@@ -1204,14 +1221,14 @@ def test_protected_reconstruction_refuses_self_asserted_reduced_mapping_domain(
             },
             source_bytes=lambda path: (repo / path).read_bytes(),
             binary={
-                "member": domain.BINARY_MEMBERS["core" if lane == "core" else "app"],
+                "member": domain.binary_member(platform, lane),
                 "sha256": "a" * 64,
                 "artifact_sha256": "b" * 64,
-                "artifact_member": f"coverage/raw/apple-ios-{'core_products' if lane == 'core' else 'products'}.zip",
+                "artifact_member": f"coverage/raw/apple-{platform}-{'core_products' if lane == 'core' else 'products'}.zip",
             },
             observed_sources=sorted(selected),
             prefix=prefix,
-            lane=lane,
+            lane=lane, platform=platform,
         )
 
     monkeypatch.setattr(helper, "native_domain", witness)
@@ -1226,7 +1243,7 @@ def test_protected_reconstruction_refuses_self_asserted_reduced_mapping_domain(
     def run(command, **kwargs):
         if command[0] == "git":
             return original_run(command, **kwargs)
-        lane = Path(command[-1]).stem.removeprefix("apple-ios-")
+        lane = Path(command[-1]).stem.removeprefix(f"apple-{platform}-")
         selected = [paths["core"]] if lane == "core" else [paths["app"]]
         if "--file-list" in command:
             return ("\n".join(str(repo / path) for path in selected) + "\n").encode()
@@ -1242,18 +1259,18 @@ def test_protected_reconstruction_refuses_self_asserted_reduced_mapping_domain(
 
     monkeypatch.setattr(exporter, "_bounded_command", run)
     inputs = {}
-    for lane in domain.LANES:
+    for lane in (domain.LANES if platform == "ios" else domain.MACOS_LANES):
         inputs[lane] = output / (lane + ".json")
         exporter.export_xccov(
             repo=repo,
-            xcresult=output / f"coverage/raw/apple-ios-{lane}.xcresult",
+            xcresult=output / f"coverage/raw/apple-{platform}-{lane}.xcresult",
             output=inputs[lane],
-            platform="ios",
-            native_domain=witness(repo, output, lane, str(repo)),
+            platform=platform,
+            native_domain=witness(repo, output, lane, str(repo), platform=platform),
         )
     report = output / "union.json"
     actual = merger.merge_xccov_reports(
-        repo=repo, inputs=inputs, output=report, platform="ios", profile="release"
+        repo=repo, inputs=inputs, output=report, platform=platform, profile="release"
     )
     if forgery:
         for value in actual["domains"].values():
@@ -1265,9 +1282,9 @@ def test_protected_reconstruction_refuses_self_asserted_reduced_mapping_domain(
         domain.parse_native_report(actual)
         report.write_text(json.dumps(actual))
         with pytest.raises(helper.ArtifactError):
-            helper.verify_native_domains(repo, output, report, str(repo))
+            helper.verify_native_domains(repo, output, report, str(repo), platform=platform)
     else:
-        helper.verify_native_domains(repo, output, report, str(repo))
+        helper.verify_native_domains(repo, output, report, str(repo), platform=platform)
     assert not list(output.parent.glob("apple-native-recheck-*"))
 
 
@@ -1284,24 +1301,25 @@ def test_native_policy_loads_fixed_siblings_and_refuses_other_imports():
         helper._native_policy("../../candidate")
 
 
-def test_native_cli_operations_are_ios_only_create_only_and_data_free(
-    tmp_path, monkeypatch, capsys
+@pytest.mark.parametrize("platform", ["ios", "macos"])
+def test_native_cli_operations_are_create_only_and_data_free(
+    tmp_path, monkeypatch, capsys, platform
 ):
     repo = tmp_path / "repo"
     output = repo / "build/evidence"
     output.mkdir(parents=True)
     value = {"fixture": True}
     calls = []
-    monkeypatch.setattr(helper, "native_domain", lambda *args: value)
+    monkeypatch.setattr(helper, "native_domain", lambda *args, **kwargs: value)
     monkeypatch.setattr(
-        helper, "verify_native_domains", lambda *args: calls.append(args)
+        helper, "verify_native_domains", lambda *args, **kwargs: calls.append((args, kwargs))
     )
     destination = output / "domain.json"
     common = [
         "--repo",
         str(repo),
         "--platform",
-        "ios",
+        platform,
         "--output",
         str(output),
         "--archive-repo-root",
@@ -1324,12 +1342,120 @@ def test_native_cli_operations_are_ios_only_create_only_and_data_free(
         helper.main(["verify-native-domains", *common, "--report", str(destination)])
         == 0
     )
-    assert calls == [(repo, output, destination, "/actual/source")]
+    assert calls == [((repo, output, destination, "/actual/source"), {} if platform == "ios" else {"platform": "macos"})]
     assert helper.main(["native-domain", *common]) == 2
     assert helper.main(["verify-native-domains", *common]) == 2
     changed = list(command)
-    changed[changed.index("ios")] = "macos"
+    changed[changed.index(platform)] = "macos" if platform == "ios" else "ios"
     assert helper.main(changed) == 2
     assert set(capsys.readouterr().err.splitlines()) == {
         "apple_coverage_artifact_invalid"
     }
+
+
+
+def mac_observation(lane, skip=False, architecture="arm64"):
+    from scripts import native_xccov_domain as policy
+    summary, tests = observation(lane)
+    if lane == "ui":
+        suites = tests["testNodes"][0]["children"][0]["children"]
+        ios_only = {"WorkspaceActionsUITests", "SettingsControlsUITests"}
+        removed = sum(suite["name"] in ios_only for suite in suites)
+        suites[:] = [suite for suite in suites if suite["name"] not in ios_only]
+        summary["totalTestCount"] -= removed
+        summary["passedTests"] -= removed
+    device = {"deviceId": "mac-device", "architecture": architecture, "platform": "macOS"}
+    tests["devices"] = [device]
+    summary["devicesAndConfigurations"] = [{"device": dict(device)}]
+    if skip:
+        identifier, reason = next(iter(policy.MACOS_SKIP_DISPOSITIONS[lane].items()))
+        suite_name, method = identifier.split("/")
+        prefix = "test://com.apple.xcode/AstralApp/" + ("AstralAppTests" if lane == "unit" else "AstralAppUITests")
+        suites = tests["testNodes"][0]["children"][0]["children"]
+        suite = next((value for value in suites if value["name"] == suite_name), None)
+        if suite is None:
+            suite = {"name": suite_name, "nodeType": "Test Suite", "result": "Passed", "nodeIdentifierURL": prefix + "/" + suite_name, "children": []}
+            suites.append(suite)
+        suite["children"].append({"name": method, "nodeType": "Test Case", "result": "Skipped", "nodeIdentifier": identifier, "nodeIdentifierURL": prefix + "/" + identifier[:-2], "children": [{"nodeType": "Failure Message", "name": "Test skipped - " + reason}]})
+        summary["totalTestCount"] += 1
+        summary["skippedTests"] = 1
+    return summary, tests
+
+
+@pytest.mark.parametrize("lane", ["unit", "ui", "staging"])
+@pytest.mark.parametrize("architecture", ["arm64", "x86_64"])
+def test_mac_raw_observations_require_exact_lane_suites_and_named_skip(lane, architecture):
+    summary, tests = mac_observation(lane, lane != "staging", architecture)
+    cases = helper.observation_cases(summary, tests, lane, platform="macos")
+    assert len(cases) == summary["totalTestCount"]
+    assert helper.STAGING_CASE in cases if lane == "staging" else helper.STAGING_CASE not in cases
+
+
+@pytest.mark.parametrize("change", ["skip_case", "skip_reason", "skip_count", "device", "extra_suite", "missing_suite", "staging", "core"])
+def test_mac_raw_observations_refuse_unproven_dispositions_and_platform_relabelling(change):
+    summary, tests = mac_observation("ui", True)
+    lane = "ui"
+    suites = tests["testNodes"][0]["children"][0]["children"]
+    skipped = next(case for suite in suites for case in suite["children"] if case["result"] == "Skipped")
+    if change == "skip_case":
+        skipped["nodeIdentifier"] = "OtherTests/testOther()"
+    elif change == "skip_reason":
+        skipped["children"][0]["name"] = "Test skipped - arbitrary feature omitted"
+    elif change == "skip_count":
+        summary["skippedTests"] = 0
+    elif change == "device":
+        tests["devices"][0]["platform"] = "iOS Simulator"
+    elif change == "extra_suite":
+        suites.append({**suites[0], "name": "OtherTests"})
+    elif change == "missing_suite":
+        suites.pop()
+    else:
+        lane = change
+    with pytest.raises((helper.ArtifactError, ValueError)):
+        helper.observation_cases(summary, tests, lane, platform="macos")
+
+
+
+@pytest.mark.parametrize("lane", ["unit", "ui", "staging"])
+@pytest.mark.parametrize("architecture", ["arm64", "x86_64"])
+def test_mac_native_reconstruction_uses_retained_products_and_actual_target(tmp_path, monkeypatch, lane, architecture):
+    from scripts import export_xccov_line_coverage as exporter
+    from scripts import native_xccov_domain as domain
+    from backend.tests.test_native_xccov_domain_088 import ROOT
+    repo, output, state, paths, mapping, _ = native_fixture(tmp_path, "macos", architecture)
+    validations = []
+    monkeypatch.setattr(helper, "validate", lambda *args: validations.append(args) or state)
+    monkeypatch.setattr(helper, "_native_policy", lambda name: domain if name == "native_xccov_domain" else exporter)
+    def metadata(result, section, **kwargs):
+        summary, tests = mac_observation(lane, lane != "staging", architecture)
+        return summary if section == "summary" else tests
+    monkeypatch.setattr(helper, "xcresult_json", metadata)
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[-1] == "-version":
+            return b"Xcode 26.6\nBuild version 17F113\n"
+        if command[-1] == "--version":
+            return b"Apple LLVM version 21.0.0\n"
+        assert command[4] == "--arch=" + architecture
+        return json.dumps(mapping(paths=tuple(path.removeprefix(helper.COMPONENT + "/") for path in paths.values()), prefix=helper.COMPONENT + "/")).encode()
+    monkeypatch.setattr(exporter, "_bounded_command", run)
+    value = helper.native_domain(repo, output, lane, ROOT, platform="macos")
+    assert value["format"] == domain.MACOS_DOMAIN_FORMAT and value["architecture"] == architecture
+    assert value["binary"]["member"] == domain.MACOS_BINARY_MEMBER
+    assert value["binary"]["artifact_member"] == "coverage/raw/apple-macos-products.zip"
+    assert set(value["sources"]) == set(paths.values())
+    assert validations == [(repo, "macos", output)] * 2
+    assert len(calls) == 3
+    assert not list(output.parent.glob("apple-native-domain-*"))
+
+
+@pytest.mark.parametrize("warning", ["[Internal] Thread running at User-interactive quality-of-service class waiting on a lower QoS thread running at Default quality-of-service class. Investigate ways to avoid priority inversions", "Accessing FocusState's value outside of the body of a View. This will result in a constant Binding of the initial value and will not update."])
+def test_mac_raw_unit_retains_passed_case_with_exact_known_runtime_warning(warning):
+    summary, tests = mac_observation("unit")
+    case = tests["testNodes"][0]["children"][0]["children"][0]["children"][0]
+    case["children"] = [{"nodeType": "Runtime Warning", "name": warning}]
+    assert helper.observation_cases(summary, tests, "unit", platform="macos") == ["ExampleTests/testExample()"]
+    case["children"][0]["name"] = "Unknown warning"
+    with pytest.raises(ValueError):
+        helper.observation_cases(summary, tests, "unit", platform="macos")

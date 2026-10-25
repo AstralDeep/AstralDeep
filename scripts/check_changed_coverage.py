@@ -1639,7 +1639,7 @@ def _parse_xccov(content: bytes, target: CoverageTarget) -> CoverageData:
                     policy.require(path is not None)
                     policy.require(path not in data.native_domains or data.native_domains[path] == facts)
                     data.native_domains[path] = facts
-            data.native_platform = "ios"
+            data.native_platform = envelope["platform"]
             document = envelope["coverage"]
         except policy.DomainError as exc:
             raise CoveragePolicyError("unparseable_report", "native domain envelope is invalid") from exc
@@ -1691,7 +1691,7 @@ def _missing_apple_lines(coverage: CoverageData, path: str, changed: set[int]) -
     observed = {line for source, line in coverage.observed if source == path}
     missing = changed - observed
     facts = coverage.native_domains.get(path)
-    if facts is not None and coverage.native_platform == "ios":
+    if facts is not None and coverage.native_platform in {"ios", "macos"}:
         missing = {line for line in missing if not facts["native_last_line"] < line <= facts["physical_lines"]}
     return missing
 
