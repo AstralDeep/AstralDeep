@@ -5,6 +5,8 @@ gate so they cannot drift apart.
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
+import re
 from typing import Any, Dict, FrozenSet, Mapping
 
 AGENT_ID = "computer-use-1"
@@ -57,7 +59,42 @@ SHELL_APPS: FrozenSet[str] = frozenset({
     "powershell", "pwsh", "cmd", "command prompt", "wt", "windows terminal", "windowsterminal",
     "terminal", "conhost", "bash", "sh", "zsh", "wsl", "ubuntu", "git-bash", "git bash", "mintty",
     "cygwin", "cygwin64 terminal", "python", "python3", "ipython", "node", "irb", "psql",
+    "iterm", "iterm2", "warp", "ghostty", "kitty", "alacritty", "wezterm", "com.github.wez.wezterm",
+    "com.apple.terminal", "com.googlecode.iterm2", "dev.warp.warp-stable",
+    "com.mitchellh.ghostty", "net.kovidgoyal.kitty", "org.alacritty",
 })
+MAC_TERMINAL_BUNDLES = frozenset({"com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty",
+    "dev.warp.Warp-Stable", "net.kovidgoyal.kitty", "org.alacritty", "com.github.wez.wezterm"})
+
+
+def mac_application(app: Any, args: Any) -> str:
+    if not isinstance(app, str) or not app or app != app.strip() or len(app) > 1024 or args != []:
+        raise ValueError("Use a Mac application name, bundle identifier or absolute .app path without arguments")
+    if re.fullmatch(r"[\w .+\-/]+", app) is None:
+        raise ValueError("Invalid Mac application target")
+    if "/" in app:
+        path = PurePosixPath(app)
+        if not app.startswith("/") or str(path) != app or ".." in path.parts or not app.endswith(".app"):
+            raise ValueError("Use an absolute canonical .app path")
+        return app
+    aliases = {"terminal": "com.apple.Terminal", "terminal.app": "com.apple.Terminal",
+               "iterm": "com.googlecode.iterm2", "iterm.app": "com.googlecode.iterm2",
+               "iterm2": "com.googlecode.iterm2", "iterm2.app": "com.googlecode.iterm2"}
+    for name, bundle in {"ghostty": "com.mitchellh.ghostty", "warp": "dev.warp.Warp-Stable",
+                         "kitty": "net.kovidgoyal.kitty", "alacritty": "org.alacritty",
+                         "wezterm": "com.github.wez.wezterm"}.items():
+        aliases[name] = aliases[f"{name}.app"] = bundle
+    return aliases.get(app.lower(), app)
+
+
+def mac_terminal_application(app: Any, *, allow_path=False) -> str:
+    target = mac_application(app, [])
+    if "/" in target and allow_path:
+        target = mac_application(PurePosixPath(target).name, [])
+    terminal = next((bundle for bundle in MAC_TERMINAL_BUNDLES if bundle.lower() == target.lower()), None)
+    if terminal is None:
+        raise ValueError("terminal_app must name a recognized Mac terminal application or bundle identifier")
+    return terminal
 
 
 def is_shell_app(app: Any) -> bool:
@@ -65,7 +102,7 @@ def is_shell_app(app: Any) -> bool:
     if not text:
         return False
     stem = text.replace("\\", "/").rsplit("/", 1)[-1]
-    for suffix in (".exe", ".lnk", ".bat", ".cmd"):
+    for suffix in (".exe", ".lnk", ".bat", ".cmd", ".app"):
         if stem.endswith(suffix):
             stem = stem[: -len(suffix)]
     return stem in SHELL_APPS or text in SHELL_APPS

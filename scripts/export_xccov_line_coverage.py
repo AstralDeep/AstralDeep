@@ -892,21 +892,32 @@ def export_xccov(
     if native_domain is not None:
         policy = _native_domain_policy()
         try:
-            policy.require(platform == "ios")
             domain = policy.validate_domain(copy.deepcopy(native_domain))
+            policy.require(platform == domain["platform"])
             policy.require(set(report) <= set(domain["sources"]))
             for path, facts in domain["sources"].items():
-                actual = policy.source_facts(_read_source_bytes(repo, path, export_deadline=deadline))
-                policy.require(all(facts[key] == value for key, value in actual.items()))
+                actual = policy.source_facts(
+                    _read_source_bytes(repo, path, export_deadline=deadline)
+                )
+                policy.require(
+                    all(facts[key] == value for key, value in actual.items())
+                )
             domain["observed_sources"] = sorted(report)
             report = policy.native_report(report, {domain["lane"]: domain})
         except policy.DomainError as exc:
-            raise ExportError("native_domain_mismatch", "native domain does not match observations") from exc
+            raise ExportError(
+                "native_domain_mismatch", "native domain does not match observations"
+            ) from exc
         rendered = (
-            json.dumps(report, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
+            json.dumps(
+                report, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+            )
+            + "\n"
         ).encode("utf-8")
         if len(rendered) > MAX_OUTPUT_BYTES:
-            raise ExportError("output_too_large", "normalized coverage exceeds its bound")
+            raise ExportError(
+                "output_too_large", "normalized coverage exceeds its bound"
+            )
     _write_new_output(destination, rendered)
     return report
 

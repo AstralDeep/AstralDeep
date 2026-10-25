@@ -12,28 +12,80 @@ import json
 import os
 import re
 import secrets
+import stat
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+from uuid import UUID
 
 IMAGE = re.compile(r"^(?:sha256:[0-9a-f]{64}|[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64})$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 ID = re.compile(r"^[0-9a-f]{32}$")
 BASELINE_PLANE = "4a07d59a448c1960ce2ae3f35e605f4d78c4a3f9"
 BASELINE_DIGEST = "a3d3ac43bee48b0ca6832cca1e4a347db0a3f838af908b8545edb11e7e94272a"
-BASELINE_DEEP = "013a06922759ae737b24b20ab02705e35614789d"
-BASELINE_IMAGE = "sha256:0061eecdbdc516f900a0d77221d806ac6f4d0c7e74cfa743eb5e0ce7b430c634"
+POLICY_ROOT = Path(__file__).resolve().parents[1]
 LABEL = "com.astraldeep.backend-web-qualification"
 SERVICES_LABEL = "com.astraldeep.backend-web-services"
 APP_LIMITS = ["--cpus", "2", "--memory", "4g", "--pids-limit", "512"]
 POSTGRES_LIMITS = ["--cpus", "2", "--memory", "2g", "--pids-limit", "256"]
+MAX_BLOB_ARCHIVE_BYTES = 4 * 1024 ** 3
 
 
 class QualificationError(ValueError):
     pass
+
+
+def load_recovery_baseline() -> dict[str, Any]:
+    path = POLICY_ROOT / "config/backend-web-recovery-baseline.json"
+    profile = json.loads(path.read_text(encoding="utf-8"))
+    if (not isinstance(profile, dict) or set(profile) != {
+            "schema_version", "deep_commit", "image_ref", "image_config", "platform", "composition_sha256",
+            "plane_commit", "schema_revision", "migration_sha256"}
+            or type(profile["schema_version"]) is not int or profile["schema_version"] != 1
+            or any(not isinstance(profile[key], str) for key in profile if key != "schema_version")
+            or not SHA.fullmatch(profile["deep_commit"]) or not SHA.fullmatch(profile["plane_commit"])
+            or not re.fullmatch("sha256:[0-9a-f]{64}", profile["image_config"])
+            or not re.fullmatch("[0-9a-f]{64}", profile["composition_sha256"])
+            or not re.fullmatch("[0-9a-f]{64}", profile["migration_sha256"])
+            or not re.fullmatch(r"[0-9]{3}\.[0-9]{3}", profile["schema_revision"])
+            or profile["platform"] != "linux/amd64"
+            or not re.fullmatch(re.escape("ghcr.io/astraldeep/astraldeep:sha-" + profile["deep_commit"]) + "@sha256:[0-9a-f]{64}", profile["image_ref"])):
+        raise QualificationError("trusted recovery baseline profile is invalid")
+    return profile
+
+
+def verify_recovery_baseline(image: str) -> dict[str, Any]:
+    profile = load_recovery_baseline()
+    if image != profile["image_ref"]:
+        raise QualificationError("baseline Deep image differs from the trusted recovery profile")
+    observed = json.loads(run(["docker", "image", "inspect", image]).stdout)[0]
+    digest_ref = "ghcr.io/astraldeep/astraldeep@" + image.split("@", 1)[1]
+    if (observed.get("Id") != profile["image_config"]
+            or observed.get("Os") != "linux" or observed.get("Architecture") != "amd64"
+            or (observed.get("Config", {}).get("Labels") or {}).get("org.opencontainers.image.revision") != profile["deep_commit"]
+            or (observed.get("Config", {}).get("Labels") or {}).get("org.opencontainers.image.source") != "https://github.com/AstralDeep/AstralDeep"
+            or digest_ref not in observed.get("RepoDigests", [])):
+        raise QualificationError("baseline image config, platform, revision or registry digest differs")
+    manifest = json.loads(run([
+        "docker", "run", *APP_LIMITS, "--rm", "--network", "none", "--read-only", "--entrypoint", "python3", image, "-c",
+        "import hashlib,json; p=open('/app/config/astral-composition.json','rb').read(); "
+        "print(json.dumps({'manifest_sha256':hashlib.sha256(p).hexdigest(),'composition':json.loads(p)}))",
+    ]).stdout)
+    composition = manifest["composition"]
+    plane = composition["compatibility"]["data_plane"]
+    if (manifest["manifest_sha256"] != profile["composition_sha256"]
+            or composition["components"]["astral-plane"]["commit"] != profile["plane_commit"]
+            or plane["schema_revision"] != profile["schema_revision"]
+            or plane["migration_sha256"] != profile["migration_sha256"]):
+        raise QualificationError("baseline full composition differs from the trusted recovery profile")
+    run(["docker", "run", *APP_LIMITS, "--rm", "--network", "none", "--read-only", "--entrypoint", "python3", image,
+         "/app/scripts/install_local_components.py", "verify", "--root", "/app", "--lock",
+         "/opt/astral-component-wheels/astral-component-wheels.lock.json"])
+    return profile
 
 
 def run(arguments: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -128,15 +180,63 @@ def validate_material(root: Path, qualification_id: str) -> Path:
     return root.resolve()
 
 
+@contextmanager
+def _private_copied_file(path: Path, *, maximum: int | None, kind: str):
+    descriptor = None
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        metadata = os.fstat(descriptor)
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+                or metadata.st_size <= 0 or (maximum is not None and metadata.st_size > maximum)):
+            raise QualificationError(f"copied {kind} must be bounded, regular and operator-owned")
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            yield stream, metadata.st_size
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise QualificationError(f"copied {kind} is unavailable") from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _read_state_output(path: Path) -> dict[str, Any]:
+    with _private_copied_file(path, maximum=65536, kind="state report") as (stream, size):
+        payload = stream.read(65537)
+        if len(payload) != size or len(payload) > 65536:
+            raise QualificationError("copied state report changed while reading")
+        observed = json.loads(payload)
+        if not isinstance(observed, dict):
+            raise QualificationError("copied state report must be an object")
+        return observed
+
+
+def _copied_file_digest(path: Path, *, maximum: int | None = None) -> str:
+    with _private_copied_file(path, maximum=maximum, kind="paired backup") as (stream, size):
+        digest = hashlib.sha256()
+        remaining = size
+        while remaining:
+            chunk = stream.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise QualificationError("copied paired backup changed while reading")
+            digest.update(chunk)
+            remaining -= len(chunk)
+        if stream.read(1):
+            raise QualificationError("copied paired backup changed while reading")
+        return digest.hexdigest()
+
+
 # DB recovery never rewinds LETS replay/authority volumes
 def _state_rehearsal(
     args: argparse.Namespace, *, prefix: str, network: str, app_env: Path, pg_env: Path,
-    material: Path, evidence: Path, database: str,
+    material: Path, evidence: Path, database: str, baseline_profile: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, str]]:
     label = f"{LABEL}={args.qualification_id}"
     roots = {name: f"{prefix}-{name}" for name in ("data", "tmp", "knowledge", "agents")}
     helper = Path(__file__).with_name("rehearse_backend_web_state.py").resolve(strict=True)
     evidence.mkdir(mode=0o700)
+    inventory = evidence / "baseline-image.json"
+    inventory.write_text(json.dumps(baseline_profile, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    inventory.chmod(0o600)
 
     def mounts(selected: dict[str, str], *, readonly: bool = False) -> list[str]:
         result = []
@@ -144,36 +244,47 @@ def _state_rehearsal(
             result += ["--mount", f"type=volume,src={volume},dst=/app/backend/{name}" + (",readonly" if readonly else "")]
         return result
 
-    def state(image: str, phase: str, selected: dict[str, str], checkpoint: str | None = None) -> dict[str, Any]:
+    def state(image: str, phase: str, selected: dict[str, str], checkpoint: str | None = None,
+              forbidden_audit_event: str | None = None) -> dict[str, Any]:
         name = f"{prefix}-{phase}"
+        output = evidence / f"{phase}.json"
+        if output.exists() or output.is_symlink():
+            raise QualificationError("state report destination must be new")
         command = [
             "docker", "create", *APP_LIMITS, "--name", name, "--label", label, "--network", network,
             "--env-file", str(app_env), "--entrypoint", "python3",
             "--mount", f"type=bind,src={helper},dst=/qualification-state.py,readonly",
-            "--mount", f"type=bind,src={evidence},dst=/qualification-evidence",
+            "--mount", f"type=bind,src={evidence},dst=/qualification-evidence,readonly",
             "--mount", f"type=bind,src={material},dst=/run/astral-bwq,readonly",
             "--mount", f"type=volume,src={prefix}-lets-replay,dst=/var/lib/astral-lets-replay",
             "--mount", f"type=volume,src={prefix}-lets-authority,dst=/var/lib/astral-lets-authority",
             *mounts(selected), image, "/qualification-state.py",
             "--qualification-id", args.qualification_id,
-            "--output", f"/qualification-evidence/{phase}.json",
+            "--output", f"/tmp/{phase}.json",
         ]
         if checkpoint:
             command += ["--checkpoint", f"/qualification-evidence/{checkpoint}", "--append"]
+        if forbidden_audit_event:
+            command += ["--forbid-audit-event", forbidden_audit_event]
         run(command)
         run(["docker", "network", "connect", args.service_network, name])
         run(["docker", "start", "--attach", name])
         if run(["docker", "inspect", "--format", "{{.State.ExitCode}}", name]).stdout.strip() != "0":
             raise QualificationError("synthetic state rehearsal process failed")
-        observed = json.loads((evidence / f"{phase}.json").read_text(encoding="utf-8"))
+        if output.exists() or output.is_symlink():
+            raise QualificationError("state report destination must be new")
+        run(["docker", "cp", f"{name}:/tmp/{phase}.json", str(output)])
+        observed = _read_state_output(output)
         if (observed.get("synthetic_only") is not True or observed.get("release_authorized") is not False
                 or any(observed.get(key) != "pass" for key in (
-                    "credential_decryption", "conversation_retention", "owner_denials", "authenticated_audit_continuity",
+                    "credential_decryption", "conversation_retention", "owner_denials", "authenticated_audit_continuity", "blob_retention",
                 ))):
             raise QualificationError("synthetic state rehearsal did not verify retained state")
         return observed
 
     seeded = state(args.baseline_deep_image, "baseline-state", {key: value for key, value in roots.items() if key != "agents"})
+    if seeded.get("schema") != {"revision": baseline_profile["schema_revision"], "migration_sha256": baseline_profile["migration_sha256"]}:
+        raise QualificationError("pre-backup state differs from the current production schema")
     run([
         "docker", "run", *APP_LIMITS, "--rm", "--label", label, "--network", "none", "--entrypoint", "true",
         "--mount", f"type=volume,src={roots['agents']},dst=/app/backend/agents", args.candidate_image,
@@ -183,25 +294,31 @@ def _state_rehearsal(
     run(["docker", "exec", f"{prefix}-pg", "pg_dump", "-U", "qualification", "-d", database,
          "--format=custom", "--file=/tmp/backend-web-baseline.dump"])
     run(["docker", "cp", f"{prefix}-pg:/tmp/backend-web-baseline.dump", str(dump)])
+    archive_name = f"{prefix}-baseline-blob-archive"
+    if archive.exists() or archive.is_symlink():
+        raise QualificationError("blob archive destination must be new")
     run([
-        "docker", "run", *APP_LIMITS, "--rm", "--label", label, "--network", "none", "--entrypoint", "tar",
-        "--mount", f"type=bind,src={evidence},dst=/qualification-evidence", *mounts(roots, readonly=True),
-        args.candidate_image, "--directory=/", "--create", "--file=/qualification-evidence/baseline-blobs.tar",
+        "docker", "create", *APP_LIMITS, "--name", archive_name, "--label", label, "--network", "none", "--entrypoint", "tar",
+        *mounts(roots, readonly=True),
+        args.candidate_image, "--directory=/", "--create", "--file=/tmp/baseline-blobs.tar",
         *(f"app/backend/{name}" for name in roots),
     ])
-    for path in (dump, archive):
-        if path.is_symlink() or not path.is_file() or not path.stat().st_size:
-            raise QualificationError("paired backup is incomplete")
-        path.chmod(0o600)
-    backups = {}
-    for path in (dump, archive):
-        with path.open("rb") as stream:
-            backups[path.name] = hashlib.file_digest(stream, "sha256").hexdigest()
+    run(["docker", "start", "--attach", archive_name])
+    if run(["docker", "inspect", "--format", "{{.State.ExitCode}}", archive_name]).stdout.strip() != "0":
+        raise QualificationError("blob archive process failed")
+    if archive.exists() or archive.is_symlink():
+        raise QualificationError("blob archive destination must be new")
+    run(["docker", "cp", f"{archive_name}:/tmp/baseline-blobs.tar", str(archive)])
+    backups = {dump.name: _copied_file_digest(dump),
+               archive.name: _copied_file_digest(archive, maximum=MAX_BLOB_ARCHIVE_BYTES)}
     migrated = state(args.candidate_image, "candidate-state", roots, "baseline-state.json")
+    appended = migrated.get("appended_event_id")
+    if (not isinstance(appended, str) or str(UUID(appended)) != appended
+            or appended in seeded["checkpoint"]["audit_event_ids"]):
+        raise QualificationError("candidate audit append identity is invalid")
     for path in (dump, archive):
-        with path.open("rb") as stream:
-            if hashlib.file_digest(stream, "sha256").hexdigest() != backups[path.name]:
-                raise QualificationError("paired backup bytes changed before recovery")
+        if _copied_file_digest(path, maximum=MAX_BLOB_ARCHIVE_BYTES if path == archive else None) != backups[path.name]:
+            raise QualificationError("paired backup bytes changed before recovery")
     # Fresh cluster required; --clean can't add missing tables
     network = f"{prefix}-recovery-network"
     recovered_pg = f"{prefix}-recovered-pg"
@@ -232,19 +349,27 @@ def _state_rehearsal(
         "--mount", f"type=bind,src={evidence},dst=/qualification-evidence,readonly", *mounts(recovered_roots),
         args.candidate_image, "--directory=/", "--extract", "--file=/qualification-evidence/baseline-blobs.tar",
     ])
-    recovered = state(args.candidate_image, "recovered-state", recovered_roots, "baseline-state.json")
+    recovered = state(args.candidate_image, "recovered-state", recovered_roots, "baseline-state.json", appended)
+    if (not isinstance(recovered.get("pre_append_audit_event_ids"), list)
+            or appended in recovered["pre_append_audit_event_ids"]):
+        raise QualificationError("paired restore retained the candidate-only audit append")
     if (migrated["checkpoint"] != seeded["checkpoint"] or recovered["checkpoint"] != seeded["checkpoint"]):
         raise QualificationError("state checkpoint changed across upgrade or recovery")
+    if not isinstance(migrated.get("schema"), dict) or migrated["schema"] != recovered.get("schema"):
+        raise QualificationError("candidate and restored Plane schema differ")
     return {
-        "status": "synthetic-state-and-paired-recovery-passed", "baseline_deep_commit": BASELINE_DEEP,
-        "baseline_image": BASELINE_IMAGE, "candidate_image": args.candidate_image,
+        "status": "synthetic-state-and-paired-recovery-passed", "production_baseline": baseline_profile,
+        "baseline_image": args.baseline_deep_image, "candidate_image": args.candidate_image,
         "evidence_directory": str(evidence), "backup_sha256": backups,
-        "reports": ["baseline-state.json", "candidate-state.json", "recovered-state.json"],
+        "reports": ["baseline-image.json", "baseline-state.json", "candidate-state.json", "recovered-state.json"],
+        "baseline_inventory_sha256": hashlib.sha256(inventory.read_bytes()).hexdigest(),
         "helper_sha256": hashlib.sha256(helper.read_bytes()).hexdigest(),
         "application_network": network, "recovered_postgres_container": recovered_pg,
         "preserved_upgraded_postgres_container": f"{prefix}-pg", "restore_target": "new-empty-postgres-cluster",
         "bundled_agents_source": "exact-candidate-image-initialized-volume",
         "legacy_mutable_generated_agent_directories_rehearsed": False,
+        "pre_backup_schema": seeded["schema"], "candidate_schema": migrated["schema"],
+        "candidate_schema_changed": migrated["schema"] != seeded["schema"],
         "lets_replay_authority_rewound": False, "release_authorized": False,
         "post_backup_candidate_append_discarded_by_rehearsed_restore": migrated["appended_event_id"],
         "real_provider_called": False,
@@ -287,18 +412,7 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
         "--root", "/app", "--lock", "/opt/astral-component-wheels/astral-component-wheels.lock.json",
     ])
     baseline_image = getattr(args, "baseline_deep_image", None)
-    if baseline_image:
-        if not IMAGE.fullmatch(baseline_image):
-            raise QualificationError("baseline Deep image must be immutable")
-        observed_baseline = json.loads(run(["docker", "image", "inspect", baseline_image]).stdout)[0]
-        if observed_baseline.get("Id") != BASELINE_IMAGE:
-            raise QualificationError("baseline Deep image differs from the inventoried live image")
-        observed_pin = run([
-            "docker", "run", *APP_LIMITS, "--rm", "--network", "none", "--entrypoint", "python3", baseline_image, "-c",
-            "import json; print(json.load(open('/app/config/astral-composition.json'))['components']['astral-plane']['commit'])",
-        ]).stdout.strip()
-        if observed_pin != BASELINE_PLANE:
-            raise QualificationError("baseline Deep image Plane pin differs")
+    production_baseline = verify_recovery_baseline(baseline_image) if baseline_image else None
     prefix = f"ad-bwq-{args.qualification_id}"
     for kind in ("container", "network", "volume"):
         existing = run(
@@ -307,7 +421,7 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
         if existing:
             raise QualificationError("qualification identity already owns Docker resources")
     for kind, suffixes in (
-        ("container", ("pg", "app", "baseline-state", "candidate-state", "recovered-state", "recovered-pg")),
+        ("container", ("pg", "app", "baseline-state", "baseline-blob-archive", "candidate-state", "recovered-state", "recovered-pg")),
         ("network", ("network", "recovery-network")),
         ("volume", ("pg", "data", "tmp", "knowledge", "agents", "lets-replay", "lets-authority",
                     "recovered-data", "recovered-tmp", "recovered-knowledge", "recovered-agents", "recovered-pg")),
@@ -387,6 +501,7 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
             state_report, app_roots = _state_rehearsal(
                 args, prefix=prefix, network=network, app_env=app_env, pg_env=pg_env,
                 material=material, evidence=state_evidence, database=database,
+                baseline_profile=production_baseline,
             )
             network = state_report["application_network"]
         application = [
@@ -404,10 +519,13 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
         run(["docker", "start", f"{prefix}-app"])
         readiness = wait_application(args.port)
     report = {
-        "schema_version": 1, "scope": "backend-web", "qualification_id": args.qualification_id,
+        "schema_version": 2, "scope": "backend-web", "qualification_id": args.qualification_id,
         "candidate_sha": args.candidate_sha, "candidate_image": args.candidate_image,
         "candidate_image_id": candidate["Id"], "plane_commit": args.plane_commit,
-        "baseline_plane_commit": BASELINE_PLANE, "baseline": baseline_report,
+        "synthetic_predecessor_migration": baseline_report,
+        "synthetic_predecessor": {"plane_commit": BASELINE_PLANE, "schema_revision": "088.003",
+                                  "migration_sha256": BASELINE_DIGEST, "fixture_sha256": args.fixture_sha256},
+        "production_baseline": production_baseline,
         "fixture": fixture, "runtime_env_sha256": hashlib.sha256(args.runtime_env.read_bytes()).hexdigest(),
         "postgres_image": args.postgres_image, "docker_namespace": prefix,
         "service_network": args.service_network,

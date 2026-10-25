@@ -11,9 +11,9 @@ import hashlib
 import json
 import logging
 import re
-import secrets
 import time
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from urllib.parse import unquote, urlsplit
 
@@ -36,6 +36,11 @@ class PendingCall:
     arguments: str
     risks: tuple[str, ...]
     expires: float
+    task: object = None
+    computer_authority: object = None
+    remote_proposal: str | None = None
+    websocket: object = None
+    cancellation: object = None
 
 
 @dataclass
@@ -44,6 +49,7 @@ class Approval:
     call: PendingCall
     consumed: bool = False
     effect_started: bool = False
+    terminal_input_used: bool = False
 
 
 _APPROVAL = contextvars.ContextVar("hitl_approval", default=None)
@@ -91,10 +97,63 @@ def _attended(orch, websocket, owner: str) -> bool:
             and not claims.get("machine_class") and claims.get("_invocation_channel") != "mcp")
 
 
-def _current_session(orch, websocket, call: PendingCall) -> bool:
+def _current_session(orch, websocket, call: PendingCall, *, allow_local_pause=False) -> bool:
+    from orchestrator.remote_confirmation import computer_approval_current
+
     return (_attended(orch, websocket, call.owner)
+            and (call.websocket is None or call.websocket is websocket)
+            and call.cancellation is not None
+            and cancellation_witness(orch, websocket, call.owner, call.chat) is call.cancellation
             and getattr(orch, "_ws_active_chat", {}).get(id(websocket)) == call.chat
-            and call.expires > time.monotonic())
+            and call.expires > time.monotonic()
+            and not getattr(orch, "cancelled_sessions", {}).get(id(websocket), False)
+            and (call.task is None or _task(orch, websocket, call.owner, call.chat) is call.task)
+            and (call.computer_authority is None
+                 or computer_approval_current(orch, websocket, call.computer_authority,
+                                               allow_local_pause=allow_local_pause)))
+
+
+def begin_task(orch, websocket, owner, chat) -> None:
+    if not owner or not chat or not _attended(orch, websocket, owner):
+        return
+    tasks = getattr(orch, "_hitl_task_origins", {})
+    tasks.pop((owner, chat), None)
+    tasks[(owner, chat)] = (websocket, object())
+    while len(tasks) > 256:
+        tasks.pop(next(iter(tasks)))
+    orch._hitl_task_origins = tasks
+
+
+def _task(orch, websocket, owner, chat):
+    task = getattr(orch, "_hitl_task_origins", {}).get((owner, chat))
+    return task if task is not None and task[0] is websocket else None
+
+
+def cancel_pending(orch, websocket, owner, chat) -> None:
+    getattr(orch, "_hitl_cancellation_witnesses", {}).pop((websocket, owner, chat), None)
+    pending = getattr(orch, "_hitl_pending_calls", {})
+    for request_id, call in list(pending.items()):
+        if (call.owner, call.chat, call.websocket) == (owner, chat, websocket):
+            pending.pop(request_id, None)
+
+
+def cancellation_witness(orch, websocket, owner, chat, *, create=False):
+    now = time.monotonic()
+    witnesses = getattr(orch, "_hitl_cancellation_witnesses", {})
+    for key, (_witness, expires) in list(witnesses.items()):
+        if expires <= now:
+            witnesses.pop(key, None)
+    key = (websocket, owner, chat)
+    entry = witnesses.get(key)
+    if create:
+        witness = entry[0] if entry is not None else object()
+        witnesses.pop(key, None)
+        witnesses[key] = (witness, now + TTL_SECONDS)
+        while len(witnesses) > 256:
+            witnesses.pop(next(iter(witnesses)))
+        orch._hitl_cancellation_witnesses = witnesses
+        return witness
+    return entry[0] if entry is not None else None
 
 
 def matching_approval(orch, owner, chat, agent, tool, args) -> bool:
@@ -107,13 +166,18 @@ def matching_approval(orch, owner, chat, agent, tool, args) -> bool:
             and call.arguments == _arguments(args))
 
 
+def reviewed_remote_proposal(orch, owner, chat, agent, tool, args):
+    return _APPROVAL.get().call.remote_proposal if matching_approval(orch, owner, chat, agent, tool, args) else None
+
+
 def current_approval(orch, owner, chat, agent, tool, args) -> Approval | None:
     approval = _APPROVAL.get()
     if not isinstance(approval, Approval) or approval.orchestrator is not orch:
         return None
     call = approval.call
     if (not approval.consumed or approval.effect_started or call.expires <= time.monotonic()
-            or (call.owner, call.chat, call.agent, call.tool) != (owner, chat, agent, tool)):
+            or (call.owner, call.chat, call.agent, call.tool) != (owner, chat, agent, tool)
+            or not _current_session(orch, call.websocket, call)):
         return None
     if not isinstance(args, dict):
         return None
@@ -134,6 +198,50 @@ def approved_call(orch, owner, chat, agent, tool) -> bool:
     return (isinstance(approval, Approval) and approval.orchestrator is orch
             and (approval.call.owner, approval.call.chat, approval.call.agent, approval.call.tool)
             == (owner, chat, agent, tool))
+
+
+def consume_terminal_input(orch, session, tool, args) -> bool:
+    approval = _APPROVAL.get()
+    if (not isinstance(approval, Approval) or approval.orchestrator is not orch or not approval.consumed
+            or not approval.effect_started or approval.terminal_input_used):
+        return False
+    call = approval.call
+    authority = call.computer_authority
+    if (call.agent != "computer-use-1" or call.tool != tool or tool not in {"type_text", "press_keys"}
+            or authority is None or authority.session is not session
+            or "terminal_input" not in call.risks or not _current_session(orch, authority.websocket, call)):
+        return False
+    original = json.loads(call.arguments)
+    compared = {key: value for key, value in args.items()
+                if key in original or key not in _SERVER_ARGUMENTS | {"_runtime"}}
+    for key, expected in (("user_id", call.owner), ("session_id", call.chat)):
+        if key not in original and compared.get(key) == expected:
+            compared.pop(key)
+    if _arguments(compared) != call.arguments:
+        return False
+    approval.terminal_input_used = True
+    return True
+
+
+def computer_effect_generation(orch, session):
+    approval = _APPROVAL.get()
+    if not isinstance(approval, Approval) or approval.orchestrator is not orch or approval.call.agent != "computer-use-1":
+        return None
+    authority = approval.call.computer_authority
+    return authority.generation if authority is not None and authority.session is session else -1
+
+
+def computer_effect_current(orch, session, tool) -> bool:
+    approval = _APPROVAL.get()
+    if approval is None:
+        return True
+    if not isinstance(approval, Approval) or approval.orchestrator is not orch:
+        return False
+    call = approval.call
+    authority = call.computer_authority
+    return (call.agent == "computer-use-1" and call.tool == tool and approval.consumed
+            and approval.effect_started and authority is not None and authority.session is session
+            and _current_session(orch, authority.websocket, call))
 
 
 def effect_refusal(orch, websocket, owner, chat, agent, tool, args, *, start=False) -> MCPResponse | None:
@@ -268,6 +376,8 @@ def _review_arguments(args: dict) -> tuple[str, bool]:
 async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MCPResponse | None:
     try:
         encoded = _arguments(args)
+        witness = cancellation_witness(orch, websocket, owner, chat, create=True)
+        task = _task(orch, websocket, owner, chat)
         if matching_approval(orch, owner, chat, agent, tool, args):
             approval = _APPROVAL.get()
             if not _current_session(orch, websocket, approval.call):
@@ -293,17 +403,29 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             return _refused("Review unavailable: this action includes sensitive or oversized arguments that cannot be "
                             "shown completely. Remove private identifiers or credentials, or use a smaller action.")
         if (not _attended(orch, websocket, owner)
-                or getattr(orch, "_ws_active_chat", {}).get(id(websocket)) != chat):
+                or getattr(orch, "_ws_active_chat", {}).get(id(websocket)) != chat
+                or cancellation_witness(orch, websocket, owner, chat) is not witness):
             return _refused("This confirmation is no longer valid for the active session.")
         pending = _pending(orch)
         call = next((item for item in pending.values() if
                      (item.owner, item.chat, item.agent, item.tool, item.arguments, item.risks)
-                     == (owner, chat, agent, tool, encoded, tuple(sorted(risks)))), None)
+                     == (owner, chat, agent, tool, encoded, tuple(sorted(risks)))
+                     and item.task is task and item.websocket is websocket and item.cancellation is witness), None)
         if call is None:
             if len(pending) >= 128 or sum(item.owner == owner for item in pending.values()) >= 32:
                 return _refused("Too many pending confirmations. Resolve an existing request and retry.")
-            call = PendingCall(secrets.token_urlsafe(24), owner, chat, agent, tool,
-                               encoded, tuple(sorted(risks)), time.monotonic() + TTL_SECONDS)
+            from orchestrator.computer_use_policy import HOST_VERBS
+            from orchestrator.remote_confirmation import capture_computer_approval, source_review_proposal
+
+            computer_authority = None
+            if agent == "computer-use-1" and tool in HOST_VERBS | {"confirm_action"}:
+                computer_authority = capture_computer_approval(orch, websocket, owner, chat, args)
+                if computer_authority is None:
+                    return _refused("The computer session is no longer current. Reissue the action in its active conversation.")
+            call = PendingCall(str(uuid.uuid4()), owner, chat, agent, tool,
+                               encoded, tuple(sorted(risks)), time.monotonic() + TTL_SECONDS,
+                               task, computer_authority, source_review_proposal(orch, owner, chat, agent, tool, args),
+                               websocket, witness)
             pending[call.request_id] = call
             try:
                 await _audit(orch, call, "proposed")
@@ -326,6 +448,18 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             Button(label="Decline", action="authorize_action", variant="secondary",
                    payload={"hitl_request_id": call.request_id, "decision": "decline"}),
         ]).to_dict()
+        from orchestrator.remote_confirmation import computer_resume_target
+
+        target = computer_resume_target(websocket, call.computer_authority, tool, args)
+        if target is not None:
+            index = next(index for index, item in enumerate(card["content"]) if item.get("action") == "authorize_action")
+            card["content"][index] = Button(
+                label=f"Approve and resume on {call.computer_authority.host.name} / {target}",
+                action="authorize_action", payload={"hitl_request_id": call.request_id,
+                                                     "decision": "approve_and_resume"}).to_dict()
+            card["content"].insert(index, Text(content="This decision explicitly resumes this Mac session. Any focus change "
+                "is limited to the reviewed target. Current policy and privacy checks still apply before the exact action.",
+                variant="caption").to_dict())
         return MCPResponse(result={"_data": {"status": "confirmation_required",
                            "message": "An approval card is available. End this turn and wait for the user's decision; "
                                       "do not retry the action or ask again in text."}}, ui_components=[card])
@@ -356,12 +490,22 @@ async def handle_decision(orch, websocket, owner, payload) -> None:
     pending = _pending(orch)
     request_id = payload.get("hitl_request_id") if isinstance(payload, dict) else None
     call = pending.get(request_id) if isinstance(request_id, str) else None
+    resume_requested = isinstance(payload, dict) and payload.get("decision") == "approve_and_resume"
     if (call is None or call.owner != owner or not _attended(orch, websocket, owner)
             or getattr(orch, "_ws_active_chat", {}).get(id(websocket)) != call.chat
             or set(payload) != {"hitl_request_id", "decision"}
-            or payload.get("decision") not in ("approve", "decline")):
+            or payload.get("decision") not in ("approve", "approve_and_resume", "decline")):
         await orch.send_ui_render(websocket, [Alert(message="This confirmation is unavailable in this conversation. "
             "It may have expired or already been handled.", variant="warning").to_dict()], target="chat")
+        return
+    from orchestrator.remote_confirmation import (
+        computer_resume_target, pause_failed_computer_approval, resume_computer_approval,
+    )
+
+    if resume_requested and computer_resume_target(
+            websocket, call.computer_authority, call.tool, json.loads(call.arguments)) is None:
+        await orch.send_ui_render(websocket, [Alert(message="This action has no reviewed local resume target.",
+                                                  variant="warning").to_dict()], target="chat")
         return
     # Pop before the await — blocks a concurrent double-click
     pending.pop(request_id)
@@ -372,7 +516,7 @@ async def handle_decision(orch, websocket, owner, payload) -> None:
     if not owned_chat:
         await _finish_card(orch, websocket, call, "Unavailable", "Conversation access could not be verified. Reissue the action.")
         return
-    if not _current_session(orch, websocket, call):
+    if not _current_session(orch, websocket, call, allow_local_pause=resume_requested or payload["decision"] == "decline"):
         await _finish_card(orch, websocket, call, "Unavailable", "The session changed or this confirmation expired. Reissue the action.")
         return
     if payload["decision"] == "decline":
@@ -384,29 +528,81 @@ async def handle_decision(orch, websocket, owner, payload) -> None:
     except Exception:
         await _finish_card(orch, websocket, call, "Unavailable", "Action audit is unavailable. The action was not run.")
         return
-    if not _current_session(orch, websocket, call):
+    if not _current_session(orch, websocket, call, allow_local_pause=resume_requested):
         await _finish_card(orch, websocket, call, "Unavailable", "The session changed or this confirmation expired. Reissue the action.")
         return
+    if resume_requested:
+        authority = await resume_computer_approval(orch, websocket, call.computer_authority,
+                                                   call.tool, json.loads(call.arguments))
+        if authority is None:
+            await _finish_card(orch, websocket, call, "Unavailable", "The local resume authority changed. Reissue the action.")
+            return
+        call = replace(call, computer_authority=authority)
     token = _APPROVAL.set(Approval(orch, call))
     try:
         tool_call = SimpleNamespace(id=f"hitl-{call.request_id}", function=SimpleNamespace(
             name=call.tool, arguments=call.arguments))
         response = await orch.execute_single_tool(websocket, tool_call, {call.tool: call.agent}, call.chat, user_id=owner)
+    except asyncio.CancelledError:
+        if resume_requested:
+            await pause_failed_computer_approval(orch, websocket, call.computer_authority)
+        await _finish_card(orch, websocket, call, "Outcome uncertain",
+                           "The action was interrupted; inspect current state before retrying.")
+        raise
     except Exception:
+        if resume_requested:
+            await pause_failed_computer_approval(orch, websocket, call.computer_authority)
         logger.exception("Approved HITL dispatch failed")
         await _finish_card(orch, websocket, call, "Failed", "The approved action could not complete. Reissue it to retry.")
         return
     finally:
         _APPROVAL.reset(token)
-    failed = response is None or bool(response.error)
+    from orchestrator.remote_confirmation import _computer_use_on_approved, successful_result
+
+    failed = not successful_result(response)
+    if failed and resume_requested:
+        await pause_failed_computer_approval(orch, websocket, call.computer_authority)
     data = response.result.get("_data", {}) if response and isinstance(response.result, dict) else {}
+    uncertain = (response is None or isinstance(data, dict) and (
+        data.get("code") == "outcome_uncertain" or data.get("status") in {"uncertain", "outcome_uncertain"})
+        or response and isinstance(response.error, dict) and (
+            response.error.get("code") == "outcome_uncertain"
+            or str(response.error.get("message", "")).startswith("outcome_uncertain:")))
     waiting = isinstance(data, dict) and data.get("status") == "confirmation_required"
     if waiting:
+        if resume_requested:
+            for request_id, item in list(_pending(orch).items()):
+                if item.computer_authority is not None and item.computer_authority.session is call.computer_authority.session:
+                    _pending(orch).pop(request_id, None)
+            await _finish_card(orch, websocket, call, "Review changed",
+                               "The review requirements changed and this Mac remains paused. Resume the session "
+                               "explicitly, then reissue the action for a fresh review.")
+            return
         await _finish_card(orch, websocket, call, "Further review needed",
                            "The action still needs approval. Review the new card before it can run.",
                            response.ui_components)
         return
-    await _finish_card(orch, websocket, call, "Blocked" if failed else "Approved",
-                       "The approved action was blocked or failed. See the tool message for details." if failed
+    await _finish_card(orch, websocket, call, "Outcome uncertain" if uncertain else "Blocked" if failed else "Approved",
+                       "The action outcome is uncertain. Inspect current state before issuing another action." if uncertain
+                       else "The approved action was blocked or failed. See the tool message for details." if failed
                        else "Approval used — the action was sent through the normal permission and privacy checks.",
                        response.ui_components if response and not failed else None)
+    if failed or not _current_session(orch, websocket, call):
+        return
+    if call.computer_authority is not None:
+        row = SimpleNamespace(owner_id=call.owner, conversation_id=call.chat,
+            machine_id=call.computer_authority.host.host_id, tool_name=call.tool,
+            arguments=json.loads(call.arguments))
+        _computer_use_on_approved(orch, row, websocket, call.computer_authority)
+    if call.task is not None:
+        from orchestrator.detached_context import detached_context
+
+        async def resume():
+            if _current_session(orch, websocket, call):
+                await orch._serialized_chat(websocket,
+                    "The exact approved action completed. Continue the remaining original task using current observations; "
+                    "any further effects still require their ordinary authorization and review.",
+                    call.chat, "Approved — continuing", user_id=call.owner,
+                    continuation_guard=lambda: _current_session(orch, websocket, call))
+
+        asyncio.create_task(resume(), context=detached_context(orch), name=f"hitl-continue-{call.request_id}")

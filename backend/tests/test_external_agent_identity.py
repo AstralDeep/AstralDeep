@@ -126,6 +126,9 @@ class _AllowAllPermissions:
     def list_disabled_agents(self, _user_id):
         return ()
 
+    def get_tool_scope_map(self, agent_id):
+        return {"summarize_atlas_state": "tools:read"} if agent_id == PANATLAS_ID else {}
+
 
 def _visibility_orchestrator(card: AgentCard):
     return SimpleNamespace(
@@ -180,6 +183,7 @@ def test_shared_dispatch_gate_denies_a_missing_identity_before_permissions():
         security_flags={},
         agent_cards={PANATLAS_ID: _card()},
         ui_sessions={websocket: {"sub": "sam"}},
+        tool_permissions=_AllowAllPermissions(),
     )
     result = asyncio.run(Orchestrator._run_gate_stack(
         orch,

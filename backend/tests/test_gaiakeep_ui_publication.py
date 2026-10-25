@@ -176,8 +176,12 @@ async def test_real_connection_stage_commits_gaia_canvas_and_fresh_owned_hydrati
         tool = "gaiakeep_core_repair"
         host.security_flags = {}
         host.agent_cards = {}
+        from agents.gaiakeep.catalog import TOOLS
+
         host.tool_permissions = MagicMock()
         host.tool_permissions.is_tool_allowed.return_value = True
+        host.tool_permissions.get_tool_scope_map.side_effect = lambda agent: {
+            name: entry["scope"] for name, entry in TOOLS.items()} if agent == "gaiakeep-1" else {}
         monkeypatch.setattr("orchestrator.remote_machines.resolve_machine", lambda *a: {"owner_user_id": OWNER})
         monkeypatch.setattr(rc, "_machine_label", lambda *a: "registered DGX")
     else:

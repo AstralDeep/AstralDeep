@@ -4201,3 +4201,30 @@ def test_strict_apple_platform_and_core_completeness_use_the_native_domain(
         with pytest.raises(collector.CoveragePolicyError) as error:
             call()
         assert error.value.code == "producer_unmapped_changed_line"
+
+
+@pytest.mark.parametrize("architecture", ["arm64", "x86_64"])
+def test_mac_native_extent_requires_exact_platform_profile_and_candidate_binding(tmp_path, architecture):
+    from scripts import native_xccov_domain as policy
+    repo, path, base, candidate, report, document = _native_changed_repo(tmp_path)
+    domain = document["domains"]["ui"]
+    domain.update(format="astral.xccov-domain-macos/v1", platform="macos", architecture=architecture)
+    domain["binary"].update(member="Products/Debug/AstralDeep.app/Contents/MacOS/AstralDeep.debug.dylib", artifact_member="coverage/native-binaries/apple-macos-ui.zip")
+    document.update(format="astral.xccov-native-macos/v1", platform="macos")
+    report.write_text(json.dumps(document))
+    decision = collector.evaluate_changed_coverage(repo, _selection(repo, base, candidate), {"apple": [report]}, producer_slots={"macos": report})
+    assert decision["status"] == "pass"
+    parsed = collector.parse_coverage_report(report, "apple")
+    assert parsed.native_platform == "macos" and parsed.covered == {(path, 2)}
+    assert collector._missing_apple_lines(parsed, path.replace("Example.swift", "Unmapped.swift"), {1, 2}) == {1, 2}
+    assert collector._missing_apple_lines(parsed, path, {4}) == {4}
+    assert collector._missing_apple_lines(parsed, path, {2, 3}) == set()
+    for slot in ("ios", "watchos"):
+        with pytest.raises(collector.CoveragePolicyError) as error:
+            collector.evaluate_changed_coverage(repo, _selection(repo, base, candidate), {"apple": [report]}, producer_slots={slot: report})
+        assert error.value.code == "producer_scope_mismatch"
+    domain["sources"][path]["source_sha256"] = "f" * 64
+    report.write_text(json.dumps(document))
+    with pytest.raises(collector.CoveragePolicyError):
+        collector.evaluate_changed_coverage(repo, _selection(repo, base, candidate), {"apple": [report]}, producer_slots={"macos": report})
+    assert policy.REPORT_FORMAT == "astral.xccov-native/v1"

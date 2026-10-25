@@ -125,8 +125,39 @@ async def test_register_agent_validates_skill_scopes(monkeypatch):
 
     scope_map = fake.tool_permissions.last[0][1]
     assert scope_map["bad_tool"] == "tools:bogus"
-    assert scope_map["empty_tool"] == "tools:read"
+    assert scope_map["empty_tool"] == ""
     assert scope_map["ok_tool"] == "tools:read"
+
+
+@pytest.mark.parametrize("scope,accepted", [("", False), ("tools:bogus", False), ("tools:read", True)])
+async def test_registered_scope_controls_real_dispatch(orchestrator_factory, scope, accepted):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from shared.protocol import AgentCard, AgentSkill, MCPResponse
+
+    orch = orchestrator_factory()
+    agent = "scope-reader"
+    card = AgentCard("Reader", "Synthetic scope reader", agent,
+                     skills=[AgentSkill("Read", "Reads a synthetic value", "read_value", scope=scope)])
+    orch.agent_cards[agent] = card
+    orch.local_agents[agent] = object()
+    orch.tool_permissions = MagicMock()
+    orch.tool_permissions.get_tool_scope_map.return_value = {"read_value": scope}
+    orch.tool_permissions.get_tool_scope.return_value = scope
+    orch.tool_permissions.is_tool_allowed.return_value = True
+    orch._execute_with_retry = AsyncMock(return_value=MCPResponse(result={"value": "synthetic"}))
+    ws = object()
+    orch.ui_sessions[ws] = {"sub": "scope-owner"}
+    call = SimpleNamespace(function=SimpleNamespace(name="read_value", arguments="{}"))
+    response = await orch.execute_single_tool(ws, call, {"read_value": agent}, "scope-chat", user_id="scope-owner")
+    if accepted:
+        assert response.error is None
+        assert response.result == {"value": "synthetic"}
+        orch._execute_with_retry.assert_awaited_once()
+    else:
+        assert response.error["code"] == "effect_declaration_unavailable"
+        assert response.error["retryable"] is False
+        orch._execute_with_retry.assert_not_awaited()
 
 
 async def test_register_agent_reads_the_stream_progress_interval(monkeypatch):

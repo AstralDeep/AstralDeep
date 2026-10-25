@@ -16,10 +16,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 
 ID = re.compile(r"^[0-9a-f]{32}$")
 MESSAGE = "Synthetic conversation retained across the baseline upgrade."
+BLOB = b"Synthetic paired blob recovery verification.\n"
 
 
 def require_isolated_target(qualification_id: str, environment: dict[str, str]) -> str:
@@ -68,11 +69,91 @@ def _event(owner: str, phase: str):
     return AuditEventCreate(
         actor_user_id=owner, auth_principal=owner, event_class="settings",
         action_type=f"qualification.{phase}", description="Synthetic recovery verification",
-        correlation_id=phase, outcome="success", started_at=datetime.now(timezone.utc),
+        correlation_id=str(uuid4()), outcome="success", started_at=datetime.now(timezone.utc),
     )
 
 
-def exercise(orch, *, owner: str, checkpoint: dict | None, append: bool = False) -> dict:
+def _seed_blob(orch, owner: str) -> dict:
+    attachment_id = str(uuid4())
+    storage_key = attachment_id + "/recovery.txt"
+    coordinator = orch.runtime_composition.plane.attachment_materializations
+    lease_id = "qualification-" + str(uuid4())
+    begun = coordinator.begin_pending_materialization(
+        attachment_id=attachment_id, owner_id=owner, filename="recovery.txt", category="text",
+        extension="txt", storage_locator=owner + "/" + storage_key, storage_key=storage_key,
+        max_bytes=len(BLOB), created_at=int(datetime.now(timezone.utc).timestamp() * 1000),
+        lease_id=lease_id, lease_seconds=300,
+    )
+    if begun.pending is None:
+        raise ValueError("synthetic blob was not newly admitted")
+    version = begun.pending.lease_version
+    staging = coordinator.open_pending_materialization_staging(
+        owner_id=owner, attachment_id=attachment_id, lease_id=lease_id, expected_lease_version=version,
+    )
+    staged = staging.write_chunks((BLOB,))
+    try:
+        coordinator.publish_pending_materialization(
+            staged=staged, owner_id=owner, attachment_id=attachment_id, lease_id=lease_id,
+            expected_lease_version=version, content_type="text/plain",
+        )
+    except BaseException:
+        staged.abort()
+        raise
+    return {"attachment_id": attachment_id, "owner_id": owner, "storage_key": storage_key,
+            "size_bytes": len(BLOB), "sha256": hashlib.sha256(BLOB).hexdigest()}
+
+
+def _verify_blob(orch, owner: str, blob: dict) -> None:
+    from astralplane.errors import PlaneError
+
+    try:
+        if (not isinstance(blob, dict)
+                or set(blob) != {"attachment_id", "owner_id", "storage_key", "size_bytes", "sha256"}
+                or blob["owner_id"] != owner or str(UUID(blob["attachment_id"])) != blob["attachment_id"]
+                or blob["storage_key"] != blob["attachment_id"] + "/recovery.txt"
+                or type(blob["size_bytes"]) is not int or blob["size_bytes"] != len(BLOB)
+                or blob["sha256"] != hashlib.sha256(BLOB).hexdigest()):
+            raise ValueError
+        plane = orch.runtime_composition.plane
+        with plane.runtime.transaction() as transaction:
+            row = plane.repositories.artifacts.attachments.get(
+                transaction, owner_id=owner, attachment_id=blob["attachment_id"],
+            )
+            foreign = plane.repositories.artifacts.attachments.get(
+                transaction, owner_id=owner + "_foreign", attachment_id=blob["attachment_id"],
+            )
+        if (row is None or foreign is not None or row.owner_id != owner
+                or row.filename != "recovery.txt" or row.size_bytes != blob["size_bytes"]
+                or row.sha256 != blob["sha256"] or row.storage_locator != owner + "/" + blob["storage_key"]):
+            raise ValueError
+        observed = b"".join(plane.blobs.iter_chunks(
+            owner_id=owner, key=blob["storage_key"], max_bytes=len(BLOB),
+            expected_size_bytes=blob["size_bytes"], expected_sha256=blob["sha256"],
+        ))
+        if observed != BLOB:
+            raise ValueError
+        try:
+            tuple(plane.blobs.iter_chunks(
+                owner_id=owner + "_foreign", key=blob["storage_key"], max_bytes=len(BLOB),
+                expected_size_bytes=blob["size_bytes"], expected_sha256=blob["sha256"],
+            ))
+        except PlaneError as exc:
+            if exc.code != "blob_not_found":
+                raise
+        else:
+            raise ValueError
+    except Exception:
+        raise ValueError("retained owner-bound blob failed verification") from None
+
+
+def exercise(orch, *, owner: str, checkpoint: dict | None, append: bool = False,
+             forbidden_audit_event: str | None = None) -> dict:
+    plane = orch.runtime_composition.plane
+    compatibility = plane.runtime.inspect_baseline_compatibility()
+    if not compatibility.compatible or compatibility.empty:
+        raise ValueError("rehearsal Plane state is not initialized")
+    schema = {"revision": compatibility.observed_revision,
+              "migration_sha256": plane.runtime.inspect_compatibility().migration_digest}
     foreign = owner + "_foreign"
     if checkpoint is None:
         if orch._llm_store.get_sync(owner) is not None or orch.audit_repo.list_for_user(owner)[0]:
@@ -84,12 +165,12 @@ def exercise(orch, *, owner: str, checkpoint: dict | None, append: bool = False)
         orch.history.add_message(chat_id, "user", MESSAGE, user_id=owner)
         first = orch.audit_repo.insert(_event(owner, "baseline_created"))
         second = orch.audit_repo.insert(_event(owner, "baseline_retained"))
-        checkpoint = {"schema_version": 1, "owner": owner, "chat_id": chat_id,
+        checkpoint = {"schema_version": 2, "owner": owner, "chat_id": chat_id,
                       "credential_sha256": _digest(key),
-                      "audit_event_ids": [first.event_id, second.event_id]}
+                      "audit_event_ids": [first.event_id, second.event_id], "blob": _seed_blob(orch, owner)}
         key = ""
-    if (set(checkpoint) != {"schema_version", "owner", "chat_id", "credential_sha256", "audit_event_ids"}
-            or type(checkpoint["schema_version"]) is not int or checkpoint["schema_version"] != 1 or checkpoint["owner"] != owner
+    if (set(checkpoint) != {"schema_version", "owner", "chat_id", "credential_sha256", "audit_event_ids", "blob"}
+            or type(checkpoint["schema_version"]) is not int or checkpoint["schema_version"] != 2 or checkpoint["owner"] != owner
             or not isinstance(checkpoint["chat_id"], str) or not checkpoint["chat_id"]
             or not isinstance(checkpoint["credential_sha256"], str)
             or not re.fullmatch(r"[0-9a-f]{64}", checkpoint["credential_sha256"])
@@ -110,7 +191,8 @@ def exercise(orch, *, owner: str, checkpoint: dict | None, append: bool = False)
         raise ValueError("retained conversation changed")
     if orch.history.get_chat(chat_id, user_id=foreign) is not None:
         raise ValueError("foreign conversation owner was admitted")
-    rows, cursor = orch.audit_repo.list_for_user(owner, limit=1000)
+    _verify_blob(orch, owner, checkpoint["blob"])
+    rows, cursor = orch.audit_repo.list_for_user(owner, limit=200)
     observed = {row.event_id for row in rows}
     if (cursor is not None or not set(checkpoint["audit_event_ids"]) <= observed
             or orch.audit_repo.verify_chain(owner) is not None):
@@ -118,16 +200,21 @@ def exercise(orch, *, owner: str, checkpoint: dict | None, append: bool = False)
     if any(orch.audit_repo.get_for_user(foreign, event_id) is not None
            for event_id in checkpoint["audit_event_ids"]):
         raise ValueError("foreign audit owner was admitted")
+    if forbidden_audit_event is not None:
+        if (not isinstance(forbidden_audit_event, str) or str(UUID(forbidden_audit_event)) != forbidden_audit_event
+                or forbidden_audit_event in observed or forbidden_audit_event in checkpoint["audit_event_ids"]):
+            raise ValueError("restored chain retained the forbidden candidate-only audit event")
     appended = None
     if append:
         appended = orch.audit_repo.insert(_event(owner, "candidate_continuity")).event_id
-        after, cursor = orch.audit_repo.list_for_user(owner, limit=1000)
+        after, cursor = orch.audit_repo.list_for_user(owner, limit=200)
         if (cursor is not None or {row.event_id for row in after} != observed | {appended}
                 or orch.audit_repo.verify_chain(owner) is not None):
             raise ValueError("candidate audit append did not preserve the authenticated chain")
-    return {"checkpoint": checkpoint, "credential_decryption": "pass",
+    return {"checkpoint": checkpoint, "schema": schema, "credential_decryption": "pass", "blob_retention": "pass",
             "conversation_retention": "pass", "owner_denials": "pass",
             "authenticated_audit_continuity": "pass", "appended_event_id": appended,
+            "pre_append_audit_event_ids": sorted(observed),
             "synthetic_only": True, "real_provider_called": False, "release_authorized": False}
 
 
@@ -136,6 +223,7 @@ def main(argv=None) -> int:
     parser.add_argument("--qualification-id", required=True)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--append", action="store_true")
+    parser.add_argument("--forbid-audit-event")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     orch = None
@@ -148,7 +236,8 @@ def main(argv=None) -> int:
         from orchestrator.orchestrator import Orchestrator
 
         orch = Orchestrator()
-        result = exercise(orch, owner=owner, checkpoint=checkpoint, append=args.append)
+        result = exercise(orch, owner=owner, checkpoint=checkpoint, append=args.append,
+                          forbidden_audit_event=args.forbid_audit_event)
         asyncio.run(orch._close_started_services())
         orch = None
         descriptor = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

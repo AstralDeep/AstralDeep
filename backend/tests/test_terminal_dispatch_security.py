@@ -14,8 +14,18 @@ from orchestrator.terminal_security import TerminalAuthority
 from orchestrator.orchestrator import GateRefusal
 from shared.feature_flags import flags
 from shared.protocol import RegisterAgent
-from tests.test_cresco_dispatch_096 import orch as orch
+from tests.test_cresco_dispatch_096 import orch as base_orch  # noqa: F401
 from tests.test_terminal_ssh_runtime import isolated as isolated
+
+
+@pytest.fixture
+def orch(base_orch):  # noqa: F811
+    from agents.cresco.mcp_tools import TOOL_REGISTRY as CRESCO_TOOLS
+    from agents.terminal_shell.mcp_tools import TOOL_REGISTRY as TERMINAL_TOOLS
+
+    for agent, tools in (("terminal-shell-1", TERMINAL_TOOLS), ("cresco-1", CRESCO_TOOLS)):
+        base_orch.tool_permissions.register_tool_scopes(agent, {name: tool["scope"] for name, tool in tools.items()})
+    return base_orch
 
 
 @pytest.mark.parametrize("tool", ["start_terminal", "terminal_write"])

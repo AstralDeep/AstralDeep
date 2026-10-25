@@ -42,3 +42,6 @@ d19050b3569f8ba6a2a5389998e3d23dcad8282b:scripts/typesafe_canary_scan.py:typesaf
 # branch lands or is rewritten. One historical line is excused, not a value,
 # prefix or path, and the hygiene test keeps the allowlist at the two canaries.
 3f01f0eca9255bb779fa5ff3ff67ce93716d51f1:backend/orchestrator/harness/conformance.py:typesafe-system-one-key:33
+# Verified SHA-256 digests of public OpenAI encoding assets; exact historical fingerprints only.
+a061349f7fcda21b417280679ce17ace99c27404:backend/orchestrator/token_assets/NOTICE:generic-api-key:13
+a061349f7fcda21b417280679ce17ace99c27404:backend/orchestrator/token_assets/NOTICE:generic-api-key:14

@@ -1375,6 +1375,39 @@ jobs:
             --output "$PWD/build/060/release-evidence"
           DIGEST=$(shasum -a 256 "build/060/release-evidence/${PRODUCER_PLATFORM}/AstralApp.app.zip" | cut -d ' ' -f 1)
           echo "ARTIFACT_SHA256=$DIGEST" >> "$GITHUB_ENV"
+      - name: Run complete macOS unit and UI lanes from the prepared binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/060/release-evidence/coverage/raw
+          for lane in unit ui; do
+            result="build/060/release-evidence/coverage/raw/apple-macos-${lane}.xcresult"
+            if [ -e "$result" ] || [ -L "$result" ]; then echo "::error::macOS lane result bundle $result already exists"; exit 1; fi
+            if [[ "$lane" == unit ]]; then
+              selectors=(-only-testing:AstralAppTests)
+            else
+              selectors=(
+                -only-testing:AstralAppUITests/Accessibility060UITests
+                -only-testing:AstralAppUITests/LLMFirstLoginUITests
+                -only-testing:AstralAppUITests/VoiceConversationUITests
+                -only-testing:AstralAppUITests/WorkspacePresentationUITests
+                -only-testing:AstralAppUITests/ConversationContinuityUITests/testDeterministicProcessRelaunchRestoresSemanticConversation
+              )
+            fi
+            xcodebuild -project "${APP_PROJECT}" -scheme "${PRODUCER_SCHEME}" \
+              -destination "${DESTINATION}" -configuration Debug \
+              CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES \
+              -test-timeouts-enabled YES \
+              -default-test-execution-time-allowance 120 \
+              -maximum-test-execution-time-allowance 300 \
+              -retry-tests-on-failure -test-iterations 3 \
+              -derivedDataPath build/060/dd -resultBundlePath "$result" \
+              "${selectors[@]}" test-without-building
+            test -d "$result"
+            python3 -I scripts/apple_coverage_artifacts.py verify --repo "$PWD" \
+              --platform macos --derived-data "$PWD/build/060/dd" \
+              --output "$PWD/build/060/release-evidence"
+          done
       - name: Produce macOS release evidence against staging
         shell: bash
         env:
@@ -1399,7 +1432,7 @@ jobs:
           export TEST_RUNNER_GITHUB_JOB="$GITHUB_JOB" TEST_RUNNER_GITHUB_RUN_ID="$GITHUB_RUN_ID"
           export TEST_RUNNER_GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" TEST_RUNNER_GITHUB_WORKFLOW="$GITHUB_WORKFLOW"
           export TEST_RUNNER_RUNNER_OS="$RUNNER_OS" TEST_RUNNER_RUNNER_ARCH="$RUNNER_ARCH" TEST_RUNNER_RUNNER_NAME="$RUNNER_NAME"
-          result="build/060/release-evidence/coverage/raw/apple-${PRODUCER_PLATFORM}.xcresult"
+          result="build/060/release-evidence/coverage/raw/apple-${PRODUCER_PLATFORM}-staging.xcresult"
           if [ -e "$result" ] || [ -L "$result" ]; then echo "::error::release-evidence result bundle $result already exists"; exit 1; fi
           xcodebuild -project "${APP_PROJECT}" -scheme "${PRODUCER_SCHEME}" \
             -destination "${DESTINATION}" -configuration Debug \
@@ -1630,6 +1663,7 @@ jobs:
                 -only-testing:AstralAppUITests/VoiceConversationUITests \
                 -only-testing:AstralAppUITests/WorkspacePresentationUITests \
                 -only-testing:AstralAppUITests/WorkspaceActionsUITests \
+                -only-testing:AstralAppUITests/SettingsControlsUITests \
                 -only-testing:AstralAppUITests/ConversationContinuityUITests/testDeterministicProcessRelaunchRestoresSemanticConversation \
                 test-without-building
               ;;

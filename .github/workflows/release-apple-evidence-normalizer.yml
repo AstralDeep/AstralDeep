@@ -191,17 +191,16 @@ jobs:
               lane_result="$raw/coverage/raw/apple-ios-${lane}.xcresult"
               test -d "$lane_result" && test ! -L "$lane_result"
             done
+          elif [[ "$PRODUCER_PLATFORM" == macos ]]; then
+            for lane in unit ui staging; do
+              lane_result="$raw/coverage/raw/apple-macos-${lane}.xcresult"
+              test -d "$lane_result" && test ! -L "$lane_result"
+            done
           else
             test -d "$result" && test ! -L "$result"
           fi
-          if [[ "$PRODUCER_PLATFORM" == ios ]]; then
-            # Required lanes must be distinct successful raw test observations.
-            # Artifact/source and lane validation do not prove xccov-to-binary
-            # UUID/profile linkage; that preexisting qualification gap remains.
+          if [[ "$PRODUCER_PLATFORM" == ios || "$PRODUCER_PLATFORM" == macos ]]; then
             python3 -I protected-policy/scripts/apple_coverage_artifacts.py validate-observations \
-              --repo "$PWD" --platform ios --output "$raw"
-          elif [[ "$PRODUCER_PLATFORM" == macos ]]; then
-            python3 -I protected-policy/scripts/apple_coverage_artifacts.py validate \
               --repo "$PWD" --platform "$PRODUCER_PLATFORM" --output "$raw"
           fi
           if [ -e "$final" ] || [ -L "$final" ]; then echo "::error::final evidence directory $final already exists"; exit 1; fi
@@ -242,8 +241,6 @@ jobs:
           if [ -e "$report" ] || [ -L "$report" ]; then echo "::error::final coverage report $report already exists"; exit 1; fi
           git diff --exit-code -- . ':(exclude)build'
           if [[ "$PRODUCER_PLATFORM" == ios ]]; then
-            # Four raw observations are independently normalized here. Candidate
-            # JSON cannot replace any lane, and staging remains mandatory.
             mkdir -p "$final/coverage/lanes" "$final/coverage/native-domains"
             for lane in core unit ui staging; do
               python3 -I protected-policy/scripts/apple_coverage_artifacts.py native-domain \
@@ -265,6 +262,28 @@ jobs:
               --output "$report"
             python3 -I protected-policy/scripts/apple_coverage_artifacts.py verify-native-domains \
               --repo "$PWD" --platform ios --output "$raw" --report "$report" \
+              --archive-repo-root "$ARCHIVE_REPO_ROOT"
+          elif [[ "$PRODUCER_PLATFORM" == macos ]]; then
+            mkdir -p "$final/coverage/lanes" "$final/coverage/native-domains"
+            for lane in unit ui staging; do
+              python3 -I protected-policy/scripts/apple_coverage_artifacts.py native-domain \
+                --repo "$PWD" --platform macos --output "$raw" --lane "$lane" \
+                --archive-repo-root "$ARCHIVE_REPO_ROOT" \
+                --domain-output "$final/coverage/native-domains/apple-macos-${lane}.json"
+              python3 -I protected-policy/scripts/export_xccov_line_coverage.py \
+                --repo "$PWD" --archive-repo-root "$ARCHIVE_REPO_ROOT" \
+                --xcresult "$raw/coverage/raw/apple-macos-${lane}.xcresult" \
+                --native-domain "$final/coverage/native-domains/apple-macos-${lane}.json" \
+                --platform macos --output "$final/coverage/lanes/apple-macos-${lane}-xccov.json"
+            done
+            python3 -I protected-policy/scripts/merge_xccov_line_coverage.py \
+              --repo "$PWD" --platform macos --profile release \
+              --unit-input "$final/coverage/lanes/apple-macos-unit-xccov.json" \
+              --ui-input "$final/coverage/lanes/apple-macos-ui-xccov.json" \
+              --staging-input "$final/coverage/lanes/apple-macos-staging-xccov.json" \
+              --output "$report"
+            python3 -I protected-policy/scripts/apple_coverage_artifacts.py verify-native-domains \
+              --repo "$PWD" --platform macos --output "$raw" --report "$report" \
               --archive-repo-root "$ARCHIVE_REPO_ROOT"
           else
           python3 -I protected-policy/scripts/export_xccov_line_coverage.py --repo "$PWD" --archive-repo-root "$ARCHIVE_REPO_ROOT" --xcresult "$result" --platform "$PRODUCER_PLATFORM" --output "$report"

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "deep_commit": "ca822e68d5477fb60fa9076107a4dab4138eeda6",
+  "image_ref": "ghcr.io/astraldeep/astraldeep:sha-ca822e68d5477fb60fa9076107a4dab4138eeda6@sha256:802244a5eb1a715dff4fa587a0e7d447b9eb425f1b674fc48cf0e685ced18aa2",
+  "image_config": "sha256:c3c72f5685d7d880fc5c84a024a47d43a5760f890fd9bc7ce906b4539dba1d41",
+  "platform": "linux/amd64",
+  "composition_sha256": "9ac9e3d362af7800401f499014e75662d24b3303f72cf1696abcfd070bfbd59e",
+  "plane_commit": "5ecce4cc2bd97ea26e348f2f7c8809985b9713bf",
+  "schema_revision": "089.004",
+  "migration_sha256": "08b7d824a62284351d1ce178708bb185d7c81f77c96ab14e890f7e5675a008fc"
+}

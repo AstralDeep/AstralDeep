@@ -1674,9 +1674,16 @@ class Orchestrator:
         return candidates[0] if candidates else None
 
     async def _register_computer_host(self, websocket, owner_sub: str, descriptor) -> None:
+        host_id = descriptor.host_id if hasattr(descriptor, "host_id") else descriptor["host_id"]
+        displaced = (self.computer_hosts.get(owner_sub, host_id), self.computer_hosts.host_for_socket(websocket))
         host, superseded = self.computer_hosts.register(owner_sub, websocket, descriptor)
-        if superseded is not None:
-            await self.computer_sessions.end_all_for_host(owner_sub, host.host_id, "host_superseded")
+        ended = set()
+        for previous in (*displaced, superseded):
+            if previous is None or (previous.owner_sub, previous.host_id) in ended:
+                continue
+            ended.add((previous.owner_sub, previous.host_id))
+            await self.computer_sessions.end_all_for_host(
+                previous.owner_sub, previous.host_id, "host_superseded")
         await self.computer_hosts.push_presence(host, "online")
 
     async def _teardown_computer_host(self, websocket) -> None:
@@ -8615,6 +8622,30 @@ class Orchestrator:
         except Exception:
             logger.exception("UI control frame failed")
 
+    async def _run_computer_control(self, context: ConnectionContext, raw: str, parsed: dict) -> None:
+        if (not flags.is_enabled("computer_use") or context.closing or not context.registered
+                or self._connection_contexts.get(id(context.websocket)) is not context
+                or not (self.ui_sessions.get(context.websocket) or {}).get("sub")
+                or self.computer_hosts.over_size_cap(len(raw.encode("utf-8")))):
+            return
+        try:
+            message = Message.from_json(raw)
+            if (not isinstance(message, UIEvent) or not isinstance(message.payload, dict)
+                    or self._connection_frame(context, raw, parsed) is None):
+                return
+            if message.action == "computer_response":
+                await self._handle_computer_response(context.websocket, message)
+            elif message.action == "computer_event" and message.payload.get("event") in {
+                    "announce", "withdraw", "heartbeat", "paused", "resumed", "stopped"}:
+                host = self.computer_hosts.host_for_socket(context.websocket)
+                if message.payload["event"] != "announce" and (
+                        host is None or host.owner_sub != self.ui_sessions[context.websocket].get("sub")
+                        or message.payload.get("host_id", host.host_id) != host.host_id):
+                    return
+                await self._handle_computer_event(context.websocket, message)
+        except (ProtocolValidationError, TypeError, ValueError):
+            logger.warning("Malformed computer host control frame refused")
+
     async def _run_ui_registration(
         self,
         context: ConnectionContext,
@@ -8644,6 +8675,10 @@ class Orchestrator:
         raw: str,
     ) -> bool:
         parsed = self._parsed_ui_frame(raw)
+        if ((parsed or {}).get("type") == "ui_event"
+                and (parsed or {}).get("action") in {"computer_response", "computer_event"}):
+            await self._run_computer_control(context, raw, parsed)
+            return True
         control = self._ui_control_kind(parsed)
         if control in {"register_ui", "close"}:
             from orchestrator.chrome_events import _note_open_surface
@@ -10412,6 +10447,20 @@ class Orchestrator:
 
                 elif msg.action == "cancel_task":
                     self.cancelled_sessions[id(websocket)] = True
+                    computer_sessions = getattr(self, "computer_sessions", None)
+                    active_chat = self._ws_active_chat.get(id(websocket))
+                    if user_id and user_id != "legacy" and active_chat:
+                        from orchestrator import hitl_confirmation
+
+                        hitl_confirmation.cancel_pending(self, websocket, user_id, active_chat)
+                        origins = getattr(self, "_hitl_task_origins", {})
+                        origin = origins.get((user_id, active_chat))
+                        if origin is not None and origin[0] is websocket:
+                            origins.pop((user_id, active_chat), None)
+                        if computer_sessions is not None:
+                            for session in computer_sessions.live_for_owner(user_id):
+                                if session.chat_id == active_chat and session.controller_ws_id == id(websocket):
+                                    await computer_sessions.end(session, "user_stop")
                     recorder = self._chat_recorders.get(id(websocket))
                     if recorder is not None:
                         try:
@@ -12553,12 +12602,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         attachments=None,
         operation_context=None,
         voice_dispatch=None,
+        continuation_guard=None,
     ):
         ws_id = id(websocket)
+        started = False
         try:
+            from orchestrator import hitl_confirmation
+
+            if continuation_guard is not None and not continuation_guard():
+                return
             if operation_context is None:
                 operation_context = _CONNECTION_OPERATION_CONTEXT.get()
             if voice_dispatch is not None:
+                if continuation_guard is None:
+                    hitl_confirmation.begin_task(self, websocket, user_id, chat_id)
+                started = True
                 await self.handle_chat_message(
                     websocket, message, chat_id, display_message,
                     user_id=user_id, draft_agent_id=draft_agent_id,
@@ -12577,6 +12635,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         chat_id, asyncio.Lock()
                     )
                     async with workspace_lock:
+                        if continuation_guard is not None and not continuation_guard():
+                            return
+                        if continuation_guard is None:
+                            hitl_confirmation.begin_task(self, websocket, user_id, chat_id)
+                        started = True
                         await self.handle_chat_message(
                             websocket, message, chat_id, display_message,
                             user_id=user_id, draft_agent_id=draft_agent_id,
@@ -12611,7 +12674,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if type(e) is SkillCatalogError:
                 raise
         finally:
-            self._chat_recorders.pop(ws_id, None)
+            if started:
+                self._chat_recorders.pop(ws_id, None)
 
     def _drop_chat_locks(self, websocket) -> None:
         ws_id = id(websocket)
@@ -17505,12 +17569,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     args = {k: v for k, v in args.items() if k != "_txn_token"}
 
         if user_id and agent_id and action.needs_review:
-            from orchestrator import hitl_confirmation
+            from orchestrator import hitl as _hitl, hitl_confirmation
 
             origin = self._source_ledger(user_id, chat_id).origin_of(args)
+            review_risks = [*source_bound.review_risks(action), f"origin:{origin.value}"]
+            if agent_id == "computer-use-1" and tool_name in {"type_text", "press_keys"} and "terminal_app" in args:
+                review_risks.append("terminal_input")
+            if _hitl.hitl_enabled():
+                from orchestrator import taint as _taint
+                trust = (_taint.trust_name(self._taint_tracker(chat_id).effective_trust_of_args(
+                    args, user_text=self._current_request_text(chat_id))) if _taint.taint_enabled() else "trusted")
+                review_risks.extend(_hitl.assess_risk(tool_name, args, actor_principal=user_id,
+                    trust=trust, agent_id=agent_id,
+                    public_reader=_hitl.registered_public_reader(self, agent_id, tool_name)))
             pending = await hitl_confirmation.evaluate(
                 self, websocket, user_id, chat_id, agent_id, tool_name,
-                args, (*source_bound.review_risks(action), f"origin:{origin.value}"))
+                args, tuple(set(review_risks)))
             if pending is not None:
                 return GateRefusal(response=pending)
 
@@ -17577,8 +17651,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if _hitl.requires_confirmation(risks) or _typesafe_confirms:
                     logger.warning("hitl.confirm user=%s tool=%s risks=%s", user_id, tool_name, risks)
                     from orchestrator import hitl_confirmation
-                    pending = await hitl_confirmation.evaluate(
-                        self, websocket, user_id, chat_id, agent_id, tool_name, args, risks)
+                    approved = hitl_confirmation.current_approval(
+                        self, user_id, chat_id, agent_id, tool_name, args)
+                    pending = (None if approved is not None and "source_bound" in approved.call.risks
+                               and set(risks).issubset(approved.call.risks) else await hitl_confirmation.evaluate(
+                                   self, websocket, user_id, chat_id, agent_id, tool_name, args, risks))
                     if pending is not None:
                         return GateRefusal(
                             response=pending,
@@ -18958,7 +19035,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         result = MCPResponse(error={"message": exc.code, "retryable": False})
                 else:
                     result = await invoke(capabilities)
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 if action.needs_review:
                     try:
                         await hitl_confirmation.audit_effect_outcome(

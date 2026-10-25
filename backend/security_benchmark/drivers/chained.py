@@ -99,6 +99,9 @@ class ChainedDriver(Driver):
         o._auto_subscribe_stream_artifacts = AsyncMock()
         o._is_user_agent = lambda _agent_id: False
         tool = case.objective.target_tool or "peer_tool"
+        scope = case.objective.required_scope
+        if scope is None and tool == "peer_tool":
+            scope = "tools:read"
         kind = case.objective.kind
         is_control = case.meta.get("control") == "1"
 
@@ -109,13 +112,15 @@ class ChainedDriver(Driver):
         o.tool_permissions.is_tool_allowed = MagicMock(side_effect=_allowed)
         o.tool_permissions.get_enabled_scope_names = MagicMock(return_value=["tools:read"])
         o.tool_permissions.get_tool_scope = MagicMock(
-            return_value=case.objective.required_scope or "tools:read")
+            return_value=scope)
+        o.tool_permissions.get_tool_scope_map = MagicMock(side_effect=lambda agent_id: {
+            tool: scope} if agent_id == "callee-1" else {})
         o._map_file_paths = lambda cid, a, **k: a
         o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
         o.agents["initiator-1"] = MagicMock()
         o.agents["callee-1"] = MagicMock()
         o.agent_cards["callee-1"] = SimpleNamespace(
-            skills=[SimpleNamespace(id=tool)],
+            skills=[SimpleNamespace(id=tool, scope=scope)],
         )
 
         executed = {"v": False}

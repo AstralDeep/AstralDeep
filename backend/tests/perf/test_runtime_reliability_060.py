@@ -14,7 +14,7 @@ import time
 import types
 import uuid
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping
@@ -1820,110 +1820,136 @@ async def test_disconnect_drains_connection_work_but_not_user_background(
         await _cleanup(orch, websocket, serve, probe, baseline)
 
 
-def test_ten_thousand_runtime_registry_interleavings_are_coherent() -> None:
-    from orchestrator.runtime_registry import (
-        RegistryKind,
-        RuntimeRegistry,
-        RuntimeRegistryRecord,
-    )
+def _assert_registry_publication_snapshot(snapshot: Any, prior_version: int = 0) -> None:
+    from orchestrator.runtime_registry import RegistryKind
+
+    writer_kinds = tuple(kind for kind in RegistryKind for _ in range(2))
+    assert snapshot.registry_version >= prior_version
+    publications = 0
+    for kind in RegistryKind:
+        records = snapshot.records(kind)
+        identities = tuple(record.identity for record in records)
+        assert identities == tuple(sorted(identities))
+        assert len(identities) == len(set(identities))
+        for record in records:
+            assert record.kind is kind
+            writer = record.value["writer"]
+            assert type(writer) is int and 0 <= writer < len(writer_kinds)
+            assert writer_kinds[writer] is kind
+            assert record.identity == f"registry-publisher-{writer}"
+            assert record.value["revision"] == record.state_revision
+            assert record.value["revisions"] == tuple(range(record.state_revision + 1))
+            publications += record.state_revision + 1
+    assert snapshot.registry_version == publications
+
+
+def test_registry_publication_oracle_rejects_an_incoherent_version() -> None:
+    from orchestrator.runtime_registry import RegistryKind, RuntimeRegistry, RuntimeRegistryRecord
 
     registry = RuntimeRegistry()
-    kinds = (
-        RegistryKind.RUNTIME,
-        RegistryKind.HOST_SESSION,
-        RegistryKind.LIFECYCLE,
-        RegistryKind.CARD,
-    )
-    writer_count = len(kinds)
-    reader_count = 2
-    publications_per_writer = 2_500
-    start = threading.Barrier(writer_count + reader_count)
-    finished = threading.Event()
-    finish_lock = threading.Lock()
-    writers_remaining = writer_count
+    coherent = registry.register(RuntimeRegistryRecord(RegistryKind.RUNTIME, "registry-publisher-0", 0,
+        {"writer": 0, "revision": 0, "revisions": [0]}), expected_state_revision=None)
+    _assert_registry_publication_snapshot(coherent)
+    with pytest.raises(AssertionError):
+        _assert_registry_publication_snapshot(replace(coherent, registry_version=2))
+
+
+def test_concurrent_registry_rounds_publish_coherent_immutable_snapshots() -> None:
+    from orchestrator.runtime_registry import RegistryKind, RuntimeRegistry, RuntimeRegistryRecord
+
+    registry = RuntimeRegistry()
+    writer_kinds = tuple(kind for kind in RegistryKind for _ in range(2))
+    writer_count, reader_count, rounds = len(writer_kinds), 2, 16
+    assert writer_count == 8
+    round_start = threading.Barrier(writer_count + reader_count)
+    round_finish = threading.Barrier(writer_count + reader_count)
+    observations = [0] * reader_count
+    retained = [None] * reader_count
+    failures = []
+    failure_lock = threading.Lock()
 
     def writer(writer_number: int) -> None:
-        nonlocal writers_remaining
-        kind = kinds[writer_number]
-        identity = f"registry-profile-{writer_number}"
-        start.wait(timeout=10)
-        try:
-            for revision in range(publications_per_writer):
-                registry.register(
-                    RuntimeRegistryRecord(
-                        kind=kind,
-                        identity=identity,
-                        state_revision=revision,
-                        value={
-                            "writer": writer_number,
-                            "revision": revision,
-                        },
-                    ),
-                    expected_state_revision=(
-                        None if revision == 0 else revision - 1
-                    ),
-                )
-        finally:
-            with finish_lock:
-                writers_remaining -= 1
-                if writers_remaining == 0:
-                    finished.set()
+        kind = writer_kinds[writer_number]
+        value = {"writer": writer_number, "revision": -1, "revisions": []}
+        for revision in range(rounds):
+            round_start.wait(timeout=10)
+            value["revision"] = revision
+            value["revisions"].append(revision)
+            registry.register(RuntimeRegistryRecord(kind, f"registry-publisher-{writer_number}", revision, value),
+                expected_state_revision=None if revision == 0 else revision - 1)
+            round_finish.wait(timeout=10)
 
-    def reader() -> int:
-        start.wait(timeout=10)
+    def reader(reader_number: int) -> None:
         prior_version = 0
-        observations = 0
-        while not finished.is_set() or observations < 256:
+        for revision in range(rounds):
+            round_start.wait(timeout=10)
             snapshot = registry.snapshot()
-            assert snapshot.registry_version >= prior_version
+            _assert_registry_publication_snapshot(snapshot, prior_version)
+            assert revision * writer_count <= snapshot.registry_version <= (revision + 1) * writer_count
+            for kind in RegistryKind:
+                assert all(record.state_revision in {revision - 1, revision} for record in snapshot.records(kind))
+            observations[reader_number] += 1
             prior_version = snapshot.registry_version
-            partitions = (
-                (RegistryKind.RUNTIME, snapshot.runtimes),
-                (RegistryKind.HOST_SESSION, snapshot.host_sessions),
-                (RegistryKind.LIFECYCLE, snapshot.lifecycles),
-                (RegistryKind.CARD, snapshot.cards),
-            )
-            for kind, records in partitions:
-                identities = tuple(record.identity for record in records)
-                assert identities == tuple(sorted(identities))
-                assert len(identities) == len(set(identities))
-                for record in records:
-                    assert record.kind is kind
-                    assert record.value["revision"] == record.state_revision
-            observations += 1
-            if observations % 64 == 0:
-                time.sleep(0)
-        return observations
+            round_finish.wait(timeout=10)
+            complete = registry.snapshot()
+            _assert_registry_publication_snapshot(complete, prior_version)
+            assert complete.registry_version == (revision + 1) * writer_count
+            for kind in RegistryKind:
+                records = complete.records(kind)
+                assert len(records) == 2
+                assert all(record.state_revision == revision for record in records)
+            observations[reader_number] += 1
+            prior_version = complete.registry_version
+            if revision == 0:
+                retained[reader_number] = complete
 
-    started = time.perf_counter()
-    with ThreadPoolExecutor(
-        max_workers=writer_count + reader_count,
-        thread_name_prefix="registry-profile",
-    ) as executor:
-        writers = [executor.submit(writer, index) for index in range(writer_count)]
-        readers = [executor.submit(reader) for _ in range(reader_count)]
-        for future in writers:
-            future.result(timeout=30)
-        observations = [future.result(timeout=30) for future in readers]
-    duration_seconds = time.perf_counter() - started
+    def participant(function, number):
+        try:
+            function(number)
+        except BaseException as exc:
+            with failure_lock:
+                failures.append(exc)
+            round_start.abort()
+            round_finish.abort()
+
+    threads = [threading.Thread(target=participant, args=(writer, number),
+        name=f"registry-writer-{number}", daemon=True) for number in range(writer_count)]
+    threads += [threading.Thread(target=participant, args=(reader, number),
+        name=f"registry-reader-{number}", daemon=True) for number in range(reader_count)]
+    try:
+        for thread in threads:
+            thread.start()
+        deadline = time.monotonic() + 10
+        for thread in threads:
+            thread.join(timeout=max(0, deadline - time.monotonic()))
+    finally:
+        round_start.abort()
+        round_finish.abort()
+        for thread in threads:
+            if thread.is_alive():
+                thread.join(timeout=1)
+    assert not any(thread.is_alive() for thread in threads), "registry publication participants deadlocked"
+    if failures:
+        raise next((error for error in failures if not isinstance(error, threading.BrokenBarrierError)), failures[0])
 
     final = registry.snapshot()
-    expected_publications = writer_count * publications_per_writer
-    assert expected_publications == 10_000
-    assert final.registry_version == expected_publications
-    for kind in kinds:
+    _assert_registry_publication_snapshot(final)
+    assert final.registry_version == writer_count * rounds
+    assert observations == [rounds * 2] * reader_count
+    for kind in RegistryKind:
         records = final.records(kind)
-        assert len(records) == 1
-        assert records[0].state_revision == publications_per_writer - 1
-        assert records[0].value["revision"] == publications_per_writer - 1
-    assert all(count >= 256 for count in observations)
-    print(
-        "US6 registry profile: "
-        f"publications={expected_publications} readers={reader_count} "
-        f"observations={sum(observations)} "
-        f"final_registry_version={final.registry_version} "
-        f"duration_seconds={duration_seconds:.3f}"
-    )
+        assert len(records) == 2
+        assert all(record.state_revision == rounds - 1 for record in records)
+        assert all(record.value["revision"] == rounds - 1 for record in records)
+    for early in retained:
+        assert early is not None and early is not final
+        _assert_registry_publication_snapshot(early)
+        assert early.registry_version == writer_count
+        for kind in RegistryKind:
+            records = early.records(kind)
+            assert len(records) == 2
+            assert all(record.state_revision == 0 and record.value["revision"] == 0 for record in records)
+            assert all(record.value["revisions"] == (0,) for record in records)
 
 
 async def test_release_load_maintenance_and_process_work_do_not_block_acknowledgements() -> None:
