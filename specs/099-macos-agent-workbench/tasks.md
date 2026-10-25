@@ -63,7 +63,7 @@
 - [ ] T034 [US5] Align the iOS release UI inventory with the existing SettingsControls suite and collect same-build Mac unit/UI/staging observations with protected independent reconstruction. Preserve exact suite identities, failure propagation, draft/default-ref guards, secret scoping and the 30-minute job budget; verify the exact provider run.
 - [ ] T035 [US5] Retain the investigated raw-profile/native UUID limitation and assess stronger future proof when the platform supports it. This is additional evidence research: current v1 requires genuine observations, exact source/compiler geometry, same-build products and protected provider/artifact reconstruction, and makes no UUID-association claim. Do not add an unsupported UUID field or treat an empty binary-ID check as proof; existing qualification gates remain required.
 
-- [ ] T036 [US1] Persist the owner-requested local opt-in across relaunch, separating saved choice from live access. Reproduce restart/reset failures; test owner/server isolation, explicit off, missing TCC/desktop/monitor/distribution, synchronous lock revocation and old-request denial; preserve physical initial enable/local Resume and live-verify the signed installed app across quit/reopen.
+- [x] T036 [US1] Persist the owner-requested local opt-in across relaunch, separating saved choice from live access. Reproduce restart/reset failures; test owner/server isolation, explicit off, missing TCC/desktop/monitor/distribution, synchronous lock revocation and old-request denial; preserve physical initial enable/local Resume and live-verify the signed installed app across quit/reopen.
 
 ## Dependencies and Parallel Work
 
