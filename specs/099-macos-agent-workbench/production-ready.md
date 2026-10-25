@@ -1,0 +1,13 @@
+# Production preparation
+
+The owner directed work on 2026-10-25 to prioritize the Mac client and server for production rather than CI. The CI repair work remains preserved separately; this branch prepares the operational pair and its live checks. Authentication, authorization, local consent, data preservation, LETS enforcement and rollback remain required.
+
+The client is the signed DirectDownload build from Projection `63deedd8ffde83f0e2890bdb280322bfa32e09ba`, executable SHA-256 `3f4f0a6acfe32ff52e366b66ef8abd6b1785dc5673ab9288a415887acda62bf7`. It preserves the installed designated signing requirement, has only the audio-input entitlement, and needs a genuine local enable action after restart. The client has not yet been installed or exercised against the prepared server.
+
+This branch pins that same Projection revision. Its server-owned `src`, `backend` and `contracts` trees are byte-identical to the previous `1704975` pin, so the server contract stays compatible with the already-rehearsed `9117730b` runtime. AstralPlane, AstralPrimitives, LETS, the Plane schema revision and migration digest remain unchanged.
+
+Preparation must retain the current immutable server image/configuration and private data backups, validate the exact composition and production posture, and render a narrowly scoped deployment override. The production deployment binds `backend/agents` from the host, so all changed tracked first-party agent files must move to the exact prepared revision while preserving ignored or untracked user-generated agent directories. The current host checkout is `ca822e68d5477fb60fa9076107a4dab4138eeda6`; deployment must refuse tracked local edits and ignored-file collisions, retain its Compose files privately, and update the source only while the application is quiesced. Enable `FF_COMPUTER_USE` while retaining real Keycloak, existing encrypted provider configuration, audit keys and LETS enforcement.
+
+Live acceptance requires normal client authentication and host registration, a genuine local enable action, visible browser/native postconditions, exactly reviewed Terminal interaction, selected-folder file round-trip, and Pause/Stop/disconnect denials. Any required sign-in, system permission or workspace grant stays with the owner. A unit-test result does not substitute for these checks.
+
+Rollback selects the saved application image and deployment override while keeping compatible current database/blob/LETS state. No database downgrade, ledger rewind, key rotation or unrelated service restart is part of this preparation. Deployment and live acceptance are recorded only after they actually occur.
