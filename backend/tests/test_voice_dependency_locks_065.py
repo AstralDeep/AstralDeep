@@ -70,6 +70,7 @@ CURRENT_DEPENDENCY_AUTHORITIES = {
         "97a1d75fd45c83331e33e7029f8f23a12870593b67c7bbc8e4470d6baf2affee"
     ),
     "backend/requirements-gaiakeep.txt": "87ea5ed066e8aa376f355df70a4efac295d331c7c77601d277a05c8acb37feea",
+    "backend/security_benchmark/requirements-eval.txt": "97a1d75fd45c83331e33e7029f8f23a12870593b67c7bbc8e4470d6baf2affee",
     "backend/tests/fixtures/runtime_reliability_060/runtime-lock-contract.json": (
         "ff84f895f5b8253dff59c9581cc033452ad576a09e40d00da31b5ba7b0f4875e"
     ),

@@ -11,7 +11,21 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+import pytest  # noqa: E402
+
 from orchestrator import onboarding_submit  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _clean_phi_gate(monkeypatch):
+    # Persistence parsing is under test, not PHI screening; the ambient analyzer's
+    # availability must not decide whether the profile branch stores anything.
+    from types import SimpleNamespace
+
+    from personalization import phi_gate
+
+    monkeypatch.setattr(phi_gate, "get_phi_gate",
+                        lambda: phi_gate.PHIGate(analyzer=SimpleNamespace(analyze=lambda **_: [])))
 
 
 class _FakeRepo:
