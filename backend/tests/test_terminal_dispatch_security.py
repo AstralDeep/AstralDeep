@@ -22,7 +22,11 @@ from tests.test_terminal_ssh_runtime import isolated as isolated
 def orch(base_orch):  # noqa: F811
     from agents.cresco.mcp_tools import TOOL_REGISTRY as CRESCO_TOOLS
     from agents.terminal_shell.mcp_tools import TOOL_REGISTRY as TERMINAL_TOOLS
+    from orchestrator.tool_permissions import ToolPermissionManager
 
+    permissions = base_orch.tool_permissions
+    permissions.get_tool_scope_map = ToolPermissionManager.get_tool_scope_map.__get__(permissions)
+    permissions.register_tool_scopes = ToolPermissionManager.register_tool_scopes.__get__(permissions)
     for agent, tools in (("terminal-shell-1", TERMINAL_TOOLS), ("cresco-1", CRESCO_TOOLS)):
         base_orch.tool_permissions.register_tool_scopes(agent, {name: tool["scope"] for name, tool in tools.items()})
     return base_orch
