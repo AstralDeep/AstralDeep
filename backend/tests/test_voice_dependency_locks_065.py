@@ -63,6 +63,8 @@ FEATURE_075_DEPENDENCY_AUTHORITIES = {
 }
 CURRENT_DEPENDENCY_AUTHORITIES = {
     **FEATURE_075_DEPENDENCY_AUTHORITIES,
+    "backend/security_benchmark/requirements-eval.txt": "97a1d75fd45c83331e33e7029f8f23a12870593b67c7bbc8e4470d6baf2affee",
+    "backend/requirements-document-worker.txt": "28383cb135800b5415ca4c9504ea83e1514fa3e6f1d89257ab06fd5e8116508a",
     "Dockerfile": "bd80b9180b1ec2fea5c2e0e4faba06739a1222727bca033c66f1a17d423ce506",
     "Dockerfile.voice": "82ffc56ab274790ea60e280852eb49608e9e8f7dbc3432fc16b4a1f3bcd21b84",
     "backend/requirements.txt": "972e495db9602454b29d55880ca7096269d71c913e44f27389aff913b9dbd459",
