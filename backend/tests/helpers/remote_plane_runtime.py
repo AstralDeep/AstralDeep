@@ -6,6 +6,9 @@ orchestrator/plane_repository_context.py.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime, timezone
+from astralplane.repositories.audit import AuditRecord
+from astralplane.repositories.credentials import CredentialRecord
 import json
 import threading
 from types import SimpleNamespace
@@ -244,6 +247,19 @@ def _credential(storage: Any, machine_id: str) -> MachineCredentialRecord | None
 class InMemoryCredentialRepository:
     def __init__(self, storage: Any) -> None:
         self._storage = storage
+        self._authority_rows = {}
+
+    def get_credential(self, transaction, *, owner_id, agent_id, credential_key):
+        return self._authority_rows.get((owner_id, agent_id, credential_key))
+
+    def upsert_credential(self, transaction, *, owner_id, agent_id, credential_key,
+                          encrypted_value, updated_at):
+        key = (owner_id, agent_id, credential_key)
+        row = CredentialRecord(len(self._authority_rows) + 1, owner_id, agent_id,
+                               credential_key, encrypted_value, updated_at, updated_at)
+        self._authority_rows[key] = row
+        return row
+
 
     def get_machine_credential(
         self,
@@ -712,6 +728,27 @@ class InMemoryAssignmentsWakeRepository:
         return SimpleNamespace(assignment=SimpleNamespace(**row), applied=True)
 
 
+class InMemoryAuthorityAudit:
+    def __init__(self):
+        self.records = []
+
+    def get(self, transaction, *, chain_id, event_id):
+        return next((record for record in self.records
+                     if record.event.chain_id == chain_id and record.event.event_id == event_id), None)
+
+    def append(self, transaction, event, authenticate):
+        previous = self.records[-1].entry_digest if self.records else bytes(32)
+        digest = authenticate(event.key_id, previous + event.inputs_json.encode())
+        record = AuditRecord(event, len(self.records) + 1, datetime.now(timezone.utc), previous, digest)
+        self.records.append(record)
+        return record
+
+
+class InMemoryOwnerLock:
+    def get(self, transaction, *, owner_id, for_update=False):
+        return None
+
+
 class InMemoryPlaneRuntime:
     def __init__(self, storage: Any) -> None:
         tracked = (
@@ -720,6 +757,9 @@ class InMemoryPlaneRuntime:
             else SimpleNamespace()
         )
         self.repositories = SimpleNamespace(
+            stop_epochs=InMemoryOwnerLock(),
+            audit=InMemoryAuthorityAudit(),
+            audit_retention=SimpleNamespace(),
             credentials=InMemoryCredentialRepository(storage),
             remote=InMemoryRemoteRepository(storage),
             tracked_jobs=tracked,

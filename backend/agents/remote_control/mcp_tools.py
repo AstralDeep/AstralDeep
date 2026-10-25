@@ -15,6 +15,7 @@ from orchestrator.credential_manager import CredentialNotConfigured, CredentialU
 from orchestrator.remote_confirmation import DESTRUCTIVE_CLASSIFICATION
 from orchestrator.remote_machines import MachineNotFound
 from orchestrator.remote_transport import RemoteResult, Verdict, get_transport
+from orchestrator.remote_effect_execution import run_qualified
 
 _DB = None
 _CREDMGR = None
@@ -124,7 +125,8 @@ def make_directory(**kwargs) -> Dict[str, Any]:
         return err
     if _bad_path(path):
         return _fail(Verdict.INVALID_ARGUMENT, target.label, "path must be an absolute path")
-    res = get_transport().run(target, ["mkdir", "-p", path], timeout=20.0, retryable=False)
+    res = run_qualified(get_transport(), target, ["mkdir", "-p", path],
+                        tool="make_directory", owner_id=user_id, timeout=20.0)
     return _finish(res, target, f"Directory ready — {_sanitize(target.label, 60)}",
                    [Text(content=f"Created (or already present): {_sanitize(path, 200)}", variant="body")],
                    {"path": path}, "check the parent directory exists and is writable")
@@ -141,7 +143,8 @@ def remove_path(**kwargs) -> Dict[str, Any]:
     if _bad_path(path):
         return _fail(Verdict.INVALID_ARGUMENT, target.label, "path must be an absolute path")
     argv = ["rm", "-r", "-f", path] if recursive else ["rm", "-f", path]
-    res = get_transport().run(target, argv, timeout=30.0, retryable=False)
+    res = run_qualified(get_transport(), target, argv,
+                        tool="remove_path", owner_id=user_id, timeout=30.0)
     return _finish(res, target, f"Deleted — {_sanitize(target.label, 60)}",
                    [Text(content=f"Removed: {_sanitize(path, 200)}"
                                  + (" (recursive)" if recursive else ""), variant="body")],
