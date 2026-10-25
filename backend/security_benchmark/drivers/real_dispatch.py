@@ -78,10 +78,26 @@ class RealDispatchQualification(InProcessDriver):
     def __init__(self, run_id: str):
         super().__init__(RunConfig(mode="in_process", run_id=run_id))
         self.fixture = FixtureServer()
+        self._previous_phi_gate = None
 
     async def setup(self) -> None:
         await super().setup()
         self.orch.delegation._exchange_via_keycloak = self._fixture_exchange
+        # The qualification's security evidence must not depend on the ambient NER
+        # model; the synthetic fixture content is known non-private by construction.
+        from personalization import phi_gate
+
+        self._previous_phi_gate = phi_gate._GATE
+        phi_gate.set_phi_gate(
+            phi_gate.PHIGate(analyzer=SimpleNamespace(analyze=lambda **_: [])))
+
+    async def teardown(self) -> None:
+        from personalization import phi_gate
+
+        if self._previous_phi_gate is not None or phi_gate._GATE is not None:
+            phi_gate.set_phi_gate(self._previous_phi_gate)
+            self._previous_phi_gate = None
+        await super().teardown()
 
     async def _fixture_exchange(self, user_token, agent_id, allowed_tools,
                                 enabled_scopes):
