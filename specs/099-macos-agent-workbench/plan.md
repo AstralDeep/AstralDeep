@@ -8,7 +8,7 @@ Deliver a native Mac computer executor and a clearer workbench using Astral's ex
 
 ## Technical Context
 
-**Language/Version**: Python3.11; Swift5.9-compatible sources. Local Xcode27.1 versus CI26.6 is recorded, not equated.
+**Language/Version**: Python 3.11; AstralCore retains its Swift tools 5.9 manifest and Swift 5 language mode. The app retains its existing Swift 5 language mode, MainActor default isolation and pinned Xcode 26.6/build 17F113 compiler floor; this does not promise compilation with the older Swift 5.9 compiler. Local Xcode 27.1 versus CI 26.6 is recorded, not equated.
 **Primary Dependencies**: Existing FastAPI/ASGI, Keycloak, astralprims/Projection/Plane; SwiftUI/AppKit, ApplicationServices/CoreGraphics, ScreenCaptureKit and Foundation. No new third-party baseline runtime.
 **Storage**: Existing Plane data only. Local consent/root bookmarks are owner/server-bound; requests, screenshots, window handles and authority are ephemeral.
 **Testing**: pytest computer/source-bound/HITL suites and measured changed-line coverage; SwiftPM/XCTest/direct-download builds; Projection protocol/provenance/architecture gates; actual authenticated native/browser/file/terminal acceptance.
@@ -24,7 +24,7 @@ Deliver a native Mac computer executor and a clearer workbench using Astral's ex
 - No schema/Plane change planned. A newly required durable store requires separate governed Plane work, never Deep SQL.
 - Changed Python requires90% coverage; root Ruff targets py311. Swift uses tracked formatting/CI. Changed extracted files update Projection's provenance digest ledger. Tests prove behavior, not comment wording.
 - Qualifying staging uses isolated candidate containers, real PostgreSQL/LETS/IAM and the actual Mac client; preserve unrelated running projects. Bind evidence to exact image/client/component identities. Existing-data migration evidence is required if any migration is discovered.
-- No new frame vocabulary. Mac promotes its host dispositions; iOS remains controller-only and refreshes shared presence. Verify every affected shared client surface live; missing evidence remains a gate, no waiver assumed.
+- No new frame vocabulary. Mac promotes its host dispositions; iOS remains controller-only with its existing ignored host-presence/session dispositions. Verify every affected shared client surface live; missing evidence remains a gate, no waiver assumed.
 - Before a product push, run deterministic `scripts/prepare_release_evidence.py` with exact base/candidate and actual coverage reports. Local output stays diagnostic; protected CI reconstructs trusted inputs. No bootstrap or protected-debt exception is assumed; any structural provider blocker must follow ConstitutionX's exact default-branch verifier/allowlist and seven-day draft-only process.
 - Preserve registered identity and hardened runtime. Local installation/qualification is distinct from signed/notarized/public release. Store submission/release-lane activation is not implicit. Publication remains in separately pinned protected Actions with native short-lived identity, never a token broker.
 
@@ -67,3 +67,7 @@ No exception. Reusing v1 and reviewed Terminal interaction is narrower than a ne
 Builder check rulings: v1 fences geometry/focus/session, not DOM/document identity; verify browser outcomes. Terminal admission boolean is separate from exact source-bound text/chord review. Clear grants on pause/authority loss and grant only current-session approved shell/explicit confirmation. Physical driver work must not block the main actor from honoring Stop.
 
 Shared-client regression matrix: Mac native layout uses negotiated console geometry/capabilities; shared menu/theme/actions remain unchanged. Qualify the changed approval/continuation behavior with Mac and web controllers, and each affected native controller under the repository client gates. No platform waiver is assumed.
+
+Same-Mac integration ruling: exact review itself changes local focus and pauses remote effects. Add explicit reviewed window handles to Mac input and a separate same-host approve-and-resume decision, tightly scoped as in the contract. Do not exempt main-window activity from takeover or secretly restore prior focus. New risk/task/target changes still require review. This extends v1 argument semantics without a new frame.
+
+Terminal ruling: no historical grant carryover ledger. Optional explicit terminal_app+hwnd keyboard review may issue only a one-call internal permit after exact consumed source approval; native checks actual bundle and scope. Global grant stays cleared. Workbench split geometry moves to optional server ROTE console.mac_workbench negotiated with exact Mac opt-in, retained across device refresh; native no longer defines breakpoints.

@@ -40,8 +40,11 @@ def _register(orch, agent, tool):
 
 @pytest.fixture
 def runtime(gate_orchestrator, monkeypatch):  # noqa: F811
+    from audit import hooks
+
     orch, ws = gate_orchestrator
     monkeypatch.setattr(hitl, "hitl_enabled", lambda: True)
+    monkeypatch.setattr(hooks, "get_recorder", lambda: None)
     monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)
     monkeypatch.setattr("personalization.phi_gate.get_phi_gate",
                         lambda: SimpleNamespace(contains_phi=lambda _text: False))

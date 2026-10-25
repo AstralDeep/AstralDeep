@@ -28,9 +28,12 @@ from orchestrator.computer_use_policy import (
     MAX_WRITE_BYTES,
     RESUME_SETTLE_SECONDS,
     MIN_SCREENSHOT_WIDTH,
+    mac_application,
+    mac_terminal_application,
     SCOPES,
     TIERS,
     TIMEOUTS,
+    OBSERVE_VERBS,
 )
 
 logger = logging.getLogger("ComputerUseTools")
@@ -100,7 +103,12 @@ def _bridge(coro, timeout: float, loop=None):
     if loop is None:
         coro.close()
         raise ComputerHostError("failed", "orchestrator loop unavailable")
-    return asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=timeout + 5.0)
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    try:
+        return future.result(timeout=timeout)
+    except TimeoutError:
+        future.cancel()
+        raise
 
 
 def _resolve_host(user_id: str, chat_id: Optional[str], ref: Optional[str]):
@@ -147,15 +155,27 @@ def _ctx(kwargs: Dict[str, Any]):
 
 
 def _run(host, session, verb: str, args: Dict[str, Any], loop=None):
+    from orchestrator.hitl_confirmation import computer_effect_current, computer_effect_generation
+
     registry, sessions = _registry(), _sessions()
     timeout = TIMEOUTS[verb]
+    deadline = time.monotonic() + timeout
+    approved_generation = computer_effect_generation(_ORCH, session)
+    generation = session.authority_generation if approved_generation is None else approved_generation
 
     async def _go():
         async with session.lock:
             if session.state != "active":
                 raise ComputerHostError("paused" if session.state == "paused" else "no_session",
                                         f"session is {session.state}")
-            result = await registry.request(host, session.session_id, verb, args, timeout)
+            if session.authority_generation != generation:
+                raise ComputerHostError("no_session", "Computer authority changed while this action was queued")
+            if not computer_effect_current(_ORCH, session, verb):
+                raise ComputerHostError("confirmation_required", "Reviewed authority changed while this action was queued")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ComputerHostError("timeout", "This action expired while queued and was not sent")
+            result = await registry.request(host, session.session_id, verb, args, remaining)
             session.verbs_run += 1
             sessions.touch(session)
             return result
@@ -164,9 +184,35 @@ def _run(host, session, verb: str, args: Dict[str, Any], loop=None):
         return _bridge(_go(), timeout, loop), None
     except ComputerHostError as exc:
         return None, _host_error(exc)
+    except TimeoutError:
+        return None, _fail("timeout" if verb in OBSERVE_VERBS else "outcome_uncertain",
+                           "The action deadline elapsed. Inspect current state before issuing another action")
     except Exception as exc:  # noqa: BLE001
         logger.warning("076: %s failed: %s", verb, exc)
         return None, _fail("failed", f"{verb} failed: {exc}")
+
+
+def _input(host, session, verb, args, kwargs):
+    if "hwnd" in kwargs:
+        hwnd = kwargs["hwnd"]
+        if getattr(host, "platform", None) != "macos" or type(hwnd) is not int or not 1 <= hwnd <= 2**53:
+            return None, _fail("out_of_range", "hwnd must be a current Mac window handle from list_windows")
+        args = {**args, "hwnd": hwnd}
+    if "terminal_app" in kwargs:
+        from orchestrator.computer_use_policy import is_shell_app
+        from orchestrator.hitl_confirmation import consume_terminal_input
+
+        try:
+            app = mac_terminal_application(kwargs["terminal_app"])
+            if (getattr(host, "platform", None) != "macos" or "hwnd" not in args
+                    or verb not in {"type_text", "press_keys"} or not is_shell_app(app)):
+                raise ValueError("A terminal-specific Mac input requires a recognized terminal and exact hwnd")
+        except ValueError as exc:
+            return None, _fail("out_of_range", str(exc))
+        if not consume_terminal_input(_ORCH, session, verb, kwargs):
+            return None, _fail("confirmation_required", "Fresh exact terminal input approval is required")
+        args = {**args, "terminal_app": app, "terminal_ok": True}
+    return _run(host, session, verb, args, _loop(kwargs))
 
 
 def _int(value: Any, name: str, lo: int, hi: int) -> int:
@@ -292,6 +338,19 @@ def resume_session(**kwargs) -> Dict[str, Any]:
 
 # Only runs post-approval; the gate already checked
 def confirm_action(**kwargs) -> Dict[str, Any]:
+    if "terminal_app" in kwargs:
+        from orchestrator.computer_use_policy import is_shell_app
+
+        _u, _c, host, ctx = _ctx(kwargs)
+        if not hasattr(ctx, "session_id"):
+            return ctx
+        try:
+            if host.platform == "macos":
+                mac_terminal_application(kwargs["terminal_app"])
+            elif not is_shell_app(kwargs["terminal_app"]):
+                raise ValueError("terminal_app must name a recognized terminal application")
+        except ValueError as exc:
+            return _fail("out_of_range", str(exc))
     summary = _sanitize(kwargs.get("summary"), MAX_SUMMARY_CHARS)
     return _data({"approved": True, "summary": summary},
                  [Text(content=f"Approved: {summary}", variant="caption")])
@@ -337,6 +396,7 @@ def list_windows(**kwargs) -> Dict[str, Any]:
     _u, _c, host, ctx = _ctx(kwargs)
     if not hasattr(ctx, "session_id"):
         return ctx
+    generation = ctx.authority_generation
     result, err = _run(host, ctx, "list_windows", {}, _loop(kwargs))
     if err:
         return err
@@ -344,9 +404,16 @@ def list_windows(**kwargs) -> Dict[str, Any]:
     for w in (result.get("windows") or [])[:100]:
         if isinstance(w, dict):
             windows.append({"hwnd": int(w.get("hwnd") or 0), "title": _sanitize(w.get("title"), 200),
-                            "process": _sanitize(w.get("process"), 80), "rect": w.get("rect"),
+                            "process": _sanitize(w.get("process"), 80),
+                            "bundle_id": _sanitize(w.get("bundle_id"), 200), "rect": w.get("rect"),
                             "focused": bool(w.get("focused")), "minimized": bool(w.get("minimized"))})
-    return _data({"computer": host.name, "windows": windows, "count": len(windows)})
+    if (_registry().get(_u, host.host_id) is host and _sessions().get(ctx.session_id) is ctx
+            and ctx.state == "active" and ctx.authority_generation == generation):
+        ctx.window_labels = {w["hwnd"]: " · ".join(part for part in (
+            w["bundle_id"] or w["process"], w["title"]) if part) for w in windows if 1 <= w["hwnd"] <= 2**53}
+    table = Table(headers=["Window", "App", "ID"],
+                  rows=[[w["title"], w["bundle_id"] or w["process"], str(w["hwnd"])] for w in windows])
+    return _data({"computer": host.name, "windows": windows, "count": len(windows)}, [table])
 
 
 def get_clipboard(**kwargs) -> Dict[str, Any]:
@@ -431,7 +498,7 @@ def _pointer(verb: str, kwargs: Dict[str, Any], extra: Optional[Dict[str, Any]] 
     except ValueError as exc:
         return _fail("out_of_range", str(exc))
     args = {"x": x, "y": y, **(extra or {})}
-    result, err = _run(host, ctx, verb, args, _loop(kwargs))
+    result, err = _input(host, ctx, verb, args, kwargs)
     if err:
         return err
     return _data({"computer": host.name, **args, **({k: v for k, v in result.items() if k in ("x", "y")})})
@@ -469,7 +536,7 @@ def drag(**kwargs) -> Dict[str, Any]:
         x2, y2 = _xy(kwargs, "x2", "y2")
     except ValueError as exc:
         return _fail("out_of_range", str(exc))
-    result, err = _run(host, ctx, "drag", {"x1": x1, "y1": y1, "x2": x2, "y2": y2}, _loop(kwargs))
+    result, err = _input(host, ctx, "drag", {"x1": x1, "y1": y1, "x2": x2, "y2": y2}, kwargs)
     if err:
         return err
     return _data({"computer": host.name, "x1": x1, "y1": y1, "x2": x2, "y2": y2})
@@ -493,7 +560,7 @@ def type_text(**kwargs) -> Dict[str, Any]:
         return _fail("out_of_range", "text must be a non-empty string")
     if len(text) > MAX_TEXT_CHARS:
         return _fail("out_of_range", f"text is limited to {MAX_TEXT_CHARS} characters per call")
-    result, err = _run(host, ctx, "type_text", {"text": text, "terminal_ok": ctx.terminal_ok}, _loop(kwargs))
+    result, err = _input(host, ctx, "type_text", {"text": text, "terminal_ok": ctx.terminal_ok}, kwargs)
     if err:
         return err
     return _data({"computer": host.name, "chars": len(text)})
@@ -506,7 +573,7 @@ def press_keys(**kwargs) -> Dict[str, Any]:
     keys = str(kwargs.get("keys") or "").strip().lower()
     if not keys or _KEY_CHORD.fullmatch(keys) is None:
         return _fail("out_of_range", "keys must be a chord like 'ctrl+s', 'enter' or 'alt+f4'")
-    result, err = _run(host, ctx, "press_keys", {"keys": keys, "terminal_ok": ctx.terminal_ok}, _loop(kwargs))
+    result, err = _input(host, ctx, "press_keys", {"keys": keys, "terminal_ok": ctx.terminal_ok}, kwargs)
     if err:
         return err
     return _data({"computer": host.name, "keys": keys})
@@ -538,12 +605,20 @@ def open_app(**kwargs) -> Dict[str, Any]:
     _u, _c, host, ctx = _ctx(kwargs)
     if not hasattr(ctx, "session_id"):
         return ctx
-    app = str(kwargs.get("app") or "").strip()
-    if (not app or len(app) > 1024 or "\x00" in app
-            or (_APP_NAME.fullmatch(app) is None and _APP_PATH.fullmatch(app) is None)):
+    app = str(kwargs.get("app") or "")
+    args_list = kwargs.get("args") if "args" in kwargs else []
+    if getattr(host, "platform", None) == "macos":
+        try:
+            app = mac_application(app, args_list)
+        except ValueError as exc:
+            return _fail("out_of_range", str(exc))
+    else:
+        app = app.strip()
+    if (getattr(host, "platform", None) != "macos" and (not app or len(app) > 1024 or "\x00" in app
+            or (_APP_NAME.fullmatch(app) is None and _APP_PATH.fullmatch(app) is None))):
         return _fail("out_of_range", "app must be a bare application name (e.g. notepad, excel) "
                                      "or the full path of an .exe/.lnk")
-    args_list = kwargs.get("args") or []
+    args_list = args_list or []
     if not isinstance(args_list, list) or any(not isinstance(a, str) or len(a) > 512 for a in args_list) \
             or len(args_list) > 16:
         return _fail("out_of_range", "args must be a short list of strings")
@@ -606,6 +681,12 @@ _COMPUTER = {"computer": {"type": "string",
 
 def _entry(fn, description: str, properties: Dict[str, Any], required: Optional[List[str]] = None):
     name = fn.__name__
+    if name in {"type_text", "press_keys", "click", "double_click", "right_click", "move", "drag", "scroll"}:
+        properties = {**properties, "hwnd": {"type": "integer", "minimum": 1, "maximum": 2**53,
+            "description": "Optional Mac window handle from list_windows. Focusing this exact window is part of the reviewed input."}}
+    if name in {"type_text", "press_keys"}:
+        properties = {**properties, "terminal_app": {"type": "string",
+            "description": "Mac terminal bundle/name from list_windows, with hwnd. Requests fresh exact terminal-input consent for this text or key action only."}}
     entry = {
         "function": fn,
         "description": description,
@@ -643,8 +724,9 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "Ask the user to approve a consequential step you are about to take in the UI — buying, paying, "
         "sending a message or email, signing in, deleting, running a command in a terminal, or anything "
         "hard to undo. Call it BEFORE the step (the task resumes automatically after they tap Approve); "
-        "an approval also unlocks typing into a terminal for a few minutes.",
-        {"summary": {"type": "string", "description": "One sentence: what you are about to do and why."}},
+        "Only an explicit terminal_app request can enable terminal input; every text and key action still needs exact review.",
+        {"summary": {"type": "string", "description": "One sentence: what you are about to do and why."},
+         "terminal_app": {"type": "string", "description": "Optional recognized terminal name or bundle identifier for terminal-specific consent."}},
         ["summary"]),
     "screenshot": _entry(
         screenshot,
