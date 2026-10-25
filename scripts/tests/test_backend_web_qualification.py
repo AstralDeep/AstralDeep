@@ -19,6 +19,12 @@ SPEC = importlib.util.spec_from_file_location("backend_web_qualification", SCRIP
 assert SPEC and SPEC.loader
 driver = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(driver)
+PRODUCTION_IMAGE = "ghcr.io/astraldeep/astraldeep:sha-ca822e68d5477fb60fa9076107a4dab4138eeda6@sha256:802244a5eb1a715dff4fa587a0e7d447b9eb425f1b674fc48cf0e685ced18aa2"
+PRODUCTION_CONFIG = "sha256:c3c72f5685d7d880fc5c84a024a47d43a5760f890fd9bc7ce906b4539dba1d41"
+PRODUCTION_COMMIT = "ca822e68d5477fb60fa9076107a4dab4138eeda6"
+PRODUCTION_PLANE = "5ecce4cc2bd97ea26e348f2f7c8809985b9713bf"
+PRODUCTION_MIGRATION = "08b7d824a62284351d1ce178708bb185d7c81f77c96ab14e890f7e5675a008fc"
+PRODUCTION_COMPOSITION = "9ac9e3d362af7800401f499014e75662d24b3303f72cf1696abcfd070bfbd59e"
 
 
 @pytest.fixture
@@ -169,7 +175,7 @@ def test_deployment_binds_baseline_and_isolated_durable_roots(args, monkeypatch)
     assert report["status"] == "started-acceptance-required"
     assert report["release_authorized"] is False
     assert report["scope"] == "backend-web"
-    assert report["baseline"]["target_revision"] == "088.003"
+    assert report["synthetic_predecessor_migration"]["target_revision"] == "088.003"
     assert report == json.loads(args.output.read_text())
     app = next(c for c in calls if "create" in c and f"ad-bwq-{args.qualification_id}-app" in c)
     assert f"127.0.0.1:{args.port}:8001" in app
@@ -221,13 +227,14 @@ def test_material_binding_and_paths(args):
         driver.validate_material(args.material_root, args.qualification_id)
 
 
-@pytest.mark.parametrize("fault", [None, "ownership", "tamper", "state", "exit"])
+@pytest.mark.parametrize("fault", [None, "ownership", "tamper", "state", "exit", "blob", "schema", "append", "discard", "checkpoint"])
 def test_exact_baseline_state_and_paired_recovery_never_rewind_lets(args, monkeypatch, fault):
-    args.baseline_deep_image = driver.BASELINE_IMAGE
+    args.baseline_deep_image = PRODUCTION_IMAGE
     evidence = args.output.parent / "state"
     calls = []
     prefix = "ad-bwq-" + args.qualification_id
-    checkpoint = {"owner": "synthetic-recovery-owner"}
+    checkpoint = {"owner": "synthetic-recovery-owner", "audit_event_ids": ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"]}
+    candidate_event = "00000000-0000-4000-8000-000000000003"
     def command(command, *, check=True):
         calls.append(command)
         stdout = ""
@@ -235,9 +242,22 @@ def test_exact_baseline_state_and_paired_recovery_never_rewind_lets(args, monkey
             phase = command[-1].removeprefix(prefix + "-")
             report = {"checkpoint": checkpoint, "synthetic_only": True, "release_authorized": False,
                       "credential_decryption": "pass", "conversation_retention": "pass",
-                      "owner_denials": "pass", "authenticated_audit_continuity": "pass", "appended_event_id": phase}
+                      "owner_denials": "pass", "authenticated_audit_continuity": "pass", "blob_retention": "pass",
+                      "schema": {"revision": "089.004", "migration_sha256": PRODUCTION_MIGRATION},
+                      "appended_event_id": candidate_event if phase == "candidate-state" else "00000000-0000-4000-8000-000000000004",
+                      "pre_append_audit_event_ids": list(checkpoint["audit_event_ids"])}
             if fault == "state":
                 report["credential_decryption"] = "failed"
+            if fault == "blob":
+                report["blob_retention"] = "failed"
+            if fault == "schema":
+                report["schema"]["revision"] = "088.003"
+            if fault == "append" and phase == "candidate-state":
+                report["appended_event_id"] = checkpoint["audit_event_ids"][0]
+            if fault == "discard" and phase == "recovered-state":
+                report["pre_append_audit_event_ids"].append(candidate_event)
+            if fault == "checkpoint" and phase == "recovered-state":
+                report["checkpoint"] = {"owner": "changed-owner"}
             (evidence / f"{phase}.json").write_text(json.dumps(report))
             if phase == "candidate-state" and fault == "tamper":
                 (evidence / "baseline.dump").write_bytes(b"changed")
@@ -252,11 +272,13 @@ def test_exact_baseline_state_and_paired_recovery_never_rewind_lets(args, monkey
         return subprocess.CompletedProcess(command, 0, stdout, "")
     monkeypatch.setattr(driver, "run", command)
     kwargs = dict(prefix=prefix, network=prefix + "-network", app_env=args.runtime_env, pg_env=args.runtime_env,
-                  material=args.material_root, evidence=evidence, database="astralplane_qualification_" + args.qualification_id)
+                  material=args.material_root, evidence=evidence, database="astralplane_qualification_" + args.qualification_id,
+                  baseline_profile=driver.load_recovery_baseline())
     if fault:
         with pytest.raises(driver.QualificationError):
             driver._state_rehearsal(args, **kwargs)
-        assert not any("pg_restore" in call for call in calls)
+        if fault not in {"discard", "checkpoint"}:
+            assert not any("pg_restore" in call for call in calls)
         return
     report, roots = driver._state_rehearsal(args, **kwargs)
     assert report["status"] == "synthetic-state-and-paired-recovery-passed"
@@ -269,6 +291,9 @@ def test_exact_baseline_state_and_paired_recovery_never_rewind_lets(args, monkey
     fresh = next(call for call in calls if "-d" in call and "--name" in call and prefix + "-recovered-pg" in call)
     assert "--network-alias" in fresh and prefix + "-pg" in fresh
     assert report["restore_target"] == "new-empty-postgres-cluster"
+    assert report["candidate_schema_changed"] is False
+    recovered = next(call for call in calls if "create" in call and prefix + "-recovered-state" in call)
+    assert recovered[recovered.index("--forbid-audit-event") + 1] == candidate_event
     baseline = next(call for call in calls if "create" in call and prefix + "-baseline-state" in call)
     assert not any("dst=/app/backend/agents" in part for part in baseline)
     assert report["legacy_mutable_generated_agent_directories_rehearsed"] is False
@@ -340,22 +365,83 @@ def test_application_connection_failure_is_bounded(monkeypatch):
         driver.wait_application(18091, attempts=1)
 
 
-def test_baseline_image_is_exact_and_recovered_roots_feed_final_application(args, monkeypatch):
+def production_docker(args, monkeypatch, failure=None):
     calls = fake_docker(args, monkeypatch)
     original = driver.run
-    args.baseline_deep_image = driver.BASELINE_IMAGE
+    args.baseline_deep_image = PRODUCTION_IMAGE
     def command(command, **kwargs):
-        if command[:3] == ["docker", "image", "inspect"] and command[-1] == driver.BASELINE_IMAGE:
+        if command[:3] == ["docker", "image", "inspect"] and command[-1] == PRODUCTION_IMAGE:
             calls.append(command)
-            return subprocess.CompletedProcess(command, 0, json.dumps([{"Id": driver.BASELINE_IMAGE}]), "")
-        if "-c" in command and driver.BASELINE_IMAGE in command:
+            image = {"Id": PRODUCTION_CONFIG,
+                "Os": "linux", "Architecture": "amd64", "Config": {"Labels": {"org.opencontainers.image.revision": PRODUCTION_COMMIT,
+                    "org.opencontainers.image.source": "https://github.com/AstralDeep/AstralDeep"}},
+                "RepoDigests": ["ghcr.io/astraldeep/astraldeep@" + PRODUCTION_IMAGE.split("@", 1)[1]]}
+            if failure in {"Id", "Os", "Architecture", "RepoDigests"}:
+                image[failure] = [] if failure == "RepoDigests" else "changed"
+            if failure in {"revision", "source"}:
+                image["Config"]["Labels"]["org.opencontainers.image." + failure] = "changed"
+            return subprocess.CompletedProcess(command, 0, json.dumps([image]), "")
+        if "-c" in command and PRODUCTION_IMAGE in command:
             calls.append(command)
-            return subprocess.CompletedProcess(command, 0, driver.BASELINE_PLANE, "")
+            manifest = {"manifest_sha256": PRODUCTION_COMPOSITION,
+                "composition": {"components": {"astral-plane": {"commit": PRODUCTION_PLANE}},
+                    "compatibility": {"data_plane": {"schema_revision": "089.004", "migration_sha256": PRODUCTION_MIGRATION}}}}
+            if failure == "composition":
+                manifest["manifest_sha256"] = "f" * 64
+            if failure == "plane":
+                manifest["composition"]["components"]["astral-plane"]["commit"] = "f" * 40
+            if failure in {"schema_revision", "migration_sha256"}:
+                manifest["composition"]["compatibility"]["data_plane"][failure] = "changed"
+            return subprocess.CompletedProcess(command, 0, json.dumps(manifest), "")
+        if PRODUCTION_IMAGE in command and "/app/scripts/install_local_components.py" in command and failure == "components":
+            raise driver.QualificationError("baseline installed component verification failed")
         return original(command, **kwargs)
     monkeypatch.setattr(driver, "run", command)
+    return calls
+
+
+@pytest.mark.parametrize("failure", ["Id", "Os", "Architecture", "RepoDigests", "revision", "source", "composition", "plane", "schema_revision", "migration_sha256", "components", "substitution"])
+def test_production_baseline_refuses_every_identity_mismatch_before_app_resources(args, monkeypatch, failure):
+    calls = production_docker(args, monkeypatch, failure)
+    if failure == "substitution":
+        args.baseline_deep_image = "sha256:" + "f" * 64
+    with pytest.raises(driver.QualificationError):
+        driver.deploy(args)
+    assert not any(call[:3] in (["docker", "network", "create"], ["docker", "volume", "create"])
+                   or call[:2] == ["docker", "create"] for call in calls)
+    assert not args.output.exists()
+
+
+def test_baseline_image_is_exact_and_recovered_roots_feed_final_application(args, monkeypatch):
+    calls = production_docker(args, monkeypatch)
     monkeypatch.setattr(driver, "_state_rehearsal", lambda *a, **kw: ({"status": "verified", "application_network": "new-private-recovery-network"}, {"data": "new-recovered-data"}))
     report = driver.deploy(args)
     assert report["state_rehearsal"]["status"] == "verified"
+    assert report["production_baseline"]["deep_commit"] == PRODUCTION_COMMIT
+    assert report["production_baseline"]["image_ref"] == PRODUCTION_IMAGE
+    assert report["synthetic_predecessor"]["plane_commit"] == "4a07d59a448c1960ce2ae3f35e605f4d78c4a3f9"
+    assert report["synthetic_predecessor"]["schema_revision"] == "088.003"
     app = next(call for call in calls if "create" in call and "ad-bwq-" + args.qualification_id + "-app" in call)
     assert "type=volume,src=new-recovered-data,dst=/app/backend/data" in app
     assert "new-private-recovery-network" in app
+
+
+@pytest.mark.parametrize("field,value", [("schema_version", 2), ("deep_commit", "bad"), ("plane_commit", "bad"),
+    ("image_config", "latest"), ("composition_sha256", "bad"), ("migration_sha256", "bad"),
+    ("platform", "linux/arm64"), ("schema_revision", "bad"), ("image_ref", "sha256:" + "f" * 64),
+    ("deep_commit", None), ("unexpected", "extra")])
+def test_recovery_profile_is_closed_and_loaded_only_from_policy_root(tmp_path, monkeypatch, field, value):
+    profile = driver.load_recovery_baseline()
+    assert profile["image_ref"] == PRODUCTION_IMAGE and profile["image_config"] == PRODUCTION_CONFIG
+    policy = tmp_path / "policy"
+    (policy / "config").mkdir(parents=True)
+    candidate = tmp_path / "candidate"
+    (candidate / "config").mkdir(parents=True)
+    (candidate / "config/backend-web-recovery-baseline.json").write_text('{"image_ref":"forged"}')
+    path = policy / "config/backend-web-recovery-baseline.json"
+    path.write_text(json.dumps(profile))
+    monkeypatch.setattr(driver, "POLICY_ROOT", policy)
+    assert driver.load_recovery_baseline() == profile
+    path.write_text(json.dumps(profile | {field: value}))
+    with pytest.raises(driver.QualificationError, match="trusted recovery"):
+        driver.load_recovery_baseline()
