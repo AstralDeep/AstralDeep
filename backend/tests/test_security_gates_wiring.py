@@ -24,6 +24,10 @@ def orch(orchestrator_factory):
     o.audit_recorder.record = AsyncMock()
     o.send_ui_render = AsyncMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    o.tool_permissions.get_tool_scope_map = MagicMock(return_value={
+        "delete_records": "tools:write", "search_web": "tools:read",
+        "send_email": "tools:write", "delete_account": "tools:write",
+        "get_weather": "tools:read"})
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     return o
@@ -54,14 +58,20 @@ def _err(resp):
 
 
 @pytest.mark.asyncio
-async def test_supervisor_blocks_unrequested_destructive(orch):
+async def test_supervisor_blocks_unrequested_destructive(orch, monkeypatch):
+    from orchestrator import hitl_confirmation
+
+    monkeypatch.setattr(hitl_confirmation, "evaluate", AsyncMock(return_value=None))
     resp = await _dispatch(orch, "delete_records", request="show me my dashboard",
                            flags={"FF_RUNTIME_SUPERVISOR": True})
     assert "didn't ask for" in _err(resp)
 
 
 @pytest.mark.asyncio
-async def test_supervisor_allows_when_intent_present(orch):
+async def test_supervisor_allows_when_intent_present(orch, monkeypatch):
+    from orchestrator import hitl_confirmation
+
+    monkeypatch.setattr(hitl_confirmation, "evaluate", AsyncMock(return_value=None))
     resp = await _dispatch(orch, "delete_records",
                            request="please delete my old records",
                            flags={"FF_RUNTIME_SUPERVISOR": True})
@@ -78,7 +88,10 @@ async def test_supervisor_allows_non_destructive(orch):
 
 
 @pytest.mark.asyncio
-async def test_supervisor_off_is_noop(orch):
+async def test_supervisor_off_is_noop(orch, monkeypatch):
+    from orchestrator import hitl_confirmation
+
+    monkeypatch.setattr(hitl_confirmation, "evaluate", AsyncMock(return_value=None))
     resp = await _dispatch(orch, "delete_records", request="show me my dashboard",
                            flags={"FF_RUNTIME_SUPERVISOR": False})
     assert "didn't ask for" not in _err(resp)
@@ -108,7 +121,10 @@ async def test_hitl_allows_benign(orch):
 
 
 @pytest.mark.asyncio
-async def test_hitl_off_is_noop(orch):
+async def test_hitl_off_is_noop(orch, monkeypatch):
+    from orchestrator import hitl_confirmation
+
+    monkeypatch.setattr(hitl_confirmation, "evaluate", AsyncMock(return_value=None))
     resp = await _dispatch(orch, "send_email", request="email bob",
                            flags={"FF_HITL_HIGHRISK": False})
     assert "No agent available" in _err(resp)

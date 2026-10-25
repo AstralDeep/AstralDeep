@@ -54,7 +54,11 @@ async def test_shared_gate_refuses_destructive_mcp_before_transport_20_of_20():
         invocation: {"sub": "u1", "_invocation_channel": "mcp"}
     }
     orchestrator.security_flags = {}
-    orchestrator.tool_permissions = SimpleNamespace(is_tool_allowed=lambda *args: True)
+    orchestrator.tool_permissions = SimpleNamespace(
+        is_tool_allowed=lambda *args: True,
+        get_tool_scope_map=lambda *args: {tool: "tools:write"
+                                          for tool in ("remove_path", "cancel_job", "signal_process",
+                                                       "control_service", "manage_package")})
     transport = AsyncMock()
     orchestrator._execute_with_retry = transport
 

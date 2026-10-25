@@ -50,6 +50,8 @@ def _build_orch() -> Orchestrator:
 
     orch.tool_permissions = MagicMock()
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    orch.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value={"roll_dice": "tools:read"})
     orch.credential_manager = MagicMock()
     orch.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value={})
     orch._llm_store = MagicMock()
@@ -117,6 +119,8 @@ async def test_single_tool_dispatch_reaches_in_process_agent(monkeypatch) -> Non
 async def test_unknown_tool_still_gets_no_agent_alert(monkeypatch) -> None:
     _pin_gates_off(monkeypatch)
     orch = _build_orch()
+    orch.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value={"phantom_tool": "tools:read"})
     orch._find_tool_owner = MagicMock(return_value=None)
     result = await orch.execute_single_tool(
         websocket=MagicMock(),

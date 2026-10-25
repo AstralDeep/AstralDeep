@@ -44,6 +44,10 @@ def test_noninteractive_claims_cannot_approve_terminal_execution(channel):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enabled,expected", [(False, "terminal_disabled"), (True, "terminal_isolation_unavailable")])
 async def test_real_dispatch_refuses_execution_before_approval_or_transport(orch, monkeypatch, enabled, expected):
+    from agents.terminal_shell.mcp_tools import TOOL_REGISTRY as _TERMINAL_TOOLS
+
+    orch.tool_permissions.register_tool_scopes(
+        "terminal-shell-1", {name: info["scope"] for name, info in _TERMINAL_TOOLS.items()})
     monkeypatch.setitem(flags._flags, "terminal_shell", enabled)
     monkeypatch.setenv("FF_TERMINAL_SHELL", "true" if enabled else "false")
     socket = MagicMock()
@@ -105,8 +109,12 @@ async def test_gate_binds_fresh_host_authority_after_normal_permission_checks(or
                                        ("target", "terminal_target_unavailable")])
 async def test_real_gate_types_terminal_loss_between_permission_and_confirmation(orch, isolated, loss, code):
     from dataclasses import replace
+
+    from agents.terminal_shell.mcp_tools import TOOL_REGISTRY as _TERMINAL_TOOLS
     from orchestrator.terminal_sessions import TerminalSessionManager
 
+    orch.tool_permissions.register_tool_scopes(
+        "terminal-shell-1", {name: info["scope"] for name, info in _TERMINAL_TOOLS.items()})
     socket = object()
     orch.ui_sessions[socket] = {"sub": "owner", "exp": time.time() + 600,
                                 "realm_access": {"roles": ["user"]}}

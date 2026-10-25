@@ -36,6 +36,8 @@ def orch(orchestrator_factory, monkeypatch):
     instance.audit_recorder.record = AsyncMock()
     instance.send_ui_render = AsyncMock()
     instance.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    instance.tool_permissions.register_tool_scopes(
+        "cresco-1", {name: info["scope"] for name, info in mcp_tools.TOOL_REGISTRY.items()})
     instance._map_file_paths = lambda cid, a, **k: a
     return instance
 

@@ -217,7 +217,9 @@ async def test_final_governed_attempt_rechecks_stop_after_authorization(monkeypa
     websocket = object()
     orch = SimpleNamespace(emergency_stop=stop, _governed_dispatch_adapter=lambda: adapter,
                            ui_sessions={websocket: {"sub": "owner"}},
-                           tool_permissions=SimpleNamespace(get_tool_scope=lambda *args: "tools:read"))
+                           tool_permissions=SimpleNamespace(
+                               get_tool_scope=lambda *args: "tools:read",
+                               get_tool_scope_map=lambda *args: {"tool": "tools:read"}))
     monkeypatch.setattr(hitl_confirmation, "effect_refusal", lambda *args, **kwargs: None)
     result = await Orchestrator._execute_governed_attempt(orch, websocket, "agent", "tool", {},
         user_id="owner", channel="ui", audit_correlation_id=None, actor_user_id="owner",
@@ -285,6 +287,9 @@ async def test_stream_physical_open_rechecks_owner_stop_after_authorization(monk
         return await kwargs["invoke"]({})
 
     orch._governed_dispatch_adapter = lambda: SimpleNamespace(execute=execute)
+    orch.tool_permissions = SimpleNamespace(
+        get_tool_scope=lambda *args: "tools:read",
+        get_tool_scope_map=lambda *args: {"tool": "tools:read"})
     monkeypatch.setattr(hooks, "ToolDispatchAudit", audit)
     if stop_after_authorization:
         with pytest.raises(EmergencyStopRefused):

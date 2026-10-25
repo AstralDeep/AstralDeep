@@ -40,6 +40,9 @@ class _Permissions:
         assert (user_id, agent_id) == (USER_ID, AGENT_ID)
         return ["tools:read"] if self.allowed else []
 
+    def get_tool_scope_map(self, agent_id: str) -> dict[str, str]:
+        return {TOOL_ID: "tools:read", "send_email": "tools:write", "blocked_tool": "tools:read"}
+
 
 class _Delegation:
     def __init__(self) -> None:
@@ -218,6 +221,12 @@ async def test_tool_denial_and_egress_confirmation_have_identical_verdicts(
 
     monkeypatch.setenv("FF_RUNTIME_SUPERVISOR", "false")
     monkeypatch.setenv("FF_HITL_HIGHRISK", "true")
+    from types import SimpleNamespace as _NS
+
+    from personalization import phi_gate
+
+    monkeypatch.setattr(phi_gate, "get_phi_gate",
+                        lambda: _NS(contains_phi=lambda _text: False))
     chat_id = "voice-parity-chat" if chat_bound else None
     runtime._ws_active_chat = {id(socket): chat_id for socket in (typed, voice)}
     runtime._map_file_paths = lambda chat, args, **kwargs: args
@@ -246,7 +255,11 @@ async def test_tool_denial_and_egress_confirmation_have_identical_verdicts(
         pending = next(iter(runtime._hitl_pending_calls.values()))
         assert (pending.owner, pending.chat, pending.agent, pending.tool) == (
             USER_ID, chat_id, AGENT_ID, "send_email")
-        assert pending.risks == ("egress",)
+        from orchestrator import source_bound
+
+        assert pending.risks == tuple(sorted((*source_bound.review_risks(
+            source_bound.declaration({"send_email": "tools:write"}, AGENT_ID, "send_email")),
+            "origin:unknown")))
     else:
         assert confirmed[0].response.error == {
             "message": "Confirmation requires an interactive signed-in conversation. "

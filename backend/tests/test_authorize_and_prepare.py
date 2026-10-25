@@ -44,6 +44,9 @@ def orch():
     o.send_ui_render = AsyncMock()
     o.tool_permissions = MagicMock()
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    o.tool_permissions.get_tool_scope_map = MagicMock(return_value={
+        "t1": "tools:read", "send_email": "tools:write", "delete_records": "tools:write",
+        "cancel_job": "tools:write", "make_directory": "tools:write"})
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager = MagicMock()
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(
@@ -202,7 +205,10 @@ async def test_taint_deny_refuses(orch, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_supervisor_blocks_unrequested_destructive(orch, monkeypatch):
+    from orchestrator import hitl_confirmation
+
     monkeypatch.setenv("FF_RUNTIME_SUPERVISOR", "true")
+    monkeypatch.setattr(hitl_confirmation, "evaluate", AsyncMock(return_value=None))
     orch._active_request = {"c1": "show me my dashboard"}
     out = await _auth(orch, tool="delete_records")
     assert "didn't ask for" in _msg(out)
@@ -325,9 +331,11 @@ async def test_remote_control_confirmation_refusal_becomes_gate_refusal(orch, mo
 
 @pytest.mark.asyncio
 async def test_remote_control_confirmation_none_proceeds(orch, monkeypatch):
-    from orchestrator import remote_confirmation
+    from orchestrator import hitl_confirmation, remote_confirmation
+
     ev = MagicMock(return_value=None)
     monkeypatch.setattr(remote_confirmation, "evaluate", ev)
+    monkeypatch.setattr(hitl_confirmation, "evaluate", AsyncMock(return_value=None))
     orch.local_agents["remote-compute-1"] = MagicMock()
     out = await _auth(orch, tool="make_directory", agent="remote-compute-1", args={"path": "/x"})
     assert isinstance(out, PreparedDispatch)
