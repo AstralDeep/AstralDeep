@@ -6,6 +6,8 @@ encrypted-at-rest tokens, and audited transitions including denials.
 from __future__ import annotations
 
 import uuid
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from cryptography.fernet import Fernet
@@ -200,6 +202,44 @@ def test_revoked_slot_frees_capacity(store, owner):
     assert record["status"] == "active"
 
 
+def test_reactivation_cannot_exceed_active_destination_capacity(store, owner):
+    _enroll(store, owner, device="device-reactivate")
+    store.revoke(owner, "device-reactivate")
+    for index in range(pd.MAX_DESTINATIONS_PER_OWNER):
+        _enroll(store, owner, device=f"device-active-{index:04d}")
+    with pytest.raises(pd.DestinationCapacity):
+        _enroll(store, owner, device="device-reactivate")
+    assert store.get_destination(owner, "device-reactivate")["status"] == "revoked"
+
+
+def test_concurrent_enrollment_cannot_exceed_active_destination_capacity(store, owner, monkeypatch):
+    for index in range(pd.MAX_DESTINATIONS_PER_OWNER - 1):
+        _enroll(store, owner, device=f"device-inventory-{index:04d}")
+    original_list = store._list_records
+    barrier = threading.Barrier(2)
+    observed = threading.local()
+
+    def same_inventory(transaction, owner_id):
+        records = original_list(transaction, owner_id)
+        if threading.current_thread().name.startswith("push-enroll") and not getattr(observed, "ready", False):
+            observed.ready = True
+            barrier.wait(timeout=10)
+        return records
+
+    def enroll_one(index):
+        try:
+            _enroll(store, owner, device=f"device-contender-{index:04d}")
+        except pd.PushDestinationError:
+            return False
+        return True
+
+    monkeypatch.setattr(store, "_list_records", same_inventory)
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="push-enroll") as executor:
+        results = list(executor.map(enroll_one, range(2)))
+    assert results.count(True) == 1
+    assert sum(item["status"] == "active" for item in store.list_destinations(owner)) == pd.MAX_DESTINATIONS_PER_OWNER
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
@@ -321,3 +361,22 @@ def test_destination_audit_unavailable_on_transition(
     with pytest.raises(pd.DestinationStoreUnavailable):
         store.revoke(owner, "device-aaaaaaaa")
     assert store.get_destination(owner, "device-aaaaaaaa")["status"] == "active"
+
+
+def test_stale_rotation_cannot_overwrite_concurrent_revocation(store, owner, monkeypatch):
+    _enroll(store, owner)
+    original_get = store._get_record
+    raced = False
+
+    def revoke_after_read(transaction, owner_id, device_id):
+        nonlocal raced
+        record = original_get(transaction, owner_id, device_id)
+        if not raced:
+            raced = True
+            store.revoke(owner_id, device_id)
+        return record
+
+    monkeypatch.setattr(store, "_get_record", revoke_after_read)
+    with pytest.raises(pd.PushDestinationError):
+        _enroll(store, owner, token="new-token")
+    assert store.get_destination(owner, "device-aaaaaaaa")["status"] == "revoked"

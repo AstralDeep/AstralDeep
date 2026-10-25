@@ -244,17 +244,22 @@ def request_http2(
         headers.update(extra_headers)
     try:
         with client:
-            resp = client.request(
+            with client.stream(
                 method.upper(),
                 url,
                 json=json_body,
                 headers=headers,
-            )
-        total = len(resp.content)
-        if total > max_response_bytes:
-            raise ResponseTooLargeError(
-                f"Response exceeded {max_response_bytes} bytes"
-            )
+            ) as resp:
+                chunks = []
+                total = 0
+                for chunk in resp.iter_bytes(chunk_size=min(64 * 1024, max_response_bytes + 1)):
+                    total += len(chunk)
+                    if total > max_response_bytes:
+                        raise ResponseTooLargeError(
+                            f"Response exceeded {max_response_bytes} bytes"
+                        )
+                    chunks.append(chunk)
+                resp._content = b"".join(chunks)
     except httpx.HTTPError as e:
         raise ServiceUnreachableError(f"Could not reach {url}: {e}") from e
 

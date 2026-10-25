@@ -193,6 +193,10 @@ def test_wrong_owner_sees_nothing(app, authed_client, other_owner):
 
 def test_acknowledgement_flow(authed_client, coordinator, store, owner):
     store.enroll(owner, device_id="device-ack-api-01", platform="android", token="tok-1")
+    asyncio.run(coordinator.enqueue_notification(owner, {
+        "type": "notification", "title": "Ready", "notification_id": "sched-20260101-a"
+    }))
+    asyncio.run(coordinator.dispatch_once())
     ok = authed_client.post(
         "/api/push/ack",
         json={
