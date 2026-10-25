@@ -69,6 +69,9 @@ async def evidence_turn(human, bound, fixture, tmp_path, monkeypatch):
     monkeypatch.setattr(phi_gate, "get_phi_gate", lambda: gate)
     async with admitted_turn(human, bound, fixture, operation=True) as turn:
         host, socket, chat, binding = turn
+        if not hasattr(host, "_source_ledger"):
+            host._source_ledger = lambda *args, **kwargs: SimpleNamespace(
+                record_tool_output=lambda *args, **kwargs: None)
         host.history = HistoryManager(str(tmp_path / "history"), plane_runtime=binding.origin.binding.runtime)
         await asyncio.to_thread(host.history.create_chat, chat, fixture[1])
         host.ui_sessions = {socket: {"sub": fixture[1], "_raw_token": binding.origin.token,

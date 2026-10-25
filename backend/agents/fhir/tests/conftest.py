@@ -25,6 +25,14 @@ TOPIC_BASE = "https://example.org/fhir/SubscriptionTopic"
 
 
 @pytest.fixture(autouse=True)
+def isolated_stream_flags(monkeypatch):
+    from shared.feature_flags import flags
+
+    monkeypatch.setitem(flags._flags, "tool_streaming", False)
+    monkeypatch.setitem(flags._flags, "stream_progress", False)
+
+
+@pytest.fixture(autouse=True)
 def isolated_audit_queue(monkeypatch, tmp_path):
     from audit import recorder
 

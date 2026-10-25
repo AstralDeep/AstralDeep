@@ -45,6 +45,8 @@ def fixture(runtime, monkeypatch, signing_key):
     monkeypatch.setattr(og, "OFFLINE_GRANT_ENC_KEY", key)
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("MOCK_AUTH", "false")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://app.invalid")
+    monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://app.invalid")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", ISSUER)
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-web")
     monkeypatch.setenv("KEYCLOAK_CLIENT_SECRET", "synthetic-confidential-secret")

@@ -28,6 +28,9 @@ class FeatureFlags:
             "memory_chat": self._read("FF_MEMORY_CHAT", True),
             "desktop_codegen": self._read("FF_DESKTOP_CODEGEN", True),
             "attachment_autoparse": self._read("FF_ATTACHMENT_AUTOPARSE", True),
+            "structured_document_parser": self._read(
+                "FF_STRUCTURED_DOCUMENT_PARSER", False
+            ),
             "context_engineering": self._read("FF_CONTEXT_ENGINEERING", False),
             "datamarking": self._read("FF_DATAMARKING", True),
             "inprocess_agents": self._read("FF_INPROCESS_AGENTS", True),
