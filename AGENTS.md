@@ -68,6 +68,7 @@ The pinned `components/AstralPrimitives` repository owns primitive definitions a
 
 ## UI and astralprims contract
 
+- Evaluate UX, developer experience, and agent experience together. Prefer clear layout and direct actions over taglines, helper prose, and secondary labels; preserve essential state, errors, permission and approval details, accessible names, and stable automation identifiers.
 - Construct primitive payloads with `.to_dict()` or `create_ui_response()`. Primitive `.to_json()` returns a JSON string and is not the component-dict contract. Any validator/help text recommending `.to_json()` is stale behavior, not authority.
 - Use `css`, not `style`. Escape and sanitize web output through the existing renderer helpers; never pass model/user text as raw HTML.
 - `Primitive.attributes` flattens last and can overwrite declared fields, including `type`; use it only with trusted, deliberate keys.
