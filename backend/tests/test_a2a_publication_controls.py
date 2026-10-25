@@ -1,8 +1,4 @@
-"""Tests for shared selective A2A publication controls (shared/a2a_publication.py,
-a2a_publication_api.py, the admin_tools a2a tab, and the card advertisement gating in
-a2a_orchestrator_executor.py): publish intent/confirm/withdraw flows, expiry, denials,
-sanitized inventory, audit events, and advertisement semantics.
-"""
+"""Tests selective A2A publication controls through durable Plane wiring, owner authorization, audit, and advertisement. Registry and chrome surface cases also cover expiry, denials, and sanitized inventory."""
 
 from __future__ import annotations
 
@@ -27,6 +23,7 @@ from shared.a2a_publication import (  # noqa: E402
     InvalidAudienceError,
     InvalidLifetimeError,
     NotEligibleError,
+    PublicationStoreUnavailable,
     StaleIntentError,
     UnknownCapabilityError,
     UnknownPublicationError,
@@ -96,7 +93,8 @@ def _jwt(claims: dict) -> str:
 
 
 def _admin_headers() -> dict:
-    return {"Authorization": "Bearer dev-token"}
+    claims = {"sub": ADMIN, "realm_access": {"roles": ["admin"]}}
+    return {"Authorization": f"Bearer {_jwt(claims)}"}
 
 
 def _user_headers(admin: bool = False) -> dict:
@@ -138,6 +136,7 @@ def _orchestrator():
     orch.local_agents = {
         "weather-1": object(), "web-research-1": object(), "draft-secret-9": object(),
     }
+    orch.a2a_agent_owners = {}
     orch.security_flags = {}
     orch._is_draft_agent = lambda agent_id: False
 
@@ -145,14 +144,45 @@ def _orchestrator():
         def __init__(self):
             self._safe = {"weather-1"}
 
+        def list_disabled_agents(self, user_id):
+            return ()
+
+        def is_tool_allowed(self, user_id, agent_id, tool_name):
+            return (agent_id, tool_name) in {
+                ("weather-1", "get_weather"), ("web-research-1", "web_search"),
+            }
+
         def _is_safe_agent(self, agent_id):
             return agent_id in self._safe
 
     orch.tool_permissions = _Permissions()
-    orch.execute_authorized_tool = AsyncMock(
-        return_value=SimpleNamespace(result={"temp": 21}, error=None, ui_components=None)
-    )
+    from shared.protocol import MCPResponse
+
+    orch.execute_authorized_tool = AsyncMock(return_value=MCPResponse(result={"temp": 21}))
     return orch
+
+
+@pytest.fixture
+def publication_host(monkeypatch):
+    from audit.repository import AuditRepository
+    from orchestrator.a2a_publication_wiring import attach_publication_registry
+    from tests.helpers.voice_plane_runtime import isolated_plane_runtime
+
+    monkeypatch.setenv("AUDIT_HMAC_SECRET", "publication-controls-key-with-32-characters")
+    monkeypatch.setenv("AUDIT_HMAC_KEY_ID", "publication_controls")
+    with isolated_plane_runtime("ad_test_publication_controls") as runtime:
+        def build():
+            orch = _orchestrator()
+            orch.plane_repository_source = runtime
+            orch.audit_repo = AuditRepository(
+                plane_runtime=runtime, plane_repositories=runtime.repositories,
+            )
+            registry = attach_publication_registry(orch)
+            registry.clock = _Clock()
+            registry._time_fn = registry.clock
+            return orch
+
+        yield build
 
 
 # --- registry contract -------------------------------------------------------
@@ -378,13 +408,13 @@ def test_card_without_registry_keeps_safe_catalog_behavior():
     assert "draft-secret-9" not in ids
 
 
-def test_card_with_empty_registry_advertises_only_chat():
+def test_card_with_empty_registry_advertises_only_chat(publication_host):
     from orchestrator.a2a_orchestrator_executor import (
         attach_publication_registry,
         build_orchestrator_a2a_card,
     )
 
-    orch = _orchestrator()
+    orch = publication_host()
     attach_publication_registry(orch)
     card = build_orchestrator_a2a_card(orch)
     ids = {skill.id for skill in card.skills}
@@ -392,14 +422,14 @@ def test_card_with_empty_registry_advertises_only_chat():
     assert card.security_requirements in (None, [])
 
 
-def test_card_advertises_published_capability_with_chosen_audience(monkeypatch):
+def test_card_advertises_published_capability_with_chosen_audience(monkeypatch, publication_host):
     from orchestrator.a2a_orchestrator_executor import (
         attach_publication_registry,
         build_orchestrator_a2a_card,
     )
 
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://iam.example/realms/astral")
-    orch = _orchestrator()
+    orch = publication_host()
     registry = attach_publication_registry(orch)
     _publish(registry, audiences=["tools:read"])
     card = build_orchestrator_a2a_card(orch)
@@ -413,13 +443,13 @@ def test_card_advertises_published_capability_with_chosen_audience(monkeypatch):
     assert "tools:read" in requirements
 
 
-def test_card_drops_withdrawn_capability():
+def test_card_drops_withdrawn_capability(publication_host):
     from orchestrator.a2a_orchestrator_executor import (
         attach_publication_registry,
         build_orchestrator_a2a_card,
     )
 
-    orch = _orchestrator()
+    orch = publication_host()
     registry = attach_publication_registry(orch)
     record = _publish(registry)
     registry.withdraw(publication_id=record.publication_id, actor=ADMIN)
@@ -427,12 +457,11 @@ def test_card_drops_withdrawn_capability():
     assert ids == {"chat"}
 
 
-def test_card_drops_expired_publication():
+def test_card_drops_expired_publication(publication_host):
     from orchestrator.a2a_orchestrator_executor import build_orchestrator_a2a_card
 
-    orch = _orchestrator()
-    registry = _registry()
-    orch.a2a_publications = registry
+    orch = publication_host()
+    registry = orch.a2a_publications
     record = _publish(registry, lifetime="1h")
     registry.clock.advance(3_601)
     ids = {skill.id for skill in build_orchestrator_a2a_card(orch).skills}
@@ -440,13 +469,13 @@ def test_card_drops_expired_publication():
     assert registry.inventory()[0]["publication_id"] == record.publication_id
 
 
-def test_card_intersection_keeps_unsafe_agents_unadvertised():
+def test_card_intersection_keeps_unsafe_agents_unadvertised(publication_host):
     from orchestrator.a2a_orchestrator_executor import (
         attach_publication_registry,
         build_orchestrator_a2a_card,
     )
 
-    orch = _orchestrator()
+    orch = publication_host()
     registry = attach_publication_registry(orch)
     _publish(registry)
     orch.tool_permissions._safe.discard("weather-1")
@@ -484,34 +513,34 @@ def _tool_call(client, name="get_weather", headers=None, rpc_id="c1"):
     )
 
 
-def test_dispatch_is_not_publication_gated_for_authorized_callers(monkeypatch):
+def test_dispatch_requires_current_publication_after_withdrawal(monkeypatch, publication_host):
     monkeypatch.setenv("USE_MOCK_AUTH", "true")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://iam.example/realms/astral")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
-    orch = _orchestrator()
-    registry = orch.a2a_publications = _registry()
+    orch = publication_host()
+    registry = orch.a2a_publications
     record = _publish(registry)
     client = _executor_client(orch)
-    from orchestrator import mcp_projection
-
-    def _fake_resolve(o, user_id, tool_name, claims):
-        return SimpleNamespace(agent_id="web-research-1", skill_id="web_search")
-
-    monkeypatch.setattr(mcp_projection, "resolve_projected_tool", _fake_resolve)
-    response = _tool_call(client, name="web_search")
+    response = _tool_call(client)
     assert response.status_code == 200
+    result = response.json()["result"]
+    assert result.get("task", result)["status"]["state"] == "TASK_STATE_COMPLETED"
     orch.execute_authorized_tool.assert_awaited_once()
     registry.withdraw(publication_id=record.publication_id, actor=ADMIN)
-    response = _tool_call(client, name="web_search", rpc_id="c2")
+    response = _tool_call(client, rpc_id="c2")
     assert response.status_code == 200
-    assert orch.execute_authorized_tool.await_count == 2
+    result = response.json()["result"]
+    assert result.get("task", result)["status"]["state"] == "TASK_STATE_FAILED"
+    orch.execute_authorized_tool.assert_awaited_once()
+    rows, _ = orch.audit_repo.list_for_user("caller-sub")
+    assert any(row.action_type == "a2a_publication.invocation_denied" for row in rows)
 
 
 # --- real startup wiring -----------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_startup_mounts_a2a_and_publication_routes_when_server_enabled(monkeypatch):
+async def test_startup_mounts_a2a_and_publication_routes_when_server_enabled(monkeypatch, publication_host):
     from orchestrator import session_store
     from orchestrator import orchestrator as module
     from shared.a2a_publication import A2APublicationRegistry
@@ -525,6 +554,9 @@ async def test_startup_mounts_a2a_and_publication_routes_when_server_enabled(mon
         module.flags, "is_enabled", lambda name: name == "a2a_server"
     )
     host = lifetime_host(monkeypatch)
+    host.__dict__.update(publication_host().__dict__)
+    del host.a2a_publications
+    del host.a2a_publication_policy
     host.voice_services = None
     host.generated_agent_publication_service = SimpleNamespace(
         recover_once=AsyncMock(return_value=SimpleNamespace(degraded_publication_ids=())),
@@ -592,15 +624,40 @@ def test_api_requires_authentication(monkeypatch):
         assert response.status_code == 401, url
 
 
-def test_api_requires_admin_role(monkeypatch):
-    client = _api_client(monkeypatch, _orchestrator())
-    for method, url in (
-        ("get", "/api/a2a/publications"),
-        ("post", "/api/a2a/publications/intents"),
-        ("delete", "/api/a2a/publications/pub-1"),
-    ):
-        response = getattr(client, method)(url, headers=_user_headers(admin=False))
-        assert response.status_code == 403, url
+def test_api_allows_current_owner_and_denies_foreign_owner(monkeypatch, publication_host):
+    orch = publication_host()
+    orch.a2a_agent_owners.update({"weather-1": "plain-sub", "web-research-1": "other-sub"})
+    orch.tool_permissions._safe.add("web-research-1")
+    client = _api_client(monkeypatch, orch)
+    headers = _user_headers()
+    catalog = client.get("/api/a2a/publications/catalog", headers=headers)
+    assert catalog.status_code == 200
+    assert [row["agent_id"] for row in catalog.json()["capabilities"]] == ["weather-1"]
+    intent = client.post("/api/a2a/publications/intents", headers=headers, json={
+        "agent_id": "weather-1", "audiences": ["tools:read"], "lifetime": "1h",
+    })
+    assert intent.status_code == 200
+    own = client.post(
+        f"/api/a2a/publications/intents/{intent.json()['intent_id']}/confirm", headers=headers,
+        json={"confirmation_token": intent.json()["confirmation_token"]},
+    )
+    assert own.status_code == 200
+    denied = client.post("/api/a2a/publications/intents", headers=headers, json={
+        "agent_id": "web-research-1", "audiences": ["tools:search"], "lifetime": "1h",
+    })
+    assert denied.status_code == 403
+    foreign = orch.a2a_publications.create_intent(
+        agent_id="web-research-1", audiences=["tools:search"], lifetime="1h",
+        actor="other-sub", owner="other-sub",
+    )
+    foreign = orch.a2a_publications.confirm(intent_id=foreign.intent_id,
+        confirmation_token=foreign.confirmation_token, actor="other-sub")
+    inventory = client.get("/api/a2a/publications", headers=headers)
+    assert inventory.status_code == 200
+    assert [row["publication_id"] for row in inventory.json()["publications"]] == [own.json()["publication_id"]]
+    assert client.delete(f"/api/a2a/publications/{foreign.publication_id}", headers=headers).status_code == 403
+    assert client.delete(f"/api/a2a/publications/{own.json()['publication_id']}", headers=headers).status_code == 200
+    assert orch.a2a_publications.is_published("web-research-1")
 
 
 def test_api_disabled_without_registry_returns_conflict(monkeypatch):
@@ -610,15 +667,13 @@ def test_api_disabled_without_registry_returns_conflict(monkeypatch):
     assert "not enabled" in response.json()["detail"]
 
 
-def test_api_full_publish_inventory_withdraw_cycle(monkeypatch):
-    orch = _orchestrator()
-    registry = _registry()
-    orch.a2a_publications = registry
+def test_api_full_publish_inventory_withdraw_cycle(monkeypatch, publication_host):
+    orch = publication_host()
     client = _api_client(monkeypatch, orch)
 
     catalog = client.get("/api/a2a/publications/catalog", headers=_admin_headers()).json()
     capabilities = {c["agent_id"]: c for c in catalog["capabilities"]}
-    assert capabilities["weather-1"]["audiences"] == ["tools:read", "tools:search"]
+    assert capabilities["weather-1"]["audiences"] == ["tools:read"]
     assert capabilities["weather-1"]["published"] is False
     assert "30d" in catalog["lifetimes"]
 
@@ -664,9 +719,8 @@ def test_api_full_publish_inventory_withdraw_cycle(monkeypatch):
     assert capabilities["weather-1"]["published"] is False
 
 
-def test_api_intent_rejects_unregistered_audience(monkeypatch):
-    orch = _orchestrator()
-    orch.a2a_publications = _registry()
+def test_api_intent_rejects_unregistered_audience(monkeypatch, publication_host):
+    orch = publication_host()
     client = _api_client(monkeypatch, orch)
     response = client.post(
         "/api/a2a/publications/intents",
@@ -676,9 +730,8 @@ def test_api_intent_rejects_unregistered_audience(monkeypatch):
     assert response.status_code == 400
 
 
-def test_api_confirm_with_wrong_token_is_forbidden(monkeypatch):
-    orch = _orchestrator()
-    orch.a2a_publications = _registry()
+def test_api_confirm_with_wrong_token_is_forbidden(monkeypatch, publication_host):
+    orch = publication_host()
     client = _api_client(monkeypatch, orch)
     intent = client.post(
         "/api/a2a/publications/intents",
@@ -693,18 +746,16 @@ def test_api_confirm_with_wrong_token_is_forbidden(monkeypatch):
     assert response.status_code == 403
 
 
-def test_api_withdraw_unknown_publication_is_not_found(monkeypatch):
-    orch = _orchestrator()
-    orch.a2a_publications = _registry()
+def test_api_withdraw_unknown_publication_is_not_found(monkeypatch, publication_host):
+    orch = publication_host()
     client = _api_client(monkeypatch, orch)
     response = client.delete("/api/a2a/publications/missing", headers=_admin_headers())
     assert response.status_code == 404
 
 
-def test_api_withdraw_twice_conflict_and_stale_confirm(monkeypatch):
-    orch = _orchestrator()
-    registry = _registry()
-    orch.a2a_publications = registry
+def test_api_withdraw_twice_conflict_and_stale_confirm(monkeypatch, publication_host):
+    orch = publication_host()
+    registry = orch.a2a_publications
     client = _api_client(monkeypatch, orch)
     headers = _admin_headers()
     publication = client.post(
@@ -745,54 +796,47 @@ def test_api_orchestrator_unavailable_returns_503(monkeypatch):
     assert response.status_code == 503
 
 
-def test_api_records_audit_events_through_recorder(monkeypatch):
-    orch = _orchestrator()
-    orch.a2a_publications = _registry()
+def test_api_commits_lifecycle_audit_with_publication_state(monkeypatch, publication_host):
+    orch = publication_host()
     client = _api_client(monkeypatch, orch)
-    recorded = []
-
-    class _FakeRecorder:
-        async def record(self, event):
-            recorded.append(event)
-            return None
-
-    from audit import recorder as audit_recorder
-
-    monkeypatch.setattr(audit_recorder, "get_recorder", lambda: _FakeRecorder())
     headers = _admin_headers()
-    client.post(
+    response = client.post(
         "/api/a2a/publications/intents", headers=headers,
         json={"agent_id": "weather-1", "audiences": ["tools:read"], "lifetime": "7d"},
     )
-    assert any("intent_created" in event.action_type for event in recorded)
+    assert response.status_code == 200
+    intent = response.json()
+    confirmed = client.post(f"/api/a2a/publications/intents/{intent['intent_id']}/confirm",
+        headers=headers, json={"confirmation_token": intent["confirmation_token"]})
+    assert confirmed.status_code == 200
+    assert client.delete(f"/api/a2a/publications/{confirmed.json()['publication_id']}",
+                         headers=headers).status_code == 200
+    rows, _ = orch.audit_repo.list_for_user(ADMIN)
+    assert sorted(row.action_type for row in rows) == [
+        "a2a_publication.intent_created", "a2a_publication.published", "a2a_publication.withdrawn",
+    ]
+    assert orch.audit_repo.verify_chain(ADMIN) is None
 
 
-def test_registry_audit_sink_records_through_recorder_and_tolerates_failures(monkeypatch):
-    from orchestrator.a2a_orchestrator_executor import attach_publication_registry
-
-    recorded = []
-
-    class _FakeRecorder:
-        def __init__(self, fail=False):
-            self.fail = fail
-
-        def record_blocking(self, event):
-            if self.fail:
-                raise RuntimeError("audit unavailable")
-            recorded.append(event)
-
-    from audit import recorder as audit_recorder
-
-    monkeypatch.setattr(audit_recorder, "get_recorder", lambda: _FakeRecorder())
-    orch = _orchestrator()
-    orch.tool_permissions._safe.add("web-research-1")
-    registry = attach_publication_registry(orch)
-    _publish(registry)
-    assert any("a2a_publication.published" in event.action_type for event in recorded)
-
-    monkeypatch.setattr(audit_recorder, "get_recorder", lambda: _FakeRecorder(fail=True))
-    _publish(registry, agent_id="web-research-1", audiences=["tools:search"])
-    assert registry.is_published("web-research-1")
+def test_registry_audit_failure_rolls_back_and_retains_confirmation(monkeypatch, publication_host):
+    orch = publication_host()
+    registry = orch.a2a_publications
+    intent = registry.create_intent(
+        agent_id="weather-1", audiences=["tools:read"], lifetime="1h", actor=ADMIN,
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(orch.audit_repo, "insert_in_transaction", lambda *args, **kwargs: None)
+        with pytest.raises(PublicationStoreUnavailable):
+            registry.confirm(intent_id=intent.intent_id,
+                confirmation_token=intent.confirmation_token, actor=ADMIN)
+    assert registry.active() == ()
+    assert registry.get_intent(intent.intent_id) == intent
+    rows, _ = orch.audit_repo.list_for_user(ADMIN)
+    assert [row.action_type for row in rows] == ["a2a_publication.intent_created"]
+    record = registry.confirm(intent_id=intent.intent_id,
+        confirmation_token=intent.confirmation_token, actor=ADMIN)
+    assert registry.active() == (record,)
+    assert orch.audit_repo.verify_chain(ADMIN) is None
 
 
 # --- admin tools chrome surface ---------------------------------------------

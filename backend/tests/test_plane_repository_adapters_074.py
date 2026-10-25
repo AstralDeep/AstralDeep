@@ -546,42 +546,55 @@ def test_chat_step_adapter_emits_canonical_plane_state() -> None:
     ]
 
 
-def test_remote_machine_adapter_uses_typed_owner_scoped_repository() -> None:
-    repository = _Remote()
-    database = _Database(remote=repository)
-    machine_id = remote_machines.create_machine(
-        database,
-        "alice",
-        "dgx",
-        "10.0.0.5",
-        22,
-        "astral",
-        "linux",
-        "cluster",
-    )
+def test_remote_machine_adapter_uses_typed_owner_scoped_repository(monkeypatch) -> None:
+    from uuid import UUID
 
-    assert remote_machines.get_machine(database, "bob", machine_id) is None
-    assert remote_machines.resolve_machine(database, "alice", "DGX")[
-        "machine_id"
-    ] == machine_id
-    remote_machines.record_probe(
-        database,
-        "alice",
-        machine_id,
-        "ok",
-        {
-            "type": "ssh-ed25519",
-            "fingerprint": "SHA256:test",
-            "blob_b64": "opaque",
-        },
-    )
-    assert remote_machines.get_machine(database, "alice", machine_id)[
-        "host_key_fingerprint"
-    ] == "SHA256:test"
-    remote_machines.retrust_host_key(database, "alice", machine_id)
-    assert remote_machines.get_machine(database, "alice", machine_id)[
-        "host_key_fingerprint"
-    ] is None
+    from audit.repository import AuditRepository
+    from orchestrator.mesh_enrollment import _decode_record
+    from tests.helpers.voice_plane_runtime import isolated_plane_runtime
+
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    monkeypatch.setenv("AUDIT_HMAC_SECRET", "remote-adapter-regression-key-with-32-characters")
+    monkeypatch.setenv("AUDIT_HMAC_KEY_ID", "remote_adapter")
+    with isolated_plane_runtime("ad_test_remote_adapter") as runtime:
+        database = SimpleNamespace(plane_runtime=runtime, plane_repositories=runtime.repositories)
+        machine_id = remote_machines.create_machine(
+            database, "alice", "dgx", "10.0.0.5", 22, "astral", "linux", "cluster",
+        )
+        audit = AuditRepository(plane_runtime=runtime, plane_repositories=runtime.repositories)
+        assert remote_machines.get_machine(database, "bob", machine_id) is None
+        assert remote_machines.resolve_machine(database, "alice", "DGX")["machine_id"] == machine_id
+        remote_machines.record_probe(database, "bob", machine_id, "ok", {
+            "type": "ssh-ed25519", "fingerprint": "SHA256:foreign", "blob_b64": "foreign",
+        })
+        assert remote_machines.get_machine(database, "alice", machine_id)["host_key_fingerprint"] is None
+        assert audit.list_for_user("bob")[0] == []
+        remote_machines.record_probe(database, "alice", machine_id, "ok", {
+            "type": "ssh-ed25519", "fingerprint": "SHA256:test", "blob_b64": "opaque",
+        })
+        assert remote_machines.get_machine(database, "alice", machine_id)["host_key_fingerprint"] == "SHA256:test"
+        with runtime.transaction() as transaction:
+            authority = runtime.repositories.credentials.get_credential(transaction,
+                owner_id="alice", agent_id="remote.effect-authority.v1", credential_key="machine:" + machine_id)
+        assert authority is not None
+        remote_machines.retrust_host_key(database, "bob", machine_id)
+        assert remote_machines.get_machine(database, "alice", machine_id)["host_key_fingerprint"] == "SHA256:test"
+        remote_machines.retrust_host_key(database, "alice", machine_id)
+        assert remote_machines.get_machine(database, "alice", machine_id)["host_key_fingerprint"] is None
+        with runtime.transaction() as transaction:
+            rotated = runtime.repositories.credentials.get_credential(transaction,
+                owner_id="alice", agent_id="remote.effect-authority.v1", credential_key="machine:" + machine_id)
+        assert rotated is not None and rotated.encrypted_value != authority.encrypted_value
+        incarnations = [_decode_record(row.encrypted_value)["incarnation"] for row in (authority, rotated)]
+        assert all(UUID(value).hex == value for value in incarnations)
+        events, _ = audit.list_for_user("alice")
+        assert [event.action_type for event in events] == [
+            "remote_machine.authority_rotated", "remote_machine.authority_rotated",
+        ]
+        assert {event.correlation_id for event in events} == {str(UUID(value)) for value in incarnations}
+        assert all(event.inputs_meta == {"target": "machine:" + machine_id}
+                   and event.outcome == "success" for event in events)
+        assert audit.verify_chain("alice") is None
 
 
 def test_share_adapter_fences_public_open_against_revocation(monkeypatch) -> None:

@@ -368,9 +368,21 @@ async def test_registered_native_logout_preserves_public_client_and_owner_queue(
     assert get_session_record(runtime, fixture[2]) == before
     assert session_count(runtime) == 1
     events, _ = service.audit.list_for_user(fixture[1])
-    assert len(events) == 1 and events[0].action_type == "auth.logout"
-    assert outcome in events[0].description
-    assert "synthetic-native-held-refresh" not in events[0].description
+    assert len(events) == 2
+    by_action = {event.action_type: event for event in events}
+    assert set(by_action) == {"auth.logout", "remote_machine.authority_rotated"}
+    logout = by_action["auth.logout"]
+    assert logout.outcome == "success" and logout.inputs_meta["azp"] == client_id
+    assert outcome in logout.description
+    assert "synthetic-native-held-refresh" not in logout.description
+    rotation = by_action["remote_machine.authority_rotated"]
+    assert rotation.outcome == "success" and rotation.inputs_meta == {"target": "owner"}
+    with runtime.transaction() as transaction:
+        for event in events:
+            stored = runtime.repositories.audit.get(transaction, chain_id=fixture[1], event_id=event.event_id)
+            assert stored.event.chain_id == stored.event.auth_principal == fixture[1]
+            assert runtime.repositories.audit.get(transaction, chain_id="foreign-owner", event_id=event.event_id) is None
+    assert service.audit.verify_chain(fixture[1]) is None
 
 
 @pytest.mark.parametrize("flow", ["windows-bff-proxy", "watch-device"])

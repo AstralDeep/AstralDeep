@@ -6,6 +6,8 @@ async_tasks.py), gaining no separate authorization path.
 from __future__ import annotations
 
 import asyncio
+import copy
+import uuid
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -243,13 +245,26 @@ async def test_tool_denial_and_egress_confirmation_have_identical_verdicts(
         assert confirmed[0].response.error is None
         assert confirmed[0].response.result == confirmed[1].response.result
         assert confirmed[0].response.result["_data"]["status"] == "confirmation_required"
-        assert confirmed[0].response.ui_components == confirmed[1].response.ui_components
-        assert confirmed[0].response.ui_components[0]["title"] == "Review action"
-        assert len(runtime._hitl_pending_calls) == 1
-        pending = next(iter(runtime._hitl_pending_calls.values()))
-        assert (pending.owner, pending.chat, pending.agent, pending.tool) == (
-            USER_ID, chat_id, AGENT_ID, "send_email")
-        assert pending.risks == ("egress",)
+        assert len(runtime._hitl_pending_calls) == 2
+        cards = []
+        request_ids = []
+        for socket, outcome in zip((typed, voice), confirmed, strict=True):
+            card = copy.deepcopy(outcome.response.ui_components[0])
+            request_id = card.pop("id").removeprefix("hitl_")
+            assert str(uuid.UUID(request_id)) == request_id
+            request_ids.append(request_id)
+            pending = runtime._hitl_pending_calls[request_id]
+            assert pending.websocket is socket
+            assert (pending.owner, pending.chat, pending.agent, pending.tool) == (
+                USER_ID, chat_id, AGENT_ID, "send_email")
+            assert pending.risks == ("egress",)
+            assert card["title"] == "Review action"
+            for component in card["content"]:
+                if component.get("action") == "authorize_action":
+                    assert component["payload"].pop("hitl_request_id") == request_id
+            cards.append(card)
+        assert request_ids[0] != request_ids[1]
+        assert cards[0] == cards[1]
     else:
         assert confirmed[0].response.error == {
             "message": "Confirmation requires an interactive signed-in conversation. "

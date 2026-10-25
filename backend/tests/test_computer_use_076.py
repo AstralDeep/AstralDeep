@@ -609,12 +609,12 @@ def test_provider_rejection_heuristic():
     assert o._llm_rejects_images(_E("rate limit exceeded")) is False
 
 
-def test_compaction_counts_an_image_part_as_a_fixed_cost():
+def test_compaction_counts_an_image_part_as_a_fixed_cost_for_qualified_model():
     from orchestrator.compaction import _IMAGE_PART_CHARS, CHARS_PER_TOKEN, estimate_tokens
     big = "A" * 500_000
     msgs = [{"role": "user", "content": [{"type": "text", "text": "hi"},
                                           {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{big}"}}]}]
-    assert estimate_tokens(msgs) < 2_000
+    assert estimate_tokens(msgs, model_name="gpt-4o", provider="openai") < 2_000
     assert _IMAGE_PART_CHARS // CHARS_PER_TOKEN == 1_500
 
 

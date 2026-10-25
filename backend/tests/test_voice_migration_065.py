@@ -78,7 +78,7 @@ def _require_embedded_plane_source(module_file: str | None) -> Path:
 
 def test_voice_schema_authority_is_pinned_to_current_plane_evidence() -> None:
     _require_embedded_plane_source(astralplane.__file__)
-    assert CURRENT_DATA_PLANE_REVISION.schema_revision == "089.006"
+    assert CURRENT_DATA_PLANE_REVISION.schema_revision == "089.012"
     assert CURRENT_DATA_PLANE_REVISION.migration_digest == MIGRATION_REGISTRY.digest
     migration_075 = getattr(plane_migrations, "PLANE_SCHEMA_075_MIGRATION", None)
     assert migration_075 is not None
@@ -122,10 +122,10 @@ def test_voice_schema_authority_is_pinned_to_current_plane_evidence() -> None:
         "79485a63e1afa858075ea52fbb088c701e83f1d621b0f57ff2e50a6fbde510d5"
     )
     assert MIGRATION_REGISTRY.digest == (
-        "1176ee5a65f74e0447abe2e63bb90808acc40289acd1a6a09ec6a10ae1a967b1"
+        "58ba65b80bf3c1019c6c110d59cc618813668f7916f1621d851e58199738dc9e"
     )
     assert CURRENT_SCHEMA_VERIFIER_CHECKSUM == (
-        "6911bade08880589f3a7de5a5654412ce14baa207b451d611fa41a1c27aaabed"
+        "e2bb080e5dc95c3c90cd46b4e3dde7c366c9b2d68d6c7c337f794e6920462e1e"
     )
     assert LEGACY_BASELINE_SOURCE_BLOB == "39cdc1d328f17840305b88158a892f5fd09c96dd"
     assert {"voice_session", "voice_turn"} <= BASELINE_REQUIRED_TABLES
