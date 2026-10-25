@@ -23,6 +23,7 @@ HOST_SURFACES = frozenset(
         "agents",
         "attachments",
         "audit",
+        "atlas",
         "authoring",
         "connections",
         "drafts",

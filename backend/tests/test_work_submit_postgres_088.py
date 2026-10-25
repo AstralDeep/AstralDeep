@@ -58,6 +58,9 @@ def service(runtime, fixture, monkeypatch):
         _is_draft_agent=lambda _: False, security_flags={}, tool_permissions=permissions,
         _source_ledger=lambda user_id, chat_id: ledgers.setdefault((user_id, chat_id), SourceLedger()),
         history=SimpleNamespace(get_chat=lambda *_args, **_kwargs: None))
+    from orchestrator.orchestrator import Orchestrator
+
+    orch._source_ledger = Orchestrator._source_ledger.__get__(orch, Orchestrator)
     assignments = AssignmentService(orch, AssignmentStore(plane_runtime=runtime), enabled=True,
         phi_gate=PHIGate(analyzer=SimpleNamespace(analyze=lambda **_: [])))
     return WorkSubmitService(assignments, AuditRepository(plane_runtime=runtime), sessions)
