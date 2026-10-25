@@ -443,6 +443,49 @@ clients):
 - All three clients must exist in the realm; the watch never contacts the IdP
   directly (the backend brokers the device grant).
 
+### Direct Mac download preparation
+
+The `AstralAppDirectDownload` scheme and `DirectDownload` configuration produce
+the Developer ID distribution. It retains the registered bundle identity and
+explicit local-computer consent. The current shipping candidate is Apple
+silicon with macOS 14 or later; bundled universal frameworks do not make an
+arm64-only app universal.
+
+To prepare a private drag-to-Applications disk image from an already-signed app:
+
+```sh
+python scripts/package_macos_candidate.py \
+  --app /private/path/AstralDeep.app \
+  --output /private/path/new-candidate-directory \
+  --team-id "$APPLE_TEAM_ID" \
+  --deep "$DEEP_COMMIT" --projection "$PROJECTION_COMMIT"
+```
+
+The packager verifies the registered identity, explicit distribution marker,
+timestamped Developer ID signature, hardened runtime and minimal entitlements.
+It re-verifies the copied app and its executable digest before building a UDZO
+DMG containing the app and an Applications shortcut. It refuses output
+replacement and writes a checksum plus a diagnostic manifest in a private
+directory. Supplied source revisions are operator declarations, not build or
+release attestations. `.candidate.dmg`, `releaseAuthorized: false` and
+`notarization: not-established` deliberately prevent confusion with a release.
+
+Public distribution requires the separately protected release publisher,
+candidate-bound qualification, release-owner approval, Developer ID signing of
+the final distribution, Apple notarization, ticket stapling, Gatekeeper
+verification, and checksums of the final bytes. Local signing, successful unit
+tests, a mounted candidate DMG or a website metadata edit supplies no release
+authority. The existing Apple workflow below is Store-only; it is not a
+notarization or direct-download publisher. Do not use an `apple-v*` tag for this
+purpose.
+
+The public site owns `downloads.html` and its availability metadata, not
+product release policy. Keep `macos: null` until a qualified immutable product
+release exists. A future direct Mac release uses `macos-v<version>-<build>` and
+`AstralDeep-<version>-<build>-<architecture>.dmg`, with a final-byte
+`SHA256SUMS`. The site verifies public release/asset identities, source pins and
+checksum bytes before rendering a download action.
+
 ### Apple release runbook
 
 AstralProjection owns active native pull-request evidence. Its own
