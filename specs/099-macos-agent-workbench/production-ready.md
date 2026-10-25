@@ -2,7 +2,7 @@
 
 The owner directed work on 2026-10-25 to prioritize the Mac client and server for production rather than CI. The CI repair work remains preserved separately; this branch prepares the operational pair and its live checks. Authentication, authorization, local consent, data preservation, LETS enforcement and rollback remain required.
 
-The client is the signed DirectDownload build from Projection `63deedd8ffde83f0e2890bdb280322bfa32e09ba`, executable SHA-256 `3f4f0a6acfe32ff52e366b66ef8abd6b1785dc5673ab9288a415887acda62bf7`. It preserves the installed designated signing requirement, has only the audio-input entitlement, and needs a genuine local enable action after restart. The client has not yet been installed or exercised against the prepared server.
+The client is the signed DirectDownload build from Projection `63deedd8ffde83f0e2890bdb280322bfa32e09ba`, executable SHA-256 `3f4f0a6acfe32ff52e366b66ef8abd6b1785dc5673ab9288a415887acda62bf7`. It preserves the installed designated signing requirement, has only the audio-input entitlement, and needs a genuine local enable action after restart. The client was installed at `2026-10-25T12:50:56Z` after signature verification and a process-scoped termination of the old app. Its previous installed bundle is preserved at the private local backup location. Launch and live interaction remain pending the locked Mac; no local consent or lock screen was bypassed.
 
 The rebuildable preparation branch pins that same Projection revision. Its server-owned `src`, `backend` and `contracts` trees are byte-identical to the previous `1704975` pin, so the server contract stays compatible with the already-rehearsed `9117730b` runtime. AstralPlane, AstralPrimitives, LETS, the Plane schema revision and migration digest remain unchanged.
 
@@ -18,4 +18,12 @@ To avoid a large rebuild on the production host's low disk reserve, the selected
 
 The exact server image completed the isolated real-IAM/LETS/PostgreSQL and paired current-production recovery service phase (exit 0, 215.554 seconds); its retained receipt explicitly grants no release authority. Full CI is incomplete and remains parked by owner direction. This operational preparation does not claim a protected release decision or publication.
 
-The Mac is currently locked. Updating or exercising the running native app and renewing physical consent remain pending the owner's return; no lock-screen, sign-in or local-consent bypass is attempted.
+The Mac is currently locked. Launching or exercising the updated native app and renewing physical consent remain pending the owner's return; no lock-screen, sign-in or local-consent bypass is attempted.
+
+## Rollout observations
+
+The first rollout stopped at the user-file preservation guard because a knowledge file is root-owned. The guard failed before source/image changes and automatically restored the original server to HTTPS readiness 200 at `2026-10-25T12:51:21Z`. No database or LETS state was rewound. A second attempt uses a scoped privileged read-only hash operation, verified against all 118 retained non-cache files before stopping the application; existing file permissions stay unchanged. Final deployment and health observations follow only after that attempt finishes.
+
+The second attempt deployed the selected server at `2026-10-25T12:55:51Z`: container `bdecc21648a43b242a10da2b44f0f345de704fd7fa94587333e15cbc6db2c762`, exact image `580bd01d0cb3…`, clean host source `9117730b`, preserved mounts and all 118 non-cache untracked files unchanged before startup. No other observed running container changed. HTTPS readiness is 200, persistence/publication report healthy, LETS remains enforce/healthy, and the container has zero restarts. Host-local private backup/rollback inputs are retained; no schema change, database downgrade, ledger rewind or key rotation occurred.
+
+Live unauthenticated HTTP smoke at `2026-10-25T12:58:34Z`: `/healthz` and `/readyz` return 200; `/` redirects to sign-in (302); `/api/chats`, `/api/chrome/menu` and `/lets/health` return 401. Native owner acceptance stays pending, and a missing informational registration log line is under investigation rather than counted as successful agent registration.
