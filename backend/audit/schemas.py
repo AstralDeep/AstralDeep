@@ -153,6 +153,14 @@ class AuditEventCreate(BaseModel):
         except ValueError as exc:
             raise ValueError("event_id must be a UUID") from exc
 
+    @field_validator("correlation_id")
+    @classmethod
+    def _canonical_correlation_id(cls, value: str) -> str:
+        try:
+            return str(UUID(value))
+        except ValueError:
+            return value
+
     @field_validator("event_class")
     @classmethod
     def _check_event_class(cls, v: str) -> str:

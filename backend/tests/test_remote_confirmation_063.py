@@ -5,6 +5,8 @@ transport contact, and approval is single-use and owner-bound.
 
 from __future__ import annotations
 
+from uuid import UUID
+
 import json
 import time
 from types import SimpleNamespace
@@ -322,7 +324,7 @@ def test_audit_proposed_event_is_valid_and_correlated(audit_rec):
     assert _types(audit_rec) == ["remote_op.proposed"]
     ev = audit_rec.events[0]
     (pid,) = db.rows.keys()
-    assert ev.outcome == "in_progress" and ev.correlation_id == pid
+    assert ev.outcome == "in_progress" and ev.correlation_id == str(UUID(pid))
     assert ev.inputs_meta.get("machine_id") == "m9" and ev.inputs_meta.get("verb") == "remove_path"
 
 
