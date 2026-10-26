@@ -109,7 +109,7 @@ def test_theme_components_theme_apply_colors_when_no_preset():
         _orch({"theme": {"colors": {"primary": "#22C55E"}}}), "u1", ["user"], {}))
     assert comps[0]["type"] == "theme_apply"
     assert comps[0]["colors"]["primary"] == "#22C55E"
-    assert comps[0]["colors"]["bg"] == theme.PRESETS["graphite"]["bg"] == "#0B0B0D"
+    assert comps[0]["colors"]["bg"] == theme.PRESETS["graphite"]["bg"] == "#121214"
     assert "preset" not in comps[0]
 
 

@@ -100,7 +100,7 @@ def test_server_palette_snapshot_cannot_be_used_for_another_owner():
     assert components[0]["colors"]["accent"] == "#2DD4BF"
 
 
-GRAPHITE = {"bg": "#0B0B0D", "surface": "#151518", "primary": "#7C3AED", "secondary": "#6E6E78",
+GRAPHITE = {"bg": "#121214", "surface": "#1B1B1F", "primary": "#7C3AED", "secondary": "#6E6E78",
             "text": "#ECECEF", "muted": "#8C8C95", "accent": "#A78BFA"}
 
 
@@ -117,8 +117,8 @@ def test_default_theme_preferences_carry_the_graphite_name_and_colors():
     prefs = theme_surface.default_theme_preferences()
     assert prefs == {"theme": {"preset": "graphite", "colors": GRAPHITE}}
     prefs["theme"]["colors"]["bg"] = "#000000"
-    assert theme_surface.PRESETS["graphite"]["bg"] == "#0B0B0D"
-    assert theme_surface.default_theme_preferences()["theme"]["colors"]["bg"] == "#0B0B0D"
+    assert theme_surface.PRESETS["graphite"]["bg"] == "#121214"
+    assert theme_surface.default_theme_preferences()["theme"]["colors"]["bg"] == "#121214"
 
 
 def test_render_has_all_preset_cards_with_action_and_swatches():
@@ -128,7 +128,7 @@ def test_render_has_all_preset_cards_with_action_and_swatches():
         assert f"&quot;preset&quot;: &quot;{name}&quot;" in html, f"missing payload for {name}"
         assert name.capitalize() in html
     assert html.index("&quot;graphite&quot;") < html.index("&quot;midnight&quot;")
-    for hexval in ("#0B0B0D", "#0F1221", "#F8FAFC", "#0EA5E9", "#F97316", "#22C55E"):
+    for hexval in ("#121214", "#0F1221", "#F8FAFC", "#0EA5E9", "#F97316", "#22C55E"):
         assert f"background:{hexval}" in html
 
 
@@ -137,7 +137,7 @@ def test_render_embeds_seven_color_pickers_with_graphite_defaults():
     assert html.count("astral-color-picker") == 7
     for key in ("bg", "surface", "primary", "secondary", "text", "muted", "accent"):
         assert f'data-color-key="{key}"' in html
-    assert 'value="#0B0B0D"' in html
+    assert 'value="#121214"' in html
     assert 'value="#A78BFA"' in html
     assert "Current theme: default (Graphite)." in html
 
@@ -154,7 +154,7 @@ def test_render_reflects_persisted_preset():
 def test_render_overlays_single_custom_color_on_defaults():
     html = render(FakeOrch(prefs={"theme": {"color_key": "primary", "color_value": "#ABCDEF"}}))
     assert 'value="#ABCDEF"' in html
-    assert 'value="#0B0B0D"' in html
+    assert 'value="#121214"' in html
     assert "custom colors" in html
     assert 'aria-pressed="true"' not in html
 
