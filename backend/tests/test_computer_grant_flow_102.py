@@ -29,7 +29,7 @@ NOTES = {"hwnd": 43, "title": "Groceries", "process": "com.apple.Notes", "bundle
          "rect": [0, 0, 800, 600], "focused": False}
 SAFARI = {"hwnd": 44, "title": "Bank", "process": "com.apple.Safari", "bundle_id": "com.apple.Safari",
           "rect": [0, 0, 800, 600], "focused": False}
-SCOPES = {"interrupt_command": "tools:write", "type_text": "tools:write", "press_keys": "tools:write", "click": "tools:write", "drag": "tools:write",
+SCOPES = {"start_session": "tools:write", "interrupt_command": "tools:write", "type_text": "tools:write", "press_keys": "tools:write", "click": "tools:write", "drag": "tools:write",
           "scroll": "tools:write", "open_app": "tools:write", "run_command": "tools:execute",
           "browser_navigate": "tools:write", "browser_click": "tools:write", "browser_scroll": "tools:write",
           "set_clipboard": "tools:write"}
@@ -405,3 +405,47 @@ async def test_interrupt_of_a_tracked_job_is_a_control_action_without_a_card(tas
     assert "hitl.control" in actions and "hitl.effect_started" in actions
     unknown = await _call(task_runtime, "interrupt_command", job_id="job-9", signal="INT")
     assert unknown.result["_data"]["status"] == "confirmation_required" and len(effects) == 1
+
+
+def _all_text(response):
+    return json.dumps(response.ui_components)
+
+
+@pytest.mark.parametrize("named", [None, "ryzenroll mobile", "RyzenRoll Mobile"])
+async def test_input_and_session_cards_name_the_registered_host_only(task_runtime, named):
+    orch, ws, effects, *_ = task_runtime
+    session, host = await _mac(task_runtime)
+    host.descriptor["name"] = "RyzenRoll Mobile"
+    extra = {"computer": named} if named else {}
+    card = await _call(task_runtime, "type_text", text="hello", hwnd=42, **extra)
+    assert "On RyzenRoll Mobile" in _texts(card)
+    if named and named != "RyzenRoll Mobile":
+        assert named not in _all_text(card)
+    await orch.computer_sessions.end(session, "user_stop")
+    start = await _call(task_runtime, "start_session", **extra)
+    assert "On RyzenRoll Mobile" in _texts(start)
+
+
+@pytest.mark.parametrize("tool,args", [("type_text", {"text": "x", "hwnd": 42}), ("start_session", {}),
+                                       ("run_command", {"argv": ["wc", "a"], "cwd": ROOT})])
+async def test_an_unresolvable_computer_name_raises_no_card(task_runtime, tool, args):
+    orch, *_ = task_runtime
+    await _mac(task_runtime, remote=True)
+    response = await _call(task_runtime, tool, computer="Not My Mac", **args)
+    text = json.dumps(response.error or response.result)
+    assert "computer_unavailable" in text and "Not My Mac" in text
+    assert not [c for c in (response.ui_components or []) if c.get("type") == "card"]
+    assert not getattr(orch, "_hitl_pending_calls", {})
+
+
+@pytest.mark.parametrize("named", [None, "ryzenroll mobile"])
+async def test_command_card_names_the_registered_host_only(task_runtime, named):
+    orch, *_ = task_runtime
+    _session, host = await _mac(task_runtime, remote=True)
+    host.descriptor["name"] = "RyzenRoll Mobile"
+    extra = {"computer": named} if named else {}
+    card = await _call(task_runtime, "run_command", argv=["wc", "notes.md"], cwd=ROOT, **extra)
+    assert card.ui_components[0]["title"] == "Confirm an action on RyzenRoll Mobile"
+    assert "Run a command on RyzenRoll Mobile" in _texts(card)
+    if named:
+        assert named not in _all_text(card)

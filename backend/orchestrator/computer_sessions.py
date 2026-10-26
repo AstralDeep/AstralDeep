@@ -197,6 +197,17 @@ class ComputerSessionManager:
                 return s
         return None
 
+    def resolve_host(self, owner_sub: str, chat_id: Optional[str], ref: Any) -> ComputerHost:
+        if ref is None or str(ref).strip() == "":
+            session = self.live_for_chat(owner_sub, chat_id)
+            if session is None:
+                live = self.live_for_owner(owner_sub)
+                session = live[0] if len(live) == 1 else None
+            host = self._registry.get(owner_sub, session.host_id) if session is not None else None
+            if host is not None:
+                return host
+        return self._registry.resolve(owner_sub, ref)
+
     def _controller_socket_alive(self, session: ComputerSession) -> bool:
         return any(id(ws) == session.controller_ws_id for ws in self._orch.ui_clients)
 

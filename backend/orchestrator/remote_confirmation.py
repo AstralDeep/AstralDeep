@@ -147,9 +147,16 @@ class ComputerApproval:
     connection_generation: object = None
 
 
+def computer_card_host(orch, owner, chat, args):
+    sessions = getattr(orch, "computer_sessions", None)
+    if sessions is None:
+        raise ComputerHostError("computer_unavailable", "remote control is not enabled on this server")
+    return sessions.resolve_host(owner, chat, args.get("computer"))
+
+
 def capture_computer_approval(orch, websocket, owner, chat, args):
     try:
-        host = orch.computer_hosts.resolve(owner, args.get("computer"))
+        host = computer_card_host(orch, owner, chat, args)
         session = orch.computer_sessions.live_for_host(owner, host.host_id)
         if session is None:
             return None
@@ -642,12 +649,16 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
     policy = policy_for(agent_id) or policy_for(MUTATING_AGENT_ID)
     proposal_id = uuid.uuid4().hex
     now = int(time.time())
-    summary = policy.summary(orch, user_id, tool_name, args)
+    card_host = computer_card_host(orch, user_id, chat_id, args) if agent_id == "computer-use-1" else None
+    summary = (_computer_policy().summary_for(tool_name, args, card_host.name) if card_host is not None
+               else policy.summary(orch, user_id, tool_name, args))
     display_summary = summary
     if agent_id in {"terminal-shell-1", "computer-use-1"} and len(summary) > 1024:
         summary = summary[:1000] + "… (see approval card preview)"
     machine_ref = args.get(policy.machine_key)
-    if policy.machine_id is not None:
+    if card_host is not None:
+        machine_ref = card_host.host_id
+    elif policy.machine_id is not None:
         machine_ref = policy.machine_id(orch, user_id, args)
     context = _proposal_context(orch)
     with context.transaction() as transaction:
@@ -693,7 +704,8 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
                 outcome="in_progress", chat_id=chat_id)
     title = policy.card_title
     if "{host}" in title:
-        title = title.replace("{host}", policy.machine_label(orch, user_id, machine_ref))
+        title = title.replace("{host}", card_host.name if card_host is not None
+                              else policy.machine_label(orch, user_id, machine_ref))
     card = Card(title=title, content=[
         Text(content=display_summary, variant="body"),
         Text(content=policy.card_caption, variant="caption"),
@@ -884,6 +896,10 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
     if agent_id == "computer-use-1":
         from orchestrator.hitl_confirmation import grant_covers
 
+        try:
+            computer_card_host(orch, user_id, chat_id, args)
+        except ComputerHostError as exc:
+            return (f"{exc.code}: {exc.message}", [Alert(message=exc.message, variant="error").to_dict()])
         if grant_covers(orch, websocket, user_id, chat_id, tool_name, args):
             return None
     pending_key = (user_id, agent_id, tool_name, _fingerprint(args))

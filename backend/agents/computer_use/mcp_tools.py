@@ -146,17 +146,7 @@ def _resolve_host(user_id: str, chat_id: Optional[str], ref: Optional[str]):
     registry, sessions = _registry(), _sessions()
     if registry is None or sessions is None:
         raise ComputerHostError("computer_unavailable", "remote control is not enabled on this server")
-    if ref is None or str(ref).strip() == "":
-        session = sessions.live_for_chat(user_id, chat_id)
-        if session is None:
-            live = sessions.live_for_owner(user_id)
-            if len(live) == 1:
-                session = live[0]
-        if session is not None:
-            host = registry.get(user_id, session.host_id)
-            if host is not None:
-                return host
-    return registry.resolve(user_id, ref)
+    return sessions.resolve_host(user_id, chat_id, ref)
 
 
 def _require_session(user_id: str, host) -> Tuple[Any, Optional[Dict[str, Any]]]:

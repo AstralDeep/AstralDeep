@@ -640,7 +640,8 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             encoded = _arguments(args)
         except Exception:
             return _refused("Review unavailable: action targets could not be resolved. Reissue the action when they are available.")
-        preview, reviewable = await asyncio.to_thread(_review_arguments, args)
+        shown = {key: value for key, value in args.items() if key != "computer"} if agent == "computer-use-1" else args
+        preview, reviewable = await asyncio.to_thread(_review_arguments, shown)
         if not reviewable:
             return _refused("Review unavailable: this action includes sensitive or oversized arguments that cannot be "
                             "shown completely. Remove private identifiers or credentials, or use a smaller action.")
@@ -653,7 +654,15 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
         from orchestrator.remote_confirmation import capture_computer_approval, source_review_proposal
 
         remote_proposal = source_review_proposal(orch, owner, chat, agent, tool, args)
-        computer = None
+        computer = card_host = None
+        if agent == "computer-use-1":
+            from orchestrator.computer_hosts import ComputerHostError
+            from orchestrator.remote_confirmation import computer_card_host
+
+            try:
+                card_host = computer_card_host(orch, owner, chat, args)
+            except ComputerHostError as exc:
+                return _refused(f"{exc.code}: {exc.message}")
         if agent == "computer-use-1" and tool in HOST_VERBS | {"confirm_action"}:
             computer = capture_computer_approval(orch, websocket, owner, chat, args)
             if computer is None:
@@ -695,10 +704,12 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
         grant = [Button(label=call.grant_offer.label, action="authorize_action", variant="secondary",
                         payload={"hitl_request_id": call.request_id, "decision": "grant_task"})
                  ] if call.grant_offer is not None else []
+        on_host = [Text(content=f"On {card_host.name}", variant="body")] if card_host is not None else []
         card = Card(title="Review action", id=f"hitl_{call.request_id}", content=[
             Text(content=f"Tool: {tool} · Agent: {agent}", variant="body"),
+            *on_host,
             Text(content=summary, variant="body"),
-            Text(content=_review_summary(args), variant="body"),
+            Text(content=_review_summary(shown), variant="body"),
             *context,
             CodeBlock(code=preview, language="json"),
             Text(content="Approve this exact action once, or decline. This request expires in 15 minutes. "

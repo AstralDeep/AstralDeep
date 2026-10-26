@@ -468,6 +468,7 @@ def _gate_orch(db):
     )
     fake = _FakeOrch()
     orch.computer_hosts = fake.computer_hosts
+    orch.computer_sessions = fake.computer_sessions
     return orch
 
 
@@ -487,13 +488,16 @@ def test_attended_input_verbs_pass_and_consequential_verbs_get_a_card():
     orch.ui_sessions[ws] = {"sub": OWNER}
     assert rc.evaluate(orch, ws, "computer-use-1", "click", {"x": 1, "y": 2}, "chat", OWNER) is None
     assert rc.evaluate(orch, ws, "computer-use-1", "screenshot", {}, "chat", OWNER) is None
-    out = rc.evaluate(orch, ws, "computer-use-1", "delete_path", {"path": "C:/tmp/x", "computer": "RYZENROLL"}, "chat", OWNER)
+    unknown = rc.evaluate(orch, ws, "computer-use-1", "delete_path", {"path": "C:/tmp/x", "computer": "RYZENROLL"},
+                          "chat", OWNER)
+    assert unknown[0].startswith("computer_unavailable") and not db.rows
+    orch.computer_hosts.register(OWNER, _WS(), ComputerHostDescriptor.from_dict(_descriptor(name="RYZENROLL")))
+    out = rc.evaluate(orch, ws, "computer-use-1", "delete_path", {"path": "C:/tmp/x", "computer": "ryzenroll"}, "chat", OWNER)
     assert out is not None and out[0].startswith("confirmation_required")
-    orch.computer_hosts.register(OWNER, _WS(), ComputerHostDescriptor.from_dict(_descriptor(name="RYZEN")))
     out_nohost = rc.evaluate(orch, ws, "computer-use-1", "write_file", {"path": "C:/x.txt", "content": "y"}, "chat", OWNER)
     assert out_nohost is not None
-    assert all(r["machine_id"] for r in db.rows.values())
-    assert any(len(r["machine_id"]) == 36 for r in db.rows.values())
+    assert all(len(r["machine_id"]) == 36 for r in db.rows.values())
+    assert "ryzenroll" not in json.dumps(out[1]) and "Delete on RYZENROLL" in json.dumps(out[1])
     card = out[1][0]
     assert card["type"] == "card" and "Confirm an action on" in card["title"]
     assert card["id"].startswith("au_approval_") and rc.policy_for("computer-use-1").card_as_result is True
