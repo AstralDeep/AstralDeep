@@ -385,7 +385,7 @@ def test_command_policy_bounds_match_the_host_protocol():
     "ASTRAL_TOKEN", "GITHUB_TOKEN", "MY_SECRET", "API_KEY", "PASSWORD", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES",
     "DYLD_LIBRARY_PATH", "PYTHONPATH", "PYTHONSTARTUP", "NODE_OPTIONS", "NPM_CONFIG_PREFIX", "PERL5OPT", "RUBYOPT",
     "GIT_SSH_COMMAND", "GIT_CONFIG_GLOBAL", "BASH_ENV", "ENV", "ZDOTDIR", "PATH", "IFS", "GCONV_PATH", "SHELL",
-    "HOME", "TMPDIR",
+    "HOME", "TMPDIR", "EDITOR", "PAGER", "VISUAL",
 ])
 async def test_env_names_outside_the_allowlist_are_forbidden(world, name):
     result = await world.call("run_command", command="ls", cwd=ROOT, env={name: "x"})
@@ -393,7 +393,7 @@ async def test_env_names_outside_the_allowlist_are_forbidden(world, name):
 
 
 @pytest.mark.parametrize("name", ["LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TZ", "TERM", "NO_COLOR",
-                                  "FORCE_COLOR", "CI", "DEBUG", "PAGER", "EDITOR", "COLUMNS", "LINES", "APP_MODE"])
+                                  "FORCE_COLOR", "CI", "DEBUG", "COLUMNS", "LINES", "APP_MODE"])
 async def test_allowlisted_env_names_reach_the_host(world, gate, name):
     world.replies["run_command"] = {"ok": True, "result": {"exit_code": 0, "stdout": "", "stderr": ""}}
     await world.call("run_command", command="ls", cwd=ROOT, env={name: "1"})

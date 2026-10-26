@@ -61,7 +61,7 @@ _IMAGE_TYPES = ("image/jpeg", "image/png", "image/webp")
 _MAX_IMAGE_B64 = 4 * 1024 * 1024
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 _ENV_ALLOWED = frozenset({"LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TZ", "TERM", "NO_COLOR", "FORCE_COLOR", "CI",
-                          "DEBUG", "PAGER", "EDITOR", "COLUMNS", "LINES"})
+                          "DEBUG", "COLUMNS", "LINES"})
 _ENV_PREFIX = "APP_"
 _JOB_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _JOB_STATES = frozenset({"running", "exited", "timed_out", "interrupted", "uncertain"})
@@ -849,8 +849,8 @@ def _command_args(kwargs: Dict[str, Any], host) -> Dict[str, Any]:
             raise _Refusal("out_of_range", f"env must map at most {MAX_ENV_VARS} names to single-line strings")
         if not all(_ENV_NAME.fullmatch(name) and (name in _ENV_ALLOWED or name.startswith(_ENV_PREFIX))
                    for name in env):
-            raise _Refusal("env_forbidden", "env may only set LANG, LC_*, TZ, TERM, NO_COLOR, FORCE_COLOR, CI, DEBUG, "
-                                            "PAGER, EDITOR, COLUMNS, LINES or APP_* variables")
+            raise _Refusal("env_forbidden", "env may only set LANG, LC_ALL, LC_CTYPE, LC_MESSAGES, TZ, TERM, NO_COLOR, "
+                                            "FORCE_COLOR, CI, DEBUG, COLUMNS, LINES or APP_* variables")
         if env:
             args["env"] = dict(env)
     background = kwargs.get("background", False)
@@ -1129,7 +1129,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
          "cwd": {"type": "string", "description": "Absolute folder inside one of workspace_roots."},
          "env": {"type": "object", "additionalProperties": {"type": "string"},
                  "description": "Up to 32 extra variables: LANG, LC_ALL, LC_CTYPE, LC_MESSAGES, TZ, TERM, NO_COLOR, "
-                                "FORCE_COLOR, CI, DEBUG, PAGER, EDITOR, COLUMNS, LINES or APP_* names only."},
+                                "FORCE_COLOR, CI, DEBUG, COLUMNS, LINES or APP_* names only."},
          "timeout_s": {"type": "integer", "description": "1-600 seconds (default 60); background jobs up to 3600."},
          "background": {"type": "boolean", "description": "Start and return a job_id right away."},
          "stdin": {"type": "string", "description": "Text written to standard input, at most 16 KiB."}},
