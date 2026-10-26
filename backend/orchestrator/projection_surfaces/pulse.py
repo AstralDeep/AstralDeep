@@ -119,14 +119,4 @@ async def components(orch, user_id, roles, params):
     repo = _repo(orch)
     if repo is None:
         return [_sdui.alert("Personalization subsystem is not available.", "error")]
-    out = [_sdui.text("A quick read on what the assistant worked out from your recent "
-                      "activity — recurring topics, goals, and preferences it is keeping "
-                      "track of. Read-only.", "caption")]
-    cards = build_digest(await asyncio.to_thread(_digest_items, repo, user_id))
-    if not cards:
-        out.append(_sdui.alert("Nothing to show yet — your digest fills in as you chat "
-                               "and the assistant notices recurring topics, goals, and "
-                               "preferences.", "info"))
-        return out
-    out.extend(cards)
-    return out
+    return list(build_digest(await asyncio.to_thread(_digest_items, repo, user_id)))

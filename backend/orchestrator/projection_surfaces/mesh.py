@@ -119,12 +119,7 @@ def _enrollment_fields():
 
     return [
         _sdui.field("label", "Device name"),
-        _sdui.field(
-            "device_key",
-            "Other device public identity (optional JSON)",
-            "textarea",
-            help="Leave blank to enroll this device. To enroll another device, paste its shared public identity.",
-        ),
+        _sdui.field("device_key", "Other device public identity (optional JSON)", "textarea"),
         _sdui.field("scopes", "Allowed access (comma separated)", default="tools:read"),
         _sdui.field("ttl_seconds", "Expires after (seconds)", default="3600"),
     ]
@@ -158,8 +153,6 @@ def _created_components(created):
             "One-time enrollment",
             [
                 _sdui.text(
-                    "Scan this QR or copy the secure link to the original joining device. "
-                    "The request still requires confirmation before the device can redeem it. "
                     "This secret is shown once and must not be shared with other devices.",
                     "caption",
                 ),
@@ -532,16 +525,14 @@ async def components(orch, user_id, roles, params):
     presence = None
     if targets is not None:
         presence = {target["member_id"]: target for target in targets}
-    out = [tab_bar, _sdui.text(_INTRO_TEXT, "caption")]
+    out = [tab_bar]
     created = _created_enrollment(orch, user_id, params)
     if created is not None:
         out.extend(_created_components(created))
     if view == "invitations":
         records = invitations
-        empty = "No enrollment requests yet."
     else:
         records = members
-        empty = "No devices are enrolled yet. Your mesh inventory starts empty."
         if presence is None:
             out.append(
                 _sdui.alert(
@@ -549,17 +540,11 @@ async def components(orch, user_id, roles, params):
                     "warning",
                 )
             )
-    if records:
-        for record in records:
-            if view == "members":
-                out.extend(_member_components(record, _target_for(record, presence)))
-            else:
-                out.extend(_invitation_components(record))
-    else:
-        out.append(_sdui.text(empty, "caption"))
-    out.append(
-        _sdui.card("Enroll a device", [_sdui.bullet_list(list(_ENROLL_STEPS), True)])
-    )
+    for record in records:
+        if view == "members":
+            out.extend(_member_components(record, _target_for(record, presence)))
+        else:
+            out.extend(_invitation_components(record))
     out.append(
         _sdui.form(
             _enrollment_fields(),

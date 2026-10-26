@@ -177,6 +177,25 @@ def test_llm_components_form_multi_action():
         assert a in handlers
 
 
+def test_llm_components_drop_captions_and_field_help_but_keep_data_sharing_consent():
+    from llm_config import data_sharing as ds
+    from orchestrator.projection_surfaces import llm
+    orch = types.SimpleNamespace(_llm_store=None, ui_sessions={})
+    for params in ({}, {"first_run": True, "principal": "ada"}):
+        comps = run(llm.components(orch, "u1", ["user"], params))
+        flat = _flat(comps)
+        captions = [c["content"] for c in flat if c.get("type") == "text" and c.get("variant") == "caption"]
+        assert not [c for c in captions if "AI provider YOU connect" in c or "stored for your account" in c]
+        assert not [c for c in captions if "Local runtimes" in c]
+        form, = [c for c in flat if c.get("type") == "param_picker"]
+        helps = {f["name"]: f.get("help") for f in form["fields"] if f.get("help")}
+        assert set(helps) <= {ds.FIELD_NAME, "typesafe_api_key"}
+        assert helps[ds.FIELD_NAME] == ds.NOTICE_BODY
+        assert helps.get("typesafe_api_key", "Status: ").startswith("Status: ")
+        assert any(c.get("type") == "alert" and c.get("message") == ds.NOTICE_BODY for c in flat)
+    assert not hasattr(llm, "SUBTITLE")
+
+
 class _PznRepo:
     def get_profile(self, user_id):
         return {"profession": "researcher", "goals": ["ship"],

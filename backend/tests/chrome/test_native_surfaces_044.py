@@ -119,11 +119,9 @@ def test_timeline_components_no_chat_is_a_notice():
     assert "Open a chat first" in comps[0]["message"]
 
 
-def test_timeline_components_empty_history_is_a_notice():
+def test_timeline_components_empty_history_stays_empty():
     orch = TimelineOrch(workspace=FakeWorkspace(snaps=[]))
-    comps = run(wt.components(orch, "u1", ["user"], {"chat_id": "c1"}))
-    assert _types(comps) == ["alert"]
-    assert "No workspace history yet" in comps[0]["message"]
+    assert run(wt.components(orch, "u1", ["user"], {"chat_id": "c1"})) == []
 
 
 def test_timeline_components_lists_snapshots_with_expected_actions():
@@ -135,6 +133,7 @@ def test_timeline_components_lists_snapshots_with_expected_actions():
 
     live_btns = _action(comps, "chrome_workspace_timeline_live")
     assert live_btns and live_btns[0]["payload"] == {"chat_id": "c1"}
+    assert "Viewing the past never changes" not in json.dumps(comps)
 
     view_btns = _action(comps, "chrome_workspace_timeline_view")
     ids = {b["payload"]["snapshot_id"] for b in view_btns}
@@ -286,16 +285,13 @@ def _pulse_orch():
         personalization_service=types.SimpleNamespace(repo=FakePersonalizationRepo()))
 
 
-def test_pulse_components_enabled_returns_intro_and_cards(monkeypatch):
+def test_pulse_components_enabled_returns_cards_without_intro(monkeypatch):
     monkeypatch.setattr(pulse_surface, "pulse_enabled", lambda: True)
     monkeypatch.setattr(pulse_surface, "build_digest",
                         lambda items, **kw: [{"type": "card", "title": "Goals",
                                               "content": [{"type": "text", "content": "• ship 044"}]}])
     comps = run(pulse_surface.components(_pulse_orch(), "u1", ["user"], {}))
-    assert comps, "non-empty when enabled"
-    kinds = _types(comps)
-    assert "text" in kinds
-    assert "card" in kinds
+    assert _types(comps) == ["card"]
 
 
 def test_pulse_components_disabled_returns_off_notice(monkeypatch):
@@ -305,11 +301,10 @@ def test_pulse_components_disabled_returns_off_notice(monkeypatch):
     assert "turned off" in comps[0]["message"]
 
 
-def test_pulse_components_enabled_no_digest_shows_empty_notice(monkeypatch):
+def test_pulse_components_enabled_no_digest_stays_empty(monkeypatch):
     monkeypatch.setattr(pulse_surface, "pulse_enabled", lambda: True)
     monkeypatch.setattr(pulse_surface, "build_digest", lambda items, **kw: [])
-    comps = run(pulse_surface.components(_pulse_orch(), "u1", ["user"], {}))
-    assert any(c["type"] == "alert" and "Nothing to show yet" in c["message"] for c in comps)
+    assert run(pulse_surface.components(_pulse_orch(), "u1", ["user"], {})) == []
 
 
 def _att(attachment_id, filename, category, size_bytes=1024):
@@ -344,9 +339,7 @@ def test_attachments_components_lists_rows_with_attach_and_delete(monkeypatch):
 
 def test_attachments_components_empty_state(monkeypatch):
     monkeypatch.setattr(att_surface, "_repo", lambda orch: _AttRepo([]))
-    comps = run(att_surface.components(object(), "u1", ["user"], {}))
-    assert len(comps) == 1 and comps[0]["type"] == "alert"
-    assert "No uploads yet" in comps[0]["message"]
+    assert run(att_surface.components(object(), "u1", ["user"], {})) == []
 
 
 def test_attachments_components_list_failure_is_a_notice(monkeypatch):

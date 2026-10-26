@@ -16,12 +16,6 @@ TITLE = "My computers"
 SURFACE_KEY = "my_computers"
 
 _DISABLED_MSG = "Remote control is not enabled on this server."
-_INTRO = ("Computers that run the AstralDeep desktop client with “Allow remote control” "
-          "switched on appear here. Start a session, then ask in chat for what you want done "
-          "— you'll see the screen update while it happens. Commands and file changes always "
-          "ask you to approve first, and anyone at the computer can pause or stop.")
-_EMPTY = ("No computers yet. On your PC, open the AstralDeep desktop client, go to "
-          "Settings → Remote control and switch it on.")
 
 _BTN = "px-3 py-2 rounded-lg text-sm font-medium bg-white/5 text-astral-text border border-white/10 hover:bg-white/10"
 _BTN_PRIMARY = ("px-3 py-2 rounded-lg text-sm font-medium bg-astral-primary/20 "
@@ -186,30 +180,23 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
     if not _enabled():
         return [_sdui.text(_DISABLED_MSG, "caption")]
     rows = _rows(orch, user_id)
-    out = [_sdui.text(_INTRO, "caption")]
+    out = []
     tc = _this_computer(orch, user_id, params)
     if tc is not None:
         if tc["enabled"]:
             out.append(_sdui.card("This computer", [
                 _sdui.badge("remote control on", "success"),
-                _sdui.text(f"{tc['name']} can be driven from your other signed-in devices. While a "
-                           "session runs, a banner with Pause and Stop stays on screen, and using the "
-                           "mouse or keyboard here pauses it.", "caption"),
                 _sdui.button("Stop allowing", "computer_host_consent", payload={"enabled": False},
                              variant="secondary"),
             ]))
         else:
             out.append(_sdui.card("This computer", [
                 _sdui.badge("remote control off", "default"),
-                _sdui.text("Switch this on to drive this computer from your phone or another "
-                           "signed-in device. You stay in control: a banner with Pause and Stop is "
-                           "always visible during a session, commands and file changes ask you to "
-                           "approve, and touching the mouse or keyboard here pauses the session.", "caption"),
+                _sdui.text("You stay in control: a banner with Pause and Stop is always visible "
+                           "during a session, commands and file changes ask you to approve, and "
+                           "touching the mouse or keyboard here pauses the session.", "caption"),
                 _sdui.button("Allow remote control", "computer_host_consent", payload={"enabled": True}),
             ]))
-    if not rows:
-        out.append(_sdui.text(_EMPTY, "caption"))
-        return out
     for h in rows:
         screens = ", ".join(f'{s["width"]}×{s["height"]}' for s in h.get("screens") or []) or "?"
         facts = _sdui.key_value([

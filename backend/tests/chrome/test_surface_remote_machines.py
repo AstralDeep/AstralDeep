@@ -94,6 +94,19 @@ def test_components_form_has_all_fields_and_submit_action():
     assert picker.get("submit_action") == "chrome_machine_add"
 
 
+def test_components_carry_no_introduction_empty_copy_or_field_help(monkeypatch):
+    empty = run(rm.components(_orch(), "u1", ["user"], {}))
+    assert [c["type"] for c in empty] == ["param_picker"]
+    monkeypatch.setattr(rm.remote_machines, "list_machines", lambda db, uid: [
+        {"machine_id": "m1", "label": "dgx", "address": "dgx.x", "port": 22,
+         "os_family": "linux", "role": "cluster", "last_verdict": "ok"}])
+    listed = run(rm.components(_orch(), "u1", ["user"], {}))
+    for comps in (empty, listed):
+        fields = [f for d in _iter_dicts(comps) for f in d.get("fields", [])]
+        assert fields and all("help" not in f for f in fields)
+        assert not [d for d in _iter_dicts(comps) if d.get("type") == "text"]
+
+
 def test_components_lists_existing_machines_with_probe_and_delete(monkeypatch):
     monkeypatch.setattr(rm.remote_machines, "list_machines", lambda db, uid: [
         {"machine_id": "m1", "label": "dgx", "address": "dgx.x", "port": 22,
