@@ -1,7 +1,7 @@
 """Holds task-scoped computer-use grants in orchestrator memory: creation from an approval
-decision, matching for covered verbs by application, window or command folder, sliding and
-hard expiry, and revocation; verb classes come from computer_use_policy, and audit records
-leave through the events callable the orchestrator injects.
+decision, matching covered verbs by application, window, command folder or browser origin,
+sliding and hard expiry, and revocation; verb classes come from computer_use_policy, and audit
+records leave through the events callable the orchestrator injects.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import posixpath
 import threading
 from types import MappingProxyType
 from typing import Any, Callable, Dict, FrozenSet, Mapping, Optional, Tuple
+from urllib.parse import urlsplit
 import uuid
 
 from orchestrator.computer_use_policy import COMMAND_VERBS, is_shell_app
@@ -30,11 +31,32 @@ INPUT_GRANT_VERBS: FrozenSet[str] = frozenset({
     "click", "double_click", "right_click", "move", "drag", "scroll", "type_text",
     "press_keys", "focus_window", "open_app",
 })
-_TERMINAL_REFUSED_VERBS: FrozenSet[str] = frozenset({"type_text", "press_keys", "open_app"})
-VERB_CLASSES: FrozenSet[str] = frozenset({"input", "command"})
+ORIGIN_GRANT_VERBS: FrozenSet[str] = frozenset({
+    "browser_navigate", "browser_click", "browser_fill", "browser_press", "browser_scroll", "browser_dialog",
+})
+VERB_CLASSES: FrozenSet[str] = frozenset({"input", "command", "browser"})
 REVOCATION_REASONS: FrozenSet[str] = frozenset({
     "pause", "stop", "takeover", "socket_lost", "host_replaced", "authority_changed",
-    "task_ended", "chat_changed", "app_changed", "window_invalid", "session_ended", "replaced",
+    "chat_changed", "app_changed", "window_invalid", "session_ended", "replaced",
+})
+
+_NEVER_GRANTABLE_BUNDLES: FrozenSet[str] = frozenset({
+    "com.apple.safari", "com.apple.safaritechnologypreview", "org.mozilla.firefox",
+    "org.mozilla.firefoxdeveloperedition", "org.mozilla.nightly", "company.thebrowser.browser",
+    "org.chromium.chromium", "com.kagi.kagimacos", "org.torproject.torbrowser", "com.duckduckgo.macos.browser",
+    "com.apple.mail", "com.apple.mobilesms", "com.apple.facetime", "com.apple.systempreferences",
+    "com.apple.keychainaccess", "com.apple.passwords", "com.bitwarden.desktop", "org.keepassxc.keepassxc",
+    "com.lastpass.lastpass", "in.sinew.enpass-desktop", "com.dashlane.dashlanephonefinal",
+    "me.proton.pass.electron", "com.microsoft.vscode", "com.microsoft.vscodeinsiders",
+    "com.todesktop.230313mzl4w4u92",
+})
+_NEVER_GRANTABLE_BUNDLE_PREFIXES: Tuple[str, ...] = (
+    "com.google.chrome", "com.microsoft.edge", "com.brave.browser", "com.operasoftware.", "com.vivaldi.",
+    "com.1password.", "com.agilebits.onepassword", "com.jetbrains.",
+)
+_NEVER_GRANTABLE_PROGRAMS: FrozenSet[str] = frozenset({
+    "sh", "bash", "zsh", "fish", "node", "ruby", "perl", "env", "xargs", "osascript", "open", "sudo",
+    "su", "launchctl", "defaults", "security",
 })
 
 _ID_MAX = 256
@@ -76,24 +98,70 @@ def _absolute(value: Any) -> Optional[str]:
     return "/" + posixpath.normpath(value).lstrip("/")
 
 
+def is_grantable_application(bundle_id: Any, kind: str) -> bool:
+    if not isinstance(bundle_id, str) or not bundle_id or kind not in {"app", "window"}:
+        return False
+    folded = bundle_id.casefold()
+    if (is_shell_app(bundle_id) or "terminal" in folded or "cursor" in folded
+            or folded in _NEVER_GRANTABLE_BUNDLES or folded.startswith(_NEVER_GRANTABLE_BUNDLE_PREFIXES)):
+        return False
+    return not (kind == "app" and folded == "com.apple.finder")
+
+
+def is_grantable_program(argv0: Any) -> bool:
+    if not isinstance(argv0, str) or not argv0:
+        return False
+    name = posixpath.basename(argv0).casefold()
+    return bool(name) and name not in _NEVER_GRANTABLE_PROGRAMS and not name.startswith("python")
+
+
+def _origin(value: Any) -> Optional[str]:
+    if (not isinstance(value, str) or not value or len(value) > _PATH_MAX
+            or any(ord(ch) <= 32 or ord(ch) == 127 for ch in value)):
+        return None
+    try:
+        parts = urlsplit(value)
+        port = parts.port
+    except ValueError:
+        return None
+    scheme = parts.scheme.lower()
+    if (scheme not in {"http", "https"} or not parts.hostname or parts.username is not None
+            or parts.password is not None or parts.path not in {"", "/"} or parts.query or parts.fragment
+            or value.rstrip("/").endswith(("?", "#"))):
+        return None
+    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    default = 80 if scheme == "http" else 443
+    return f"{scheme}://{host}" + ("" if port in (None, default) else f":{port}")
+
+
 def _scope(scope: Any, classes: FrozenSet[str], command: Optional[Mapping[str, str]]) -> Dict[str, Any]:
     if not isinstance(scope, Mapping):
         raise ValueError("scope must be an object")
     kind = scope.get("kind")
+    if kind in {"app", "window"}:
+        if "input" not in classes or "browser" in classes:
+            raise ValueError("application and window grants carry the input class and never the browser class")
+        bundle = _text(scope.get("bundle_id"), "scope.bundle_id")
+        if not is_grantable_application(bundle, kind):
+            raise ValueError("this application stays on exact review and cannot carry a task grant")
     if kind == "app":
         if set(scope) != {"kind", "bundle_id"}:
             raise ValueError("app scope must contain exactly kind and bundle_id")
-        return {"kind": "app", "bundle_id": _text(scope["bundle_id"], "scope.bundle_id")}
+        return {"kind": "app", "bundle_id": bundle}
     if kind == "window":
         if set(scope) != {"kind", "bundle_id", "hwnd"} or _hwnd(scope["hwnd"]) is None:
             raise ValueError("window scope must contain kind, bundle_id and a positive integer hwnd")
-        return {"kind": "window", "bundle_id": _text(scope["bundle_id"], "scope.bundle_id"),
-                "hwnd": scope["hwnd"]}
+        return {"kind": "window", "bundle_id": bundle, "hwnd": scope["hwnd"]}
     if kind == "command":
         if set(scope) != {"kind"} or classes != {"command"} or command is None:
             raise ValueError("command scope carries only kind and needs exactly the command class")
         return {"kind": "command"}
-    raise ValueError("scope.kind must be app, window or command")
+    if kind == "origin":
+        origin = _origin(scope.get("origin"))
+        if set(scope) != {"kind", "origin"} or classes != {"browser"} or origin is None:
+            raise ValueError("origin scope needs one http or https origin and exactly the browser class")
+        return {"kind": "origin", "origin": origin}
+    raise ValueError("scope.kind must be app, window, command or origin")
 
 
 def _command(command: Any) -> Optional[Dict[str, str]]:
@@ -104,6 +172,8 @@ def _command(command: Any) -> Optional[Dict[str, str]]:
     argv0 = _text(command["argv0"], "command.argv0", _ARGV0_MAX)
     if any(ch.isspace() for ch in argv0):
         raise ValueError("command.argv0 must be one program name without whitespace")
+    if not is_grantable_program(argv0):
+        raise ValueError("this program stays on exact review and cannot carry a task grant")
     root = _absolute(command["root"])
     if root is None or root == "/":
         raise ValueError("command.root must be an absolute folder other than /")
@@ -122,6 +192,8 @@ def _classes(verb_classes: Any) -> FrozenSet[str]:
 def _key(scope: Mapping[str, Any], command: Optional[Mapping[str, str]]) -> Tuple[Any, ...]:
     if scope["kind"] == "command":
         return ("command", command["argv0"], command["root"])
+    if scope["kind"] == "origin":
+        return ("origin", scope["origin"])
     if scope["kind"] == "window":
         return ("window", scope["bundle_id"].casefold(), scope["hwnd"])
     return ("app", scope["bundle_id"].casefold())
@@ -131,7 +203,7 @@ def _target_summary(target: Any) -> Dict[str, Any]:
     if not isinstance(target, Mapping):
         return {}
     out: Dict[str, Any] = {}
-    for name in ("bundle_id", "argv0", "cwd"):
+    for name in ("bundle_id", "argv0", "cwd", "origin"):
         value = target.get(name)
         if isinstance(value, str):
             out[name] = value[:_TARGET_TEXT_MAX]
@@ -185,10 +257,14 @@ class TaskGrant:
             "hard_cap_s": self.hard_cap_s,
         }
 
-    def _bound(self, owner_id: str, host_id: str, chat_id: str, task_id: str) -> bool:
-        return (self.owner_id, self.host_id, self.chat_id, self.task_id) == (owner_id, host_id, chat_id, task_id)
+    def _bound(self, owner_id: str, host_id: str, chat_id: str) -> bool:
+        return (self.owner_id, self.host_id, self.chat_id) == (owner_id, host_id, chat_id)
 
     def _covers(self, verb: str, target: Mapping[str, Any]) -> bool:
+        if target.get("destructive"):
+            return False
+        if verb in ORIGIN_GRANT_VERBS:
+            return self.scope["kind"] == "origin" and _origin(target.get("origin")) == self.scope["origin"]
         if verb in INPUT_GRANT_VERBS:
             if "input" not in self.verb_classes or self.scope["kind"] not in {"app", "window"}:
                 return False
@@ -197,11 +273,9 @@ class TaskGrant:
                 return False
             if "hwnd" in target and _hwnd(target["hwnd"]) is None:
                 return False
-            if self.scope["kind"] == "window" and target.get("hwnd") != self.scope["hwnd"]:
-                return False
-            return not (verb in _TERMINAL_REFUSED_VERBS and is_shell_app(bundle))
+            return self.scope["kind"] == "app" or target.get("hwnd") == self.scope["hwnd"]
         if verb in COMMAND_VERBS:
-            if "command" not in self.verb_classes or self.command is None or target.get("destructive"):
+            if "command" not in self.verb_classes or self.command is None:
                 return False
             cwd = _absolute(target.get("cwd"))
             root = self.command["root"]
@@ -228,8 +302,6 @@ class GrantStore:
         if ("command" in classes) != (normalized_command is not None):
             raise ValueError("command is required exactly when verb_classes includes command")
         normalized_scope = _scope(scope, classes, normalized_command)
-        if normalized_scope["kind"] != "command" and "input" not in classes:
-            raise ValueError("application and window grants must include the input class")
         key = _key(normalized_scope, normalized_command)
         grant = TaskGrant(
             str(uuid.uuid4()), *ids,
@@ -253,7 +325,7 @@ class GrantStore:
         return grant
 
     def match(self, session_id: str, verb: str, target: Any, *, now: float, owner_id: str,
-              host_id: str, chat_id: str, task_id: str) -> Optional[TaskGrant]:
+              host_id: str, chat_id: str) -> Optional[TaskGrant]:
         at = _instant(now)
         if not isinstance(target, Mapping):
             return None
@@ -266,7 +338,7 @@ class GrantStore:
                 if reason is not None:
                     expired.append((grant, reason))
                     continue
-                if found is None and grant._bound(owner_id, host_id, chat_id, task_id) and grant._covers(verb, target):
+                if found is None and grant._bound(owner_id, host_id, chat_id) and grant._covers(verb, target):
                     found = grant
             for grant, _ in expired:
                 self._remove(grant)
