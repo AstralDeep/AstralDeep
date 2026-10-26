@@ -4,6 +4,7 @@ Host inventory and the local-computer descriptor are replaced with deterministic
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -140,3 +141,48 @@ def test_resume_is_offered_only_for_remotely_resumable_pauses(enabled, monkeypat
     html = run(my_computers.render(object(), "u1", ["user"], {}))
     assert ("chrome_computer_session_resume" in html) is offered
     assert "chrome_computer_session_stop" in html
+
+
+class _RevokingSessions:
+    def __init__(self, result=True):
+        self.calls = []
+        self.result = result
+
+    async def revoke_grant(self, *args):
+        self.calls.append(args)
+        return self.result
+
+
+_REVOKE = {"grant_id": "g1", "session_id": "s1", "host_id": "h1", "chat_id": "c1"}
+
+
+def _revoke(payload, result=True):
+    orch = SimpleNamespace(computer_sessions=_RevokingSessions(result))
+    key, params, notice = run(my_computers.HANDLERS["chrome_computer_grant_revoke"](
+        orch, None, "u1", ["user"], payload))
+    return orch.computer_sessions.calls, key, notice
+
+
+def test_grant_revoke_names_owner_session_host_chat_and_grant(enabled):
+    calls, key, notice = _revoke({**_REVOKE, "surface": "my_computers"})
+    assert calls == [("u1", "s1", "h1", "c1", "g1")] and key == "my_computers"
+    assert "text-green-400" in notice and "Grant revoked." in notice
+
+
+@pytest.mark.parametrize("payload", [{}, {**_REVOKE, "grant_id": ""}, {**_REVOKE, "chat_id": None},
+                                     {**_REVOKE, "host_id": "h" * 257}, {**_REVOKE, "extra": 1},
+                                     {k: v for k, v in _REVOKE.items() if k != "session_id"}, "not-a-dict"])
+def test_grant_revoke_refuses_malformed_payloads_without_touching_grants(enabled, payload):
+    calls, _key, notice = _revoke(payload)
+    assert calls == [] and "That grant is not active." in notice
+
+
+def test_grant_revoke_of_an_unknown_or_foreign_grant_is_a_bounded_error(enabled):
+    calls, _key, notice = _revoke(dict(_REVOKE), result=False)
+    assert len(calls) == 1 and "text-red-400" in notice and "That grant is not active." in notice
+
+
+def test_grant_revoke_is_refused_while_the_feature_is_off(monkeypatch):
+    monkeypatch.setattr(my_computers, "_enabled", lambda: False)
+    calls, _key, notice = _revoke(dict(_REVOKE))
+    assert calls == [] and my_computers._DISABLED_MSG in notice

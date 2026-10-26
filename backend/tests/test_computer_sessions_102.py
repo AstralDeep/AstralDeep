@@ -588,3 +588,118 @@ async def test_turn_cancel_interrupts_running_command_jobs_and_keeps_the_session
     await orch.computer_sessions.end(session, "user_stop")
     await orch.computer_sessions.interrupt_jobs(session)
     assert len([f for f in host_ws.frames("computer_request") if f["args"].get("signal") == "INT"]) == 1
+
+
+def _session_frames(ws):
+    return [json.loads(frame) for frame in ws.sent if json.loads(frame).get("type") == "computer_session"]
+
+
+async def test_session_frames_carry_the_live_grants_in_their_public_shape(recorder):
+    orch, host, controller, session = await _started()
+    await orch.computer_sessions.on_host_event(OWNER, host.host_id, "heartbeat", session.session_id, None)
+    store = orch.computer_sessions.grants
+    app = store.create(OWNER, host.host_id, session.session_id, "chat-1", "task-1",
+                       {"kind": "app", "bundle_id": "com.apple.TextEdit"}, ("input",), now=1_800_000_000.0)
+    window = store.create(OWNER, host.host_id, session.session_id, "chat-1", "task-1",
+                          {"kind": "window", "bundle_id": "com.apple.Notes", "hwnd": 7}, ("input",),
+                          now=1_800_000_000.0)
+    program = store.create(OWNER, host.host_id, session.session_id, "chat-1", "task-1", {"kind": "command"},
+                           ("command",), {"argv0": "npm", "root": ROOT["path"]}, now=1_800_000_000.0)
+    origin = store.create(OWNER, host.host_id, session.session_id, "chat-1", "task-1",
+                          {"kind": "origin", "origin": "https://example.com"}, ("browser",), now=1_800_000_000.0)
+    await _settle()
+    frame = _session_frames(controller)[-1]
+    assert frame["session_id"] == session.session_id and frame["chat_id"] == "chat-1"
+    expires = int(1_800_000_000 + cg.SLIDING_TTL_S)
+    assert frame["grants"] == [
+        {"id": app.grant_id, "kind": "application", "target": "com.apple.TextEdit", "expires_at": expires,
+         "scope": {"kind": "app"}},
+        {"id": window.grant_id, "kind": "application", "target": "com.apple.Notes", "expires_at": expires,
+         "scope": {"kind": "window", "hwnd": 7}},
+        {"id": program.grant_id, "kind": "program", "target": "npm", "expires_at": expires,
+         "scope": {"kind": "command", "root": ROOT["path"]}},
+        {"id": origin.grant_id, "kind": "origin", "target": "https://example.com", "expires_at": expires,
+         "scope": {"kind": "origin"}},
+    ]
+    assert _session_frames(orch.ui_clients[0])[-1]["grants"] == frame["grants"]
+    await orch.computer_sessions.end(session, "user_stop")
+    assert _session_frames(controller)[-1]["grants"] == [] and _session_frames(controller)[-1]["state"] == "ended"
+
+
+async def test_grant_use_and_expiry_refresh_the_frame(recorder):
+    orch, host, controller, session = await _started()
+    grant = _grant(orch, session, host)
+    await _settle()
+    before = len(_session_frames(controller))
+    orch.computer_sessions.grants.touch(grant.grant_id, now=1_800_000_100.0, verb="click",
+                                        target={"bundle_id": "com.apple.TextEdit"})
+    await _settle()
+    assert _session_frames(controller)[-1]["grants"][0]["expires_at"] == int(1_800_000_100 + cg.SLIDING_TTL_S)
+    orch.computer_sessions.grants.expire(now=1_900_000_000.0)
+    await _settle()
+    frames = _session_frames(controller)
+    assert len(frames) == before + 2 and frames[-1]["grants"] == []
+    await orch.computer_sessions.end(session, "user_stop")
+
+
+async def test_expired_grants_are_not_listed_before_they_are_swept(monkeypatch):
+    orch, host, _controller, session = await _started()
+    _grant(orch, session, host)
+    monkeypatch.setattr("orchestrator.computer_sessions.time.time", lambda: 1_900_000_000.0)
+    assert orch.computer_sessions.grant_rows(session) == []
+    await orch.computer_sessions.end(session, "user_stop")
+
+
+async def test_grant_events_after_the_session_ended_push_nothing():
+    orch, host, controller, session = await _started()
+    grant = _grant(orch, session, host)
+    await _settle()
+    orch.computer_sessions._sessions.pop(session.session_id)
+    before = len(controller.sent)
+    orch.computer_sessions.grants.revoke_grant(grant.grant_id, "replaced")
+    await _settle()
+    assert len(controller.sent) == before
+
+
+def test_grant_events_without_a_running_loop_skip_the_push():
+    from orchestrator.computer_sessions import ComputerSession
+
+    orch = _FakeOrch()
+    session = ComputerSession("s-1", OWNER, "h-1", "Mac", 1, "d", "Mac", "chat-1")
+    orch.computer_sessions._sessions[session.session_id] = session
+    orch.computer_sessions._schedule_push(session.session_id)
+    orch.computer_sessions._schedule_push(None)
+    assert orch.computer_sessions._push_pending == set()
+
+
+async def test_owner_revokes_one_grant_with_an_audited_user_reason(recorder):
+    orch, host, controller, session = await _started()
+    keep = _grant(orch, session, host)
+    gone = _grant(orch, session, host, scope={"kind": "app", "bundle_id": "com.apple.Notes"})
+    await _settle()
+    revoked = await orch.computer_sessions.revoke_grant(OWNER, session.session_id, host.host_id, "chat-1",
+                                                        gone.grant_id)
+    await _settle()
+    assert revoked and [g.grant_id for g in orch.computer_sessions.grants.list(session.session_id)] == [keep.grant_id]
+    event = [e for e in recorder.events if e.action_type == cg.EVENT_REVOKED][-1]
+    assert event.inputs_meta["reason"] == "user_revoked" and event.inputs_meta["grant_id"] == gone.grant_id
+    assert [g["id"] for g in _session_frames(controller)[-1]["grants"]] == [keep.grant_id]
+    await orch.computer_sessions.end(session, "user_stop")
+
+
+@pytest.mark.parametrize("change", ["owner", "session", "host", "chat", "grant", "ended"])
+async def test_revoke_is_bound_to_owner_host_session_and_chat(change):
+    orch, host, _controller, session = await _started()
+    grant = _grant(orch, session, host)
+    args = {"owner": "someone-else", "session": "other-session", "host": "other-host", "chat": "chat-2",
+            "grant": "unknown-grant", "ended": None}
+    values = [OWNER, session.session_id, host.host_id, "chat-1", grant.grant_id]
+    index = ["owner", "session", "host", "chat", "grant"].index(change) if change != "ended" else None
+    if index is not None:
+        values[index] = args[change]
+    else:
+        session.state = "ended"
+    assert not await orch.computer_sessions.revoke_grant(*values)
+    assert [g.grant_id for g in orch.computer_sessions.grants.list(session.session_id)] == [grant.grant_id]
+    session.state = "active"
+    await orch.computer_sessions.end(session, "user_stop")

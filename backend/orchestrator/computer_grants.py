@@ -37,7 +37,7 @@ ORIGIN_GRANT_VERBS: FrozenSet[str] = frozenset({
 VERB_CLASSES: FrozenSet[str] = frozenset({"input", "command", "browser"})
 REVOCATION_REASONS: FrozenSet[str] = frozenset({
     "pause", "stop", "takeover", "socket_lost", "host_replaced", "authority_changed",
-    "chat_changed", "app_changed", "window_invalid", "session_ended", "replaced",
+    "chat_changed", "app_changed", "window_invalid", "session_ended", "replaced", "user_revoked",
 })
 
 _NEVER_GRANTABLE_BUNDLES: FrozenSet[str] = frozenset({
