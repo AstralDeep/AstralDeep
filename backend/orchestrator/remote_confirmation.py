@@ -906,6 +906,15 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
 
 
 async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]) -> None:
+    held: list = []
+    try:
+        await _handle_decision(orch, websocket, user_id, payload, held)
+    finally:
+        for origin in held:
+            origin.close()
+
+
+async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any], held: list) -> None:
     from astralprims import Alert
     proposal_id = (payload or {}).get("proposal_id")
     decision = (payload or {}).get("decision")
@@ -1025,6 +1034,11 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
                 decided_at=now,
             )
 
+    from orchestrator.hitl_confirmation import continuation_guidance
+
+    origin, guided = await continuation_guidance(orch, websocket)
+    if origin is not None:
+        held.append(origin)
     approved = await asyncio.to_thread(_approve)
     if approved is None:
         await _say("This request was already handled.")
@@ -1118,22 +1132,23 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
             str(proposal_id), time.time() + policy.retry_grace_s)
         logger.info("remote_op approved but not attempted (%s): retry grace %.0fs id=%s",
                     not_attempted, policy.retry_grace_s, proposal_id)
-    if policy is not None and policy.auto_continue and row.conversation_id and websocket is not None:
+    from orchestrator.hitl_confirmation import CONTINUATION_TEXT, continue_after_approval
+
+    def computer_current():
+        return computer_approval_current(orch, websocket, computer_authority)
+
+    guard = None
+    if policy is not None and policy.auto_continue:
         outcome = _continuation_text(row, result, retry_grace_s=policy.retry_grace_s if not_attempted else 0)
-        try:
-            # Needs a detached context: the click's fence goes stale mid-task
-            asyncio.create_task(
-                orch._serialized_chat(websocket, outcome, row.conversation_id,
-                                      "✓ Approved — continuing", user_id=user_id),
-                context=_detached_turn_context(orch),
-                name=f"remote-op-continue-{row.proposal_id}")
-        except Exception:  # noqa: BLE001
-            logger.debug("remote_op auto-continue failed", exc_info=True)
-
-
-def _detached_turn_context(orch) -> contextvars.Context:
-    from orchestrator.detached_context import detached_context
-    return detached_context(orch)
+    elif row.agent_id == "computer-use-1" and successful_result(result):
+        outcome, guard = CONTINUATION_TEXT, computer_current
+    else:
+        outcome = None
+    if outcome is not None and guided and row.conversation_id and websocket is not None:
+        if origin is not None:
+            held.remove(origin)
+        continue_after_approval(orch, websocket, user_id, row.conversation_id, outcome, "✓ Approved — continuing",
+                                origin, guard=guard, name=f"remote-op-continue-{row.proposal_id}")
 
 
 def _result_data(result) -> Tuple[Any, Any]:

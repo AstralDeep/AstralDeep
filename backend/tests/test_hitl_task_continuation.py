@@ -22,7 +22,10 @@ from tests.test_lets_gate_ordering import gate_orchestrator  # noqa: F401
 
 @pytest.fixture
 def task_runtime(runtime, monkeypatch):  # noqa: F811
+    from shared.feature_flags import flags
+
     orch, ws = runtime
+    monkeypatch.setitem(flags._flags, "user_skills", False)
     monkeypatch.setattr(source_bound, "declaration", strict_declaration)
     orch.tool_permissions.get_tool_scope_map.return_value = {"send_email": "tools:write"}
     orch.audit_recorder.record.return_value = object()

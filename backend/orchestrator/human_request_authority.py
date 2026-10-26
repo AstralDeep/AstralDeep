@@ -50,6 +50,7 @@ _SOCKET_WRITES = frozenset({"chrome_user_skill_save", "chrome_user_skill_toggle"
                            "chrome_safety_stop", "chrome_safety_resume",
                            "chrome_mesh_create", "chrome_mesh_confirm", "chrome_mesh_reject",
                            "chrome_mesh_rename", "chrome_mesh_revoke", "chrome_mesh_remove_invitation"})
+_GUIDANCE_READS = frozenset({"chat_message", "authorize_action", "remote_op_decision"})
 MAX_SOCKET_MESSAGE_BYTES = 128 * 1024
 
 
@@ -620,7 +621,7 @@ class _HumanSocketRequest:
 def capture_human_socket_request(boundary, *, websocket, context, message, purpose="metadata"):
     if purpose == "skill_lookup":
         method = ("WS_READ" if type(message) is dict and message.get("type") == "ui_event"
-                  and message.get("action") == "chat_message" else None)
+                  and message.get("action") in _GUIDANCE_READS else None)
     elif purpose == "metadata":
         method = _socket_method(message)
     elif purpose == "voice_guidance":

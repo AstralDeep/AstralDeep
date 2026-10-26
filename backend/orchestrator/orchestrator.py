@@ -7228,15 +7228,18 @@ class Orchestrator:
         )
         from persistent_agents.models import AssignmentError
 
+        decision_guidance = False
         try:
             if frame.action != "chat_message" or human_lookup_eligible:
                 from orchestrator import user_skills
                 voice_guidance = frame.operation_kind == "voice_chat_message" and (user_skills.enabled() or evidence_context.needs_authority(self))
+                decision_guidance = (not frame.foreground and frame.action in {"authorize_action", "remote_op_decision"}
+                                     and (user_skills.enabled() or evidence_context.needs_authority(self)))
                 frame.human_request = capture_human_socket_request(
                     getattr(self, "human_request_boundary", None), websocket=context.websocket,
                     context=context, message=frame.parsed,
                     purpose=("remote_effect" if frame.foreground else "voice_guidance" if voice_guidance else
-                             "skill_lookup" if frame.action == "chat_message" else "metadata"),
+                             "skill_lookup" if frame.action == "chat_message" or decision_guidance else "metadata"),
                 )
             if frame.human_request is not None:
                 if frame.action == "chrome_open" and frame.surface == "evidence":
@@ -7267,7 +7270,7 @@ class Orchestrator:
             try:
                 logger.warning("human request capture failed action=%s cause=%s",
                                frame.action, getattr(exc, "code", type(exc).__name__))
-                if frame.action != "chat_message":
+                if frame.action != "chat_message" and not decision_guidance:
                     await self._send_connection_admission_refusal(
                         context, frame, code="operation_failed", retryable=False,
                     )
