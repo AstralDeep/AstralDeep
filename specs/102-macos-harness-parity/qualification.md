@@ -46,6 +46,9 @@ Implementation lanes are complete on `claude/102-macos-harness-parity` in Deep a
 | Second cutover (2026-10-26) | image `astraldeep:sha-f1c963541a03484dacfb6e98cb69b95f882695de` (id `sha256:e5bc0626…`) built from Deep `f1c96354` with Projection `960f9cf8` via bundles; paired backup under `/opt/astraldeep-backups/deploy-f1c96354-*`; readiness 200 with db ok, 15 agents, LETS enforce/healthy; `/api/chats` 401; no startup errors |
 | Mac install | 1.9 (70) rebuilt from Projection `960f9cf8` (archive sha256 `cce860597514f346…`), notarized and stapled, installed over the previous 70 and relaunched |
 
+| Second live round (14:32 to 14:36Z, server `f1c96354`, client Projection `960f9cf`) | host online; start_session approved and started twice (14:34:20Z, 14:35:16Z); the new decision-frame human capture failed with `human_authentication_required` so the continuation was skipped (log: "Approval continuation guidance unavailable"); 7 and 27 seconds after each start the host recorded `paused (local_input)` and `ended (consent_revoked)` in the same second because `MacComputerDesktopProbe.usable` requires a resolvable frontmost process and `refreshPermissions` on activation treated the transient failure as a desktop lock; the owner also saw a wrong or missing computer name on approval cards and reported that Esc had let an in-flight tool finish |
+| Fixes in flight | server: decision capture for native sockets or fallback to the proposing turn's guidance origin, card names from the registry, cancel interrupts in-flight tools (`1c33e15e`, not yet deployed); client: desktop probe limited to real lock facts, no withdraw on pause, clearer permission re-add text; settings surfaces renderer rework |
+
 ## Pending
 
 - Full macOS app suite in one pass after the workbench lane commits.
