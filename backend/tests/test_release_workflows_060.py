@@ -133,6 +133,7 @@ BUILD_SIGN_PUBLISH_JOBS = {
     ("apple-release.yml", "release"),
     ("build-windows-candidate.yml", "windows-candidate"),
     ("publish-image.yml", "publish"),
+    ("release-macos.yml", "release"),
     ("release-windows.yml", "build-sign-release"),
     ("release-windows-publisher.yml", "publish"),
 }
