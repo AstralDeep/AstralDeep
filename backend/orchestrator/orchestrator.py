@@ -10771,12 +10771,18 @@ class Orchestrator:
                 elif msg.action == "get_history":
                     await self._push_history_surface(websocket, loading=True)
                     chats = await asyncio.to_thread(
-                        self.history.get_recent_chats, user_id=user_id)
+                        self.history.get_recent_chats, user_id=user_id,
+                        include_archived=(msg.payload or {}).get("include_archived") is True)
                     await self._safe_send(websocket, json.dumps({
                         "type": "history_list",
                         "chats": chats
                     }))
                     await self._push_history_surface(websocket, chats=chats)
+
+                elif (msg.action == "chat_rename" or msg.action == "chat_pin" or msg.action == "chat_unpin"
+                      or msg.action == "chat_archive" or msg.action == "chat_unarchive"):
+                    from orchestrator import chat_organization
+                    await chat_organization.handle(self, websocket, user_id, msg.action, msg.payload)
 
                 elif msg.action == "load_chat":
                     chat_id = msg.payload.get("chat_id")

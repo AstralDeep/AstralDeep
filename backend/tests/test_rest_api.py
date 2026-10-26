@@ -283,6 +283,15 @@ class TestChatEndpoints:
         chats = resp.json()["chats"]
         assert any(c["id"] == chat_id for c in chats)
 
+    def test_archived_chats_are_listed_only_on_request(self, client, orch):
+        chat_id = client.post("/api/chats", headers=AUTH_HEADER).json()["chat_id"]
+        orch.history.add_message(chat_id, "user", "hello", user_id="dev-user-id")
+        assert orch.history.set_chat_flag(chat_id, "archived", True, user_id="dev-user-id")
+        hidden = client.get("/api/chats", headers=AUTH_HEADER).json()["chats"]
+        assert all(c["id"] != chat_id for c in hidden)
+        shown = client.get("/api/chats?include_archived=true", headers=AUTH_HEADER).json()["chats"]
+        assert next(c for c in shown if c["id"] == chat_id)["archived"] is True
+
     def test_get_chat_detail(self, client):
         resp = client.post("/api/chats", headers=AUTH_HEADER)
         chat_id = resp.json()["chat_id"]

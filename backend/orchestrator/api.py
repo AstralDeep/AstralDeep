@@ -550,10 +550,12 @@ chat_router = APIRouter(prefix="/api/chats", tags=["Chat"])
 async def list_chats(
     request: Request,
     limit: int = 20,
+    include_archived: bool = False,
     user_id: str = Depends(require_user_id),
 ):
     orch = _get_orchestrator(request)
-    chats = await asyncio.to_thread(orch.history.get_recent_chats, limit=limit, user_id=user_id)
+    chats = await asyncio.to_thread(orch.history.get_recent_chats, limit=limit, user_id=user_id,
+                                    include_archived=include_archived)
     return ChatListResponse(chats=[ChatSummary(**c) for c in chats])
 
 
