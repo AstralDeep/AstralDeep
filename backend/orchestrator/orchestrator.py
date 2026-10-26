@@ -1725,6 +1725,33 @@ class Orchestrator:
                 return ws
         return candidates[0] if candidates else None
 
+    async def _cancel_turn(self, websocket, user_id, chat_id) -> None:
+        self.cancelled_sessions[id(websocket)] = True
+        if user_id and user_id != "legacy" and chat_id:
+            from orchestrator import hitl_confirmation
+
+            hitl_confirmation.cancel_pending(self, websocket, user_id, chat_id)
+            origins = getattr(self, "_hitl_task_origins", {})
+            origin = origins.get((user_id, chat_id))
+            if origin is not None and origin[0] is websocket:
+                origins.pop((user_id, chat_id), None)
+        recorder = self._chat_recorders.get(id(websocket))
+        if recorder is not None:
+            try:
+                await recorder.cancel_all_in_flight()
+            except Exception:  # pragma: no cover
+                logger.debug("cancel_all_in_flight failed", exc_info=True)
+        await self._safe_send(websocket, json.dumps({
+            "type": "chat_status",
+            "status": "done",
+            "message": "Cancelled"
+        }))
+
+    async def cancel_computer_turn(self, session) -> None:
+        websocket = next((ws for ws in list(self.ui_clients) if id(ws) == session.controller_ws_id), None)
+        if websocket is not None and self._get_user_id(websocket) == session.owner_sub:
+            await self._cancel_turn(websocket, session.owner_sub, session.chat_id)
+
     async def _register_computer_host(self, websocket, owner_sub: str, descriptor) -> None:
         host_id = descriptor.host_id if hasattr(descriptor, "host_id") else descriptor["host_id"]
         displaced = (self.computer_hosts.get(owner_sub, host_id), self.computer_hosts.host_for_socket(websocket))
@@ -1796,7 +1823,7 @@ class Orchestrator:
             self.computer_hosts.withdraw(owner_sub, host.host_id)
             await self.computer_hosts.push_presence(host, "offline")
             return
-        if event in ("heartbeat", "paused", "resumed", "stopped"):
+        if event in ("heartbeat", "paused", "resumed", "stopped", "approval_activity"):
             await self.computer_sessions.on_host_event(
                 owner_sub, host.host_id, event,
                 str(payload.get("session_id") or ""), payload.get("reason"))
@@ -10115,6 +10142,10 @@ class Orchestrator:
                             )
                             self.ui_sessions[websocket] = user_data
                             public_prefs = public_user_preferences(prefs)
+                            if not public_prefs.get("theme"):
+                                from orchestrator.projection_surfaces.theme import default_theme_preferences
+
+                                public_prefs.update(default_theme_preferences())
                             if public_prefs:
                                 await self._safe_send(websocket, json.dumps({
                                     "type": "user_preferences",
@@ -10556,32 +10587,7 @@ class Orchestrator:
                         )
 
                 elif msg.action == "cancel_task":
-                    self.cancelled_sessions[id(websocket)] = True
-                    computer_sessions = getattr(self, "computer_sessions", None)
-                    active_chat = self._ws_active_chat.get(id(websocket))
-                    if user_id and user_id != "legacy" and active_chat:
-                        from orchestrator import hitl_confirmation
-
-                        hitl_confirmation.cancel_pending(self, websocket, user_id, active_chat)
-                        origins = getattr(self, "_hitl_task_origins", {})
-                        origin = origins.get((user_id, active_chat))
-                        if origin is not None and origin[0] is websocket:
-                            origins.pop((user_id, active_chat), None)
-                        if computer_sessions is not None:
-                            for session in computer_sessions.live_for_owner(user_id):
-                                if session.chat_id == active_chat and session.controller_ws_id == id(websocket):
-                                    await computer_sessions.end(session, "user_stop")
-                    recorder = self._chat_recorders.get(id(websocket))
-                    if recorder is not None:
-                        try:
-                            await recorder.cancel_all_in_flight()
-                        except Exception:  # pragma: no cover
-                            logger.debug("cancel_all_in_flight failed", exc_info=True)
-                    await self._safe_send(websocket, json.dumps({
-                        "type": "chat_status",
-                        "status": "done",
-                        "message": "Cancelled"
-                    }))
+                    await self._cancel_turn(websocket, user_id, self._ws_active_chat.get(id(websocket)))
 
                 elif msg.action == "watch_task":
                     task_id = msg.payload.get("task_id")

@@ -97,6 +97,8 @@ def _host_error(exc: ComputerHostError) -> Dict[str, Any]:
         hint = "call start_session first"
     elif exc.code == "paused":
         hint = "someone is using the computer; call resume_session when it is free"
+    elif exc.code == "local_pause_requires_local_resume":
+        hint = "ask the user to press Resume on that computer; do not call resume_session again"
     return _fail(exc.code, exc.message, next_action=hint, **extra)
 
 
@@ -282,7 +284,7 @@ def start_session(**kwargs) -> Dict[str, Any]:
     vision = "yes" if session.images_supported else "no — non-visual mode"
     data = {"session_id": session.session_id, "host_id": host.host_id, "computer": host.name,
             "platform": host.platform, "screens": host.screens, "state": session.state,
-            "images_supported": session.images_supported,
+            "images_supported": session.images_supported, "workspace_roots": host.workspace_roots,
             "note": "Take a screenshot to see the screen; coordinates you send are in the "
                     "screenshot's pixel space."}
     card = Card(title=f"Controlling {host.name}", content=[
@@ -306,7 +308,7 @@ def end_session(**kwargs) -> Dict[str, Any]:
     session = _sessions().live_for_host(user_id, host.host_id)
     if session is None:
         return _data({"ended": False, "note": f"no session on {host.name}"})
-    _bridge(_sessions().end(session, "user_stop"), TIMEOUTS["end_session"], _loop(kwargs))
+    _bridge(_sessions().end(session, "user_stop", cancel_turn=False), TIMEOUTS["end_session"], _loop(kwargs))
     return _data({"ended": True, "reason": "user_stop", "computer": host.name, "verbs_run": session.verbs_run},
                  [Text(content=f"Stopped controlling {host.name}.", variant="body")])
 
@@ -329,7 +331,10 @@ def resume_session(**kwargs) -> Dict[str, Any]:
         await asyncio.sleep(RESUME_SETTLE_SECONDS)
         return session.state
 
-    state = _bridge(_resume_and_verify(), TIMEOUTS["resume_session"], _loop(kwargs))
+    try:
+        state = _bridge(_resume_and_verify(), TIMEOUTS["resume_session"], _loop(kwargs))
+    except ComputerHostError as exc:
+        return _host_error(exc)
     if state == "paused":
         return _fail("paused", f"someone is still using {host.name}; the session paused again "
                                f"({session.pause_reason or 'local input'})",
@@ -394,6 +399,11 @@ def screenshot(**kwargs) -> Dict[str, Any]:
                         if session.images_supported else [])}
 
 
+def _current(user_id, host, session, generation) -> bool:
+    return (_registry().get(user_id, host.host_id) is host and _sessions().get(session.session_id) is session
+            and session.state == "active" and session.authority_generation == generation)
+
+
 def list_windows(**kwargs) -> Dict[str, Any]:
     _u, _c, host, ctx = _ctx(kwargs)
     if not hasattr(ctx, "session_id"):
@@ -409,10 +419,8 @@ def list_windows(**kwargs) -> Dict[str, Any]:
                             "process": _sanitize(w.get("process"), 80),
                             "bundle_id": _sanitize(w.get("bundle_id"), 200), "rect": w.get("rect"),
                             "focused": bool(w.get("focused")), "minimized": bool(w.get("minimized"))})
-    if (_registry().get(_u, host.host_id) is host and _sessions().get(ctx.session_id) is ctx
-            and ctx.state == "active" and ctx.authority_generation == generation):
-        ctx.window_labels = {w["hwnd"]: " · ".join(part for part in (
-            w["bundle_id"] or w["process"], w["title"]) if part) for w in windows if 1 <= w["hwnd"] <= 2**53}
+    if _current(_u, host, ctx, generation):
+        ctx.remember_windows(windows)
     table = Table(headers=["Window", "App", "ID"],
                   rows=[[w["title"], w["bundle_id"] or w["process"], str(w["hwnd"])] for w in windows])
     return _data({"computer": host.name, "windows": windows, "count": len(windows)}, [table])

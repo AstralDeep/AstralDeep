@@ -1,19 +1,26 @@
 """Manages consent-gated remote-control sessions between an owner's client and a
-computer host, with idle/duration caps, heartbeat watchdog, and audit logging; built
-on computer_hosts.py and used by orchestrator.py.
+computer host, with idle/duration caps, heartbeat watchdog, task grants from computer_grants.py
+and audit logging; built on computer_hosts.py and used by orchestrator.py and the agent tools.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import inspect
+import io
 import json
 import logging
 import os
+import posixpath
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from orchestrator.computer_grants import GrantStore
 from orchestrator.computer_hosts import ComputerHost, ComputerHostError, ComputerHostRegistry
 
 logger = logging.getLogger("ComputerSessions")
@@ -30,6 +37,19 @@ END_REASONS = frozenset({
     "host_silent", "host_unresponsive", "idle_timeout", "max_duration",
     "controller_offline", "flag_off",
 })
+STOP_REASONS = frozenset({"user_stop", "local_stop"})
+_GRANT_REVOCATIONS = {
+    "user_stop": "stop", "local_stop": "stop", "host_superseded": "host_replaced", "host_offline": "socket_lost",
+    "host_silent": "socket_lost", "host_unresponsive": "socket_lost", "consent_revoked": "authority_changed",
+}
+_KILL_REASONS = END_REASONS - {"local_stop", "host_offline", "host_superseded", "host_silent",
+                               "host_unresponsive", "consent_revoked"}
+JOB_KILL_TIMEOUT_S = 3.0
+MAX_COMMAND_JOBS = 64
+SCREENSHOT_CACHE_BYTES = 3 * 1024 * 1024
+CROP_PIXELS = 512
+_CROP_PIXEL_LIMIT = 40_000_000
+_MARKER_RGB = (255, 32, 160)
 
 
 @dataclass
@@ -51,6 +71,9 @@ class ComputerSession:
     images_supported: bool = True
     last_screenshot: Optional[Dict[str, Any]] = None
     window_labels: Dict[int, str] = field(default_factory=dict)
+    window_cache: Dict[int, Dict[str, Any]] = field(default_factory=dict)
+    screenshot_cache: Optional[Dict[str, Any]] = None
+    command_jobs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     terminal_ok_until: float = 0.0
     authority_generation: int = 0
     acked: asyncio.Event = field(default_factory=asyncio.Event)
@@ -67,6 +90,62 @@ class ComputerSession:
 
     def grant_terminal(self, seconds: float) -> None:
         self.terminal_ok_until = time.time() + float(seconds)
+
+    def forget_observations(self) -> None:
+        self.window_labels.clear()
+        self.window_cache.clear()
+        self.screenshot_cache = None
+
+    def remember_windows(self, windows: Sequence[Dict[str, Any]]) -> None:
+        self.window_cache = {w["hwnd"]: {"bundle_id": w.get("bundle_id") or w.get("process") or "",
+                                         "title": w.get("title") or "", "rect": w.get("rect"),
+                                         "focused": bool(w.get("focused"))}
+                             for w in windows if isinstance(w.get("hwnd"), int) and 1 <= w["hwnd"] <= 2**53}
+        self.window_labels = {hwnd: " · ".join(part for part in (entry["bundle_id"], entry["title"]) if part)
+                              for hwnd, entry in self.window_cache.items()}
+
+    def remember_screenshot(self, b64: str, media_type: str, width: int, height: int, screen_index: int) -> None:
+        self.screenshot_cache = None
+        if not isinstance(b64, str) or len(b64) > (SCREENSHOT_CACHE_BYTES * 4) // 3 + 4:
+            return
+        try:
+            data = base64.b64decode(b64, validate=True)
+        except (binascii.Error, ValueError):
+            return
+        if len(data) <= SCREENSHOT_CACHE_BYTES:
+            self.screenshot_cache = {"data": data, "media_type": media_type, "width": width, "height": height,
+                                     "screen_index": screen_index}
+
+    def pointer_crop(self, points: Sequence[Tuple[int, int]]) -> Optional[str]:
+        shot = self.screenshot_cache
+        if shot is None or not points:
+            return None
+        try:
+            from PIL import Image as PILImage, ImageDraw
+        except ImportError:
+            return None
+        try:
+            with PILImage.open(io.BytesIO(shot["data"])) as image:
+                width, height = image.size
+                x, y = points[0]
+                if width * height > _CROP_PIXEL_LIMIT or not (0 <= x < width and 0 <= y < height):
+                    return None
+                left = min(max(0, x - CROP_PIXELS // 2), max(0, width - CROP_PIXELS))
+                top = min(max(0, y - CROP_PIXELS // 2), max(0, height - CROP_PIXELS))
+                crop = image.convert("RGB").crop((left, top, min(width, left + CROP_PIXELS),
+                                                  min(height, top + CROP_PIXELS)))
+            draw = ImageDraw.Draw(crop)
+            for px, py in points:
+                cx, cy = px - left, py - top
+                draw.ellipse((cx - 14, cy - 14, cx + 14, cy + 14), outline=_MARKER_RGB, width=3)
+                draw.line((cx - 22, cy, cx + 22, cy), fill=_MARKER_RGB, width=2)
+                draw.line((cx, cy - 22, cx, cy + 22), fill=_MARKER_RGB, width=2)
+            out = io.BytesIO()
+            crop.save(out, "JPEG", quality=80)
+        except Exception:  # noqa: BLE001
+            logger.info("102: pointer crop unavailable for session %s", self.session_id[:12], exc_info=True)
+            return None
+        return base64.b64encode(out.getvalue()).decode("ascii")
 
     def public(self) -> Dict[str, Any]:
         return {
@@ -95,6 +174,8 @@ class ComputerSessionManager:
         self._registry = registry
         self._sessions: Dict[str, ComputerSession] = {}
         self._sweeper: Optional[asyncio.Task] = None
+        self._audit_tasks: set = set()
+        self.grants = GrantStore(events=self._grant_event)
 
     def get(self, session_id: str) -> Optional[ComputerSession]:
         return self._sessions.get(session_id)
@@ -138,7 +219,8 @@ class ComputerSessionManager:
                 if chat_id and existing.chat_id != chat_id:
                     existing.terminal_ok_until = 0.0
                     existing.authority_generation += 1
-                    existing.window_labels.clear()
+                    existing.forget_observations()
+                    self.grants.revoke(existing.session_id, "chat_changed")
                 existing.chat_id = chat_id or existing.chat_id
                 self.touch(existing)
                 return existing
@@ -150,7 +232,8 @@ class ComputerSessionManager:
             existing.controller_ws_id = id(websocket)
             existing.terminal_ok_until = 0.0
             existing.authority_generation += 1
-            existing.window_labels.clear()
+            existing.forget_observations()
+            self.grants.revoke(existing.session_id, "authority_changed")
             existing.controller_label = self._controller_label(websocket)
             existing.controller_device_id = self._device_id(websocket)
             existing.chat_id = chat_id or existing.chat_id
@@ -195,13 +278,18 @@ class ComputerSessionManager:
         session.authority_generation += 1
         session.pause_reason = reason
         session.last_activity_at = time.time()
+        self.grants.revoke(session.session_id, "takeover" if reason == "local_input" else "pause")
         await self._audit(session, "computer_session.paused", f"paused ({reason})")
         if push:
             await self._push(session)
 
-    async def resume(self, session: ComputerSession, *, push: bool = True) -> None:
+    async def resume(self, session: ComputerSession, *, push: bool = True, local: bool = False) -> None:
         if session.state != PAUSED:
             return
+        if session.pause_reason == "local_pause" and not local:
+            raise ComputerHostError("local_pause_requires_local_resume",
+                                    f"{session.host_name} was paused at the computer; only its own Resume "
+                                    "control can continue the session")
         session.state = ACTIVE
         session.authority_generation += 1
         session.pause_reason = None
@@ -210,7 +298,7 @@ class ComputerSessionManager:
         if push:
             await self._push(session)
 
-    async def end(self, session: ComputerSession, reason: str) -> None:
+    async def end(self, session: ComputerSession, reason: str, *, cancel_turn: bool = True) -> None:
         if session.state == ENDED:
             return
         if reason not in END_REASONS:
@@ -221,11 +309,42 @@ class ComputerSessionManager:
         session.reason = reason
         session.last_activity_at = time.time()
         self._sessions.pop(session.session_id, None)
+        self.grants.revoke(session.session_id, _GRANT_REVOCATIONS.get(reason, "session_ended"))
+        jobs = list(session.command_jobs)
+        session.command_jobs.clear()
+        host = self._registry.get(session.owner_sub, session.host_id)
+        if jobs and host is not None and reason in _KILL_REASONS:
+            await self._kill_jobs(host, session, jobs)
+        self._forget_browser(session)
         await self._audit(session, "computer_session.ended", f"ended ({reason})",
-                          outcome="success" if reason in ("user_stop", "local_stop") else "failure")
+                          outcome="success" if reason in STOP_REASONS else "failure")
         await self._push(session)
         logger.info("076: session %s ended (%s) host=%s verbs=%d",
                     session.session_id[:12], reason, session.host_name, session.verbs_run)
+        cancel = getattr(self._orch, "cancel_computer_turn", None)
+        if cancel_turn and reason in STOP_REASONS and callable(cancel):
+            outcome = cancel(session)
+            if inspect.isawaitable(outcome):
+                await outcome
+
+    async def _kill_jobs(self, host: ComputerHost, session: ComputerSession, jobs: List[str]) -> None:
+        results = await asyncio.gather(*(self._registry.request(
+            host, session.session_id, "interrupt_command", {"job_id": job, "signal": "KILL"}, JOB_KILL_TIMEOUT_S)
+            for job in jobs), return_exceptions=True)
+        for job, result in zip(jobs, results):
+            if isinstance(result, BaseException):
+                logger.info("102: job %s on %s not confirmed killed at session end: %s",
+                            job[:12], session.host_name, getattr(result, "code", type(result).__name__))
+
+    @staticmethod
+    def _forget_browser(session: ComputerSession) -> None:
+        forget = getattr(sys.modules.get("agents.computer_use.browser_tools"), "forget", None)
+        if callable(forget):
+            try:
+                forget(session.session_id)
+            except Exception:  # noqa: BLE001
+                logger.warning("102: browser page state for session %s was not released", session.session_id[:12],
+                               exc_info=True)
 
     def touch(self, session: ComputerSession) -> None:
         session.last_activity_at = time.time()
@@ -251,9 +370,12 @@ class ComputerSessionManager:
         elif event == "paused":
             await self.pause(session, reason or "local_input")
         elif event == "resumed":
-            await self.resume(session)
+            await self.resume(session, local=True)
         elif event == "stopped":
             await self.end(session, "local_stop")
+        elif event == "approval_activity":
+            await self._audit(session, "computer_session.approval_activity",
+                              "input on the controlled host acted on an approval card")
 
     def _device_id(self, websocket) -> str:
         try:
@@ -297,6 +419,56 @@ class ComputerSessionManager:
             ))
         except Exception:  # noqa: BLE001
             logger.debug("076: session audit failed (%s)", action_type, exc_info=True)
+
+    def _grant_event(self, name: str, payload: Dict[str, Any]) -> None:
+        try:
+            from datetime import datetime, timezone
+
+            from audit.recorder import get_recorder
+            from audit.schemas import AuditEventCreate
+            recorder = get_recorder()
+            if recorder is None:
+                return
+            scope, command = payload.get("scope") or {}, payload.get("command") or {}
+            meta: Dict[str, Any] = {key: payload[key] for key in ("grant_id", "host_id", "task_id", "verb", "reason")
+                                    if key in payload}
+            meta["scope"] = scope.get("kind")
+            meta.update({key: scope[key] for key in ("bundle_id", "hwnd", "origin") if key in scope})
+            if command:
+                meta["argv0"], meta["folder"] = command.get("argv0"), posixpath.basename(command.get("root") or "")
+            target = payload.get("target") or {}
+            if isinstance(target.get("cwd"), str):
+                meta["folder"] = posixpath.basename(target["cwd"].rstrip("/"))
+            event = AuditEventCreate(
+                actor_user_id=payload["owner_id"], auth_principal=payload["owner_id"],
+                event_class="agent_lifecycle", action_type=name,
+                description=f"task grant {name.rsplit('.', 1)[-1]} ({meta['scope']})",
+                conversation_id=payload.get("chat_id"), correlation_id=payload["session_id"],
+                outcome="success",
+                inputs_meta=meta, started_at=datetime.now(timezone.utc))
+        except Exception:  # noqa: BLE001
+            logger.warning("102: grant audit record could not be built (%s)", name, exc_info=True)
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            try:
+                recorder.record_blocking(event)
+            except Exception:  # noqa: BLE001
+                logger.warning("102: grant audit failed (%s)", name, exc_info=True)
+            return
+        task = loop.create_task(self._record_grant(recorder, event, name))
+        self._audit_tasks.add(task)
+        task.add_done_callback(self._audit_tasks.discard)
+
+    @staticmethod
+    async def _record_grant(recorder, event, name: str) -> None:
+        try:
+            await recorder.record(event)
+        except Exception:  # noqa: BLE001
+            logger.warning("102: grant audit failed (%s)", name, exc_info=True)
 
     def _ensure_sweeper(self) -> None:
         if self._sweeper is None or self._sweeper.done():

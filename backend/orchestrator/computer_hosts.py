@@ -56,6 +56,10 @@ class ComputerHost:
     def screens(self) -> List[Dict[str, Any]]:
         return list(self.descriptor.get("screens") or [])
 
+    @property
+    def workspace_roots(self) -> List[Dict[str, str]]:
+        return [dict(root) for root in self.descriptor.get("workspace_roots") or []]
+
     def public(self, online: bool = True) -> Dict[str, Any]:
         return {
             "host_id": self.host_id,
@@ -64,6 +68,7 @@ class ComputerHost:
             "client_version": str(self.descriptor.get("client_version") or ""),
             "screens": self.screens,
             "verbs": list(self.verbs),
+            "workspace_roots": self.workspace_roots,
             "online": online,
             "last_seen": int(self.last_seen),
         }

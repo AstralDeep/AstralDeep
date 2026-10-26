@@ -4,6 +4,7 @@ every agent's mcp_server.py and the orchestrator's dispatch and chat pipelines.
 """
 
 import json
+import posixpath
 import re
 import uuid
 from dataclasses import asdict, dataclass, field, fields, replace
@@ -2699,6 +2700,14 @@ COMPUTER_HOST_PLATFORMS: frozenset = frozenset({"windows", "macos", "linux"})
 COMPUTER_HOST_PROTOCOL = 1
 _COMPUTER_HOST_NAME_MAX = 64
 _COMPUTER_HOST_MAX_SCREENS = 8
+_COMPUTER_HOST_MAX_ROOTS = 16
+_COMPUTER_HOST_ROOT_NAME_MAX = 128
+_COMPUTER_HOST_ROOT_PATH_MAX = 1024
+
+
+def _printable(value: Any, limit: int) -> bool:
+    return (isinstance(value, str) and bool(value.strip()) and len(value) <= limit
+            and not any(ord(ch) < 32 or ord(ch) == 127 for ch in value))
 
 
 @dataclass(frozen=True)
@@ -2710,6 +2719,24 @@ class ComputerHostDescriptor:
     screens: tuple
     verbs: tuple
     protocol: int = COMPUTER_HOST_PROTOCOL
+    workspace_roots: tuple = ()
+
+    def _validate_roots(self) -> None:
+        roots = self.workspace_roots
+        if not isinstance(roots, tuple) or len(roots) > _COMPUTER_HOST_MAX_ROOTS:
+            raise ProtocolValidationError(
+                f"computer_host.workspace_roots must list at most {_COMPUTER_HOST_MAX_ROOTS} folders")
+        paths = set()
+        for root in roots:
+            if not isinstance(root, Mapping) or set(root) != {"name", "path"}:
+                raise ProtocolValidationError("computer_host.workspace_roots entries must contain exactly name, path")
+            path = root["path"]
+            if (not _printable(root["name"], _COMPUTER_HOST_ROOT_NAME_MAX)
+                    or not _printable(path, _COMPUTER_HOST_ROOT_PATH_MAX) or not path.startswith("/")
+                    or path == "/" or posixpath.normpath(path) != path or path in paths):
+                raise ProtocolValidationError(
+                    "computer_host.workspace_roots entries need a printable name and a unique canonical absolute path")
+            paths.add(path)
 
     def validate(self) -> None:
         _require_uuid4(self.host_id, "computer_host.host_id")
@@ -2758,10 +2785,11 @@ class ComputerHostDescriptor:
         unknown = sorted(set(verbs) - COMPUTER_HOST_VERBS)
         if unknown:
             raise ProtocolValidationError(f"computer_host.verbs contains unknown verbs: {unknown}")
+        self._validate_roots()
 
     def to_dict(self) -> Dict[str, Any]:
         self.validate()
-        return {
+        data = {
             "host_id": self.host_id,
             "name": self.name,
             "platform": self.platform,
@@ -2770,20 +2798,26 @@ class ComputerHostDescriptor:
             "verbs": list(self.verbs),
             "protocol": self.protocol,
         }
+        if self.workspace_roots:
+            data["workspace_roots"] = [dict(root) for root in self.workspace_roots]
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ComputerHostDescriptor":
         if not isinstance(data, Mapping):
             raise ProtocolValidationError("computer_host must be an object")
         expected = {item.name for item in fields(cls)}
-        if set(data) != expected:
+        if not expected - {"workspace_roots"} <= set(data) <= expected:
             raise ProtocolValidationError(
                 "computer_host must contain exactly host_id, name, platform, client_version, "
-                "screens, verbs, protocol")
+                "screens, verbs, protocol and optionally workspace_roots")
         screens = data.get("screens")
         verbs = data.get("verbs")
-        if not isinstance(screens, (list, tuple)) or not isinstance(verbs, (list, tuple)):
-            raise ProtocolValidationError("computer_host.screens and computer_host.verbs must be arrays")
+        roots = data.get("workspace_roots", ())
+        if (not isinstance(screens, (list, tuple)) or not isinstance(verbs, (list, tuple))
+                or not isinstance(roots, (list, tuple))):
+            raise ProtocolValidationError(
+                "computer_host.screens, computer_host.verbs and computer_host.workspace_roots must be arrays")
         descriptor = cls(
             host_id=data["host_id"],
             name=data["name"],
@@ -2792,6 +2826,7 @@ class ComputerHostDescriptor:
             screens=tuple(dict(s) if isinstance(s, Mapping) else s for s in screens),
             verbs=tuple(verbs),
             protocol=data["protocol"],
+            workspace_roots=tuple(dict(r) if isinstance(r, Mapping) else r for r in roots),
         )
         descriptor.validate()
         return descriptor
