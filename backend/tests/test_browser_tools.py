@@ -560,7 +560,7 @@ async def test_other_host_failures_keep_the_ordinary_error_shape(world):
     await world.orch.computer_sessions.on_host_event(OWNER, world.host.host_id, "paused", world.session.session_id,
                                                      "local_input")
     paused = await world.call("browser_snapshot")
-    assert paused["_data"]["code"] == "paused"
+    assert paused["_data"]["code"] == "local_resume_required" and paused["_ui_components"][0]["variant"] == "error"
     unattended = await asyncio.to_thread(browser_tools.browser_snapshot, session_id=CHAT)
     assert unattended["_data"]["code"] == "unattended_refused"
 

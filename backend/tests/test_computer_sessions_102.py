@@ -76,11 +76,141 @@ async def test_local_pause_refuses_remote_resume_until_the_host_resumes(recorder
     await orch.computer_sessions.end(session, "user_stop")
 
 
-async def test_takeover_pause_still_resumes_remotely():
+async def test_local_input_pause_refuses_remote_resume_and_audits_the_refusal(recorder):
+    orch, host, _controller, session = await _started()
+    await orch.computer_sessions.on_host_event(OWNER, host.host_id, "paused", session.session_id, "local_input")
+    generation = session.authority_generation
+    with pytest.raises(ComputerHostError) as refused:
+        await orch.computer_sessions.resume(session)
+    assert refused.value.code == "local_resume_required"
+    assert session.state == "paused" and session.pause_reason == "local_input"
+    assert session.authority_generation == generation
+    refusal = [e for e in recorder.events if e.action_type == "computer_session.resume_refused"]
+    assert len(refusal) == 1 and refusal[0].outcome == "failure"
+    assert refusal[0].inputs_meta["reason"] == "local_resume_required"
+    assert refusal[0].correlation_id == session.session_id and refusal[0].conversation_id == "chat-1"
+    await orch.computer_sessions.on_host_event(OWNER, host.host_id, "resumed", session.session_id, None)
+    assert session.state == "active" and session.pause_reason is None
+    await orch.computer_sessions.end(session, "user_stop")
+
+
+@pytest.mark.parametrize("reason", ["user_pause", "approval_not_completed", "manual_pause"])
+async def test_remote_pause_reasons_still_resume_remotely(reason):
     orch, _host, _controller, session = await _started()
-    await orch.computer_sessions.pause(session, "local_input")
+    await orch.computer_sessions.pause(session, reason)
     await orch.computer_sessions.resume(session)
     assert session.state == "active"
+    await orch.computer_sessions.end(session, "user_stop")
+
+
+async def test_local_pause_refusal_is_audited_too(recorder):
+    orch, _host, _controller, session = await _started()
+    await orch.computer_sessions.pause(session, "local_pause")
+    with pytest.raises(ComputerHostError):
+        await orch.computer_sessions.resume(session)
+    refusal = [e for e in recorder.events if e.action_type == "computer_session.resume_refused"]
+    assert [e.inputs_meta["reason"] for e in refusal] == ["local_pause_requires_local_resume"]
+    await orch.computer_sessions.end(session, "user_stop")
+
+
+async def test_resume_session_tool_reports_the_local_input_refusal(monkeypatch):
+    orch, _host, _controller, session = await _started()
+    monkeypatch.setattr(mcp_tools, "_ORCH", orch)
+    monkeypatch.setattr(mcp_tools, "_LOOP", asyncio.get_running_loop())
+    await orch.computer_sessions.pause(session, "local_input")
+    result = await asyncio.to_thread(mcp_tools.resume_session, user_id=OWNER, session_id="chat-1")
+    assert result["_data"]["code"] == "local_resume_required"
+    _assert_terminal(result)
+    assert session.state == "paused"
+    await orch.computer_sessions.end(session, "user_stop")
+
+
+def _assert_terminal(result):
+    alert, = result["_ui_components"]
+    assert alert["variant"] == "error" and "Stop now and end your turn" in alert["message"]
+    assert "press Resume" in result["_data"]["next_action"]
+    assert "do not call resume_session, wait or any other computer tool" in result["_data"]["next_action"]
+
+
+async def _locally_paused(monkeypatch, reason="local_input"):
+    orch, host, controller, session = await _started()
+    monkeypatch.setattr(mcp_tools, "_ORCH", orch)
+    monkeypatch.setattr(mcp_tools, "_LOOP", asyncio.get_running_loop())
+    await orch.computer_sessions.on_host_event(OWNER, host.host_id, "paused", session.session_id, reason)
+    requests = []
+
+    async def request(*args, **kwargs):
+        requests.append(args)
+        raise AssertionError("a locally paused session must not reach the host")
+    monkeypatch.setattr(orch.computer_hosts, "request", request)
+    return orch, host, session, requests
+
+
+@pytest.mark.parametrize("reason", ["local_input", "local_pause"])
+@pytest.mark.parametrize("verb,args", [("screenshot", {}), ("list_windows", {}), ("wait", {"seconds": 5}),
+                                       ("click", {"x": 1, "y": 2}), ("read_file", {"path": "/tmp/x"})])
+async def test_every_verb_on_a_locally_paused_session_is_a_terminal_refusal(monkeypatch, reason, verb, args):
+    orch, _host, session, requests = await _locally_paused(monkeypatch, reason)
+    result = await asyncio.to_thread(getattr(mcp_tools, verb), user_id=OWNER, session_id="chat-1", **args)
+    assert result["_data"]["code"] == "local_resume_required" and requests == []
+    _assert_terminal(result)
+    await orch.computer_sessions.end(session, "user_stop")
+
+
+async def test_start_session_on_a_locally_paused_session_is_a_terminal_refusal(monkeypatch):
+    orch, _host, session, _requests = await _locally_paused(monkeypatch)
+    monkeypatch.setattr(orch, "socket_for_chat", lambda user, chat: orch.ui_clients[1], raising=False)
+    result = await asyncio.to_thread(mcp_tools.start_session, user_id=OWNER, session_id="chat-1")
+    assert result["_data"]["code"] == "local_resume_required"
+    _assert_terminal(result)
+    await orch.computer_sessions.end(session, "user_stop")
+
+
+async def test_the_dispatcher_does_not_retry_a_local_pause_refusal(monkeypatch):
+    from types import SimpleNamespace
+
+    from agents.computer_use.mcp_server import MCPServer
+    from orchestrator.orchestrator import Orchestrator
+    from shared.protocol import MCPRequest
+
+    orch, _host, session, requests = await _locally_paused(monkeypatch)
+    server, calls = MCPServer(), []
+
+    async def execute_tool_and_wait(agent, tool, args, **kwargs):
+        calls.append(tool)
+        request = MCPRequest(request_id="r", method="tools/call", params={"name": tool, "arguments": args})
+        return await asyncio.to_thread(server.process_request, request)
+    dispatcher = SimpleNamespace(MAX_RETRIES=3, RETRY_BACKOFF=[0.0, 0.0], execute_tool_and_wait=execute_tool_and_wait,
+                                 _protected_dispatch_channel=lambda websocket, explicit=None: "web")
+    response = await Orchestrator._execute_with_retry_loop(
+        dispatcher, None, "computer-use-1", "screenshot", {"user_id": OWNER, "session_id": "chat-1"},
+        user_id=OWNER, audit_conversation_id="chat-1")
+    assert calls == ["screenshot"] and requests == []
+    assert response.error["retryable"] is False
+    assert response.error["message"].startswith("local_resume_required:") and "press Resume" in response.error["message"]
+    await orch.computer_sessions.end(session, "user_stop")
+
+
+async def test_a_repeated_host_pause_is_acknowledged_on_the_session_frame(recorder):
+    orch, host, controller, session = await _started()
+    await orch.computer_sessions.on_host_event(OWNER, host.host_id, "paused", session.session_id, "local_input")
+    host_socket = orch.ui_clients[0]
+    before = len(host_socket.sent)
+    await orch.computer_sessions.on_host_event(OWNER, host.host_id, "paused", session.session_id, "local_input")
+    frames = [json.loads(frame) for frame in host_socket.sent[before:]]
+    assert [(f["type"], f["session_id"], f["state"], f["pause_reason"]) for f in frames] == [
+        ("computer_session", session.session_id, "paused", "local_input")]
+    assert [e.action_type for e in recorder.events].count("computer_session.paused") == 1
+    await orch.computer_sessions.end(session, "user_stop")
+
+
+@pytest.mark.parametrize("reported", [None, "user_pause", "something_else"])
+async def test_a_host_reported_pause_is_always_local(reported):
+    orch, host, _controller, session = await _started()
+    await orch.computer_sessions.on_host_event(OWNER, host.host_id, "paused", session.session_id, reported)
+    assert session.pause_reason == "local_input"
+    with pytest.raises(ComputerHostError):
+        await orch.computer_sessions.resume(session)
     await orch.computer_sessions.end(session, "user_stop")
 
 

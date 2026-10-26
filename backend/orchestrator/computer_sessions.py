@@ -38,6 +38,7 @@ END_REASONS = frozenset({
     "controller_offline", "flag_off",
 })
 STOP_REASONS = frozenset({"user_stop", "local_stop"})
+LOCAL_RESUME_REFUSALS = {"local_pause": "local_pause_requires_local_resume", "local_input": "local_resume_required"}
 _GRANT_REVOCATIONS = {
     "user_stop": "stop", "local_stop": "stop", "host_superseded": "host_replaced", "host_offline": "socket_lost",
     "host_silent": "socket_lost", "host_unresponsive": "socket_lost", "consent_revoked": "authority_changed",
@@ -297,10 +298,12 @@ class ComputerSessionManager:
     async def resume(self, session: ComputerSession, *, push: bool = True, local: bool = False) -> None:
         if session.state != PAUSED:
             return
-        if session.pause_reason == "local_pause" and not local:
-            raise ComputerHostError("local_pause_requires_local_resume",
-                                    f"{session.host_name} was paused at the computer; only its own Resume "
-                                    "control can continue the session")
+        refusal = None if local else LOCAL_RESUME_REFUSALS.get(session.pause_reason or "")
+        if refusal is not None:
+            await self._audit(session, "computer_session.resume_refused", f"resume refused ({refusal})",
+                              outcome="failure", meta={"reason": refusal, "pause_reason": session.pause_reason})
+            raise ComputerHostError(refusal, f"{session.host_name} was paused at the computer; only its own Resume "
+                                             "control can continue the session")
         session.state = ACTIVE
         session.authority_generation += 1
         session.pause_reason = None
@@ -385,7 +388,11 @@ class ComputerSessionManager:
             if not session.acked.is_set():
                 session.acked.set()
         elif event == "paused":
-            await self.pause(session, reason or "local_input")
+            local = reason if reason in LOCAL_RESUME_REFUSALS else "local_input"
+            if session.state == PAUSED and session.pause_reason == local:
+                await self._push(session)
+            else:
+                await self.pause(session, local)
         elif event == "resumed":
             await self.resume(session, local=True)
         elif event == "stopped":
@@ -412,7 +419,7 @@ class ComputerSessionManager:
                 logger.debug("076: computer_session push failed", exc_info=True)
 
     async def _audit(self, session: ComputerSession, action_type: str, description: str,
-                     *, outcome: str = "success") -> None:
+                     *, outcome: str = "success", meta: Optional[Dict[str, Any]] = None) -> None:
         try:
             from datetime import datetime, timezone
 
@@ -431,7 +438,7 @@ class ComputerSessionManager:
                 correlation_id=session.session_id,
                 outcome=outcome,
                 inputs_meta={"host_id": session.host_id, "controller": session.controller_label,
-                             "verbs_run": session.verbs_run},
+                             "verbs_run": session.verbs_run, **(meta or {})},
                 started_at=datetime.now(timezone.utc),
             ))
         except Exception:  # noqa: BLE001

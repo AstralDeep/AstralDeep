@@ -89,3 +89,54 @@ def test_remote_resume_of_a_local_pause_names_the_mac(enabled, monkeypatch):
     _, _, notice = run(my_computers._h_session_resume(_Orch(), None, "u1", ["user"], {"session_id": "s1"}))
     assert "text-red-400" in notice
     assert "Studio was paused on that Mac. Resume it there." in notice
+
+
+class _InputPausedSessions:
+    async def resume(self, session):
+        from orchestrator.computer_hosts import ComputerHostError
+        raise ComputerHostError("local_resume_required", "paused by local input")
+
+
+class _InputPausedOrch:
+    computer_sessions = _InputPausedSessions()
+
+
+def test_remote_resume_of_a_local_input_pause_is_refused_with_a_notice(enabled, monkeypatch):
+    monkeypatch.setattr(my_computers, "_owned_session", lambda orch, user, payload: _Session())
+    _, _, notice = run(my_computers._h_session_resume(_InputPausedOrch(), None, "u1", ["user"], {"session_id": "s1"}))
+    assert "text-red-400" in notice
+    assert "Studio was paused at that computer. Resume it there." in notice
+
+
+class _BrokenSessions:
+    async def resume(self, session):
+        from orchestrator.computer_hosts import ComputerHostError
+        raise ComputerHostError("failed", "other")
+
+
+class _BrokenOrch:
+    computer_sessions = _BrokenSessions()
+
+
+def test_other_resume_failures_still_propagate(enabled, monkeypatch):
+    from orchestrator.computer_hosts import ComputerHostError
+    monkeypatch.setattr(my_computers, "_owned_session", lambda orch, user, payload: _Session())
+    with pytest.raises(ComputerHostError):
+        run(my_computers._h_session_resume(_BrokenOrch(), None, "u1", ["user"], {"session_id": "s1"}))
+
+
+def _paused(reason):
+    return {**_host(), "session": {"session_id": "s1", "state": "paused", "pause_reason": reason,
+                                   "controller_label": "Mac", "verbs_run": 0}}
+
+
+@pytest.mark.parametrize("reason,offered", [("local_input", False), ("local_pause", False),
+                                            ("user_pause", True), (None, True)])
+def test_resume_is_offered_only_for_remotely_resumable_pauses(enabled, monkeypatch, reason, offered):
+    blob = json.dumps(_components(monkeypatch, [_paused(reason)], None))
+    assert ("chrome_computer_session_resume" in blob) is offered
+    assert "chrome_computer_session_stop" in blob
+    monkeypatch.setattr(my_computers, "_this_computer", lambda orch, user, params: None)
+    html = run(my_computers.render(object(), "u1", ["user"], {}))
+    assert ("chrome_computer_session_resume" in html) is offered
+    assert "chrome_computer_session_stop" in html

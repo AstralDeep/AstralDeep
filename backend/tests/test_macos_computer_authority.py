@@ -66,7 +66,7 @@ async def test_pause_then_resume_does_not_restore_terminal_authority():
     session = await _session(orch, host, orch.add(_WS(chat="chat-1")))
     session.grant_terminal(180)
     await orch.computer_sessions.pause(session, "local_input")
-    await orch.computer_sessions.resume(session)
+    await orch.computer_sessions.resume(session, local=True)
     assert not session.terminal_ok
     await orch.computer_sessions.end(session, "user_stop")
 
@@ -196,7 +196,7 @@ async def test_stale_terminal_approval_cannot_grant_new_authority(change):
                           conversation_id="chat-1", tool_name="open_app", arguments={"app": "powershell"})
     if change == "pause":
         await orch.computer_sessions.pause(session, "local_input")
-        await orch.computer_sessions.resume(session)
+        await orch.computer_sessions.resume(session, local=True)
     elif change == "chat":
         orch._ws_active_chat[id(controller)] = "other-chat"
     elif change == "owner":
@@ -267,7 +267,7 @@ async def test_queued_input_cannot_survive_pause_and_resume(monkeypatch):
     pending = asyncio.create_task(asyncio.to_thread(mcp_tools._run, host, session, "click", {"x": 1, "y": 2}, loop))
     await entered.wait()
     await orch.computer_sessions.pause(session, "local_input")
-    await orch.computer_sessions.resume(session)
+    await orch.computer_sessions.resume(session, local=True)
     session.lock.release()
     _result, refusal = await pending
     assert refusal["_data"]["code"] == "no_session" and not effects

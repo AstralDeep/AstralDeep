@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from webrender.chrome import esc, notice_block
 
 from orchestrator.computer_hosts import ComputerHostError
+from orchestrator.computer_sessions import LOCAL_RESUME_REFUSALS
 
 TITLE = "My computers"
 SURFACE_KEY = "my_computers"
@@ -60,6 +61,10 @@ def _rows(orch, user_id: str) -> List[Dict[str, Any]]:
     return hosts
 
 
+def _remotely_resumable(s: Dict[str, Any]) -> bool:
+    return s["state"] == "paused" and s.get("pause_reason") not in LOCAL_RESUME_REFUSALS
+
+
 def _session_line(h: Dict[str, Any]) -> str:
     s = h.get("session")
     if not s:
@@ -84,11 +89,11 @@ def _host_html(h: Dict[str, Any]) -> str:
                            f"data-ui-payload='{{\"host_id\":\"{hid}\"}}'>Control this computer</button>")
         else:
             sid = esc(s["session_id"])
-            if s["state"] == "paused":
+            if _remotely_resumable(s):
                 buttons.append(f'<button type="button" class="{_BTN_PRIMARY}" '
                                f'data-ui-action="chrome_computer_session_resume" '
                                f"data-ui-payload='{{\"session_id\":\"{sid}\"}}'>Resume</button>")
-            else:
+            elif s["state"] != "paused":
                 buttons.append(f'<button type="button" class="{_BTN}" '
                                f'data-ui-action="chrome_computer_session_pause" '
                                f"data-ui-payload='{{\"session_id\":\"{sid}\"}}'>Pause</button>")
@@ -212,10 +217,10 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
                 buttons.append(_sdui.button("Control this computer", "chrome_computer_session_start",
                                             payload={"host_id": h["host_id"]}))
             else:
-                if s["state"] == "paused":
+                if _remotely_resumable(s):
                     buttons.append(_sdui.button("Resume", "chrome_computer_session_resume",
                                                 payload={"session_id": s["session_id"]}))
-                else:
+                elif s["state"] != "paused":
                     buttons.append(_sdui.button("Pause", "chrome_computer_session_pause",
                                                 payload={"session_id": s["session_id"]}, variant="secondary"))
                 buttons.append(_sdui.button("Stop", "chrome_computer_session_stop",
@@ -283,6 +288,9 @@ async def _h_session_resume(orch, websocket, user_id, roles, payload):
     try:
         await orch.computer_sessions.resume(session)
     except ComputerHostError as exc:
+        if exc.code == "local_resume_required":
+            return (SURFACE_KEY, {}, notice_block(
+                "error", f"{esc(session.host_name)} was paused at that computer. Resume it there."))
         if exc.code != "local_pause_requires_local_resume":
             raise
         return (SURFACE_KEY, {}, notice_block(

@@ -120,7 +120,7 @@ async def test_grant_survives_turns_and_is_revoked_with_the_session_pause(task_r
     hc.begin_task(orch, ws, OWNER, CHAT)
     assert (await _call(task_runtime, "type_text", text="b", hwnd=42)).result["_data"]["ok"]
     await orch.computer_sessions.pause(session, "local_input")
-    await orch.computer_sessions.resume(session)
+    await orch.computer_sessions.resume(session, local=True)
     again = await _call(task_runtime, "type_text", text="c", hwnd=42)
     assert again.result["_data"]["status"] == "confirmation_required" and len(effects) == 2
 
