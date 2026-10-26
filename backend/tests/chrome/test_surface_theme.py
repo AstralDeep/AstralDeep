@@ -100,7 +100,7 @@ def test_server_palette_snapshot_cannot_be_used_for_another_owner():
     assert components[0]["colors"]["accent"] == "#2DD4BF"
 
 
-GRAPHITE = {"bg": "#0B0B0D", "surface": "#151518", "primary": "#8B5CF6", "secondary": "#6E6E78",
+GRAPHITE = {"bg": "#0B0B0D", "surface": "#151518", "primary": "#7C3AED", "secondary": "#6E6E78",
             "text": "#ECECEF", "muted": "#8C8C95", "accent": "#A78BFA"}
 
 
