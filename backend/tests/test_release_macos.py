@@ -12,6 +12,7 @@ import importlib.util
 import json
 import plistlib
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -28,15 +29,21 @@ PROJECTION = "b" * 40
 DEEP = "a" * 40
 SIGNATURE = "S" * 86 + "=="
 NOW = dt.datetime(2026, 10, 26, 12, 0, 0, tzinfo=dt.timezone.utc)
+FEED = "https://astraldeep.github.io/appcast.xml"
+POLICY = "https://astraldeep.github.io/data/mac-update-policy.json"
+DMG = "AstralDeep-2.0.0-71-arm64.dmg"
+ASSETS = "https://github.com/AstralDeep/AstralDeep/releases/download/macos-v2.0.0-71/"
 IDENTITY = {
-    "version": "1.9", "build": 70, "minimumMacOS": "14.0", "architecture": "arm64",
+    "version": "2.0.0", "build": 71, "minimumMacOS": "14.0", "architecture": "arm64",
     "bundleID": "com.personalailabs.astraldeep", "executableSHA256": "e" * 64, "teamID": "593LGH35GS",
 }
+SITE_FILES = ["downloads.json", "appcast.xml", "mac-update-policy.json", "mac-update-policy.json.sig"]
 
 
-def item(build: int, version: str, channel: str | None = None, length: int = 111, signature: str = "O" * 86 + "==") -> str:
+def item(build: int, version: str, channel: str | None = None, length: int = 111, signature: str = "O" * 86 + "==",
+         suffix: str = "zip") -> str:
     tag = f"macos-v{version}-{build}"
-    url = f"https://github.com/AstralDeep/AstralDeep/releases/download/{tag}/AstralDeep-{version}-{build}-arm64.zip"
+    url = f"https://github.com/AstralDeep/AstralDeep/releases/download/{tag}/AstralDeep-{version}-{build}-arm64.{suffix}"
     extra = f"<sparkle:channel>{channel}</sparkle:channel>" if channel else ""
     return (
         f"<item><title>{version}</title><sparkle:version>{build}</sparkle:version>"
@@ -52,6 +59,13 @@ def feed(*items: str) -> str:
     )
 
 
+def published(build: int, version: str, *, draft: bool = False, tag: str | None = None, assets=()) -> dict:
+    return {
+        "tag_name": tag or f"macos-v{version}-{build}", "draft": draft, "target_commitish": "c" * 40,
+        "assets": [{"name": name} for name in assets],
+    }
+
+
 def write_app(app, info):
     (app / "Contents").mkdir(parents=True)
     (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info))
@@ -64,7 +78,7 @@ class FakeRunner(release.Runner):
         super().__init__(out=env.lines.append, **kwargs)
         self.env = env
         self.fail: list = []
-        self.curl: list[str] = []
+        self.probes: list[str] = []
         self.dirty: set[str] = set()
         self.release_exists = False
         self.immutable = True
@@ -79,6 +93,8 @@ class FakeRunner(release.Runner):
         self.generate_item = None
         self.extra_stage_file = False
         self.pin = PROJECTION
+        self.listing: str | None = None
+        self.mounted: list[Path] = []
 
     def _execute(self, command, cwd):
         for matcher in self.fail:
@@ -111,7 +127,17 @@ class FakeRunner(release.Runner):
         if command[1] == "-c":
             Path(command[-1]).write_bytes(b"zip-bytes-" + command[-1].encode())
         else:
-            (Path(command[-1]) / "AstralDeep.app").mkdir(parents=True)
+            Path(command[-1]).mkdir(parents=True)
+
+    def _hdiutil(self, command, cwd):
+        if command[1] == "create":
+            Path(command[-1]).write_bytes(b"dmg-bytes-" + command[-1].encode())
+        elif command[1] == "attach":
+            mount = Path(command[command.index("-mountpoint") + 1])
+            (mount / "AstralDeep.app").mkdir(parents=True, exist_ok=True)
+            self.mounted.append(mount)
+        elif command[1] == "detach":
+            self.mounted.remove(Path(command[2]))
 
     def _xcrun(self, command, cwd):
         if command[1] == "notarytool":
@@ -138,11 +164,11 @@ class FakeRunner(release.Runner):
     def _generate_appcast(self, command, cwd):
         out = Path(command[command.index("-o") + 1])
         staging = Path(command[-1])
-        archive = next(staging.glob("*.zip"))
+        archive = next(staging.glob("*.dmg"))
         build, version = self.env.build, self.env.version
         channel = "preview" if "--channel" in command else None
         kept = re.findall(r"<item>.*?</item>", out.read_text(), re.S) if out.exists() else []
-        fresh = self.generate_item or item(build, version, channel, archive.stat().st_size, SIGNATURE)
+        fresh = self.generate_item or item(build, version, channel, archive.stat().st_size, SIGNATURE, "dmg")
         out.write_text(feed(fresh, *kept))
         if self.extra_stage_file:
             (staging / "old_updates").mkdir()
@@ -151,8 +177,10 @@ class FakeRunner(release.Runner):
         if command[1:3] == ["release", "view"]:
             return release.Result(0 if self.release_exists else 1, "", "release not found")
         if command[1:3] == ["release", "create"]:
-            self.uploads = [Path(part) for part in command if part.endswith((".zip", "SHA256SUMS", "release-provenance.json"))]
+            self.uploads = [Path(part) for part in command[command.index("--latest=false") + 1:] if part != "--prerelease"]
             return None
+        if command[1] == "api" and command[-1].endswith("/releases?per_page=100"):
+            return release.Result(0, self.listing if self.listing is not None else json.dumps([self.env.releases]))
         if command[1] == "api" and "/releases/tags/" in command[2]:
             assets = [
                 {"name": path.name, "digest": "sha256:" + ("0" * 64 if self.altered_digest else hashlib.sha256(path.read_bytes()).hexdigest())}
@@ -168,7 +196,13 @@ class FakeRunner(release.Runner):
         return next(c for c in reversed(self.history) if c[:3] == ["gh", "release", "create"])
 
     def _curl(self, command, cwd):
-        return release.Result(0, self.curl.pop(0) if self.curl else "206")
+        if "--range" in command:
+            return release.Result(0, self.probes.pop(0) if self.probes else "206")
+        url = command[-1]
+        status, code, body, final = self.env.site.get(url, (22, 404, b"", url))
+        if code == 200 and status in {0, 63}:
+            Path(command[command.index("--output") + 1]).write_bytes(body)
+        return release.Result(status, f"{code} {final}")
 
 
 class Env:
@@ -177,17 +211,17 @@ class Env:
         self.lines: list[str] = []
         self.deep = tmp_path / "deep"
         self.projection = self.deep / "components" / "AstralProjection"
-        self.website = tmp_path / "astraldeep.github.io"
         self.sparkle = tmp_path / "bin"
-        self.version, self.build = "1.9", 70
+        self.version, self.build = "2.0.0", 71
         self.deep_sha = DEEP
-        for path in (self.projection, self.website / "data", self.website / "site" / "data", self.sparkle):
+        self.site: dict[str, tuple[int, int, bytes, str]] = {}
+        self.releases = [published(69, "1.8"), published(0, "", tag="v0.6.0")]
+        for path in (self.projection, self.sparkle):
             path.mkdir(parents=True)
         for tool in ("sign_update", "generate_appcast"):
             (self.sparkle / tool).write_text("#!/bin/sh\n")
-        self.write_downloads(69, "1.8")
         self.notes = tmp_path / "notes.md"
-        self.notes.write_text("## 1.9\n\n- Updates inside the app.\n")
+        self.notes.write_text("## 2.0.0\n\n- Updates inside the app.\n")
         monkeypatch.setattr(release.platform, "system", lambda: "Darwin")
         monkeypatch.setattr(release.shutil, "which", lambda name: f"/usr/bin/{name}")
         monkeypatch.setattr(release.packager, "inspect_app", lambda app, team: dict(IDENTITY))
@@ -196,16 +230,15 @@ class Env:
             "SUVerifyUpdateBeforeExtraction": True,
         }
 
-    def write_downloads(self, build, version):
-        record = {"schemaVersion": 1, "macos": {"version": version, "build": build}}
-        (self.website / "data" / "downloads.json").write_text(json.dumps(record))
+    def serve(self, url, body, *, code=200, status=0, final=None):
+        self.site[url] = (status, code, body.encode() if isinstance(body, str) else body, final or url)
 
     def args(self, *extra):
         stage = self.tmp / "out" / "stage"
         return release.build_parser().parse_args([
             "--projection-commit", PROJECTION, "--version", self.version, "--build", str(self.build),
             "--notes", str(self.notes), "--staging-dir", str(stage), "--work-dir", str(self.tmp / "out" / "work"),
-            "--website", str(self.website), "--projection", str(self.projection), "--sparkle-bin", str(self.sparkle), *extra,
+            "--projection", str(self.projection), "--sparkle-bin", str(self.sparkle), *extra,
         ])
 
     def release(self, *extra, runner=None, dry=False, **kwargs):
@@ -221,6 +254,10 @@ class Env:
     def stage(self):
         return self.tmp / "out" / "stage"
 
+    @property
+    def work(self):
+        return self.tmp / "out" / "work"
+
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
@@ -231,7 +268,7 @@ def label(command):
     name = Path(command[0]).name
     if name == "git":
         return "git " + command[3]
-    if name in {"xcrun", "gh"}:
+    if name in {"xcrun", "gh", "hdiutil"}:
         return f"{name} {command[1]}"
     return name
 
@@ -240,30 +277,47 @@ def tools(runner):
     return [label(command) for command in runner.history]
 
 
+def fetches(runner):
+    return [c for c in runner.history if c[0] == "curl" and "--max-filesize" in c]
+
+
+def test_archive_is_a_dmg_named_for_the_release(env):
+    subject, _ = env.release()
+    assert subject.tag == "macos-v2.0.0-71"
+    assert subject.archive_name == DMG
+    assert subject.asset_url == ASSETS + DMG
+
+
 def test_build_without_publish_stages_only_the_newest_archive_and_writes_every_artifact(env):
     subject, runner = env.release()
     assert subject.execute() == env.stage
     names = sorted(path.name for path in env.stage.iterdir())
     assert names == sorted([
-        "AstralDeep-1.9-70-arm64.zip", "AstralDeep-1.9-70-arm64.md", "appcast.xml", "SHA256SUMS", "release-provenance.json",
+        DMG, "AstralDeep-2.0.0-71-arm64.md", "appcast.xml", "SHA256SUMS", "release-provenance.json",
         "downloads.json", "mac-update-policy.json", "mac-update-policy.json.sig", release.STATE_FILE,
     ])
-    archive = env.stage / "AstralDeep-1.9-70-arm64.zip"
+    archive = env.stage / DMG
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    assert (env.stage / "SHA256SUMS").read_text() == f"{digest}  AstralDeep-1.9-70-arm64.zip\n"
+    assert (env.stage / "SHA256SUMS").read_text() == f"{digest}  {DMG}\n"
     record = json.loads((env.stage / "downloads.json").read_text())["macos"]
     assert list(record) == [
         "version", "build", "minimumMacOS", "architecture", "format", "bytes", "sha256", "url", "releaseURL",
         "checksumsURL", "source", "channel",
     ]
+    assert record["format"] == "dmg" and record["version"] == "2.0.0" and record["build"] == 71
     assert record["sha256"] == digest and record["bytes"] == archive.stat().st_size and record["channel"] == "stable"
-    assert record["url"] == "https://github.com/AstralDeep/AstralDeep/releases/download/macos-v1.9-70/AstralDeep-1.9-70-arm64.zip"
+    assert record["url"] == ASSETS + DMG and record["checksumsURL"] == ASSETS + "SHA256SUMS"
     assert record["source"] == {"deep": DEEP, "projection": PROJECTION}
     provenance = json.loads((env.stage / "release-provenance.json").read_text())
-    assert provenance["tag"] == "macos-v1.9-70" and provenance["archive"]["sha256"] == digest
+    assert provenance["tag"] == "macos-v2.0.0-71" and provenance["archive"]["sha256"] == digest
+    assert provenance["archive"]["filename"] == DMG
     assert provenance["apple"]["notarizationSubmission"] == "sub-1"
+    assert provenance["apple"]["diskImageNotarizationSubmission"] == "sub-1"
     assert provenance["apple"]["gatekeeperAssessment"] == "accepted: Notarized Developer ID"
+    assert provenance["apple"]["diskImageGatekeeperAssessment"] == "accepted: Notarized Developer ID"
+    assert provenance["verification"]["diskImageMountedIdentity"] == "passed"
     assert provenance["appExecutableSha256"] == "e" * 64 and provenance["distribution"] == "DirectDownload"
+    assert not any("protected Mac publisher" in line for line in provenance["limitations"])
     assert set(provenance) >= {
         "schemaVersion", "product", "version", "build", "bundleIdentifier", "minimumMacOS", "architecture", "distribution",
         "channel", "tag", "source", "archive", "appExecutableSha256", "apple", "verification", "publication", "limitations",
@@ -274,20 +328,255 @@ def test_build_without_publish_stages_only_the_newest_archive_and_writes_every_a
     }
     assert (env.stage / "mac-update-policy.json.sig").read_text() == SIGNATURE + "\n"
     assert len(base64.b64decode(SIGNATURE)) == 64
-    assert not any(c[0] in {"gh", "npm", "curl"} or c[:4] == ["git", "-C", str(env.website), "push"] for c in runner.history)
+    assert not any(c[0] == "npm" or c[:3] == ["gh", "release", "create"] or "push" in c for c in runner.history)
     assert any("nothing was published" in line for line in env.lines)
 
 
 def test_steps_run_in_the_documented_order(env):
     subject, runner = env.release()
     subject.execute()
-    names = tools(runner)
-    expected = [
-        "git status", "git status", "git rev-parse", "git rev-parse", "git ls-tree", "xcodebuild", "xcodebuild", "codesign",
-        "codesign", "ditto", "xcrun notarytool", "xcrun stapler", "xcrun stapler", "spctl", "ditto", "ditto", "spctl",
-        "xcrun stapler", "sign_update", "generate_appcast", "sign_update", "sign_update",
+    assert tools(runner) == [
+        "git status", "git status", "git rev-parse", "git rev-parse", "git ls-tree", "gh api",
+        "xcodebuild", "xcodebuild", "codesign", "codesign",
+        "ditto", "xcrun notarytool", "xcrun stapler", "xcrun stapler", "spctl",
+        "ditto", "hdiutil create", "codesign", "xcrun notarytool", "xcrun stapler", "xcrun stapler", "spctl",
+        "hdiutil attach", "spctl", "xcrun stapler", "hdiutil detach",
+        "curl", "sign_update", "generate_appcast", "curl", "sign_update", "sign_update",
     ]
-    assert names == expected
+
+
+def test_package_builds_signs_notarizes_and_staples_the_dmg(env):
+    subject, runner = env.release()
+    subject.execute()
+    dmg = str(env.stage / DMG)
+    volume = env.work / "volume"
+    mount = str(env.work / "mount")
+    joined = [" ".join(c) for c in runner.history]
+
+    def at(predicate):
+        return next(i for i, c in enumerate(runner.history) if predicate(c))
+
+    copy = at(lambda c: c[0] == "ditto" and c[1] != "-c")
+    assert runner.history[copy][1:] == [str(env.work / "export/AstralDeep.app"), str(volume / "AstralDeep.app")]
+    assert (volume / "Applications").is_symlink() and str((volume / "Applications").readlink()) == "/Applications"
+    create = at(lambda c: c[:2] == ["hdiutil", "create"])
+    assert runner.history[create][2:] == [
+        "-volname", "AstralDeep", "-srcfolder", str(volume), "-fs", "HFS+", "-format", "UDZO", dmg,
+    ]
+    sign = at(lambda c: c[0] == "codesign" and c[-1] == dmg)
+    assert runner.history[sign] == ["codesign", "--sign", release.SIGNING_IDENTITY, "--timestamp", dmg]
+    notarize = at(lambda c: c[:3] == ["xcrun", "notarytool", "submit"] and c[3] == dmg)
+    assert runner.history[notarize][4:] == ["--keychain-profile", "astral-notary", "--wait", "--output-format", "json"]
+    staple = at(lambda c: c[:3] == ["xcrun", "stapler", "staple"] and c[-1] == dmg)
+    validate = at(lambda c: c[:3] == ["xcrun", "stapler", "validate"] and c[-1] == dmg)
+    assess = at(lambda c: c[0] == "spctl" and c[-1] == dmg)
+    assert runner.history[assess] == [
+        "spctl", "--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=4", dmg,
+    ]
+    attach = at(lambda c: c[:2] == ["hdiutil", "attach"])
+    assert runner.history[attach] == ["hdiutil", "attach", "-nobrowse", "-readonly", "-mountpoint", mount, dmg]
+    mounted = at(lambda c: c[0] == "spctl" and c[-1] == f"{mount}/AstralDeep.app")
+    assert runner.history[mounted][1:4] == ["--assess", "--type", "execute"]
+    detach = at(lambda c: c[:2] == ["hdiutil", "detach"])
+    assert runner.history[detach] == ["hdiutil", "detach", mount]
+    assert create < sign < notarize < staple < validate < assess < attach < mounted < detach
+    assert runner.mounted == []
+    assert not any(" -x " in line for line in joined)
+
+
+def test_package_refuses_app_identity_change_inside_dmg(env, monkeypatch):
+    def inspect(app, team):
+        return {**IDENTITY, "executableSHA256": "f" * 64} if "mount" in str(app) else dict(IDENTITY)
+
+    monkeypatch.setattr(release.packager, "inspect_app", inspect)
+    subject, runner = env.release()
+    with pytest.raises(release.ReleaseError, match="disk image differs from the notarized app"):
+        subject.execute()
+    assert tools(runner)[-1] == "hdiutil detach" and runner.mounted == []
+    assert not any(c[0].endswith(("sign_update", "generate_appcast")) for c in runner.history)
+
+
+def test_a_failed_detach_stops_the_release(env):
+    subject, runner = env.release()
+    runner.fail.append(lambda c: c[:2] == ["hdiutil", "detach"])
+    with pytest.raises(release.ReleaseError, match="could not be detached"):
+        subject.execute()
+    assert not any(c[0].endswith("sign_update") for c in runner.history)
+
+
+def test_disk_image_notarization_and_gatekeeper_problems_stop_the_release(env):
+    app = env.tmp / "AstralDeep.app"
+    for patch, message in (
+        ({"notary": {"status": "Invalid", "id": "sub-9"}}, "ended as Invalid"),
+        ({"stapler_output": "failed"}, "did not validate"),
+        ({"spctl_output": "accepted\nsource=Developer ID"}, "did not accept"),
+    ):
+        subject, runner = env.release()
+        for key, value in patch.items():
+            setattr(runner, key, value)
+        with pytest.raises(release.ReleaseError, match=message):
+            subject.package(app, dict(IDENTITY))
+        assert not any(c[:2] == ["hdiutil", "attach"] for c in runner.history)
+        shutil.rmtree(env.tmp / "out")
+
+
+def test_notary_key_file_mode_replaces_the_keychain_profile(env):
+    key = env.tmp / "AuthKey.p8"
+    subject, runner = env.release(
+        "--notary-key", str(key), "--notary-key-id", "KEY1234567", "--notary-issuer", "11111111-2222-3333-4444-555555555555")
+    subject.execute()
+    submissions = [c for c in runner.history if c[:3] == ["xcrun", "notarytool", "submit"]]
+    assert len(submissions) == 2
+    for command in submissions:
+        assert command[4:10] == [
+            "--key", str(key), "--key-id", "KEY1234567", "--issuer", "11111111-2222-3333-4444-555555555555",
+        ]
+        assert "--keychain-profile" not in command
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--notary-key", "k.p8"], ["--notary-key-id", "KEY"], ["--notary-issuer", "ISSUER"],
+        ["--notary-key", "k.p8", "--notary-key-id", "KEY"], ["--notary-key-id", "KEY", "--notary-issuer", "ISSUER"],
+    ],
+)
+def test_notary_key_flags_must_travel_together(env, flags):
+    subject, _ = env.release(*flags)
+    with pytest.raises(release.ReleaseError, match="travel together"):
+        subject.validate()
+
+
+def test_live_feed_is_fetched_from_the_site(env):
+    env.serve(FEED, feed(item(69, "1.8", "preview")))
+    live_policy = {"schemaVersion": 1, "minimumBuild": 68, "serial": 4, "expires": "2027-01-01T00:00:00Z", "message": "x"}
+    env.serve(POLICY, json.dumps(live_policy))
+    subject, runner = env.release()
+    subject.execute()
+    assert [c[-1] for c in fetches(runner)] == [FEED, POLICY]
+    for command in fetches(runner):
+        for flag, value in (("--max-filesize", "2097152"), ("--proto", "=https"), ("--proto-redir", "=https"),
+                            ("--max-redirs", "2")):
+            assert command[command.index(flag) + 1] == value
+        assert "--fail" in command and "--location" in command
+    items = release.parse_appcast(env.stage / "appcast.xml")
+    assert [entry["build"] for entry in items] == [71, 69]
+    assert items[1]["channel"] == "preview" and items[0]["channel"] is None
+    state = json.loads((env.stage / "release-state.json").read_text())
+    assert state["liveAppcastSha256"] == hashlib.sha256(feed(item(69, "1.8", "preview")).encode()).hexdigest()
+    policy = json.loads((env.stage / "mac-update-policy.json").read_text())
+    assert (policy["minimumBuild"], policy["serial"]) == (68, 5)
+    for retired in ("--website", "--no-pull-request"):
+        with pytest.raises(SystemExit):
+            release.build_parser().parse_args([
+                "--projection-commit", PROJECTION, "--version", "2.0.0", "--build", "71", "--notes", "n.md", retired, "x",
+            ])
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "final", "message"),
+    [
+        (63, 200, FEED, "exceeds 2097152 bytes"),
+        (0, 200, "https://example.com/appcast.xml", "outside astraldeep.github.io"),
+        (0, 200, "http://astraldeep.github.io/appcast.xml", "outside astraldeep.github.io"),
+        (22, 500, FEED, "answered 500"),
+        (47, 301, FEED, "answered 301"),
+        (22, 404, "https://example.com/missing", "outside astraldeep.github.io"),
+    ],
+)
+def test_live_feed_refuses_oversized_or_redirected_bodies(env, status, code, final, message):
+    env.serve(FEED, feed(item(69, "1.8")), code=code, status=status, final=final)
+    subject, runner = env.release()
+    destination = env.tmp / "live" / "appcast.xml"
+    with pytest.raises(release.ReleaseError, match=message):
+        subject.fetch_live(FEED, destination)
+    assert not destination.exists()
+    subject, runner = env.release()
+    with pytest.raises(release.ReleaseError, match=message):
+        subject.execute()
+    assert not any(c[0].endswith("generate_appcast") for c in runner.history)
+
+
+def test_live_feed_body_must_exist_and_stay_bounded(env):
+    subject, runner = env.release()
+    destination = env.tmp / "live" / "appcast.xml"
+    runner._curl = lambda command, cwd: release.Result(0, f"200 {FEED}")
+    with pytest.raises(release.ReleaseError, match="body is missing or too large"):
+        subject.fetch_live(FEED, destination)
+
+    def oversized(command, cwd):
+        Path(command[command.index("--output") + 1]).write_bytes(b"x" * (2097152 + 1))
+        return release.Result(0, f"200 {FEED}")
+
+    runner._curl = oversized
+    with pytest.raises(release.ReleaseError, match="body is missing or too large"):
+        subject.fetch_live(FEED, destination)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("status", [22, 56])
+def test_a_site_404_means_absent_whatever_curl_status_http2_reports(env, status):
+    env.serve(FEED, "", code=404, status=status)
+    subject, _ = env.release()
+    assert subject.fetch_live(FEED, env.tmp / "live" / "appcast.xml") is False
+    assert not (env.tmp / "live" / "appcast.xml").exists()
+
+
+def test_a_missing_live_feed_is_allowed_only_before_the_pipeline_published_one(env):
+    subject, _ = env.release()
+    assert subject.fetch_live(FEED, env.tmp / "live" / "appcast.xml") is False
+    env.releases = [published(70, "1.9", assets=["appcast.xml", "mac-update-policy.json"])]
+    subject, runner = env.release()
+    with pytest.raises(release.ReleaseError, match="serves no appcast.xml although macos-v1.9-70 published one"):
+        subject.execute()
+    assert not any(c[0].endswith("generate_appcast") for c in runner.history)
+    shutil.rmtree(env.tmp / "out")
+    env.serve(FEED, feed(item(70, "1.9", suffix="dmg")))
+    subject, runner = env.release()
+    with pytest.raises(release.ReleaseError, match="serves no mac-update-policy.json although macos-v1.9-70"):
+        subject.execute()
+
+
+def test_latest_release_bounds_the_build(env):
+    env.releases = [
+        published(70, "1.9"), published(99, "9.0.0", draft=True), published(0, "", tag="apple-v9.9"),
+        published(0, "", tag="macos-vbeta-200"), published(69, "1.8"),
+    ]
+    env.build = 70
+    subject, _ = env.release()
+    with pytest.raises(release.ReleaseError, match=r"must exceed the published build 70 \(macos-v1.9-70\)"):
+        subject.preflight()
+    env.build = 71
+    subject, runner = env.release()
+    subject.preflight()
+    assert subject.latest == {
+        "tag": "macos-v1.9-70", "version": "1.9", "build": 70, "target": "c" * 40, "assets": [],
+    }
+    listing = next(c for c in runner.history if c[:2] == ["gh", "api"])
+    assert listing == ["gh", "api", "--paginate", "--slurp", "repos/AstralDeep/AstralDeep/releases?per_page=100"]
+
+
+def test_latest_release_reads_every_page_and_tolerates_an_empty_repository(env):
+    subject, runner = env.release()
+    runner.listing = json.dumps([[published(69, "1.8")], [published(80, "2.0.5")]])
+    assert subject.latest_release()["build"] == 80
+    runner.listing = json.dumps([[]])
+    assert subject.latest_release() is None
+
+
+@pytest.mark.parametrize("listing", ["not json", json.dumps({"message": "Not Found"}), json.dumps([[{"tag_name": "macos-v1.8-69"}]])])
+def test_latest_release_refuses_an_unreadable_listing(env, listing):
+    subject, runner = env.release()
+    runner.listing = listing
+    with pytest.raises(release.ReleaseError, match="release list is unreadable"):
+        subject.latest_release()
+
+
+def test_version_and_build_are_passed_as_xcodebuild_overrides(env):
+    subject, runner = env.release()
+    subject.execute()
+    archive = next(c for c in runner.history if c[:2] == ["xcodebuild", "archive"])
+    assert "MARKETING_VERSION=2.0.0" in archive and "CURRENT_PROJECT_VERSION=71" in archive
 
 
 def test_command_lines_use_the_documented_flags(env):
@@ -303,36 +592,31 @@ def test_command_lines_use_the_documented_flags(env):
     assert "ARCHS=arm64" in archive
     export = by["xcodebuild"][1]
     assert export[1] == "-exportArchive"
-    assert plistlib.loads((env.tmp / "out" / "work" / "export-options.plist").read_bytes()) == {
+    assert plistlib.loads((env.work / "export-options.plist").read_bytes()) == {
         "method": "developer-id", "teamID": "593LGH35GS", "signingStyle": "manual",
         "signingCertificate": "Developer ID Application", "destination": "export",
     }
-    assert by["ditto"][0][:6] == ["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(env.tmp / "out/work/export/AstralDeep.app")]
+    assert by["ditto"][0][:6] == ["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(env.work / "export/AstralDeep.app")]
     assert by["xcrun notarytool"][0][3:] == [
-        str(env.tmp / "out/work/notarize/AstralDeep-1.9-70-arm64.zip"), "--keychain-profile", "astral-notary", "--wait",
+        str(env.work / "notarize/AstralDeep-2.0.0-71-arm64.zip"), "--keychain-profile", "astral-notary", "--wait",
         "--output-format", "json",
     ]
     assert by["spctl"][0][1:4] == ["--assess", "--type", "execute"]
     generate = next(c for c in runner.history if c[0].endswith("generate_appcast"))
-    base = "https://github.com/AstralDeep/AstralDeep/releases/download/macos-v1.9-70/"
     assert generate[1:3] == ["--ed-key-file", str(env.tmp / "key")]
     for flag, value in (
-        ("--download-url-prefix", base), ("--link", "https://astraldeep.github.io"), ("--maximum-versions", "5"),
+        ("--download-url-prefix", ASSETS), ("--link", "https://astraldeep.github.io"), ("--maximum-versions", "5"),
         ("--maximum-deltas", "0"), ("--channel", "preview"), ("-o", str(env.stage / "appcast.xml")),
     ):
         assert generate[generate.index(flag) + 1] == value
     assert "--embed-release-notes" in generate and generate[-1] == str(env.stage)
     sign = next(c for c in runner.history if c[0].endswith("sign_update"))
-    assert sign[1:3] == ["--ed-key-file", str(env.tmp / "key")]
+    assert sign[1:3] == ["--ed-key-file", str(env.tmp / "key")] and sign[-1] == str(env.stage / DMG)
     assert any(c[0].endswith("sign_update") and "-p" in c and c[-1].endswith("mac-update-policy.json") for c in runner.history)
     assert any(c[0].endswith("sign_update") and "--verify" in c for c in runner.history)
     state = json.loads((env.stage / "release-state.json").read_text())
     assert state["channel"] == "preview"
-    assert parse_channel(env.stage / "appcast.xml") == "preview"
-
-
-def parse_channel(path):
-    return release.parse_appcast(path)[0]["channel"]
+    assert release.parse_appcast(env.stage / "appcast.xml")[0]["channel"] == "preview"
 
 
 def test_account_signing_is_the_default(env):
@@ -342,20 +626,10 @@ def test_account_signing_is_the_default(env):
     assert generate[1:3] == ["--account", "ed25519"]
 
 
-def test_live_appcast_is_copied_so_older_items_survive(env):
-    (env.website / "site" / "appcast.xml").write_text(feed(item(69, "1.8", "preview")))
-    subject, runner = env.release()
-    subject.execute()
-    items = release.parse_appcast(env.stage / "appcast.xml")
-    assert [entry["build"] for entry in items] == [70, 69]
-    assert items[1]["channel"] == "preview" and items[0]["channel"] is None
-    state = json.loads((env.stage / "release-state.json").read_text())
-    assert state["liveAppcastSha256"] == hashlib.sha256((env.website / "site" / "appcast.xml").read_bytes()).hexdigest()
-
-
 @pytest.mark.parametrize(
     "matcher",
     [
+        lambda c: c[:2] == ["gh", "api"],
         lambda c: c[0] == "xcodebuild" and "archive" in c,
         lambda c: c[0] == "xcodebuild" and "-exportArchive" in c,
         lambda c: c[0] == "codesign",
@@ -364,8 +638,13 @@ def test_live_appcast_is_copied_so_older_items_survive(env):
         lambda c: c[:3] == ["xcrun", "stapler", "staple"],
         lambda c: c[:3] == ["xcrun", "stapler", "validate"],
         lambda c: c[0] == "spctl",
-        lambda c: c[0] == "ditto" and "-x" in c,
-        lambda c: c[0].endswith("sign_update") and c[-1].endswith(".zip"),
+        lambda c: c[0] == "ditto" and "-c" not in c,
+        lambda c: c[:2] == ["hdiutil", "create"],
+        lambda c: c[0] == "codesign" and c[-1].endswith(".dmg"),
+        lambda c: c[:2] == ["xcrun", "notarytool"] and c[3].endswith(".dmg"),
+        lambda c: c[0] == "spctl" and c[-1].endswith(".dmg"),
+        lambda c: c[:2] == ["hdiutil", "attach"],
+        lambda c: c[0].endswith("sign_update") and c[-1].endswith(".dmg"),
         lambda c: c[0].endswith("generate_appcast"),
         lambda c: c[0].endswith("sign_update") and "-p" in c,
         lambda c: c[0].endswith("sign_update") and "--verify" in c,
@@ -377,7 +656,7 @@ def test_a_failing_step_stops_everything_after_it(env, matcher):
     with pytest.raises(release.ReleaseError, match="failed with status 1"):
         subject.execute()
     assert matcher(runner.history[-1])
-    assert not any(c[0] in {"gh", "npm"} for c in runner.history)
+    assert not any(c[:3] == ["gh", "release", "create"] for c in runner.history)
 
 
 def test_a_failing_git_check_stops_before_any_build(env):
@@ -390,7 +669,7 @@ def test_a_failing_git_check_stops_before_any_build(env):
 
 def test_remote_writes_require_publish_even_when_called_directly(env):
     runner = release.Runner(dry_run=False, publish=False, out=env.lines.append)
-    for command in (["gh", "release", "create", "x"], ["git", "push"], ["gh", "pr", "create"]):
+    for command in (["gh", "release", "create", "x"], ["gh", "release", "edit", "x"]):
         with pytest.raises(release.ReleaseError, match="requires --publish"):
             runner.run(command, remote_write=True)
     assert runner.history == []
@@ -404,60 +683,56 @@ def test_dry_run_prints_the_plan_and_executes_nothing(env):
     subject, runner = env.release(dry=True)
     subject.execute()
     assert not env.stage.exists() and not (env.tmp / "out").exists()
-    assert [c for c in tools(runner) if c.startswith(("gh", "npm", "curl"))] == []
+    assert not any(c[:3] == ["gh", "release", "create"] or c[0] == "npm" for c in runner.history)
     printed = [line for line in env.lines if line.startswith("+ ")]
-    assert len(printed) == len(runner.history) >= 20
-    assert any("xcodebuild archive" in line for line in printed) and any("notarytool submit" in line for line in printed)
+    assert len(printed) == len(runner.history) >= 25
+    assert any("xcodebuild archive" in line for line in printed) and any("hdiutil create" in line for line in printed)
+    assert any(line.startswith("link ") and line.endswith("-> /Applications") for line in env.lines)
     assert any(line.startswith("write ") for line in env.lines)
     assert env.lines[-1].startswith("Dry run:")
 
 
-def test_dry_run_with_publish_prints_the_release_and_website_commands_only(env):
+def test_dry_run_with_publish_prints_only_release_commands(env):
     subject, runner = env.release("--publish", dry=True)
     subject.execute()
     joined = [" ".join(c) for c in runner.history]
-    assert any(c.startswith("gh release create macos-v1.9-70") and "--draft" in c and "--prerelease" not in c for c in joined)
-    assert any(c.startswith("gh release edit macos-v1.9-70") and "--draft=false" in c for c in joined)
-    assert any(c.startswith("gh pr create") for c in joined) and any(" push -u origin release/macos-v1.9-70" in c for c in joined)
+    assert any(c.startswith("gh release create macos-v2.0.0-71") and "--draft" in c and "--prerelease" not in c for c in joined)
+    assert any(c.startswith("gh release edit macos-v2.0.0-71") and "--draft=false" in c for c in joined)
+    assert not any(c.startswith(("gh pr", "npm", "git push")) or " push " in c for c in joined)
     assert not env.stage.exists()
 
 
-def test_publish_creates_a_draft_uploads_assets_publishes_then_prepares_the_website(env):
+def test_publish_uploads_site_files_as_release_assets(env):
     subject, runner = env.release("--publish", "--channel", "preview")
     subject.execute()
-    joined = [" ".join(c) for c in runner.history]
-    create = next(c for c in runner.history if c[:3] == ["gh", "release", "create"])
+    create = runner.last_create()
     assert "--draft" in create and "--prerelease" in create and "--latest=false" in create
     assert create[create.index("--target") + 1] == DEEP and create[create.index("--repo") + 1] == "AstralDeep/AstralDeep"
-    assert [Path(p).name for p in create if p.endswith((".zip", "SHA256SUMS", ".json"))] == [
-        "AstralDeep-1.9-70-arm64.zip", "SHA256SUMS", "release-provenance.json",
+    assert create[create.index("--notes-file") + 1] == str(env.stage / "AstralDeep-2.0.0-71-arm64.md")
+    assert [path.name for path in runner.uploads] == [
+        DMG, "SHA256SUMS", "release-provenance.json", "AstralDeep-2.0.0-71-arm64.md", *SITE_FILES,
     ]
+    assert release.STATE_FILE not in [path.name for path in runner.uploads]
+    joined = [" ".join(c) for c in runner.history]
 
     def first(prefix):
         return next(i for i, c in enumerate(joined) if c.startswith(prefix))
 
-    assert first("gh release create") < first("gh release edit") < first("curl") < first("npm test")
-    assert first("npm test") < first(f"git -C {env.website} add") < first(f"git -C {env.website} commit")
-    site = [c for c in runner.history if c[:3] == ["git", "-C", str(env.website)]]
-    assert [c[3] for c in site if c[3] in {"status", "fetch", "switch", "add", "commit", "push"}] == [
-        "status", "fetch", "switch", "add", "commit", "push",
-    ]
-    assert next(c for c in site if c[3] == "switch")[4:] == ["-c", "release/macos-v1.9-70", "origin/main"]
-    npm = [c for c in runner.history if c[0] == "npm"]
-    assert [c[1:] for c in npm] == [["test"], ["run", "check"], ["run", "build"]]
-    assert (env.website / "site" / "appcast.xml").read_text() == (env.stage / "appcast.xml").read_text()
-    assert json.loads((env.website / "data" / "downloads.json").read_text())["macos"]["build"] == 70
-    assert (env.website / "site/data/mac-update-policy.json.sig").read_text() == SIGNATURE + "\n"
-    assert any(c[:3] == ["gh", "pr", "create"] and "AstralDeep/astraldeep.github.io" in c for c in runner.history)
-    assert sum(1 for c in runner.history if c[0] == "curl") == 3
+    assert first("gh release create") < first("gh release edit") < first("curl --silent --location --range")
+    probes = [c[-1] for c in runner.history if c[0] == "curl" and "--range" in c]
+    assert probes == [ASSETS + path.name for path in runner.uploads]
+    assert not any(c[0] in {"npm", "git"} and ("push" in c or "commit" in c) for c in runner.history)
+    assert not any(c[:3] == ["gh", "pr", "create"] for c in runner.history)
+    assert any(line.startswith("Published macos-v2.0.0-71") for line in env.lines)
 
 
-def test_stable_release_is_not_marked_prerelease(env):
-    subject, runner = env.release("--publish", "--no-pull-request")
+def test_stable_channel_is_not_prerelease_and_not_latest(env):
+    subject, runner = env.release("--publish")
     subject.execute()
-    assert "--prerelease" not in runner.last_create()
-    assert not any(c[:3] == ["gh", "pr", "create"] or "push" in c for c in runner.history)
-    assert any(c[3:4] == ["commit"] for c in runner.history if c[0] == "git")
+    create = runner.last_create()
+    assert "--latest=false" in create and "--prerelease" not in create
+    edit = next(c for c in runner.history if c[:3] == ["gh", "release", "edit"])
+    assert "--prerelease" not in edit
 
 
 def test_publish_refuses_an_existing_release(env):
@@ -473,7 +748,7 @@ def test_publish_rejects_mutable_or_altered_releases(env):
     runner.immutable = False
     with pytest.raises(release.ReleaseError, match="not an immutable release"):
         subject.execute()
-    assert not any(c[0] in {"npm", "curl"} for c in runner.history)
+    assert not any(c[0] == "curl" and "--range" in c for c in runner.history)
 
 
 def test_publish_rejects_asset_digests_that_differ_from_the_staged_bytes(env):
@@ -485,40 +760,33 @@ def test_publish_rejects_asset_digests_that_differ_from_the_staged_bytes(env):
 
 def test_asset_wait_retries_until_the_url_answers(env):
     subject, runner = env.release("--publish")
-    runner.curl = ["404", "000", "200"]
+    runner.probes = ["404", "000", "200"]
     subject.execute()
     assert subject.sleeps == [10.0, 10.0]
-    probes = [c for c in runner.history if c[0] == "curl"]
-    assert "--range" in probes[0] and probes[0][-1].startswith("https://github.com/AstralDeep/AstralDeep/releases/download/macos-v1.9-70/")
+    probes = [c for c in runner.history if c[0] == "curl" and "--range" in c]
+    assert probes[0][-1] == ASSETS + DMG
 
 
 def test_asset_wait_gives_up_after_the_attempt_limit(env):
     subject, _ = env.release()
-    subject.runner.curl = ["404"] * 5
+    subject.runner.probes = ["404"] * 5
     with pytest.raises(release.ReleaseError, match="never answered 200"):
         subject.wait_for_asset("https://example.invalid/asset", attempts=3, delay=0.5)
     assert subject.sleeps == [0.5, 0.5]
 
 
-@pytest.mark.parametrize("failing", ["test", "check", "build"])
-def test_website_failures_stop_before_commit_and_push(env, failing):
-    subject, runner = env.release("--publish")
-    runner.fail.append(lambda c: c[0] == "npm" and c[-1] == failing)
-    with pytest.raises(release.ReleaseError, match="npm failed"):
-        subject.execute()
-    assert not any(c[0] == "git" and "commit" in c for c in runner.history)
-    assert not any("push" in c for c in runner.history)
-
-
 def test_publish_staged_publishes_the_exact_bytes_without_rebuilding(env):
+    env.serve(FEED, feed(item(69, "1.8")))
     subject, _ = env.release()
     subject.execute()
-    before = (env.stage / "AstralDeep-1.9-70-arm64.zip").read_bytes()
+    before = (env.stage / DMG).read_bytes()
     again, runner = env.release("--publish", "--publish-staged")
     again.execute()
-    assert not any(c[0] in {"xcodebuild", "ditto", "codesign", "spctl"} or c[:2] == ["xcrun", "notarytool"] for c in runner.history)
+    assert not any(c[0] in {"xcodebuild", "ditto", "codesign", "spctl", "hdiutil"} or c[:2] == ["xcrun", "notarytool"]
+                   for c in runner.history)
     assert not any(c[0].endswith(("sign_update", "generate_appcast")) for c in runner.history)
-    assert (env.stage / "AstralDeep-1.9-70-arm64.zip").read_bytes() == before
+    assert (env.stage / DMG).read_bytes() == before
+    assert [c[-1] for c in fetches(runner)] == [FEED]
     assert any(c[:3] == ["gh", "release", "create"] for c in runner.history)
     assert any("Publishing the staged build" in line for line in env.lines)
 
@@ -526,11 +794,12 @@ def test_publish_staged_publishes_the_exact_bytes_without_rebuilding(env):
 @pytest.mark.parametrize(
     ("tamper", "message"),
     [
-        (lambda e: (e.stage / "AstralDeep-1.9-70-arm64.zip").write_bytes(b"other"), "changed after it was built"),
+        (lambda e: (e.stage / DMG).write_bytes(b"other"), "changed after it was built"),
         (lambda e: (e.stage / "SHA256SUMS").unlink(), "incomplete"),
-        (lambda e: (e.website / "site" / "appcast.xml").write_text(feed(item(69, "1.8"))), "live appcast changed"),
+        (lambda e: (e.stage / "downloads.json").unlink(), "incomplete"),
+        (lambda e: e.serve(FEED, feed(item(69, "1.8"))), "live appcast changed"),
         (lambda e: setattr(e, "deep_sha", "c" * 40), "Deep moved"),
-        (lambda e: e.write_downloads(70, "1.9"), "must exceed"),
+        (lambda e: setattr(e, "releases", [published(71, "2.0.0")]), "must exceed"),
     ],
 )
 def test_publish_staged_refuses_stale_or_altered_builds(env, tamper, message):
@@ -565,7 +834,7 @@ def test_publish_staged_dry_run_prints_commands_only(env):
     [
         (["--publish-staged"], "needs --publish"),
         (["--ed-key-file", "k", "--ed-account", "other"], "either --ed-account or --ed-key-file"),
-        (["--minimum-build", "71"], "between 1 and the release build"),
+        (["--minimum-build", "72"], "between 1 and the release build"),
         (["--minimum-build", "0"], "between 1 and the release build"),
     ],
 )
@@ -598,18 +867,14 @@ def test_version_build_commit_and_notes_are_validated(env):
 
 
 def test_preflight_rejects_unclean_or_mismatched_sources(env):
-    for dirty, label in (("deep", "Deep"), ("AstralProjection", "Projection")):
+    for dirty, name in (("deep", "Deep"), ("AstralProjection", "Projection")):
         subject, runner = env.release()
         runner.dirty = {dirty}
-        with pytest.raises(release.ReleaseError, match=f"{label} working tree is not clean"):
+        with pytest.raises(release.ReleaseError, match=f"{name} working tree is not clean"):
             subject.preflight()
     subject, runner = env.release()
     runner.pin = "c" * 40
     with pytest.raises(release.ReleaseError, match="same commit"):
-        subject.preflight()
-    subject, runner = env.release("--publish")
-    runner.dirty = {"astraldeep.github.io"}
-    with pytest.raises(release.ReleaseError, match="Website working tree is not clean"):
         subject.preflight()
 
 
@@ -625,14 +890,9 @@ def test_preflight_rejects_malformed_pin_output_and_bad_deep_head(env):
         subject.preflight()
 
 
-def test_preflight_requires_a_strictly_greater_build_and_empty_directories(env):
-    env.write_downloads(70, "1.9")
-    subject, _ = env.release()
-    with pytest.raises(release.ReleaseError, match="must exceed the published build 70"):
-        subject.preflight()
-    env.write_downloads(69, "1.8")
+def test_preflight_requires_empty_directories(env):
     env.stage.mkdir(parents=True)
-    (env.stage / "old.zip").write_text("x")
+    (env.stage / "old.dmg").write_text("x")
     subject, _ = env.release()
     with pytest.raises(release.ReleaseError, match="is not empty"):
         subject.preflight()
@@ -644,24 +904,11 @@ def test_preflight_reports_environment_problems(env, monkeypatch):
     with pytest.raises(release.ReleaseError, match="built on macOS"):
         subject.preflight()
     monkeypatch.setattr(release.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(release.shutil, "which", lambda name: None if name == "gh" else "/bin/x")
-    subject, _ = env.release("--publish")
-    with pytest.raises(release.ReleaseError, match="Missing tools: gh"):
-        subject.preflight()
-
-
-def test_downloads_record_must_be_readable_but_may_be_null(env):
-    (env.website / "data" / "downloads.json").write_text(json.dumps({"schemaVersion": 1, "macos": None}))
-    subject, _ = env.release()
-    assert subject.live_downloads() is None
-    (env.website / "data" / "downloads.json").write_text("{")
-    with pytest.raises(release.ReleaseError, match="unreadable"):
-        subject.live_downloads()
-    (env.website / "data" / "downloads.json").unlink()
-    with pytest.raises(release.ReleaseError, match="unreadable"):
-        subject.live_downloads()
-    dry, _ = env.release(dry=True)
-    assert dry.live_downloads() is None
+    for tool in ("gh", "hdiutil", "curl"):
+        monkeypatch.setattr(release.shutil, "which", lambda name, missing=tool: None if name == missing else "/bin/x")
+        subject, _ = env.release()
+        with pytest.raises(release.ReleaseError, match=f"Missing tools: {tool}"):
+            subject.preflight()
 
 
 def test_identity_checks_translate_packager_failures_and_version_drift(env, monkeypatch):
@@ -674,7 +921,7 @@ def test_identity_checks_translate_packager_failures_and_version_drift(env, monk
     monkeypatch.setattr(release.packager, "inspect_app", refuse)
     with pytest.raises(release.ReleaseError, match="App identity check failed"):
         subject.inspect(app)
-    monkeypatch.setattr(release.packager, "inspect_app", lambda a, t: {**IDENTITY, "build": 69, "version": "1.8"})
+    monkeypatch.setattr(release.packager, "inspect_app", lambda a, t: {**IDENTITY, "build": 70, "version": "1.9"})
     with pytest.raises(release.ReleaseError, match="differs from the requested release"):
         subject.inspect(app)
     monkeypatch.setattr(release.packager, "inspect_app", lambda a, t: {**IDENTITY, "architecture": "x86_64"})
@@ -729,16 +976,13 @@ def test_notarization_problems_stop_the_release(env):
         subject.notarize(app, dict(IDENTITY))
 
 
-def test_identity_changes_during_notarization_or_extraction_are_refused(env, monkeypatch):
+def test_identity_changes_during_notarization_are_refused(env, monkeypatch):
     app = env.tmp / "work" / "AstralDeep.app"
     subject, _ = env.release()
     subject.work = env.tmp / "work"
     monkeypatch.setattr(release.packager, "inspect_app", lambda a, t: {**IDENTITY, "executableSHA256": "f" * 64})
     with pytest.raises(release.ReleaseError, match="changed while notarizing"):
         subject.notarize(app, dict(IDENTITY))
-    subject, _ = env.release()
-    with pytest.raises(release.ReleaseError, match="Fresh extraction"):
-        subject.package(app, dict(IDENTITY))
 
 
 def test_stage_rejects_unusable_signing_output_and_extra_files(env):
@@ -747,7 +991,6 @@ def test_stage_rejects_unusable_signing_output_and_extra_files(env):
         runner.signing_output = output
         with pytest.raises(release.ReleaseError, match="did not report the archive signature"):
             subject.execute()
-        import shutil
         shutil.rmtree(env.tmp / "out")
     subject, runner = env.release()
     runner.extra_stage_file = True
@@ -766,17 +1009,16 @@ def test_default_sparkle_tools_come_from_the_archive_derived_data(env):
     args = env.args()
     args.sparkle_bin = None
     subject = release.Release(args, FakeRunner(env, dry_run=False, publish=False), deep=env.deep, clock=lambda: NOW)
-    assert subject.tool("sign_update") == str(env.tmp / "out/work/dd/SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update")
+    assert subject.tool("sign_update") == str(env.work / "dd/SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update")
 
 
 def test_generated_appcast_must_describe_the_archive_and_preserve_old_items(env):
     subject, runner = env.release()
-    runner.generate_item = item(70, "1.9", None, 1, SIGNATURE)
+    runner.generate_item = item(71, "2.0.0", None, 1, SIGNATURE, "dmg")
     with pytest.raises(release.ReleaseError, match=r"disagrees with the archive: \['length'\]"):
         subject.execute()
-    import shutil
     shutil.rmtree(env.tmp / "out")
-    (env.website / "site" / "appcast.xml").write_text(feed(item(69, "1.8", None, 111, "O" * 86 + "==")))
+    env.serve(FEED, feed(item(69, "1.8", None, 111, "O" * 86 + "==")))
     subject, runner = env.release()
     original = runner._generate_appcast
 
@@ -788,15 +1030,6 @@ def test_generated_appcast_must_describe_the_archive_and_preserve_old_items(env)
     runner._generate_appcast = rewrite
     with pytest.raises(release.ReleaseError, match="rewrote the existing item for build 69"):
         subject.execute()
-
-
-def test_policy_inherits_the_live_minimum_and_increments_the_serial(env):
-    live = {"schemaVersion": 1, "minimumBuild": 68, "serial": 4, "expires": "2027-01-01T00:00:00Z", "message": "x"}
-    (env.website / "site" / "data" / "mac-update-policy.json").write_text(json.dumps(live))
-    subject, _ = env.release()
-    subject.execute()
-    policy = json.loads((env.stage / "mac-update-policy.json").read_text())
-    assert (policy["minimumBuild"], policy["serial"]) == (68, 5)
 
 
 def test_policy_options_override_and_are_bounded(env):
@@ -828,7 +1061,7 @@ def test_policy_rejects_a_malformed_signature_and_an_unreadable_live_policy(env)
         subject.staging.mkdir(exist_ok=True)
         with pytest.raises(release.ReleaseError, match="malformed policy signature"):
             subject.policy()
-    (env.website / "site" / "data" / "mac-update-policy.json").write_text("{")
+    env.serve(POLICY, "{")
     subject, _ = env.release()
     with pytest.raises(release.ReleaseError, match="Live update policy is unreadable"):
         subject.live_policy()
@@ -869,7 +1102,7 @@ def test_sha256_file_streams_the_whole_file(tmp_path):
 
 
 def test_main_reports_release_errors_and_succeeds_otherwise(env, monkeypatch, capsys):
-    argv = ["--projection-commit", PROJECTION, "--version", "1.9", "--build", "70", "--notes", str(env.notes), "--dry-run"]
+    argv = ["--projection-commit", PROJECTION, "--version", "2.0.0", "--build", "71", "--notes", str(env.notes), "--dry-run"]
 
     class Failing:
         def __init__(self, *_args, **_kwargs):
