@@ -22,7 +22,10 @@ from tests.test_lets_gate_ordering import gate_orchestrator  # noqa: F401
 
 @pytest.fixture
 def task_runtime(runtime, monkeypatch):  # noqa: F811
+    from shared.feature_flags import flags
+
     orch, ws = runtime
+    monkeypatch.setitem(flags._flags, "user_skills", False)
     monkeypatch.setattr(source_bound, "declaration", strict_declaration)
     orch.tool_permissions.get_tool_scope_map.return_value = {"send_email": "tools:write"}
     orch.audit_recorder.record.return_value = object()
@@ -656,7 +659,7 @@ async def test_self_host_approval_reply_completes_through_actual_socket_admissio
             pending_request.append(value["request_id"])
             socket.feed(frame("cancel_task", {}) if cancel else frame("computer_response", {
                 "request_id": value["request_id"], "ok": True, "result": {"typed": True}}))
-        elif cancel and value.get("type") == "computer_session" and value.get("state") == "ended" and pending_request:
+        elif cancel and value.get("type") == "chat_status" and value.get("message") == "Cancelled" and pending_request:
             socket.feed(frame("computer_response", {"request_id": pending_request.pop(),
                 "ok": False, "error": {"code": "outcome_uncertain", "message": "Stopped after delivery"}}))
         return True
@@ -701,7 +704,7 @@ async def test_self_host_approval_reply_completes_through_actual_socket_admissio
         await asyncio.sleep(0)
         assert physical == [("type_text", {"text": "reviewed synthetic text", "hwnd": 42, "terminal_ok": False})]
         if cancel:
-            assert turns == ["original"] and session.state == "ended" and not session.terminal_ok
+            assert turns == ["original"] and session.state == "active" and not session.terminal_ok
             assert any(call.args[0].action_type == "hitl.effect_uncertain"
                        for call in orch.audit_recorder.record.await_args_list)
             assert "Inspect current state" in str(orch.send_ui_render.await_args_list)
@@ -793,7 +796,7 @@ async def test_host_event_control_path_uses_closed_events_and_selected_host(task
 
 
 @pytest.mark.parametrize("change", ["current", "other_chat", "other_controller", "other_owner", "no_owner", "no_session"])
-async def test_generic_cancel_control_ends_only_current_owned_chat_controller(task_runtime, change):
+async def test_generic_cancel_control_cancels_the_turn_and_keeps_the_computer_session(task_runtime, change):
     from unittest.mock import AsyncMock
     from orchestrator import orchestrator as module
 
@@ -823,11 +826,13 @@ async def test_generic_cancel_control_ends_only_current_owned_chat_controller(ta
     await asyncio.gather(*context.tracked_tasks)
     ended = [json.loads(call.args[1]) for call in orch._safe_send.await_args_list
              if json.loads(call.args[1]).get("type") == "computer_session"]
-    assert bool(ended) is (change == "current")
-    if change == "current":
-        assert session.state == "ended" and not session.terminal_ok and ended[0]["state"] == "ended"
-    elif change != "no_session":
+    assert ended == []
+    if change != "no_session":
         assert session.state == "active" and session.terminal_ok
+    if change == "current":
+        assert orch.cancelled_sessions[id(ws)] is True
+        assert any(json.loads(call.args[1]).get("message") == "Cancelled"
+                   for call in orch._safe_send.await_args_list)
     await orch.computer_sessions.end(session, "user_stop")
 
 

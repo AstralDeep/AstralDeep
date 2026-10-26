@@ -19,6 +19,9 @@ logger = logging.getLogger("Orchestrator.Chrome")
 TITLE = "Theme"
 
 PRESETS = {
+    "graphite": {"bg": "#121214", "surface": "#1B1B1F", "primary": "#7C3AED",
+                 "secondary": "#6E6E78", "text": "#ECECEF", "muted": "#8C8C95",
+                 "accent": "#A78BFA"},
     "midnight": {"bg": "#0F1221", "surface": "#1A1E2E", "primary": "#6366F1",
                  "secondary": "#8B5CF6", "text": "#F3F4F6", "muted": "#9CA3AF",
                  "accent": "#06B6D4"},
@@ -36,7 +39,7 @@ PRESETS = {
                "accent": "#A3E635"},
 }
 
-_DEFAULT_PRESET = "midnight"
+_DEFAULT_PRESET = "graphite"
 
 _COLOR_KEYS = [
     ("bg", "Background"),
@@ -65,6 +68,10 @@ def _theme_context(orch):
         repository=source.plane_repositories.preferences.theme,
         plane_runtime=source.plane_runtime,
     )
+
+
+def default_theme_preferences() -> dict:
+    return {"theme": {"preset": _DEFAULT_PRESET, "colors": dict(PRESETS[_DEFAULT_PRESET])}}
 
 
 def _normalize_hex(value) -> str:
@@ -202,11 +209,9 @@ async def render(orch, user_id, roles, params) -> str:
         f'<p class="text-xs text-astral-muted">{esc(_summary_text(theme))}</p>'
         f'<div class="space-y-2">'
         f'<h3 class="text-sm font-semibold text-astral-text">Presets</h3>'
-        f'<p class="text-xs text-astral-muted">Pick a preset to apply and save it.</p>'
         f'<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">{cards}</div></div>'
         f'<div class="space-y-2 border-t border-white/5 pt-4">'
         f'<h3 class="text-sm font-semibold text-astral-text">Fine-tune colors</h3>'
-        f'<p class="text-xs text-astral-muted">Color changes apply and save instantly.</p>'
         f'<div class="bg-white/5 border border-white/10 rounded-lg p-3">{pickers}</div></div>'
     )
 
@@ -226,7 +231,6 @@ async def components(orch, user_id, roles, params):
     out += [
         _sdui.text(_summary_text(theme), "caption"),
         _sdui.text("Presets", "h3"),
-        _sdui.text("Pick a preset to apply and save it.", "caption"),
     ]
     for name in PRESETS:
         is_active = name == active
@@ -244,7 +248,6 @@ async def components(orch, user_id, roles, params):
                 variant="secondary" if is_active else "primary")],
         ))
     out.append(_sdui.text("Fine-tune colors", "h3"))
-    out.append(_sdui.text("Color changes apply and save instantly.", "caption"))
     for key, label in _COLOR_KEYS:
         out.append({"type": "color_picker", "color_key": key,
                     "value": colors[key], "label": label})

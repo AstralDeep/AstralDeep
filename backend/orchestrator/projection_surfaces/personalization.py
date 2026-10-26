@@ -254,17 +254,13 @@ def _render_soul(orch, user_id: str, params: dict) -> str:
         f'<input id="chrome-profession" name="profession" type="text" class="{_INPUT_CLS}" '
         f'value="{esc(profession)}" placeholder="e.g. clinical researcher"></div>'
         f'<div><label class="{_LABEL_CLS}" for="chrome-goals">Goals (one per line)</label>'
-        f'<textarea id="chrome-goals" name="goals" rows="4" class="{_INPUT_CLS}" '
-        f'placeholder="One goal per line">{esc(goals_text)}</textarea></div>'
+        f'<textarea id="chrome-goals" name="goals" rows="4" class="{_INPUT_CLS}">'
+        f"{esc(goals_text)}</textarea></div>"
         f'<div><label class="{_LABEL_CLS}" for="chrome-personality-notes">'
         f"Personality notes</label>"
         f'<textarea id="chrome-personality-notes" name="personality_notes" rows="3" '
-        f'class="{_INPUT_CLS}" placeholder="How should the assistant sound?">'
-        f"{esc(notes)}</textarea></div>"
+        f'class="{_INPUT_CLS}">{esc(notes)}</textarea></div>'
         f'<div class="flex justify-end">{save_btn}</div></div>'
-        f'<p class="text-xs text-astral-muted">Personality guides tone and voice only — it '
-        f"never overrides the safety, privacy, or HIPAA/compliance rules. Free-text values "
-        f"are screened; anything that looks like protected health information is rejected.</p>"
         + _render_chat_notice_preference(orch, user_id)
     )
 
@@ -286,9 +282,6 @@ def _render_chat_notice_preference(orch, user_id):
         "chrome_profile_save", {"chat_phi_notice_enabled": not enabled},
     )
     return (f'<div class="{_CARD_CLS} space-y-2"><h3>Chat PHI reminders</h3>'
-            '<p class="text-sm text-astral-muted">Show optional reminders when a message '
-            'may contain identifying information. Your choice is saved for your account. '
-            'Privacy and memory protections stay active.</p>'
             f'<p class="text-sm">Currently {"on" if enabled else "off"}</p>{toggle}</div>')
 
 
@@ -301,16 +294,6 @@ async def _render_memory(orch, user_id: str) -> str:
         claims={"sub": user_id}, event_class="memory", action_type="memory.view",
         description="Viewed durable memory", outputs_meta={"count": len(items)},
     )
-    intro = (
-        '<p class="text-xs text-astral-muted">Durable, non-PHI personalization facts the '
-        "assistant remembers across sessions. Edits are screened by the same PHI gate as "
-        "everything else.</p>"
-    )
-    if not items:
-        return intro + (
-            f'<div class="{_CARD_CLS} text-sm text-astral-muted">No memory items yet — '
-            f"they appear as you chat or when dreaming promotes recurring signals.</div>"
-        )
     rows = []
     for item in items:
         mem_id = str(item.get("id") or "")
@@ -329,7 +312,7 @@ async def _render_memory(orch, user_id: str) -> str:
             f'aria-label="Memory value">'
             f'<div class="flex gap-2 justify-end">{save}{delete}</div></div>'
         )
-    return intro + f'<div class="space-y-2">{"".join(rows)}</div>'
+    return f'<div class="space-y-2">{"".join(rows)}</div>' if rows else ""
 
 
 def _render_skills(orch, user_id: str) -> str:
@@ -347,11 +330,6 @@ def _render_skills(orch, user_id: str) -> str:
                 "enabled": tp.is_tool_allowed(user_id, agent_id, tool_name),
                 "authorized": tp.is_skill_authorized(user_id, agent_id, tool_name),
             })
-    if not catalog:
-        return (
-            f'<div class="{_CARD_CLS} text-sm text-astral-muted">No skills are available '
-            f"yet.</div>"
-        )
     catalog.sort(key=lambda s: (s["agent_id"], s["tool_name"]))
     rows = []
     for entry in catalog:
@@ -388,7 +366,7 @@ def _render_skills(orch, user_id: str) -> str:
             f'<div class="flex items-center justify-between gap-3 bg-white/5 border '
             f'border-white/10 rounded-lg px-3 py-2">{header}{right}</div>'
         )
-    return f'<div class="space-y-2">{"".join(rows)}</div>'
+    return f'<div class="space-y-2">{"".join(rows)}</div>' if rows else ""
 
 
 def _get_job_policy(store, user_id: str, job_id: str) -> Optional[dict]:
@@ -453,27 +431,19 @@ def _render_schedule(orch, user_id: str) -> str:
     store = _job_store(orch)
     if store is None:
         return _unavailable("The scheduler is not available.")
-    hint = (
-        '<p class="text-xs text-astral-muted">New jobs are created in chat — ask the '
-        "assistant to schedule a task and it will walk you through consent.</p>"
-    )
+    note = ""
     execution_enabled = flags.is_enabled("scheduler_execution")
     if not execution_enabled:
-        hint = (
+        note = (
             f'<div class="{_CARD_CLS} text-sm"><strong>Note.</strong> Unattended '
             "execution is currently <strong>unavailable</strong>: scheduled jobs "
             "will not run until an "
             "administrator enables it (pending a security review). You can still create "
-            "and manage jobs.</div>" + hint
+            "and manage jobs.</div>"
         )
     jobs = [j for j in store.list_jobs(user_id)
             if (j.get("status") or "") != "disabled"
             and j.get("agent_id") != "__dreaming__"]
-    if not jobs:
-        return hint + (
-            f'<div class="{_CARD_CLS} text-sm text-astral-muted">No scheduled jobs '
-            f"yet.</div>"
-        )
     cards = []
     for job in jobs:
         job_id = str(job.get("id") or "")
@@ -518,7 +488,7 @@ def _render_schedule(orch, user_id: str) -> str:
                 f'mb-1">Recent runs</div><ul class="space-y-0.5">{"".join(run_lines)}</ul></div>'
             )
         else:
-            history = '<div class="text-xs text-astral-muted">No runs yet.</div>'
+            history = ""
         cards.append(
             f'<div class="{_CARD_CLS} space-y-2" data-job-id="{esc(job_id)}">'
             f'<div class="flex items-center justify-between gap-2">'
@@ -533,7 +503,7 @@ def _render_schedule(orch, user_id: str) -> str:
             f"{history}"
             f'<div class="flex gap-2 justify-end">{"".join(actions)}</div></div>'
         )
-    return hint + f'<div class="space-y-3">{"".join(cards)}</div>'
+    return note + (f'<div class="space-y-3">{"".join(cards)}</div>' if cards else "")
 
 
 def _render_dreaming(orch, user_id: str) -> str:
@@ -554,16 +524,11 @@ def _render_dreaming(orch, user_id: str) -> str:
         f'<div class="flex items-center justify-between gap-2">'
         f'<span class="text-sm text-astral-text">Background consolidation is '
         f'<span class="font-semibold">{esc(state)}</span></span>{toggle}</div>'
-        f'<p class="text-xs text-astral-muted">Dreaming periodically reviews recent, '
-        f"recurring signals and promotes the non-PHI ones into long-term memory. "
-        f"In-app only; every sweep is recorded below.</p>"
         f'<div class="flex justify-end">{trigger}</div></div>'
     )
     sweeps = svc.repo.list_sweeps(user_id)
     if not sweeps:
-        sweeps_html = (
-            f'<div class="{_CARD_CLS} text-sm text-astral-muted">No sweeps yet.</div>'
-        )
+        sweeps_html = ""
     else:
         lines = []
         for sweep in sweeps:
@@ -643,22 +608,15 @@ def _components_soul(orch, user_id, params):
     enabled = _chat_notice_state(orch, user_id)
     reminder = (_sdui.alert("Chat PHI reminder settings are temporarily unavailable.", "warning")
                 if enabled is None else _sdui.card("Chat PHI reminders", [
-                    _sdui.text("Show optional reminders for identifying information. Your choice "
-                               "is saved for your account; privacy and memory protections stay active.",
-                               "caption"),
                     _sdui.button("Turn off PHI reminders" if enabled else "Turn on PHI reminders",
                                  "chrome_profile_save", {"chat_phi_notice_enabled": not enabled}),
                 ]))
     return [
         _sdui.form(
-            [_sdui.field("profession", "Profession", "text", default=profession,
-                         help="e.g. clinical researcher"),
+            [_sdui.field("profession", "Profession", "text", default=profession),
              _sdui.field("goals", "Goals (one per line)", "textarea", default=goals_text),
-             _sdui.field("personality_notes", "Personality notes", "textarea", default=notes,
-                         help="How should the assistant sound?")],
+             _sdui.field("personality_notes", "Personality notes", "textarea", default=notes)],
             submit_action="chrome_profile_save", submit_label="Save profile"),
-        _sdui.text("Personality guides tone and voice only — it never overrides the safety, "
-                   "privacy, or HIPAA rules, and free-text values are PHI-screened.", "caption"),
         reminder,
     ]
 
@@ -672,12 +630,7 @@ async def _components_memory(orch, user_id):
         claims={"sub": user_id}, event_class="memory", action_type="memory.view",
         description="Viewed durable memory", outputs_meta={"count": len(items)},
     )
-    out = [_sdui.text("Durable, non-PHI facts the assistant remembers across sessions. Edits "
-                      "are screened by the same PHI gate as everything else.", "caption")]
-    if not items:
-        out.append(_sdui.alert("No memory items yet — they appear as you chat or when dreaming "
-                               "promotes recurring signals.", "info"))
-        return out
+    out = []
     for item in items:
         mem_id = str(item.get("id") or "")
         out.append(_sdui.card(
@@ -706,8 +659,6 @@ def _components_skills(orch, user_id):
                 "enabled": tp.is_tool_allowed(user_id, agent_id, tool_name),
                 "authorized": tp.is_skill_authorized(user_id, agent_id, tool_name),
             })
-    if not catalog:
-        return [_sdui.alert("No skills are available yet.", "info")]
     catalog.sort(key=lambda s: (s["agent_id"], s["tool_name"]))
     out = []
     for e in catalog:
@@ -735,8 +686,7 @@ def _job_policy_components(job_id: str, policy: Optional[dict]):
     monitor_changes = bool(policy.get("monitor_changes"))
     terminal_stop = bool(policy.get("terminal_stop"))
     fields = [
-        _sdui.field("max_runs", "Run limit (blank for none)", "number",
-                    default=max_runs, help="Leave blank for no run limit."),
+        _sdui.field("max_runs", "Run limit (blank for none)", "number", default=max_runs),
         _sdui.field("monitor_changes", "Notify only when the source changes", "boolean",
                     default=monitor_changes),
     ]
@@ -771,13 +721,8 @@ def _components_schedule(orch, user_id):
         out.append(_sdui.alert("Unattended execution is currently unavailable: scheduled jobs "
                                "will not run until an administrator enables it (pending a "
                                "security review). You can still create and manage jobs.", "warning"))
-    out.append(_sdui.text("New jobs are created in chat — ask the assistant to schedule a task.",
-                          "caption"))
     jobs = [j for j in store.list_jobs(user_id)
             if (j.get("status") or "") != "disabled" and j.get("agent_id") != "__dreaming__"]
-    if not jobs:
-        out.append(_sdui.alert("No scheduled jobs yet.", "info"))
-        return out
     for job in jobs:
         job_id = str(job.get("id") or "")
         status = str(job.get("status") or "")
@@ -826,16 +771,12 @@ def _components_dreaming(orch, user_id):
     enabled = bool(profile.get("dreaming_enabled", True)) if profile else True
     out = [_sdui.card(
         f"Background consolidation is {'on' if enabled else 'off'}",
-        [_sdui.text("Dreaming periodically reviews recent, recurring signals and promotes the "
-                    "non-PHI ones into long-term memory. In-app only; every sweep is recorded "
-                    "below.", "caption"),
-         _sdui.button("Turn off" if enabled else "Turn on", "chrome_dreaming_toggle",
+        [_sdui.button("Turn off" if enabled else "Turn on", "chrome_dreaming_toggle",
                       {"enabled": not enabled}, variant="secondary" if enabled else "primary"),
          _sdui.button("Run a sweep now", "chrome_dreaming_trigger", {}, "primary")],
     )]
     sweeps = svc.repo.list_sweeps(user_id)
     if not sweeps:
-        out.append(_sdui.alert("No sweeps yet.", "info"))
         return out
     lines = []
     for s in sweeps:
@@ -1378,8 +1319,7 @@ def _assignment_limit_fields(limits):
               for key in _ASSIGNMENT_LIMITS]
     for period in ("daily", "lifetime"):
         result.extend({"name": f"{period}.{key}", "label": f"{period.title()} {_ASSIGNMENT_LABELS[key]}",
-                       "value": limits[period][key],
-                       "help": "Optional; only used with a currency cap." if key == "spend_micro_units" else "Finite hard limit."}
+                       "value": limits[period][key]}
                       for key in (*_ASSIGNMENT_METRICS, "spend_micro_units"))
     return result
 

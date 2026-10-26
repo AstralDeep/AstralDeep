@@ -98,10 +98,8 @@ async def components(orch, user_id, roles, params):
         limit=_PAGE_SIZE, offset=page * _PAGE_SIZE)
     total = await asyncio.to_thread(orch.workspace.count_snapshots, chat_id, user_id)
     if not snaps:
-        return [_sdui.alert("No workspace history yet for this chat. Snapshots appear "
-                            "as turns produce or update components.", "info")]
+        return []
     out = [
-        _sdui.text("Viewing the past never changes the live workspace.", "caption"),
         _sdui.button("Back to live", "chrome_workspace_timeline_live",
                      {"chat_id": chat_id}, variant="primary"),
     ]

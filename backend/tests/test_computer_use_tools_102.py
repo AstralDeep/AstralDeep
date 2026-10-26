@@ -1,0 +1,416 @@
+"""Tests for backend/agents/computer_use/mcp_tools.py: the extension registration hook, the
+macOS tool descriptions, post-effect screenshots, the host wait verb and the three command tools.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import sys
+import types
+import uuid
+
+import pytest
+
+from agents.computer_use import mcp_tools
+from orchestrator import computer_use_policy as policy
+from orchestrator.computer_hosts import ComputerHostError
+from orchestrator.tool_security import ToolSecurityAnalyzer
+from shared.protocol import ComputerHostDescriptor, MCPRequest
+from tests.test_computer_use_076 import OWNER, _AgentOrch, _descriptor, _FakeHostSocket, _WS
+
+_EXTENSION = "agents.computer_use.browser_tools"
+
+
+def _extension(register, **attrs):
+    module = types.ModuleType(_EXTENSION)
+    module.register = register
+    for name, value in attrs.items():
+        setattr(module, name, value)
+    return module
+
+
+def _browser_entry(name):
+    return {"function": lambda **_: {}, "description": name, "input_schema": {"type": "object"},
+            "scope": policy.SCOPES[name], "tier": policy.TIERS[name], "retryable": False,
+            "timeout": policy.TIMEOUTS[name]}
+
+
+def test_hook_is_a_no_op_without_the_extension(monkeypatch):
+    monkeypatch.setitem(sys.modules, _EXTENSION, None)
+    registry = {"screenshot": {"description": "kept"}}
+    mcp_tools.register_extension_tools(registry)
+    assert registry == {"screenshot": {"description": "kept"}}
+
+
+def test_hook_adds_new_browser_verbs_from_the_extension(monkeypatch):
+    def register(registry):
+        registry["browser_snapshot"] = _browser_entry("browser_snapshot")
+
+    monkeypatch.setitem(sys.modules, _EXTENSION, _extension(register))
+    registry = {"screenshot": {"description": "kept"}}
+    mcp_tools.register_extension_tools(registry)
+    assert set(registry) == {"screenshot", "browser_snapshot"}
+    assert registry["screenshot"] == {"description": "kept"}
+
+
+@pytest.mark.parametrize("name", ["run_shell", "screenshot", "run_command"])
+def test_hook_refuses_unknown_or_overriding_entries_and_keeps_the_registry(monkeypatch, name):
+    def register(registry):
+        registry["browser_snapshot"] = _browser_entry("browser_snapshot")
+        registry[name] = {"description": "forged"}
+
+    monkeypatch.setitem(sys.modules, _EXTENSION, _extension(register))
+    registry = {"screenshot": {"description": "kept"}}
+    with pytest.raises(RuntimeError):
+        mcp_tools.register_extension_tools(registry)
+    assert registry == {"screenshot": {"description": "kept"}}
+
+
+def test_hook_refuses_an_entry_whose_policy_declaration_drifted(monkeypatch):
+    def register(registry):
+        registry["browser_click"] = {**_browser_entry("browser_click"), "scope": "tools:read"}
+
+    monkeypatch.setitem(sys.modules, _EXTENSION, _extension(register))
+    registry = {}
+    with pytest.raises(RuntimeError):
+        mcp_tools.register_extension_tools(registry)
+    assert registry == {}
+
+
+def test_hook_propagates_a_broken_extension_import(monkeypatch):
+    broken = types.ModuleType(_EXTENSION)
+    monkeypatch.setitem(sys.modules, _EXTENSION, broken)
+    with pytest.raises(AttributeError):
+        mcp_tools.register_extension_tools({})
+
+
+CHAT = "chat-1"
+CTX = {"user_id": OWNER, "session_id": CHAT}
+ROOT = "/Users/sam/Projects/x"
+JOB = str(uuid.uuid4())
+SHOT = {"screen_index": 0, "width": 1280, "height": 720, "scale": 0.5, "media_type": "image/jpeg",
+        "base64": "/9j/AAAA"}
+
+
+class _Gate:
+    def __init__(self, fail=False):
+        self.fail = fail
+        self.seen = []
+
+    def redact_for_storage(self, text):
+        self.seen.append(text)
+        if self.fail:
+            raise ValueError("phi_redaction_unavailable")
+        cleaned = text.replace("123-45-6789", "[REDACTED:phi]")
+        return cleaned, cleaned != text
+
+
+class _World:
+    def __init__(self, orch, host, host_ws, session, replies):
+        self.orch, self.host, self.host_ws, self.session, self.replies = orch, host, host_ws, session, replies
+
+    async def call(self, tool, **kwargs):
+        return await asyncio.to_thread(getattr(mcp_tools, tool), **CTX, **kwargs)
+
+    def requests(self, verb=None):
+        return [f for f in self.host_ws.frames("computer_request") if verb is None or f["verb"] == verb]
+
+
+@pytest.fixture
+def gate(monkeypatch):
+    from personalization import phi_gate
+
+    fake = _Gate()
+    monkeypatch.setattr(phi_gate, "get_phi_gate", lambda: fake)
+    return fake
+
+
+@pytest.fixture
+async def world(monkeypatch):
+    replies = {}
+
+    def answers(verb, args):
+        reply = replies.get(verb)
+        if callable(reply):
+            return reply(args)
+        return reply if reply is not None else {"ok": True, "result": {}}
+
+    from orchestrator import terminal_host_review
+
+    orch = _AgentOrch()
+    mcp_tools.register_deps(orch)
+    monkeypatch.setattr(terminal_host_review, "computer_use_review_current", lambda current: current is orch)
+    host_ws = orch.add(_FakeHostSocket(orch, answers))
+    host, _ = orch.computer_hosts.register(OWNER, host_ws, ComputerHostDescriptor.from_dict(_descriptor(
+        platform="macos", name="Mac", workspace_roots=[{"name": "x", "path": ROOT}])))
+    orch.add(_WS(chat=CHAT))
+    task = asyncio.create_task(asyncio.to_thread(mcp_tools.start_session, **CTX))
+    for _ in range(400):
+        await asyncio.sleep(0.005)
+        live = orch.computer_sessions.live_for_host(OWNER, host.host_id)
+        if live is not None:
+            await orch.computer_sessions.on_host_event(OWNER, host.host_id, "heartbeat", live.session_id, None)
+            break
+    await task
+    session = orch.computer_sessions.live_for_host(OWNER, host.host_id)
+    yield _World(orch, host, host_ws, session, replies)
+    await orch.computer_sessions.end_all("user_stop")
+
+
+def test_descriptions_are_written_for_the_mac_and_steer_commands_and_the_browser_pane():
+    reg = mcp_tools.TOOL_REGISTRY
+    text = json.dumps({name: entry["description"] for name, entry in reg.items()})
+    for retired in ("notepad", "powershell", "win+r", "alt+f4", "Windows Terminal"):
+        assert retired not in text
+    assert "cmd+l" in reg["press_keys"]["description"]
+    for name in ("click", "double_click", "right_click", "move", "drag", "scroll"):
+        assert "list_windows" in reg[name]["description"] and "hwnd" in reg[name]["description"]
+        assert "Astral's own windows" in reg[name]["description"]
+        assert "browser_" in reg[name]["description"]
+    assert "run_command" in reg["type_text"]["description"] and "Terminal" in reg["type_text"]["description"]
+    run = reg["run_command"]["description"]
+    assert "argv" in run and "workspace_roots" in run and "screenshot" in run and "Terminal" in run
+    assert reg["run_command"]["input_schema"]["required"] == ["cwd"]
+
+
+def test_only_run_command_matches_a_scanner_pattern():
+    analyzer = ToolSecurityAnalyzer()
+    flagged = {name for name, entry in mcp_tools.TOOL_REGISTRY.items()
+               if analyzer.analyze_tool(name, entry["description"], entry["input_schema"]) is not None}
+    assert flagged == {"run_command"}
+
+
+def test_command_tools_are_registered_with_policy_scopes():
+    reg = mcp_tools.TOOL_REGISTRY
+    assert (reg["run_command"]["scope"], reg["read_output"]["scope"], reg["interrupt_command"]["scope"]) == (
+        "tools:execute", "tools:read", "tools:write")
+    assert reg["run_command"]["destructive"] == "always"
+    assert "destructive" not in reg["read_output"] and "destructive" not in reg["interrupt_command"]
+
+
+async def test_input_verbs_attach_the_post_effect_screenshot_as_an_untrusted_image(world):
+    world.session.remember_windows([{"hwnd": 42, "title": "Untitled", "bundle_id": "com.apple.TextEdit"}])
+    world.replies["click"] = {"ok": True, "result": {"x": 10, "y": 20, "screenshot": SHOT}}
+    result = await world.call("click", x=10, y=20, hwnd=42)
+    assert result["_images"] == [{"media_type": "image/jpeg", "base64": "/9j/AAAA",
+                                  "caption": "Screen of Mac after click"}]
+    assert result["_data"]["screenshot"] == {"width": 1280, "height": 720, "scale": 0.5, "screen_index": 0}
+    assert "base64" not in json.dumps(result["_data"])
+    assert result["_ui_components"][-1]["id"] == f"au_cuview_{world.session.session_id}"
+    assert world.session.screenshot_cache["data"] == b"\xff\xd8\xff\x00\x00\x00"
+    assert world.session.last_screenshot["width"] == 1280
+    from agents.computer_use.mcp_server import MCPServer
+
+    world.replies["type_text"] = {"ok": True, "result": {"screenshot": SHOT}}
+    served = await asyncio.to_thread(MCPServer().process_request, MCPRequest(method="tools/call", params={
+        "name": "type_text", "arguments": {**CTX, "text": "hi", "hwnd": 42}}))
+    assert served.result["_images"][0]["caption"] == "Screen of Mac after type_text"
+    assert "_model_digest" not in served.result
+
+
+@pytest.mark.parametrize("shot", [None, {"base64": "", "media_type": "image/jpeg"},
+                                  {**SHOT, "media_type": "text/html"}, "junk"])
+async def test_input_results_without_a_valid_screenshot_attach_nothing(world, shot):
+    world.session.remember_windows([{"hwnd": 42, "title": "Untitled", "bundle_id": "com.apple.TextEdit"}])
+    world.replies["press_keys"] = {"ok": True, "result": {"screenshot": shot} if shot is not None else {}}
+    result = await world.call("press_keys", keys="enter", hwnd=42)
+    assert "_images" not in result and "screenshot" not in result["_data"]
+
+
+async def test_non_visual_sessions_keep_the_screenshot_out_of_the_model(world):
+    world.session.images_supported = False
+    world.replies["open_app"] = {"ok": True, "result": {"launched": True, "screenshot": SHOT}}
+    result = await world.call("open_app", app="com.apple.TextEdit")
+    assert result["_images"] == [] and result["_data"]["screenshot"]["width"] == 1280
+
+
+@pytest.mark.parametrize("tool,args", [("click", {"x": 1, "y": 1}), ("drag", {"x1": 1, "y1": 1, "x2": 2, "y2": 2}),
+                                       ("scroll", {"x": 1, "y": 1}), ("move", {"x": 1, "y": 1})])
+async def test_mac_pointer_tools_refuse_without_a_window_handle(world, tool, args):
+    result = await world.call(tool, **args)
+    assert result["_data"]["code"] == "out_of_range"
+    assert result["_data"]["message"] == "Call list_windows and pass hwnd for the target window."
+    assert not world.requests(tool)
+
+
+async def test_wait_uses_the_host_verb_while_active(world):
+    world.replies["wait"] = {"ok": True, "result": {"waited": 0.2}}
+    result = await world.call("wait", seconds=0.2)
+    assert result["_data"]["state"] == "active" and result["_data"]["waited"] == 0.2
+    assert world.requests("wait")[-1]["args"] == {"seconds": 0.2}
+    world.replies["wait"] = {"ok": False, "error": {"code": "paused", "message": "paused"}}
+    refused = await world.call("wait", seconds=0.2)
+    assert refused["_data"]["code"] == "paused"
+
+
+async def test_foreground_command_returns_shaped_privacy_gated_untrusted_output(world, gate):
+    world.replies["run_command"] = {"ok": True, "result": {
+        "exit_code": 0, "signal": None, "timed_out": False, "duration_ms": 42,
+        "stdout": "3 notes.md\nSSN 123-45-6789\n", "stderr": "warn\x07ing", "stdout_bytes": 30, "stderr_bytes": 8,
+        "truncated": False, "cwd": ROOT, "started_at": "2026-10-26T00:00:00Z"}}
+    result = await world.call("run_command", argv=["wc", "-l", "notes.md"], cwd=ROOT, timeout_s=5)
+    data = result["_data"]
+    assert data["exit_code"] == 0 and data["duration_ms"] == 42 and data["timed_out"] is False
+    assert data["stdout"] == "3 notes.md\nSSN [REDACTED:phi]\n" and data["stderr"] == "warning"
+    assert data["privacy"] == "redacted" and data["untrusted_output"] is True
+    assert (data["stdout_bytes"], data["stderr_bytes"], data["cwd"]) == (30, 8, ROOT)
+    assert "_model_digest" not in result
+    request = world.requests("run_command")[-1]
+    assert request["args"] == {"argv": ["wc", "-l", "notes.md"], "cwd": ROOT, "timeout_s": 5, "background": False}
+    assert 10000 < request["deadline_ms"] <= 15000
+
+
+async def test_command_output_is_withheld_when_the_privacy_gate_is_unavailable(world, gate):
+    gate.fail = True
+    world.replies["run_command"] = {"ok": True, "result": {"exit_code": 1, "stdout": "x", "stderr": "",
+                                                            "duration_ms": 1}}
+    data = (await world.call("run_command", command="ls", cwd=ROOT))["_data"]
+    assert data["stdout"] == "" and data["privacy"] == "withheld" and data["exit_code"] == 1
+
+
+async def test_timed_out_command_reports_it_without_retrying(world, gate):
+    world.replies["run_command"] = {"ok": True, "result": {"exit_code": None, "signal": "TERM", "timed_out": True,
+                                                            "duration_ms": 5000, "stdout": "", "stderr": ""}}
+    data = (await world.call("run_command", argv=["sleep", "30"], cwd=ROOT, timeout_s=5))["_data"]
+    assert data["timed_out"] is True and data["signal"] == "TERM" and len(world.requests("run_command")) == 1
+    assert "not retried" in data["note"]
+
+
+@pytest.mark.parametrize("args,code", [
+    ({"cwd": ROOT}, "out_of_range"), ({"command": "ls", "argv": ["ls"], "cwd": ROOT}, "out_of_range"),
+    ({"command": "", "cwd": ROOT}, "out_of_range"), ({"command": "x" * 4097, "cwd": ROOT}, "out_of_range"),
+    ({"argv": [], "cwd": ROOT}, "out_of_range"), ({"argv": ["ls", 3], "cwd": ROOT}, "out_of_range"),
+    ({"argv": ["ls"] * 257, "cwd": ROOT}, "out_of_range"), ({"argv": [""], "cwd": ROOT}, "out_of_range"),
+    ({"command": "ls"}, "out_of_range"), ({"command": "ls", "cwd": "relative"}, "out_of_range"),
+    ({"command": "ls", "cwd": ROOT + "/../y"}, "out_of_range"), ({"command": "ls\x00", "cwd": ROOT}, "out_of_range"),
+    ({"command": "ls", "cwd": "/Users/sam/Other"}, "cwd_outside_workspace"),
+    ({"command": "ls", "cwd": ROOT, "env": {"BAD-NAME": "x"}}, "env_forbidden"),
+    ({"command": "ls", "cwd": ROOT, "env": {"app_lower": "x"}}, "env_forbidden"),
+    ({"command": "ls", "cwd": ROOT, "env": {"APP_" + "X" * 61: "x"}}, "env_forbidden"),
+    ({"command": "ls", "cwd": ROOT, "env": {"A": 1}}, "out_of_range"),
+    ({"command": "ls", "cwd": ROOT, "env": {"LANG": "C\nPATH=/tmp"}}, "out_of_range"),
+    ({"command": "ls", "cwd": ROOT, "env": {"LANG": "C\rX"}}, "out_of_range"),
+    ({"command": "ls", "cwd": ROOT, "env": {"LANG": "x" * 4097}}, "out_of_range"),
+    ({"command": "ls", "cwd": ROOT, "env": {f"V{i}": "x" for i in range(33)}}, "out_of_range"),
+    ({"command": "ls", "cwd": ROOT, "env": "A=1"}, "out_of_range"),
+    ({"command": "ls", "cwd": ROOT, "timeout_s": 0}, "out_of_range"),
+    ({"command": "ls", "cwd": ROOT, "timeout_s": 601}, "out_of_range"),
+    ({"command": "ls", "cwd": ROOT, "timeout_s": 3601, "background": True}, "out_of_range"),
+    ({"command": "ls", "cwd": ROOT, "timeout_s": "5"}, "out_of_range"),
+    ({"command": "ls", "cwd": ROOT, "background": "yes"}, "out_of_range"),
+    ({"command": "ls", "cwd": ROOT, "stdin": "x" * 16385}, "out_of_range"),
+    ({"command": "ls", "cwd": ROOT, "stdin": 5}, "out_of_range"),
+])
+async def test_invalid_commands_are_refused_before_launch(world, args, code):
+    result = await world.call("run_command", **args)
+    assert result["_data"]["code"] == code and not world.requests("run_command")
+
+
+async def test_background_jobs_are_tracked_read_and_interrupted(world, gate):
+    world.replies["run_command"] = {"ok": True, "result": {"job_id": JOB.upper(), "started_at": "2026-10-26T00:00:00Z"}}
+    started = await world.call("run_command", argv=["tail", "-f", "log.txt"], cwd=ROOT, background=True,
+                               timeout_s=3600, env={"LANG": "C"}, stdin="in")
+    assert started["_data"]["job_id"] == JOB and started["_data"]["background"] is True
+    assert world.session.command_jobs[JOB]["state"] == "running"
+    assert world.requests("run_command")[-1]["args"]["env"] == {"LANG": "C"}
+    assert 25000 < world.requests("run_command")[-1]["deadline_ms"] <= 30000
+    world.replies["read_output"] = {"ok": True, "result": {
+        "job_id": JOB, "state": "running", "exit_code": None, "next_offset": 12, "truncated": False,
+        "chunks": [{"stream": "stdout", "offset": 0, "data": "line 123-45-6789\n"}, "junk",
+                   {"stream": "evil", "offset": 0, "data": "x"}]}}
+    read = (await world.call("read_output", job_id=JOB, wait_s=2))["_data"]
+    assert read["chunks"] == [{"stream": "stdout", "offset": 0, "data": "line [REDACTED:phi]\n"}]
+    assert read["next_offset"] == 12 and read["state"] == "running" and read["untrusted_output"] is True
+    assert world.requests("read_output")[-1]["args"] == {"job_id": JOB, "stream": "both", "offset": 0,
+                                                         "max_bytes": 65536, "wait_s": 2}
+    world.replies["interrupt_command"] = {"ok": True, "result": {"job_id": JOB, "state": "interrupted",
+                                                                  "exit_code": 130}}
+    stopped = (await world.call("interrupt_command", job_id=JOB, signal="INT"))["_data"]
+    assert stopped == {"computer": "Mac", "job_id": JOB, "state": "interrupted", "exit_code": 130}
+    assert world.session.command_jobs[JOB]["state"] == "interrupted"
+    world.replies["read_output"] = {"ok": True, "result": {"job_id": JOB, "state": "interrupted",
+                                                            "exit_code": 130, "chunks": [], "next_offset": 12}}
+    assert (await world.call("read_output", job_id=JOB, offset=12))["_data"]["state"] == "interrupted"
+
+
+@pytest.mark.parametrize("tool,args", [("read_output", {"job_id": str(uuid.uuid4())}),
+                                       ("interrupt_command", {"job_id": str(uuid.uuid4()), "signal": "KILL"}),
+                                       ("read_output", {"job_id": "not-a-uuid"}),
+                                       ("interrupt_command", {"job_id": JOB, "signal": "HUP"}),
+                                       ("read_output", {"job_id": JOB, "stream": "logs"}),
+                                       ("read_output", {"job_id": JOB, "wait_s": 26}),
+                                       ("read_output", {"job_id": JOB, "max_bytes": 0}),
+                                       ("read_output", {"job_id": JOB, "offset": -1})])
+async def test_unknown_jobs_and_bad_reads_are_refused_without_a_host_request(world, tool, args):
+    world.session.command_jobs[JOB] = {"state": "running"}
+    result = await world.call(tool, **args)
+    assert result["_data"]["code"] in {"unknown_job", "out_of_range"} and not world.requests(tool)
+
+
+async def test_host_job_ids_must_be_uuids_and_the_job_table_is_bounded(world, gate):
+    world.replies["run_command"] = {"ok": True, "result": {"job_id": "../evil", "started_at": "x"}}
+    bad = await world.call("run_command", command="ls", cwd=ROOT, background=True)
+    assert bad["_data"]["code"] == "failed" and not world.session.command_jobs
+    for index in range(64):
+        world.session.command_jobs[str(uuid.UUID(int=index))] = {"state": "exited" if index else "running"}
+    world.replies["run_command"] = {"ok": True, "result": {"job_id": JOB, "started_at": "x"}}
+    await world.call("run_command", command="ls", cwd=ROOT, background=True)
+    assert len(world.session.command_jobs) == 64 and JOB in world.session.command_jobs
+    assert str(uuid.UUID(int=0)) in world.session.command_jobs
+
+
+async def test_command_tools_do_not_wait_behind_the_physical_effect_lock(world, gate):
+    world.replies["run_command"] = {"ok": True, "result": {"exit_code": 0, "stdout": "", "stderr": ""}}
+    await world.session.lock.acquire()
+    try:
+        result = await asyncio.wait_for(world.call("run_command", command="ls", cwd=ROOT), 5)
+    finally:
+        world.session.lock.release()
+    assert result["_data"]["exit_code"] == 0
+
+
+async def test_host_refusals_surface_their_codes(world, gate):
+    world.replies["run_command"] = {"ok": False, "error": {"code": "cwd_outside_workspace", "message": "outside"}}
+    result = await world.call("run_command", command="ls", cwd=ROOT)
+    assert result["_data"]["code"] == "cwd_outside_workspace"
+
+
+def test_command_policy_bounds_match_the_host_protocol():
+    assert policy.MAX_COMMAND_CHARS == 4096 and policy.MAX_ARGV_ITEMS == 256 and policy.MAX_ENV_VARS == 32
+    assert ComputerHostError("x", "y").code == "x"
+
+
+@pytest.mark.parametrize("name", [
+    "ASTRAL_TOKEN", "GITHUB_TOKEN", "MY_SECRET", "API_KEY", "PASSWORD", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH", "PYTHONPATH", "PYTHONSTARTUP", "NODE_OPTIONS", "NPM_CONFIG_PREFIX", "PERL5OPT", "RUBYOPT",
+    "GIT_SSH_COMMAND", "GIT_CONFIG_GLOBAL", "BASH_ENV", "ENV", "ZDOTDIR", "PATH", "IFS", "GCONV_PATH", "SHELL",
+    "HOME", "TMPDIR", "EDITOR", "PAGER", "VISUAL",
+])
+async def test_env_names_outside_the_allowlist_are_forbidden(world, name):
+    result = await world.call("run_command", command="ls", cwd=ROOT, env={name: "x"})
+    assert result["_data"]["code"] == "env_forbidden" and not world.requests("run_command")
+
+
+@pytest.mark.parametrize("name", ["LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TZ", "TERM", "NO_COLOR",
+                                  "FORCE_COLOR", "CI", "DEBUG", "COLUMNS", "LINES", "APP_MODE"])
+async def test_allowlisted_env_names_reach_the_host(world, gate, name):
+    world.replies["run_command"] = {"ok": True, "result": {"exit_code": 0, "stdout": "", "stderr": ""}}
+    await world.call("run_command", command="ls", cwd=ROOT, env={name: "1"})
+    assert world.requests("run_command")[-1]["args"]["env"] == {name: "1"}
+
+
+async def test_a_host_without_shared_folders_refuses_every_cwd(world):
+    world.host.descriptor["workspace_roots"] = []
+    result = await world.call("run_command", command="ls", cwd=ROOT)
+    assert result["_data"]["code"] == "cwd_outside_workspace" and "shares no workspace folder" in \
+        result["_data"]["message"]
+    assert not world.requests("run_command")
+
+
+async def test_run_command_refuses_when_the_host_review_is_not_current(world, monkeypatch):
+    from orchestrator import terminal_host_review
+
+    monkeypatch.setattr(terminal_host_review, "computer_use_review_current", lambda _orch: False)
+    result = await world.call("run_command", command="ls", cwd=ROOT)
+    assert result["_data"]["code"] == "security_blocked" and not world.requests("run_command")

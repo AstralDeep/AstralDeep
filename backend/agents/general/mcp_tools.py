@@ -966,6 +966,10 @@ def search_arxiv(query: str, max_results: int = 10, session_id: str = "default",
 
 
 THEME_PRESETS = {
+    "graphite": {
+        "bg": "#121214", "surface": "#1B1B1F", "primary": "#7C3AED",
+        "secondary": "#6E6E78", "text": "#ECECEF", "muted": "#8C8C95", "accent": "#A78BFA",
+    },
     "midnight": {
         "bg": "#0F1221", "surface": "#1A1E2E", "primary": "#6366F1",
         "secondary": "#8B5CF6", "text": "#F3F4F6", "muted": "#9CA3AF", "accent": "#06B6D4",
@@ -1012,7 +1016,7 @@ def _build_theme_customization_card(active_preset: str = None):
             )
         )
 
-    default_colors = THEME_PRESETS.get(active_preset, THEME_PRESETS["midnight"])
+    default_colors = THEME_PRESETS.get(active_preset, THEME_PRESETS["graphite"])
     color_pickers = []
     for key, label in THEME_COLOR_LABELS.items():
         color_pickers.append(
@@ -1030,7 +1034,7 @@ def _build_theme_customization_card(active_preset: str = None):
         content=[
             Text(content="Choose a preset theme:", variant="body"),
             Grid(
-                columns=5,
+                columns=len(THEME_PRESETS),
                 children=preset_buttons,
                 gap=8,
             ),
@@ -1315,7 +1319,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
             "properties": {
                 "preset": {
                     "type": "string",
-                    "description": "Optional preset name to show as default: midnight, daylight, ocean, sunset, forest"
+                    "description": "Optional preset name to show as default: graphite, midnight, daylight, ocean, sunset, forest"
                 }
             }
         }
@@ -1323,13 +1327,13 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     "apply_theme_preset": {
         "function": apply_theme_preset,
         "scope": "tools:write",
-        "description": "Apply a predefined theme preset immediately. Available presets: midnight (dark indigo/purple), daylight (light mode), ocean (deep blue/cyan), sunset (warm orange/red), forest (green nature). Use this when the user asks to switch to a specific theme.",
+        "description": "Apply a predefined theme preset immediately. Available presets: graphite (default; near-black with purple accents), midnight (dark indigo/purple), daylight (light mode), ocean (deep blue/cyan), sunset (warm orange/red), forest (green nature). Use this when the user asks to switch to a specific theme.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "preset": {
                     "type": "string",
-                    "enum": ["midnight", "daylight", "ocean", "sunset", "forest"],
+                    "enum": ["graphite", "midnight", "daylight", "ocean", "sunset", "forest"],
                     "description": "The theme preset name to apply"
                 }
             },

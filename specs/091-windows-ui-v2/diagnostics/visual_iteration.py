@@ -41,9 +41,9 @@ catalog = copy.deepcopy(MENU['console']['catalog'])
 examples = literal_assignments(ROOT / 'backend/orchestrator/welcome.py', ['WELCOME_EXAMPLES'])['WELCOME_EXAMPLES']
 categories = literal_assignments(ROOT / 'backend/orchestrator/web_landing.py', ['SCENARIO_CATEGORIES', 'CATEGORY_ORDER'])
 catalog['scenarios'] = []
-for title, caption, query in examples:
+for title, query in examples:
     slug = '_'.join(re.findall(r'[a-z0-9]+', title.lower()))
-    catalog['scenarios'].append(dict(id=slug, title=title, description=caption, prompt=query, category=categories['SCENARIO_CATEGORIES'].get(slug, 'Utilities')))
+    catalog['scenarios'].append(dict(id=slug, title=title, description='', prompt=query, category=categories['SCENARIO_CATEGORIES'].get(slug, 'Utilities')))
 catalog['categories'] = list(categories['CATEGORY_ORDER'])
 catalog['agents'] = []
 for path in (ROOT / 'backend/agents').glob('*/*_agent.py'):

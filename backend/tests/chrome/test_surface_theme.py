@@ -100,24 +100,46 @@ def test_server_palette_snapshot_cannot_be_used_for_another_owner():
     assert components[0]["colors"]["accent"] == "#2DD4BF"
 
 
+GRAPHITE = {"bg": "#121214", "surface": "#1B1B1F", "primary": "#7C3AED", "secondary": "#6E6E78",
+            "text": "#ECECEF", "muted": "#8C8C95", "accent": "#A78BFA"}
+
+
+def test_graphite_is_the_first_preset_and_the_default_and_midnight_stays():
+    assert list(theme_surface.PRESETS) == ["graphite", "midnight", "daylight", "ocean", "sunset", "forest"]
+    assert theme_surface.PRESETS["graphite"] == GRAPHITE
+    assert theme_surface._DEFAULT_PRESET == "graphite"
+    assert theme_surface.PRESETS["midnight"] == {
+        "bg": "#0F1221", "surface": "#1A1E2E", "primary": "#6366F1", "secondary": "#8B5CF6",
+        "text": "#F3F4F6", "muted": "#9CA3AF", "accent": "#06B6D4"}
+
+
+def test_default_theme_preferences_carry_the_graphite_name_and_colors():
+    prefs = theme_surface.default_theme_preferences()
+    assert prefs == {"theme": {"preset": "graphite", "colors": GRAPHITE}}
+    prefs["theme"]["colors"]["bg"] = "#000000"
+    assert theme_surface.PRESETS["graphite"]["bg"] == "#121214"
+    assert theme_surface.default_theme_preferences()["theme"]["colors"]["bg"] == "#121214"
+
+
 def test_render_has_all_preset_cards_with_action_and_swatches():
     html = render(FakeOrch())
-    assert html.count('data-ui-action="chrome_theme_preset"') == 5
-    for name in ("midnight", "daylight", "ocean", "sunset", "forest"):
+    assert html.count('data-ui-action="chrome_theme_preset"') == 6
+    for name in ("graphite", "midnight", "daylight", "ocean", "sunset", "forest"):
         assert f"&quot;preset&quot;: &quot;{name}&quot;" in html, f"missing payload for {name}"
         assert name.capitalize() in html
-    for hexval in ("#0F1221", "#F8FAFC", "#0EA5E9", "#F97316", "#22C55E"):
+    assert html.index("&quot;graphite&quot;") < html.index("&quot;midnight&quot;")
+    for hexval in ("#121214", "#0F1221", "#F8FAFC", "#0EA5E9", "#F97316", "#22C55E"):
         assert f"background:{hexval}" in html
 
 
-def test_render_embeds_seven_color_pickers_with_midnight_defaults():
+def test_render_embeds_seven_color_pickers_with_graphite_defaults():
     html = render(FakeOrch())
     assert html.count("astral-color-picker") == 7
     for key in ("bg", "surface", "primary", "secondary", "text", "muted", "accent"):
         assert f'data-color-key="{key}"' in html
-    assert 'value="#0F1221"' in html
-    assert 'value="#06B6D4"' in html
-    assert "Current theme: default (Midnight)." in html
+    assert 'value="#121214"' in html
+    assert 'value="#A78BFA"' in html
+    assert "Current theme: default (Graphite)." in html
 
 
 def test_render_reflects_persisted_preset():
@@ -132,7 +154,7 @@ def test_render_reflects_persisted_preset():
 def test_render_overlays_single_custom_color_on_defaults():
     html = render(FakeOrch(prefs={"theme": {"color_key": "primary", "color_value": "#ABCDEF"}}))
     assert 'value="#ABCDEF"' in html
-    assert 'value="#0F1221"' in html
+    assert 'value="#121214"' in html
     assert "custom colors" in html
     assert 'aria-pressed="true"' not in html
 
@@ -142,15 +164,15 @@ def test_render_overlays_colors_map_and_ignores_invalid_hex():
     html = render(FakeOrch(prefs=prefs))
     assert 'value="#112233"' in html
     assert "<script>" not in html
-    assert 'value="#06B6D4"' in html
+    assert 'value="#A78BFA"' in html
 
 
 def test_render_tolerates_db_failure_and_bad_theme_shape():
     html = render(FakeOrch(fail_on_get=True))
-    assert "Current theme: default (Midnight)." in html
+    assert "Current theme: default (Graphite)." in html
 
     html2 = render(FakeOrch(prefs={"theme": "not-a-dict"}))
-    assert "Current theme: default (Midnight)." in html2
+    assert "Current theme: default (Graphite)." in html2
 
 
 def test_preset_save_persists_like_save_theme_and_applies_instantly():
@@ -190,3 +212,20 @@ def test_db_failure_returns_error_notice_not_exception():
     assert surface == "theme"
     assert "Failed to save theme" in notice and "bg-red-500/10" in notice
     assert "astral-theme-apply" not in notice
+
+
+def test_theme_surface_drops_instructional_captions_in_both_paths_and_keeps_the_state_summary():
+    orch = FakeOrch()
+    html = render(orch)
+    components = asyncio.run(theme_surface.components(orch, "user-1", ["user"], {}))
+    captions = [c["content"] for c in components if c.get("type") == "text" and c.get("variant") == "caption"]
+    headings = [c["content"] for c in components if c.get("type") == "text" and c.get("variant") == "h3"]
+
+    for sentence in ("Pick a preset", "apply and save", "save instantly"):
+        assert sentence not in html
+        assert not [c for c in captions if sentence in c]
+    assert captions == ["Current theme: default (Graphite)."]
+    assert headings == ["Presets", "Fine-tune colors"]
+    assert "Presets" in html and "Fine-tune colors" in html
+    assert html.count("astral-color-picker") == 7
+    assert [c["type"] for c in components].count("color_picker") == 7

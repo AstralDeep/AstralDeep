@@ -315,7 +315,7 @@ def _sdui_action_payloads(value, action):
     return found
 
 
-def test_render_defaults_to_soul_tab_with_form_and_precedence_note():
+def test_render_defaults_to_soul_tab_with_form_and_no_captions():
     html = render(make_orch())
     for label in ("Soul", "Memory", "Skills", "Schedule", "Dreaming"):
         assert label in html
@@ -324,7 +324,7 @@ def test_render_defaults_to_soul_tab_with_form_and_precedence_note():
         assert f'name="{name}"' in html
     assert 'data-ui-action="chrome_profile_save"' in html
     assert 'data-ui-collect="true"' in html
-    assert "tone and voice only" in html
+    assert "tone and voice only" not in html
     assert 'value="researcher"' in html
     assert "write more" in html
     assert "be brief" in html
@@ -379,7 +379,7 @@ def test_skills_tab_renders_toggle_and_unavailable_reason():
     assert "Agents &amp; permissions" in html
 
 
-def test_schedule_tab_lists_jobs_with_actions_history_and_chat_hint(monkeypatch):
+def test_schedule_tab_lists_jobs_with_actions_and_history(monkeypatch):
     monkeypatch.setitem(flags._flags, "scheduler_execution", True)
     jobs = [_job("j1", "active"), _job("j2", "paused", name="Weekly report"),
             _job("j3", "disabled", name="Ghost job")]
@@ -393,7 +393,7 @@ def test_schedule_tab_lists_jobs_with_actions_history_and_chat_hint(monkeypatch)
     assert 'data-ui-action="chrome_job_run_now"' in html
     assert 'data-ui-action="chrome_job_resume"' in html
     assert 'data-ui-action="chrome_job_delete"' in html
-    assert "created in chat" in html
+    assert "created in chat" not in html
     assert "all good" in html and "success" in html
 
 
@@ -778,3 +778,104 @@ def test_phi_reject_field_labels_each_field(monkeypatch):
 def test_components_schedule_tab_via_sdui_entry():
     comps = asyncio.run(surf.components(make_orch(), "u1", ["user"], {"tab": "schedule"}))
     assert comps and len(comps) >= 2
+
+
+CUT_COPY = (
+    "Personality guides tone",
+    "How should the assistant sound",
+    "One goal per line",
+    "Show optional reminders",
+    "Durable, non-PHI",
+    "No memory items",
+    "No skills are available",
+    "New jobs are created in chat",
+    "No scheduled jobs",
+    "No runs yet",
+    "Dreaming periodically",
+    "No sweeps yet",
+    "Leave blank for no run limit",
+    "Finite hard limit",
+    "only used with a currency cap",
+)
+
+
+def _all_text(value):
+    if isinstance(value, dict):
+        return " ".join(_all_text(child) for child in value.values())
+    if isinstance(value, (list, tuple)):
+        return " ".join(_all_text(child) for child in value)
+    return str(value)
+
+
+def _sdui_all(orch, tab):
+    return asyncio.run(surf.components(orch, "u1", ["user"], {"tab": tab}))
+
+
+@pytest.mark.parametrize("tab", ["soul", "memory", "skills", "schedule", "dreaming"])
+def test_populated_tabs_carry_no_captions_helps_or_empty_state_sentences(tab):
+    orch = make_orch(jobs=[_job("j1", "active")])
+    html = render(orch, {"tab": tab})
+    sdui = _all_text(_sdui_all(orch, tab))
+
+    for sentence in CUT_COPY:
+        assert sentence not in html, (tab, sentence)
+        assert sentence not in sdui, (tab, sentence)
+
+
+def test_empty_memory_skills_schedule_and_dreaming_tabs_stay_empty_in_both_paths(monkeypatch):
+    monkeypatch.setitem(flags._flags, "scheduler_execution", True)
+    repo_empty = make_orch()
+    repo_empty.personalization_service.repo.memory = []
+    repo_empty.personalization_service.repo.sweeps = []
+    repo_empty.tool_permissions._tool_scope_map = {}
+
+    for tab in ("memory", "skills", "schedule", "dreaming"):
+        html = render(repo_empty, {"tab": tab})
+        assert "Soul" in html
+        for sentence in CUT_COPY:
+            assert sentence not in html, (tab, sentence)
+        sdui = _sdui_all(repo_empty, tab)
+        assert sdui[0]["type"] == "container"
+        for sentence in CUT_COPY:
+            assert sentence not in _all_text(sdui), (tab, sentence)
+
+    assert _sdui_all(repo_empty, "memory")[1:] == []
+    assert _sdui_all(repo_empty, "skills")[1:] == []
+    assert _sdui_all(repo_empty, "schedule")[1:] == []
+    assert [c["type"] for c in _sdui_all(repo_empty, "dreaming")[1:]] == ["card"]
+
+
+def test_state_notices_survive_the_copy_cuts(monkeypatch):
+    monkeypatch.setitem(flags._flags, "scheduler_execution", False)
+    monkeypatch.setattr(surf, "notices_enabled", lambda *_: True)
+    orch = make_orch(jobs=[_job("j1", "active")])
+    orch.tool_permissions._allowed[("u1", "helper", "wipe_disk")] = False
+
+    schedule_html = render(orch, {"tab": "schedule"})
+    schedule_sdui = _all_text(_sdui_all(orch, "schedule"))
+    assert "Unattended" in schedule_html and "Unattended" in schedule_sdui
+    skills_html = render(orch, {"tab": "skills"})
+    assert "Agents &amp; permissions" in skills_html
+    assert "Agents & permissions" in _all_text(_sdui_all(orch, "skills"))
+    assert "Currently" in render(orch, {"tab": "soul"})
+
+
+def test_assignment_limit_fields_carry_no_help_sentences():
+    limits = surf._assignment_limits()
+
+    fields = surf._assignment_limit_fields(limits)
+
+    assert fields and all("help" not in item for item in fields)
+    assert {"daily.spend_micro_units", "lifetime.spend_micro_units"} <= {item["name"] for item in fields}
+
+
+def test_run_policy_form_has_no_field_help_and_keeps_its_state_text():
+    components = surf._job_policy_components(
+        "j1", {"version": 3, "max_runs": 5, "admitted_runs": 2, "monitor_changes": False, "terminal_stop": True}
+    )
+
+    text = _all_text(components)
+    assert "Leave blank for no run limit" not in text
+    assert "2 of 5 runs admitted" in text
+    assert "stopped permanently" in text
+    assert surf._job_policy_components("j1", None) == []

@@ -81,6 +81,13 @@ def test_theme_components_valid_and_actionable():
     assert "chrome_theme_preset" in collect_handlers()
 
 
+def test_theme_components_list_graphite_first_and_midnight_after():
+    from orchestrator.projection_surfaces import theme
+    comps = run(theme.components(_orch(), "u1", ["user"], {}))
+    labels = [c.get("label") for c in _flat(comps) if c.get("label")]
+    assert labels.index("Apply Graphite") < labels.index("Apply Midnight")
+
+
 def test_theme_components_marks_active_preset():
     from orchestrator.projection_surfaces import theme
     comps = run(theme.components(_orch({"theme": {"preset": "ocean"}}), "u1", ["user"], {}))
@@ -102,7 +109,7 @@ def test_theme_components_theme_apply_colors_when_no_preset():
         _orch({"theme": {"colors": {"primary": "#22C55E"}}}), "u1", ["user"], {}))
     assert comps[0]["type"] == "theme_apply"
     assert comps[0]["colors"]["primary"] == "#22C55E"
-    assert comps[0]["colors"]["bg"] == theme.PRESETS["midnight"]["bg"]
+    assert comps[0]["colors"]["bg"] == theme.PRESETS["graphite"]["bg"] == "#121214"
     assert "preset" not in comps[0]
 
 
@@ -168,6 +175,25 @@ def test_llm_components_form_multi_action():
     for a in ("chrome_llm_models", "chrome_llm_test", "chrome_llm_save",
               "chrome_llm_clear", "chrome_typesafe_save", "chrome_typesafe_clear"):
         assert a in handlers
+
+
+def test_llm_components_drop_captions_and_field_help_but_keep_data_sharing_consent():
+    from llm_config import data_sharing as ds
+    from orchestrator.projection_surfaces import llm
+    orch = types.SimpleNamespace(_llm_store=None, ui_sessions={})
+    for params in ({}, {"first_run": True, "principal": "ada"}):
+        comps = run(llm.components(orch, "u1", ["user"], params))
+        flat = _flat(comps)
+        captions = [c["content"] for c in flat if c.get("type") == "text" and c.get("variant") == "caption"]
+        assert not [c for c in captions if "AI provider YOU connect" in c or "stored for your account" in c]
+        assert not [c for c in captions if "Local runtimes" in c]
+        form, = [c for c in flat if c.get("type") == "param_picker"]
+        helps = {f["name"]: f.get("help") for f in form["fields"] if f.get("help")}
+        assert set(helps) <= {ds.FIELD_NAME, "typesafe_api_key"}
+        assert helps[ds.FIELD_NAME] == ds.NOTICE_BODY
+        assert helps.get("typesafe_api_key", "Status: ").startswith("Status: ")
+        assert any(c.get("type") == "alert" and c.get("message") == ds.NOTICE_BODY for c in flat)
+    assert not hasattr(llm, "SUBTITLE")
 
 
 class _PznRepo:

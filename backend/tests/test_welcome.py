@@ -36,19 +36,16 @@ def test_every_type_is_renderable():
 
 def test_first_screen_has_three_choices_and_discloses_the_rest():
     comps = welcome_components()
-    assert comps[0]["type"] == "hero"
-    assert comps[0]["title"] == "How can I help?"
-    assert not comps[0].get("eyebrow") and not comps[0].get("subtitle")
-    grid = comps[1]
-    assert grid["type"] == "grid"
+    assert [node["type"] for node in comps] == ["grid", "collapsible"]
+    grid, more = comps
     assert len(grid["children"]) == 3
     assert all(child["type"] == "button" for child in grid["children"])
-    more = comps[2]
-    assert more["type"] == "collapsible"
-    assert more["title"] == "More examples" and more["default_open"] is False
+    assert more["title"] == "" and more["default_open"] is False
+    assert more["aria-label"] == "More examples"
     assert (len([n for n in _walk(more["content"]) if n["type"] == "button"])
             == len(WELCOME_EXAMPLES) - 3)
-    assert not any(n["type"] in {"text", "card"} for n in _walk(comps))
+    assert not any(n["type"] in {"text", "card", "hero"} for n in _walk(comps))
+    assert "How can I help?" not in json.dumps(comps)
     assert json.dumps(comps), "wire-serializable"
 
 
@@ -57,7 +54,7 @@ def test_buttons_dispatch_standard_chat_message_action():
     assert len(buttons) == len(WELCOME_EXAMPLES)
     queries = {b["payload"]["message"] for b in buttons}
     assert all(b["action"] == "chat_message" for b in buttons)
-    assert queries == {q for _, _, q in WELCOME_EXAMPLES}
+    assert queries == {q for _, q in WELCOME_EXAMPLES}
     assert all(q.strip() for q in queries)
 
 
@@ -77,7 +74,7 @@ def test_example_names_are_unique_visible_and_accessible():
 
 def test_unavailable_tools_keep_explicit_consent_separate_from_examples():
     comps = welcome_components(tools_available=False)
-    consent = comps[1]
+    consent = comps[0]
     assert consent["type"] == "card" and "Agents are off" in consent["title"]
     actions = [n for n in _walk([consent]) if n["type"] == "button"]
     assert [n["action"] for n in actions] == ["enable_recommended_agents", "chrome_open"]
@@ -101,6 +98,14 @@ def test_voice_profile_gets_readable_text():
     text = " ".join(
         ComponentAdapter._extract_text(c) for c in welcome_components()
     )
-    assert "How can I help?" in text
-    for title, _, _ in WELCOME_EXAMPLES:
+    for title, _ in WELCOME_EXAMPLES:
         assert title in text, f"example {title!r} unreadable on voice"
+
+
+def test_landing_scenarios_send_prompts_without_captions():
+    from orchestrator import web_landing
+
+    items = web_landing.scenarios()
+    assert [(item["title"], item["prompt"]) for item in items] == list(WELCOME_EXAMPLES)
+    assert all(item["description"] == "" for item in items)
+    assert all(item["category"] in web_landing.categories(items) for item in items)

@@ -30,8 +30,8 @@ async def build(orch, params=None):
 
 async def test_empty_native_drafts_offers_the_existing_generation_form():
     components = await build(orch_with([]))
-    assert "No drafts yet" in json.dumps(components)
-    form, = [component for component in components if component["type"] == "param_picker"]
+    assert [component["type"] for component in components] == ["param_picker"]
+    form, = components
     assert form["submit_action"] == "chrome_draft_create"
     assert form["submit_label"] == "Generate & self-test"
     assert [(field["name"], field["kind"]) for field in form["fields"]] == [
@@ -79,13 +79,21 @@ async def test_native_refine_collects_guidance_without_submitting_a_chat_query()
     assert "chat_message" not in json.dumps(components)
 
 
+async def test_native_drafts_form_and_detail_carry_no_helper_copy():
+    form, = await build(orch_with([]))
+    assert form["description"] == ""
+    assert all("help" not in field for field in form["fields"])
+    detail = json.dumps(await build(orch_with([_draft()]), {"draft_id": "d1"}))
+    assert "Test the draft from chat" not in detail
+
+
 async def test_native_live_detail_has_no_draft_decision_controls():
     components = await build(orch_with([_draft(status="live")]), {"draft_id": "d1"})
     assert not [component for component in flatten(components)
                 if component.get("action") in {
                     "draft_approve", "draft_discard", "revision_apply", "revision_discard",
                 }]
-    assert "approved and is live" in json.dumps(components)
+    assert "approved and is live" not in json.dumps(components)
 
 
 async def test_native_detail_retains_failure_and_revision_context():
@@ -174,8 +182,10 @@ async def test_draft_decision_refreshes_current_native_surface_without_guessing_
     assert len(orch.sent) == 2
     assert orch.sent[-1]["surface_key"] == "drafts"
     wire = json.dumps(orch.sent[-1])
-    assert ("No drafts yet" if action in {"draft_discard", "revision_discard"}
-            else "Updated owner draft") in wire
+    if action in {"draft_discard", "revision_discard"}:
+        assert "Tracker" not in wire and "No drafts yet" not in wire
+    else:
+        assert "Updated owner draft" in wire
     assert "success" not in wire
 
 
@@ -225,7 +235,8 @@ async def test_actual_native_draft_decision_handlers_deny_foreign_owner_without_
     assert orch.chat_cards and orch.chat_cards[0]["type"] == "alert"
     assert "Foreign private draft" not in json.dumps(orch.chat_cards + orch.sent)
     assert orch.sent[-1]["request_generation"] == generation
-    assert "No drafts yet" in json.dumps(orch.sent[-1])
+    types = [component["type"] for component in orch.sent[-1]["components"]]
+    assert "param_picker" in types and "card" not in types
 
 
 async def test_native_draft_store_failure_produces_a_visible_error(monkeypatch):

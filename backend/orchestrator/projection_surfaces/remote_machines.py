@@ -154,17 +154,15 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
     def _cred_fields_sdui():
         return [
             _sdui.field("cred_type", "Credential type", "select", default="ssh_key",
-                        options=list(_CRED),
-                        help="Pick ssh_key to paste a private key below, or password."),
+                        options=list(_CRED)),
             _sdui.field("private_key", "Private key (paste the full PEM)",
-                        "textarea", help="Used only when the credential type is ssh_key.",
+                        "textarea",
                         visible_when={"field": "cred_type", "equals": "ssh_key",
                                       "default": "ssh_key"}),
             _sdui.field("passphrase", "Key passphrase (optional)", "password",
                         visible_when={"field": "cred_type", "equals": "ssh_key",
                                       "default": "ssh_key"}),
             _sdui.field("password", "Password", "password",
-                        help="Used only when the credential type is password.",
                         visible_when={"field": "cred_type", "equals": "password",
                                       "default": "ssh_key"}),
         ]
@@ -176,12 +174,8 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
         plane_source_from_orchestrator(orch),
         user_id,
     )
-    out = [_sdui.text("Register your own machines and clusters. On save the product makes a "
-                      "real connection and reports what happened. Your machines are private "
-                      "to you.", "caption")]
-    if not rows:
-        out.append(_sdui.text("No machines yet — add one below.", "caption"))
-    else:
+    out = []
+    if rows:
         for r in rows:
             mid = r["machine_id"]
             facts = _sdui.key_value([
@@ -208,8 +202,8 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
                                                cred_form]))
 
     fields = [
-        _sdui.field("label", "Label", "text", help="A short name, e.g. my-dgx."),
-        _sdui.field("address", "Address", "text", help="Hostname or IP, e.g. dgx.ai.uky.edu."),
+        _sdui.field("label", "Label", "text"),
+        _sdui.field("address", "Address", "text"),
         _sdui.field("port", "Port", "number", default="22"),
         _sdui.field("username", "Username", "text"),
         _sdui.field("os_family", "Operating system", "select", default="linux", options=list(_OS)),

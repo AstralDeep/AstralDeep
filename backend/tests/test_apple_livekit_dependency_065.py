@@ -92,6 +92,10 @@ def test_resolved_livekit_graph_is_exact_and_complete() -> None:
             "0.0.6",
             "7c161254ce7cd55debc48023f69a917076b12a26",
         ),
+        "sparkle": (
+            "2.10.1",
+            "ab7d71291238df6e0492143b120c9b696a35f603",
+        ),
         "swift-protobuf": (
             "1.38.1",
             "55d7a1cc5666b85c13464aea1c4b4a90feccb4c8",

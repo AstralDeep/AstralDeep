@@ -113,12 +113,7 @@ async def components(orch, user_id, roles, params):
     except Exception:
         logger.exception("attachments surface: list failed (native)")
         return [_sdui.alert("Could not load your attachments.", "error")]
-    if not items:
-        return [_sdui.alert("No uploads yet. Use the paperclip in the chat box to attach "
-                            "a file — it will appear here so you can reuse it in other "
-                            "chats.", "info")]
-    out = [_sdui.text("Attach a previously uploaded file to your next message (no "
-                      "re-upload), or delete files you no longer need.", "caption")]
+    out = []
     for att in items:
         cat = _CATEGORY_LABEL.get(att.category, att.category)
         out.append(_sdui.card(
