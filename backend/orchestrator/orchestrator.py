@@ -17713,6 +17713,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
             if _conf is not None:
                 _msg, _comps = _conf
+                if agent_id == "computer-use-1" and tool_name == "write_file":
+                    from orchestrator.write_review import attach_write_diff
+                    _comps = await attach_write_diff(self, websocket, user_id, chat_id, args, _comps)
                 _policy = remote_confirmation.policy_for(agent_id)
                 if (_policy is not None and _policy.card_as_result
                         and (agent_id != "gaiakeep-1" or remote_confirmation.is_approval_card_result(_comps))):

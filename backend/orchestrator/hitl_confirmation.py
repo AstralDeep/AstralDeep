@@ -787,6 +787,12 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             Button(label="Decline", action="authorize_action", variant="secondary",
                    payload={"hitl_request_id": call.request_id, "decision": "decline"}),
         ]).to_dict()
+        if agent == "computer-use-1" and tool == "write_file":
+            from orchestrator.write_review import review_components
+
+            index = next(index for index, item in enumerate(card["content"]) if item.get("type") == "code") + 1
+            card["content"][index:index] = await review_components(orch, websocket, owner, chat, args,
+                                                                   f"hitl_{call.request_id}_diff")
         from orchestrator.remote_confirmation import computer_resume_target
 
         target = computer_resume_target(websocket, call.computer_authority, tool, args)
