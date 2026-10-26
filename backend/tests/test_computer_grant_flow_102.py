@@ -288,13 +288,55 @@ async def test_run_command_card_grants_the_program_in_its_folder(task_runtime):
     assert "Environment: LANG=C" in _texts(with_env) and len(_buttons(with_env)) == 2
 
 
-async def test_plain_approval_of_a_command_creates_no_grant(task_runtime):
+async def test_plain_approval_of_a_command_is_one_card_one_execution_and_no_grant(task_runtime):
     orch, ws, effects, *_ = task_runtime
     session, _host = await _mac(task_runtime, remote=True)
-    first = await _call(task_runtime, "run_command", argv=["wc", "notes.md"], cwd=ROOT)
-    await rc.handle_decision(orch, ws, OWNER, _payload(first, "approve"))
-    assert not effects and orch._hitl_pending_calls
+    args = {"argv": ["wc", "notes.md"], "cwd": ROOT}
+    first = await _call(task_runtime, "run_command", **args)
+    payload = _payload(first, "approve")
+    await rc.handle_decision(orch, ws, OWNER, payload)
+    assert len(effects) == 1 and effects[0][1]["argv"] == ["wc", "notes.md"]
+    assert not getattr(orch, "_hitl_pending_calls", {})
     assert orch.computer_sessions.grants.list(session.session_id) == ()
+    actions = [call.args[0].action_type for call in orch.audit_recorder.record.await_args_list]
+    assert "hitl.remote_reviewed" in actions and actions.count("hitl.effect_started") == 1
+    renders = [c for c in orch.send_ui_render.await_args_list
+               if any(isinstance(item, dict) and item.get("type") == "card" for item in c.args[1])]
+    assert renders == []
+    await rc.handle_decision(orch, ws, OWNER, payload)
+    assert len(effects) == 1
+    row = SimpleNamespace(proposal_id=payload["proposal_id"], owner_id=OWNER, conversation_id=CHAT,
+                          agent_id="computer-use-1", tool_name="run_command", args_fingerprint=rc._fingerprint(args))
+    risks = ("source_bound", "privileged", "tools:execute")
+    with rc.source_review_scope(orch, row):
+        replay = await hc.evaluate(orch, ws, OWNER, CHAT, "computer-use-1", "run_command", dict(args), risks)
+        changed = await hc.evaluate(orch, ws, OWNER, CHAT, "computer-use-1", "run_command",
+                                    {"argv": ["wc", "other.md"], "cwd": ROOT}, risks)
+    assert replay.result["_data"]["status"] == "confirmation_required"
+    assert changed.result["_data"]["status"] == "confirmation_required"
+    assert len(effects) == 1
+
+
+async def test_denying_the_command_card_runs_nothing_and_raises_no_second_card(task_runtime):
+    orch, ws, effects, *_ = task_runtime
+    await _mac(task_runtime, remote=True)
+    first = await _call(task_runtime, "run_command", argv=["wc", "notes.md"], cwd=ROOT)
+    await rc.handle_decision(orch, ws, OWNER, _payload(first, "decline"))
+    assert not effects and not getattr(orch, "_hitl_pending_calls", {})
+
+
+async def test_remote_review_needs_the_same_session_and_a_consumed_proposal(task_runtime):
+    orch, ws, effects, *_ = task_runtime
+    session, host = await _mac(task_runtime, remote=True)
+    args = {"argv": ["wc", "notes.md"], "cwd": ROOT}
+    first = await _call(task_runtime, "run_command", **args)
+    proposal = _payload(first, "approve")["proposal_id"]
+    row = SimpleNamespace(proposal_id=proposal, owner_id=OWNER, conversation_id=CHAT, agent_id="computer-use-1",
+                          tool_name="run_command", args_fingerprint=rc._fingerprint(args))
+    risks = ("source_bound", "privileged", "tools:execute")
+    with rc.source_review_scope(orch, row):
+        pending = await hc.evaluate(orch, ws, OWNER, CHAT, "computer-use-1", "run_command", dict(args), risks)
+    assert pending.result["_data"]["status"] == "confirmation_required" and not effects
 
 
 async def test_destructive_command_card_offers_no_grant(task_runtime):

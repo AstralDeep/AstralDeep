@@ -27,6 +27,7 @@ TTL_SECONDS = 900
 POINTER_VERBS = frozenset({"click", "double_click", "right_click", "move", "drag", "scroll"})
 POINTER_REFUSAL = "Call list_windows and pass hwnd for the target window."
 CONTROL_VERBS = frozenset({"interrupt_command"})
+REMOTE_REVIEWED_VERBS = frozenset({"run_command"})
 _BUNDLE_ID = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
 
 
@@ -476,6 +477,47 @@ async def granted_dispatch(orch, websocket, owner, chat, agent, tool, args, risk
     return await _dispatch_approved(orch, websocket, call)
 
 
+def _consumed_command_review(orch, owner, chat, tool, args, proposal_id) -> bool:
+    from orchestrator.remote_confirmation import _fingerprint, _proposal_context
+
+    context = _proposal_context(orch)
+    row = context.call(context.repository.get, owner_id=owner, proposal_id=proposal_id)
+    return (row is not None and row.status == "consumed" and row.expires_at > time.time()
+            and (row.owner_id, row.conversation_id, row.agent_id, row.tool_name)
+            == (owner, chat, "computer-use-1", tool) and row.args_fingerprint == _fingerprint(args))
+
+
+async def remote_reviewed_dispatch(orch, websocket, owner, chat, agent, tool, args, risks, remote_proposal, authority):
+    if (agent != "computer-use-1" or tool not in REMOTE_REVIEWED_VERBS or not isinstance(remote_proposal, str)
+            or authority is None or approved_call(orch, owner, chat, agent, tool)):
+        return None
+    now = time.monotonic()
+    used = {key: expiry for key, expiry in getattr(orch, "_hitl_remote_reviews_used", {}).items() if expiry > now}
+    orch._hitl_remote_reviews_used = used
+    entry = getattr(orch, "_computer_approval_authorities", {}).get(remote_proposal)
+    reviewed = entry[0] if entry is not None and entry[1] > now else None
+    if remote_proposal in used or reviewed is None or reviewed.session is not authority.session:
+        return None
+    try:
+        consumed = await asyncio.to_thread(_consumed_command_review, orch, owner, chat, tool, args, remote_proposal)
+    except Exception:
+        logger.warning("Remote command review could not be verified", exc_info=True)
+        return None
+    if not consumed or remote_proposal in used or len(used) >= 1024:
+        return None
+    used[remote_proposal] = now + TTL_SECONDS
+    call = PendingCall(str(uuid.uuid4()), owner, chat, agent, tool, _arguments(args), tuple(sorted(risks)),
+                       now + TTL_SECONDS, _task(orch, websocket, owner, chat), authority, remote_proposal, websocket,
+                       cancellation_witness(orch, websocket, owner, chat, create=True))
+    if not _current_session(orch, websocket, call):
+        return None
+    try:
+        await _audit(orch, call, "remote_reviewed")
+    except Exception:
+        return _refused("Action audit is unavailable. The action was not run.")
+    return await _dispatch_approved(orch, websocket, call)
+
+
 def _computer_points(tool, args):
     names = (("x1", "y1"), ("x2", "y2")) if tool == "drag" else (("x", "y"),)
     points = [(args.get(x), args.get(y)) for x, y in names]
@@ -618,8 +660,10 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             if (tool in POINTER_VERBS and computer.host.platform == "macos"
                     and (type(hwnd) is not int or hwnd not in computer.session.window_cache)):
                 return _refused(POINTER_REFUSAL)
-            granted = await granted_dispatch(orch, websocket, owner, chat, agent, tool, args, risks,
-                                             authority=computer)
+            granted = (await remote_reviewed_dispatch(orch, websocket, owner, chat, agent, tool, args, risks,
+                                                      remote_proposal, computer)
+                       or await granted_dispatch(orch, websocket, owner, chat, agent, tool, args, risks,
+                                                 authority=computer))
             if granted is not None:
                 return granted
         call = next((item for item in pending.values() if
