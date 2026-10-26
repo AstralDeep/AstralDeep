@@ -282,6 +282,8 @@ class _ConnectionIngressFrame:
     deadline_at_utc: datetime | None
     authenticated_user_id: str | None = field(default=None, repr=False)
     local_final_verified: bool = False
+    foreground: bool = False
+    remote_effect_call: object = field(default=None, repr=False)
     work_read: "WorkSurfaceRead | None" = field(default=None, repr=False)
     human_request: object = field(default=None, repr=False)
     guidance_origin: object = field(default=None, repr=False)
@@ -6836,6 +6838,9 @@ class Orchestrator:
         work = context.operations.get(getattr(operation, "operation_id", None))
         if work is None:
             return None, None
+        call = work.frame.remote_effect_call
+        if call is not None and getattr(self, "_hitl_pending_calls", {}).get(call.request_id) is not call:
+            return None, None
         connection = context.connection_generation
         fence = work.fence
         claims = self.ui_sessions.get(websocket)
@@ -6845,6 +6850,11 @@ class Orchestrator:
                     "connection_generation": connection}
 
         def current():
+            if work.frame.foreground:
+                try:
+                    work.frame.human_request.assert_socket()
+                except Exception:
+                    return False
             return (self._connection_contexts.get(id(websocket)) is context
                     and context.websocket is websocket and context.registered and not context.closing
                     and _CONNECTION_OPERATION_CONTEXT.get() is active
@@ -7129,6 +7139,8 @@ class Orchestrator:
                 retryable=False,
             )
             return
+        from orchestrator.remote_effect_ingress import bind_frame
+        bind_frame(self, context, frame)
         is_local_final = frame.parsed.get("type") == "voice_local_final"
         if is_local_final:
             if not await self._verify_connection_local_final(context, frame):
@@ -7196,7 +7208,7 @@ class Orchestrator:
                 frame.human_request = capture_human_socket_request(
                     getattr(self, "human_request_boundary", None), websocket=context.websocket,
                     context=context, message=frame.parsed,
-                    purpose=("voice_guidance" if voice_guidance else
+                    purpose=("remote_effect" if frame.foreground else "voice_guidance" if voice_guidance else
                              "skill_lookup" if frame.action == "chat_message" else "metadata"),
                 )
             if frame.human_request is not None:
@@ -7212,6 +7224,8 @@ class Orchestrator:
 
                     frame.guidance_navigation = capture_navigation(self, pending=frame.human_request)
                 await frame.human_request.capture_session()
+                if frame.foreground:
+                    await frame.human_request.authenticate()
                 if frame.human_request.purpose == "metadata":
                     frame.read_only = frame.human_request.method == "WS_READ"
                 elif frame.human_request.purpose == "voice_guidance":
@@ -7323,12 +7337,14 @@ class Orchestrator:
             if frame.operation_kind in {
                 "llm_credential_save",
                 "voice_chat_message",
+                "remote_effect_approval",
             }:
                 claims = (
                     getattr(self, "ui_sessions", {}).get(context.websocket)
                     or {}
                 )
-                owner_user_id = claims.get("sub") or "legacy"
+                owner_user_id = (frame.remote_effect_call.owner if frame.foreground
+                                 else claims.get("sub") or "legacy")
                 owner = OperationOwner(
                     owner_scope=OwnerScope.USER,
                     owner_user_id=owner_user_id,
@@ -7351,19 +7367,19 @@ class Orchestrator:
                 idempotency_namespace=(
                     frame.operation_kind
                     if frame.operation_kind
-                    in {"llm_credential_save", "voice_chat_message"}
+                    in {"llm_credential_save", "voice_chat_message", "remote_effect_approval"}
                     else None
                 ),
                 idempotency_key=(
                     str(frame.submission_id)
                     if frame.operation_kind
-                    in {"llm_credential_save", "voice_chat_message"}
+                    in {"llm_credential_save", "voice_chat_message", "remote_effect_approval"}
                     else None
                 ),
                 normalized_input_digest=(
                     frame.normalized_digest
                     if frame.operation_kind
-                    in {"llm_credential_save", "voice_chat_message"}
+                    in {"llm_credential_save", "voice_chat_message", "remote_effect_approval"}
                     else None
                 ),
                 chat_id=frame.chat_id,
@@ -7372,6 +7388,11 @@ class Orchestrator:
                 request_generation=frame.request_generation,
             )
             try:
+                if frame.foreground:
+                    frame.human_request.assert_socket()
+                    call = frame.remote_effect_call
+                    if getattr(self, "_hitl_pending_calls", {}).get(call.request_id) is not call:
+                        raise RuntimeError("remote approval intent changed before admission")
                 result = coordinator.submit(request)
             except Exception as exc:
                 result = exc
@@ -7509,7 +7530,7 @@ class Orchestrator:
                     self._reconnectable_operations = registry
                 existing = (
                     registry.get(result.operation_id)
-                    if owner.owner_scope is OwnerScope.USER
+                    if owner.owner_scope is OwnerScope.USER and not frame.foreground
                     else None
                 )
                 if existing is not None:
@@ -7550,7 +7571,7 @@ class Orchestrator:
                 )
                 work.subscribers[id(context)] = (context, frame)
                 context.operations[result.operation_id] = work
-                if owner.owner_scope is OwnerScope.USER:
+                if owner.owner_scope is OwnerScope.USER and not frame.foreground:
                     # Registered before the first await: blocks a duplicate worker
                     registry[result.operation_id] = work
                 if (
@@ -7623,7 +7644,7 @@ class Orchestrator:
                     continue
                 if (
                     context.closing
-                    and owner.owner_scope is OwnerScope.CONNECTION
+                    and (owner.owner_scope is OwnerScope.CONNECTION or frame.foreground)
                 ):
                     frame.close_work_read()
                     terminal = await self._call_work_admission(
@@ -7668,7 +7689,7 @@ class Orchestrator:
                     operation=True,
                 )
                 work.task = task
-                if work.owner.owner_scope is OwnerScope.USER:
+                if work.owner.owner_scope is OwnerScope.USER and not work.frame.foreground:
                     reconnectable_tasks = getattr(
                         self, "_reconnectable_operation_tasks", None
                     )
@@ -7717,7 +7738,7 @@ class Orchestrator:
         while True:
             if (
                 context.closing
-                and work.owner.owner_scope is OwnerScope.CONNECTION
+                and (work.owner.owner_scope is OwnerScope.CONNECTION or work.frame.foreground)
             ):
                 terminal = await self._call_work_admission(
                     self.work_admission.cancel,
@@ -7749,7 +7770,7 @@ class Orchestrator:
             revision = await self._wait_for_interactive_capacity(
                 context,
                 revision,
-                allow_closing=(work.owner.owner_scope is OwnerScope.USER),
+                allow_closing=(work.owner.owner_scope is OwnerScope.USER and not work.frame.foreground),
             )
 
     async def _renew_connection_lease(
@@ -8348,15 +8369,17 @@ class Orchestrator:
             # Wait before claiming: claiming first can deadlock the pool
             if work.predecessors:
                 predecessors = (tuple(asyncio.shield(item) for item in work.predecessors)
-                                if (work.frame.work_read is not None or (work.frame.human_request is not None
-                                    and work.frame.human_request.purpose == "metadata"))
+                                if (work.frame.foreground or work.frame.work_read is not None or (work.frame.human_request is not None
+                                    and work.frame.human_request.purpose in {"metadata", "remote_effect"}))
                                 else work.predecessors)
                 await asyncio.gather(*predecessors)
             if (
                 context.closing
-                and work.owner.owner_scope is OwnerScope.CONNECTION
+                and (work.owner.owner_scope is OwnerScope.CONNECTION or work.frame.foreground)
             ):
                 raise asyncio.CancelledError
+            if work.frame.foreground:
+                await work.frame.human_request.authenticate()
             claim, terminal = await self._claim_connection_operation(
                 context, work
             )
@@ -8381,7 +8404,7 @@ class Orchestrator:
             )
             if (
                 context.closing
-                and work.owner.owner_scope is OwnerScope.CONNECTION
+                and (work.owner.owner_scope is OwnerScope.CONNECTION or work.frame.foreground)
             ):
                 raise asyncio.CancelledError
             connection_operation_context = {
@@ -8546,7 +8569,7 @@ class Orchestrator:
             if work.frame.work_read is not None:
                 async with asyncio.timeout_at(work.frame.work_read.deadline):
                     await _execute()
-            elif work.frame.human_request is not None and work.frame.human_request.purpose == "metadata":
+            elif work.frame.human_request is not None and work.frame.human_request.purpose in {"metadata", "remote_effect"}:
                 async with asyncio.timeout_at(work.frame.human_request.deadline):
                     await _execute()
             elif work.frame.operation_kind == "llm_credential_save":
@@ -8995,12 +9018,12 @@ class Orchestrator:
         connection_work = tuple(
             work
             for work in context.operations.values()
-            if work.owner.owner_scope is OwnerScope.CONNECTION
+            if work.owner.owner_scope is OwnerScope.CONNECTION or work.frame.foreground
         )
         reconnectable_work = tuple(
             work
             for work in context.operations.values()
-            if work.owner.owner_scope is not OwnerScope.CONNECTION
+            if work.owner.owner_scope is not OwnerScope.CONNECTION and not work.frame.foreground
         )
         for work in reconnectable_work:
             work.subscribers.pop(id(context), None)
@@ -11394,8 +11417,10 @@ class Orchestrator:
                         _targs["_txn_token"] = _tok
                         _tc = _SNS(id="authz", function=_SNS(
                             name=_tool, arguments=json.dumps(_targs)))
-                        await self.execute_single_tool(
+                        response = await self.execute_single_tool(
                             websocket, _tc, {_tool: _aid}, _p.get("chat_id"), user_id=user_id)
+                        from orchestrator.remote_effect_ingress import publish_review
+                        await publish_review(self, websocket, _aid, _tool, _p.get("chat_id"), user_id, response)
                     else:
                         await self.send_ui_render(websocket, [Alert(
                             message="Couldn't authorize that action.", variant="warning").to_dict()])
@@ -17767,10 +17792,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             render_target="chat" if pending.error else None)
 
         if chat_id:
-            args = await asyncio.to_thread(
-                self._map_file_paths, chat_id, args, user_id=user_id)
-            if self._tool_accepts_context_arg(agent_id, tool_name, "session_id"):
-                args["session_id"] = chat_id
+            if agent_id != "terminal-shell-1":
+                args = await asyncio.to_thread(
+                    self._map_file_paths, chat_id, args, user_id=user_id)
+                if self._tool_accepts_context_arg(agent_id, tool_name, "session_id"):
+                    args["session_id"] = chat_id
             if user_id and self._tool_accepts_context_arg(
                 agent_id, tool_name, "user_id"
             ):

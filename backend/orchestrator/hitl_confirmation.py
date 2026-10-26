@@ -398,7 +398,9 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
         if not chat or not _attended(orch, websocket, owner):
             return _refused("Confirmation requires an interactive signed-in conversation. Reissue the action there.")
         try:
-            args = await asyncio.to_thread(orch._map_file_paths, chat, json.loads(encoded), user_id=owner)
+            args = json.loads(encoded)
+            if agent != "terminal-shell-1":
+                args = await asyncio.to_thread(orch._map_file_paths, chat, args, user_id=owner)
             encoded = _arguments(args)
         except Exception:
             return _refused("Review unavailable: action targets could not be resolved. Reissue the action when they are available.")
@@ -411,15 +413,18 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
                 or cancellation_witness(orch, websocket, owner, chat) is not witness):
             return _refused("This confirmation is no longer valid for the active session.")
         pending = _pending(orch)
+        from orchestrator.remote_confirmation import source_review_proposal
+
+        remote_proposal = source_review_proposal(orch, owner, chat, agent, tool, args)
         call = next((item for item in pending.values() if
-                     (item.owner, item.chat, item.agent, item.tool, item.arguments, item.risks)
-                     == (owner, chat, agent, tool, encoded, tuple(sorted(risks)))
+                     (item.owner, item.chat, item.agent, item.tool, item.arguments, item.risks, item.remote_proposal)
+                     == (owner, chat, agent, tool, encoded, tuple(sorted(risks)), remote_proposal)
                      and item.task is task and item.websocket is websocket and item.cancellation is witness), None)
         if call is None:
             if len(pending) >= 128 or sum(item.owner == owner for item in pending.values()) >= 32:
                 return _refused("Too many pending confirmations. Resolve an existing request and retry.")
             from orchestrator.computer_use_policy import HOST_VERBS
-            from orchestrator.remote_confirmation import capture_computer_approval, source_review_proposal
+            from orchestrator.remote_confirmation import capture_computer_approval
 
             computer_authority = None
             if agent == "computer-use-1" and tool in HOST_VERBS | {"confirm_action"}:
@@ -428,7 +433,7 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
                     return _refused("The computer session is no longer current. Reissue the action in its active conversation.")
             call = PendingCall(str(uuid.uuid4()), owner, chat, agent, tool,
                                encoded, tuple(sorted(risks)), time.monotonic() + TTL_SECONDS,
-                               task, computer_authority, source_review_proposal(orch, owner, chat, agent, tool, args),
+                               task, computer_authority, remote_proposal,
                                websocket, witness)
             pending[call.request_id] = call
             try:

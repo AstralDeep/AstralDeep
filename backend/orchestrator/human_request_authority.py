@@ -424,6 +424,8 @@ class _HumanSocketRequest:
                 transport.headers.getlist("cookie") for part in header.split(";")]
             if web_auth.COOKIE_NAME in supplied and self.session_id is None:
                 raise ValueError
+            if purpose == "remote_effect" and self.session_id is None:
+                raise ValueError
             if self.session_id is not None and method == "WS_WRITE":
                 from orchestrator.work_api import _origin
                 origins = transport.headers.getlist("origin")
@@ -623,6 +625,11 @@ def capture_human_socket_request(boundary, *, websocket, context, message, purpo
         method = _socket_method(message)
     elif purpose == "voice_guidance":
         method = "WS_READ" if _voice_guidance_message(message) else None
+    elif purpose == "remote_effect":
+        if type(boundary) is not HumanRequestBoundary:
+            _unavailable()
+        from orchestrator.remote_effect_ingress import pending_call
+        method = "WS_WRITE" if pending_call(boundary.orchestrator, websocket, message) is not None else None
     else:
         _unauthenticated()
     return None if method is None else _HumanSocketRequest(boundary, websocket=websocket,
