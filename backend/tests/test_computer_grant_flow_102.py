@@ -279,10 +279,13 @@ async def test_run_command_card_grants_the_program_in_its_folder(task_runtime):
     again = await _call(task_runtime, "run_command", command="wc -l other.md", cwd=ROOT)
     assert again.error is None and again.result["_data"]["ok"] and len(effects) == 2
     for args in ({"command": "wc -l a | sh", "cwd": ROOT}, {"argv": ["cat", "a"], "cwd": ROOT},
-                 {"argv": ["wc", "a"], "cwd": "/tmp"}, {"argv": ["wc", "a"], "cwd": ROOT, "env": {"PATH": "/x"}}):
+                 {"argv": ["wc", "a"], "cwd": "/tmp"}, {"argv": ["wc", "a"], "cwd": ROOT, "env": {"PATH": "/x"}},
+                 {"argv": ["wc", "a"], "cwd": ROOT, "env": {"LANG": "C"}}):
         refused = await _call(task_runtime, "run_command", **args)
         assert refused.result["_data"]["status"] == "confirmation_required"
     assert len(effects) == 2
+    with_env = await _call(task_runtime, "run_command", argv=["wc", "b"], cwd=ROOT, env={"LANG": "C"})
+    assert "Environment: LANG=C" in _texts(with_env) and len(_buttons(with_env)) == 2
 
 
 async def test_plain_approval_of_a_command_creates_no_grant(task_runtime):

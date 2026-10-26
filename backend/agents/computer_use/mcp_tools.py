@@ -59,8 +59,10 @@ _APP_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)[\w \\/:.\-()+~]{1,1000}$")
 _POINTER_VERBS = frozenset({"click", "double_click", "right_click", "move", "drag", "scroll"})
 _IMAGE_TYPES = ("image/jpeg", "image/png", "image/webp")
 _MAX_IMAGE_B64 = 4 * 1024 * 1024
-_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
-_FORBIDDEN_ENV = re.compile(r"^ASTRAL_|TOKEN|SECRET|KEY|PASSWORD", re.IGNORECASE)
+_ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+_ENV_ALLOWED = frozenset({"LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TZ", "TERM", "NO_COLOR", "FORCE_COLOR", "CI",
+                          "DEBUG", "PAGER", "EDITOR", "COLUMNS", "LINES"})
+_ENV_PREFIX = "APP_"
 _JOB_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _JOB_STATES = frozenset({"running", "exited", "timed_out", "interrupted", "uncertain"})
 _FINISHED = _JOB_STATES - {"running"}
@@ -832,18 +834,23 @@ def _command_args(kwargs: Dict[str, Any], host) -> Dict[str, Any]:
             or ".." in cwd.split("/")):
         raise _Refusal("out_of_range", "cwd must be an absolute folder inside one of workspace_roots")
     roots = [root["path"] for root in host.workspace_roots]
+    if not roots:
+        raise _Refusal("cwd_outside_workspace", f"{host.name} shares no workspace folder; ask the user to select "
+                                                "one in Computer controls")
     folder = posixpath.normpath(cwd)
-    if roots and not any(folder == root or folder.startswith(root.rstrip("/") + "/") for root in roots):
+    if not any(folder == root or folder.startswith(root.rstrip("/") + "/") for root in roots):
         raise _Refusal("cwd_outside_workspace", "cwd is outside every workspace folder the user selected")
     args["cwd"] = cwd
     env = kwargs.get("env")
     if env is not None:
         if not isinstance(env, dict) or len(env) > MAX_ENV_VARS or not all(
-                isinstance(k, str) and _ENV_NAME.fullmatch(k) and isinstance(v, str) and len(v) <= 4096
-                and "\x00" not in v for k, v in env.items()):
-            raise _Refusal("out_of_range", f"env must map at most {MAX_ENV_VARS} variable names to strings")
-        if any(_FORBIDDEN_ENV.search(name) for name in env):
-            raise _Refusal("env_forbidden", "env may not set ASTRAL_*, token, secret, key or password variables")
+                isinstance(k, str) and isinstance(v, str) and len(v) <= 4096
+                and not any(ch in v for ch in "\x00\n\r") for k, v in env.items()):
+            raise _Refusal("out_of_range", f"env must map at most {MAX_ENV_VARS} names to single-line strings")
+        if not all(_ENV_NAME.fullmatch(name) and (name in _ENV_ALLOWED or name.startswith(_ENV_PREFIX))
+                   for name in env):
+            raise _Refusal("env_forbidden", "env may only set LANG, LC_*, TZ, TERM, NO_COLOR, FORCE_COLOR, CI, DEBUG, "
+                                            "PAGER, EDITOR, COLUMNS, LINES or APP_* variables")
         if env:
             args["env"] = dict(env)
     background = kwargs.get("background", False)
@@ -1116,7 +1123,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                   "description": "Program and arguments, started directly without a shell."},
          "cwd": {"type": "string", "description": "Absolute folder inside one of workspace_roots."},
          "env": {"type": "object", "additionalProperties": {"type": "string"},
-                 "description": "Up to 32 extra environment variables; secrets and ASTRAL_* are refused."},
+                 "description": "Up to 32 extra variables: LANG, LC_ALL, LC_CTYPE, LC_MESSAGES, TZ, TERM, NO_COLOR, "
+                                "FORCE_COLOR, CI, DEBUG, PAGER, EDITOR, COLUMNS, LINES or APP_* names only."},
          "timeout_s": {"type": "integer", "description": "1-600 seconds (default 60); background jobs up to 3600."},
          "background": {"type": "boolean", "description": "Start and return a job_id right away."},
          "stdin": {"type": "string", "description": "Text written to standard input, at most 16 KiB."}},

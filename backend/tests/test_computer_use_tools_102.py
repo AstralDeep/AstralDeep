@@ -282,13 +282,13 @@ async def test_timed_out_command_reports_it_without_retrying(world, gate):
     ({"command": "ls"}, "out_of_range"), ({"command": "ls", "cwd": "relative"}, "out_of_range"),
     ({"command": "ls", "cwd": ROOT + "/../y"}, "out_of_range"), ({"command": "ls\x00", "cwd": ROOT}, "out_of_range"),
     ({"command": "ls", "cwd": "/Users/sam/Other"}, "cwd_outside_workspace"),
-    ({"command": "ls", "cwd": ROOT, "env": {"ASTRAL_TOKEN": "x"}}, "env_forbidden"),
-    ({"command": "ls", "cwd": ROOT, "env": {"github_token": "x"}}, "env_forbidden"),
-    ({"command": "ls", "cwd": ROOT, "env": {"MY_SECRET": "x"}}, "env_forbidden"),
-    ({"command": "ls", "cwd": ROOT, "env": {"API_KEY": "x"}}, "env_forbidden"),
-    ({"command": "ls", "cwd": ROOT, "env": {"PASSWORD": "x"}}, "env_forbidden"),
-    ({"command": "ls", "cwd": ROOT, "env": {"BAD-NAME": "x"}}, "out_of_range"),
+    ({"command": "ls", "cwd": ROOT, "env": {"BAD-NAME": "x"}}, "env_forbidden"),
+    ({"command": "ls", "cwd": ROOT, "env": {"app_lower": "x"}}, "env_forbidden"),
+    ({"command": "ls", "cwd": ROOT, "env": {"APP_" + "X" * 61: "x"}}, "env_forbidden"),
     ({"command": "ls", "cwd": ROOT, "env": {"A": 1}}, "out_of_range"),
+    ({"command": "ls", "cwd": ROOT, "env": {"LANG": "C\nPATH=/tmp"}}, "out_of_range"),
+    ({"command": "ls", "cwd": ROOT, "env": {"LANG": "C\rX"}}, "out_of_range"),
+    ({"command": "ls", "cwd": ROOT, "env": {"LANG": "x" * 4097}}, "out_of_range"),
     ({"command": "ls", "cwd": ROOT, "env": {f"V{i}": "x" for i in range(33)}}, "out_of_range"),
     ({"command": "ls", "cwd": ROOT, "env": "A=1"}, "out_of_range"),
     ({"command": "ls", "cwd": ROOT, "timeout_s": 0}, "out_of_range"),
@@ -376,3 +376,30 @@ async def test_host_refusals_surface_their_codes(world, gate):
 def test_command_policy_bounds_match_the_host_protocol():
     assert policy.MAX_COMMAND_CHARS == 4096 and policy.MAX_ARGV_ITEMS == 256 and policy.MAX_ENV_VARS == 32
     assert ComputerHostError("x", "y").code == "x"
+
+
+@pytest.mark.parametrize("name", [
+    "ASTRAL_TOKEN", "GITHUB_TOKEN", "MY_SECRET", "API_KEY", "PASSWORD", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH", "PYTHONPATH", "PYTHONSTARTUP", "NODE_OPTIONS", "NPM_CONFIG_PREFIX", "PERL5OPT", "RUBYOPT",
+    "GIT_SSH_COMMAND", "GIT_CONFIG_GLOBAL", "BASH_ENV", "ENV", "ZDOTDIR", "PATH", "IFS", "GCONV_PATH", "SHELL",
+    "HOME", "TMPDIR",
+])
+async def test_env_names_outside_the_allowlist_are_forbidden(world, name):
+    result = await world.call("run_command", command="ls", cwd=ROOT, env={name: "x"})
+    assert result["_data"]["code"] == "env_forbidden" and not world.requests("run_command")
+
+
+@pytest.mark.parametrize("name", ["LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TZ", "TERM", "NO_COLOR",
+                                  "FORCE_COLOR", "CI", "DEBUG", "PAGER", "EDITOR", "COLUMNS", "LINES", "APP_MODE"])
+async def test_allowlisted_env_names_reach_the_host(world, gate, name):
+    world.replies["run_command"] = {"ok": True, "result": {"exit_code": 0, "stdout": "", "stderr": ""}}
+    await world.call("run_command", command="ls", cwd=ROOT, env={name: "1"})
+    assert world.requests("run_command")[-1]["args"]["env"] == {name: "1"}
+
+
+async def test_a_host_without_shared_folders_refuses_every_cwd(world):
+    world.host.descriptor["workspace_roots"] = []
+    result = await world.call("run_command", command="ls", cwd=ROOT)
+    assert result["_data"]["code"] == "cwd_outside_workspace" and "shares no workspace folder" in \
+        result["_data"]["message"]
+    assert not world.requests("run_command")

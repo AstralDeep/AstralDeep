@@ -85,8 +85,8 @@ def test_argv_and_simple_commands_are_grantable_for_their_program_and_root():
         "argv0": "wc", "root": ROOT, "folder": "x"}
     nested = [{"name": "outer", "path": "/Users/sam"}, {"name": "inner", "path": ROOT}]
     assert policy.command_grant(_cmd("wc x", cwd=ROOT + "/a"), nested)["folder"] == "inner"
-    assert policy.command_grant(_cmd("ls", cwd="/tmp/work"), []) == {
-        "argv0": "ls", "root": "/tmp/work", "folder": "work"}
+    assert policy.command_grant(_cmd("ls", cwd="/tmp/work"), []) is None
+    assert policy.command_grant(_argv(["wc", "x"], env={"LANG": "C"}), ROOTS) is None
 
 
 @pytest.mark.parametrize("args", [

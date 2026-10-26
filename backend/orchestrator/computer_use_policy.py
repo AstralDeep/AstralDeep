@@ -514,12 +514,10 @@ def command_grant(args: Mapping[str, Any], roots: Any = ()) -> Optional[Dict[str
             return None
     else:
         words = value
-    known = _root_paths(roots)
-    candidates = [root for root in known if cwd == root["path"] or cwd.startswith(root["path"] + "/")]
-    if known and not candidates:
+    candidates = [root for root in _root_paths(roots) if cwd == root["path"] or cwd.startswith(root["path"] + "/")]
+    if not candidates:
         return None
-    root = max(candidates, key=lambda item: len(item["path"])) if candidates else {
-        "name": posixpath.basename(cwd), "path": cwd}
+    root = max(candidates, key=lambda item: len(item["path"]))
     if (not words or "=" in words[0] or not is_grantable_program(words[0])
             or not _grantable_invocation(words, cwd, root["path"]) or is_destructive_command(args, roots)):
         return None
