@@ -68,3 +68,24 @@ def test_listed_computers_keep_controls(enabled, monkeypatch):
     blob = json.dumps(components)
     assert "Control this computer" in blob
     assert "No computers yet" not in blob and "Computers that run" not in blob
+
+
+class _Session:
+    host_name = "Studio"
+
+
+class _LocallyPausedSessions:
+    async def resume(self, session):
+        from orchestrator.computer_hosts import ComputerHostError
+        raise ComputerHostError("local_pause_requires_local_resume", "paused locally")
+
+
+class _Orch:
+    computer_sessions = _LocallyPausedSessions()
+
+
+def test_remote_resume_of_a_local_pause_names_the_mac(enabled, monkeypatch):
+    monkeypatch.setattr(my_computers, "_owned_session", lambda orch, user, payload: _Session())
+    _, _, notice = run(my_computers._h_session_resume(_Orch(), None, "u1", ["user"], {"session_id": "s1"}))
+    assert "text-red-400" in notice
+    assert "Studio was paused on that Mac. Resume it there." in notice

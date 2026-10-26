@@ -280,7 +280,13 @@ async def _h_session_resume(orch, websocket, user_id, roles, payload):
     session = _owned_session(orch, user_id, payload)
     if session is None:
         return (SURFACE_KEY, {}, notice_block("error", "That session is not running."))
-    await orch.computer_sessions.resume(session)
+    try:
+        await orch.computer_sessions.resume(session)
+    except ComputerHostError as exc:
+        if exc.code != "local_pause_requires_local_resume":
+            raise
+        return (SURFACE_KEY, {}, notice_block(
+            "error", f"{esc(session.host_name)} was paused on that Mac. Resume it there."))
     return (SURFACE_KEY, {}, notice_block("success", f"Resumed {esc(session.host_name)}."))
 
 
