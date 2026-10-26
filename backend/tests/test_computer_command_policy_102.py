@@ -164,3 +164,12 @@ def test_grant_labels_name_the_application_window_or_program_and_folder():
     assert policy.command_grant_label("wc", "x") == "Allow wc in x for this task"
     assert policy.application_name("com.apple.TextEdit") == "TextEdit"
     assert policy.application_name("TextEdit") == "TextEdit"
+
+
+@pytest.mark.parametrize("tool,sink", [("run_command", True), ("browser_click", True), ("browser_fill", True),
+                                       ("browser_press", True), ("browser_scroll", False), ("read_output", False),
+                                       ("write_file", True), ("click", False)])
+def test_command_and_browser_effects_are_taint_sinks_for_the_computer_agent(tool, sink):
+    from orchestrator.taint import is_sink
+
+    assert is_sink("computer-use-1", tool) is sink

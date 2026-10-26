@@ -108,6 +108,12 @@ class AgentConfirmationPolicy:
         self.retry_grace_s = float(retry_grace_s or 0.0)
 
 
+def _computer_policy():
+    from orchestrator import computer_use_policy
+
+    return computer_use_policy
+
+
 def _computer_use_label(orch, user_id: str, ref) -> str:
     try:
         registry = getattr(orch, "computer_hosts", None)
@@ -638,7 +644,7 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
     now = int(time.time())
     summary = policy.summary(orch, user_id, tool_name, args)
     display_summary = summary
-    if agent_id == "terminal-shell-1" and len(summary) > 1024:
+    if agent_id in {"terminal-shell-1", "computer-use-1"} and len(summary) > 1024:
         summary = summary[:1000] + "… (see approval card preview)"
     machine_ref = args.get(policy.machine_key)
     if policy.machine_id is not None:
@@ -670,12 +676,17 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
         if on_created is not None:
             on_created(transaction, proposal_id)
     logger.info("remote_op proposal created: %s verb=%s owner=%s", proposal_id, tool_name, user_id)
+    offer = None
     if agent_id == "computer-use-1":
+        from orchestrator.hitl_confirmation import grant_request
+
         authorities = getattr(orch, "_computer_approval_authorities", {})
         authorities = {key: value for key, value in authorities.items() if value[1] > time.monotonic()}
         authority = capture_computer_approval(orch, websocket, user_id, chat_id, args)
+        request = grant_request(authority, tool_name, args)
+        offer = request.offer if request is not None else None
         if authority is not None and len(authorities) < 128:
-            authorities[proposal_id] = (authority, time.monotonic() + PROPOSAL_TTL_S)
+            authorities[proposal_id] = (authority, time.monotonic() + PROPOSAL_TTL_S, offer)
         orch._computer_approval_authorities = authorities
     _audit_sync(user_id, "remote_op.proposed", f"proposed {tool_name}: {summary}",
                 proposal_id=proposal_id, machine_id=machine_ref, verb=tool_name,
@@ -691,6 +702,10 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
         Button(label="Decline", action="remote_op_decision", variant="secondary",
                payload={"proposal_id": proposal_id, "decision": "decline"}),
     ], id=card_component_id(proposal_id) if policy.card_as_result or agent_id == "gaiakeep-1" else None).to_dict()
+    if offer is not None and offer.label and authority is not None:
+        card["content"].insert(len(card["content"]) - 1, Button(
+            label=offer.label, action="remote_op_decision", variant="secondary",
+            payload={"proposal_id": proposal_id, "decision": "grant_task"}).to_dict())
     if agent_id == "computer-use-1":
         target = computer_resume_target(websocket, authority, tool_name, args)
         if target is not None:
@@ -818,6 +833,14 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
     if classification is None:
         return None
 
+    if (agent_id == "computer-use-1" and tool_name == "browser_navigate" and "url" in args
+            and _computer_policy().canonical_browser_url(args["url"]) is None):
+        _audit_sync(user_id, "remote_op.refused_url", "refused browser_navigate to a rejected address",
+                    machine_id=machine_ref, verb=tool_name, outcome="failure", chat_id=chat_id)
+        return ("url_rejected: the browser pane only opens http and https addresses with a plain host name; "
+                "no approval was requested.",
+                [Alert(message="That address cannot be opened in the browser pane.", variant="error").to_dict()])
+
     from persistent_agents.dispatch_context import current_dispatch
     if current_dispatch() is not None and classification == "if_exists":
         destructive = True
@@ -858,6 +881,11 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
                 [Alert(message="Approval no longer valid — re-request the operation.",
                        variant="error").to_dict()])
 
+    if agent_id == "computer-use-1":
+        from orchestrator.hitl_confirmation import grant_covers
+
+        if grant_covers(orch, websocket, user_id, chat_id, tool_name, args):
+            return None
     pending_key = (user_id, agent_id, tool_name, _fingerprint(args))
     if policy.retry_grace_s > 0:
         grace = _RETRY_GRACE.pop(pending_key, None)
@@ -882,6 +910,7 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
     proposal_id = (payload or {}).get("proposal_id")
     decision = (payload or {}).get("decision")
     resume_requested = decision == "approve_and_resume"
+    grant_requested = decision == "grant_task"
 
     async def _say(message: str, variant: str = "warning") -> None:
         await orch.send_ui_render(websocket, [Alert(message=message, variant=variant).to_dict()], target="chat")
@@ -902,11 +931,15 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
                            proposal_id=proposal_id, outcome="failure")
         await _say("That confirmation is not available.")
         return
-    computer_authority = None
+    computer_authority = offer = None
     if row.agent_id == "computer-use-1":
         entry = getattr(orch, "_computer_approval_authorities", {}).get(str(proposal_id))
         computer_authority = entry[0] if entry is not None and entry[1] > time.monotonic() else None
-        if (decision not in {"approve", "approve_and_resume", "decline"}
+        offer = entry[2] if computer_authority is not None and len(entry) > 2 else None
+        if grant_requested and (offer is None or not offer.label):
+            await _say("This action cannot be allowed for the whole task. Approve it once or decline.")
+            return
+        if (decision not in {"approve", "approve_and_resume", "grant_task", "decline"}
                 or (resume_requested and computer_resume_target(
                     websocket, computer_authority, row.tool_name, row.arguments) is None)
                 or not computer_approval_current(orch, websocket, computer_authority,
@@ -915,6 +948,9 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
             return
     elif resume_requested:
         await _say("This action cannot resume a local computer session.")
+        return
+    elif grant_requested:
+        await _say("This action cannot be allowed for the whole task. Approve it once or decline.")
         return
     terminal_request = None
     if str(row.conversation_id or "").startswith("terminal-api:"):
@@ -955,7 +991,7 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
                            outcome="failure", chat_id=_cid)
         await _say("This request expired — please re-request the operation.")
         return
-    if decision not in {"approve", "approve_and_resume"}:
+    if decision not in {"approve", "approve_and_resume", "grant_task"}:
         def _decline():
             with context.transaction() as transaction:
                 return context.repository.decide_if_pending(
@@ -995,6 +1031,19 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
         return
     await _audit_async(user_id, "remote_op.approved", f"approved {_verb}",
                        proposal_id=proposal_id, machine_id=_mid, verb=_verb, chat_id=_cid)
+    if offer is not None and (grant_requested or offer.on_approve):
+        if not computer_approval_current(orch, websocket, computer_authority):
+            await _say("The computer authority changed during review. No new action was dispatched.")
+            return
+        task = computer_authority.task
+        try:
+            orch.computer_sessions.grants.create(
+                user_id, computer_authority.host.host_id, computer_authority.session.session_id, row.conversation_id,
+                getattr(task[1], "task_id", None) if task is not None else str(proposal_id),
+                offer.scope, offer.verb_classes, offer.command, now=time.time())
+        except ValueError:
+            await _say("This action stays on exact review and was not run. Approve it once instead.")
+            return
     if resume_requested:
         computer_authority = await resume_computer_approval(
             orch, websocket, computer_authority, row.tool_name, row.arguments)
