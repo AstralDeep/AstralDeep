@@ -11,15 +11,26 @@ from typing import Any, Dict, FrozenSet, Mapping
 
 AGENT_ID = "computer-use-1"
 
+COMMAND_VERBS: FrozenSet[str] = frozenset({"run_command", "read_output", "interrupt_command"})
+BROWSER_VERBS: FrozenSet[str] = frozenset({
+    "browser_snapshot", "browser_get_text", "browser_screenshot", "browser_wait",
+    "browser_navigate", "browser_click", "browser_fill", "browser_press", "browser_scroll",
+    "browser_dialog",
+})
+
 OBSERVE_VERBS: FrozenSet[str] = frozenset({
     "screenshot", "list_windows", "get_clipboard", "read_file", "list_dir", "wait",
+    "browser_snapshot", "browser_get_text", "browser_screenshot", "browser_wait",
+    "read_output",
 })
 INPUT_VERBS: FrozenSet[str] = frozenset({
     "click", "double_click", "right_click", "move", "drag", "scroll", "type_text",
     "press_keys", "focus_window", "open_app", "set_clipboard",
+    "browser_navigate", "browser_click", "browser_fill", "browser_press", "browser_scroll",
+    "browser_dialog", "interrupt_command",
 })
 CONSEQUENTIAL_VERBS: FrozenSet[str] = frozenset({
-    "write_file", "delete_path",
+    "write_file", "delete_path", "run_command",
 })
 SESSION_VERBS: FrozenSet[str] = frozenset({
     "list_computers", "start_session", "end_session", "resume_session", "confirm_action",
@@ -39,6 +50,7 @@ TIERS: Dict[str, str] = {
 SCOPES: Dict[str, str] = {
     **{v: "tools:read" for v in OBSERVE_VERBS},
     **{v: "tools:write" for v in INPUT_VERBS},
+    **{v: "tools:execute" for v in COMMAND_VERBS},
     "write_file": "tools:files",
     "delete_path": "tools:files",
     "list_computers": "tools:read",
@@ -53,6 +65,8 @@ DESTRUCTIVE_CLASSIFICATION: Dict[str, Any] = {
     "delete_path": "always",
     "confirm_action": "always",
     "open_app": {"by_shell_app": True},
+    "run_command": "always",
+    "browser_navigate": "always",
 }
 
 SHELL_APPS: FrozenSet[str] = frozenset({
@@ -129,6 +143,10 @@ TIMEOUTS: Dict[str, float] = {
     "scroll": 5.0, "type_text": 30.0, "press_keys": 5.0, "focus_window": 5.0,
     "open_app": 15.0, "set_clipboard": 5.0,
     "write_file": 10.0, "delete_path": 10.0,
+    "run_command": 600.0, "read_output": 30.0, "interrupt_command": 5.0,
+    "browser_snapshot": 5.0, "browser_get_text": 5.0, "browser_screenshot": 5.0,
+    "browser_wait": 15.0, "browser_navigate": 15.0, "browser_click": 10.0, "browser_fill": 10.0,
+    "browser_press": 5.0, "browser_scroll": 5.0, "browser_dialog": 5.0,
     "list_computers": 5.0, "start_session": 10.0, "end_session": 5.0,
     "resume_session": 5.0, "confirm_action": 5.0,
 }
