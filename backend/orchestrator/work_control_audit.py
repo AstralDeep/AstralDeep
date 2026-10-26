@@ -44,12 +44,12 @@ class WorkControlAudit:
                source_id=None, target_id=None):
         self.assert_current()
         if (command not in {"pause", "stop", "delete", "resume", "wake", "wait", "reconcile",
-                            "subscribe", "unsubscribe"}
+                            "subscribe", "unsubscribe", "continuity"}
                 or type(record) is not AssignmentRecord or record.owner_id != owner_id):
             raise AssignmentError("work_control_unavailable", 503)
         metadata = {}
         try:
-            if command in {"wait", "reconcile"}:
+            if command in {"wait", "reconcile", "continuity"}:
                 metadata["submission_id"] = validate_id(submission_id)
                 if command == "reconcile":
                     metadata["action_id"] = validate_id(action_id)
