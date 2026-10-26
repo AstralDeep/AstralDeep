@@ -43,6 +43,9 @@ Implementation lanes are complete on `claude/102-macos-harness-parity` in Deep a
 | First live steps (14:55 to 15:04 local, build 70 second install) | step 1 and the TextEdit request produced one approval card for `start_session`; the approval was consumed and the session started (`computer_session.started` 13:55:33Z), then the server's continuation task raised `skill_lookup_unavailable` (503 from the foreground guidance capture inside a detached task) so no desktop action ran; at 13:56:42Z the host withdrew access (`computer_session.ended consent_revoked`) because its permission refresh on activation found a permission missing for the rebuilt binary while the owner was in System Settings, and macOS had registered two AstralDeep rows in Device Control and Data Access; the host stayed offline until re-enabled locally, so step 3 (`start_session` "no computer called RyzenRoll Mobile") and step 4 (agent fell back to `fetch_page`) could not run; the owner then chose a theme preset (14:04 `chrome_theme_preset`) and found Graphite too dark |
 | Follow-ups | continuation guidance binding fix and withdrawn-host offline reason on the server (lane S1); Graphite backgrounds lightened to `#121214`, `#1B1B1F`, `#232328` in every table (Projection `960f9cf`, Deep `3cb8c7ee`); Deep pin `bc4f37b2`; 1.9 (70) rebuilt again from the lighter theme |
 
+| Second cutover (2026-10-26) | image `astraldeep:sha-f1c963541a03484dacfb6e98cb69b95f882695de` (id `sha256:e5bc0626…`) built from Deep `f1c96354` with Projection `960f9cf8` via bundles; paired backup under `/opt/astraldeep-backups/deploy-f1c96354-*`; readiness 200 with db ok, 15 agents, LETS enforce/healthy; `/api/chats` 401; no startup errors |
+| Mac install | 1.9 (70) rebuilt from Projection `960f9cf8` (archive sha256 `cce860597514f346…`), notarized and stapled, installed over the previous 70 and relaunched |
+
 ## Pending
 
 - Full macOS app suite in one pass after the workbench lane commits.
