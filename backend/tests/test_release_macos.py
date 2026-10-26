@@ -300,6 +300,7 @@ def test_command_lines_use_the_documented_flags(env):
     assert archive[1:3] == ["archive", "-project"] and "AstralAppDirectDownload" in archive
     assert "ASTRAL_DEVELOPMENT_TEAM=593LGH35GS" in archive and "-configuration" in archive and "DirectDownload" in archive
     assert any(arg.startswith("CODE_SIGN_IDENTITY=Developer ID Application") for arg in archive)
+    assert "ARCHS=arm64" in archive
     export = by["xcodebuild"][1]
     assert export[1] == "-exportArchive"
     assert plistlib.loads((env.tmp / "out" / "work" / "export-options.plist").read_bytes()) == {

@@ -296,6 +296,7 @@ class Release:
             "-configuration", CONFIGURATION, "-destination", "generic/platform=macOS",
             "-archivePath", archive, "-derivedDataPath", self.work / "dd",
             f"ASTRAL_DEVELOPMENT_TEAM={TEAM_ID}", "CODE_SIGN_STYLE=Manual", f"CODE_SIGN_IDENTITY={SIGNING_IDENTITY}",
+            "ARCHS=arm64",
         ])
         self.runner.run([
             "xcodebuild", "-exportArchive", "-archivePath", archive, "-exportPath", export,
