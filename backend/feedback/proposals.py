@@ -57,8 +57,8 @@ def _sha256_of_path(p: Path) -> str:
 
 def _make_unified_diff(old: str, new: str, artifact_path: str) -> str:
     diff = difflib.unified_diff(
-        old.splitlines(keepends=True),
-        new.splitlines(keepends=True),
+        old.replace("\x00", "\ufffd").splitlines(keepends=True),
+        new.replace("\x00", "\ufffd").splitlines(keepends=True),
         fromfile=f"a/{artifact_path}",
         tofile=f"b/{artifact_path}",
     )
@@ -67,11 +67,11 @@ def _make_unified_diff(old: str, new: str, artifact_path: str) -> str:
 
 # Must parse exactly what _make_unified_diff produces
 def _apply_unified_diff(old: str, diff_payload: str) -> str:
-    old_lines = old.splitlines(keepends=True)
+    old_lines = old.replace("\x00", "\ufffd").splitlines(keepends=True)
     out: List[str] = []
     src_idx = 0
 
-    lines = diff_payload.splitlines(keepends=True)
+    lines = diff_payload.replace("\x00", "\ufffd").splitlines(keepends=True)
     i = 0
     while i < len(lines):
         line = lines[i]
