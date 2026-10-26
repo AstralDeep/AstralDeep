@@ -799,6 +799,7 @@ jobs:
             scripts/tests/test_acceptance_ci_contract.py
             scripts/tests/test_prepare_plane_upgrade_baseline.py
             scripts/tests/test_package_macos_candidate.py
+            backend/tests/test_release_macos.py
           )
           test "${#RELEASE_TOOL_TESTS[@]}" -gt 0
           docker run --rm --init --cpus=2 --memory=4g \
