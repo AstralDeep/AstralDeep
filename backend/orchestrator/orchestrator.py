@@ -23498,7 +23498,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         try:
             if flags.is_enabled("inprocess_agents"):
                 from orchestrator import local_agents
+                from orchestrator.terminal_host_review import review_registered_computer_use
+
                 await local_agents.register_built_ins(self)
+                review_registered_computer_use(self)
         except Exception:
             logger.exception("Feature 040: in-process agent registration failed")
 

@@ -901,6 +901,11 @@ def _command_card(host, data: Dict[str, Any]) -> List[Any]:
 
 
 def run_command(**kwargs) -> Dict[str, Any]:
+    from orchestrator.terminal_host_review import computer_use_review_current
+
+    if not computer_use_review_current(_ORCH):
+        return _fail("security_blocked", "run_command is cleared only for this server's in-process computer-use "
+                                         "implementation, and that review is not current")
     _u, _c, host, ctx = _ctx(kwargs)
     if not hasattr(ctx, "session_id"):
         return ctx

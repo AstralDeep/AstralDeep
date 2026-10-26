@@ -136,8 +136,11 @@ async def world(monkeypatch):
             return reply(args)
         return reply if reply is not None else {"ok": True, "result": {}}
 
+    from orchestrator import terminal_host_review
+
     orch = _AgentOrch()
     mcp_tools.register_deps(orch)
+    monkeypatch.setattr(terminal_host_review, "computer_use_review_current", lambda current: current is orch)
     host_ws = orch.add(_FakeHostSocket(orch, answers))
     host, _ = orch.computer_hosts.register(OWNER, host_ws, ComputerHostDescriptor.from_dict(_descriptor(
         platform="macos", name="Mac", workspace_roots=[{"name": "x", "path": ROOT}])))
@@ -403,3 +406,11 @@ async def test_a_host_without_shared_folders_refuses_every_cwd(world):
     assert result["_data"]["code"] == "cwd_outside_workspace" and "shares no workspace folder" in \
         result["_data"]["message"]
     assert not world.requests("run_command")
+
+
+async def test_run_command_refuses_when_the_host_review_is_not_current(world, monkeypatch):
+    from orchestrator import terminal_host_review
+
+    monkeypatch.setattr(terminal_host_review, "computer_use_review_current", lambda _orch: False)
+    result = await world.call("run_command", command="ls", cwd=ROOT)
+    assert result["_data"]["code"] == "security_blocked" and not world.requests("run_command")
