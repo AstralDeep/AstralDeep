@@ -103,9 +103,10 @@ def test_skips_when_head_is_already_released():
     assert result["skip"] is True and result["reason"] == "head is already released as macos-v2.0.0-71"
 
 
-def test_skips_when_head_does_not_descend_from_the_newest_release():
+def test_skips_when_head_is_older_than_the_newest_release():
     result = nxt.decide("2.0.0", newest("2.0.1", 72), HEAD, descends=False)
-    assert result["skip"] is True and "does not descend from macos-v2.0.1-72" in result["reason"]
+    assert result["skip"] is True
+    assert result["reason"] == f"head is older than macos-v2.0.1-72 ({OLD}); nothing to release"
 
 
 def git(repo: Path, *args: str) -> str:
@@ -135,12 +136,14 @@ class FakeGitHub:
         self.tags = tags or {}
         self.calls: list[list[str]] = []
         self.failing: set[str] = set()
+        self.ancestors: set[tuple[str, str]] | None = None
 
     def run(self, command, **kwargs):
         self.calls.append(command)
         assert kwargs.get("capture_output") and kwargs.get("text") and kwargs.get("check") is False
         if command[0] == "git":
-            return subprocess.CompletedProcess(command, 0, "", "")
+            related = self.ancestors is None or (command[-2], command[-1]) in self.ancestors
+            return subprocess.CompletedProcess(command, 0 if related else 1, "", "")
         path = command[-1]
         if path in self.failing:
             return subprocess.CompletedProcess(command, 1, "", "HTTP 404")
@@ -253,6 +256,39 @@ def test_cli_skips_a_released_head_and_handles_an_empty_history(tmp_path, monkey
     capsys.readouterr()
     assert nxt.main(argv[:-2]) == 0
     assert json.loads(capsys.readouterr().out)["build"] == 71
+
+
+def released_at_old(monkeypatch, ancestors):
+    fake = FakeGitHub(
+        [[entry("macos-v2.0.1-72")]],
+        {"macos-v2.0.1-72": {"ref": "refs/tags/macos-v2.0.1-72", "object": {"type": "commit", "sha": OLD}}},
+    )
+    fake.ancestors = ancestors
+    monkeypatch.setattr(nxt.subprocess, "run", fake.run)
+    return fake
+
+
+def test_cli_skips_with_a_notice_when_head_is_older_than_the_newest_release(tmp_path, monkeypatch, capsys):
+    fake = released_at_old(monkeypatch, {(HEAD, OLD)})
+    output = tmp_path / "out"
+    argv = ["--repo", "AstralDeep/AstralDeep", "--head", HEAD, "--pbxproj", str(write_project(tmp_path, "2.0.0")),
+            "--github-output", str(output)]
+    assert nxt.main(argv) == 0
+    assert "skip=true\n" in output.read_text()
+    printed = capsys.readouterr().out.splitlines()
+    assert printed[0] == f"::notice::head is older than macos-v2.0.1-72 ({OLD}); nothing to release"
+    assert json.loads(printed[1])["skip"] is True
+    assert [c[-2:] for c in fake.calls if c[0] == "git"] == [[OLD, HEAD], [HEAD, OLD]]
+
+
+def test_cli_fails_when_head_and_the_newest_release_have_diverged(tmp_path, monkeypatch, capsys):
+    released_at_old(monkeypatch, set())
+    output = tmp_path / "out"
+    argv = ["--repo", "AstralDeep/AstralDeep", "--head", HEAD, "--pbxproj", str(write_project(tmp_path, "2.0.0")),
+            "--github-output", str(output)]
+    assert nxt.main(argv) == 1
+    assert f"head and macos-v2.0.1-72 ({OLD}) have diverged" in capsys.readouterr().err
+    assert not output.exists()
 
 
 @pytest.mark.parametrize(

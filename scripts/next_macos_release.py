@@ -65,7 +65,7 @@ def decide(source: str, newest: dict | None, head_sha: str, descends: bool = Tru
     if newest is not None and newest["target"] == head_sha:
         skip, reason = True, f"head is already released as {newest['tag']}"
     elif newest is not None and not descends:
-        skip, reason = True, f"head does not descend from {newest['tag']} ({newest['target']})"
+        skip, reason = True, f"head is older than {newest['tag']} ({newest['target']}); nothing to release"
     return {
         "skip": skip, "reason": reason, "version": version, "build": build,
         "previous_tag": newest["tag"] if newest else None, "previous_target": newest["target"] if newest else None,
@@ -137,8 +137,11 @@ def run(args: argparse.Namespace) -> dict:
     except ValueError as error:
         raise NextReleaseError(str(error)) from error
     newest = newest_release(args.repo)
-    related = newest is None or newest["target"] == args.head or descends(Path(args.checkout), newest["target"], args.head)
-    return decide(source, newest, args.head, related)
+    checkout = Path(args.checkout)
+    later = newest is None or newest["target"] == args.head or descends(checkout, newest["target"], args.head)
+    if not later and not descends(checkout, args.head, newest["target"]):
+        raise NextReleaseError(f"head and {newest['tag']} ({newest['target']}) have diverged; release from main's history")
+    return decide(source, newest, args.head, later)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -154,6 +157,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except NextReleaseError as error:
         print(f"Next Mac release failed: {error}", file=sys.stderr)
         return 1
+    if result["skip"]:
+        print(f"::notice::{result['reason']}")
     print(json.dumps(result, sort_keys=True))
     if args.github_output:
         lines = {

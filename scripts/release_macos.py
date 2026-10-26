@@ -11,6 +11,7 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import os
 import platform
 import plistlib
 import re
@@ -20,7 +21,7 @@ import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -41,6 +42,8 @@ SITE_HOST = "astraldeep.github.io"
 SITE_URL = f"https://{SITE_HOST}"
 POLICY_URL = f"{SITE_URL}/data/mac-update-policy.json"
 LIVE_LIMIT = 2 * 1024 * 1024
+SYNC_ATTEMPTS = 10
+SYNC_DELAY = 60.0
 RELEASE_REPO = "AstralDeep/AstralDeep"
 RELEASE_ROOT = f"https://github.com/{RELEASE_REPO}/releases"
 FIRST_MINIMUM_BUILD = 70
@@ -146,9 +149,10 @@ class Release:
     def __init__(
         self, args: argparse.Namespace, runner: Runner, *, deep: Path = ROOT,
         clock: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.timezone.utc),
-        sleep: Callable[[float], None] = time.sleep,
+        sleep: Callable[[float], None] = time.sleep, environ: Mapping[str, str] = os.environ,
     ) -> None:
         self.args = args
+        self.environ = environ
         self.runner = runner
         self.deep = deep
         self.clock = clock
@@ -261,7 +265,7 @@ class Release:
                     newest = {
                         "tag": match.group(0), "version": match.group(1), "build": build,
                         "target": str(entry.get("target_commitish", "")),
-                        "assets": sorted(str(asset["name"]) for asset in entry.get("assets", [])),
+                        "assets": {str(asset["name"]): asset.get("digest") for asset in entry.get("assets", [])},
                     }
         except (ValueError, KeyError, TypeError, AttributeError) as error:
             raise ReleaseError(f"GitHub release list is unreadable: {error}") from error
@@ -294,10 +298,22 @@ class Release:
             destination.unlink(missing_ok=True)
         raise ReleaseError(f"{url} {problem}")
 
-    def require_published(self, found: bool, name: str) -> None:
-        if not found and self.latest and name in self.latest["assets"]:
-            raise ReleaseError(
-                f"The site serves no {name} although {self.latest['tag']} published one; refusing to drop it")
+    def fetch_synced(self, url: str, destination: Path, name: str) -> bool:
+        assets = self.latest["assets"] if self.latest else {}
+        if name not in assets or self.dry:
+            return self.fetch_live(url, destination)
+        if not assets[name]:
+            raise ReleaseError(f"{self.latest['tag']} lists {name} without a digest; its successor cannot be checked")
+        found = False
+        for attempt in range(SYNC_ATTEMPTS):
+            found = self.fetch_live(url, destination)
+            if found and f"sha256:{sha256_file(destination)}" == assets[name]:
+                return True
+            if attempt + 1 < SYNC_ATTEMPTS:
+                self.sleep(SYNC_DELAY)
+        if not found:
+            raise ReleaseError(f"The site serves no {name} although {self.latest['tag']} published one; refusing to drop it")
+        raise ReleaseError(f"The site still serves an older {name} than {self.latest['tag']}; rerun once the site syncs")
 
     def inspect(self, app: Path) -> dict[str, object]:
         if self.dry:
@@ -450,8 +466,7 @@ class Release:
             missing = [name for name in ("sign_update", "generate_appcast") if not Path(self.tool(name)).is_file()]
             if missing:
                 raise ReleaseError(f"Sparkle tools not found in {self.sparkle_bin}: {missing}; pass --sparkle-bin")
-        found = self.fetch_live(FEED_URL, live)
-        self.require_published(found, "appcast.xml")
+        found = self.fetch_synced(FEED_URL, live, "appcast.xml")
         self.live_appcast = live if found else None
         if not self.dry:
             shutil.copyfile(self.args.notes, notes)
@@ -502,8 +517,7 @@ class Release:
 
     def live_policy(self) -> dict[str, object] | None:
         path = self.work / "live" / "mac-update-policy.json"
-        found = self.fetch_live(POLICY_URL, path)
-        self.require_published(found, "mac-update-policy.json")
+        found = self.fetch_synced(POLICY_URL, path, "mac-update-policy.json")
         if not found:
             return None
         try:
@@ -572,7 +586,7 @@ class Release:
                 "appcastEnclosureSignature": "passed", "updatePolicySignature": "passed",
             },
             "publication": {
-                "method": "scripts/release_macos.py --publish", "approvalSource": "explicit --publish by the repository owner",
+                "method": "scripts/release_macos.py --publish", **self.approval(),
                 "recordedAt": self.clock().isoformat(), "canonicalProtectedPublisherApproval": False,
                 "broaderComputerHarnessQualification": False,
                 "scope": "This exact archive, its Sparkle appcast item and the signed minimum-build policy only",
@@ -581,6 +595,15 @@ class Release:
                 "Apple silicon only; macOS 14 or later.",
                 "Published by the owner's Mac or the release-macos workflow; both verify the same identities.",
             ],
+        }
+
+    def approval(self) -> dict[str, str]:
+        if self.environ.get("GITHUB_ACTIONS") != "true":
+            return {"approvalSource": "explicit --publish by the repository owner"}
+        run = "/".join(self.environ.get(key, "") for key in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY"))
+        return {
+            "approvalSource": f"{self.environ.get('GITHUB_EVENT_NAME', '')} on main through .github/workflows/release-macos.yml",
+            "workflowRun": f"{run}/actions/runs/{self.environ.get('GITHUB_RUN_ID', '')}",
         }
 
     def write_outputs(
@@ -651,14 +674,19 @@ class Release:
         if self.channel == "preview":
             create.append("--prerelease")
         run([*create, *assets], remote_write=True)
-        edit = ["gh", "release", "edit", self.tag, "--repo", RELEASE_REPO, "--draft=false"]
+        edit = ["gh", "release", "edit", self.tag, "--repo", RELEASE_REPO, "--draft=false", "--latest=false"]
         if self.channel == "preview":
             edit.append("--prerelease")
         run(edit, remote_write=True)
         info = run(["gh", "api", f"repos/{RELEASE_REPO}/releases/tags/{self.tag}"],
                    preview=json.dumps({"immutable": True, "draft": False, "prerelease": self.channel == "preview", "assets": []}))
+        latest = run(["gh", "api", f"repos/{RELEASE_REPO}/releases/latest", "--jq", ".tag_name"], check=False)
         if self.dry:
             return
+        if latest.returncode and "HTTP 404" not in latest.stderr:
+            raise ReleaseError(f"Could not confirm the Latest release: {latest.stderr.strip()[-300:]}")
+        if not latest.returncode and latest.stdout.strip() == self.tag:
+            raise ReleaseError(f"{self.tag} became the repository's Latest release; mark the newest Windows release Latest again")
         published = json.loads(info.stdout)
         if published.get("immutable") is not True or published.get("draft") is not False \
                 or published.get("prerelease") is not (self.channel == "preview"):

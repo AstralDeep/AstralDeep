@@ -59,11 +59,15 @@ def feed(*items: str) -> str:
     )
 
 
-def published(build: int, version: str, *, draft: bool = False, tag: str | None = None, assets=()) -> dict:
+def published(build: int, version: str, *, draft: bool = False, tag: str | None = None, assets=None) -> dict:
     return {
         "tag_name": tag or f"macos-v{version}-{build}", "draft": draft, "target_commitish": "c" * 40,
-        "assets": [{"name": name} for name in assets],
+        "assets": [{"name": name, "digest": digest} for name, digest in (assets or {}).items()],
     }
+
+
+def digest(text: str) -> str:
+    return "sha256:" + hashlib.sha256(text.encode()).hexdigest()
 
 
 def write_app(app, info):
@@ -94,6 +98,7 @@ class FakeRunner(release.Runner):
         self.extra_stage_file = False
         self.pin = PROJECTION
         self.listing: str | None = None
+        self.latest_tag: str | None = "v0.6.0"
         self.mounted: list[Path] = []
 
     def _execute(self, command, cwd):
@@ -179,6 +184,10 @@ class FakeRunner(release.Runner):
         if command[1:3] == ["release", "create"]:
             self.uploads = [Path(part) for part in command[command.index("--latest=false") + 1:] if part != "--prerelease"]
             return None
+        if command[1] == "api" and command[2].endswith("/releases/latest"):
+            if self.latest_tag is None:
+                return release.Result(1, "", "gh: Not Found (HTTP 404)")
+            return release.Result(0, self.latest_tag + "\n")
         if command[1] == "api" and command[-1].endswith("/releases?per_page=100"):
             return release.Result(0, self.listing if self.listing is not None else json.dumps([self.env.releases]))
         if command[1] == "api" and "/releases/tags/" in command[2]:
@@ -525,15 +534,58 @@ def test_a_site_404_means_absent_whatever_curl_status_http2_reports(env, status)
 def test_a_missing_live_feed_is_allowed_only_before_the_pipeline_published_one(env):
     subject, _ = env.release()
     assert subject.fetch_live(FEED, env.tmp / "live" / "appcast.xml") is False
-    env.releases = [published(70, "1.9", assets=["appcast.xml", "mac-update-policy.json"])]
+    live = feed(item(70, "1.9", suffix="dmg"))
+    env.releases = [published(70, "1.9", assets={"appcast.xml": digest(live), "mac-update-policy.json": digest("{}")})]
     subject, runner = env.release()
     with pytest.raises(release.ReleaseError, match="serves no appcast.xml although macos-v1.9-70 published one"):
         subject.execute()
     assert not any(c[0].endswith("generate_appcast") for c in runner.history)
+    assert subject.sleeps == [60.0] * (release.SYNC_ATTEMPTS - 1)
     shutil.rmtree(env.tmp / "out")
-    env.serve(FEED, feed(item(70, "1.9", suffix="dmg")))
+    env.serve(FEED, live)
     subject, runner = env.release()
     with pytest.raises(release.ReleaseError, match="serves no mac-update-policy.json although macos-v1.9-70"):
+        subject.execute()
+    assert any(c[0].endswith("generate_appcast") for c in runner.history)
+
+
+def test_a_stale_site_is_awaited_and_then_refused(env):
+    current = feed(item(70, "1.9", suffix="dmg"), item(69, "1.8"))
+    env.releases = [published(70, "1.9", assets={"appcast.xml": digest(current)})]
+    env.serve(FEED, feed(item(69, "1.8")))
+    subject, runner = env.release()
+    with pytest.raises(release.ReleaseError, match="still serves an older appcast.xml than macos-v1.9-70"):
+        subject.execute()
+    assert subject.sleeps == [60.0] * (release.SYNC_ATTEMPTS - 1)
+    assert len(fetches(runner)) == release.SYNC_ATTEMPTS
+    assert not any(c[0].endswith("generate_appcast") for c in runner.history)
+
+
+def test_the_stage_waits_for_the_site_to_serve_the_newest_release(env):
+    stale, current = feed(item(69, "1.8")), feed(item(70, "1.9", suffix="dmg"), item(69, "1.8"))
+    policy = json.dumps({"schemaVersion": 1, "minimumBuild": 70, "serial": 3, "expires": "2027-01-01T00:00:00Z", "message": "x"})
+    env.releases = [published(70, "1.9", assets={"appcast.xml": digest(current), "mac-update-policy.json": digest(policy)})]
+    env.serve(POLICY, policy)
+    subject, runner = env.release()
+    answers = [stale, stale, current]
+
+    def site(command, cwd):
+        if command[-1] == FEED:
+            env.serve(FEED, answers.pop(0) if answers else current)
+        return FakeRunner._curl(runner, command, cwd)
+
+    runner._curl = site
+    subject.execute()
+    assert subject.sleeps == [60.0, 60.0]
+    assert [entry["build"] for entry in release.parse_appcast(env.stage / "appcast.xml")] == [71, 70, 69]
+    assert json.loads((env.stage / "mac-update-policy.json").read_text())["serial"] == 4
+
+
+def test_a_published_site_file_without_a_digest_is_refused(env):
+    env.releases = [published(70, "1.9", assets={"appcast.xml": None})]
+    env.serve(FEED, feed(item(70, "1.9", suffix="dmg")))
+    subject, _ = env.release()
+    with pytest.raises(release.ReleaseError, match="lists appcast.xml without a digest"):
         subject.execute()
 
 
@@ -550,7 +602,7 @@ def test_latest_release_bounds_the_build(env):
     subject, runner = env.release()
     subject.preflight()
     assert subject.latest == {
-        "tag": "macos-v1.9-70", "version": "1.9", "build": 70, "target": "c" * 40, "assets": [],
+        "tag": "macos-v1.9-70", "version": "1.9", "build": 70, "target": "c" * 40, "assets": {},
     }
     listing = next(c for c in runner.history if c[:2] == ["gh", "api"])
     assert listing == ["gh", "api", "--paginate", "--slurp", "repos/AstralDeep/AstralDeep/releases?per_page=100"]
@@ -732,7 +784,44 @@ def test_stable_channel_is_not_prerelease_and_not_latest(env):
     create = runner.last_create()
     assert "--latest=false" in create and "--prerelease" not in create
     edit = next(c for c in runner.history if c[:3] == ["gh", "release", "edit"])
-    assert "--prerelease" not in edit
+    assert "--prerelease" not in edit and "--latest=false" in edit
+    joined = [" ".join(c) for c in runner.history]
+    check = next(i for i, c in enumerate(joined) if c.startswith("gh api repos/AstralDeep/AstralDeep/releases/latest"))
+    assert joined.index(" ".join(edit)) < check
+
+
+@pytest.mark.parametrize(("latest", "message"), [("macos-v2.0.0-71", "became the repository's Latest release"),
+                                                  ("broken", "Could not confirm the Latest release")])
+def test_publish_refuses_a_release_that_became_latest(env, latest, message):
+    subject, runner = env.release("--publish")
+    runner.latest_tag = latest
+    if latest == "broken":
+        runner.fail.append(lambda c: c[:3] == ["gh", "api", "repos/AstralDeep/AstralDeep/releases/latest"])
+    with pytest.raises(release.ReleaseError, match=message):
+        subject.execute()
+    assert not any(c[0] == "curl" and "--range" in c for c in runner.history)
+
+
+def test_publish_accepts_a_repository_without_a_latest_release(env):
+    subject, runner = env.release("--publish")
+    runner.latest_tag = None
+    subject.execute()
+    assert any(line.startswith("Published macos-v2.0.0-71") for line in env.lines)
+
+
+def test_provenance_names_the_workflow_run_that_published(env):
+    environ = {"GITHUB_ACTIONS": "true", "GITHUB_SERVER_URL": "https://github.com", "GITHUB_REPOSITORY": "AstralDeep/AstralDeep",
+               "GITHUB_RUN_ID": "123", "GITHUB_EVENT_NAME": "workflow_run"}
+    subject, _ = env.release(environ=environ)
+    subject.execute()
+    publication = json.loads((env.stage / "release-provenance.json").read_text())["publication"]
+    assert publication["approvalSource"] == "workflow_run on main through .github/workflows/release-macos.yml"
+    assert publication["workflowRun"] == "https://github.com/AstralDeep/AstralDeep/actions/runs/123"
+    shutil.rmtree(env.tmp / "out")
+    subject, _ = env.release(environ={})
+    subject.execute()
+    publication = json.loads((env.stage / "release-provenance.json").read_text())["publication"]
+    assert publication["approvalSource"] == "explicit --publish by the repository owner" and "workflowRun" not in publication
 
 
 def test_publish_refuses_an_existing_release(env):

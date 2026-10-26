@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-macos
+  group: release-macos-${{ github.event_name == 'workflow_dispatch' && inputs.dry_run != false && 'dry-run' || 'publish' }}
   cancel-in-progress: false
 
 env:
@@ -79,6 +79,7 @@ jobs:
     if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (needs.decide.outputs.skip != 'true' && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository))) }}
     runs-on: macos-26
     timeout-minutes: 60
+    environment: release-macos
     permissions:
       contents: write
     env:

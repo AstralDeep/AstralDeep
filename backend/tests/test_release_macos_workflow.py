@@ -69,7 +69,10 @@ def test_runs_after_green_ci_on_main_or_by_dispatch_that_defaults_to_a_dry_run(f
     dry_run = on["workflow_dispatch"]["inputs"]["dry_run"]
     assert dry_run["type"] == "boolean" and dry_run["default"] is True
     assert flow["permissions"] == {"contents": "read"}
-    assert flow["concurrency"] == {"group": "release-macos", "cancel-in-progress": False}
+    assert flow["concurrency"] == {
+        "group": "release-macos-${{ github.event_name == 'workflow_dispatch' && inputs.dry_run != false && 'dry-run' || 'publish' }}",
+        "cancel-in-progress": False,
+    }
 
 
 def test_decide_is_cheap_unprivileged_and_guarded(flow):
@@ -92,6 +95,7 @@ def test_release_job_runs_only_for_a_green_main_commit_that_is_not_released(flow
     job = flow["jobs"]["release"]
     assert job["runs-on"] == "macos-26" and job["timeout-minutes"] == 60
     assert job["needs"] == ["decide"] and job["permissions"] == {"contents": "write"}
+    assert job["environment"] == "release-macos"
     expression = condition(job)
     assert expression.startswith(f"{GUARD} && (")
     for clause in (

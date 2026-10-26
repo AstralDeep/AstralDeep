@@ -487,8 +487,10 @@ as an immutable GitHub release tagged `macos-v<version>-<build>`.
 from the default branch, so a pull request cannot change the publisher. The only
 manual entry is `workflow_dispatch` from `main`, whose `dry_run` input defaults
 to true. A dispatch with `dry_run` false publishes only when a successful CI push
-run exists for that `main` commit. Runs queue in one `release-macos` concurrency
-group and never cancel each other.
+run exists for that `main` commit. Publishing runs share one concurrency group
+and never run in parallel; while one runs, a newer queued run replaces an older
+queued one, and its release includes the older commit's changes. Dry runs use a
+separate group, so a rehearsal never displaces a queued publication.
 
 **Version and build.** `scripts/next_macos_release.py` reads the newest
 non-draft `macos-v*` release and the `MARKETING_VERSION` of Projection's
@@ -498,8 +500,10 @@ non-draft `macos-v*` release and the `MARKETING_VERSION` of Projection's
 - otherwise: the newest release's patch plus one;
 - build: the larger of the newest build and 70, plus one;
 - no release when the newest release already targets the head commit, or when
-  the head does not descend from that release's commit (a late or re-run CI for
-  an older commit).
+  the head is older than that release's commit (a late or re-run CI), with a
+  notice in the run log;
+- the run fails when the head and the newest release's commit have diverged
+  (a release cut outside `main`'s history).
 
 Raise the minor by editing `MARKETING_VERSION` in Projection; the major moves
 only by the owner's decision. The chosen values reach `xcodebuild` as
@@ -518,24 +522,32 @@ are the DMG, `SHA256SUMS`, `release-provenance.json`, the notes `.md`,
 from the pull requests merged along `main`'s first-parent history since the
 previous release. Earlier appcast items and the policy's minimum build and serial
 come from the live `https://astraldeep.github.io/appcast.xml` and
-`/data/mac-update-policy.json` through a bounded HTTPS fetch; once a release from
-this pipeline has published them, their absence fails the run instead of
-dropping items or resetting the serial.
+`/data/mac-update-policy.json` through a bounded HTTPS fetch. Once a release from
+this pipeline has published them, the live bytes must equal that release's
+assets: the stage waits up to ten minutes for the site to sync, then fails rather
+than drop items, reset the serial or lower the minimum build.
 
-**Secrets (names only — never commit or echo values).** The job fails before any
-signing step when one is unset:
+**Secrets (names only — never commit or echo values).** The release job runs in
+the `release-macos` environment, whose deployments are restricted to `main`; the
+Developer ID and Sparkle secrets live there, so a workflow on another branch
+cannot read them. The `ASC_*` secrets stay repository-wide because
+`apple-release.yml` shares them. The job fails before any signing step when one
+is unset:
 
-| Secret | Purpose |
-|---|---|
-| `APPLE_DEVELOPER_ID_APP_CERT_P12_BASE64` | Base64 of the Developer ID Application identity `.p12` (certificate and private key). |
-| `APPLE_DEVELOPER_ID_CERT_PASSWORD` | Password of that `.p12`. |
-| `ASC_KEY_ID` | App Store Connect API key id for `notarytool --key-id`. |
-| `ASC_ISSUER_ID` | App Store Connect issuer id for `notarytool --issuer`. |
-| `ASC_KEY_P8_BASE64` | Base64 of the App Store Connect `.p8` key, written to a 0600 file for `notarytool --key`. |
-| `SPARKLE_ED25519_PRIVATE_KEY` | Sparkle EdDSA private key text, written to a 0600 file for `--ed-key-file`. |
+| Secret | Scope | Purpose |
+|---|---|---|
+| `APPLE_DEVELOPER_ID_APP_CERT_P12_BASE64` | `release-macos` environment | Base64 of the Developer ID Application identity `.p12` (certificate and private key). |
+| `APPLE_DEVELOPER_ID_CERT_PASSWORD` | `release-macos` environment | Password of that `.p12`. |
+| `SPARKLE_ED25519_PRIVATE_KEY` | `release-macos` environment | Sparkle EdDSA private key text, written to a 0600 file for `--ed-key-file`. |
+| `ASC_KEY_ID` | repository | App Store Connect API key id for `notarytool --key-id`. |
+| `ASC_ISSUER_ID` | repository | App Store Connect issuer id for `notarytool --issuer`. |
+| `ASC_KEY_P8_BASE64` | repository | Base64 of the App Store Connect `.p8` key, written to a 0600 file for `notarytool --key`. |
 
 The `.p12` is imported into an ephemeral keychain; the key files and the keychain
-are removed at the end of the job.
+are removed at the end of the job. The published release's provenance names the
+workflow run that published it. If a run fails after creating its draft
+release, delete that draft before the next run; a draft with the same tag stops
+every later run with "already exists".
 
 **Dry run.** Run the workflow from `main` with `dry_run` checked, or
 `gh workflow run release-macos.yml --repo AstralDeep/AstralDeep --ref main -f dry_run=true`.
