@@ -185,8 +185,9 @@ def test_command_and_browser_verbs_have_tiers_scopes_timeouts_and_sessions():
         assert policy.SCOPES[verb] == "tools:read"
     for verb in _BROWSER_INPUT:
         assert policy.SCOPES[verb] == "tools:write"
-    for verb in _COMMAND_VERBS:
-        assert policy.SCOPES[verb] == "tools:execute"
+    assert policy.SCOPES["run_command"] == "tools:execute"
+    assert policy.SCOPES["read_output"] == "tools:read"
+    assert policy.SCOPES["interrupt_command"] == "tools:write"
     for verb in {"browser_snapshot", "browser_get_text", "browser_screenshot"}:
         assert policy.TIMEOUTS[verb] == 5.0
     assert policy.TIMEOUTS["browser_navigate"] == policy.TIMEOUTS["browser_wait"] == 15.0

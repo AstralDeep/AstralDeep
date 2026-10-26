@@ -50,7 +50,7 @@ TIERS: Dict[str, str] = {
 SCOPES: Dict[str, str] = {
     **{v: "tools:read" for v in OBSERVE_VERBS},
     **{v: "tools:write" for v in INPUT_VERBS},
-    **{v: "tools:execute" for v in COMMAND_VERBS},
+    "run_command": "tools:execute",
     "write_file": "tools:files",
     "delete_path": "tools:files",
     "list_computers": "tools:read",
