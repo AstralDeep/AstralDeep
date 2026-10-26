@@ -106,10 +106,43 @@ def test_compound_shell_wrapped_destructive_or_unbound_commands_are_never_granta
     assert policy.command_grant(args, ROOTS) is None
 
 
-def test_find_and_git_stay_grantable_for_read_only_use():
-    assert policy.command_grant(_argv(["find", ".", "-name", "*.md"]), ROOTS)["argv0"] == "find"
-    assert policy.command_grant(_argv(["git", "status"]), ROOTS)["argv0"] == "git"
-    assert policy.command_grant(_argv(["git", "-C", "repo", "log"]), ROOTS)["argv0"] == "git"
+@pytest.mark.parametrize("argv", [
+    ["git", "status"], ["git", "status", "--short"], ["git", "log", "--oneline", "-5"], ["git", "diff", "HEAD~1"],
+    ["git", "show", "HEAD"], ["git", "blame", "notes.md"], ["git", "describe", "--tags"],
+    ["git", "rev-parse", "HEAD"], ["git", "ls-files"], ["git", "shortlog", "-sn"], ["git", "branch"],
+    ["git", "branch", "--list"], ["git", "branch", "-a", "-v"], ["git", "branch", "-r"], ["git", "tag"],
+    ["git", "tag", "-l"], ["git", "tag", "--list"], ["git", "remote"], ["git", "remote", "-v"],
+    ["git", "stash", "list"], ["find", ".", "-name", "*.md"], ["make"], ["make", "-f", "build/Makefile"],
+    ["make", "-C", "sub", "test"], ["tar", "-tzf", "a.tgz"], ["rsync", "-a", "a/", "b/"],
+])
+def test_read_only_git_and_bounded_tools_stay_grantable(argv):
+    assert policy.command_grant(_argv(argv), ROOTS)["argv0"] == argv[0]
+
+
+@pytest.mark.parametrize("argv", [
+    ["git", "-c", "core.sshCommand=evil", "fetch"], ["git", "-c", "x=y", "status"], ["git", "-C", "repo", "log"],
+    ["git", "--exec-path=/tmp", "status"], ["git", "--git-dir=/tmp/g", "status"], ["git", "--work-tree=/", "status"],
+    ["git", "--config-env=a=b", "status"], ["git", "--namespace=x", "log"], ["git", "-p", "log"],
+    ["git", "--paginate", "log"], ["git", "--no-pager", "log"], ["git"], ["git", "config", "--list"],
+    ["git", "submodule", "update"], ["git", "fetch"], ["git", "pull"], ["git", "commit", "-m", "x"],
+    ["git", "add", "."], ["git", "rm", "x"], ["git", "mv", "a", "b"], ["git", "checkout", "main"],
+    ["git", "switch", "main"], ["git", "restore", "x"], ["git", "merge", "x"], ["git", "cherry-pick", "x"],
+    ["git", "filter-branch"], ["git", "bisect", "start"], ["git", "difftool"], ["git", "mergetool"],
+    ["git", "daemon"], ["git", "instaweb"], ["git", "archive", "HEAD"], ["git", "worktree", "add", "x"],
+    ["git", "co"], ["git", "unknown-alias"], ["git", "branch", "new-branch"], ["git", "branch", "-D", "x"],
+    ["git", "branch", "-m", "a", "b"], ["git", "tag", "v1"], ["git", "tag", "-d", "v1"], ["git", "remote", "add", "o", "u"],
+    ["git", "remote", "remove", "o"], ["git", "stash"], ["git", "stash", "pop"], ["git", "stash", "list", "-p"],
+    ["git", "log", "--output=/tmp/x"], ["git", "diff", "--ext-diff"], ["git", "diff", "--output", "x"],
+    ["git", "log", "--exec=x"], ["find", ".", "-fprint", "x"], ["find", ".", "-fls", "x"], ["find", ".", "-okdir", "x"],
+    ["make", "-f", "/tmp/Makefile"], ["make", "--file=../Makefile"], ["make", "-f../Makefile"],
+    ["make", "--makefile", "/etc/x"], ["make", "-C", "/tmp"], ["make", "--directory=../.."], ["make", "-f"],
+    ["tar", "--to-command=sh", "-xf", "a.tar"], ["tar", "-I", "evil", "-xf", "a.tar"],
+    ["tar", "--use-compress-program=evil", "-xf", "a"], ["tar", "--checkpoint-action=exec=x", "-cf", "a", "b"],
+    ["rsync", "-e", "evil", "a", "b"], ["rsync", "-ave", "evil", "a", "b"], ["tar", "-xIf", "evil", "a"], ["rsync", "--rsh=evil", "a", "b"], ["rsync", "--rsync-path=evil", "a", "b"],
+])
+def test_git_outside_the_read_only_allowlist_and_exec_style_options_stay_on_exact_review(argv):
+    assert policy.command_grant(_argv(argv), ROOTS) is None
+    assert policy.command_grant(_cmd(" ".join(argv)), ROOTS) is None
 
 
 def test_run_command_card_shows_every_reviewed_field_exactly():

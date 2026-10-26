@@ -435,14 +435,66 @@ def is_destructive_command(args: Mapping[str, Any], roots: Any = ()) -> bool:
     return bool(destructive or downloads_into_shell)
 
 
-def _never_grantable_invocation(words: Sequence[str]) -> bool:
+_GIT_READ_ONLY = frozenset({"status", "log", "diff", "show", "blame", "describe", "rev-parse", "ls-files",
+                            "shortlog"})
+_GIT_LISTING = {"branch": frozenset({"--list", "-a", "-r", "-v"}), "tag": frozenset({"-l", "--list"}),
+                "remote": frozenset({"-v"})}
+_GIT_UNSAFE_OPTIONS = ("--output", "--ext-diff", "--exec", "--upload-pack", "--receive-pack", "--textconv")
+_FIND_UNSAFE = frozenset({"-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"})
+_EXEC_OPTIONS = {
+    "tar": ("--to-command", "--use-compress-program", "-I", "--checkpoint-action", "--info-script", "-F",
+            "--new-volume-script"),
+    "rsync": ("-e", "--rsh", "--rsync-path"),
+}
+
+
+def _grantable_git(words: Sequence[str]) -> bool:
+    if len(words) < 2 or words[1].startswith("-"):
+        return False
+    sub, tail = words[1], list(words[2:])
+    if any(word.startswith(_GIT_UNSAFE_OPTIONS) for word in tail):
+        return False
+    if sub in _GIT_READ_ONLY:
+        return True
+    if sub in _GIT_LISTING:
+        return all(word in _GIT_LISTING[sub] for word in tail)
+    return sub == "stash" and tail == ["list"]
+
+
+def _option_paths(words: Sequence[str], short: str, long: Sequence[str]):
+    for index, word in enumerate(words):
+        if word == short or word in long:
+            yield words[index + 1] if index + 1 < len(words) else None
+        elif word.startswith(short) and len(word) > len(short) and not word.startswith("--"):
+            yield word[len(short):]
+        else:
+            for name in long:
+                if word.startswith(name + "="):
+                    yield word[len(name) + 1:]
+
+
+def _inside_root(path: Any, cwd: str, root: str) -> bool:
+    if not isinstance(path, str) or not path or path.startswith("~") or "$" in path:
+        return False
+    resolved = posixpath.normpath(posixpath.join(cwd, path))
+    return resolved == root or resolved.startswith(root.rstrip("/") + "/")
+
+
+def _grantable_invocation(words: Sequence[str], cwd: str, root: str) -> bool:
     program = _program(words[0])
-    if program == "find":
-        return bool({"-exec", "-execdir", "-delete", "-ok", "-okdir"} & set(words))
     if program == "git":
-        sub, tail = _git_subcommand(words)
-        return sub in {"push", "reset", "clean", "rebase"} or (sub == "checkout" and "--" in tail)
-    return False
+        return _grantable_git(words)
+    if program == "find":
+        return not _FIND_UNSAFE & set(words)
+    if program in _EXEC_OPTIONS:
+        return not any(word == option or word.startswith(option + "=") or (
+            len(option) == 2 and word.startswith("-") and not word.startswith("--") and option[1] in word[1:])
+            for word in words[1:] for option in _EXEC_OPTIONS[program])
+    if program in {"make", "gmake"}:
+        paths = [*_option_paths(words[1:], "-f", ("--file", "--makefile")),
+                 *_option_paths(words[1:], "-C", ("--directory",))]
+        return all(_inside_root(path, cwd, root) for path in paths)
+    return True
 
 
 def command_grant(args: Mapping[str, Any], roots: Any = ()) -> Optional[Dict[str, str]]:
@@ -462,15 +514,15 @@ def command_grant(args: Mapping[str, Any], roots: Any = ()) -> Optional[Dict[str
             return None
     else:
         words = value
-    if (not words or "=" in words[0] or not is_grantable_program(words[0])
-            or _never_grantable_invocation(words) or is_destructive_command(args, roots)):
-        return None
     known = _root_paths(roots)
     candidates = [root for root in known if cwd == root["path"] or cwd.startswith(root["path"] + "/")]
     if known and not candidates:
         return None
     root = max(candidates, key=lambda item: len(item["path"])) if candidates else {
         "name": posixpath.basename(cwd), "path": cwd}
+    if (not words or "=" in words[0] or not is_grantable_program(words[0])
+            or not _grantable_invocation(words, cwd, root["path"]) or is_destructive_command(args, roots)):
+        return None
     return {"argv0": words[0], "root": root["path"], "folder": root["name"]}
 
 
