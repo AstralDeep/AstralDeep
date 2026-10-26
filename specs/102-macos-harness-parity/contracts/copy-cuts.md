@@ -72,3 +72,9 @@ Swift: `MacWorkbenchViewTests.swift` forbidden-copy list (extend with every CUT 
 Deep: `test_welcome.py`, `test_welcome_identity.py`, `test_wiring_030.py`, `test_first_turn_contract.py`, `test_curated_examples_060.py`, `tests/chrome/test_surface_*.py`, `test_native_console_surfaces.py`, `test_pulse.py`, `test_search_surface.py`, `test_typesafe_settings.py`.
 
 Projection: `tests/chrome/test_console_model.py`, `tests/chrome/test_personalization_views.py`, `tests/chrome/test_agent_views.py`, Windows `test_console_shell.py`, `test_detail_surface_geometry.py`, `test_message_routing.py`, Android `ConsoleShellTest.kt`.
+
+## Rulings from the builder check (2026-10-25)
+
+- Windows `console.py:113` and Android `ConsoleModel.kt:75-91` reject blank console labels, and `message_placeholder` is their accessible name. So the server keeps sending every label other clients require: `title`, `subtitle`, `start_here`, `example`, `empty_*`, `message_placeholder` and `result_*` stay non-empty on the server. The Mac stops drawing them visually and keeps `message_placeholder` as the composer's accessibility label. T007 still makes the Mac and watch parsers tolerate absent labels so a later server cut cannot break them.
+- Cut at source applies to strings no client requires to decode: welcome scenario captions, "How can I help?" and "More examples", the agent intro subtitle and repeated prompts, surface captions, info alerts and field helps, web landing categories, terminal helper sentences and component row words. These are optional fields on every client.
+- `subtitle` on the server changes from the tagline to the short functional label "Workspace" so Windows and Android keep a valid non-empty label without a tagline.

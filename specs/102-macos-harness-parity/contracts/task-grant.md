@@ -60,3 +60,16 @@ The approval window above also preserves the existing 180-second terminal admiss
 ## Results
 
 Every successful input verb result includes `screenshot` (same shape as the `screenshot` verb, bounded to 1280 pixels wide) taken after the effect settles, so the agent can continue without a second round trip.
+
+## Rulings from the builder check (2026-10-25)
+
+- Grant scope binds owner, host, session and chat. `task_id` is recorded for audit only; a grant survives across turns in the same chat until expiry or revocation, because `begin_task` resets per user message.
+- Same-host detection uses the existing rule: the approval controller's websocket is the host's websocket (`remote_confirmation.computer_resume_target`). There is no `controller_host_id` field.
+- Input inside Astral's own windows is never takeover, at any time: approving a card, pressing Esc, clicking Stop, using the Activity panel, typing the next message. The host classifies an event as takeover only when, 300 ms after the event, the frontmost application is not Astral. Input inside the browser pane is the one exception and pauses the agent's pane work. The fixed 10-second approval window is withdrawn.
+- The floating session panel shows an "Approval waiting" state with a button that brings Astral forward; Astral never raises itself on its own.
+- Pause reasons keep their existing names: `local_pause` (explicit Pause control) and `local_input` (takeover). Only `local_pause` refuses remote resume; `local_input` can be resumed by the agent's `resume_session` as today.
+- Pointer verbs on a macOS host require `hwnd`; the server refuses a pointer verb without it with a message to call `list_windows` first. The server caches the last `list_windows` result and the last screenshot bytes per session (bounded to 3 MB), so the card gets the application name and window title from the cache and a Pillow crop when Pillow is importable, otherwise no crop.
+- The grant decision lives in both card paths: `hitl_confirmation.evaluate` for input verbs (`authorize_action`) and `remote_confirmation` for `run_command`, which is classed destructive "always" so it uses the readable `summary_for` card.
+- Never grantable as an application scope: terminal-capable applications (existing list), Safari, Chrome, Firefox, Arc, Edge and other browsers, Mail, Messages, FaceTime, System Settings, Keychain Access, 1Password, Bitwarden and other password managers, Finder windows showing hidden or system paths. Actions in those applications stay on exact review.
+- Esc and Command-period cancel the current turn only; the computer session and its grants stay. Stop ends the session, revokes grants and cancels the turn. `cancel_task` is changed so it no longer ends the computer session.
+- The host descriptor gains an optional `workspace_roots` list; `ComputerHostDescriptor.from_dict` accepts it as optional, old hosts without it still validate.

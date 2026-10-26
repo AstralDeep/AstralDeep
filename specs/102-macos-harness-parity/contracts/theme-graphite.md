@@ -53,3 +53,8 @@ In the `register_ui` handler, when no stored theme exists, the server sends `{"t
 ## Tests
 
 Update the pinned values and names in Deep `tests/chrome/test_surface_theme.py`, `test_surface_components.py`, `test_projection_controllers.py`; Projection `tests/test_theme_preset_parity.py`, `tests/chrome/test_personalization_views.py`, `tests/test_no_hex_literals_089.py`; Windows `tests/test_theme_live.py`; Android `ThemeTest.kt`; Mac `SettingsControlTests.swift`, `WebPrimitiveStyleTests.swift`, `OfflineChartTests.swift`, `CanvasCapture088Tests.swift`, `WorkspaceExportPipeline088Tests.swift`; watch `ConsoleWatchTests.swift`. Add a Deep test that `register_ui` without a stored theme sends the Graphite colors and that a stored Midnight is sent unchanged.
+
+## Rulings from the builder check (2026-10-25)
+
+- Stored custom themes carry only the seven roles and no preset name. On the Mac, applying a colors-only theme derives the Apple extras from the stored roles: `surface2` is `surface` lightened by 4 percent when the background is dark and darkened by 4 percent when light, `border` is `text` at 8 percent, and the four status colors stay the Graphite set. A stored `{"preset": "midnight"}` applies the full Midnight case including its original `surface2`.
+- `Theme.swift` is shared with iOS and watchOS; their defaults become Graphite too. The spec's "no client code changes" for other clients means no behavior logic changes; theme table data on Windows and Android and the shared Apple palette default do change.

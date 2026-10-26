@@ -47,3 +47,9 @@ Runs on the owner's Mac. Inputs: Projection commit, version, build, channel, rel
 ## Install and relaunch
 
 Sparkle performs the swap. The app shows "Update ready, restart when idle" while postponing. On quit, a staged update installs. Build 70 is installed by hand once; every later build arrives through the feed.
+
+## Rulings from the builder check (2026-10-25)
+
+- Mac Settings is a server-rendered surface, so the native update controls live in a native `Updates…` sheet opened from the app menu (next to Check for Updates) and from the status chip. Settings on the server gains no update section in this feature.
+- The release command always regenerates and re-signs `mac-update-policy.json`: `--minimum-build` (default: unchanged from the live policy, or 70 on first publication), `serial` auto-incremented from the live policy, `--policy-expires` default 180 days from now. Expiry is therefore rolled on every release.
+- Policy failure handling: a signature or parse failure shows the status chip; an expired policy or an unreachable feed connects silently and logs only.

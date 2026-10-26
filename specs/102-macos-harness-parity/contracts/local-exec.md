@@ -72,3 +72,12 @@ Request `{"job_id": "uuid", "signal": "INT" | "TERM" | "KILL"}`. Result `{"job_i
 ## Windows and others
 
 Windows and Android hosts do not advertise these verbs; `registry.request` returns `unsupported` as today. Recorded as a Principle XII divergence in the spec.
+
+## Rulings from the builder check (2026-10-25)
+
+- Deadline ceilings are per verb: `run_command` 600 s, `read_output` 30 s, `interrupt_command` 5 s. The fence ticket uses the verb's deadline.
+- Command and browser verbs run on a separate executor in the host, not on the serial physical-effect queue, so a running command never blocks Stop, pause or pointer verbs. Four concurrent command jobs per session.
+- Review classes: `run_command` is destructive "always" (exact review or a command grant); `read_output` is observe, scope `tools:read`, no review; `interrupt_command` is a control verb like `resume_session`, scope `tools:write`, no review.
+- Grantable commands: only `argv` form, or a `command` string that tokenizes to a single simple invocation with no `$(`, backticks, `|`, `;`, `&&`, `||`, `>`, `>>`, `<` or newline. Shell-wrapped or compound commands always take exact review. Never grantable as `argv0`: `sh`, `bash`, `zsh`, `fish`, `python*`, `node`, `ruby`, `perl`, `env`, `xargs`, `osascript`, `open`, `sudo`, `su`, `launchctl`, `defaults`, `security`, `find` with `-exec` or `-delete`, `git` with `push`, `reset`, `clean`, `checkout --` or `rebase`.
+- The destructive matcher looks inside `sh -c`, `bash -c`, `zsh -c` and `env` wrappers before matching.
+- The scanner review: `terminal_host_review.py` is generalized so the flagged set for the computer-use implementation class is exactly `{run_command}`; `read_output` and `interrupt_command` match no scanner pattern and need no review entry.

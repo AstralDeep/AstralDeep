@@ -235,7 +235,7 @@ Rollout (US7)
 - The owner is present for actions that need their identity: SSH and sudo to the sandbox, Keycloak sign-in in the Mac app, macOS permission prompts, and the go-ahead to publish a public release.
 - The Developer ID Application identity for team `593LGH35GS` and the `astral-notary` keychain profile are available on this Mac.
 - Local tests are run and must pass for changed code; hosted CI is not consulted.
-- Windows, Android, iOS and watchOS receive no client code changes in this feature. Server-side defaults and copy cuts reach them through server-owned data, which the owner has accepted.
+- Windows, Android, iOS and watchOS receive no behavior changes in this feature. Their theme preset tables gain Graphite as data, the shared Apple palette default changes, and server-owned defaults and copy cuts reach them through server-owned data, which the owner has accepted.
 
 ## Out of Scope
 

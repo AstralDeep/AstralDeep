@@ -57,3 +57,9 @@ Deferred to a later version: `browser_find`, `browser_console`, `browser_network
 ## Limits stated to the user
 
 No shared sign-in with Safari or Chrome. Google and many single sign-on providers refuse embedded views. No console or network inspection in this version. Downloads, uploads and popups are blocked in this version.
+
+## Rulings from the builder check (2026-10-25)
+
+- Origin approval is a grant: approving `browser_navigate` to an origin creates a grant with scope `{"kind": "origin", "origin": "https://example.org"}` covering `browser_navigate` within that origin and `browser_click`, `browser_fill`, `browser_press`, `browser_scroll` and `browser_dialog` on pages of that origin. Observation verbs need no review. Consequential targets still return `confirmation_required` and take exact review. The grant follows the same expiry and revocation rules as other grants.
+- Deadline ceilings: `browser_navigate` and `browser_wait` 15 s, other browser verbs 5 s. Browser verbs run on the host's non-physical executor.
+- The pane is one of Astral's own windows for takeover purposes with the stated exception: typing or clicking inside the page content pauses the agent's browser work; using the pane's own URL bar, Take over and navigation buttons does not.
