@@ -287,7 +287,7 @@ def test_the_agent_registry_carries_the_browser_tools_with_strict_policy_equalit
     assert set(policy.BROWSER_VERBS) <= set(mcp_tools.TOOL_REGISTRY)
     for name in BROWSER_TOOLS:
         assert mcp_tools.TOOL_REGISTRY[name]["scope"] == policy.SCOPES[name]
-    assert policy.ALL_VERBS - set(mcp_tools.TOOL_REGISTRY) <= policy.COMMAND_VERBS
+    assert set(mcp_tools.TOOL_REGISTRY) == policy.ALL_VERBS
 
 
 def test_summary_for_names_the_canonical_origin():
