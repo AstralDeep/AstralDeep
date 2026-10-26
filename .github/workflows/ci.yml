@@ -310,7 +310,7 @@ jobs:
           retention-days: 14
 
   plane-postgres:
-    name: Exact Plane complete PostgreSQL suite
+    name: Exact Plane PostgreSQL suite
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -352,19 +352,35 @@ jobs:
             --baseline-root "$RUNNER_TEMP/plane-consumer-baseline.git" \
             --github-env "$GITHUB_ENV" \
             --output components/AstralPlane/build/backend-web/consumer-baseline.json
+      - name: Run the full Plane suite only when the Plane pin moved
+        id: lane
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          base_sha="$(jq -er .base_deep_sha components/AstralPlane/build/backend-web/consumer-baseline.json)"
+          python scripts/ci_plane_lane.py --base "$base_sha" --head "$CANDIDATE_SHA" --github-output "$GITHUB_OUTPUT"
       - working-directory: components/AstralPlane
+        env:
+          PLANE_LANE: ${{ steps.lane.outputs.lane }}
         run: |
           set -euo pipefail
           uv lock --check
           uv sync --frozen --group ci
           uv run --frozen --group ci ruff check .
-          uv run --frozen --group ci pytest -q -ra -p no:cacheprovider \
-            --cov=astralplane --cov=scripts.import_staging_fixture \
-            --cov=scripts.migrate_qualification_database \
-            --cov=scripts.qualify_main_upgrade --cov=scripts.check_acceptance_faults \
-            --cov=scripts.ci_review_diagnostics --cov=scripts.check_changed_coverage --cov-branch \
-            --cov-report=xml:build/backend-web/plane-python.xml \
-            --junitxml=build/backend-web/plane-tests.xml --cov-fail-under=88.75
+          if [[ "$PLANE_LANE" == smoke ]]; then
+            uv run --frozen --group ci pytest -q -ra -p no:cacheprovider \
+              tests/architecture tests/test_api.py tests/test_domain.py tests/test_bootstrap.py \
+              --junitxml=build/backend-web/plane-tests.xml
+          else
+            uv run --frozen --group ci pytest -q -ra -p no:cacheprovider \
+              --cov=astralplane --cov=scripts.import_staging_fixture \
+              --cov=scripts.migrate_qualification_database \
+              --cov=scripts.qualify_main_upgrade --cov=scripts.check_acceptance_faults \
+              --cov=scripts.ci_review_diagnostics --cov=scripts.check_changed_coverage --cov-branch \
+              --cov-report=xml:build/backend-web/plane-python.xml \
+              --junitxml=build/backend-web/plane-tests.xml --cov-fail-under=88.75
+          fi
       - name: Enforce changed Plane Python against the baseline component
         run: |
           set -euo pipefail
