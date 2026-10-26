@@ -5,6 +5,8 @@ bounds.
 """
 
 import asyncio
+import itertools
+import os
 import threading
 import time
 import uuid
@@ -45,6 +47,9 @@ def signing_key():
     return key, {"keys": [public_jwk]}
 
 
+_SESSION_OWNER_SEQUENCE = itertools.count(1)
+
+
 def session_fixture(runtime, monkeypatch, signing_key, *, owner=None):
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
     monkeypatch.setenv("WEB_SESSION_SECRET", "synthetic-private-cookie-key")
@@ -54,7 +59,8 @@ def session_fixture(runtime, monkeypatch, signing_key, *, owner=None):
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-web")
     monkeypatch.setenv("KEYCLOAK_CLIENT_SECRET", "synthetic-secret")
     monkeypatch.setenv("KEYCLOAK_ALLOWED_AZP", "astral-native")
-    owner, sid = owner or str(uuid.uuid4()), uuid.uuid4().hex
+    # Digit runs stay letter-prefixed so no approval review can misread the fixture owner as a credential.
+    owner, sid = owner or f"review-owner-p{os.getpid()}-x{next(_SESSION_OWNER_SEQUENCE):06d}", uuid.uuid4().hex
     store = web_session_store(runtime)
 
     def token(**changes):

@@ -4,6 +4,7 @@ import base64
 from copy import deepcopy
 import json
 from types import SimpleNamespace
+import uuid
 from unittest.mock import AsyncMock
 
 from fastapi import FastAPI
@@ -94,9 +95,12 @@ async def active(human, socket_request, isolated, monkeypatch, tmp_path):
     assert review_registered_terminal(orch)
     for tool, entry in mcp_tools.TOOL_REGISTRY.items():
         orch.tool_permissions.set_tool_permission(owner, AGENT_ID, tool, entry["scope"], True)
-    info = orch.terminal_sessions.create(owner,
-        authority=bind_terminal_authority(orch, socket, owner, "start_terminal"),
-        runtime_binding=orch.terminal_sessions.runtime_binding(owner))
+    identifier = uuid.UUID("00112233445566778899aabbccddeeff")
+    with monkeypatch.context() as scope:
+        scope.setattr(uuid, "uuid4", lambda: identifier)
+        info = orch.terminal_sessions.create(owner,
+            authority=bind_terminal_authority(orch, socket, owner, "start_terminal"),
+            runtime_binding=orch.terminal_sessions.runtime_binding(owner))
     session = orch.terminal_sessions._sessions[info["session_id"]]
     chat = orch.history.create_chat(user_id=owner)
     orch.history.add_file_mapping(chat, "uploaded.txt", "/mapped/uploaded.txt", user_id=owner)

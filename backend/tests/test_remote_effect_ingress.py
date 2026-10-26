@@ -449,15 +449,51 @@ async def test_dual_review_proof_cannot_be_substituted_or_expired(remote_ingress
             args["machine_id"] = str(UUID(int=1, version=4)) if change == "machine" else args["machine_id"]
             proof, _ = remote_confirmation._create_proposal(env.orch, owner, env.chat,
                 "remote-compute-1", "remove_path", args)
+            crafted = proposals.call(proposals.repository.get, owner_id=owner, proposal_id=proof)
+
             def consume():
                 with proposals.transaction() as tx:
                     proposals.repository.decide_if_pending(tx, owner_id=owner, proposal_id=proof,
-                        decision="approved", decided_at=row.created_at)
+                        decision="approved", decided_at=crafted.created_at)
                     proposals.repository.consume_if_valid(tx, owner_id=owner, proposal_id=proof,
                         expected_tool_name="remove_path", expected_args_fingerprint=remote_confirmation._fingerprint(args),
-                        consumed_at=row.created_at)
+                        consumed_at=crafted.created_at)
             await asyncio.to_thread(consume)
         env.orch._hitl_pending_calls[identity] = replace(call, remote_proposal=proof)
+    await delivered(env.state, approve)
+    assert env.effects == env.selections == []
+
+
+@pytest.mark.asyncio
+async def test_dual_review_proof_created_in_a_later_second_is_still_rejected(remote_ingress, monkeypatch):
+    env = remote_ingress
+    approve = await propose(env, "proposal", "remove_path")
+    env.enable()
+    identity = approve["payload"]["hitl_request_id"]
+    call = env.orch._hitl_pending_calls[identity]
+    proposals = remote_confirmation._proposal_context(env.orch)
+    row = proposals.call(proposals.repository.get, owner_id=env.owner, proposal_id=call.remote_proposal)
+    assert row.status == "consumed"
+    real_time = remote_confirmation.time.time
+    monkeypatch.setattr(remote_confirmation.time, "time", lambda: real_time() + 5)
+    args = json.loads(call.arguments)
+    args["machine_id"] = str(UUID(int=1, version=4))
+    proof, _ = remote_confirmation._create_proposal(env.orch, env.owner, env.chat,
+        "remote-compute-1", "remove_path", args)
+    monkeypatch.setattr(remote_confirmation.time, "time", real_time)
+    crafted = proposals.call(proposals.repository.get, owner_id=env.owner, proposal_id=proof)
+    assert crafted.created_at > row.created_at
+
+    def consume():
+        with proposals.transaction() as tx:
+            proposals.repository.decide_if_pending(tx, owner_id=env.owner, proposal_id=proof,
+                decision="approved", decided_at=crafted.created_at)
+            proposals.repository.consume_if_valid(tx, owner_id=env.owner, proposal_id=proof,
+                expected_tool_name="remove_path", expected_args_fingerprint=remote_confirmation._fingerprint(args),
+                consumed_at=crafted.created_at)
+
+    await asyncio.to_thread(consume)
+    env.orch._hitl_pending_calls[identity] = replace(call, remote_proposal=proof)
     await delivered(env.state, approve)
     assert env.effects == env.selections == []
 
