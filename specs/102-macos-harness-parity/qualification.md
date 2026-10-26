@@ -32,6 +32,14 @@ Implementation lanes are complete on `claude/102-macos-harness-parity` in Deep a
 | Logs | startup complete; one "ASGI callable returned without completing handshake" line from an unauthenticated socket attempt during startup |
 | Rollback | `rollback.sh <backup dir>` restores the previous override, checkout and container; not exercised |
 
+## Live verification (2026-10-26)
+
+| Step | Observation |
+|---|---|
+| Launch and sign-in | 1.9 (70) restored the Keychain session and connected to the deployed sandbox (`/ws` accepted); the workbench showed the cut copy: no wordmark beside the logo, a bare outlined composer, the canvas header carrying the result title; the stored Ocean preset was honored |
+| Crash | opening Updates… trapped in SwiftUI: the sheet was attached outside the window's `.environment(model.themeStore)` chain and `UpdateSettingsSheet` read `ThemeStore` non-optionally (crash report `AstralDeep-2026-10-26-094204.ips`, `EXC_BREAKPOINT` in `EnvironmentValues.subscript.getter`) |
+| Fix | the sheet content now receives the theme and tint environment at its presentation site, and the three update views fall back to the Graphite palette when no `ThemeStore` is present; regression test `UpdateViewsEnvironmentTests` hosts them with no environment; Projection `7539629`; 1.9 (70) rebuilt from it |
+
 ## Pending
 
 - Full macOS app suite in one pass after the workbench lane commits.

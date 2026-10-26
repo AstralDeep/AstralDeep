@@ -5,7 +5,7 @@
     "astral-projection": {
       "repository": "https://github.com/AstralDeep/AstralProjection.git",
       "path": "components/AstralProjection",
-      "commit": "26651aee3f9c3135ec0e044968fdbd34ad84b887",
+      "commit": "753962929aca7279be63239e9a159e64edbfba24",
       "contract_version": "astralprojection.contract/v1"
     },
     "astral-plane": {
