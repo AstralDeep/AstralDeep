@@ -49,6 +49,8 @@ Implementation lanes are complete on `claude/102-macos-harness-parity` in Deep a
 | Second live round (14:32 to 14:36Z, server `f1c96354`, client Projection `960f9cf`) | host online; start_session approved and started twice (14:34:20Z, 14:35:16Z); the new decision-frame human capture failed with `human_authentication_required` so the continuation was skipped (log: "Approval continuation guidance unavailable"); 7 and 27 seconds after each start the host recorded `paused (local_input)` and `ended (consent_revoked)` in the same second because `MacComputerDesktopProbe.usable` requires a resolvable frontmost process and `refreshPermissions` on activation treated the transient failure as a desktop lock; the owner also saw a wrong or missing computer name on approval cards and reported that Esc had let an in-flight tool finish |
 | Fixes in flight | server: decision capture for native sockets or fallback to the proposing turn's guidance origin, card names from the registry, cancel interrupts in-flight tools (`1c33e15e`, not yet deployed); client: desktop probe limited to real lock facts, no withdraw on pause, clearer permission re-add text; settings surfaces renderer rework |
 
+| Final Deep `tests` group on the merge candidate (`7fe22c87`) | 15,796 passed, 71 failed, 2,624 skipped, 4 collection errors | every failure and error is in the baseline set already recorded above; no new failure against the previous full run |
+
 ## Pending
 
 - Full macOS app suite in one pass after the workbench lane commits.
