@@ -212,3 +212,20 @@ def test_db_failure_returns_error_notice_not_exception():
     assert surface == "theme"
     assert "Failed to save theme" in notice and "bg-red-500/10" in notice
     assert "astral-theme-apply" not in notice
+
+
+def test_theme_surface_drops_instructional_captions_in_both_paths_and_keeps_the_state_summary():
+    orch = FakeOrch()
+    html = render(orch)
+    components = asyncio.run(theme_surface.components(orch, "user-1", ["user"], {}))
+    captions = [c["content"] for c in components if c.get("type") == "text" and c.get("variant") == "caption"]
+    headings = [c["content"] for c in components if c.get("type") == "text" and c.get("variant") == "h3"]
+
+    for sentence in ("Pick a preset", "apply and save", "save instantly"):
+        assert sentence not in html
+        assert not [c for c in captions if sentence in c]
+    assert captions == ["Current theme: default (Graphite)."]
+    assert headings == ["Presets", "Fine-tune colors"]
+    assert "Presets" in html and "Fine-tune colors" in html
+    assert html.count("astral-color-picker") == 7
+    assert [c["type"] for c in components].count("color_picker") == 7

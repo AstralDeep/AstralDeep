@@ -131,6 +131,22 @@ def test_error_page_sanitizes_malicious_next():
     assert "evil.com" not in body
 
 
+MIDNIGHT_LITERALS = ("#0F1221", "#1A1E2E", "#F3F4F6", "#9CA3AF", "#6366F1")
+GRAPHITE_LITERALS = ("background:#0B0B0D", "color:#ECECEF", "background:#151518", "color:#8C8C95", "background:#8B5CF6")
+
+
+def test_sign_in_pages_use_the_graphite_palette_and_no_midnight_literals():
+    pages = {
+        "error": web_auth._error_page("/", "boom").body.decode("utf-8"),
+        "no_access": web_auth._no_access_page().body.decode("utf-8"),
+    }
+    for name, body in pages.items():
+        for literal in GRAPHITE_LITERALS:
+            assert literal in body, (name, literal)
+        for literal in MIDNIGHT_LITERALS:
+            assert literal.lower() not in body.lower(), (name, literal)
+
+
 def test_session_roles_mock_mode(monkeypatch):
     monkeypatch.setenv("USE_MOCK_AUTH", "true")
     assert web_auth.session_roles(_FakeRequest()) == ["admin", "user"]
