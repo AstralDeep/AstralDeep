@@ -594,7 +594,7 @@ def _fallback_view(surface: str, error: ProjectionPublicError) -> PresentationVi
             },
         ),
         "theme": {
-            "name": "midnight",
+            "name": "graphite",
             "colors": {},
             "color_scheme": "dark",
             "contrast": "normal",

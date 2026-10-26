@@ -81,6 +81,13 @@ def test_theme_components_valid_and_actionable():
     assert "chrome_theme_preset" in collect_handlers()
 
 
+def test_theme_components_list_graphite_first_and_midnight_after():
+    from orchestrator.projection_surfaces import theme
+    comps = run(theme.components(_orch(), "u1", ["user"], {}))
+    labels = [c.get("label") for c in _flat(comps) if c.get("label")]
+    assert labels.index("Apply Graphite") < labels.index("Apply Midnight")
+
+
 def test_theme_components_marks_active_preset():
     from orchestrator.projection_surfaces import theme
     comps = run(theme.components(_orch({"theme": {"preset": "ocean"}}), "u1", ["user"], {}))
@@ -102,7 +109,7 @@ def test_theme_components_theme_apply_colors_when_no_preset():
         _orch({"theme": {"colors": {"primary": "#22C55E"}}}), "u1", ["user"], {}))
     assert comps[0]["type"] == "theme_apply"
     assert comps[0]["colors"]["primary"] == "#22C55E"
-    assert comps[0]["colors"]["bg"] == theme.PRESETS["midnight"]["bg"]
+    assert comps[0]["colors"]["bg"] == theme.PRESETS["graphite"]["bg"] == "#0B0B0D"
     assert "preset" not in comps[0]
 
 

@@ -19,6 +19,9 @@ logger = logging.getLogger("Orchestrator.Chrome")
 TITLE = "Theme"
 
 PRESETS = {
+    "graphite": {"bg": "#0B0B0D", "surface": "#151518", "primary": "#8B5CF6",
+                 "secondary": "#6E6E78", "text": "#ECECEF", "muted": "#8C8C95",
+                 "accent": "#A78BFA"},
     "midnight": {"bg": "#0F1221", "surface": "#1A1E2E", "primary": "#6366F1",
                  "secondary": "#8B5CF6", "text": "#F3F4F6", "muted": "#9CA3AF",
                  "accent": "#06B6D4"},
@@ -36,7 +39,7 @@ PRESETS = {
                "accent": "#A3E635"},
 }
 
-_DEFAULT_PRESET = "midnight"
+_DEFAULT_PRESET = "graphite"
 
 _COLOR_KEYS = [
     ("bg", "Background"),
@@ -65,6 +68,10 @@ def _theme_context(orch):
         repository=source.plane_repositories.preferences.theme,
         plane_runtime=source.plane_runtime,
     )
+
+
+def default_theme_preferences() -> dict:
+    return {"theme": {"preset": _DEFAULT_PRESET, "colors": dict(PRESETS[_DEFAULT_PRESET])}}
 
 
 def _normalize_hex(value) -> str:
