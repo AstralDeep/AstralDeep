@@ -429,3 +429,32 @@ async def test_socket_loss_keeps_the_ordinary_offline_message(monkeypatch):
     with pytest.raises(ComputerHostError) as refused:
         orch.computer_hosts.resolve(OWNER, "Studio")
     assert "is offline" in refused.value.message
+
+
+async def test_turn_cancel_interrupts_running_command_jobs_and_keeps_the_session():
+    from orchestrator.orchestrator import Orchestrator
+
+    orch, host, controller, session = await _started()
+    session.command_jobs["job-run"] = {"state": "running"}
+    session.command_jobs["job-done"] = {"state": "exited"}
+    orch.cancelled_sessions = {}
+    orch._chat_recorders = {}
+    host_ws = host.websocket
+
+    async def reply():
+        for _ in range(200):
+            await asyncio.sleep(0.001)
+            for frame in host_ws.frames("computer_request"):
+                orch.computer_hosts.handle_response(host_ws, OWNER, {"request_id": frame["request_id"], "ok": True,
+                                                                   "result": {"state": "interrupted"}})
+
+    responder = asyncio.create_task(reply())
+    await Orchestrator._cancel_turn(orch, controller, OWNER, "chat-1")
+    responder.cancel()
+    signals = [(f["args"]["job_id"], f["args"]["signal"]) for f in host_ws.frames("computer_request")]
+    assert signals == [("job-run", "INT")] and session.state == "active"
+    await Orchestrator._cancel_turn(orch, controller, OWNER, "chat-other")
+    assert len(host_ws.frames("computer_request")) == 1
+    await orch.computer_sessions.end(session, "user_stop")
+    await orch.computer_sessions.interrupt_jobs(session)
+    assert len([f for f in host_ws.frames("computer_request") if f["args"].get("signal") == "INT"]) == 1

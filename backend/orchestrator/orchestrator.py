@@ -1741,11 +1741,66 @@ class Orchestrator:
                 await recorder.cancel_all_in_flight()
             except Exception:  # pragma: no cover
                 logger.debug("cancel_all_in_flight failed", exc_info=True)
+        dispatching = getattr(self, "_turn_tool_tasks", {}).get((id(websocket), chat_id))
+        if dispatching is not None and not dispatching.done():
+            self._tool_cancel_requests = getattr(self, "_tool_cancel_requests", set())
+            self._tool_cancel_requests.add(dispatching)
+            dispatching.cancel()
         await self._safe_send(websocket, json.dumps({
             "type": "chat_status",
             "status": "done",
             "message": "Cancelled"
         }))
+        sessions = getattr(self, "computer_sessions", None)
+        if sessions is not None and user_id and chat_id:
+            for session in sessions.live_for_owner(user_id):
+                if session.chat_id == chat_id and session.controller_ws_id == id(websocket):
+                    await sessions.interrupt_jobs(session)
+
+    def _take_tool_cancel(self) -> bool:
+        task = asyncio.current_task()
+        requests = getattr(self, "_tool_cancel_requests", set())
+        if task not in requests:
+            return False
+        requests.discard(task)
+        return task.uncancel() == 0
+
+    def _release_tool_dispatch(self, key) -> None:
+        task = asyncio.current_task()
+        tasks = getattr(self, "_turn_tool_tasks", {})
+        if tasks.get(key) is task:
+            tasks.pop(key, None)
+        requests = getattr(self, "_tool_cancel_requests", set())
+        if task in requests:
+            requests.discard(task)
+            task.uncancel()
+
+    def _note_cancelled_request(self, request_id, agent_id, tool_name, ui_websocket) -> None:
+        now = time.monotonic()
+        late = {key: value for key, value in getattr(self, "_late_tool_requests", {}).items() if value[4] > now}
+        if len(late) < 256:
+            owner = self._get_user_id(ui_websocket) if ui_websocket is not None else None
+            chat = self._ws_active_chat.get(id(ui_websocket)) if ui_websocket is not None else None
+            late[request_id] = (agent_id, tool_name, owner, chat, now + 600)
+        self._late_tool_requests = late
+
+    async def _audit_late_tool_result(self, user_id, chat_id, agent_id, tool_name) -> None:
+        from audit.recorder import now_utc
+        from audit.schemas import AuditEventCreate
+
+        logger.info("tool result discarded after cancel tool=%s agent=%s", tool_name, agent_id)
+        recorder = getattr(self, "audit_recorder", None)
+        if recorder is None or not user_id:
+            return
+        try:
+            await recorder.record(AuditEventCreate(
+                actor_user_id=user_id, auth_principal=user_id, agent_id=agent_id,
+                event_class="agent_tool_call", action_type=f"tool.{tool_name}.late_after_cancel"[:128],
+                description="A tool result arrived after the turn was cancelled and was discarded.",
+                conversation_id=chat_id, correlation_id=str(_uuid.uuid4()), outcome="interrupted",
+                inputs_meta={"tool": tool_name, "agent_id": agent_id}, started_at=now_utc(), completed_at=now_utc()))
+        except Exception:
+            logger.warning("late tool result audit failed tool=%s", tool_name, exc_info=True)
 
     async def cancel_computer_turn(self, session) -> None:
         websocket = next((ws for ws in list(self.ui_clients) if id(ws) == session.controller_ws_id), None)
@@ -5760,6 +5815,9 @@ class Orchestrator:
                             (getattr(self, "_pending_request_agent", None) or {}).get(req_id))
                         return
                     self.pending_requests[req_id].set_result(msg)
+                elif req_id in getattr(self, "_late_tool_requests", {}):
+                    agent_id, tool_name, owner, chat, _expiry = self._late_tool_requests.pop(req_id)
+                    await self._audit_late_tool_result(owner, chat, agent_id, tool_name)
                 else:
                     logger.warning(f"Received response for unknown request: {req_id}")
 
@@ -15307,24 +15365,42 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     if turn_count == 1:
                         with perf_span("turn.first_tool_dispatch", chat=chat_id):
                             pass
-                    with perf_span("turn.tools", chat=chat_id):
-                        if len(llm_msg.tool_calls) == 1:
-                            tc = llm_msg.tool_calls[0]
-                            res = await self.execute_single_tool(websocket, tc, tool_to_agent, chat_id, user_id=user_id, tool_to_unqualified=tool_to_unqualified)
-                            if res:
-                                tool_results.append(res)
-                        else:
-                            _batches = turn_hooks.fanout_batches(list(llm_msg.tool_calls))
-                            if _batches:
-                                logger.info("fanout chat=%s calls=%d batches=%d",
-                                            chat_id, len(llm_msg.tool_calls), len(_batches))
-                                for _batch in _batches:
-                                    tool_results.extend(await self.execute_parallel_tools(
-                                        websocket, _batch, tool_to_agent, chat_id,
-                                        user_id=user_id, tool_to_unqualified=tool_to_unqualified))
+                    _dispatch_key = (id(websocket), chat_id)
+                    self._turn_tool_tasks = getattr(self, "_turn_tool_tasks", {})
+                    self._turn_tool_tasks[_dispatch_key] = asyncio.current_task()
+                    _tools_cancelled = False
+                    try:
+                        with perf_span("turn.tools", chat=chat_id):
+                            if len(llm_msg.tool_calls) == 1:
+                                tc = llm_msg.tool_calls[0]
+                                res = await self.execute_single_tool(websocket, tc, tool_to_agent, chat_id, user_id=user_id, tool_to_unqualified=tool_to_unqualified)
+                                if res:
+                                    tool_results.append(res)
                             else:
-                                res_list = await self.execute_parallel_tools(websocket, llm_msg.tool_calls, tool_to_agent, chat_id, user_id=user_id, tool_to_unqualified=tool_to_unqualified)
-                                tool_results.extend(res_list)
+                                _batches = turn_hooks.fanout_batches(list(llm_msg.tool_calls))
+                                if _batches:
+                                    logger.info("fanout chat=%s calls=%d batches=%d",
+                                                chat_id, len(llm_msg.tool_calls), len(_batches))
+                                    for _batch in _batches:
+                                        tool_results.extend(await self.execute_parallel_tools(
+                                            websocket, _batch, tool_to_agent, chat_id,
+                                            user_id=user_id, tool_to_unqualified=tool_to_unqualified))
+                                else:
+                                    res_list = await self.execute_parallel_tools(websocket, llm_msg.tool_calls, tool_to_agent, chat_id, user_id=user_id, tool_to_unqualified=tool_to_unqualified)
+                                    tool_results.extend(res_list)
+                    except asyncio.CancelledError:
+                        if not self._take_tool_cancel():
+                            raise
+                        _tools_cancelled = True
+                    finally:
+                        self._release_tool_dispatch(_dispatch_key)
+                    if _tools_cancelled or self.cancelled_sessions.get(id(websocket)):
+                        for _tc, _late in zip(llm_msg.tool_calls, tool_results):
+                            if _late is not None:
+                                await self._audit_late_tool_result(user_id, chat_id,
+                                    tool_to_agent.get(_tc.function.name), _tc.function.name)
+                        self.cancelled_sessions[id(websocket)] = True
+                        continue
 
                     _turn_tools = [tc.function.name for tc in llm_msg.tool_calls]
                     _tools_used += len(_turn_tools)
@@ -19737,6 +19813,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             result = await asyncio.wait_for(future, timeout=timeout)
             return result
 
+        except asyncio.CancelledError:
+            self._note_cancelled_request(request_id, agent_id, tool_name, ui_websocket)
+            raise
         except asyncio.TimeoutError:
             logger.error(f"Tool call timed out: {tool_name}")
             return MCPResponse(request_id=request_id,
@@ -20032,6 +20111,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             task.add_done_callback(_on_handler_done)
             logger.info(f"Dispatched tool call (in-process): {tool_name} → {agent_id}")
             return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.CancelledError:
+            self._note_cancelled_request(request_id, agent_id, tool_name, ui_websocket)
+            raise
         except asyncio.TimeoutError:
             logger.error(f"In-process tool call timed out: {tool_name}")
             return MCPResponse(request_id=request_id,

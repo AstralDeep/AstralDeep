@@ -314,7 +314,7 @@ class ComputerSessionManager:
         session.command_jobs.clear()
         host = self._registry.get(session.owner_sub, session.host_id)
         if jobs and host is not None and reason in _KILL_REASONS:
-            await self._kill_jobs(host, session, jobs)
+            await self._signal_jobs(host, session, jobs, "KILL")
         self._forget_browser(session)
         await self._audit(session, "computer_session.ended", f"ended ({reason})",
                           outcome="success" if reason in STOP_REASONS else "failure")
@@ -327,14 +327,20 @@ class ComputerSessionManager:
             if inspect.isawaitable(outcome):
                 await outcome
 
-    async def _kill_jobs(self, host: ComputerHost, session: ComputerSession, jobs: List[str]) -> None:
+    async def interrupt_jobs(self, session: ComputerSession, signal: str = "INT") -> None:
+        jobs = [job for job, record in session.command_jobs.items() if record.get("state", "running") == "running"]
+        host = self._registry.get(session.owner_sub, session.host_id)
+        if jobs and host is not None and session.state != ENDED:
+            await self._signal_jobs(host, session, jobs, signal)
+
+    async def _signal_jobs(self, host: ComputerHost, session: ComputerSession, jobs: List[str], signal: str) -> None:
         results = await asyncio.gather(*(self._registry.request(
-            host, session.session_id, "interrupt_command", {"job_id": job, "signal": "KILL"}, JOB_KILL_TIMEOUT_S)
+            host, session.session_id, "interrupt_command", {"job_id": job, "signal": signal}, JOB_KILL_TIMEOUT_S)
             for job in jobs), return_exceptions=True)
         for job, result in zip(jobs, results):
             if isinstance(result, BaseException):
-                logger.info("102: job %s on %s not confirmed killed at session end: %s",
-                            job[:12], session.host_name, getattr(result, "code", type(result).__name__))
+                logger.info("102: job %s on %s not confirmed signalled (%s): %s", job[:12], session.host_name,
+                            signal, getattr(result, "code", type(result).__name__))
 
     @staticmethod
     def _forget_browser(session: ComputerSession) -> None:
