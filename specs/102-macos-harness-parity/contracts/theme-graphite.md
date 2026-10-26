@@ -6,7 +6,7 @@
 |---|---|---|
 | bg | `#0B0B0D` | near-black workspace |
 | surface | `#151518` | panels, cards, sidebar |
-| primary | `#8B5CF6` | purple controls, selection, links |
+| primary | `#7C3AED` | purple controls, selection, links; white text on it measures about 5.7:1 |
 | secondary | `#6E6E78` | gray accent, secondary gradient stop |
 | text | `#ECECEF` | body text |
 | muted | `#8C8C95` | secondary text, icons |
@@ -45,7 +45,7 @@ In the `register_ui` handler, when no stored theme exists, the server sends `{"t
 ## Mac sweep
 
 - `ComponentView.swift:519-520` code text color becomes `palette.success` on `palette.surface2`; `MarkdownBlockView.swift:39` uses `palette.surface2`.
-- `.foregroundStyle(.white)` on primary fills stays; purple keeps contrast above 4.5:1.
+- `.foregroundStyle(.white)` on primary fills stays; `#7C3AED` keeps white text above 4.5:1 (the lighter `#8B5CF6` measured 4.24:1 and was rejected).
 - `RootView.swift:508` and `MacComputerControls.swift:52,98` use `palette.error`.
 - `BannerBar` gains an SF Symbol per variant.
 - `OfflineChartView.swift` injects `primary`, `secondary`, `accent` for series so charts follow the palette.
