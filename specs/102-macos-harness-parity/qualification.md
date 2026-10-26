@@ -20,11 +20,21 @@ Implementation lanes are complete on `claude/102-macos-harness-parity` in Deep a
 | Installed client | `/Applications/AstralDeep.app` is 1.9 (70), `codesign --verify --deep --strict` and `spctl` accepted, Team `593LGH35GS`, feed URL present; build 69 retained at `~/Library/Application Support/AstralDeep-rollback/AstralDeep-1.8-69.zip` | not yet launched against the new server |
 | Website | `npm test` 136 passed, `npm run check`, `npm run build:preview` | appcast cross-check added |
 
+## Sandbox rollout (2026-10-26)
+
+| Step | Observation |
+|---|---|
+| Host inventory | `/opt/AstralDeep` clean at `da5a6c66` with submodules at the pins; root disk at 98 percent with 9.5 GB free; passwordless sudo and docker group available to the operator account |
+| Build phase | Docker build cache and unused images reclaimed to 22 GB free; Deep commit `88274b70` and Projection `26651aee` fetched from git bundles (no push); image `astraldeep:sha-88274b70e6e926f22759a6e5e4ca135317fb1067` built on the host, id `sha256:977bcb02…`, 2,688,174,487 bytes |
+| Paired backup | `/opt/astraldeep-backups/deploy-88274b70-20261026T133724Z` (root only): PostgreSQL custom dump 3,131,458 bytes (`PGDMP` header, TOC lists through `workspace_snapshot_chat_id_fkey`), durable tar of `backend/data`, `backend/knowledge`, `backend/tmp`, `backend/agents` 10,806,948 bytes, previous override, previous image `sha256:cdd5291a914b…` and previous commit `da5a6c66`, `SHA256SUMS` |
+| Cutover | checkout `88274b70` with Projection `26651aee`; override image line rewritten to the new tag with `pull_policy: never` and `FF_COMPUTER_USE=true` preserved; `docker compose up -d --no-deps --force-recreate astraldeep`; readiness 200 within the deadline; container healthy |
+| External smoke | `/healthz` 200, `/readyz` 200 with db ok, 15 agents, LETS enforce/healthy; `/api/chats` and `/api/chrome/menu` 401; `/` redirects to sign-in |
+| Logs | startup complete; one "ASGI callable returned without completing handshake" line from an unauthenticated socket attempt during startup |
+| Rollback | `rollback.sh <backup dir>` restores the previous override, checkout and container; not exercised |
+
 ## Pending
 
 - Full macOS app suite in one pass after the workbench lane commits.
 - Projection pin move in Deep (`components/AstralProjection`, `config/astral-composition.json`).
-- Server image build and sandbox rollout with paired backup and rollback.
-- Signed, notarized 1.9 (70) build installed over 69.
 - Live verification of each story's independent test against the sandbox.
 - Publication of 1.9 (70) through the release command on the owner's word.
