@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from astralprims import Alert, Card, CodeBlock, Image, Table, Text
 
-from orchestrator.computer_hosts import ComputerHostError
+from orchestrator.computer_hosts import WITHDRAWN, WITHDRAWN_NOTE, ComputerHostError
 from orchestrator.computer_use_policy import (
     BROWSER_VERBS,
     DEFAULT_COMMAND_TIMEOUT_S,
@@ -319,8 +319,10 @@ def list_computers(**kwargs) -> Dict[str, Any]:
     out = []
     for r in rows:
         s = live.get(r["host_id"])
-        out.append({**r, "session": {"state": s["state"], "controller": s["controller_label"],
-                                     "session_id": s["session_id"]} if s else None})
+        status = "online" if r["online"] else (f"offline · {WITHDRAWN_NOTE}" if r.get("offline_reason") == WITHDRAWN
+                                               else "offline")
+        out.append({**r, "status": status, "session": {"state": s["state"], "controller": s["controller_label"],
+                                                       "session_id": s["session_id"]} if s else None})
     if not out:
         return _data({"computers": [], "note": "no computers — on the PC open the AstralDeep "
                                                 "desktop client and switch on Settings → Remote control"},
@@ -328,7 +330,7 @@ def list_computers(**kwargs) -> Dict[str, Any]:
                          content="No computers yet. On your PC, open the AstralDeep desktop client "
                                  "and switch on Settings → Remote control.", variant="body")])])
     table = Table(headers=["Computer", "Platform", "Status", "Session"],
-                  rows=[[r["name"], r["platform"], "online" if r["online"] else "offline",
+                  rows=[[r["name"], r["platform"], r["status"],
                          (r["session"]["state"] + " · " + r["session"]["controller"]) if r["session"] else "—"]
                         for r in out])
     return _data({"computers": out}, [Card(title="My computers", content=[table])])

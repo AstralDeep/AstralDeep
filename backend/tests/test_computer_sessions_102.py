@@ -6,6 +6,7 @@ cancellation and the optional workspace_roots descriptor field.
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -361,3 +362,70 @@ async def test_orchestrator_passes_approval_activity_to_the_session_manager(monk
     if called:
         assert seen[0][2] == event
     await orch.computer_sessions.end(session, "user_stop")
+
+
+WITHDRAWN = "access withdrawn on that Mac; re-enable it in Computer controls there"
+
+
+async def _withdrawn(monkeypatch):
+    orch = _FakeOrch()
+    host_ws = orch.add(_WS())
+    host, _ = orch.computer_hosts.register(OWNER, host_ws, ComputerHostDescriptor.from_dict(
+        _descriptor(platform="macos", name="RyzenRoll Mobile")))
+    orch.add(_WS(chat="chat-1"))
+    orch.computer_hosts.withdraw(OWNER, host.host_id)
+    monkeypatch.setattr(mcp_tools, "_ORCH", orch)
+    monkeypatch.setattr(mcp_tools, "_LOOP", asyncio.get_running_loop())
+    return orch, host, host_ws
+
+
+async def test_withdrawn_host_stays_listed_offline_with_the_reason(monkeypatch):
+    orch, host, _ws = await _withdrawn(monkeypatch)
+    row, = orch.computer_hosts.list_for_owner(OWNER)
+    assert row["online"] is False and row["offline_reason"] == "consent_revoked"
+    listed = await asyncio.to_thread(mcp_tools.list_computers, user_id=OWNER)
+    computer, = listed["_data"]["computers"]
+    assert computer["name"] == "RyzenRoll Mobile" and computer["status"] == f"offline · {WITHDRAWN}"
+    assert WITHDRAWN in json.dumps(listed["_ui_components"])
+
+
+@pytest.mark.parametrize("ref", [None, "RyzenRoll Mobile"])
+async def test_start_session_on_a_withdrawn_host_names_it_and_says_how_to_re_enable(monkeypatch, ref):
+    orch, host, _ws = await _withdrawn(monkeypatch)
+    kwargs = {"user_id": OWNER, "session_id": "chat-1", **({"computer": ref} if ref else {})}
+    result = await asyncio.to_thread(mcp_tools.start_session, **kwargs)
+    assert result["_data"]["code"] == "computer_unavailable"
+    message = result["_data"]["message"]
+    assert "RyzenRoll Mobile" in message and "re-enable" in message and "no computer called" not in message
+
+
+async def test_requests_to_a_withdrawn_host_name_it(monkeypatch):
+    orch, host, host_ws = await _withdrawn(monkeypatch)
+    with pytest.raises(ComputerHostError) as refused:
+        await orch.computer_hosts.request(host, "session", "screenshot", {}, 1)
+    assert refused.value.code == "computer_unavailable" and "RyzenRoll Mobile" in refused.value.message
+    assert not host_ws.frames("computer_request")
+
+
+async def test_re_announce_clears_the_withdrawn_record_and_forget_still_removes_it(monkeypatch):
+    orch, host, host_ws = await _withdrawn(monkeypatch)
+    again, _ = orch.computer_hosts.register(OWNER, host_ws, ComputerHostDescriptor.from_dict(
+        _descriptor(platform="macos", name="RyzenRoll Mobile", host_id=host.host_id)))
+    row, = orch.computer_hosts.list_for_owner(OWNER)
+    assert row["online"] is True and row["offline_reason"] is None
+    orch.computer_hosts.withdraw(OWNER, again.host_id)
+    assert orch.computer_hosts.forget(OWNER, again.host_id) is True
+    assert orch.computer_hosts.list_for_owner(OWNER) == []
+
+
+async def test_socket_loss_keeps_the_ordinary_offline_message(monkeypatch):
+    orch = _FakeOrch()
+    host_ws = orch.add(_WS())
+    host, _ = orch.computer_hosts.register(OWNER, host_ws, ComputerHostDescriptor.from_dict(
+        _descriptor(platform="macos", name="Studio")))
+    orch.computer_hosts.on_socket_closed(host_ws)
+    row, = orch.computer_hosts.list_for_owner(OWNER)
+    assert row["offline_reason"] is None
+    with pytest.raises(ComputerHostError) as refused:
+        orch.computer_hosts.resolve(OWNER, "Studio")
+    assert "is offline" in refused.value.message

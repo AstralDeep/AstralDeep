@@ -20,6 +20,8 @@ from orchestrator.computer_use_policy import OBSERVE_VERBS
 logger = logging.getLogger("ComputerHosts")
 
 MAX_FRAME_BYTES = int(os.getenv("COMPUTER_HOST_MAX_FRAME_BYTES", str(4 * 1024 * 1024)))
+WITHDRAWN = "consent_revoked"
+WITHDRAWN_NOTE = "access withdrawn on that Mac; re-enable it in Computer controls there"
 LAST_SEEN_TTL_S = int(os.getenv("COMPUTER_HOST_LAST_SEEN_TTL_S", str(24 * 3600)))
 
 
@@ -39,6 +41,14 @@ class ComputerHost:
     descriptor: Dict[str, Any]
     registered_at: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
+    offline_reason: Optional[str] = None
+
+    def unavailable(self) -> "ComputerHostError":
+        if self.offline_reason == WITHDRAWN:
+            return ComputerHostError("computer_unavailable", f"{self.name} withdrew computer access; ask the user "
+                                                             "to re-enable it in Computer controls on that Mac")
+        return ComputerHostError("computer_unavailable", f"{self.name} is offline — open the AstralDeep desktop "
+                                                         "client on it")
 
     @property
     def name(self) -> str:
@@ -70,6 +80,7 @@ class ComputerHost:
             "verbs": list(self.verbs),
             "workspace_roots": self.workspace_roots,
             "online": online,
+            "offline_reason": None if online else self.offline_reason,
             "last_seen": int(self.last_seen),
         }
 
@@ -118,7 +129,9 @@ class ComputerHostRegistry:
         if host is not None:
             self._by_ws.pop(id(host.websocket), None)
             self._fail_pending(key)
-        self._offline.pop(key, None)
+            host.last_seen = time.time()
+            host.offline_reason = WITHDRAWN
+            self._offline[key] = host
         return host
 
     def forget(self, owner_sub: str, host_id: str) -> bool:
@@ -166,6 +179,9 @@ class ComputerHostRegistry:
             if len(online) == 1:
                 return online[0]
             if not online:
+                known = [h for (o, _), h in self._offline.items() if o == owner_sub]
+                if len(known) == 1:
+                    raise known[0].unavailable()
                 raise ComputerHostError(
                     "computer_unavailable",
                     "none of your computers is online — open the AstralDeep desktop client "
@@ -187,15 +203,15 @@ class ComputerHostRegistry:
         known_offline = [h for (o, _), h in self._offline.items()
                          if o == owner_sub and (h.host_id == wanted or h.name.lower() == wanted.lower())]
         if known_offline:
-            raise ComputerHostError(
-                "computer_unavailable",
-                f"{known_offline[0].name} is offline — open the AstralDeep desktop client on it")
+            raise known_offline[0].unavailable()
         raise ComputerHostError(
             "computer_unavailable", f"no computer called {wanted!r} is online",
             candidates=[h.name for h in online])
 
     async def request(self, host: ComputerHost, session_id: str, verb: str,
                       args: Dict[str, Any], timeout: float) -> Dict[str, Any]:
+        if self._offline.get((host.owner_sub, host.host_id)) is host and host.offline_reason == WITHDRAWN:
+            raise host.unavailable()
         if (self._hosts.get((host.owner_sub, host.host_id)) is not host
                 or (self._orch.ui_sessions.get(host.websocket) or {}).get("sub") != host.owner_sub):
             raise ComputerHostError("host_offline", "The selected host connection is no longer current")
