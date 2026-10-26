@@ -6,6 +6,7 @@ shared with orchestrator/computer_use_policy so the gate can't drift.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 import re
 import time
@@ -15,6 +16,7 @@ from astralprims import Alert, Card, Image, Table, Text
 
 from orchestrator.computer_hosts import ComputerHostError
 from orchestrator.computer_use_policy import (
+    BROWSER_VERBS,
     DEFAULT_READ_BYTES,
     DEFAULT_SCREENSHOT_WIDTH,
     DESTRUCTIVE_CLASSIFICATION,
@@ -785,3 +787,23 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         delete_path, "Delete a file or empty directory on the computer. ALWAYS asks the user to approve first.",
         {"path": {"type": "string"}}, ["path"]),
 }
+
+
+def register_extension_tools(registry: Dict[str, Dict[str, Any]]) -> None:
+    name = f"{__package__}.browser_tools"
+    try:
+        extension = importlib.import_module(name)
+    except ModuleNotFoundError as exc:
+        if exc.name != name:
+            raise
+        return
+    added: Dict[str, Dict[str, Any]] = {}
+    extension.register(added)
+    if not set(added) <= BROWSER_VERBS or set(added) & set(registry) or any(
+            (entry.get("scope"), entry.get("tier"), entry.get("timeout")) != (SCOPES[verb], TIERS[verb], TIMEOUTS[verb])
+            for verb, entry in added.items()):
+        raise RuntimeError("browser_tools may only add new browser verbs declared in computer_use_policy")
+    registry.update(added)
+
+
+register_extension_tools(TOOL_REGISTRY)
