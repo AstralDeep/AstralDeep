@@ -123,6 +123,7 @@ async def test_permission_masters_and_tool_defaults_match_web_effective_resoluti
     fields = _fields(components)
     assert fields["__scope::tools:read"]["default"] is True
     assert fields["get_data::tools:read"]["default"] is True
+    assert fields["get_data::tools:read"]["help"] == "Fetch records"
     assert fields["__scope::tools:write"]["default"] is False
     assert fields["write_data::tools:write"]["visible_when"] == {
         "field": "__scope::tools:write", "equals": True, "default": False,
