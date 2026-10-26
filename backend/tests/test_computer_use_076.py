@@ -190,7 +190,7 @@ def test_command_and_browser_verbs_have_tiers_scopes_timeouts_and_sessions():
     for verb in {"browser_snapshot", "browser_get_text", "browser_screenshot"}:
         assert policy.TIMEOUTS[verb] == 5.0
     assert policy.TIMEOUTS["browser_navigate"] == policy.TIMEOUTS["browser_wait"] == 15.0
-    assert policy.TIMEOUTS["run_command"] == 600.0
+    assert policy.TIMEOUTS["run_command"] == 630.0
     assert policy.TIMEOUTS["read_output"] == 30.0
     assert policy.TIMEOUTS["interrupt_command"] == 5.0
     for verb in _BROWSER_INPUT - {"browser_navigate"}:

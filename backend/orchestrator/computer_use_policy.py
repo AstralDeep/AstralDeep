@@ -149,7 +149,7 @@ TIMEOUTS: Dict[str, float] = {
     "scroll": 5.0, "type_text": 30.0, "press_keys": 5.0, "focus_window": 5.0,
     "open_app": 15.0, "set_clipboard": 5.0,
     "write_file": 10.0, "delete_path": 10.0,
-    "run_command": 600.0, "read_output": 30.0, "interrupt_command": 5.0,
+    "run_command": 630.0, "read_output": 30.0, "interrupt_command": 5.0,
     "browser_snapshot": 5.0, "browser_get_text": 5.0, "browser_screenshot": 5.0,
     "browser_wait": 15.0, "browser_navigate": 15.0, "browser_click": 5.0, "browser_fill": 5.0,
     "browser_press": 5.0, "browser_scroll": 5.0, "browser_dialog": 5.0,
