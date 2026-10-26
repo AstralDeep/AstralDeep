@@ -616,6 +616,20 @@ def _consume_if_valid(
     return consumed is not None
 
 
+def consumed_review(orch, proposal_id, owner, chat, agent, tool, args, *, transaction=None):
+    from orchestrator.remote_effect_execution import qualified_tool
+
+    if not qualified_tool(agent, tool) or not isinstance(proposal_id, str):
+        return None
+    context = _proposal_context(orch)
+    row = (context.call(context.repository.get, owner_id=owner, proposal_id=proposal_id)
+        if transaction is None else context.repository.get(transaction, owner_id=owner, proposal_id=proposal_id))
+    return row if (row is not None and row.status == "consumed" and row.expires_at > time.time()
+        and (row.owner_id, row.conversation_id, row.agent_id, row.tool_name, row.machine_id)
+            == (owner, chat, agent, tool, args.get("machine_id"))
+        and row.args_fingerprint == _fingerprint(args)) else None
+
+
 def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
                      tool_name: str, args: dict[str, Any], *, on_created=None, websocket=None) -> tuple[str, dict[str, Any]]:
     from astralprims import Button, Card, Text
@@ -1024,6 +1038,8 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
                     await pause_failed_computer_approval(orch, websocket, computer_authority)
                 getattr(orch, "_computer_approval_authorities", {}).pop(str(proposal_id), None)
             raise
+    from orchestrator.remote_effect_ingress import publish_review
+    await publish_review(orch, websocket, row.agent_id, row.tool_name, row.conversation_id, user_id, result)
     if row.agent_id == "computer-use-1" and successful_result(result):
         _computer_use_on_approved(orch, row, websocket, computer_authority)
     elif row.agent_id == "computer-use-1" and resume_requested:

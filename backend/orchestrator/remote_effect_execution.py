@@ -45,6 +45,11 @@ class RemoteEffectSelection:
         self.ledger, self.coordinator, self.sessions = orch.effect_attempts, orch.work_admission, orch.web_sessions
         self.registration = getattr(orch, "ui_sessions", {}).get(websocket)
         self.connection_generation = getattr(connection, "connection_generation", None)
+        admitted = _CONNECTION_OPERATION_CONTEXT.get() or {}
+        self.human_request = (admitted.get("human_request")
+            if admitted.get("operation_kind") == "remote_effect_approval" else None)
+        work = getattr(connection, "operations", {}).get(fence.operation_id)
+        self.review = work.frame.remote_effect_call if self.human_request is not None and work is not None else None
         self.owner_id, self.fence, self.tool = owner_id, fence, tool
         self.original_digest = _digest(arguments)
         self.reference = reference
@@ -55,6 +60,19 @@ class RemoteEffectSelection:
         self._lock = threading.Lock()
 
     def _assert_placement(self):
+        if self.human_request is not None:
+            try:
+                self.human_request.assert_socket()
+                from orchestrator.hitl_confirmation import _current_session
+
+                if self.review is None or not _current_session(self.orch, self.websocket, self.review):
+                    raise ValueError
+                if (self.human_request.boundary.orchestrator is not self.orch
+                        or self.human_request.websocket is not self.websocket
+                        or self.human_request.purpose != "remote_effect"):
+                    raise ValueError
+            except Exception:
+                raise ReconciliationRefused("effect_current_authority_unavailable") from None
         if (self.closed or self.orch.runtime_composition.plane.runtime is not self.runtime
                 or self.orch.effect_attempts is not self.ledger or self.orch.work_admission is not self.coordinator
                 or self.orch.web_sessions is not self.sessions
@@ -106,6 +124,12 @@ class RemoteEffectSelection:
         record = self.orch.work_admission.assert_current_execution_lease(self.fence, transaction=tx)
         if record.owner_scope is not OwnerScope.USER or record.owner_user_id != self.owner_id:
             raise ReconciliationRefused("effect_owner_mismatch")
+        if self.review is not None and self.review.remote_proposal is not None:
+            from orchestrator.remote_confirmation import consumed_review
+            if consumed_review(self.orch, self.review.remote_proposal, self.owner_id,
+                    self.review.chat, self.review.agent, self.tool, json.loads(self.review.arguments),
+                    transaction=tx) is None:
+                raise ReconciliationRefused("effect_remote_approval_changed")
         if (not target.host_key_fingerprint or not target.authority_digest
                 or authority_digest(runtime, tx, self.owner_id, target.machine_id) != target.authority_digest):
             raise ReconciliationRefused("effect_target_authority_changed")

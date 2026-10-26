@@ -961,6 +961,10 @@ class EffectReconciliationService:
             raise ReconciliationRefused("reconcile_report_stale")
         if record.execution_generation != attempt.execution_generation:
             raise ReconciliationRefused("reconcile_report_stale")
+        cancelled_qualified = (record.state is OperationState.CANCELLED
+            and attempt.dispatch_id is not None and current_human)
+        if cancelled_qualified:
+            self._assert_cancelled_report_current(transaction, owner_id, parsed_operation)
         outcome = _OUTCOME_BY_REPORT[body.outcome]
         outcome_digest = (
             body.result_digest if outcome is AttemptOutcome.APPLIED else None
@@ -980,6 +984,7 @@ class EffectReconciliationService:
                 OperationState.CANCELLED,
             }
             and not attempt.settled
+            and not cancelled_qualified
         ):
             raise ReconciliationRefused("reconcile_outcome_conflict")
         settled = self._ledger._settle_in_transaction(
@@ -992,6 +997,8 @@ class EffectReconciliationService:
         )
         if attempt.dispatch_id is not None:
             self._assert_current_target(transaction, owner_id, attempt)
+        if cancelled_qualified:
+            self._assert_cancelled_report_current(transaction, owner_id, parsed_operation)
         return {
             "operation_id": str(parsed_operation),
             "attempt_nonce": settled.attempt_nonce,
@@ -1000,6 +1007,15 @@ class EffectReconciliationService:
             "operation_state": record.state.value,
         }
 
+
+    def _assert_cancelled_report_current(self, transaction, owner_id, operation_id):
+        from astralplane.repositories.stop_epochs import OwnerStoppedError, StopEpochConflictError
+        repository = self._ledger._store.source.plane_runtime.repositories.stop_epochs
+        try:
+            repository.assert_running(transaction, owner_id=owner_id)
+            repository.assert_operation(transaction, owner_id=owner_id, operation_id=operation_id)
+        except (OwnerStoppedError, StopEpochConflictError):
+            raise ReconciliationRefused("reconcile_execution_stopped") from None
 
     def _assert_current_target(self, transaction, owner_id, attempt, *, read_only=False):
         from orchestrator.remote_effect_authority import (
