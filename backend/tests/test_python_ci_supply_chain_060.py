@@ -273,6 +273,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "install_doctor.py",
         "install_local_components.py",
         "merge_backend_web_coverage.py",
+        "next_macos_release.py",
         "prepare_plane_upgrade_baseline.py",
         "package_macos_candidate.py",
         "release_macos.py",
