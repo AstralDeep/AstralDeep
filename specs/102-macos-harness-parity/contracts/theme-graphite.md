@@ -4,8 +4,8 @@
 
 | Role | Hex | Purpose |
 |---|---|---|
-| bg | `#0B0B0D` | near-black workspace |
-| surface | `#151518` | panels, cards, sidebar |
+| bg | `#121214` | near-black workspace (lightened from `#0B0B0D` after the owner saw it live) |
+| surface | `#1B1B1F` | panels, cards, sidebar |
 | primary | `#7C3AED` | purple controls, selection, links; white text on it measures about 5.7:1 |
 | secondary | `#6E6E78` | gray accent, secondary gradient stop |
 | text | `#ECECEF` | body text |
@@ -18,7 +18,7 @@ Background luminance is below the 0.5 threshold, so the Mac keeps the dark color
 
 | Role | Hex |
 |---|---|
-| surface2 | `#1D1D21` |
+| surface2 | `#232328` |
 | border | white at 8 percent |
 | success | `#5EC28F` |
 | warning | `#D4A94A` |
