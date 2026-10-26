@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 import re
 from typing import Any, Dict, FrozenSet, Mapping
+from urllib.parse import urlsplit
 
 AGENT_ID = "computer-use-1"
 
@@ -178,8 +179,47 @@ CARD_CAPTION = ("This runs on your computer exactly as shown and I can't undo it
                 "Approve to continue, or decline.")
 
 
+def _origin_label(url: Any) -> str:
+    try:
+        parts = urlsplit(str(url or ""))
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        return ""
+    if parts.scheme.lower() not in ("http", "https") or not host:
+        return ""
+    try:
+        ascii_host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        ascii_host = host
+    shown = host if ascii_host == host else f"{host} ({ascii_host})"
+    return f"{parts.scheme.lower()}://{shown}" + (f":{port}" if port else "")
+
+
+def _one_line(value: Any, limit: int) -> str:
+    return " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", str(value or "")).split())[:limit]
+
+
 def summary_for(tool_name: str, args: Mapping[str, Any], host_label: str) -> str:
     h = host_label or "your computer"
+    if tool_name == "browser_navigate":
+        if args.get("url") is None:
+            action = args.get("action")
+            move = {"back": "Go back", "forward": "Go forward", "reload": "Reload the page"}.get(
+                action if isinstance(action, str) else "", "Navigate")
+            return f"{move} in the Astral browser pane on {h}"
+        origin = _origin_label(args["url"])
+        if not origin:
+            return f"Open an address the browser pane on {h} will refuse: {_one_line(args['url'], 120)}"
+        parts = urlsplit(str(args["url"]))
+        rest = _one_line(parts.path, 120) + ("?…" if parts.query else "")
+        return (f"Open {origin}{rest} in the Astral browser pane on {h}. Approving this site lets the pane load "
+                "its pages; passwords and payment fields are never filled.")
+    if (tool_name in ("browser_click", "browser_fill") and isinstance(args.get("confirm_element"), str)
+            and _one_line(args["confirm_element"], 1)):
+        element = _one_line(args["confirm_element"], 200)
+        verb = "Click" if tool_name == "browser_click" else "Fill in"
+        return (f"{verb} {element} in the Astral browser pane on {h}. This looks like a purchase, payment, "
+                "deletion or message, and I can't undo it.")
     if tool_name == "write_file":
         mode = "overwrite" if args.get("if_exists") == "overwrite" else "create"
         return f"Write file on {h} ({mode}): {str(args.get('path') or '')[:200]}"
