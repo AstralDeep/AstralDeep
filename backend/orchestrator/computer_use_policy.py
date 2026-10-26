@@ -6,9 +6,12 @@ gate so they cannot drift apart.
 from __future__ import annotations
 
 import ipaddress
+import json
 from pathlib import PurePosixPath
+import posixpath
 import re
-from typing import Any, Dict, FrozenSet, Mapping, Optional
+import shlex
+from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Sequence, Set
 import unicodedata
 from urllib.parse import urlsplit, urlunsplit
 
@@ -228,8 +231,288 @@ def _one_line(value: Any, limit: int) -> str:
     return " ".join(text.split())[:limit]
 
 
+DEFAULT_COMMAND_TIMEOUT_S = 60
+MAX_FOREGROUND_TIMEOUT_S = 600
+MAX_BACKGROUND_TIMEOUT_S = 3600
+MAX_COMMAND_CHARS = 8192
+MAX_ARGV_ITEMS = 256
+MAX_ARG_CHARS = 4096
+MAX_ENV_VARS = 32
+MAX_STDIN_BYTES = 16 * 1024
+
+_MAX_NESTING = 4
+_SEPARATORS = frozenset({"|", "||", "&&", ";", "&", "(", ")", "|&", ";;", ";&", ";;&"})
+_WRITE_REDIRECTS = frozenset({">", ">>", ">|", "&>", "&>>", "<>", ">&"})
+_READ_REDIRECTS = frozenset({"<", "<<", "<<<", "<&"})
+_HARMLESS_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"})
+_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
+_SUBSTITUTIONS = (re.compile(r"\$\(([^()]*)\)"), re.compile(r"`([^`]*)`"))
+_ALWAYS_DESTRUCTIVE = frozenset({
+    "sudo", "su", "doas", "rmdir", "diskutil", "dd", "launchctl", "security", "osascript", "killall",
+    "shutdown", "reboot", "halt",
+})
+_WRAPPERS = frozenset({"env", "command", "exec", "nohup", "time", "nice", "xargs", "timeout", "caffeinate",
+                       "stdbuf", "builtin"})
+_SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh"})
+_INTERPRETERS = frozenset({"perl", "ruby", "node", "osascript", "php"})
+_DOWNLOADERS = frozenset({"curl", "wget"})
+_UNGRANTABLE_MARKS = ("$", "`", "|", ";", "&", ">", "<", "\n", "\r", "(", ")")
+_LABEL_TEXT = 60
+
+
+def _program(word: str) -> str:
+    return posixpath.basename(word).lower()
+
+
+def _short_flags(words: Sequence[str]) -> str:
+    return "".join(w[1:] for w in words if w.startswith("-") and not w.startswith("--"))
+
+
+def _in_venv(word: str) -> bool:
+    parts = PurePosixPath(word).parts
+    return len(parts) >= 3 and parts[-2] == "bin" and parts[-3] in {".venv", "venv", "env", ".env"}
+
+
+def _git_subcommand(words: Sequence[str]) -> tuple:
+    index = 1
+    while index < len(words) and words[index].startswith("-"):
+        index += 2 if words[index] in {"-C", "-c"} else 1
+    return (words[index], list(words[index + 1:])) if index < len(words) else ("", [])
+
+
+def _first_operand(words: Sequence[str]) -> str:
+    return next((w for w in words[1:] if not w.startswith("-")), "")
+
+
+def _destructive_program(words: Sequence[str]) -> bool:
+    program = _program(words[0])
+    rest = list(words[1:])
+    flags = _short_flags(rest)
+    if program in _ALWAYS_DESTRUCTIVE or program.startswith("mkfs"):
+        return True
+    if program == "rm":
+        targets = [w for w in rest if not w.startswith("-")]
+        return ("r" in flags or "R" in flags or "--recursive" in rest
+                or any(t in {"/", "/*", "~", "~/"} for t in targets))
+    if program in {"chmod", "chown", "chgrp"}:
+        return "R" in flags or "--recursive" in rest
+    if program == "defaults":
+        return _first_operand(words) in {"write", "delete", "import", "rename"}
+    if program == "git":
+        sub, tail = _git_subcommand(words)
+        tail_flags = _short_flags(tail)
+        if sub == "push":
+            return ("f" in tail_flags or any(w.startswith("--force") for w in tail)
+                    or any(w.startswith("+") for w in tail))
+        if sub == "reset":
+            return "--hard" in tail
+        if sub == "clean":
+            return "f" in tail_flags or "--force" in tail
+        return False
+    if program in {"npm", "yarn", "pnpm"}:
+        return _first_operand(words) == "publish"
+    if re.fullmatch(r"pip[0-9.]*", program):
+        return _first_operand(words) == "install" and not _in_venv(words[0])
+    if program.startswith("python"):
+        return ("-m" in rest and rest[rest.index("-m") + 1:rest.index("-m") + 3] == ["pip", "install"]
+                and not _in_venv(words[0]))
+    if program == "brew":
+        return _first_operand(words) in {"install", "reinstall", "upgrade", "uninstall", "remove", "rm"}
+    return False
+
+
+class _CommandScan:
+    def __init__(self, cwd: Optional[str], roots: Sequence[str]):
+        self.cwd = cwd
+        self.roots = list(roots) or ([cwd] if cwd else [])
+        self.programs: Set[str] = set()
+
+    def _inside(self, target: str) -> bool:
+        if target in _HARMLESS_TARGETS:
+            return True
+        if any(mark in target for mark in ("$", "`", "*", "?")) or target.startswith("~"):
+            return False
+        if not target.startswith("/"):
+            if not self.cwd:
+                return False
+            target = posixpath.join(self.cwd, target)
+        resolved = posixpath.normpath(target)
+        return any(resolved == root or resolved.startswith(root.rstrip("/") + "/") for root in self.roots)
+
+    def invocation(self, words: Sequence[str], depth: int) -> bool:
+        if depth > _MAX_NESTING:
+            return True
+        words = list(words)
+        while words and _ASSIGNMENT.fullmatch(words[0]):
+            words.pop(0)
+        if not words:
+            return False
+        program = _program(words[0])
+        self.programs.add(program)
+        if program in _WRAPPERS:
+            return any(self.invocation(words[index:], depth + 1) for index in range(1, len(words)))
+        if program in _SHELLS:
+            for index, word in enumerate(words[1:], start=1):
+                if word.startswith("-") and not word.startswith("--") and "c" in word[1:]:
+                    script = next((w for w in words[index + 1:] if not w.startswith("-")), None)
+                    return script is not None and self.text(script, depth + 1)
+            return False
+        return _destructive_program(words)
+
+    def text(self, command: str, depth: int) -> bool:
+        if depth > _MAX_NESTING:
+            return True
+        for pattern in _SUBSTITUTIONS:
+            for inner in pattern.findall(command):
+                if self.text(inner, depth + 1):
+                    return True
+        try:
+            lexer = shlex.shlex(command.replace("\r", "\n").replace("\n", " ; "), posix=True,
+                                punctuation_chars=True)
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            tokens = list(lexer)
+        except ValueError:
+            return True
+        segment: List[str] = []
+        for index, token in enumerate(tokens):
+            if token in _SEPARATORS:
+                if segment and self.invocation(segment, depth):
+                    return True
+                segment = []
+                continue
+            if token in _WRITE_REDIRECTS or token in _READ_REDIRECTS:
+                continue
+            previous = tokens[index - 1] if index else ""
+            if previous in _WRITE_REDIRECTS:
+                if not (previous == ">&" and (token.isdigit() or token == "-")) and not self._inside(token):
+                    return True
+                continue
+            if previous in _READ_REDIRECTS:
+                continue
+            segment.append(token)
+        return bool(segment) and self.invocation(segment, depth)
+
+
+def _command_shape(args: Mapping[str, Any]):
+    argv, command = args.get("argv"), args.get("command")
+    if (argv is None) == (command is None):
+        return None
+    if argv is not None:
+        if not isinstance(argv, list) or not argv or not all(isinstance(a, str) and a for a in argv):
+            return None
+        return "argv", argv
+    if not isinstance(command, str) or not command.strip():
+        return None
+    return "command", command
+
+
+def _absolute_cwd(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or not value.startswith("/") or "\x00" in value:
+        return None
+    return posixpath.normpath(value)
+
+
+def _root_paths(roots: Any) -> List[Dict[str, str]]:
+    out = []
+    for root in roots or ():
+        if isinstance(root, Mapping):
+            path = _absolute_cwd(root.get("path"))
+            if path is not None and path != "/":
+                out.append({"name": str(root.get("name") or posixpath.basename(path)), "path": path})
+    return out
+
+
+def is_destructive_command(args: Mapping[str, Any], roots: Any = ()) -> bool:
+    shape = _command_shape(args)
+    if shape is None:
+        return True
+    scan = _CommandScan(_absolute_cwd(args.get("cwd")), [root["path"] for root in _root_paths(roots)])
+    kind, value = shape
+    destructive = scan.invocation(value, 0) if kind == "argv" else scan.text(value, 0)
+    downloads_into_shell = scan.programs & _DOWNLOADERS and (
+        scan.programs & (_SHELLS | _INTERPRETERS) or any(p.startswith("python") for p in scan.programs))
+    return bool(destructive or downloads_into_shell)
+
+
+def _never_grantable_invocation(words: Sequence[str]) -> bool:
+    program = _program(words[0])
+    if program == "find":
+        return bool({"-exec", "-execdir", "-delete", "-ok", "-okdir"} & set(words))
+    if program == "git":
+        sub, tail = _git_subcommand(words)
+        return sub in {"push", "reset", "clean", "rebase"} or (sub == "checkout" and "--" in tail)
+    return False
+
+
+def command_grant(args: Mapping[str, Any], roots: Any = ()) -> Optional[Dict[str, str]]:
+    from orchestrator.computer_grants import is_grantable_program
+
+    shape = _command_shape(args)
+    cwd = _absolute_cwd(args.get("cwd"))
+    if shape is None or cwd is None or args.get("env"):
+        return None
+    kind, value = shape
+    if kind == "command":
+        if any(mark in value for mark in _UNGRANTABLE_MARKS):
+            return None
+        try:
+            words = shlex.split(value)
+        except ValueError:
+            return None
+    else:
+        words = value
+    if (not words or "=" in words[0] or not is_grantable_program(words[0])
+            or _never_grantable_invocation(words) or is_destructive_command(args, roots)):
+        return None
+    known = _root_paths(roots)
+    candidates = [root for root in known if cwd == root["path"] or cwd.startswith(root["path"] + "/")]
+    if known and not candidates:
+        return None
+    root = max(candidates, key=lambda item: len(item["path"])) if candidates else {
+        "name": posixpath.basename(cwd), "path": cwd}
+    return {"argv0": words[0], "root": root["path"], "folder": root["name"]}
+
+
+def _label_text(value: Any) -> str:
+    text = " ".join(_CTRL_TEXT.sub("", str(value or "")).split())
+    return text if len(text) <= _LABEL_TEXT else text[:_LABEL_TEXT - 1] + "…"
+
+
+_CTRL_TEXT = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def application_name(bundle_id: Any) -> str:
+    return _label_text(str(bundle_id or "").rsplit(".", 1)[-1]) or "this application"
+
+
+def input_grant_label(app_name: str, window_title: Optional[str] = None) -> str:
+    title = _label_text(window_title) if window_title else ""
+    return f'Allow for this task in window "{title}"' if title else f"Allow for this task in {_label_text(app_name)}"
+
+
+def command_grant_label(argv0: str, folder: str) -> str:
+    return f"Allow {_label_text(argv0)} in {_label_text(folder)} for this task"
+
+
+def _command_summary(args: Mapping[str, Any], host: str) -> str:
+    argv = args.get("argv")
+    shown = (f"Arguments: {json.dumps(argv, ensure_ascii=False)}" if isinstance(argv, list)
+             else f"Command: {args.get('command')}")
+    timeout = args.get("timeout_s", DEFAULT_COMMAND_TIMEOUT_S)
+    env = args.get("env") if isinstance(args.get("env"), Mapping) else {}
+    lines = [f"Run a command on {host}", shown, f"Folder: {args.get('cwd')}", f"Timeout: {timeout} s",
+             "Environment: " + (", ".join(f"{key}={value}" for key, value in env.items()) if env else "none"),
+             "Background: " + ("yes" if args.get("background") else "no")]
+    if isinstance(args.get("stdin"), str):
+        lines.append(f"Standard input: {len(args['stdin'])} characters")
+    return "\n".join(lines)
+
+
 def summary_for(tool_name: str, args: Mapping[str, Any], host_label: str) -> str:
     h = host_label or "your computer"
+    if tool_name == "run_command":
+        return _command_summary(args, h)
     if tool_name == "browser_navigate":
         if args.get("url") is None:
             action = args.get("action")
