@@ -5,10 +5,12 @@ gate so they cannot drift apart.
 
 from __future__ import annotations
 
+import ipaddress
 from pathlib import PurePosixPath
 import re
-from typing import Any, Dict, FrozenSet, Mapping
-from urllib.parse import urlsplit
+from typing import Any, Dict, FrozenSet, Mapping, Optional
+import unicodedata
+from urllib.parse import urlsplit, urlunsplit
 
 AGENT_ID = "computer-use-1"
 
@@ -179,24 +181,51 @@ CARD_CAPTION = ("This runs on your computer exactly as shown and I can't undo it
                 "Approve to continue, or decline.")
 
 
-def _origin_label(url: Any) -> str:
+MAX_BROWSER_URL_CHARS = 2048
+_BROWSER_HOST = re.compile(r"[a-z0-9_][a-z0-9._-]*")
+
+
+def canonical_browser_url(raw: Any) -> Optional[str]:
+    if (not isinstance(raw, str) or not raw or len(raw) > MAX_BROWSER_URL_CHARS or not raw.isascii()
+            or any(ord(ch) < 33 or ord(ch) == 127 or ch == "\\" for ch in raw)):
+        return None
     try:
-        parts = urlsplit(str(url or ""))
-        host, port = parts.hostname, parts.port
+        parts = urlsplit(raw)
+        port = parts.port
     except ValueError:
+        return None
+    scheme, host = parts.scheme.lower(), parts.hostname
+    if scheme not in ("http", "https") or not host or "@" in parts.netloc or port == 0:
+        return None
+    if ":" in host:
+        try:
+            ipaddress.IPv6Address(host)
+        except ValueError:
+            return None
+        if "%" in host:
+            return None
+        netloc = f"[{host}]"
+    elif _BROWSER_HOST.fullmatch(host):
+        netloc = host
+    else:
+        return None
+    if port is not None and port != (80 if scheme == "http" else 443):
+        netloc += f":{port}"
+    return urlunsplit((scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def _origin_label(url: Any) -> str:
+    canonical = canonical_browser_url(url)
+    if canonical is None:
         return ""
-    if parts.scheme.lower() not in ("http", "https") or not host:
-        return ""
-    try:
-        ascii_host = host.encode("idna").decode("ascii")
-    except UnicodeError:
-        ascii_host = host
-    shown = host if ascii_host == host else f"{host} ({ascii_host})"
-    return f"{parts.scheme.lower()}://{shown}" + (f":{port}" if port else "")
+    parts = urlsplit(canonical)
+    return f"{parts.scheme}://{parts.netloc}"
 
 
 def _one_line(value: Any, limit: int) -> str:
-    return " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", str(value or "")).split())[:limit]
+    text = "".join(" " if unicodedata.category(ch) in ("Cc", "Zl", "Zp") else "" if unicodedata.category(ch) == "Cf"
+                   else ch for ch in str(value or ""))
+    return " ".join(text.split())[:limit]
 
 
 def summary_for(tool_name: str, args: Mapping[str, Any], host_label: str) -> str:
@@ -207,13 +236,14 @@ def summary_for(tool_name: str, args: Mapping[str, Any], host_label: str) -> str
             move = {"back": "Go back", "forward": "Go forward", "reload": "Reload the page"}.get(
                 action if isinstance(action, str) else "", "Navigate")
             return f"{move} in the Astral browser pane on {h}"
-        origin = _origin_label(args["url"])
-        if not origin:
-            return f"Open an address the browser pane on {h} will refuse: {_one_line(args['url'], 120)}"
-        parts = urlsplit(str(args["url"]))
+        canonical = canonical_browser_url(args["url"])
+        if canonical is None:
+            return (f"Navigate the Astral browser pane on {h} to an address that will be refused; "
+                    "nothing will load.")
+        parts = urlsplit(canonical)
         rest = _one_line(parts.path, 120) + ("?…" if parts.query else "")
-        return (f"Open {origin}{rest} in the Astral browser pane on {h}. Approving this site lets the pane load "
-                "its pages; passwords and payment fields are never filled.")
+        return (f"Open {_origin_label(canonical)}{rest} in the Astral browser pane on {h}. Approving this site "
+                "lets the pane load its pages; passwords and payment fields are never filled.")
     if (tool_name in ("browser_click", "browser_fill") and isinstance(args.get("confirm_element"), str)
             and _one_line(args["confirm_element"], 1)):
         element = _one_line(args["confirm_element"], 200)
