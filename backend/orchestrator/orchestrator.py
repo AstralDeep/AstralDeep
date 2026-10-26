@@ -1402,6 +1402,14 @@ class Orchestrator:
             metrics=self._push_delivery_metric,
         )
 
+        from orchestrator.notification_routing import NotificationRoutingCoordinator
+        self.notification_routing = NotificationRoutingCoordinator(
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+            audit_repository=self.audit_repo,
+            metrics=self._notification_metric,
+        )
+
         from orchestrator.human_request_authority import HumanRequestBoundary
         self.human_request_boundary = HumanRequestBoundary(self)
         from personalization.explicit_note_service import ExplicitNoteService
@@ -13239,26 +13247,69 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return
         observability.record(name, labels=labels)
 
+    def _notification_metric(self, name: str) -> None:
+        observability = getattr(self, "runtime_observability", None)
+        if observability is None:
+            return
+        observability.record(name)
+
+    def _owner_surface_active(self, user_id: str) -> bool:
+        for _ws, claims in list(self.ui_sessions.items()):
+            if (claims or {}).get("sub") == user_id:
+                return True
+        return False
+
     async def notify_user(self, user_id: str, payload: Dict[str, Any]) -> None:
         try:
             data = json.dumps(payload)
         except Exception:  # pragma: no cover
             logger.debug("notify_user: unserializable payload", exc_info=True)
             return
-        sent = 0
-        for ws in list(self.ui_clients):
+        foreground = True
+        push_enabled = flags.is_enabled("push_delivery")
+        coordinator = getattr(self, "notification_routing", None)
+        decision = None
+        if coordinator is not None and flags.is_enabled("notification_routing"):
             try:
-                if self._get_user_id(ws) != user_id:
-                    continue
-                if await self._safe_send(ws, data):
-                    sent += 1
-            except Exception:  # pragma: no cover
-                logger.debug("notify_user: send failed for one socket", exc_info=True)
+                decision = await coordinator.route(
+                    owner_id=user_id,
+                    payload=payload,
+                    has_active_surface=self._owner_surface_active(user_id),
+                    push_available=push_enabled,
+                )
+            except Exception:
+                logger.warning(
+                    "notify_user: routing unavailable, delivering foreground",
+                    exc_info=True,
+                )
+                decision = None
+            if decision is not None:
+                foreground = bool(decision["foreground"])
+                push_enabled = bool(decision["push"])
+        sent = 0
+        if foreground:
+            for ws in list(self.ui_clients):
+                try:
+                    if self._get_user_id(ws) != user_id:
+                        continue
+                    if await self._safe_send(ws, data):
+                        sent += 1
+                except Exception:  # pragma: no cover
+                    logger.debug(
+                        "notify_user: send failed for one socket", exc_info=True
+                    )
         logger.info(
             "notify_user.delivered",
-            extra={"user_id": user_id, "sockets": sent, "kind": payload.get("type")},
+            extra={
+                "user_id": user_id,
+                "sockets": sent,
+                "kind": payload.get("type"),
+                "routed": decision is not None,
+                "quiet": bool((decision or {}).get("quiet")),
+                "duplicate": bool((decision or {}).get("duplicate")),
+            },
         )
-        if flags.is_enabled("push_delivery"):
+        if push_enabled:
             try:
                 await self.push_delivery.enqueue_notification(user_id, payload)
             except Exception:
@@ -23977,6 +24028,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator.auth import auth_router
         from orchestrator.mesh_api import mesh_router
         from orchestrator.push_api import push_router
+        from orchestrator.notification_api import notification_router
         from orchestrator.web_auth import web_auth_router
         from orchestrator.attachments.router import attachments_router
         from audit.api import audit_router
@@ -24004,6 +24056,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(chrome_router)
         from orchestrator.lets_health_api import lets_router
         app.include_router(lets_router)
+        app.include_router(notification_router)
         from orchestrator.a2a_publication_api import publication_router
         app.include_router(publication_router)
         app.include_router(export_router)

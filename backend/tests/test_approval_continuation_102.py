@@ -4,6 +4,7 @@ through the real handle_chat_message, closed afterwards, and never outlives a st
 """
 
 import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -52,9 +53,18 @@ def guided(task_runtime, monkeypatch):
                            follow_ups=follow_ups)
 
 
-async def _settle():
-    for _ in range(20):
-        await asyncio.sleep(0)
+async def _settle(predicate=None, timeout: float = 10.0):
+    # The continuation turn is a detached task with thread-pool handoffs; loop
+    # ticks alone cannot observe its completion deterministically under load.
+    deadline = time.monotonic() + timeout
+    while True:
+        for _ in range(20):
+            await asyncio.sleep(0)
+        if predicate is None or predicate():
+            return
+        if time.monotonic() >= deadline:
+            return
+        await asyncio.sleep(0.005)
 
 
 @pytest.mark.parametrize("decision", ["approve", "grant_task"])
@@ -63,7 +73,7 @@ async def test_approval_resumes_under_the_deciders_guidance_and_dispatches_the_n
     await _mac(task_runtime)
     card = await _call(task_runtime, "type_text", text="hello", hwnd=42)
     await hc.handle_decision(guided.orch, guided.ws, OWNER, _payload(card, decision))
-    await _settle()
+    await _settle(lambda: len(guided.follow_ups) == 1 and guided.origins and guided.origins[0].closed)
     assert len(guided.effects) == (2 if decision == "grant_task" else 1)
     (message, origin), = guided.turns
     assert message == hc.CONTINUATION_TEXT and origin is guided.origins[0] and origin.owner_id == OWNER
@@ -133,7 +143,7 @@ async def test_single_card_command_approval_resumes_under_guidance(task_runtime,
     await _mac(task_runtime, remote=True)
     card = await _call(task_runtime, "run_command", argv=["wc", "notes.md"], cwd=ROOT)
     await rc.handle_decision(guided.orch, guided.ws, OWNER, _payload(card, decision))
-    await _settle()
+    await _settle(lambda: len(guided.turns) == 1 and guided.origins and guided.origins[0].closed)
     assert len(guided.effects) == 1
     (message, origin), = guided.turns
     assert message == hc.CONTINUATION_TEXT and origin.closed
@@ -155,7 +165,7 @@ async def test_command_resume_stops_when_the_computer_session_changes(task_runti
     card = await _call(task_runtime, "run_command", argv=["wc", "notes.md"], cwd=ROOT)
     await rc.handle_decision(guided.orch, guided.ws, OWNER, _payload(card, "approve"))
     await guided.orch.computer_sessions.pause(session, "local_input")
-    await _settle()
+    await _settle(lambda: guided.origins and guided.origins[0].closed)
     assert len(guided.effects) == 1 and not guided.turns and guided.origins[0].closed
 
 
