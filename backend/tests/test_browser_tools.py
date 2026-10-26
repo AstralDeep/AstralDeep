@@ -84,6 +84,73 @@ async def world():
     return World(orch, host, host_ws, session, replies)
 
 
+_BIDI = "\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
+
+
+def test_canonical_browser_url_lowercases_the_scheme_and_host_and_drops_default_ports():
+    canonical = policy.canonical_browser_url
+    assert canonical("HTTPS://Example.ORG:443/Path/Up?Q=1#Frag") == "https://example.org/Path/Up?Q=1#Frag"
+    assert canonical("HTTP://example.org:80") == "http://example.org"
+    assert canonical("http://example.org:443/") == "http://example.org:443/"
+    assert canonical("https://example.org:80/") == "https://example.org:80/"
+    assert canonical("https://example.org:8443/x") == "https://example.org:8443/x"
+    assert canonical("https://example.org:/x") == "https://example.org/x"
+    assert canonical("https://sub-1.my_host.example./x") == "https://sub-1.my_host.example./x"
+    assert canonical("https://good.example/a@evil.example") == "https://good.example/a@evil.example"
+    assert canonical("https://good.example?x=@evil.example") == "https://good.example?x=@evil.example"
+    assert canonical("https://good.example#@evil.example") == "https://good.example#@evil.example"
+    assert canonical("https://xn--e1awd7f.example/") == "https://xn--e1awd7f.example/"
+
+
+def test_canonical_browser_url_preserves_ipv6_literals():
+    canonical = policy.canonical_browser_url
+    assert canonical("http://[::1]:8080/x") == "http://[::1]:8080/x"
+    assert canonical("HTTPS://[2001:DB8::1]:443/") == "https://[2001:db8::1]/"
+    assert canonical("http://[::1]") == "http://[::1]"
+    for bad in ("http://[::1", "http://[::1%25en0]/", "http://[::1%en0]/", "http://[zzzz::1]/", "http://[::1]:99999/"):
+        assert canonical(bad) is None
+
+
+@pytest.mark.parametrize("raw", [
+    "https://good.example\\@evil.example/",
+    "https://good.example\\.evil.example/",
+    "https:\\\\good.example/",
+    "https://good.example:80@evil.example/",
+    "https://user@evil.example/",
+    "https://user:pw@example.org/",
+    "https://@example.org/",
+    "https://good.example/\tx", "https://good.example\t/", "https://good\n.example/", "https://good.example/\r\nx",
+    " https://example.org/", "https://example.org/ ", "https://exa mple.org/", "https://example.org/a b",
+    "https://example.org/\x00", "https://example.org/\x7f", "https://example.org/\x1b[0m",
+    "https://example.org/\u202e/gpj.exe", "https://example.org/\u200eevil", "https://ex\u2066ample.org/",
+    "https://example.org/\u2069", "https://example.org/\u200f", "https://example.org/" + _BIDI,
+    "https://exаmple.org/", "https://münchen.example/", "https://example.org/é",
+    "https://exa%6dple.org/", "https://example.org%2eevil.example/", "https://exa$ple.org/", "https://.example/",
+    "https://example.org:0/", "https://example.org:99999/", "https://example.org:http/",
+    "https:good.example", "https:/good.example", "https:///good.example", "//good.example", "good.example",
+    "file:///etc/passwd", "javascript:alert(1)", "data:text/html,hi", "ftp://example.org/", "about:blank",
+    "ws://example.org/", "https://", "", "x" * 2100, "https://example.org/" + "a" * 2100,
+    None, 7, ["https://example.org/"], b"https://example.org/",
+])
+def test_canonical_browser_url_rejects_every_parser_differential(raw):
+    assert policy.canonical_browser_url(raw) is None
+    assert browser_tools.origin_of(raw) is None
+
+
+def test_the_card_origin_label_comes_from_the_canonical_url_and_is_empty_when_rejected():
+    assert policy._origin_label("HTTPS://Example.org:443/x") == "https://example.org"
+    assert policy._origin_label("http://[::1]:8080/") == "http://[::1]:8080"
+    for raw in ("https://good.example\\@evil.example/", "https://u:p@example.org/", "https://exаmple.org/", None):
+        assert policy._origin_label(raw) == ""
+
+
+def test_origin_of_derives_from_the_canonical_url_only():
+    for raw in ("https://Example.org:443/a?b#c", "https://example.org"):
+        assert browser_tools.origin_of(raw) == "https://example.org"
+    assert browser_tools.origin_of("http://Example.org:80/") == "http://example.org"
+    assert browser_tools.origin_of("https://example.org\\@evil.example/") is None
+
+
 def test_origin_of_normalizes_http_origins_and_refuses_everything_else():
     assert browser_tools.origin_of("https://Example.ORG/a/b?q=1#f") == "https://example.org"
     assert browser_tools.origin_of("HTTP://example.org:80/x") == "http://example.org"
@@ -125,7 +192,8 @@ def test_browser_target_uses_the_url_for_navigation_and_the_page_for_everything_
 
 
 def test_an_invalid_navigation_url_never_borrows_the_current_page_origin():
-    for bad in ("file:///etc/hosts", "javascript:alert(1)", "https://user:pw@example.org/", 7, ""):
+    for bad in ("file:///etc/hosts", "javascript:alert(1)", "https://user:pw@example.org/", 7, "",
+                "https://example.org\\@evil.example/", "https://example.org/\u202e"):
         assert browser_tools.browser_target("browser_navigate", {"url": bad}, PAGE) == {"destructive": False}
 
 
@@ -222,20 +290,24 @@ def test_the_agent_registry_carries_the_browser_tools_with_strict_policy_equalit
     assert policy.ALL_VERBS - set(mcp_tools.TOOL_REGISTRY) <= policy.COMMAND_VERBS
 
 
-def test_summary_for_names_the_origin_and_never_the_credentials():
-    card = policy.summary_for("browser_navigate", {"url": "https://Example.org/login?next=/a"}, "RYZENROLL")
-    assert "https://example.org" in card and "RYZENROLL" in card and "browser pane" in card
-    assert "/login" in card and "next=" not in card and "?…" in card
+def test_summary_for_names_the_canonical_origin():
+    card = policy.summary_for("browser_navigate", {"url": "https://Example.org:443/login?next=/a"}, "RYZENROLL")
+    assert "https://example.org/login" in card and "RYZENROLL" in card and "browser pane" in card
+    assert "next=" not in card and "?…" in card and ":443" not in card
     custom = policy.summary_for("browser_navigate", {"url": "http://localhost:8080/app"}, "Mac")
     assert "http://localhost:8080" in custom
-    secret = policy.summary_for("browser_navigate", {"url": "https://user:hunter2@example.org/"}, "Mac")
-    assert "hunter2" not in secret and "user:" not in secret
-    assert "https://example.org" in secret
 
 
-def test_summary_for_shows_the_punycode_form_of_lookalike_hosts():
-    card = policy.summary_for("browser_navigate", {"url": "https://exаmple.org/"}, "Mac")
-    assert "xn--" in card
+@pytest.mark.parametrize("raw", [
+    "https://user:hunter2@example.org/", "https://good.example\\@evil.example/", "https://good.example:80@evil.example/",
+    "https://good.example/\tx@evil.example", "https://good\n.example/", "https://example.org/\u202e/gpj.exe",
+    "https://exаmple.org/", "javascript:alert(1)", "file:///etc/passwd",
+])
+def test_summary_for_a_rejected_address_says_it_will_be_refused_and_shows_no_host(raw):
+    card = policy.summary_for("browser_navigate", {"url": raw}, "Mac")
+    assert "refused" in card and "nothing will load" in card
+    for leaked in ("good", "evil", "example", "hunter2", "gpj", "localhost", "etc/passwd", "alert"):
+        assert leaked not in card
 
 
 def test_summary_for_navigation_actions_and_refused_addresses():
@@ -243,7 +315,7 @@ def test_summary_for_navigation_actions_and_refused_addresses():
         assert action in policy.summary_for("browser_navigate", {"action": action}, "Mac").lower()
     assert "Navigate" in policy.summary_for("browser_navigate", {"action": ["x"]}, "Mac")
     bad = policy.summary_for("browser_navigate", {"url": "javascript:alert(1)\n\x00"}, "Mac")
-    assert "refuse" in bad and "\n" not in bad and "\x00" not in bad
+    assert "refused" in bad and "\n" not in bad and "\x00" not in bad
     assert "browser pane on your computer" in policy.summary_for("browser_navigate", {}, "")
     assert "your computer" in policy.summary_for("browser_navigate", {"url": ORIGIN}, "")
 
@@ -257,6 +329,9 @@ def test_summary_for_the_consequential_browser_card():
     assert policy.summary_for("browser_click", {"confirm_element": 7}, "Mac") == "browser_click on Mac"
     long = policy.summary_for("browser_click", {"confirm_element": "x" * 900}, "Mac")
     assert len(long) < 500
+    spoofed = policy.summary_for("browser_click", {"confirm_element": f'[e3] button "{_BIDI}Pay\x07 now"\n'}, "Mac")
+    assert '[e3] button "Pay now"' in spoofed
+    assert not any(ch in spoofed for ch in _BIDI) and "\x07" not in spoofed and "\n" not in spoofed
 
 
 async def test_snapshot_forwards_the_bounded_request_and_returns_untrusted_lines_without_a_digest(world):
@@ -407,10 +482,24 @@ async def test_navigate_to_a_url_and_by_action_updates_the_known_page(world):
     assert world.requests("browser_navigate")[-1]["args"] == {"action": "forward"}
     assert browser_tools.page_url(world.session.session_id) == "https://example.org/next"
     before = len(world.requests())
-    for bad in ({}, {"url": "file:///etc/passwd"}, {"url": "javascript:alert(1)"}, {"url": "https://u:p@example.org/"},
-                {"url": 7}, {"action": "sideways"}, {"url": PAGE, "action": "back"}, {"action": 3}):
+    for bad in ({}, {"action": "sideways"}, {"url": PAGE, "action": "back"}, {"action": 3}):
         assert (await world.call("browser_navigate", **bad))["_data"]["code"] == "out_of_range"
+    for bad in ("file:///etc/passwd", "javascript:alert(1)", "https://u:p@example.org/", 7, "",
+                "https://good.example\\@evil.example/", "https://good.example/\tx", "https://good.example/\u202e",
+                "https://exаmple.org/", " https://example.org/"):
+        refused = await world.call("browser_navigate", url=bad)
+        assert refused["_data"]["code"] == "url_rejected" and refused["_ui_components"][0]["variant"] == "error"
+        assert (await world.call("browser_navigate", url=bad, action="back"))["_data"]["code"] == "out_of_range"
     assert len(world.requests()) == before
+
+
+async def test_navigate_forwards_the_canonical_url_never_the_raw_one(world):
+    world.replies["browser_navigate"] = {"ok": True, "result": {"url": "https://example.org/Path"}}
+    out = await world.call("browser_navigate", url="HTTPS://Example.ORG:443/Path?Q=1")
+    assert world.requests("browser_navigate")[-1]["args"] == {"url": "https://example.org/Path?Q=1"}
+    assert out["_data"]["navigated"] == "https://example.org/Path?Q=1"
+    await world.call("browser_navigate", url="http://[::1]:80/x")
+    assert world.requests("browser_navigate")[-1]["args"] == {"url": "http://[::1]/x"}
 
 
 async def test_navigate_surfaces_a_refused_origin_and_a_pending_dialog(world):
@@ -557,12 +646,20 @@ async def test_a_consequential_control_is_recorded_and_returned_for_exact_review
 
 
 async def test_a_consequential_control_without_a_parseable_line_is_still_actionable(world):
-    world.replies["browser_click"] = _error("confirmation_required", "")
+    world.replies["browser_click"] = _error("confirmation_required", "\x07\x07")
     out = await world.call("browser_click", ref="e3", snapshot_id="s9")
     assert out["_data"]["code"] == "confirmation_required" and out["_data"]["element"] == ""
     assert "browser_snapshot" in out["_data"]["next_action"]
     page = browser_tools._PAGES.get(world.session.session_id)
     assert page is None or not page.held
+
+
+async def test_a_consequential_message_without_an_element_token_is_held_for_the_requested_reference(world):
+    world.replies["browser_click"] = _error("confirmation_required", "submit control in a payment form\x07")
+    out = await world.call("browser_click", ref="e3", snapshot_id="s9")
+    assert out["_data"]["element"] == "submit control in a payment form"
+    assert browser_tools._PAGES[world.session.session_id].held[("s9", "e3")] == "submit control in a payment form"
+    assert "submit control in a payment form" in out["_data"]["next_action"]
 
 
 async def test_a_consequential_fill_records_the_field_the_host_named(world):
@@ -573,7 +670,7 @@ async def test_a_consequential_fill_records_the_field_the_host_named(world):
     assert list(held) == [("s9", "e4")]
     world.replies["browser_fill"] = _error("confirmation_required", "needs review")
     out = await world.call("browser_fill", snapshot_id="s10", fields=[{"ref": "e2", "value": "a"}])
-    assert out["_data"]["element"] == "" and list(held) == [("s9", "e4")]
+    assert out["_data"]["element"] == "needs review" and held[("s10", "e2")] == "needs review"
 
 
 def _approve(monkeypatch, approved=True):

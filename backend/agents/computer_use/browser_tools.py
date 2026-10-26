@@ -19,12 +19,14 @@ from orchestrator.computer_use_policy import (
     AGENT_ID,
     DEFAULT_SCREENSHOT_WIDTH,
     DESTRUCTIVE_CLASSIFICATION,
+    MAX_BROWSER_URL_CHARS,
     MAX_SCREENSHOT_WIDTH,
     MAX_TEXT_CHARS,
     MIN_SCREENSHOT_WIDTH,
     SCOPES,
     TIERS,
     TIMEOUTS,
+    canonical_browser_url,
 )
 
 MAX_PAGE_CHARS = 60_000
@@ -32,7 +34,7 @@ IMAGE_CAPTION = "UNTRUSTED page content"
 
 _LINE_CHARS = 2_000
 _TITLE_CHARS = 300
-_URL_CHARS = 2_048
+_URL_CHARS = MAX_BROWSER_URL_CHARS
 _ELEMENT_CHARS = 300
 _MAX_FRAMES = 20
 _MAX_FIELDS = 20
@@ -86,15 +88,10 @@ def _mt():
 
 
 def origin_of(url: Any) -> Optional[str]:
-    if (not isinstance(url, str) or not url or len(url) > _URL_CHARS
-            or any(ord(ch) <= 32 or ord(ch) == 127 for ch in url)):
+    canonical = canonical_browser_url(url)
+    if canonical is None:
         return None
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        return None
-    if not parts.scheme or not parts.netloc:
-        return None
+    parts = urlsplit(canonical)
     return _grant_origin(f"{parts.scheme}://{parts.netloc}")
 
 
@@ -184,9 +181,7 @@ def _release(session_id: str, snapshot_id: str, refs: List[str]) -> None:
 
 
 def _url(value: Any) -> Optional[str]:
-    if isinstance(value, str) and origin_of(value) is not None:
-        return value
-    return None
+    return canonical_browser_url(value)
 
 
 def _token(value: Any, name: str) -> str:
@@ -219,16 +214,17 @@ def _refusal(code: str, message: str, host, *, notice: bool = False, **extra: An
     return mt._data(data, components)
 
 
-def _element_line(message: str) -> str:
-    match = _ELEMENT.search(_mt()._sanitize(message, 4 * _ELEMENT_CHARS))
-    return " ".join((match.group(0) if match else "").split())[:_ELEMENT_CHARS]
+def _element_line(message: str) -> Tuple[str, Optional[str]]:
+    text = _mt()._sanitize(message, 4 * _ELEMENT_CHARS)
+    match = _ELEMENT.search(text)
+    line = " ".join((match.group(0) if match else text).split())[:_ELEMENT_CHARS]
+    return line, match.group(1) if match else None
 
 
 def _needs_review(error: Dict[str, Any], host, session, snapshot_id: Optional[str], refs: List[str]):
     message = str(error["_data"].get("message") or "")
-    line = _element_line(message)
+    line, named = _element_line(message)
     if line:
-        named = _ELEMENT.search(line).group(1)
         _hold(session.session_id, snapshot_id or "", [named] if named in refs else refs, line)
         action = (f"Repeat the same call with confirm_element set to exactly this line: {line} "
                   "The user is then asked to review this exact step; do not paraphrase it.")
@@ -414,26 +410,25 @@ def browser_wait(**kwargs) -> Dict[str, Any]:
 def browser_navigate(**kwargs) -> Dict[str, Any]:
     mt = _mt()
     url, action = kwargs.get("url"), kwargs.get("action")
-    try:
-        if (url is None) == (action is None):
-            raise ValueError("give exactly one of url or action")
-        if url is not None:
-            if origin_of(url) is None:
-                raise ValueError("url must be an http or https address without a username or password")
-            args: Dict[str, Any] = {"url": url}
-        else:
-            if action not in ("back", "forward", "reload"):
-                raise ValueError("action must be back, forward or reload")
-            args = {"action": action}
-    except ValueError as exc:
-        return mt._fail("out_of_range", str(exc))
+    if url is not None and action is not None:
+        return mt._fail("out_of_range", "give exactly one of url or action")
+    if url is not None:
+        canonical = canonical_browser_url(url)
+        if canonical is None:
+            return mt._fail("url_rejected", "url must be a plain ASCII http or https address with no username, "
+                                            "password, spaces or backslashes")
+        args: Dict[str, Any] = {"url": canonical}
+    elif action in ("back", "forward", "reload"):
+        args = {"action": action}
+    else:
+        return mt._fail("out_of_range", "give exactly one of url, or an action of back, forward or reload")
     _, _, host, session, reply = _begin(kwargs)
     if reply is not None:
         return reply
     result, reply = _send(host, session, "browser_navigate", args, kwargs)
     if reply is not None:
         return reply
-    return mt._data(_page_data(host, session, result, navigated=url if url is not None else action))
+    return mt._data(_page_data(host, session, result, navigated=args.get("url", action)))
 
 
 def _permit(user_id, chat_id, session, verb: str, snapshot_id: str, refs: List[str], line: str, host):
