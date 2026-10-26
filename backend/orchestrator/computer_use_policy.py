@@ -256,7 +256,6 @@ _WRAPPERS = frozenset({"env", "command", "exec", "nohup", "time", "nice", "xargs
 _SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh"})
 _INTERPRETERS = frozenset({"perl", "ruby", "node", "osascript", "php"})
 _DOWNLOADERS = frozenset({"curl", "wget"})
-_UNGRANTABLE_MARKS = ("$", "`", "|", ";", "&", ">", "<", "\n", "\r", "(", ")")
 _LABEL_TEXT = 60
 
 
@@ -461,26 +460,7 @@ def _grantable_git(words: Sequence[str]) -> bool:
     return sub == "stash" and tail == ["list"]
 
 
-def _option_paths(words: Sequence[str], short: str, long: Sequence[str]):
-    for index, word in enumerate(words):
-        if word == short or word in long:
-            yield words[index + 1] if index + 1 < len(words) else None
-        elif word.startswith(short) and len(word) > len(short) and not word.startswith("--"):
-            yield word[len(short):]
-        else:
-            for name in long:
-                if word.startswith(name + "="):
-                    yield word[len(name) + 1:]
-
-
-def _inside_root(path: Any, cwd: str, root: str) -> bool:
-    if not isinstance(path, str) or not path or path.startswith("~") or "$" in path:
-        return False
-    resolved = posixpath.normpath(posixpath.join(cwd, path))
-    return resolved == root or resolved.startswith(root.rstrip("/") + "/")
-
-
-def _grantable_invocation(words: Sequence[str], cwd: str, root: str) -> bool:
+def _grantable_invocation(words: Sequence[str]) -> bool:
     program = _program(words[0])
     if program == "git":
         return _grantable_git(words)
@@ -490,10 +470,6 @@ def _grantable_invocation(words: Sequence[str], cwd: str, root: str) -> bool:
         return not any(word == option or word.startswith(option + "=") or (
             len(option) == 2 and word.startswith("-") and not word.startswith("--") and option[1] in word[1:])
             for word in words[1:] for option in _EXEC_OPTIONS[program])
-    if program in {"make", "gmake"}:
-        paths = [*_option_paths(words[1:], "-f", ("--file", "--makefile")),
-                 *_option_paths(words[1:], "-C", ("--directory",))]
-        return all(_inside_root(path, cwd, root) for path in paths)
     return True
 
 
@@ -502,24 +478,15 @@ def command_grant(args: Mapping[str, Any], roots: Any = ()) -> Optional[Dict[str
 
     shape = _command_shape(args)
     cwd = _absolute_cwd(args.get("cwd"))
-    if shape is None or cwd is None or args.get("env"):
+    if shape is None or cwd is None or args.get("env") or shape[0] != "argv":
         return None
-    kind, value = shape
-    if kind == "command":
-        if any(mark in value for mark in _UNGRANTABLE_MARKS):
-            return None
-        try:
-            words = shlex.split(value)
-        except ValueError:
-            return None
-    else:
-        words = value
+    words = shape[1]
     candidates = [root for root in _root_paths(roots) if cwd == root["path"] or cwd.startswith(root["path"] + "/")]
     if not candidates:
         return None
     root = max(candidates, key=lambda item: len(item["path"]))
     if (not words or "=" in words[0] or not is_grantable_program(words[0])
-            or not _grantable_invocation(words, cwd, root["path"]) or is_destructive_command(args, roots)):
+            or not _grantable_invocation(words) or is_destructive_command(args, roots)):
         return None
     return {"argv0": words[0], "root": root["path"], "folder": root["name"]}
 

@@ -78,13 +78,15 @@ def test_command_shape_without_command_or_argv_is_destructive():
     assert policy.is_destructive_command({"cwd": ROOT, "command": 7}, ROOTS) is True
 
 
-def test_argv_and_simple_commands_are_grantable_for_their_program_and_root():
+def test_only_argv_commands_are_grantable_for_their_program_and_root():
     assert policy.command_grant(_argv(["wc", "-l", "notes.md"]), ROOTS) == {
         "argv0": "wc", "root": ROOT, "folder": "x"}
-    assert policy.command_grant(_cmd("wc -l notes.md", cwd=ROOT + "/sub"), ROOTS) == {
+    assert policy.command_grant(_argv(["wc", "-l", "notes.md"], cwd=ROOT + "/sub"), ROOTS) == {
         "argv0": "wc", "root": ROOT, "folder": "x"}
+    assert policy.command_grant(_cmd("wc -l notes.md", cwd=ROOT + "/sub"), ROOTS) is None
+    assert policy.command_grant(_cmd("ls"), ROOTS) is None
     nested = [{"name": "outer", "path": "/Users/sam"}, {"name": "inner", "path": ROOT}]
-    assert policy.command_grant(_cmd("wc x", cwd=ROOT + "/a"), nested)["folder"] == "inner"
+    assert policy.command_grant(_argv(["wc", "x"], cwd=ROOT + "/a"), nested)["folder"] == "inner"
     assert policy.command_grant(_cmd("ls", cwd="/tmp/work"), []) is None
     assert policy.command_grant(_argv(["wc", "x"], env={"LANG": "C"}), ROOTS) is None
 
@@ -112,8 +114,7 @@ def test_compound_shell_wrapped_destructive_or_unbound_commands_are_never_granta
     ["git", "rev-parse", "HEAD"], ["git", "ls-files"], ["git", "shortlog", "-sn"], ["git", "branch"],
     ["git", "branch", "--list"], ["git", "branch", "-a", "-v"], ["git", "branch", "-r"], ["git", "tag"],
     ["git", "tag", "-l"], ["git", "tag", "--list"], ["git", "remote"], ["git", "remote", "-v"],
-    ["git", "stash", "list"], ["find", ".", "-name", "*.md"], ["make"], ["make", "-f", "build/Makefile"],
-    ["make", "-C", "sub", "test"], ["tar", "-tzf", "a.tgz"], ["rsync", "-a", "a/", "b/"],
+    ["git", "stash", "list"], ["find", ".", "-name", "*.md"], ["tar", "-tzf", "a.tgz"], ["rsync", "-a", "a/", "b/"],
 ])
 def test_read_only_git_and_bounded_tools_stay_grantable(argv):
     assert policy.command_grant(_argv(argv), ROOTS)["argv0"] == argv[0]
@@ -134,8 +135,7 @@ def test_read_only_git_and_bounded_tools_stay_grantable(argv):
     ["git", "remote", "remove", "o"], ["git", "stash"], ["git", "stash", "pop"], ["git", "stash", "list", "-p"],
     ["git", "log", "--output=/tmp/x"], ["git", "diff", "--ext-diff"], ["git", "diff", "--output", "x"],
     ["git", "log", "--exec=x"], ["find", ".", "-fprint", "x"], ["find", ".", "-fls", "x"], ["find", ".", "-okdir", "x"],
-    ["make", "-f", "/tmp/Makefile"], ["make", "--file=../Makefile"], ["make", "-f../Makefile"],
-    ["make", "--makefile", "/etc/x"], ["make", "-C", "/tmp"], ["make", "--directory=../.."], ["make", "-f"],
+    ["make"], ["make", "-f", "build/Makefile"], ["make", "-C", "sub", "test"], ["make", "-f", "/tmp/Makefile"],
     ["tar", "--to-command=sh", "-xf", "a.tar"], ["tar", "-I", "evil", "-xf", "a.tar"],
     ["tar", "--use-compress-program=evil", "-xf", "a"], ["tar", "--checkpoint-action=exec=x", "-cf", "a", "b"],
     ["rsync", "-e", "evil", "a", "b"], ["rsync", "-ave", "evil", "a", "b"], ["tar", "-xIf", "evil", "a"], ["rsync", "--rsh=evil", "a", "b"], ["rsync", "--rsync-path=evil", "a", "b"],
@@ -173,3 +173,10 @@ def test_command_and_browser_effects_are_taint_sinks_for_the_computer_agent(tool
     from orchestrator.taint import is_sink
 
     assert is_sink("computer-use-1", tool) is sink
+
+
+@pytest.mark.parametrize("program", ["nice", "nohup", "time", "command", "exec", "caffeinate", "awk", "gawk", "sed",
+                                     "make", "xcrun", "swift", "php", "lua", "tclsh", "osascript", "env", "su",
+                                     "sudo", "script", "expect", "screen", "tmux"])
+def test_wrapper_and_interpreter_programs_are_never_grantable(program):
+    assert policy.command_grant(_argv([program, "wc", "-l", "notes.md"]), ROOTS) is None

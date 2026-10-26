@@ -56,7 +56,9 @@ _NEVER_GRANTABLE_BUNDLE_PREFIXES: Tuple[str, ...] = (
 )
 _NEVER_GRANTABLE_PROGRAMS: FrozenSet[str] = frozenset({
     "sh", "bash", "zsh", "fish", "node", "ruby", "perl", "env", "xargs", "osascript", "open", "sudo",
-    "su", "launchctl", "defaults", "security",
+    "su", "launchctl", "defaults", "security", "nice", "nohup", "time", "command", "exec", "caffeinate",
+    "awk", "gawk", "sed", "make", "xcrun", "swift", "php", "lua", "tclsh", "script", "expect", "screen",
+    "tmux",
 })
 
 _ID_MAX = 256

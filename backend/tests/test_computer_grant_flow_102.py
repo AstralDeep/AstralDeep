@@ -276,8 +276,10 @@ async def test_run_command_card_grants_the_program_in_its_folder(task_runtime):
     assert len(effects) == 1 and not orch._hitl_pending_calls
     grant, = orch.computer_sessions.grants.list(session.session_id)
     assert dict(grant.command) == {"argv0": "wc", "root": ROOT} and dict(grant.scope) == {"kind": "command"}
-    again = await _call(task_runtime, "run_command", command="wc -l other.md", cwd=ROOT)
+    again = await _call(task_runtime, "run_command", argv=["wc", "-l", "other.md"], cwd=ROOT)
     assert again.error is None and again.result["_data"]["ok"] and len(effects) == 2
+    shell = await _call(task_runtime, "run_command", command="wc -l other.md", cwd=ROOT)
+    assert shell.result["_data"]["status"] == "confirmation_required" and len(effects) == 2
     for args in ({"command": "wc -l a | sh", "cwd": ROOT}, {"argv": ["cat", "a"], "cwd": ROOT},
                  {"argv": ["wc", "a"], "cwd": "/tmp"}, {"argv": ["wc", "a"], "cwd": ROOT, "env": {"PATH": "/x"}},
                  {"argv": ["wc", "a"], "cwd": ROOT, "env": {"LANG": "C"}}):
@@ -449,3 +451,14 @@ async def test_command_card_names_the_registered_host_only(task_runtime, named):
     assert "Run a command on RyzenRoll Mobile" in _texts(card)
     if named:
         assert named not in _all_text(card)
+
+
+@pytest.mark.parametrize("args,grantable", [
+    ({"command": "wc -l notes.md"}, False), ({"argv": ["nice", "wc", "-l", "notes.md"]}, False),
+    ({"argv": ["awk", "1", "notes.md"]}, False), ({"argv": ["wc", "-l", "notes.md"]}, True),
+])
+async def test_only_plain_argv_command_cards_offer_a_grant(task_runtime, args, grantable):
+    await _mac(task_runtime, remote=True)
+    card = await _call(task_runtime, "run_command", cwd=ROOT, **args)
+    labels = [b["label"] for b in _buttons(card)]
+    assert labels == (["Approve", "Allow wc in x for this task", "Decline"] if grantable else ["Approve", "Decline"])

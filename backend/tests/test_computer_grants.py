@@ -139,7 +139,8 @@ def test_finder_is_grantable_only_as_a_reviewed_window():
 @pytest.mark.parametrize("argv0", [
     "sh", "bash", "/bin/zsh", "BASH", "fish", "python", "python3", "/usr/bin/python3.12", "node", "ruby",
     "perl", "env", "/usr/bin/env", "xargs", "osascript", "open", "sudo", "su", "launchctl", "defaults",
-    "security",
+    "security", "nice", "nohup", "time", "command", "exec", "caffeinate", "awk", "gawk", "sed", "make",
+    "/usr/bin/make", "xcrun", "swift", "php", "lua", "tclsh", "script", "expect", "screen", "tmux",
 ])
 def test_never_grantable_programs_are_refused(argv0):
     store, events = _store()
