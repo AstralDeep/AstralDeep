@@ -119,8 +119,7 @@ async def _session(orch: _FakeOrch, host, controller: _WS, chat="chat-1"):
 
 def test_registry_equals_policy():
     from agents.computer_use.mcp_tools import TOOL_REGISTRY
-    assert set(TOOL_REGISTRY) <= policy.ALL_VERBS
-    assert policy.ALL_VERBS - set(TOOL_REGISTRY) <= policy.COMMAND_VERBS
+    assert set(TOOL_REGISTRY) == policy.ALL_VERBS
     assert policy.HOST_VERBS == COMPUTER_HOST_VERBS
     for name, entry in TOOL_REGISTRY.items():
         assert entry["scope"] == policy.SCOPES[name]
@@ -874,7 +873,7 @@ async def test_mcp_server_carries_images_and_turns_refusals_into_errors():
     server = MCPServer()
     names = {t["name"] for t in server.get_tool_list()}
     assert names == set(mcp_tools.TOOL_REGISTRY)
-    assert policy.ALL_VERBS - names <= policy.COMMAND_VERBS
+    assert names == policy.ALL_VERBS
     res = await asyncio.to_thread(server.process_request, MCPRequest(
         request_id="r1", method="tools/call", params={"name": "screenshot", "arguments": {"user_id": OWNER}}))
     assert res.error and "computer_unavailable" in res.error["message"] and res.error["retryable"] is False

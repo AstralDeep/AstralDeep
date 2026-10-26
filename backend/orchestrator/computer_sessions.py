@@ -310,7 +310,7 @@ class ComputerSessionManager:
         session.last_activity_at = time.time()
         self._sessions.pop(session.session_id, None)
         self.grants.revoke(session.session_id, _GRANT_REVOCATIONS.get(reason, "session_ended"))
-        jobs = list(session.command_jobs)
+        jobs = [job for job, record in session.command_jobs.items() if record.get("state", "running") == "running"]
         session.command_jobs.clear()
         host = self._registry.get(session.owner_sub, session.host_id)
         if jobs and host is not None and reason in _KILL_REASONS:
