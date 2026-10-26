@@ -465,7 +465,7 @@ class _HumanSocketRequest:
                 or _socket_policy() != self.policy
                 or _socket_message(self.message) != self.message_json
                 or (self.purpose == "metadata" and _socket_method(self.message) != self.method)
-                or (self.purpose == "skill_lookup" and self.message.get("action") != "chat_message")
+                or (self.purpose == "skill_lookup" and self.message.get("action") not in _GUIDANCE_READS)
                 or (self.purpose == "voice_guidance" and not _voice_guidance_message(self.message))):
             _unauthenticated()
 
