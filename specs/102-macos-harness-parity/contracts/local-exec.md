@@ -84,7 +84,7 @@ Windows and Android hosts do not advertise these verbs; `registry.request` retur
 
 ## Security review rulings (2026-10-26)
 
-- Environment additions use an allowlist, not a denylist: names matching `^[A-Z][A-Z0-9_]{0,63}$` that are in {LANG, LC_ALL, LC_CTYPE, LC_MESSAGES, TZ, TERM, NO_COLOR, FORCE_COLOR, CI, DEBUG, PAGER, EDITOR, COLUMNS, LINES} or that start with `APP_`; everything else is `env_forbidden`. Values are at most 4096 characters with no NUL or newline. Both the server and the host enforce it.
+- Environment additions use an allowlist, not a denylist: names matching `^[A-Z][A-Z0-9_]{0,63}$` that are in {LANG, LC_ALL, LC_CTYPE, LC_MESSAGES, TZ, TERM, NO_COLOR, FORCE_COLOR, CI, DEBUG, COLUMNS, LINES} or that start with `APP_`; everything else is `env_forbidden`. The host forces EDITOR, VISUAL and GIT_EDITOR to `/usr/bin/false` and PAGER and GIT_PAGER to `cat` after merging, so no request can name a program through them. Values are at most 4096 characters with no NUL or newline. Both the server and the host enforce it.
 - A command grant never covers a command with environment additions; those take exact review, and the card always lists the keys and values.
 - With no granted workspace folder, `run_command` is refused as `cwd_outside_workspace` on both sides; containment is checked unconditionally, `cwd` must be absolute with no `..` components, and the host resolves symlinks before the check.
 - Git grants cover only read-only subcommands with no global options (status, log, diff, show, blame, describe, rev-parse, ls-files, branch listing, tag listing, remote -v, stash list, shortlog); everything else under git is exact review.
