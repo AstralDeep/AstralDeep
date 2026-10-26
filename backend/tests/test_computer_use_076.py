@@ -194,7 +194,9 @@ def test_command_and_browser_verbs_have_tiers_scopes_timeouts_and_sessions():
     assert policy.TIMEOUTS["read_output"] == 30.0
     assert policy.TIMEOUTS["interrupt_command"] == 5.0
     for verb in _BROWSER_INPUT - {"browser_navigate"}:
-        assert 0 < policy.TIMEOUTS[verb] <= 10.0
+        assert policy.TIMEOUTS[verb] == 5.0
+    for verb in policy.HOST_VERBS - _COMMAND_VERBS - _BROWSER_OBSERVE - _BROWSER_INPUT:
+        assert 0 < policy.TIMEOUTS[verb] <= 30.0
     for verb in _COMMAND_VERBS | _BROWSER_OBSERVE | _BROWSER_INPUT:
         assert verb in policy.SESSION_REQUIRED
         assert policy.is_unattended_allowed(verb) is False
