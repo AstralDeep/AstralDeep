@@ -14,8 +14,12 @@ The required Deep CI aggregate now includes:
   probe `backend/tests/perf/concurrent_surfaces.py` is an explicit-run `perf`
   probe, not a required gate.
 - Disposable PostgreSQL 17 for those tests, and the exact pinned Plane's
-  complete PostgreSQL suite. The test producer refuses absent/mismatched
-  database URLs and requires an `ad_gate_` database plus an explicit isolation
+  PostgreSQL suite: complete, with its coverage gates, when the
+  `components/AstralPlane` gitlink differs between the immutable base and the
+  candidate (`scripts/ci_plane_lane.py`; an unreadable base counts as a
+  change), otherwise Plane's architecture, API, domain and bootstrap tests,
+  because Plane's own CI runs the complete suite. The test producer refuses
+  absent/mismatched database URLs and requires an `ad_gate_` database plus an explicit isolation
   declaration. Missing-database skips fail the producer.
 - Deep Python lint; exact Projection Python and JavaScript lint and tests;
   pinned browser interaction tests; exact component-source integrity.
