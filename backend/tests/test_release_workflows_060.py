@@ -1876,8 +1876,8 @@ def test_every_ci_job_is_bounded_by_thirty_minutes() -> None:
             "voice-worker-test", "gates",
         )
     } == {
-        "backend-image": 30, "backend-web": 30, "plane-postgres": 30,
-        "projection-backend-web": 30, "voice-worker-test": 30, "gates": 5,
+        "backend-image": 30, "backend-web": 20, "plane-postgres": 20,
+        "projection-backend-web": 30, "voice-worker-test": 7, "gates": 5,
     }
 
 
