@@ -804,7 +804,7 @@ def _no_access_page() -> HTMLResponse:
 <body style="margin:0;display:grid;place-items:center;min-height:100vh;background:#121214;color:#ECECEF;font-family:system-ui,sans-serif">
 <div style="max-width:440px;padding:2rem;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:#1B1B1F;text-align:center">
 <h1 style="font-size:1.1rem;margin:0 0 .75rem">No access</h1>
-<p style="font-size:.9rem;color:#8C8C95;margin:0 0 1.25rem">Your account signed in successfully but does not have access to this
+<p style="font-size:.9rem;color:#93939B;margin:0 0 1.25rem">Your account signed in successfully but does not have access to this
 application. Ask an administrator to grant your account the <b>user</b> role, then sign in again.</p>
 <a href="/auth/login?next=%2F" style="display:inline-block;padding:.6rem 1.2rem;border-radius:8px;background:#7C3AED;color:#fff;text-decoration:none;font-size:.9rem">Sign in again</a>
 </div></body></html>"""
@@ -821,7 +821,7 @@ def _error_page(nxt: str, reason: str, status: int = 200) -> HTMLResponse:
 <body style="margin:0;display:grid;place-items:center;min-height:100vh;background:#121214;color:#ECECEF;font-family:system-ui,sans-serif">
 <div style="max-width:420px;padding:2rem;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:#1B1B1F;text-align:center">
 <h1 style="font-size:1.1rem;margin:0 0 .75rem">Sign-in problem</h1>
-<p style="font-size:.9rem;color:#8C8C95;margin:0 0 1.25rem">{escape(reason)}</p>
+<p style="font-size:.9rem;color:#93939B;margin:0 0 1.25rem">{escape(reason)}</p>
 <a href="{escape(retry)}" style="display:inline-block;padding:.6rem 1.2rem;border-radius:8px;background:#7C3AED;color:#fff;text-decoration:none;font-size:.9rem">Try again</a>
 </div></body></html>"""
     return HTMLResponse(body, status_code=status)

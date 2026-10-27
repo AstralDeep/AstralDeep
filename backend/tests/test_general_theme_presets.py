@@ -3,6 +3,7 @@ its use as the default shown in the customization card, and the registry text na
 """
 
 from agents.general import mcp_tools
+from orchestrator.projection_surfaces import theme as theme_surface
 
 GRAPHITE = {
     "bg": "#121214",
@@ -10,7 +11,7 @@ GRAPHITE = {
     "primary": "#7C3AED",
     "secondary": "#6E6E78",
     "text": "#ECECEF",
-    "muted": "#8C8C95",
+    "muted": "#93939B",
     "accent": "#A78BFA",
 }
 MIDNIGHT = {
@@ -21,6 +22,15 @@ MIDNIGHT = {
     "text": "#F3F4F6",
     "muted": "#9CA3AF",
     "accent": "#06B6D4",
+}
+DAYLIGHT = {
+    "bg": "#F8FAFC",
+    "surface": "#FFFFFF",
+    "primary": "#4F46E5",
+    "secondary": "#7C3AED",
+    "text": "#1E293B",
+    "muted": "#58667B",
+    "accent": "#067590",
 }
 ORDER = ["graphite", "midnight", "daylight", "ocean", "sunset", "forest"]
 
@@ -50,6 +60,13 @@ def test_graphite_leads_the_preset_table_and_midnight_keeps_its_values():
     assert list(mcp_tools.THEME_PRESETS) == ORDER
     assert mcp_tools.THEME_PRESETS["graphite"] == GRAPHITE
     assert mcp_tools.THEME_PRESETS["midnight"] == MIDNIGHT
+    assert mcp_tools.THEME_PRESETS["daylight"] == DAYLIGHT
+
+
+def test_every_agent_preset_matches_the_server_surface_table_on_its_seven_roles():
+    assert list(mcp_tools.THEME_PRESETS) == list(theme_surface.PRESETS)
+    for name, colors in mcp_tools.THEME_PRESETS.items():
+        assert colors == {key: theme_surface.PRESETS[name][key] for key in colors}, name
 
 
 def test_the_customization_card_defaults_to_graphite_with_one_button_per_preset():
