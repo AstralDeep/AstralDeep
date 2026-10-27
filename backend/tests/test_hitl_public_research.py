@@ -7,6 +7,7 @@ clicks.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 import uuid
@@ -471,6 +472,22 @@ def test_review_preview_is_complete_and_consequential(runtime):
             "url": "https://example.org/report", "options": [True, "safe"]}
     preview, reviewable = hc._review_arguments(args)
     assert reviewable and json.loads(preview) == args
+
+
+@pytest.mark.parametrize("value", [str(uuid.uuid4()),
+    "44474262c237-9f8e7d6c5b4a3210fedcba9876543210",
+    hashlib.sha256(b"binding").hexdigest(), "a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"])
+def test_machine_identifiers_are_reviewable_despite_digit_runs(runtime, value):
+    args = {"runtime_binding": value, "session_id": str(uuid.uuid4()),
+            "command": "printf 'uploaded.txt'"}
+    preview, reviewable = hc._review_arguments(args)
+    assert reviewable and json.loads(preview) == args
+
+
+@pytest.mark.parametrize("value", ["4111111111111111", "123456789"])
+def test_decimal_runs_stay_refused_as_private_identifiers(runtime, value):
+    preview, reviewable = hc._review_arguments({"note": value})
+    assert not reviewable and value not in preview
 
 
 @pytest.mark.parametrize("args", [{"patient_name": "Private Person"}, {"password": "keep-secret"},

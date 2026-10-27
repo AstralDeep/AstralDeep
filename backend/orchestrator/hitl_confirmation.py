@@ -85,6 +85,22 @@ _SECRET_MARKERS = re.compile(r"(?i)(?:api[_ -]?key|access[_ -]?token|secret|pass
                              r"bearer |credential|-----BEGIN|\bsk-[\w-]{12,}|\beyJ[\w-]+\.[\w-]+\.[\w-]+)")
 _EMAIL_DESTINATION = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _PHONE_DESTINATION = re.compile(r"\+?[0-9(). -]{10,24}")
+_MACHINE_TOKEN = re.compile(r"(?i)(?<![0-9a-f-])[0-9a-f](?:[0-9a-f-]{14,68}[0-9a-f])?(?![0-9a-f-])")
+
+
+def _machine_identifier(value: str) -> bool:
+    token = value.strip()
+    return (
+        len(token) >= 16
+        and _MACHINE_TOKEN.fullmatch(token) is not None
+        and re.search(r"[a-f]", token, re.IGNORECASE) is not None
+    )
+
+
+def _scan_text(visible_strings: list) -> str:
+    return _MACHINE_TOKEN.sub(
+        lambda match: " " if _machine_identifier(match.group(0)) else match.group(0),
+        "\n".join(visible_strings))
 
 
 def _routing_address(key, value) -> bool:
@@ -581,7 +597,9 @@ def _review_arguments(args: dict) -> tuple[str, bool]:
             return [walk(child, key) for child in value]
         if isinstance(value, str):
             decoded = unquote(unquote(value))
-            if _SECRET_MARKERS.search(decoded) or (not destination and _SENSITIVE_INPUT.search(decoded)):
+            if _SECRET_MARKERS.search(decoded) or (
+                not destination and not _machine_identifier(decoded)
+                and _SENSITIVE_INPUT.search(decoded)):
                 reviewable = False
                 return "[REDACTED — review unavailable]"
             if key == "url":
@@ -606,7 +624,7 @@ def _review_arguments(args: dict) -> tuple[str, bool]:
         return "[Arguments exceed the complete review limit. Use a smaller action.]", False
     if reviewable and visible_strings:
         try:
-            if get_phi_gate().contains_phi("\n".join(visible_strings)):
+            if get_phi_gate().contains_phi(_scan_text(visible_strings)):
                 return "[Private identifiers cannot be shown in an approval preview.]", False
         except Exception:
             return "[Privacy review unavailable. Reissue the action when it is available.]", False
