@@ -550,6 +550,10 @@ def confirm_action(**kwargs) -> Dict[str, Any]:
         except ValueError as exc:
             return _fail("out_of_range", str(exc))
     summary = _sanitize(kwargs.get("summary"), MAX_SUMMARY_CHARS)
+    from orchestrator.hitl_confirmation import computer_presentation_source
+    source = computer_presentation_source(_ORCH, kwargs.get("user_id"), kwargs.get("session_id"), "confirm_action")
+    if source in {"bypass", "project_grant"}:
+        return _data({"ready": True, "summary": summary})
     return _data({"approved": True, "summary": summary},
                  [Text(content=f"Approved: {summary}", variant="caption")])
 

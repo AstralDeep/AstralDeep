@@ -244,3 +244,35 @@ async def test_text_only_sessionless_review_is_bound_and_withdrawn_before_late_d
     await orch.computer_sessions.set_bypass(host, False)
     await hitl.handle_decision(orch, ws, call.owner, _payload(card, "approve"))
     assert not effects and not orch.computer_sessions.live_for_owner(call.owner)
+
+
+async def test_bypass_confirm_action_crosses_real_gates_without_approval_presentation(task_runtime, monkeypatch):
+    import asyncio
+    from agents.computer_use import mcp_tools
+    from shared.protocol import MCPResponse
+    orch, ws, *_ = task_runtime
+    session, host = await project_runtime(task_runtime, monkeypatch)
+    monkeypatch.setattr(mcp_tools, "_ORCH", orch)
+    await orch.computer_sessions.set_bypass(host, True)
+    async def execute(websocket, agent, tool, args, **kwargs):
+        async def invoke(_):
+            result = await asyncio.to_thread(mcp_tools.confirm_action, user_id="owner-a", session_id="chat-a", **args)
+            return MCPResponse(result=result)
+        return await orch._execute_governed_attempt(websocket, agent, tool, args, user_id="owner-a", channel="web",
+            audit_correlation_id="test", actor_user_id="owner-a", auth_principal="owner-a", conversation_id="chat-a", invoke=invoke)
+    orch._execute_with_retry = execute
+    response = await _call(task_runtime, "confirm_action", summary="Prepare the requested action")
+    assert response.error is None, response
+    assert response.result["_data"]["approval_source"] == "bypass"
+    assert response.result["_ui_components"] == []
+    assert response.result["_data"]["ready"] is True and "approved" not in response.result["_data"]
+    assert not getattr(orch, "_hitl_pending_calls", {}) and not remote_confirmation._PENDING_CARDS
+    await orch.computer_sessions.end(session, "consent_revoked")
+
+
+def test_confirm_action_does_not_trust_model_supplied_approval_source(monkeypatch):
+    from agents.computer_use import mcp_tools
+    monkeypatch.setattr(mcp_tools, "_ORCH", object())
+    response = mcp_tools.confirm_action(summary="Exact human review", approval_source="bypass")
+    assert response["_data"]["approved"] is True
+    assert response["_ui_components"][0]["content"] == "Approved: Exact human review"

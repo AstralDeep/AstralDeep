@@ -272,6 +272,14 @@ def approved_call(orch, owner, chat, agent, tool) -> bool:
             == (owner, chat, agent, tool))
 
 
+def computer_presentation_source(orch, owner, chat, tool):
+    approval = _APPROVAL.get()
+    if (not approved_call(orch, owner, chat, "computer-use-1", tool)
+            or not approval.consumed or not approval.effect_started):
+        return None
+    return approval.call.approval_source
+
+
 def consume_terminal_input(orch, session, tool, args) -> bool:
     approval = _APPROVAL.get()
     if (not isinstance(approval, Approval) or approval.orchestrator is not orch or not approval.consumed
