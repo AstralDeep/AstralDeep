@@ -52,6 +52,10 @@ _PENDING_CARDS: Dict[tuple, tuple] = {}
 
 
 _RETRY_GRACE: Dict[Tuple[Any, ...], Tuple[str, float]] = {}
+
+
+class Refusal(tuple):
+    __slots__ = ()
 _SOURCE_PROPOSAL = contextvars.ContextVar("source_review_remote_proposal", default=None)
 
 
@@ -145,6 +149,25 @@ class ComputerApproval:
     task: object = None
     controller_context: object = None
     connection_generation: object = None
+
+
+def _resolve_command_folder(orch, user_id, chat_id, args):
+    from astralprims import Alert
+
+    try:
+        host = computer_card_host(orch, user_id, chat_id, args)
+    except ComputerHostError:
+        return None
+    policy = _computer_policy()
+    try:
+        args["cwd"] = policy.resolve_cwd(args.get("cwd"), host.workspace_roots, host.name)
+    except policy.CwdRefusal as exc:
+        _audit_sync(user_id, "remote_op.refused_cwd", "refused run_command outside the shared folders",
+                    machine_id=host.host_id, verb="run_command", outcome="failure", chat_id=chat_id)
+        return Refusal((f"{exc.code}: {exc} Nothing was run and no approval was requested.",
+                        [Alert(message=f"That folder is not shared from {host.name}; nothing was run.",
+                               variant="error").to_dict()]))
+    return None
 
 
 def computer_card_host(orch, owner, chat, args):
@@ -845,6 +868,11 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
     if classification is None:
         return None
 
+    if agent_id == "computer-use-1" and tool_name == "run_command":
+        refusal = _resolve_command_folder(orch, user_id, chat_id, args)
+        if refusal is not None:
+            return refusal
+
     if (agent_id == "computer-use-1" and tool_name == "browser_navigate" and "url" in args
             and _computer_policy().canonical_browser_url(args["url"]) is None):
         _audit_sync(user_id, "remote_op.refused_url", "refused browser_navigate to a rejected address",
@@ -1091,6 +1119,11 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
     tc = SimpleNamespace(id="remote-op", function=SimpleNamespace(
         name=row.tool_name, arguments=json.dumps(stored_args)))
     logger.info("remote_op approved -> re-dispatch: id=%s verb=%s", proposal_id, row.tool_name)
+    from orchestrator.hitl_confirmation import (
+        announce_turn, claim_turn_effect, release_turn_effect, turn_effect_cancelled,
+    )
+
+    announced = False
     if terminal_request is not None:
         terminal_request.status = "running"
         try:
@@ -1107,24 +1140,61 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
         if row.agent_id == "computer-use-1" and not computer_approval_current(orch, websocket, computer_authority):
             await _say("The computer authority changed during review. No new action was dispatched.")
             return
+        announced = websocket is not None and bool(row.conversation_id)
+        if announced:
+            await announce_turn(orch, websocket, "executing", f"Running: {row.tool_name}...")
+        effect_key = claim_turn_effect(orch, websocket, row.conversation_id) if announced else None
         try:
-            with source_review_scope(orch, row):
-                result = await orch.execute_single_tool(
-                    websocket, tc, {row.tool_name: row.agent_id}, row.conversation_id, user_id=user_id)
+            try:
+                with source_review_scope(orch, row):
+                    result = await orch.execute_single_tool(
+                        websocket, tc, {row.tool_name: row.agent_id}, row.conversation_id, user_id=user_id)
+                cancelled = False
+            except asyncio.CancelledError:
+                if effect_key is None or not turn_effect_cancelled(orch):
+                    raise
+                result, cancelled = None, True
+            finally:
+                if effect_key is not None:
+                    release_turn_effect(orch, effect_key)
         except (Exception, asyncio.CancelledError):
             if row.agent_id == "computer-use-1":
                 if resume_requested:
                     await pause_failed_computer_approval(orch, websocket, computer_authority)
                 getattr(orch, "_computer_approval_authorities", {}).pop(str(proposal_id), None)
             raise
+        if cancelled:
+            if row.agent_id == "computer-use-1":
+                if resume_requested:
+                    await pause_failed_computer_approval(orch, websocket, computer_authority)
+                getattr(orch, "_computer_approval_authorities", {}).pop(str(proposal_id), None)
+            await _replace_card(orch, row, "Cancelled",
+                                f"{row.summary} — cancelled; inspect current state before retrying.")
+            await announce_turn(orch, websocket, "done")
+            return
+    continued = False
+    try:
+        continued = await _settle_decision(orch, websocket, user_id, row, result, stored_args, proposal_id,
+                                           computer_authority, resume_requested, guided, origin, held, _say)
+    finally:
+        if announced and not continued:
+            await announce_turn(orch, websocket, "done")
+
+
+async def _settle_decision(orch, websocket, user_id, row, result, stored_args, proposal_id, computer_authority,
+                           resume_requested, guided, origin, held, _say) -> bool:
     from orchestrator.remote_effect_ingress import publish_review
     await publish_review(orch, websocket, row.agent_id, row.tool_name, row.conversation_id, user_id, result)
     if row.agent_id == "computer-use-1" and successful_result(result):
         _computer_use_on_approved(orch, row, websocket, computer_authority)
-    elif row.agent_id == "computer-use-1" and resume_requested:
+    elif row.agent_id == "computer-use-1":
         data, _error = _result_data(result)
         if not isinstance(data, dict) or data.get("status") != "confirmation_required":
-            await pause_failed_computer_approval(orch, websocket, computer_authority)
+            if resume_requested:
+                await pause_failed_computer_approval(orch, websocket, computer_authority)
+            reason = _failure_text(result)
+            await _replace_card(orch, row, "Not completed", f"{row.summary} — not completed: {reason}")
+            await _say(f"{row.tool_name} did not complete: {reason}", variant="error")
     if row.agent_id == "computer-use-1":
         getattr(orch, "_computer_approval_authorities", {}).pop(str(proposal_id), None)
     if (row.agent_id in {"gaiakeep-1", "computer-use-1"} and websocket is not None and row.conversation_id
@@ -1160,11 +1230,13 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
         outcome, guard = CONTINUATION_TEXT, computer_current
     else:
         outcome = None
-    if outcome is not None and guided and row.conversation_id and websocket is not None:
-        if origin is not None:
-            held.remove(origin)
-        continue_after_approval(orch, websocket, user_id, row.conversation_id, outcome, "✓ Approved — continuing",
-                                origin, guard=guard, name=f"remote-op-continue-{row.proposal_id}")
+    if outcome is None or not guided or not row.conversation_id or websocket is None:
+        return False
+    if origin is not None:
+        held.remove(origin)
+    continue_after_approval(orch, websocket, user_id, row.conversation_id, outcome, "✓ Approved — continuing",
+                            origin, guard=guard, name=f"remote-op-continue-{row.proposal_id}")
+    return True
 
 
 def _result_data(result) -> Tuple[Any, Any]:
@@ -1184,6 +1256,14 @@ def successful_result(result) -> bool:
     return not isinstance(data, dict) or (not data.get("code") and data.get("status") not in {
         "confirmation_required", "failed", "error", "uncertain", "outcome_uncertain", "cancelled"}
         and data.get("ok") is not False and data.get("launched") is not False)
+
+
+def _failure_text(result) -> str:
+    data, error = _result_data(result)
+    for source in (error, data):
+        if isinstance(source, dict) and (source.get("message") or source.get("code")):
+            return " ".join(str(source.get("message") or source.get("code")).split())[:300]
+    return "the computer returned no result"
 
 
 def _not_attempted_code(result) -> Optional[str]:

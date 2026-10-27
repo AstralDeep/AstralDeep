@@ -66,6 +66,21 @@ async def test_exact_in_process_implementation_clears_only_run_command(setup):
     assert review.review_registered_terminal(orch) is False
 
 
+async def test_registration_declares_end_session_a_host_owned_de_escalation(setup):
+    orch = await setup()
+    assert orch._source_bound_de_escalations == {(AGENT, "end_session")}
+    card = deepcopy(orch.agent_cards[AGENT])
+    await orch.register_agent(object(), RegisterAgent(agent_card=card, api_key="synthetic-registration-key"))
+    assert orch._source_bound_de_escalations == set()
+
+
+async def test_a_rescoped_end_session_is_not_declared_a_de_escalation(setup, monkeypatch):
+    monkeypatch.setitem(mcp_tools.TOOL_REGISTRY, "end_session",
+                        {**mcp_tools.TOOL_REGISTRY["end_session"], "scope": "tools:execute"})
+    orch = await setup()
+    assert not getattr(orch, "_source_bound_de_escalations", set())
+
+
 @pytest.mark.parametrize("change", ["extra_run_shell", "renamed_run_shell"])
 async def test_a_renamed_or_extra_command_tool_keeps_everything_blocked(setup, monkeypatch, change):
     entry = dict(mcp_tools.TOOL_REGISTRY["run_command"])

@@ -186,3 +186,17 @@ def test_grant_revoke_is_refused_while_the_feature_is_off(monkeypatch):
     monkeypatch.setattr(my_computers, "_enabled", lambda: False)
     calls, _key, notice = _revoke(dict(_REVOKE))
     assert calls == [] and my_computers._DISABLED_MSG in notice
+
+
+def test_a_reregistered_mac_shows_once(enabled, monkeypatch):
+    from tests.test_computer_use_076 import OWNER, _FakeOrch, _host_named
+
+    orch = _FakeOrch()
+    _host_named(orch, "RyzenRoll Mobile", online=False, age_s=60)
+    _host_named(orch, "RyzenRoll Mobile")
+    monkeypatch.setattr(my_computers, "_this_computer", lambda orch, user, params: None)
+    cards = run(my_computers.components(orch, OWNER, ["user"], {}))
+    assert [card["title"] for card in cards] == ["RyzenRoll Mobile"]
+    assert "offline" not in json.dumps(cards[0]["content"][0])
+    html = run(my_computers.render(orch, OWNER, ["user"], {}))
+    assert html.count("RyzenRoll Mobile") == 1 and "1 online · 1 total" in html
