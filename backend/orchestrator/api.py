@@ -602,7 +602,11 @@ async def delete_project(request: Request, project_id: str, revision: int,
 
     orch = _get_orchestrator(request)
     await _project_operation(orch, user_id, ProjectService(orch.history).delete,
-                             user_id, project_id, revision, changed=True)
+                             user_id, project_id, revision)
+    from orchestrator.project_authority import invalidate_deleted_project
+
+    await invalidate_deleted_project(orch, user_id, project_id)
+    await orch._broadcast_user_history(user_id=user_id, projects_changed=True)
     return DeleteResponse()
 
 

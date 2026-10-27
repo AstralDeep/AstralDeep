@@ -2737,6 +2737,7 @@ class ComputerHostDescriptor:
     verbs: tuple
     protocol: int = COMPUTER_HOST_PROTOCOL
     workspace_roots: tuple = ()
+    project_manifest: Optional[dict] = None
 
     def _validate_roots(self) -> None:
         roots = self.workspace_roots
@@ -2803,6 +2804,14 @@ class ComputerHostDescriptor:
         if unknown:
             raise ProtocolValidationError(f"computer_host.verbs contains unknown verbs: {unknown}")
         self._validate_roots()
+        if self.project_manifest is not None:
+            from shared.project_workspaces import ProjectManifest, ProjectWorkspaceError
+            try:
+                ProjectManifest.from_dict(self.project_manifest)
+            except ProjectWorkspaceError as exc:
+                raise ProtocolValidationError(str(exc)) from None
+            if self.workspace_roots or self.platform != "macos":
+                raise ProtocolValidationError("Project hosts cannot carry legacy workspace roots")
 
     def to_dict(self) -> Dict[str, Any]:
         self.validate()
@@ -2817,6 +2826,9 @@ class ComputerHostDescriptor:
         }
         if self.workspace_roots:
             data["workspace_roots"] = [dict(root) for root in self.workspace_roots]
+        if self.project_manifest is not None:
+            from shared.project_workspaces import ProjectManifest
+            data["project_manifest"] = ProjectManifest.from_dict(self.project_manifest).to_dict()
         return data
 
     @classmethod
@@ -2824,7 +2836,7 @@ class ComputerHostDescriptor:
         if not isinstance(data, Mapping):
             raise ProtocolValidationError("computer_host must be an object")
         expected = {item.name for item in fields(cls)}
-        if not expected - {"workspace_roots"} <= set(data) <= expected:
+        if not expected - {"workspace_roots", "project_manifest"} <= set(data) <= expected:
             raise ProtocolValidationError(
                 "computer_host must contain exactly host_id, name, platform, client_version, "
                 "screens, verbs, protocol and optionally workspace_roots")
@@ -2844,6 +2856,7 @@ class ComputerHostDescriptor:
             verbs=tuple(verbs),
             protocol=data["protocol"],
             workspace_roots=tuple(dict(r) if isinstance(r, Mapping) else r for r in roots),
+            project_manifest=data.get("project_manifest"),
         )
         descriptor.validate()
         return descriptor

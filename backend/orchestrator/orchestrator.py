@@ -1814,9 +1814,24 @@ class Orchestrator:
             await self._cancel_turn(websocket, session.owner_sub, session.chat_id)
 
     async def _register_computer_host(self, websocket, owner_sub: str, descriptor) -> None:
-        host_id = descriptor.host_id if hasattr(descriptor, "host_id") else descriptor["host_id"]
+        from orchestrator.project_authority import prepare_project_advertisement, acknowledge_project_manifest
+        from orchestrator.computer_hosts import ComputerHostError
+        from shared.project_workspaces import ProjectManifest
+
+        data = descriptor.to_dict() if hasattr(descriptor, "to_dict") else descriptor
+        host_id = data["host_id"]
+        try:
+            project_mode, project_manifest = await prepare_project_advertisement(self, websocket, owner_sub, data)
+        except ComputerHostError as exc:
+            raw = data.get("project_manifest")
+            await acknowledge_project_manifest(self, websocket, host_id,
+                ProjectManifest.from_dict(raw) if raw is not None else None, error=exc)
+            return
         displaced = (self.computer_hosts.get(owner_sub, host_id), self.computer_hosts.host_for_socket(websocket))
         host, superseded = self.computer_hosts.register(owner_sub, websocket, descriptor)
+        host.project_mode = project_mode
+        host.project_manifest = project_manifest
+        host.project_manifest_highwater = project_manifest.generation if project_manifest else 0
         ended = set()
         for previous in (*displaced, superseded):
             if previous is None or (previous.owner_sub, previous.host_id) in ended:
@@ -1826,6 +1841,7 @@ class Orchestrator:
             await self.computer_sessions.end_all_for_host(
                 previous.owner_sub, previous.host_id, "host_superseded")
         await self.computer_hosts.push_presence(host, "online")
+        await acknowledge_project_manifest(self, websocket, host_id, project_manifest)
 
     async def _teardown_computer_host(self, websocket) -> None:
         host = self.computer_hosts.on_socket_closed(websocket)
@@ -1879,7 +1895,15 @@ class Orchestrator:
             await self._register_computer_host(websocket, owner_sub, descriptor)
             return
         host = self.computer_hosts.host_for_socket(websocket)
-        if host is None:
+        if host is None or host.owner_sub != owner_sub or payload.get("host_id", host.host_id) != host.host_id:
+            return
+        if event == "project_workspaces_changed":
+            from orchestrator.project_authority import replace_project_manifest
+            from shared.project_workspaces import ProjectWorkspaceError
+            try:
+                await replace_project_manifest(self, websocket, host, payload.get("project_manifest"))
+            except ProjectWorkspaceError:
+                logger.warning("Malformed complete project manifest refused")
             return
         if event == "withdraw":
             await self.computer_sessions.clear_bypass(owner_sub, host.host_id, "access_disabled")
@@ -6869,6 +6893,8 @@ class Orchestrator:
         code: int,
         reason: str,
     ) -> None:
+        from orchestrator.approval_receipts import drop_connection
+        drop_connection(self, websocket)
         try:
             await websocket.close(code=code, reason=reason)
         except Exception:
@@ -8850,7 +8876,7 @@ class Orchestrator:
             if message.action == "computer_response":
                 await self._handle_computer_response(context.websocket, message)
             elif message.action == "computer_event" and message.payload.get("event") in {
-                    "announce", "withdraw", "heartbeat", "paused", "resumed", "stopped"}:
+                    "announce", "withdraw", "heartbeat", "paused", "resumed", "stopped", "project_workspaces_changed"}:
                 host = self.computer_hosts.host_for_socket(context.websocket)
                 if message.payload["event"] != "announce" and (
                         host is None or host.owner_sub != self.ui_sessions[context.websocket].get("sub")
@@ -10108,9 +10134,6 @@ class Orchestrator:
                         else:
                             _hosts.pop(id(websocket), None)
                     _ch = getattr(msg, "computer_host", None)
-                    if _ch is not None and flags.is_enabled("computer_use"):
-                        await self._register_computer_host(
-                            websocket, user_data.get("sub", "legacy"), _ch)
                     _register_started = time.monotonic()
                     user_id = user_data.get("sub", "legacy")
                     _resume_requested = getattr(msg, "resume", None) is not None
@@ -10168,12 +10191,17 @@ class Orchestrator:
                     _llm_gate_task = asyncio.create_task(
                         self.llm_configured_for(user_data.get("sub", "")))
 
-                    device_info = msg.device or {}
+                    device_info = dict(msg.device or {})
+                    device_info["project_workspaces_v1"] = (
+                        device_info.get("project_workspaces_v1") is True
+                        and "project_workspaces_v1" in user_data["_client_capabilities"])
                     rote_profile = self.rote.register_device(websocket, device_info)
                     user_data["_project_workspaces_v1"] = project_workspaces_negotiated(
                         rote_profile, device_info, user_data["_client_capabilities"])
                     user_data["_project_device_id"] = msg.device_id
                     user_data["_project_connection_generation"] = msg.connection_generation
+                    if _ch is not None and flags.is_enabled("computer_use"):
+                        await self._register_computer_host(websocket, user_data.get("sub", "legacy"), _ch)
 
                     try:
                         _dt = getattr(rote_profile.device_type, "value", str(rote_profile.device_type))
@@ -11364,7 +11392,8 @@ class Orchestrator:
                 elif msg.action == "update_device":
                     registration = self.ui_sessions.get(websocket)
                     viewport_binding = getattr(self, "_conversation_scopes", {}).get(id(websocket))
-                    device_info = msg.payload.get("device") or {}
+                    device_info = dict(msg.payload.get("device") or {})
+                    device_info["project_workspaces_v1"] = (registration or {}).get("_project_workspaces_v1") is True
                     old_profile = self.rote.get_profile(websocket)
                     canonical_cached = self.rote.get_cached_components(websocket) or []
                     new_profile, re_adapted, profile_changed = self.rote.update_device(websocket, device_info)
@@ -17562,6 +17591,32 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         initiating_agent_id: Optional[str] = None,
         auto_subscribe_stream: bool = True,
     ):
+        from orchestrator.project_authority import project_dispatch_scope
+        from orchestrator.computer_hosts import ComputerHostError
+        admitted = False
+        try:
+            async with project_dispatch_scope(self, websocket, user_id, chat_id, agent_id, tool_name, args):
+                admitted = True
+                return await self._run_project_bound_gate_stack(websocket, agent_id, tool_name, args, chat_id, user_id,
+                    stream_params=stream_params, parent_token=parent_token, initiating_agent_id=initiating_agent_id,
+                    auto_subscribe_stream=auto_subscribe_stream)
+        except ComputerHostError as exc:
+            if admitted:
+                raise
+            await self._audit_gate_denial(websocket, user_id, agent_id, tool_name, chat_id, args,
+                                         gate="project_authority", detail=exc.code)
+            return GateRefusal(response=MCPResponse(error={"code": exc.code, "message": exc.message,
+                "retryable": False, "effect_state": "not_started"}),
+                render_components=[Alert(message=exc.message, variant="error").to_dict()], render_target="chat")
+
+    async def _run_project_bound_gate_stack(
+        self, websocket, agent_id: Optional[str], tool_name: str, args: Dict,
+        chat_id: str = None, user_id: str = None, *,
+        stream_params: Optional[Dict] = None,
+        parent_token: Optional[Dict[str, Any]] = None,
+        initiating_agent_id: Optional[str] = None,
+        auto_subscribe_stream: bool = True,
+    ):
         if stream_params is None:
             stream_params = dict(args)
 
@@ -19261,6 +19316,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator import hitl_confirmation
 
         async def reviewed_invoke(capabilities):
+            from orchestrator.project_authority import project_dispatch_scope
+            from orchestrator.computer_hosts import ComputerHostError
+            admitted = False
+            try:
+                async with project_dispatch_scope(self, websocket, user_id, conversation_id, agent_id, tool_name, args):
+                    admitted = True
+                    return await project_bound_invoke(capabilities)
+            except ComputerHostError as exc:
+                return MCPResponse(error={"code": exc.code, "message": exc.message, "retryable": False,
+                    **({"effect_state": "not_started"} if not admitted or exc.effect_state == "not_started" else {})})
+
+        async def project_bound_invoke(capabilities):
             from orchestrator import mesh_admission
             from orchestrator import source_bound
             claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
@@ -19292,6 +19359,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     logger.exception("Source-bound pre-effect audit unavailable")
                     return MCPResponse(error={"code": "effect_audit_unavailable",
                         "message": "Action audit is unavailable.", "retryable": False})
+            project_read = None
+            if not action.needs_review:
+                try:
+                    project_read = await hitl_confirmation.project_read_approval(
+                        self, websocket, user_id, conversation_id, agent_id, tool_name, args)
+                except Exception:
+                    return MCPResponse(error={"code": "project_authority_unavailable",
+                        "message": "The project grant or its audit is no longer available.", "retryable": False,
+                        "effect_state": "not_started"})
             refusal = hitl_confirmation.effect_refusal(
                 self, websocket, user_id, conversation_id, agent_id, tool_name, args, start=True)
             if refusal is not None:
@@ -19309,10 +19385,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 else:
                     result = await invoke(capabilities)
             except (Exception, asyncio.CancelledError):
-                if action.needs_review:
+                outcome_call = approval.call if action.needs_review else project_read
+                if outcome_call is not None:
                     try:
                         await hitl_confirmation.audit_effect_outcome(
-                            self, approval.call, uncertain=True)
+                            self, outcome_call, uncertain=True)
                     except Exception:
                         logger.exception("Source-bound uncertain-outcome audit unavailable")
                 raise
@@ -19328,6 +19405,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     return MCPResponse(error={"code": "outcome_uncertain",
                         "message": "Action outcome could not be audited; reconcile before retrying.",
                         "retryable": False})
+            if project_read is not None:
+                try:
+                    await hitl_confirmation.audit_effect_outcome(self, project_read,
+                        uncertain=result is None or bool(result.error))
+                except Exception:
+                    return MCPResponse(error={"code": "outcome_uncertain", "retryable": False,
+                        "message": "The project read outcome could not be audited."})
+                if result is not None and isinstance(result.result, dict):
+                    data = result.result.get("_data")
+                    if isinstance(data, dict):
+                        result.result = {**result.result, "_data": {**data, "approval_source": "project_grant"}}
             return result
 
         adapter = self._governed_dispatch_adapter()

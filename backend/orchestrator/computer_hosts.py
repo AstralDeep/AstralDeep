@@ -44,6 +44,10 @@ class ComputerHost:
     registered_at: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
     offline_reason: Optional[str] = None
+    project_mode: bool = False
+    project_manifest: Any = None
+    project_manifest_highwater: int = 0
+    project_retirements: Dict[str, int] = field(default_factory=dict)
 
     def unavailable(self) -> "ComputerHostError":
         if self.offline_reason == WITHDRAWN:
@@ -231,7 +235,10 @@ class ComputerHostRegistry:
             candidates=[h.name for h in online])
 
     async def request(self, host: ComputerHost, session_id: str, verb: str,
-                      args: Dict[str, Any], timeout: float) -> Dict[str, Any]:
+                      args: Dict[str, Any], timeout: float, *, deadline: Optional[float] = None) -> Dict[str, Any]:
+        expires = time.monotonic() + timeout
+        if deadline is not None:
+            expires = min(expires, deadline)
         if self._offline.get((host.owner_sub, host.host_id)) is host and host.offline_reason == WITHDRAWN:
             raise host.unavailable()
         if (self._hosts.get((host.owner_sub, host.host_id)) is not host
@@ -241,6 +248,29 @@ class ComputerHostRegistry:
             raise ComputerHostError("unsupported", f"{verb!r} is not a host verb")
         if verb not in host.verbs:
             raise ComputerHostError("unsupported", f"{host.name} does not support {verb}")
+        origin = None
+        if host.project_mode:
+            from orchestrator.project_authority import FILE_VERBS, ProjectSessionWitness, resolve_project_origin
+            session = self._orch.computer_sessions.get(session_id)
+            if session is None or session.state != "active":
+                raise ComputerHostError("no_session", "The origin project session is not active")
+            session_witness = ProjectSessionWitness.capture(self._orch, session)
+            try:
+                async with asyncio.timeout(max(0, expires - time.monotonic())):
+                    origin = await resolve_project_origin(self._orch, host.owner_sub, session.chat_id, host, session=session)
+            except TimeoutError:
+                raise ComputerHostError("timeout", "The project lookup expired before delivery.", effect_state="not_started") from None
+            if not session_witness.current(self._orch):
+                raise ComputerHostError("stale_project_grant", "The session changed before delivery", effect_state="not_started")
+            if verb in FILE_VERBS:
+                from orchestrator.project_authority import normalize_project_arguments
+                checked = dict(args)
+                normalize_project_arguments(origin, verb, checked)
+                if checked != args:
+                    raise ComputerHostError("stale_project_grant", "Project arguments changed after preflight", effect_state="not_started")
+        remaining = expires - time.monotonic()
+        if remaining < 0.001:
+            raise ComputerHostError("timeout", "The computer call expired before delivery.", effect_state="not_started")
         loop = asyncio.get_running_loop()
         request_id = f"creq_{uuid.uuid4().hex}"
         fut: asyncio.Future = loop.create_future()
@@ -251,10 +281,11 @@ class ComputerHostRegistry:
             "session_id": session_id,
             "verb": verb,
             "args": args,
-            "deadline_ms": int(timeout * 1000),
+            "deadline_ms": int(remaining * 1000),
+            **({"project_context": origin.context.to_dict()} if origin else {}),
         })
         try:
-            async with asyncio.timeout(timeout):
+            async with asyncio.timeout(remaining):
                 try:
                     sent = await self._orch._safe_send(host.websocket, frame)
                 except Exception:
@@ -269,6 +300,16 @@ class ComputerHostRegistry:
                                           "current state before retrying") from None
         finally:
             self._pending.pop(request_id, None)
+        if origin is not None:
+            try:
+                async with asyncio.timeout(max(0, expires - time.monotonic())):
+                    await resolve_project_origin(self._orch, host.owner_sub, session.chat_id, host, session=session)
+                if not session_witness.current(self._orch):
+                    raise ComputerHostError("stale_project_grant", "The session changed after delivery")
+                if time.monotonic() >= expires:
+                    raise ComputerHostError("outcome_uncertain", "The call expired after delivery")
+            except (ComputerHostError, TimeoutError):
+                raise ComputerHostError("outcome_uncertain", "Project authority changed after delivery; reconcile the outcome.") from None
         host.last_seen = time.time()
         if payload.get("ok") is True:
             result = payload.get("result")

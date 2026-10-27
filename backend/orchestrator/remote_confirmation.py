@@ -151,6 +151,8 @@ class ComputerApproval:
     task: object = None
     controller_context: object = None
     connection_generation: object = None
+    project_origin: object = None
+    standing: bool = False
 
 
 def _resolve_command_folder(orch, user_id, chat_id, args):
@@ -161,8 +163,12 @@ def _resolve_command_folder(orch, user_id, chat_id, args):
     except ComputerHostError:
         return None
     policy = _computer_policy()
+    from orchestrator.project_authority import project_roots
     try:
-        args["cwd"] = policy.resolve_cwd(args.get("cwd"), host.workspace_roots, host.name)
+        roots = project_roots(orch, user_id, chat_id, host, required=True)
+        args["cwd"] = policy.resolve_cwd(args.get("cwd", roots[0]["path"] if roots and getattr(host, "project_mode", False) else None), roots, host.name)
+    except ComputerHostError as exc:
+        return Refusal((f"{exc.code}: {exc.message}", [Alert(message=exc.message, variant="error").to_dict()]))
     except policy.CwdRefusal as exc:
         _audit_sync(user_id, "remote_op.refused_cwd", "refused run_command outside the shared folders",
                     machine_id=host.host_id, verb="run_command", outcome="failure", chat_id=chat_id)
@@ -182,8 +188,13 @@ def _resolve_file_folder(orch, user_id, chat_id, tool_name, args):
     if host.platform != "macos":
         return None
     policy = _computer_policy()
+    from orchestrator.project_authority import project_roots
     try:
-        args["path"] = policy.resolve_workspace_path(args.get("path"), host.workspace_roots, host.name)
+        roots = project_roots(orch, user_id, chat_id, host, required=True)
+        primary = roots[0]["path"] if roots and getattr(host, "project_mode", False) else None
+        args["path"] = policy.resolve_workspace_path(args.get("path"), roots, host.name, primary=primary)
+    except ComputerHostError as exc:
+        return Refusal((f"{exc.code}: {exc.message}", [Alert(message=exc.message, variant="error").to_dict()]))
     except policy.CwdRefusal as exc:
         _audit_sync(user_id, "remote_op.refused_path", "refused file operation outside the shared folders",
                     machine_id=host.host_id, verb=tool_name, outcome="failure", chat_id=chat_id)
@@ -199,7 +210,7 @@ def computer_card_host(orch, owner, chat, args):
     return sessions.resolve_host(owner, chat, args.get("computer"))
 
 
-def capture_computer_approval(orch, websocket, owner, chat, args):
+def capture_computer_approval(orch, websocket, owner, chat, args, *, standing=False):
     try:
         host = computer_card_host(orch, owner, chat, args)
         session = orch.computer_sessions.live_for_host(owner, host.host_id)
@@ -211,7 +222,7 @@ def capture_computer_approval(orch, websocket, owner, chat, args):
             return None
         authority = ComputerApproval(owner, chat, websocket, host, session, session.authority_generation,
             getattr(orch, "_hitl_task_origins", {}).get((owner, chat)), context,
-            getattr(context, "connection_generation", None))
+            getattr(context, "connection_generation", None), getattr(session, "project_origin", None), standing)
         if session.state == "paused" and session.pause_reason == "approval_not_completed":
             authority = getattr(session, "approval_pause_authority", None)
             return authority if computer_approval_current(orch, websocket, authority, allow_local_pause=True) else None
@@ -231,6 +242,10 @@ def computer_approval_current(orch, websocket, authority, *, allow_local_pause=F
             or not context.registered or context.closing or context.connection_generation != authority.connection_generation):
         return False
     session = authority.session
+    if getattr(authority.host, "project_mode", False):
+        from orchestrator.project_authority import origin_current
+        if authority.project_origin is None or not origin_current(orch, authority.project_origin):
+            return False
     state_current = (session.state == "active" and session.authority_generation == authority.generation)
     if allow_local_pause:
         recoverable_pause = (session.pause_reason == "local_input"
@@ -240,7 +255,8 @@ def computer_approval_current(orch, websocket, authority, *, allow_local_pause=F
                                          and session.authority_generation == authority.generation + 1)
     return (authority.websocket is websocket and claims.get("sub") == authority.owner
             and not _no_live_human(orch, websocket)
-            and getattr(orch, "_ws_active_chat", {}).get(id(websocket)) == authority.chat
+            and (authority.standing and authority.project_origin is not None
+                 or getattr(orch, "_ws_active_chat", {}).get(id(websocket)) == authority.chat)
             and not getattr(orch, "cancelled_sessions", {}).get(id(websocket), False)
             and (authority.task is None
                  or getattr(orch, "_hitl_task_origins", {}).get((authority.owner, authority.chat)) is authority.task)
@@ -1024,7 +1040,9 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
 async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]) -> None:
     held: list = []
     try:
-        await _handle_decision(orch, websocket, user_id, payload, held)
+        from orchestrator.approval_receipts import run
+        await run(orch, websocket, user_id, payload, "proposal_id",
+                  lambda: _handle_decision(orch, websocket, user_id, payload, held))
     finally:
         for origin in held:
             origin.close()
@@ -1038,6 +1056,8 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
     grant_requested = decision == "grant_task"
 
     async def _say(message: str, variant: str = "warning") -> None:
+        from orchestrator.approval_receipts import note
+        note(orch, proposal_id, "refused", message)
         await orch.send_ui_render(websocket, [Alert(message=message, variant=variant).to_dict()], target="chat")
 
     context = _proposal_context(orch)
@@ -1056,6 +1076,8 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
                            proposal_id=proposal_id, outcome="failure")
         await _say("That confirmation is not available.")
         return
+    from orchestrator.approval_receipts import bind_origin
+    bind_origin(orch, proposal_id, row.conversation_id)
     computer_authority = offer = None
     if row.agent_id == "computer-use-1":
         entry = getattr(orch, "_computer_approval_authorities", {}).get(str(proposal_id))
@@ -1120,6 +1142,8 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
                            proposal_id=proposal_id, machine_id=_mid, verb=_verb,
                            outcome="failure", chat_id=_cid)
         await _say("This request expired — please re-request the operation.")
+        from orchestrator.approval_receipts import note
+        note(orch, proposal_id, "expired", "This request expired. Reissue the operation.")
         return
     if decision not in {"approve", "approve_and_resume", "grant_task"}:
         def _decline():
@@ -1140,6 +1164,8 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
                            proposal_id=proposal_id, machine_id=_mid, verb=_verb,
                            outcome="failure", chat_id=_cid)
         await _say("Declined — nothing was changed.", variant="info")
+        from orchestrator.approval_receipts import note
+        note(orch, proposal_id, "cancelled", "Declined; nothing was changed.")
         await _replace_card(orch, row, "Declined", f"{row.summary} — not done.")
         if terminal_request is not None:
             terminal_request.status = "declined"
@@ -1185,6 +1211,8 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
         if computer_authority is None:
             await _say("The local resume authority changed. Re-request the action.")
             return
+    from orchestrator.approval_receipts import note
+    note(orch, proposal_id, "accepted", "Approval accepted. The action remains subject to effect-time checks.")
     await _replace_card(orch, row, "Approved ✓", f"{row.summary} — running now.")
     # Goes back through the gate to re-validate — not a direct call
     if row.agent_id == "gaiakeep-1":

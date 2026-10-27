@@ -188,6 +188,12 @@ def _ctx(kwargs: Dict[str, Any]):
     session, err = _require_session(user_id, host)
     if err:
         return user_id, chat_id, host, err
+    if getattr(host, "project_mode", False):
+        from orchestrator.project_authority import current_origin, origin_current
+        origin = current_origin(_ORCH, user_id, chat_id, host)
+        if (origin is None or session.chat_id != chat_id
+                or not origin_current(_ORCH, getattr(session, "project_origin", None))):
+            return user_id, chat_id, host, _fail("stale_project_grant", "The session belongs to another origin or grant revision.")
     return user_id, chat_id, host, session
 
 
@@ -200,14 +206,33 @@ def _run(host, session, verb: str, args: Dict[str, Any], loop=None, *, timeout: 
     deadline = time.monotonic() + timeout
     approved_generation = computer_effect_generation(_ORCH, session)
     generation = session.authority_generation if approved_generation is None else approved_generation
+    project_lease = None
+    if getattr(host, "project_mode", False):
+        from orchestrator.project_authority import capture_project_bridge
+        try:
+            project_lease = capture_project_bridge(_ORCH, session.owner_sub, session.chat_id, host, session)
+        except ComputerHostError as exc:
+            return None, _host_error(exc)
 
     async def _go():
+        if project_lease is not None:
+            from orchestrator.project_authority import project_dispatch_scope
+            project_lease.verify(_ORCH)
+            async with project_dispatch_scope(_ORCH, project_lease.controller, project_lease.origin.owner,
+                                              project_lease.origin.chat, "computer-use-1", verb, args):
+                project_lease.verify(_ORCH)
+                return await _locked_attempt()
+        return await _locked_attempt()
+
+    async def _locked_attempt():
         if not serialize:
             return await _attempt()
         async with session.lock:
             return await _attempt()
 
     async def _attempt():
+        if project_lease is not None:
+            project_lease.verify(_ORCH)
         if session.state != "active":
             raise ComputerHostError("paused" if session.state == "paused" else "no_session",
                                     f"session is {session.state}")
@@ -219,7 +244,10 @@ def _run(host, session, verb: str, args: Dict[str, Any], loop=None, *, timeout: 
             from orchestrator.computer_use_policy import CwdRefusal, resolve_workspace_path
 
             try:
-                path = resolve_workspace_path(args.get("path"), host.workspace_roots, host.name)
+                from orchestrator.project_authority import project_roots
+                roots = project_roots(_ORCH, session.owner_sub, session.chat_id, host, required=True)
+                primary = roots[0]["path"] if roots and getattr(host, "project_mode", False) else None
+                path = resolve_workspace_path(args.get("path"), roots, host.name, primary=primary)
             except CwdRefusal as exc:
                 raise ComputerHostError(exc.code, str(exc), effect_state="not_started") from None
             if path != args.get("path"):
@@ -228,7 +256,13 @@ def _run(host, session, verb: str, args: Dict[str, Any], loop=None, *, timeout: 
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise ComputerHostError("timeout", "This action expired while queued and was not sent")
-        result = await registry.request(host, session.session_id, verb, args, remaining)
+        result = await registry.request(host, session.session_id, verb, args, remaining,
+                                        **({"deadline": deadline} if project_lease is not None else {}))
+        if project_lease is not None:
+            try:
+                project_lease.verify(_ORCH)
+            except ComputerHostError:
+                raise ComputerHostError("outcome_uncertain", "The original project call ended after delivery.") from None
         session.verbs_run += 1
         sessions.touch(session)
         return result
@@ -335,6 +369,16 @@ def list_computers(**kwargs) -> Dict[str, Any]:
     out = []
     for r in rows:
         s = live.get(r["host_id"])
+        host = registry.get(user_id, r["host_id"])
+        if host is not None and getattr(host, "project_mode", False):
+            from orchestrator.project_authority import current_origin
+            origin = current_origin(_ORCH, user_id, kwargs.get("session_id"), host)
+            roots = origin.roots if origin else []
+            r = {**r, "workspace_roots": roots, "primary_root": roots[0]["path"] if roots else None,
+                 "project_id": origin.context.project_id if origin else None,
+                 "permitted_operations": [verb for verb in host.verbs if roots or verb not in {
+                     "read_file", "list_dir", "write_file", "delete_path", "run_command", "read_output", "interrupt_command"}],
+                 "grant_refusal": None if roots else "Choose folders for this project on this Mac."}
         status = "online" if r["online"] else (f"offline · {WITHDRAWN_NOTE}" if r.get("offline_reason") == WITHDRAWN
                                                else "offline")
         out.append({**r, "status": status, "session": {"state": s["state"], "controller": s["controller_label"],
@@ -361,14 +405,25 @@ def start_session(**kwargs) -> Dict[str, Any]:
     if registry is None or sessions is None:
         return _fail("computer_unavailable", "remote control is not enabled on this server")
     try:
-        host = registry.resolve(user_id, kwargs.get("computer"))
+        host = sessions.resolve_host(user_id, chat_id, kwargs.get("computer"))
     except ComputerHostError as exc:
         return _host_error(exc)
     websocket = _ORCH.socket_for_chat(user_id, chat_id) if hasattr(_ORCH, "socket_for_chat") else None
     if websocket is None:
         return _fail("unattended_refused", "a remote-control session needs a live person on an interactive client")
     try:
-        session = _bridge(sessions.start(user_id, host, websocket, chat_id), TIMEOUTS["start_session"], _loop(kwargs))
+        lease = None
+        if getattr(host, "project_mode", False):
+            from orchestrator.project_authority import capture_project_bridge
+            lease = capture_project_bridge(_ORCH, user_id, chat_id, host,
+                                           sessions.live_for_host(user_id, host.host_id), allow_rebind=True)
+            websocket = lease.controller
+        async def start():
+            if lease is not None:
+                lease.verify(_ORCH)
+            return await sessions.start(user_id, host, websocket, chat_id,
+                caller_guard=(lambda: lease.verify(_ORCH, session_transition=True)) if lease else None)
+        session = _bridge(start(), TIMEOUTS["start_session"], _loop(kwargs))
     except ComputerHostError as exc:
         return _host_error(exc)
     except Exception as exc:  # noqa: BLE001
@@ -378,7 +433,10 @@ def start_session(**kwargs) -> Dict[str, Any]:
     vision = "yes" if session.images_supported else "no — non-visual mode"
     data = {"session_id": session.session_id, "host_id": host.host_id, "computer": host.name,
             "platform": host.platform, "screens": host.screens, "state": session.state,
-            "images_supported": session.images_supported, "workspace_roots": host.workspace_roots,
+            "images_supported": session.images_supported,
+            "workspace_roots": session.project_origin.roots if session.project_origin else host.workspace_roots,
+            **({"project_id": session.project_origin.context.project_id,
+                "primary_root": session.project_origin.primary} if session.project_origin else {}),
             "note": "Take a screenshot to see the screen; coordinates you send are in the "
                     "screenshot's pixel space."}
     card = Card(title=f"Controlling {host.name}", content=[
@@ -402,7 +460,21 @@ def end_session(**kwargs) -> Dict[str, Any]:
     session = _sessions().live_for_host(user_id, host.host_id)
     if session is None:
         return _data({"ended": False, "note": f"no session on {host.name}"})
-    _bridge(_sessions().end(session, "user_stop", cancel_turn=False), TIMEOUTS["end_session"], _loop(kwargs))
+    try:
+        lease = None
+        if getattr(host, "project_mode", False):
+            from orchestrator.project_authority import capture_project_bridge
+            lease = capture_project_bridge(_ORCH, user_id, chat_id, host, session)
+        async def end():
+            if lease is not None:
+                from orchestrator.project_authority import resolve_project_origin
+                lease.verify(_ORCH)
+                await resolve_project_origin(_ORCH, user_id, chat_id, host, session=session)
+                lease.verify(_ORCH)
+            await _sessions().end(session, "user_stop", cancel_turn=False)
+        _bridge(end(), TIMEOUTS["end_session"], _loop(kwargs))
+    except ComputerHostError as exc:
+        return _host_error(exc)
     return _data({"ended": True, "reason": "user_stop", "computer": host.name, "verbs_run": session.verbs_run},
                  [Text(content=f"Stopped controlling {host.name}.", variant="body")])
 
@@ -420,9 +492,32 @@ def resume_session(**kwargs) -> Dict[str, Any]:
     if session is None:
         return _fail("no_session", f"no session on {host.name}", next_action="call start_session")
 
+    lease = None
+    if getattr(host, "project_mode", False):
+        from orchestrator.project_authority import capture_project_bridge
+        try:
+            lease = capture_project_bridge(_ORCH, user_id, chat_id, host, session)
+        except ComputerHostError as exc:
+            return _host_error(exc)
+
     async def _resume_and_verify():
+        expected = None
+        if lease is not None:
+            from dataclasses import replace
+            from orchestrator.project_authority import resolve_project_origin
+            lease.verify(_ORCH)
+            await resolve_project_origin(_ORCH, user_id, chat_id, host, session=session)
+            lease.verify(_ORCH)
+            expected = replace(lease, session=replace(lease.session, state="active",
+                generation=lease.session.generation + (1 if lease.session.state == "paused" else 0)))
         await _sessions().resume(session)
+        if expected is not None:
+            expected.verify(_ORCH)
         await asyncio.sleep(RESUME_SETTLE_SECONDS)
+        if expected is not None:
+            expected.verify(_ORCH)
+            await resolve_project_origin(_ORCH, user_id, chat_id, host, session=session)
+            expected.verify(_ORCH)
         return session.state
 
     try:
@@ -854,8 +949,11 @@ def _command_args(kwargs: Dict[str, Any], host) -> Dict[str, Any]:
             raise _Refusal("out_of_range", f"argv must list 1-{MAX_ARGV_ITEMS} strings, the program first")
         args["argv"] = list(argv)
     try:
-        args["cwd"] = resolve_cwd(kwargs.get("cwd"), host.workspace_roots, host.name)
-    except CwdRefusal as exc:
+        from orchestrator.project_authority import project_roots
+        roots = project_roots(_ORCH, kwargs.get("user_id"), kwargs.get("session_id"), host, required=True)
+        default = roots[0]["path"] if roots and getattr(host, "project_mode", False) else None
+        args["cwd"] = resolve_cwd(kwargs.get("cwd", default), roots, host.name)
+    except (CwdRefusal, ComputerHostError) as exc:
         raise _Refusal(exc.code, str(exc)) from None
     env = kwargs.get("env")
     if env is not None:

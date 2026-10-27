@@ -63,7 +63,9 @@ def unified_diff(path: str, current: Optional[str], proposed: str) -> Tuple[str,
 async def _current_text(orch, websocket, owner: str, chat: Optional[str], args: Dict[str, Any]) -> Tuple[str, Optional[str]]:
     from orchestrator.remote_confirmation import capture_computer_approval, computer_approval_current
 
-    authority = capture_computer_approval(orch, websocket, owner, chat, args)
+    from orchestrator.hitl_confirmation import consent_decision
+    authority = capture_computer_approval(orch, websocket, owner, chat, args,
+        standing=consent_decision(orch, websocket, owner, chat, "computer-use-1", "write_file", args, ())[0] == "standing")
     if authority is None:
         return "unavailable", None
     session = authority.session
@@ -109,7 +111,10 @@ async def prepare_write_review(orch, websocket, owner: str, chat: Optional[str],
         host = computer_card_host(orch, owner, chat, args)
         if host.platform != "macos":
             return None
-        args["path"] = resolve_workspace_path(args.get("path"), host.workspace_roots, host.name)
+        from orchestrator.project_authority import project_roots
+        roots = project_roots(orch, owner, chat, host, required=True)
+        primary = roots[0]["path"] if roots and getattr(host, "project_mode", False) else None
+        args["path"] = resolve_workspace_path(args.get("path"), roots, host.name, primary=primary)
     except (ComputerHostError, CwdRefusal):
         return None
     snapshot = await _current_text(orch, websocket, owner, chat, args)
