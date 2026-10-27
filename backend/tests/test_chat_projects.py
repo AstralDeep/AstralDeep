@@ -771,3 +771,93 @@ def test_client_supplied_creation_identity_is_not_silently_replaced(api_client):
     response = client.post("/api/chats", json={"chat_id": identity()})
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "project_selection_required"
+
+
+@pytest.mark.parametrize(
+    "legacy_id",
+    ["🧪" * 512, "\x01" * 512, " legacy\n" + "🧪" * 504],
+    ids=["emoji", "control", "mixed"],
+)
+def test_project_chat_cursor_round_trips_maximum_legacy_identity(history, legacy_id):
+    from orchestrator.projects import ProjectService
+
+    service = ProjectService(history)
+    owner_id = "🧪" * 512
+    project_id = identity()
+    service.create(owner_id, project_id, "Research")
+    chats = sorted([legacy_id, "🫠" * 512])
+    for chat_id in chats:
+        history.create_chat(chat_id, user_id=owner_id)
+        with history.plane_runtime.transaction() as transaction:
+            history.plane_repositories.projects.attach_chat(
+                transaction, owner_id=owner_id, project_id=project_id, chat_id=chat_id
+            )
+    page = service.list_chats(owner_id, project_id, limit=1)
+    assert page["chats"][0]["id"] == chats[0]
+    assert len(page["next_cursor"]) <= 4096
+    final = service.list_chats(
+        owner_id, project_id, limit=1, cursor=page["next_cursor"]
+    )
+    assert final["chats"][0]["id"] == chats[1]
+    assert final["next_cursor"] is None
+
+
+def test_project_cursor_bounds_do_not_depend_on_owner_unicode(history):
+    from orchestrator.projects import ProjectService
+
+    service = ProjectService(history)
+    owner = "🧪" * 512
+    projects = [identity(), identity()]
+    for index, project_id in enumerate(projects):
+        service.create(owner, project_id, "Project", index)
+    first = service.list(owner, limit=1)
+    assert len(first["next_cursor"]) < 512
+    final = service.list(owner, limit=1, cursor=first["next_cursor"])
+    assert final["projects"][0]["project_id"] == projects[1]
+    assert final["next_cursor"] is None
+
+
+@pytest.mark.parametrize(
+    "ordering",
+    [
+        {"chat_id_utf8": "!"},
+        {"chat_id_utf8": 3},
+        {"chat_id_utf8": "_w=="},
+        {"chat_id_utf8": "", "owner_id": "other"},
+        [],
+    ],
+)
+def test_signed_malformed_cursor_ordering_is_refused(ordering):
+    import time
+    from orchestrator.external_identity_links import encode_signed_payload
+    from orchestrator.projects import ProjectError, ProjectService, _cursor_scope
+    from orchestrator.web_auth import _secret
+
+    scope = "chats:" + identity()
+    now = int(time.time())
+    token = encode_signed_payload(
+        {
+            "v": 1,
+            "type": "project_page",
+            "iat": now,
+            "exp": now + 300,
+            "scope": _cursor_scope("owner", scope),
+            "cursor": ordering,
+        },
+        _secret(),
+    )
+    with pytest.raises(ProjectError, match="invalid_project_cursor"):
+        ProjectService._cursor(token, "owner", scope)
+
+
+def test_cursor_encoder_never_emits_an_oversized_token():
+    from astralplane import ProjectChatCursor
+    from orchestrator.projects import ProjectError, ProjectService
+
+    project_id = identity()
+    with pytest.raises(ProjectError, match="invalid_project_cursor"):
+        ProjectService._next(
+            ProjectChatCursor("owner", project_id, None, "🧪" * 600),
+            "owner",
+            "chats:" + project_id,
+        )

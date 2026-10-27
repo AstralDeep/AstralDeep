@@ -4,6 +4,9 @@ Authenticated cursors and negotiated client policy are shared by REST and WebSoc
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import time
 import uuid
 from dataclasses import asdict
@@ -24,6 +27,17 @@ from orchestrator.plane_repository_context import (
     repository_from,
 )
 from orchestrator.web_auth import _secret
+
+
+_PROJECT_CURSOR_MAX_BYTES = 4096
+
+
+def _cursor_scope(owner_id, scope):
+    return hashlib.sha256(
+        json.dumps([owner_id, scope], ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
 
 
 class ProjectError(ValueError):
@@ -164,21 +178,29 @@ class ProjectService:
             if (
                 not isinstance(cursor, str)
                 or not cursor.isascii()
-                or len(cursor) > 4096
+                or len(cursor) > _PROJECT_CURSOR_MAX_BYTES
             ):
                 raise ValueError
             payload = decode_signed_payload(
                 cursor, _secret(), expected_type="project_page"
             )
-            if payload.get("owner_id") != owner_id or payload.get("scope") != scope:
+            if payload.get("scope") != _cursor_scope(owner_id, scope):
                 raise ValueError
             values = payload["cursor"]
-            if values["owner_id"] != owner_id:
+            if scope == "projects":
+                return ProjectCursor(owner_id=owner_id, **values)
+            if not isinstance(values, dict) or set(values) != {"chat_id_utf8"}:
                 raise ValueError
-            return (
-                ProjectCursor(**values)
-                if scope == "projects"
-                else ProjectChatCursor(**values)
+            raw = base64.b64decode(
+                values["chat_id_utf8"], altchars=b"-_", validate=True
+            )
+            if len(raw) > 2048:
+                raise ValueError
+            return ProjectChatCursor(
+                owner_id=owner_id,
+                project_id=scope.removeprefix("chats:"),
+                cutoff=None,
+                chat_id=raw.decode("utf-8"),
             )
         except (ValueError, TypeError, KeyError):
             raise ProjectError("invalid_project_cursor") from None
@@ -188,18 +210,29 @@ class ProjectService:
         if cursor is None:
             return None
         now = int(time.time())
-        return encode_signed_payload(
+        ordering = (
+            {"position": cursor.position, "project_id": cursor.project_id}
+            if scope == "projects"
+            else {
+                "chat_id_utf8": base64.urlsafe_b64encode(
+                    cursor.chat_id.encode("utf-8")
+                ).decode("ascii")
+            }
+        )
+        token = encode_signed_payload(
             {
                 "v": 1,
                 "type": "project_page",
                 "iat": now,
                 "exp": now + 300,
-                "owner_id": owner_id,
-                "scope": scope,
-                "cursor": asdict(cursor),
+                "scope": _cursor_scope(owner_id, scope),
+                "cursor": ordering,
             },
             _secret(),
         )
+        if len(token) > _PROJECT_CURSOR_MAX_BYTES:
+            raise ProjectError("invalid_project_cursor")
+        return token
 
     def list(self, owner_id, *, cursor=None, limit=50):
         page = self._call(
