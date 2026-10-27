@@ -29,7 +29,8 @@ CONSUMER = ".github/workflows/backend-web-readiness.yml"
 PRODUCER = ".github/workflows/backend-web-qualification-protected.yml"
 PRODUCER_JOB = "qualify-backend-web"
 PRODUCER_PHASE_JOBS = (
-    "qualify-backend-web-gates-tests",
+    "qualify-backend-web-gates-tests_1",
+    "qualify-backend-web-gates-tests_2",
     "qualify-backend-web-gates-persistent_agents",
     "qualify-backend-web-gates-modules",
     "qualify-backend-web-services",
