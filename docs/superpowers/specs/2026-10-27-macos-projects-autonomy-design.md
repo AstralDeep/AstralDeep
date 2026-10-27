@@ -1,7 +1,7 @@
 # macOS projects and autonomous computer use
 
 Date: 2026-10-27
-State: builder review passed and owner approved implementation on 2026-10-27. No product implementation or deployment yet.
+State: builder review passed and owner approved implementation on 2026-10-27. Approval/path repairs are locally implemented, tested and independently reviewed; projects and rollout are in progress.
 
 ## Intent and owner decisions
 
