@@ -103,7 +103,7 @@ async def prepare_write_review(orch, websocket, owner: str, chat: Optional[str],
 
     if args.get(_MARKER) or approved_call(orch, owner, chat, "computer-use-1", "write_file"):
         return None
-    if consent_decision(orch, websocket, owner, chat, "computer-use-1", "write_file", args, ())[0] != "review":
+    if consent_decision(orch, websocket, owner, chat, "computer-use-1", "write_file", args, ())[0] == "refuse":
         return None
     try:
         host = computer_card_host(orch, owner, chat, args)
@@ -124,7 +124,7 @@ async def diff_components(orch, websocket, owner: str, chat: Optional[str], args
     if not isinstance(path, str) or not isinstance(proposed, str):
         return [Text(id=component_id, content=UNAVAILABLE_TEXT, variant="caption").to_dict()]
     state, current = snapshot if snapshot is not None else await _current_text(orch, websocket, owner, chat, args)
-    if state == "unavailable":
+    if state == "unavailable" or state == "missing" and args.get("if_exists") == "overwrite":
         return [Text(id=component_id, content=UNAVAILABLE_TEXT, variant="caption").to_dict()]
     diff, _truncated = await asyncio.to_thread(unified_diff, path, current, proposed)
     if not diff:
