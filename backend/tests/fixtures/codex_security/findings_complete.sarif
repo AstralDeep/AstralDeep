@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "codex-security",
+          "informationUri": "https://github.com/openai/codex-security",
+          "rules": [
+            {"id": "CS100", "shortDescription": {"text": "Unvalidated command interpolation."}},
+            {"id": "CS200", "shortDescription": {"text": "Timing-sensitive comparison."}}
+          ]
+        }
+      },
+      "originalUriBaseIds": {
+        "SRCROOT": {"uri": "file://@SOURCE_ROOT@/"}
+      },
+      "results": [
+        {
+          "ruleId": "CS100",
+          "level": "warning",
+          "message": {"text": "Candidate finding: unvalidated interpolation in command builder."},
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "@SOURCE_ROOT@/backend/orchestrator/example.py",
+                  "uriBaseId": "SRCROOT"
+                },
+                "region": {
+                  "startLine": 10,
+                  "snippet": {"text": "SYNTHETIC_SNIPPET_CONTENT_SHOULD_BE_STRIPPED"}
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CS200",
+          "level": "note",
+          "message": {"text": "Candidate finding: comparison may be timing-sensitive."},
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {"uri": "scripts/tool.py"},
+                "region": {"startLine": 42}
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

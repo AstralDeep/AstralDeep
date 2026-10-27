@@ -1,0 +1,23 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {"driver": {"name": "codex-security", "informationUri": "https://github.com/openai/codex-security"}},
+      "results": [
+        {
+          "ruleId": "CS400",
+          "level": "warning",
+          "message": {"text": "Candidate finding: provider escaped the checkout."},
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {"uri": "/etc/passwd"},
+                "region": {"startLine": 1}
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

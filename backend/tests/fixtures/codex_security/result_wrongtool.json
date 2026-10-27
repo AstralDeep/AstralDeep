@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "status": "complete",
+  "provider": {"tool": "someone-else", "version": "0.1.0-synthetic"},
+  "calls_used": 1,
+  "cost_usd": 0.01,
+  "artifacts": {"sarif": null, "coverage_receipt": null}
+}

@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "policy": "codex-security-report-only-review",
+  "provider": {
+    "tool": "codex-security",
+    "reviewed_source": {
+      "repository": "https://github.com/openai/codex-security",
+      "commit": "f894f1ff64b1a332001f48593c1622b85701f9f3",
+      "reviewed_on": "2026-10-06"
+    },
+    "args": ["scan", "--output-dir", "{output_dir}"],
+    "result_file": "result.json",
+    "endpoint_allowlist": ["api.openai.com:443"]
+  },
+  "sandbox": {
+    "program": "bwrap",
+    "mask_files": [
+      ".env",
+      ".env.*",
+      "*.pem",
+      "*.key",
+      "*.p12",
+      "*.pfx",
+      "*.keystore",
+      "*.jks",
+      "id_rsa*",
+      "id_ecdsa*",
+      "id_ed25519*",
+      "*.secrets.json"
+    ],
+    "mask_dirs": [
+      "backend/data",
+      "backend/tmp",
+      "backend/logs",
+      "backend/knowledge",
+      "data",
+      "tmp_uploads",
+      "backend/security_benchmark/_artifacts",
+      "backend/clinical_diagnostic/_artifacts",
+      "backend/answer_behavior/_artifacts"
+    ]
+  },
+  "scope": {
+    "include_roots": [
+      "backend",
+      "scripts",
+      "config",
+      "contracts",
+      "sdk",
+      "tooling",
+      "specs",
+      "migration",
+      "deploy",
+      ".specify",
+      "docs",
+      "components",
+      "Makefile",
+      "Dockerfile",
+      "pyproject.toml",
+      "ruff.toml"
+    ],
+    "exclude_paths": [
+      "backend/data",
+      "backend/tmp",
+      "backend/logs",
+      "backend/knowledge",
+      "data",
+      "tmp_uploads",
+      "backend/security_benchmark/_artifacts",
+      "backend/clinical_diagnostic/_artifacts",
+      "backend/answer_behavior/_artifacts",
+      "backend/attachments"
+    ],
+    "exclude_names": [
+      ".env",
+      ".env.*",
+      "*.pem",
+      "*.key",
+      "*.p12",
+      "*.pfx",
+      "*.keystore",
+      "*.jks",
+      "id_rsa*",
+      "id_ecdsa*",
+      "id_ed25519*",
+      "*.secrets.json"
+    ],
+    "max_files": 20000,
+    "max_bytes": 536870912
+  },
+  "budgets": {
+    "max_runs": 20,
+    "max_calls_per_run": 60,
+    "max_cost_usd": 25.0,
+    "max_seconds": 1800,
+    "max_artifact_bytes": 67108864
+  },
+  "reports": {
+    "directory": "backend/tmp/codex-security",
+    "require_untracked": true
+  },
+  "preview": {
+    "enabled": false
+  }
+}
