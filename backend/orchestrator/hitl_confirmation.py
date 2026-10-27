@@ -809,7 +809,7 @@ def _review_summary(args: dict) -> str:
     return description
 
 
-def _review_arguments(args: dict) -> tuple[str, bool]:
+def _review_arguments(args: dict, *, project_targets=frozenset()) -> tuple[str, bool]:
     from orchestrator.hitl import _SENSITIVE_INPUT, sensitive_url
     from personalization.phi_gate import get_phi_gate
     from shared.phi_redactor import PHI_FIELD_PATTERNS, redact
@@ -817,9 +817,10 @@ def _review_arguments(args: dict) -> tuple[str, bool]:
     reviewable = True
     visible_strings = []
 
-    def walk(value, key=""):
+    def walk(value, key="", *, top_level=False):
         nonlocal reviewable
-        destination = _routing_address(key, value)
+        destination = (_routing_address(key, value) or
+                       top_level and isinstance(value, str) and (key, value) in project_targets)
         sensitive_key = _SECRET_MARKERS.search(key) or any(
             marker in key.lower() for marker in ("password", "credential", "authorization", "cookie", "private_key"))
         if sensitive_key or (not destination and key not in {"url", "filename", "file_name", "hostname"}
@@ -827,7 +828,7 @@ def _review_arguments(args: dict) -> tuple[str, bool]:
             reviewable = False
             return "[REDACTED — review unavailable]"
         if isinstance(value, dict):
-            return {name: walk(child, name) for name, child in value.items()}
+            return {name: walk(child, name, top_level=value is args) for name, child in value.items()}
         if isinstance(value, list):
             return [walk(child, key) for child in value]
         if isinstance(value, str):
@@ -893,7 +894,14 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             return _refused("Review unavailable: action targets could not be resolved. Reissue the action when they are available.")
         shown = {key: value for key, value in args.items()
                  if not (key == "computer" and agent == "computer-use-1") and not (key == "user_id" and value == owner)}
-        preview, reviewable = await asyncio.to_thread(_review_arguments, shown)
+        project_targets = frozenset()
+        if agent == "computer-use-1" and consent_decision(orch, websocket, owner, chat, agent, tool, args, risks)[0] == "standing":
+            from orchestrator.project_authority import project_review_targets
+            from orchestrator.remote_confirmation import computer_card_host
+
+            host = computer_card_host(orch, owner, chat, args)
+            project_targets = project_review_targets(orch, owner, chat, host, tool, args)
+        preview, reviewable = await asyncio.to_thread(_review_arguments, shown, project_targets=project_targets)
         if not reviewable:
             return _refused("Review unavailable: this action includes sensitive or oversized arguments that cannot be "
                             "shown completely. Remove private identifiers or credentials, or use a smaller action.")

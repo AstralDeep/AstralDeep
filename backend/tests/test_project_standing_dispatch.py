@@ -107,7 +107,8 @@ async def test_omitted_computer_keeps_origin_session_with_two_project_hosts(task
     await orch.computer_sessions.end(session, "consent_revoked")
 
 @pytest.mark.parametrize("preview", ["unsupported", "missing", "present"])
-async def test_standing_write_crosses_both_gates_worker_bridge_and_native_rpc(task_runtime, monkeypatch, preview):
+@pytest.mark.parametrize("dated", [False, True])
+async def test_standing_write_crosses_both_gates_worker_bridge_and_native_rpc(task_runtime, monkeypatch, preview, dated):
     import asyncio
     import json
     from agents.computer_use import mcp_tools
@@ -115,6 +116,11 @@ async def test_standing_write_crosses_both_gates_worker_bridge_and_native_rpc(ta
 
     orch, ws, *_ = task_runtime
     session, host = await project_runtime(task_runtime, monkeypatch)
+    root = "/tmp/project-20261027" if dated else "/tmp/project-a"
+    host.project_manifest = ProjectManifest.from_dict({"generation": 2, "projects": [{"project_id": PROJECT,
+        "grant_revision": 2, "roots": [{"name": "Primary", "path": root}]}]})
+    host.project_manifest_highwater = 2
+    session.project_origin = await project_authority.resolve_project_origin(orch, "owner-a", "chat-a", host)
     orch.ui_clients = [ws, host.websocket]
     orch.computer_hosts._orch = orch
     orch.computer_sessions._orch = orch
@@ -144,7 +150,7 @@ async def test_standing_write_crosses_both_gates_worker_bridge_and_native_rpc(ta
     assert response.error is None and "code" not in response.result["_data"], response
     assert response.result["_data"]["approval_source"] == "project_grant"
     assert [frame["verb"] for frame in delivered] == (["read_file"] if preview != "unsupported" else []) + ["write_file"]
-    assert all(frame["args"]["path"] == "/tmp/project-a/note.md" for frame in delivered)
+    assert all(frame["args"]["path"] == root + "/note.md" for frame in delivered)
     assert all(frame["project_context"] == session.project_origin.context.to_dict() for frame in delivered)
     assert session.state == "active"
     if preview == "missing":

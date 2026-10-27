@@ -333,6 +333,19 @@ def normalize_project_arguments(origin, tool, args):
         raise _refusal(exc.code, str(exc)) from None
 
 
+def project_review_targets(orch, owner, chat, host, tool, args):
+    origin = current_origin(orch, owner, chat, host)
+    key = "cwd" if tool == "run_command" else "path" if tool in {"read_file", "list_dir", "write_file", "delete_path"} else None
+    if origin is None or key is None:
+        return frozenset()
+    normalized = dict(args)
+    normalize_project_arguments(origin, tool, normalized)
+    value = args.get(key)
+    if not isinstance(value, str) or normalized.get(key) != value:
+        return frozenset()
+    return frozenset({(key, value)})
+
+
 async def invalidate_deleted_project(orch, owner, project):
     registry = getattr(orch, "computer_hosts", None)
     if registry is None:
