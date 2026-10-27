@@ -90,6 +90,14 @@ def _require_uuid4(value: object, field_name: str) -> str:
     return value
 
 
+def _require_project_id(value: object) -> None:
+    try:
+        if not isinstance(value, str) or str(uuid.UUID(value)) != value:
+            raise ValueError
+    except (ValueError, AttributeError):
+        raise ProtocolValidationError("project_id must be a canonical UUID string") from None
+
+
 def _require_uint64(value: object, field_name: str) -> int:
     if (
         isinstance(value, bool)
@@ -717,7 +725,14 @@ class CorrelatedNewChat(UIEvent):
             _require_uuid4(getattr(self, name), name)
         if not isinstance(self.payload, Mapping):
             raise ProtocolValidationError("new_chat payload must be an object")
-        payload_fields = set(self._CORRELATIONS)
+        payload_fields = set(self._CORRELATIONS) | (set(self.payload) & {"project_id", "chat_id", "agent_id"})
+        if "project_id" in self.payload:
+            _require_project_id(self.payload["project_id"])
+            _require_uuid4(self.payload.get("chat_id"), "payload.chat_id")
+        elif "chat_id" in self.payload:
+            _require_uuid4(self.payload["chat_id"], "payload.chat_id")
+        if "agent_id" in self.payload:
+            _require_bounded_string(self.payload["agent_id"], "payload.agent_id", minimum=1, maximum=512)
         _require_exact_fields(
             self.payload,
             payload_fields,
@@ -791,9 +806,11 @@ class ChatCreated(Message):
             raise ProtocolValidationError("chat_created payload must be an object")
         _require_exact_fields(
             self.payload,
-            self._PAYLOAD_FIELDS,
+            self._PAYLOAD_FIELDS | (set(self.payload) & {"project_id"}),
             label="chat_created payload",
         )
+        if "project_id" in self.payload:
+            _require_project_id(self.payload["project_id"])
         _require_uuid4(self.payload.get("chat_id"), "payload.chat_id")
         if self.payload.get("from_message") is not False:
             raise ProtocolValidationError(

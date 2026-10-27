@@ -5,6 +5,7 @@ clients here can never submit audio, pick a backend, or read secrets.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import math
 import re
@@ -331,6 +332,7 @@ async def create_client_local_voice_session(
         body = await _body(request, CreateClientLocalSessionRequest)
         _validate_local_eligibility(body.client_capability)
         context = _control_context(request, user_id, body.device_id)
+        await _require_project_chat(request, user_id, body.visible_chat_id)
         runtime_request = body.model_dump(mode="json", exclude_none=True)
         runtime_request["capability"] = runtime_request.pop("client_capability")
         runtime_request["device_kind"] = (
@@ -370,6 +372,7 @@ async def take_over_client_local_voice_session(
         body = await _body(request, TakeoverClientLocalSessionRequest)
         _validate_local_eligibility(body.client_capability)
         context = _control_context(request, user_id, body.device_id)
+        await _require_project_chat(request, user_id, body.visible_chat_id)
         runtime_request = body.model_dump(mode="json", exclude_none=True)
         runtime_request["capability"] = runtime_request.pop("client_capability")
         runtime_request["expected_media_grant_revision"] = runtime_request.pop(
@@ -409,6 +412,7 @@ async def create_voice_session(
         _require_remote_v1(request)
         body = await _body(request, CreateSessionRequest)
         context = _control_context(request, user_id, body.device_id)
+        await _require_project_chat(request, user_id, body.visible_chat_id)
         runtime = _runtime(request)
         value = await _invoke(
             runtime,
@@ -440,6 +444,7 @@ async def take_over_voice_session(
         checked_session_id = _uuid4(session_id, "invalid_session_id")
         body = await _body(request, TakeoverSessionRequest)
         context = _control_context(request, user_id, body.device_id)
+        await _require_project_chat(request, user_id, body.visible_chat_id)
         runtime = _runtime(request)
         value = await _invoke(
             runtime,
@@ -471,6 +476,8 @@ async def update_voice_session(
         checked_session_id = _uuid4(session_id, "invalid_session_id")
         body = await _body(request, UpdateSessionRequest)
         context = _control_context(request, user_id)
+        if body.visible_chat_id is not None:
+            await _require_project_chat(request, user_id, body.visible_chat_id)
         runtime = _runtime(request)
         value = await _invoke(
             runtime,
@@ -793,6 +800,18 @@ def _voice_services(request: Request) -> Any:
     return services
 
 
+async def _require_project_chat(request: Request, user_id: str, chat_id: str) -> None:
+    from orchestrator.projects import ProjectError, ProjectService, request_requires_project
+
+    orchestrator = _orchestrator(request)
+    if request_requires_project(orchestrator, request, user_id):
+        try:
+            await asyncio.to_thread(ProjectService(orchestrator.history).require_chat, user_id, chat_id)
+        except ProjectError as exc:
+            raise VoiceApiError(exc.code, status_code=exc.status,
+                                payload={"message": exc.message}) from None
+
+
 def _control_context(
     request: Request,
     user_id: str,
@@ -980,7 +999,7 @@ def _v2_error_response(exc: Exception) -> JSONResponse:
         "local_session_not_ready", "local_recognition_failed",
         "local_recognition_cancelled", "local_synthesis_failed",
         "local_audio_interrupted", "local_engine_lost",
-        "invalid_binding", "capacity_exhausted", "internal_error",
+        "invalid_binding", "capacity_exhausted", "internal_error", "project_selection_required",
     }
     if reason not in allowed_reasons:
         reason = "internal_error"

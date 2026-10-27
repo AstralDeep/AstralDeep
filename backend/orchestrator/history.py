@@ -2287,6 +2287,26 @@ def _component_preview_text(components) -> str:
     return " ".join(" ".join(parts).split())
 
 
+def _chat_preview(content):
+    preview = ""
+    if content is not None:
+        content_obj = content
+        if isinstance(content_obj, str):
+            preview = content_obj
+        elif isinstance(content_obj, (list, tuple)):
+            preview = _component_preview_text(content_obj)
+        elif isinstance(content_obj, Mapping):
+            preview = _component_preview_text([content_obj])
+        else:
+            preview = str(content_obj)
+        from webrender.sanitize import plain_md
+
+        preview = plain_md(preview)
+        if len(preview) > PREVIEW_MAX_CHARS:
+            preview = preview[:PREVIEW_MAX_CHARS] + "..."
+    return preview
+
+
 class HistoryManager:
     def __init__(
         self,
@@ -2631,7 +2651,11 @@ class HistoryManager:
                     }
                 )
 
+        from orchestrator.projects import ProjectService
+
+        project_id = ProjectService(self).project_for_chat(user_id, chat_id)
         return {
+            **({"project_id": project_id} if project_id is not None else {}),
             "id": chat_id_value,
             "title": (
                 stage.requested_title
@@ -2645,6 +2669,28 @@ class HistoryManager:
             "updated_at": updated_at_value,
             "messages": messages
         }
+
+    def get_chat_summary(self, chat_id: str, user_id: str):
+        with self._history.transaction() as transaction:
+            record = self._history.repository.conversations.get(
+                transaction, owner_id=user_id, conversation_id=chat_id)
+            if record is None:
+                return None
+            organization = self._preferences.repository.get_chat_organization(
+                transaction, owner_id=user_id)
+            messages = self._history.repository.messages
+            message_id = messages.latest_visible_id(transaction, owner_id=user_id, conversation_id=chat_id)
+            message = (messages.get(transaction, owner_id=user_id, conversation_id=chat_id,
+                                    message_id=message_id) if message_id is not None else None)
+            return {
+                "id": record.conversation_id, "title": record.title or "New Chat",
+                "agent_id": record.agent_id, "created_at": record.created_at,
+                "updated_at": record.updated_at or 0,
+                "preview": _chat_preview(message.content if message else None),
+                "has_saved_components": record.has_saved_components,
+                "pinned": chat_id in organization.pinned,
+                "archived": chat_id in organization.archived,
+            }
 
     def get_recent_chats(self, limit: int = 20, user_id: str = 'legacy',
                          include_archived: bool = False) -> List[Dict]:
@@ -2678,25 +2724,13 @@ class HistoryManager:
                 if regular >= limit:
                     continue
                 regular += 1
-            content = row.latest_message_content
-            preview = ""
-            if content is not None:
-                content_obj = content
-                if isinstance(content_obj, str):
-                    preview = content_obj
-                elif isinstance(content_obj, (list, tuple)):
-                    preview = _component_preview_text(content_obj)
-                elif isinstance(content_obj, Mapping):
-                    preview = _component_preview_text([content_obj])
-                else:
-                    preview = str(content_obj)
-                from webrender.sanitize import plain_md
+            preview = _chat_preview(row.latest_message_content)
 
-                preview = plain_md(preview)
-                if len(preview) > PREVIEW_MAX_CHARS:
-                    preview = preview[:PREVIEW_MAX_CHARS] + "..."
+            from orchestrator.projects import ProjectService
 
+            project_id = ProjectService(self).project_for_chat(user_id, row.conversation_id)
             results.append({
+                **({"project_id": project_id} if project_id is not None else {}),
                 "id": row.conversation_id,
                 "title": row.title,
                 "agent_id": row.agent_id,
