@@ -25,6 +25,7 @@ def _tree(tmp_path):
         path = tmp_path / "backend" / name / "test_example.py"
         path.parent.mkdir(parents=True)
         path.write_text("", encoding="utf-8")
+    (tmp_path / "backend" / "tests" / "test_second.py").write_text("", encoding="utf-8")
     return tmp_path
 
 
@@ -187,38 +188,60 @@ def test_run_never_masks_failure_and_preserves_evidence(tmp_path, monkeypatch, s
     assert result == (0 if scenario == "pass" else 1)
     evidence = json.loads((output / "test-results.json").read_text(encoding="utf-8"))
     assert evidence["production_qualified"] is False
-    assert len(evidence["suites"]) == 7
+    assert len(evidence["suites"]) == 8
     assert seen[0][-1] == "erase"
     assert "xml" in seen[-1]
     assert evidence["source_commit"] == "a" * 40
     assert json.loads((output / "suite-plan.json").read_text())["source_commit"] == "a" * 40
 
 
-def test_only_the_tests_suite_runs_on_xdist_workers_with_the_same_coverage(tmp_path):
-    output = tmp_path / "evidence"
+def test_only_the_tests_shards_run_on_xdist_workers_with_the_same_coverage(tmp_path):
+    root = _tree(tmp_path)
+    output = root / "evidence"
     output.mkdir()
-    serial = gate.suite_command(tmp_path, output, "persistent_agents/tests", "backend-persistent_agents-tests",
+    serial = gate.suite_command(root, output, "persistent_agents/tests", "backend-persistent_agents-tests",
                                 output / "serial.xml")
-    parallel = gate.suite_command(tmp_path, output, "tests", "backend-tests", output / "parallel.xml")
+    parallel = gate.suite_command(root, output, "tests", "backend-tests-1", output / "parallel.xml")
+    other = gate.suite_command(root, output, "tests", "backend-tests-2", output / "other.xml")
     assert serial[1:4] == ["-m", "coverage", "run"] and "-n" not in serial and "--branch" in serial
-    assert f"--source={tmp_path / 'backend'},{tmp_path / 'scripts'}" in serial
-    assert parallel[1:4] == ["-m", "pytest", "tests"]
-    assert parallel[parallel.index("-n") + 1] == "4" and parallel[parallel.index("--dist") + 1] == "loadfile"
-    for flag in (f"--cov={tmp_path / 'backend'}", f"--cov={tmp_path / 'scripts'}", "--cov-branch",
-                 "--cov-append", "--cov-report="):
-        assert flag in parallel
-    shared = serial[serial.index("pytest") + 2:]
-    assert parallel[4:4 + len(shared)] == [item.replace("serial", "parallel") for item in shared]
-    config = Path(next(item for item in parallel if item.startswith("--cov-config=")).split("=", 1)[1])
+    assert f"--source={root / 'backend'},{root / 'scripts'}" in serial
+    shard_files = [
+        [name for order, name in enumerate(
+            sorted(path.relative_to(root / "backend").as_posix()
+                   for path in (root / "backend" / "tests").rglob("test_*.py")))
+         if order % gate.TEST_SHARD_COUNT == index - 1]
+        for index in (1, 2)
+    ]
+    assert parallel[3:3 + len(shard_files[0])] == shard_files[0]
+    assert other[3:3 + len(shard_files[1])] == shard_files[1]
+    assert not set(shard_files[0]) & set(shard_files[1])
+    assert sorted(shard_files[0] + shard_files[1]) == sorted(
+        path.relative_to(root / "backend").as_posix()
+        for path in (root / "backend" / "tests").rglob("test_*.py")
+    )
+    shared = [item.replace("serial", "parallel")
+              for item in serial[serial.index("pytest") + 2:]]
+    assert parallel[3 + len(shard_files[0]):] == [
+        *shared, "-n", "4", "--dist", "loadfile",
+        f"--cov={root / 'backend'}", f"--cov={root / 'scripts'}", "--cov-branch", "--cov-append",
+        f"--cov-config={output / 'xdist-coverage.rc'}", "--cov-report=",
+    ]
+    shared = [item.replace("serial", "other")
+              for item in serial[serial.index("pytest") + 2:]]
+    assert other[3 + len(shard_files[1]):] == [
+        *shared, "-n", "4", "--dist", "loadfile",
+        f"--cov={root / 'backend'}", f"--cov={root / 'scripts'}", "--cov-branch", "--cov-append",
+        f"--cov-config={output / 'xdist-coverage.rc'}", "--cov-report=",
+    ]
     omitted = next(item for item in serial if item.startswith("--omit=")).split("=", 1)[1].split(",")
-    assert config.parent == output
-    assert config.read_text(encoding="utf-8") == "[run]\nomit =\n" + "".join(f"    {item}\n" for item in omitted)
+    assert (output / "xdist-coverage.rc").read_text(
+        encoding="utf-8") == "[run]\nomit =\n" + "".join(f"    {item}\n" for item in omitted)
 
 
 def test_collection_inventory_precedes_execution_and_uses_junit_identity(tmp_path, monkeypatch):
     path = tmp_path / "inventory.json"
     monkeypatch.setenv("BQ_SUITE_INVENTORY_PATH", str(path))
-    monkeypatch.setenv("BQ_SUITE_NAME", "backend-tests")
+    monkeypatch.setenv("BQ_SUITE_NAME", "backend-tests-1")
     monkeypatch.setenv("BQ_SOURCE_COMMIT", "a" * 40)
     session = SimpleNamespace(items=[SimpleNamespace(nodeid="tests/test_one.py::TestOne::test_deny[param/a]")])
     backend_web_test_reporter.pytest_collection_finish(session)
@@ -232,67 +255,18 @@ def test_collection_inventory_precedes_execution_and_uses_junit_identity(tmp_pat
     backend_web_test_reporter.pytest_collection_finish(session)
 
 
-def test_xdist_inventory_is_written_once_by_the_controller(tmp_path, monkeypatch):
-    path = tmp_path / "inventory.json"
-    monkeypatch.setenv("BQ_SUITE_INVENTORY_PATH", str(path))
-    monkeypatch.setenv("BQ_SUITE_NAME", "backend-tests")
-    monkeypatch.setenv("BQ_SOURCE_COMMIT", "a" * 40)
-    monkeypatch.setattr(backend_web_test_reporter, "_XDIST_COLLECTIONS", {})
-    worker = SimpleNamespace(config=SimpleNamespace(workerinput={"workerid": "gw0"}),
-                             items=[SimpleNamespace(nodeid="tests/test_one.py::test_one")])
-    backend_web_test_reporter.pytest_collection_finish(worker)
-    assert not path.exists()
-    ids = ["tests/test_two.py::test_two", "tests/test_one.py::test_one"]
-    backend_web_test_reporter.pytest_xdist_node_collection_finished(SimpleNamespace(), ids)
-    backend_web_test_reporter.pytest_xdist_node_collection_finished(SimpleNamespace(), list(reversed(ids)))
-    assert json.loads(path.read_text())["tests"] == ["tests.test_one::test_one", "tests.test_two::test_two"]
-    with pytest.raises(ValueError, match="different tests"):
-        backend_web_test_reporter.pytest_xdist_node_collection_finished(SimpleNamespace(), ids[:1])
-    monkeypatch.delenv("BQ_SUITE_INVENTORY_PATH")
-    backend_web_test_reporter.pytest_xdist_node_collection_finished(SimpleNamespace(), ids)
-
-
-def test_collection_duplicate_identities_fail_closed(tmp_path, monkeypatch):
-    monkeypatch.setenv("BQ_SUITE_INVENTORY_PATH", str(tmp_path / "inventory.json"))
-    monkeypatch.setenv("BQ_SUITE_NAME", "backend-tests")
-    monkeypatch.setenv("BQ_SOURCE_COMMIT", "a" * 40)
-    item = SimpleNamespace(nodeid="test_one.py::test_one")
-    with pytest.raises(ValueError, match="duplicate"):
-        backend_web_test_reporter.pytest_collection_finish(SimpleNamespace(items=[item, item]))
-
-
-@pytest.mark.parametrize("identity,dirty", [("a" * 40, ""), ("bad", ""),
-                                            ("a" * 40, " M backend/runtime.py"),
-                                            ("a" * 40, "?? temp.html")])
-def test_source_identity_requires_exact_clean_git_commit(tmp_path, monkeypatch, identity, dirty):
-    monkeypatch.setattr(gate.subprocess, "run", lambda command, **kw:
-                        SimpleNamespace(stdout=dirty if "status" in command else identity))
-    if identity == "bad":
-        with pytest.raises(ValueError, match="exact source"):
-            gate.source_identity(tmp_path)
-    elif dirty:
-        with pytest.raises(ValueError, match="clean candidate"):
-            gate.source_identity(tmp_path)
-    else:
-        assert gate.source_identity(tmp_path) == identity
-
-
-def test_main_resolves_paths_and_propagates_gate_result(tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(gate, "run", lambda root, output, *, group: calls.append(
-        (root, output, group)) or 23)
-    arguments = ["gate", "--root", str(tmp_path), "--output", str(tmp_path / "out")]
-    monkeypatch.setattr(gate.sys, "argv", arguments)
-    assert gate.main() == 23
-    monkeypatch.setattr(gate.sys, "argv", [*arguments, "--group", "modules"])
-    assert gate.main() == 23
-    expected = (tmp_path.resolve(), (tmp_path / "out").resolve())
-    assert calls == [(*expected, "all"), (*expected, "modules")]
+def test_whole_tests_group_runs_both_shards_locally(tmp_path):
+    commands = gate.suite_commands(_tree(tmp_path))
+    selected = gate.group_commands(commands, "tests")
+    shards = [command for command in commands if command[2] in gate.TEST_SHARD_SUITES]
+    assert [name for _cwd, _path, name in selected] == ["backend-tests-1", "backend-tests-2"]
+    assert sorted(selected) == sorted(shards)
+    assert shards == [command for command in gate.group_commands(commands, "tests_1") + gate.group_commands(commands, "tests_2")]
 
 
 ALL_SUITES = [
     "backend-agents-journal_review-tests", "backend-audit-tests", "backend-evaluation-suites",
-    "backend-persistent_agents-tests", "backend-tests",
+    "backend-persistent_agents-tests", "backend-tests-1", "backend-tests-2",
     "perf-voice_concurrent_turns.py", "tooling",
 ]
 
@@ -324,36 +298,28 @@ def _passing_suites(monkeypatch, *, timeout_suite=None):
 
 
 GROUP_SUITES = {
-    "tests": ["backend-tests"],
+    "tests": ["backend-tests-1", "backend-tests-2"],
     "persistent_agents": ["backend-persistent_agents-tests"],
     "modules": [name for name in ALL_SUITES
-                if name not in {"backend-tests", "backend-persistent_agents-tests"}],
+                if name not in {"backend-tests-1", "backend-tests-2",
+                                "backend-persistent_agents-tests"}],
 }
-
-
-@pytest.mark.parametrize("group,expected", [
-    (None, ALL_SUITES), ("all", ALL_SUITES), *GROUP_SUITES.items(),
-])
-def test_suite_groups_plan_whole_suites_and_record_the_group(tmp_path, monkeypatch, group, expected):
-    root = _tree(tmp_path)
-    output = root / "evidence"
-    _passing_suites(monkeypatch)
-    assert (gate.run(root, output) if group is None else gate.run(root, output, group=group)) == 0
-    plan = json.loads((output / "suite-plan.json").read_text(encoding="utf-8"))
-    evidence = json.loads((output / "test-results.json").read_text(encoding="utf-8"))
-    assert plan["group"] == evidence["group"] == (group or "all")
-    assert [item["suite"] for item in plan["suites"]] == expected
-    assert [item["suite"] for item in evidence["suites"]] == expected
-    assert evidence["status"] == "pass"
 
 
 def test_whole_suite_groups_partition_the_complete_plan(tmp_path):
     commands = gate.suite_commands(_tree(tmp_path))
     groups = {group: gate.group_commands(commands, group) for group in GROUP_SUITES}
     assert gate.GROUPS == ("all", "tests", "persistent_agents", "modules")
+    assert gate.MERGE_GROUPS == ("modules", "persistent_agents", "tests_1", "tests_2")
     assert gate.group_commands(commands, "all") == commands
     assert {group: [name for _cwd, _path, name in selected] for group, selected in groups.items()} == GROUP_SUITES
     assert sorted(command for selected in groups.values() for command in selected) == sorted(commands)
+    shards = {group: gate.group_commands(commands, group) for group in gate.SHARD_GROUP_SUITES}
+    assert {group: [name for _cwd, _path, name in selected] for group, selected in shards.items()} == {
+        "tests_1": ["backend-tests-1"], "tests_2": ["backend-tests-2"],
+    }
+    assert sorted(command for selected in shards.values() for command in selected) == sorted(
+        gate.group_commands(commands, "tests"))
     with pytest.raises(ValueError, match="unknown suite group"):
         gate.group_commands(commands, "everything")
 

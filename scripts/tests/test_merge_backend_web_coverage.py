@@ -36,6 +36,10 @@ WORKSPACE = {
         "from service.decide import decide\n\n\ndef test_positive():\n"
         "    assert decide(1) == 'positive'\n"
     ),
+    "backend/tests/test_idle.py": (
+        "from service.idle import idle\n\n\ndef test_idle():\n"
+        "    assert idle() == 0\n"
+    ),
     "backend/tests/perf/voice_concurrent_turns.py": "def test_turns():\n    assert True\n",
     "backend/persistent_agents/tests/test_agents.py": (
         "from service.decide import decide\n\n\ndef test_other():\n"
@@ -126,9 +130,9 @@ def test_merged_group_reports_equal_one_complete_run(tmp_path, monkeypatch):
     for key in ("COVERAGE_FILE", "COVERAGE_PROCESS_START", "COVERAGE_RCFILE"):
         monkeypatch.delenv(key, raising=False)
     evidence = workspace / "build"
-    for group in gate.GROUPS:
+    for group in ("all", *gate.MERGE_GROUPS):
         assert gate.run(workspace, evidence / group, group=group) == 0
-    assert merge.GROUPS == ("modules", "persistent_agents", "tests")
+    assert merge.GROUPS == ("modules", "persistent_agents", "tests_1", "tests_2")
     repository = (tmp_path / "repository").resolve()
     subprocess.run(["git", "clone", "-q", str(workspace), str(repository)], check=True)
 
@@ -238,19 +242,19 @@ EVIDENCE_REFUSALS = {
     "missing-group": lambda groups, recorded: groups.pop("persistent_agents"),
     "single-group": lambda groups, recorded: [groups.pop(group) for group in ("modules", "persistent_agents")],
     "duplicate-group": lambda groups, recorded: [
-        _rewrite(groups["modules"], name, lambda document: document.update(group="tests"))
+        _rewrite(groups["modules"], name, lambda document: document.update(group="tests_1"))
         for name in ("suite-plan.json", "test-results.json")],
     "complete-group": lambda groups, recorded: [
         _rewrite(groups["modules"], name, lambda document: document.update(group="all"))
         for name in ("suite-plan.json", "test-results.json")],
     "result-group": lambda groups, recorded: _rewrite(
-        groups["tests"], "test-results.json", lambda document: document.update(group="modules")),
+        groups["tests_1"], "test-results.json", lambda document: document.update(group="modules")),
     "failed-results": lambda groups, recorded: _rewrite(
         groups["modules"], "test-results.json", lambda document: document.update(status="fail")),
     "partial-results": lambda groups, recorded: _rewrite(
         groups["modules"], "test-results.json", lambda document: document["suites"].pop()),
     "result-source": lambda groups, recorded: _rewrite(
-        groups["tests"], "test-results.json", lambda document: document.update(source_commit="b" * 40)),
+        groups["tests_1"], "test-results.json", lambda document: document.update(source_commit="b" * 40)),
     "group-source": lambda groups, recorded: [
         _rewrite(groups["modules"], name, lambda document: document.update(source_commit="b" * 40))
         for name in ("suite-plan.json", "test-results.json")],
@@ -270,34 +274,34 @@ EVIDENCE_REFUSALS = {
         _rewrite(groups["modules"], name, lambda document: document["suites"].pop())
         for name in ("suite-plan.json", "test-results.json")],
     "duplicated-suite": lambda groups, recorded: (
-        _rewrite(groups["tests"], "suite-plan.json", lambda document: document["suites"].append(
+        _rewrite(groups["tests_1"], "suite-plan.json", lambda document: document["suites"].append(
             {"suite": "tooling", "cwd": ".", "path": "scripts/tests"})),
-        _rewrite(groups["tests"], "test-results.json", lambda document: document["suites"].append(
+        _rewrite(groups["tests_1"], "test-results.json", lambda document: document["suites"].append(
             {"suite": "tooling", "status": "pass"}))),
     "malformed-plan": lambda groups, recorded: _rewrite(
-        groups["tests"], "suite-plan.json", lambda document: document["suites"].append("tooling")),
+        groups["tests_1"], "suite-plan.json", lambda document: document["suites"].append("tooling")),
     "unversioned-plan": lambda groups, recorded: _rewrite(
-        groups["tests"], "suite-plan.json", lambda document: document.pop("schema_version")),
+        groups["tests_1"], "suite-plan.json", lambda document: document.pop("schema_version")),
     "boolean-version": lambda groups, recorded: _rewrite(
-        groups["tests"], "suite-plan.json", lambda document: document.update(schema_version=True)),
+        groups["tests_1"], "suite-plan.json", lambda document: document.update(schema_version=True)),
     "untyped-identity": lambda groups, recorded: _rewrite(
         groups["modules"], "suite-plan.json", lambda document: document.update(runner_sha256=["0" * 64])),
     "untyped-suite": lambda groups, recorded: _rewrite(
-        groups["tests"], "suite-plan.json", lambda document: document["suites"][0].update(path=None)),
-    "unreadable-plan": lambda groups, recorded: (groups["tests"] / "suite-plan.json").write_text(
+        groups["tests_1"], "suite-plan.json", lambda document: document["suites"][0].update(path=None)),
+    "unreadable-plan": lambda groups, recorded: (groups["tests_1"] / "suite-plan.json").write_text(
         "{", encoding="utf-8"),
     "missing-results": lambda groups, recorded: (groups["modules"] / "test-results.json").unlink(),
     "missing-data": lambda groups, recorded: (groups["modules"] / ".coverage").unlink(),
-    "corrupt-data": lambda groups, recorded: (groups["tests"] / ".coverage").write_bytes(
+    "corrupt-data": lambda groups, recorded: (groups["tests_1"] / ".coverage").write_bytes(
         b"not a coverage database"),
     "statement-data": lambda groups, recorded: _replace_data(
-        groups["tests"], lambda data: data.add_lines({str(recorded / "backend/service.py"): [1]})),
+        groups["tests_1"], lambda data: data.add_lines({str(recorded / "backend/service.py"): [1]})),
     "empty-data": lambda groups, recorded: _replace_data(
-        groups["tests"], lambda data: data.add_arcs({})),
+        groups["tests_1"], lambda data: data.add_arcs({})),
     "foreign-root": lambda groups, recorded: _replace_data(
-        groups["tests"], lambda data: data.add_arcs({"/elsewhere/backend/service.py": {(-1, 1)}})),
+        groups["tests_1"], lambda data: data.add_arcs({"/elsewhere/backend/service.py": {(-1, 1)}})),
     "escaping-path": lambda groups, recorded: _replace_data(
-        groups["tests"], lambda data: data.add_arcs(
+        groups["tests_1"], lambda data: data.add_arcs(
             {str(recorded / "backend/../../outside.py"): {(-1, 1)}})),
 }
 REFUSAL_REASONS = {

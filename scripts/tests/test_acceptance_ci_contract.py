@@ -23,9 +23,11 @@ def job(text, name):
 
 def test_acceptance_cases_run_in_the_complete_owner_suite_groups():
     commands = suite_commands(ROOT)
-    assert (ROOT / "backend", "tests", "backend-tests") in group_commands(
-        commands, "tests"
-    )
+    shards = group_commands(commands, "tests")
+    assert [(cwd, path, name) for cwd, path, name in shards] == [
+        (ROOT / "backend", "tests", "backend-tests-1"),
+        (ROOT / "backend", "tests", "backend-tests-2"),
+    ]
     assert (ROOT, "scripts/tests", "tooling") in group_commands(commands, "modules")
     for name in (
         "test_phi_clinical_acceptance.py",
