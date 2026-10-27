@@ -194,6 +194,27 @@ def test_run_never_masks_failure_and_preserves_evidence(tmp_path, monkeypatch, s
     assert json.loads((output / "suite-plan.json").read_text())["source_commit"] == "a" * 40
 
 
+def test_only_the_tests_suite_runs_on_xdist_workers_with_the_same_coverage(tmp_path):
+    output = tmp_path / "evidence"
+    output.mkdir()
+    serial = gate.suite_command(tmp_path, output, "persistent_agents/tests", "backend-persistent_agents-tests",
+                                output / "serial.xml")
+    parallel = gate.suite_command(tmp_path, output, "tests", "backend-tests", output / "parallel.xml")
+    assert serial[1:4] == ["-m", "coverage", "run"] and "-n" not in serial and "--branch" in serial
+    assert f"--source={tmp_path / 'backend'},{tmp_path / 'scripts'}" in serial
+    assert parallel[1:4] == ["-m", "pytest", "tests"]
+    assert parallel[parallel.index("-n") + 1] == "4" and parallel[parallel.index("--dist") + 1] == "loadfile"
+    for flag in (f"--cov={tmp_path / 'backend'}", f"--cov={tmp_path / 'scripts'}", "--cov-branch",
+                 "--cov-append", "--cov-report="):
+        assert flag in parallel
+    shared = serial[serial.index("pytest") + 2:]
+    assert parallel[4:4 + len(shared)] == [item.replace("serial", "parallel") for item in shared]
+    config = Path(next(item for item in parallel if item.startswith("--cov-config=")).split("=", 1)[1])
+    omitted = next(item for item in serial if item.startswith("--omit=")).split("=", 1)[1].split(",")
+    assert config.parent == output
+    assert config.read_text(encoding="utf-8") == "[run]\nomit =\n" + "".join(f"    {item}\n" for item in omitted)
+
+
 def test_collection_inventory_precedes_execution_and_uses_junit_identity(tmp_path, monkeypatch):
     path = tmp_path / "inventory.json"
     monkeypatch.setenv("BQ_SUITE_INVENTORY_PATH", str(path))
@@ -209,6 +230,26 @@ def test_collection_inventory_precedes_execution_and_uses_junit_identity(tmp_pat
         backend_web_test_reporter.pytest_collection_finish(session)
     monkeypatch.delenv("BQ_SUITE_INVENTORY_PATH")
     backend_web_test_reporter.pytest_collection_finish(session)
+
+
+def test_xdist_inventory_is_written_once_by_the_controller(tmp_path, monkeypatch):
+    path = tmp_path / "inventory.json"
+    monkeypatch.setenv("BQ_SUITE_INVENTORY_PATH", str(path))
+    monkeypatch.setenv("BQ_SUITE_NAME", "backend-tests")
+    monkeypatch.setenv("BQ_SOURCE_COMMIT", "a" * 40)
+    monkeypatch.setattr(backend_web_test_reporter, "_XDIST_COLLECTIONS", {})
+    worker = SimpleNamespace(config=SimpleNamespace(workerinput={"workerid": "gw0"}),
+                             items=[SimpleNamespace(nodeid="tests/test_one.py::test_one")])
+    backend_web_test_reporter.pytest_collection_finish(worker)
+    assert not path.exists()
+    ids = ["tests/test_two.py::test_two", "tests/test_one.py::test_one"]
+    backend_web_test_reporter.pytest_xdist_node_collection_finished(SimpleNamespace(), ids)
+    backend_web_test_reporter.pytest_xdist_node_collection_finished(SimpleNamespace(), list(reversed(ids)))
+    assert json.loads(path.read_text())["tests"] == ["tests.test_one::test_one", "tests.test_two::test_two"]
+    with pytest.raises(ValueError, match="different tests"):
+        backend_web_test_reporter.pytest_xdist_node_collection_finished(SimpleNamespace(), ids[:1])
+    monkeypatch.delenv("BQ_SUITE_INVENTORY_PATH")
+    backend_web_test_reporter.pytest_xdist_node_collection_finished(SimpleNamespace(), ids)
 
 
 def test_collection_duplicate_identities_fail_closed(tmp_path, monkeypatch):
@@ -398,12 +439,12 @@ def test_image_gate_passes_only_a_known_group_to_the_suite_runner(tmp_path, grou
         "/var/lib/postgresql/data:rw,nosuid,nodev,size=1g",
         "/var/lib/postgresql/wal:rw,nosuid,nodev,size=512m",
     ]
-    assert "--memory=2g" in database
+    assert "--memory=3g" in database
     assert "--cpus=2" in database
     assert database[database.index("POSTGRES_INITDB_WALDIR=/var/lib/postgresql/wal") - 1] == "--env"
-    assert database[-6:] == [
+    assert database[-8:] == [
         "postgres:17-alpine@sha256:dc17045ccfd343b49600570ea734b9c4991cf1c3f3302e67df51e3b402dd55c4",
-        "postgres", "-c", "max_wal_size=256MB", "-c", "min_wal_size=80MB",
+        "postgres", "-c", "max_wal_size=256MB", "-c", "min_wal_size=80MB", "-c", "max_connections=400",
     ]
     assert [database[index + 1] for index, value in enumerate(database) if value == "--env"] == [
         "POSTGRES_INITDB_WALDIR=/var/lib/postgresql/wal",
@@ -411,6 +452,7 @@ def test_image_gate_passes_only_a_known_group_to_the_suite_runner(tmp_path, grou
     ]
     runner = next(call for call in calls if call[:1] == ["run"]
                   and any(argument.endswith("-test") for argument in call))
+    assert "--cpus=4" in runner and "--memory=10g" in runner
     assert runner[runner.index(f"ASTRAL_GATE_GROUP={expected}") - 1] == "--env"
     assert '--group "$ASTRAL_GATE_GROUP"' in runner[-1]
     assert "/qualification-policy/scripts/run_backend_web_tests.py" in runner[-1]

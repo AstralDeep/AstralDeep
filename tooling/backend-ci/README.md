@@ -14,8 +14,12 @@ The required Deep CI aggregate now includes:
   probe `backend/tests/perf/concurrent_surfaces.py` is an explicit-run `perf`
   probe, not a required gate.
 - Disposable PostgreSQL 17 for those tests, and the exact pinned Plane's
-  complete PostgreSQL suite. The test producer refuses absent/mismatched
-  database URLs and requires an `ad_gate_` database plus an explicit isolation
+  PostgreSQL suite: complete, with its coverage gates, when the
+  `components/AstralPlane` gitlink differs between the immutable base and the
+  candidate (`scripts/ci_plane_lane.py`; an unreadable base counts as a
+  change), otherwise Plane's architecture, API, domain and bootstrap tests,
+  because Plane's own CI runs the complete suite. The test producer refuses
+  absent/mismatched database URLs and requires an `ad_gate_` database plus an explicit isolation
   declaration. Missing-database skips fail the producer.
 - Deep Python lint; exact Projection Python and JavaScript lint and tests;
   pinned browser interaction tests; exact component-source integrity.
@@ -40,10 +44,16 @@ The required Deep CI aggregate now includes:
   records paused native paths; it does not change the complete Projection
   release profile. Responsive interactions run in Chromium, Firefox and WebKit.
 
-Every CI job has at most a 30-minute budget, and the suite runner gives each
-suite a 30-minute (1800 s) timeout. Protected qualification runs every suite
-under the same 1800 s per-suite cap. The backend suites run as a three-job
-matrix of whole-suite groups: `tests` is the `backend/tests` suite,
+Every CI job has at most a 30-minute budget; the backend group, Plane and
+voice-worker test jobs are capped at 20 minutes so a slower suite fails fast,
+and the suite runner gives each suite a 30-minute (1800 s) timeout. Protected
+qualification runs every suite under the same 1800 s per-suite cap. The backend
+suites run as a three-job matrix of whole-suite groups: `tests` is the
+`backend/tests` suite, which runs on four `pytest-xdist` workers
+(`--dist loadfile`), each moved by `backend/tests/conftest.py` onto its own
+`<suite database>_<worker>` database created from `template0`, and measured
+by `pytest-cov` with the same source, branch and omit settings as the other
+suites' `coverage run`,
 `persistent_agents` is the `backend/persistent_agents/tests` suite, and
 `modules` is every other backend suite, the voice concurrency probe and the
 tooling suite. No suite was pruned to fit: once the Plane-backed test

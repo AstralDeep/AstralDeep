@@ -87,7 +87,7 @@ def test_command_revision_never_coerces_or_exceeds_wire_integer(revision):
         WorkControlRequest.model_validate(body(expected_revision=revision))
 
 
-@pytest.mark.parametrize("submission", ["x", str(uuid4()).upper(), True, None, "00000000-0000-1000-8000-000000000000"])
+@pytest.mark.parametrize("submission", ["x", "9F1C2B7E-3D4A-4C5B-8E6F-7A8B9C0D1E2F", True, None, "00000000-0000-1000-8000-000000000000"])
 def test_submission_identity_is_canonical_uuid4(submission):
     with pytest.raises(ValidationError):
         WorkControlRequest.model_validate(body(submission_id=submission))

@@ -109,7 +109,7 @@ def test_embedded_plane_qualification_measures_owner_upgrade_and_integrity_tools
         assert f"--cov={module}" in plane
     assert "--fail-under=90" in plane
     assert "--cov-fail-under=88.75" in plane
-    assert "timeout-minutes: 30" in plane
+    assert "timeout-minutes: 20" in plane
 
 
 @pytest.mark.parametrize(

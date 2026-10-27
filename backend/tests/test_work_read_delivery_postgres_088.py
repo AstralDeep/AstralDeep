@@ -240,7 +240,7 @@ async def test_normal_auth_without_private_token_handoff_cannot_deliver(read_hos
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("expiry", [True, str(int(time.time()) + 3600), 10**400])
+@pytest.mark.parametrize("expiry", [True, "4102444800", 10**400])
 async def test_nonfinite_or_non_numeric_principal_expiry_is_closed(read_host, fixture, expiry):
     app, identity = read_host
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://app.invalid") as client:
