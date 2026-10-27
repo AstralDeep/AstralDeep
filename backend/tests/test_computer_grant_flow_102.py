@@ -15,6 +15,7 @@ import pytest
 from orchestrator import computer_grants as cg
 from orchestrator import hitl_confirmation as hc
 from orchestrator import remote_confirmation as rc
+from shared.protocol import MCPResponse
 from tests.helpers.remote_plane_runtime import make_remote_confirmation_plane_source
 from tests.test_computer_use_076 import _descriptor, _FakeDB, _FakeOrch
 from tests.test_hitl_public_research import _dispatch, runtime as runtime  # noqa: F401
@@ -391,13 +392,58 @@ async def test_run_command_card_grants_the_program_in_its_folder(task_runtime):
     shell = await _call(task_runtime, "run_command", command="wc -l other.md", cwd=ROOT)
     assert shell.result["_data"]["status"] == "confirmation_required" and len(effects) == 2
     for args in ({"command": "wc -l a | sh", "cwd": ROOT}, {"argv": ["cat", "a"], "cwd": ROOT},
-                 {"argv": ["wc", "a"], "cwd": "/tmp"}, {"argv": ["wc", "a"], "cwd": ROOT, "env": {"PATH": "/x"}},
+                 {"argv": ["wc", "a"], "cwd": ROOT, "env": {"PATH": "/x"}},
                  {"argv": ["wc", "a"], "cwd": ROOT, "env": {"LANG": "C"}}):
         refused = await _call(task_runtime, "run_command", **args)
         assert refused.result["_data"]["status"] == "confirmation_required"
     assert len(effects) == 2
     with_env = await _call(task_runtime, "run_command", argv=["wc", "b"], cwd=ROOT, env={"LANG": "C"})
     assert "Environment: LANG=C" in _texts(with_env) and len(_buttons(with_env)) == 2
+
+
+@pytest.mark.parametrize("cwd", ["/tmp", "/Users/riley/AstralTest", "~/Documents", "notes"])
+async def test_a_command_folder_outside_every_shared_root_is_refused_before_a_card(task_runtime, cwd):
+    orch, ws, effects, *_ = task_runtime
+    await _mac(task_runtime, remote=True)
+    response = await _call(task_runtime, "run_command", argv=["wc", "a"], cwd=cwd)
+    assert response.result is None and not response.ui_components
+    assert response.error["retryable"] is False and "x = " + ROOT in response.error["message"]
+    assert response.error["message"].startswith(("cwd_outside_workspace:", "out_of_range:"))
+    assert not effects and not rc._PENDING_CARDS and not getattr(orch, "_hitl_pending_calls", {})
+    alerts = [c.args[1] for c in orch.send_ui_render.await_args_list]
+    assert any(item.get("variant") == "error" for batch in alerts for item in batch)
+
+
+@pytest.mark.parametrize("cwd,resolved", [("x/notes", ROOT + "/notes"), ("~/Projects/x", ROOT)])
+async def test_a_root_relative_command_folder_is_resolved_before_review(task_runtime, cwd, resolved):
+    orch, ws, effects, *_ = task_runtime
+    await _mac(task_runtime, remote=True)
+    card = await _call(task_runtime, "run_command", argv=["wc", "-l", "notes.md"], cwd=cwd)
+    assert f"Folder: {resolved}" in _texts(card)
+    assert [b["label"] for b in _buttons(card)] == ["Approve", "Allow wc in x for this task", "Decline"]
+    await rc.handle_decision(orch, ws, OWNER, _payload(card, "approve"))
+    assert [args["cwd"] for _tool, args in effects] == [resolved]
+
+
+@pytest.mark.parametrize("failure,shown", [
+    (MCPResponse(error={"message": "outcome_uncertain: Mac did not answer run_command within 70 s", "retryable": False}),
+     "Mac did not answer run_command within 70 s"),
+    (MCPResponse(result={"_data": {"code": "failed", "message": "spawn refused"}}), "spawn refused"),
+    (MCPResponse(result={"_data": {"status": "failed"}}), "returned no result"),
+    (None, "outcome_uncertain: inspect current state"),
+])
+async def test_an_approved_command_that_fails_reports_it_instead_of_staying_running(task_runtime, failure, shown):
+    orch, ws, effects, turns, _proposals, outcome = task_runtime
+    await _mac(task_runtime, remote=True)
+    outcome[0] = failure
+    card = await _call(task_runtime, "run_command", argv=["wc", "notes.md"], cwd=ROOT)
+    orch.workspace.aupsert.reset_mock()
+    await rc.handle_decision(orch, ws, OWNER, _payload(card, "approve"))
+    assert len(effects) == 1 and not turns
+    titles = [call.args[2][0]["title"] for call in orch.workspace.aupsert.await_args_list]
+    assert titles[-1] == "Not completed" and shown in json.dumps(orch.workspace.aupsert.await_args_list[-1].args[2])
+    alerts = [item for call in orch.send_ui_render.await_args_list for item in call.args[1]]
+    assert any(item.get("variant") == "error" and shown in item.get("message", "") for item in alerts)
 
 
 async def test_plain_approval_of_a_command_is_one_card_one_execution_and_no_grant(task_runtime):

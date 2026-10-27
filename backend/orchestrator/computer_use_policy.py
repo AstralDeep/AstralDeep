@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import math
 from pathlib import PurePosixPath
 import posixpath
 import re
@@ -240,6 +241,25 @@ MAX_ARGV_ITEMS = 256
 MAX_ARG_CHARS = 4096
 MAX_ENV_VARS = 32
 MAX_STDIN_BYTES = 16 * 1024
+COMMAND_DEADLINE_MARGIN_S = 10
+BACKGROUND_START_S = 30.0
+HOST_DEADLINE_GRACE_S = 15.0
+DEFAULT_HOST_DEADLINE_S = 30.0
+
+
+def host_deadline(verb: str, args: Mapping[str, Any]) -> float:
+    if verb != "run_command":
+        return float(TIMEOUTS.get(verb, DEFAULT_HOST_DEADLINE_S))
+    if args.get("background") is True:
+        return BACKGROUND_START_S
+    timeout = args.get("timeout_s", DEFAULT_COMMAND_TIMEOUT_S)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+        timeout = DEFAULT_COMMAND_TIMEOUT_S
+    return float(min(timeout, MAX_FOREGROUND_TIMEOUT_S) + COMMAND_DEADLINE_MARGIN_S)
+
+
+def dispatch_timeout(verb: str, args: Mapping[str, Any]) -> float:
+    return host_deadline(verb, args) + HOST_DEADLINE_GRACE_S
 
 _MAX_NESTING = 4
 _SEPARATORS = frozenset({"|", "||", "&&", ";", "&", "(", ")", "|&", ";;", ";&", ";;&"})
@@ -421,6 +441,50 @@ def _root_paths(roots: Any) -> List[Dict[str, str]]:
             if path is not None and path != "/":
                 out.append({"name": str(root.get("name") or posixpath.basename(path)), "path": path})
     return out
+
+
+class CwdRefusal(ValueError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+_HOME = re.compile(r"(/(?:Users|home)/[^/]+)(?:/|$)")
+_CWD_FORMS = "Pass an absolute folder inside one, <folder name>/sub/path, or ~/sub/path."
+
+
+def _folders_hint(folders: Sequence[Mapping[str, str]]) -> str:
+    listed = "; ".join(f"{root['name']} = {root['path']}" for root in folders)
+    return f"Shared folders: {listed[:1800]}. {_CWD_FORMS}"
+
+
+def resolve_cwd(value: Any, roots: Any, host_name: str) -> str:
+    folders = _root_paths(roots)
+    if not folders:
+        raise CwdRefusal("cwd_outside_workspace", f"{host_name} shares no workspace folder; ask the user to "
+                                                  "select one in Computer controls")
+    hint = _folders_hint(folders)
+    if (not isinstance(value, str) or not value.strip() or len(value) > 1024 or "\x00" in value
+            or ".." in value.split("/")):
+        raise CwdRefusal("out_of_range", f"cwd must name a shared folder. {hint}")
+    if value.startswith("/"):
+        path = value
+    elif value == "~" or value.startswith("~/"):
+        homes = {match.group(1) for root in folders if (match := _HOME.match(root["path"]))}
+        if len(homes) != 1:
+            raise CwdRefusal("out_of_range", f"~ cannot be resolved from the shared folders. {hint}")
+        path = homes.pop() + value[1:]
+    else:
+        named = [root for root in folders if value == root["name"] or value.startswith(root["name"] + "/")]
+        longest = max((len(root["name"]) for root in named), default=0)
+        named = [root for root in named if len(root["name"]) == longest]
+        if len(named) != 1:
+            raise CwdRefusal("out_of_range", f"cwd must start with /, ~/ or the name of one shared folder. {hint}")
+        path = named[0]["path"] + value[longest:]
+    folder = "/" + posixpath.normpath(path).lstrip("/")
+    if not any(folder == root["path"] or folder.startswith(root["path"] + "/") for root in folders):
+        raise CwdRefusal("cwd_outside_workspace", f"cwd {folder[:200]} is outside every folder the user shared. {hint}")
+    return folder
 
 
 def is_destructive_command(args: Mapping[str, Any], roots: Any = ()) -> bool:

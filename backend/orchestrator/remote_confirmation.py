@@ -55,6 +55,10 @@ _RETRY_GRACE: Dict[Tuple[Any, ...], Tuple[str, float]] = {}
 _SOURCE_PROPOSAL = contextvars.ContextVar("source_review_remote_proposal", default=None)
 
 
+class Refusal(tuple):
+    __slots__ = ()
+
+
 @contextmanager
 def source_review_scope(orch, row):
     token = _SOURCE_PROPOSAL.set((orch, row.proposal_id, row.owner_id, row.conversation_id,
@@ -145,6 +149,25 @@ class ComputerApproval:
     task: object = None
     controller_context: object = None
     connection_generation: object = None
+
+
+def _resolve_command_folder(orch, user_id, chat_id, args):
+    from astralprims import Alert
+
+    try:
+        host = computer_card_host(orch, user_id, chat_id, args)
+    except ComputerHostError:
+        return None
+    policy = _computer_policy()
+    try:
+        args["cwd"] = policy.resolve_cwd(args.get("cwd"), host.workspace_roots, host.name)
+    except policy.CwdRefusal as exc:
+        _audit_sync(user_id, "remote_op.refused_cwd", "refused run_command outside the shared folders",
+                    machine_id=host.host_id, verb="run_command", outcome="failure", chat_id=chat_id)
+        return Refusal((f"{exc.code}: {exc} Nothing was run and no approval was requested.",
+                        [Alert(message=f"That folder is not shared from {host.name}; nothing was run.",
+                               variant="error").to_dict()]))
+    return None
 
 
 def computer_card_host(orch, owner, chat, args):
@@ -845,6 +868,11 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
     if classification is None:
         return None
 
+    if agent_id == "computer-use-1" and tool_name == "run_command":
+        refusal = _resolve_command_folder(orch, user_id, chat_id, args)
+        if refusal is not None:
+            return refusal
+
     if (agent_id == "computer-use-1" and tool_name == "browser_navigate" and "url" in args
             and _computer_policy().canonical_browser_url(args["url"]) is None):
         _audit_sync(user_id, "remote_op.refused_url", "refused browser_navigate to a rejected address",
@@ -1121,10 +1149,14 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
     await publish_review(orch, websocket, row.agent_id, row.tool_name, row.conversation_id, user_id, result)
     if row.agent_id == "computer-use-1" and successful_result(result):
         _computer_use_on_approved(orch, row, websocket, computer_authority)
-    elif row.agent_id == "computer-use-1" and resume_requested:
+    elif row.agent_id == "computer-use-1":
         data, _error = _result_data(result)
         if not isinstance(data, dict) or data.get("status") != "confirmation_required":
-            await pause_failed_computer_approval(orch, websocket, computer_authority)
+            if resume_requested:
+                await pause_failed_computer_approval(orch, websocket, computer_authority)
+            reason = _failure_text(result)
+            await _replace_card(orch, row, "Not completed", f"{row.summary} — not completed: {reason}")
+            await _say(f"{row.tool_name} did not complete: {reason}", variant="error")
     if row.agent_id == "computer-use-1":
         getattr(orch, "_computer_approval_authorities", {}).pop(str(proposal_id), None)
     if (row.agent_id in {"gaiakeep-1", "computer-use-1"} and websocket is not None and row.conversation_id
@@ -1184,6 +1216,14 @@ def successful_result(result) -> bool:
     return not isinstance(data, dict) or (not data.get("code") and data.get("status") not in {
         "confirmation_required", "failed", "error", "uncertain", "outcome_uncertain", "cancelled"}
         and data.get("ok") is not False and data.get("launched") is not False)
+
+
+def _failure_text(result) -> str:
+    data, error = _result_data(result)
+    for source in (error, data):
+        if isinstance(source, dict) and (source.get("message") or source.get("code")):
+            return " ".join(str(source.get("message") or source.get("code")).split())[:300]
+    return "the computer returned no result"
 
 
 def _not_attempted_code(result) -> Optional[str]:

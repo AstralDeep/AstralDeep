@@ -232,18 +232,19 @@ class ComputerHostRegistry:
             "deadline_ms": int(timeout * 1000),
         })
         try:
-            try:
-                sent = await self._orch._safe_send(host.websocket, frame)
-            except Exception:
-                sent = False
-            if sent is False:
-                raise ComputerHostError("host_offline" if verb in OBSERVE_VERBS else "outcome_uncertain",
-                    f"Delivery to {host.name} could not be confirmed; inspect current state before retrying")
-            try:
-                payload = await asyncio.wait_for(fut, timeout=timeout)
-            except asyncio.TimeoutError:
-                code = "timeout" if verb in OBSERVE_VERBS else "outcome_uncertain"
-                raise ComputerHostError(code, f"{host.name} did not answer {verb}; inspect current state before retrying") from None
+            async with asyncio.timeout(timeout):
+                try:
+                    sent = await self._orch._safe_send(host.websocket, frame)
+                except Exception:
+                    sent = False
+                if sent is False:
+                    raise ComputerHostError("host_offline" if verb in OBSERVE_VERBS else "outcome_uncertain",
+                        f"Delivery to {host.name} could not be confirmed; inspect current state before retrying")
+                payload = await fut
+        except TimeoutError:
+            code = "timeout" if verb in OBSERVE_VERBS else "outcome_uncertain"
+            raise ComputerHostError(code, f"{host.name} did not answer {verb} within {timeout:g} s; inspect "
+                                          "current state before retrying") from None
         finally:
             self._pending.pop(request_id, None)
         host.last_seen = time.time()
