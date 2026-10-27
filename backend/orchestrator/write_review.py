@@ -60,12 +60,12 @@ def unified_diff(path: str, current: Optional[str], proposed: str) -> Tuple[str,
     return "\n".join(lines), False
 
 
-async def _current_text(orch, websocket, owner: str, chat: Optional[str], args: Dict[str, Any]) -> Optional[str]:
+async def _current_text(orch, websocket, owner: str, chat: Optional[str], args: Dict[str, Any]) -> Tuple[str, Optional[str]]:
     from orchestrator.remote_confirmation import capture_computer_approval, computer_approval_current
 
     authority = capture_computer_approval(orch, websocket, owner, chat, args)
     if authority is None:
-        return None
+        return "unavailable", None
     session = authority.session
 
     async def read():
@@ -81,15 +81,19 @@ async def _current_text(orch, websocket, owner: str, chat: Optional[str], args: 
 
     try:
         result = await asyncio.wait_for(read(), READ_TIMEOUT_S)
-    except (ComputerHostError, asyncio.TimeoutError) as exc:
+    except ComputerHostError as exc:
+        if exc.code == "not_found":
+            return "missing", None
         logger.info("write review read unavailable: %s", getattr(exc, "code", type(exc).__name__))
-        return None
+        return "unavailable", None
+    except asyncio.TimeoutError:
+        return "unavailable", None
     except Exception:  # noqa: BLE001
         logger.warning("write review read failed", exc_info=True)
-        return None
+        return "unavailable", None
     if not isinstance(result, dict) or result.get("truncated") or not isinstance(result.get("text"), str):
-        return None
-    return result["text"]
+        return "unavailable", None
+    return "present", result["text"]
 
 
 async def diff_components(orch, websocket, owner: str, chat: Optional[str], args: Dict[str, Any],
@@ -97,12 +101,13 @@ async def diff_components(orch, websocket, owner: str, chat: Optional[str], args
     path, proposed = args.get("path"), args.get("content")
     if not isinstance(path, str) or not isinstance(proposed, str):
         return [Text(id=component_id, content=UNAVAILABLE_TEXT, variant="caption").to_dict()]
-    current = await _current_text(orch, websocket, owner, chat, args)
-    if current is None and args.get("if_exists") == "overwrite":
+    state, current = await _current_text(orch, websocket, owner, chat, args)
+    if state == "unavailable":
         return [Text(id=component_id, content=UNAVAILABLE_TEXT, variant="caption").to_dict()]
     diff, _truncated = await asyncio.to_thread(unified_diff, path, current, proposed)
     if not diff:
-        return [Text(id=component_id, content=UNCHANGED_TEXT, variant="caption").to_dict()]
+        return [Text(id=component_id, content="Create an empty file." if state == "missing" else UNCHANGED_TEXT,
+                     variant="caption").to_dict()]
     return [CodeBlock(id=component_id, code=diff, language="diff").to_dict()]
 
 
@@ -124,4 +129,8 @@ async def attach_write_diff(orch, websocket, owner: str, chat: Optional[str], ar
         return components
     component_id = f"{card['id']}_diff" if isinstance(card.get("id"), str) else None
     parts = await review_components(orch, websocket, owner, chat, args, component_id)
-    return [{**card, "content": [*card["content"][:1], *parts, *card["content"][1:]]}]
+    summary = card["content"][:1]
+    if summary and any(part.get("code", "").startswith("--- /dev/null\n")
+                       or part.get("content") == "Create an empty file." for part in parts):
+        summary = [{**summary[0], "content": summary[0].get("content", "").replace("(overwrite)", "(create)", 1)}]
+    return [{**card, "content": [*summary, *parts, *card["content"][1:]]}]

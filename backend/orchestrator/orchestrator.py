@@ -19282,7 +19282,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 try:
                     await hitl_confirmation.audit_effect_outcome(
                         self, approval.call, uncertain=(
-                            result is None or bool(result.error)))
+                            result is None or bool(result.error)), no_effect=(
+                            agent_id == "computer-use-1" and result is not None and isinstance(result.error, dict)
+                            and result.error.get("effect_state") == "not_started"))
                 except Exception:
                     logger.exception("Source-bound effect outcome audit unavailable")
                     return MCPResponse(error={"code": "outcome_uncertain",

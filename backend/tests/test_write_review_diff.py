@@ -80,10 +80,23 @@ async def test_unreadable_target_yields_diff_unavailable(task_runtime, monkeypat
 
 
 async def test_create_card_diffs_against_an_absent_file(task_runtime, monkeypatch):
-    card, _calls = await _card(task_runtime, monkeypatch, ComputerHostError("failed", "errno 2"), if_exists="refuse")
+    card, _calls = await _card(task_runtime, monkeypatch, ComputerHostError("not_found", "File does not exist"), if_exists="refuse")
     diff, = _diff(card)
     assert diff["code"].splitlines()[:2] == ["--- /dev/null", f"+++ {PATH}"]
     assert diff["code"].splitlines()[-2:] == ["+line one", "+new"]
+
+
+async def test_overwrite_of_a_missing_file_still_shows_a_create_diff(task_runtime, monkeypatch):
+    card, _calls = await _card(task_runtime, monkeypatch, ComputerHostError("not_found", "File does not exist"))
+    diff, = _diff(card)
+    assert diff["code"].splitlines()[:2] == ["--- /dev/null", f"+++ {PATH}"]
+
+
+async def test_unreadable_new_file_is_not_reported_as_an_empty_file(task_runtime, monkeypatch):
+    card, _calls = await _card(task_runtime, monkeypatch, ComputerHostError("permission_denied", "refused"),
+                               if_exists="refuse")
+    marker, = _diff(card)
+    assert marker["type"] == "text" and marker["content"] == wr.UNAVAILABLE_TEXT
 
 
 async def test_unchanged_content_says_so(task_runtime, monkeypatch):
@@ -201,3 +214,10 @@ async def test_a_busy_session_times_out_to_diff_unavailable(task_runtime, monkey
     finally:
         session.lock.release()
     assert calls == [] and parts[0]["content"] == wr.UNAVAILABLE_TEXT
+
+
+@pytest.mark.parametrize("content", ["poem", ""])
+async def test_missing_file_summary_says_create_even_when_overwrite_was_requested(task_runtime, monkeypatch, content):
+    card, _calls = await _card(task_runtime, monkeypatch, ComputerHostError("not_found", "missing"), content=content)
+    assert "(create)" in card["content"][0]["content"]
+    assert "(overwrite)" not in card["content"][0]["content"]

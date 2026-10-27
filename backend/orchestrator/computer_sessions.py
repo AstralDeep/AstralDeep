@@ -80,6 +80,7 @@ class ComputerSession:
     command_jobs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     terminal_ok_until: float = 0.0
     authority_generation: int = 0
+    approval_pause_authority: Any = field(default=None, repr=False, compare=False)
     acked: asyncio.Event = field(default_factory=asyncio.Event)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     verbs_run: int = 0
@@ -331,6 +332,7 @@ class ComputerSessionManager:
     async def pause(self, session: ComputerSession, reason: str, *, push: bool = True) -> None:
         if session.state == ENDED or session.state == PAUSED and session.pause_reason == reason:
             return
+        session.approval_pause_authority = None
         session.state = PAUSED
         session.terminal_ok_until = 0.0
         session.authority_generation += 1
@@ -350,6 +352,7 @@ class ComputerSessionManager:
                               outcome="failure", meta={"reason": refusal, "pause_reason": session.pause_reason})
             raise ComputerHostError(refusal, f"{session.host_name} was paused at the computer; only its own Resume "
                                              "control can continue the session")
+        session.approval_pause_authority = None
         session.state = ACTIVE
         session.authority_generation += 1
         session.pause_reason = None
@@ -363,6 +366,7 @@ class ComputerSessionManager:
             return
         if reason not in END_REASONS:
             reason = "user_stop"
+        session.approval_pause_authority = None
         session.state = ENDED
         session.terminal_ok_until = 0.0
         session.authority_generation += 1

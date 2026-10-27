@@ -1,6 +1,6 @@
 """Exercises the per-host bypass permissions mode end to end: only the host's own signed-in client
 socket can switch it, the review gate auto-approves computer-use cards with an audited bypass source
-while the privilege, secure-input, terminal and Astral floors keep asking, and every clearing trigger.
+while unavailable privilege, secure-input and Astral authority fail without cards, and every clearing trigger.
 """
 
 import asyncio
@@ -228,15 +228,13 @@ async def test_bypass_also_covers_starting_a_session(task_runtime):
     ("type_text", {"text": "hunter2", "hwnd": 50}), ("type_text", {"text": "hunter2", "hwnd": 51}),
     ("press_keys", {"keys": "enter", "hwnd": 51}), ("type_text", {"text": "x"}),
     ("click", {"x": 1, "y": 1, "hwnd": 52}), ("open_app", {"app": "com.personalailabs.astraldeep"}),
-    ("type_text", {"text": "ls", "hwnd": 53, "terminal_app": "Terminal"}), ("open_app", {"app": "Terminal"}),
-    ("confirm_action", {"summary": "Pay the invoice"}), ("resume_session", {}),
 ])
-async def test_the_floor_still_asks_in_bypass(task_runtime, tool, args):
+async def test_bypass_floor_refuses_directly_without_a_card(task_runtime, tool, args):
     orch, ws, effects, *_ = task_runtime
     await _bypassed(task_runtime)
     response = await _call(task_runtime, tool, **args)
-    assert response.result["_data"]["status"] == "confirmation_required" and not effects
-    assert "bypass" not in json.dumps(response.result)
+    assert response.error and not effects
+    assert not rc._PENDING_CARDS and not getattr(orch, "_hitl_pending_calls", {})
     assert not [event for event in _audited(orch) if event.action_type == "hitl.bypass"]
 
 
@@ -262,7 +260,7 @@ async def test_bypass_keeps_delegation_policy_taint_privacy_and_folder_checks(ta
     orch._taint_tracker = lambda _chat: SimpleNamespace(effective_trust_of_args=lambda *_a, **_k: taint.UNTRUSTED)
     orch._current_request_text = lambda _chat: ""
     tainted = await _call(task_runtime, "run_command", argv=["wc", "a"], cwd=ROOT)
-    assert tainted.result["_data"]["status"] == "confirmation_required"
+    assert tainted.error and not rc._PENDING_CARDS and not getattr(orch, "_hitl_pending_calls", {})
     monkeypatch.setattr(taint, "taint_enabled", lambda: False)
     private = await _call(task_runtime, "type_text", text="password: hunter2", hwnd=42)
     assert "Review unavailable" in private.error["message"]

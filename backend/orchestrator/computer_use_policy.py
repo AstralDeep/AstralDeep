@@ -489,6 +489,28 @@ def resolve_cwd(value: Any, roots: Any, host_name: str) -> str:
     return folder
 
 
+def resolve_workspace_path(value: Any, roots: Any, host_name: str, *, primary: str | None = None) -> str:
+    folders = _root_paths(roots)
+    if not folders:
+        raise CwdRefusal("path_outside_workspace", f"{host_name} shares no workspace folder; ask the user to "
+                                                  "select a project folder in Computer controls")
+    hint = _folders_hint(folders)
+    if not isinstance(value, str) or not value.strip() or len(value) > 1024 or "\x00" in value or "\\" in value:
+        raise CwdRefusal("out_of_range", f"path must name a file or directory in a shared folder. {hint}")
+    if value.startswith("/"):
+        path = value
+    elif primary is not None and any(root["path"] == primary for root in folders):
+        path = posixpath.join(primary, value)
+    elif len(folders) == 1:
+        path = posixpath.join(folders[0]["path"], value)
+    else:
+        raise CwdRefusal("path_outside_workspace", f"Use an absolute path when multiple folders are shared. {hint}")
+    path = "/" + posixpath.normpath(path).lstrip("/")
+    if not any(path == root["path"] or path.startswith(root["path"] + "/") for root in folders):
+        raise CwdRefusal("path_outside_workspace", f"The path is outside every folder shared by {host_name}. {hint}")
+    return path
+
+
 _ESCALATING = frozenset({"sudo", "sudoedit", "su", "doas", "pkexec", "visudo", "dseditgroup", "sysadminctl"})
 _TRUST_EDITS = frozenset({"authorizationdb", "add-trusted-cert", "remove-trusted-cert", "trust-settings-import"})
 _SETID_MODE = re.compile(r"[ugoa]*[+=][rwxXt]*s[rwxXst]*|0?[2467][0-7]{3}")
@@ -541,7 +563,7 @@ WINDOW_INPUT_VERBS: FrozenSet[str] = frozenset({
     "click", "double_click", "right_click", "move", "drag", "scroll", "type_text", "press_keys", "focus_window",
 })
 BYPASS_VERBS: FrozenSet[str] = (OBSERVE_VERBS | INPUT_VERBS | CONSEQUENTIAL_VERBS
-                                | frozenset({"start_session", "end_session"}))
+                                | frozenset({"start_session", "end_session", "resume_session", "confirm_action"}))
 
 
 def is_astral_app(value: Any) -> bool:
@@ -558,8 +580,13 @@ def is_secure_input_app(bundle: Any) -> bool:
 
 
 def bypass_floor(tool: str, args: Mapping[str, Any], window_bundle: Optional[str]) -> bool:
-    if "terminal_app" in args:
-        return True
+    if "terminal_app" in args and tool in WINDOW_INPUT_VERBS:
+        try:
+            terminal = mac_terminal_application(args["terminal_app"])
+        except ValueError:
+            return True
+        if tool not in KEYBOARD_VERBS or not window_bundle or terminal.casefold() != window_bundle.casefold():
+            return True
     if tool == "run_command":
         argv = args.get("argv")
         text = " ".join(str(word) for word in argv) if isinstance(argv, list) else str(args.get("command") or "")
@@ -567,11 +594,12 @@ def bypass_floor(tool: str, args: Mapping[str, Any], window_bundle: Optional[str
     if tool in {"write_file", "delete_path"}:
         return bool(_ASTRAL_TEXT.search(str(args.get("path") or "")))
     if tool == "open_app":
-        return is_shell_app(args.get("app")) or is_astral_app(args.get("app"))
+        return is_astral_app(args.get("app"))
     if tool in WINDOW_INPUT_VERBS:
         if not window_bundle or is_astral_app(window_bundle):
             return True
-        return tool in KEYBOARD_VERBS and (is_secure_input_app(window_bundle) or is_shell_app(window_bundle))
+        return tool in KEYBOARD_VERBS and (is_secure_input_app(window_bundle)
+                                          or is_shell_app(window_bundle) and "terminal_app" not in args)
     return False
 
 

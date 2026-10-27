@@ -27,11 +27,12 @@ LAST_SEEN_TTL_S = int(os.getenv("COMPUTER_HOST_LAST_SEEN_TTL_S", str(24 * 3600))
 
 
 class ComputerHostError(Exception):
-    def __init__(self, code: str, message: str, *, candidates: Optional[List[str]] = None):
+    def __init__(self, code: str, message: str, *, candidates: Optional[List[str]] = None, effect_state: Optional[str] = None):
         super().__init__(message)
         self.code = code
         self.message = message
         self.candidates = candidates or []
+        self.effect_state = "not_started" if effect_state == "not_started" else None
 
 
 @dataclass
@@ -275,7 +276,7 @@ class ComputerHostRegistry:
         error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
         code = str(error.get("code") or "failed")
         message = str(error.get("message") or f"{verb} failed on {host.name}")[:500]
-        raise ComputerHostError(code, message)
+        raise ComputerHostError(code, message, effect_state=error.get("effect_state"))
 
     def handle_response(self, websocket, owner_sub: str, payload: Dict[str, Any]) -> bool:
         request_id = str(payload.get("request_id") or "")

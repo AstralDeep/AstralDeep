@@ -166,9 +166,29 @@ def _resolve_command_folder(orch, user_id, chat_id, args):
     except policy.CwdRefusal as exc:
         _audit_sync(user_id, "remote_op.refused_cwd", "refused run_command outside the shared folders",
                     machine_id=host.host_id, verb="run_command", outcome="failure", chat_id=chat_id)
-        return Refusal((f"{exc.code}: {exc} Nothing was run and no approval was requested.",
+        return Refusal((f"{exc.code}: {exc} Nothing was run.",
                         [Alert(message=f"That folder is not shared from {host.name}; nothing was run.",
                                variant="error").to_dict()]))
+    return None
+
+
+def _resolve_file_folder(orch, user_id, chat_id, tool_name, args):
+    from astralprims import Alert
+
+    try:
+        host = computer_card_host(orch, user_id, chat_id, args)
+    except ComputerHostError:
+        return None
+    if host.platform != "macos":
+        return None
+    policy = _computer_policy()
+    try:
+        args["path"] = policy.resolve_workspace_path(args.get("path"), host.workspace_roots, host.name)
+    except policy.CwdRefusal as exc:
+        _audit_sync(user_id, "remote_op.refused_path", "refused file operation outside the shared folders",
+                    machine_id=host.host_id, verb=tool_name, outcome="failure", chat_id=chat_id)
+        return Refusal((f"{exc.code}: {exc} Nothing was run.",
+                        [Alert(message=str(exc), variant="error").to_dict()]))
     return None
 
 
@@ -192,6 +212,9 @@ def capture_computer_approval(orch, websocket, owner, chat, args):
         authority = ComputerApproval(owner, chat, websocket, host, session, session.authority_generation,
             getattr(orch, "_hitl_task_origins", {}).get((owner, chat)), context,
             getattr(context, "connection_generation", None))
+        if session.state == "paused" and session.pause_reason == "approval_not_completed":
+            authority = getattr(session, "approval_pause_authority", None)
+            return authority if computer_approval_current(orch, websocket, authority, allow_local_pause=True) else None
         return authority if computer_approval_current(orch, websocket, authority) else None
     except (AttributeError, ComputerHostError):
         return None
@@ -210,7 +233,10 @@ def computer_approval_current(orch, websocket, authority, *, allow_local_pause=F
     session = authority.session
     state_current = (session.state == "active" and session.authority_generation == authority.generation)
     if allow_local_pause:
-        state_current = state_current or (session.state == "paused" and session.pause_reason == "local_input"
+        recoverable_pause = (session.pause_reason == "local_input"
+                             or session.pause_reason == "approval_not_completed" and authority.task is not None
+                             and getattr(session, "approval_pause_authority", None) is authority)
+        state_current = state_current or (session.state == "paused" and recoverable_pause
                                          and session.authority_generation == authority.generation + 1)
     return (authority.websocket is websocket and claims.get("sub") == authority.owner
             and not _no_live_human(orch, websocket)
@@ -236,6 +262,9 @@ def computer_resume_target(websocket, authority, tool, args) -> str | None:
             return None
         label = authority.session.window_labels.get(hwnd)
         return f"{label} (window {hwnd})" if label else f"window {hwnd}"
+    if (tool == "run_command" and authority.session.pause_reason == "approval_not_completed"
+            and isinstance(args.get("cwd"), str)):
+        return args["cwd"][:200]
     if tool == "open_app":
         try:
             return computer_use_policy.mac_application(args.get("app"), args.get("args", []))
@@ -265,6 +294,8 @@ async def resume_computer_approval(orch, websocket, authority, tool, args):
 async def pause_failed_computer_approval(orch, websocket, authority):
     if computer_approval_current(orch, websocket, authority):
         await orch.computer_sessions.pause(authority.session, "approval_not_completed")
+        if authority.session.authority_generation == authority.generation + 1:
+            authority.session.approval_pause_authority = authority
 
 
 def _computer_use_on_approved(orch, row, websocket=None, authority=None) -> bool:
@@ -669,7 +700,7 @@ def consumed_review(orch, proposal_id, owner, chat, agent, tool, args, *, transa
 
 
 def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
-                     tool_name: str, args: dict[str, Any], *, on_created=None, websocket=None) -> tuple[str, dict[str, Any]]:
+                     tool_name: str, args: dict[str, Any], *, on_created=None, websocket=None, review_parts=()) -> tuple[str, dict[str, Any]]:
     from astralprims import Button, Card, Text
     policy = policy_for(agent_id) or policy_for(MUTATING_AGENT_ID)
     proposal_id = uuid.uuid4().hex
@@ -753,6 +784,7 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
             card["content"].insert(2, Text(content="This decision explicitly resumes this Mac session. Any focus change is "
                 "limited to the reviewed target. The exact action still passes permission, privacy and source review.",
                 variant="caption").to_dict())
+    card["content"][2:2] = review_parts
     return proposal_id, card
 
 
@@ -851,6 +883,16 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
                 args["request_id"] = reconciliation["request_id"]
             else:
                 args["params"] = dict(public["params"], request_id=reconciliation["request_id"])
+    if agent_id == "computer-use-1":
+        from orchestrator.hitl_confirmation import bypass_refusal
+
+        if tool_name in {"read_file", "list_dir", "write_file", "delete_path"}:
+            refusal = _resolve_file_folder(orch, user_id, chat_id, tool_name, args)
+            if refusal is not None:
+                return refusal
+        refusal = bypass_refusal(orch, websocket, user_id, chat_id, agent_id, tool_name, args, ())
+        if refusal is not None:
+            return Refusal((refusal, [Alert(message=refusal, variant="error").to_dict()]))
     machine_ref = args.get(policy.machine_key)
     classification = classification_for(tool_name, agent_id)
     if classification is None and not policy.gate_unclassified_unattended:
@@ -927,12 +969,35 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
         from orchestrator.hitl_confirmation import bypass_covers, grant_covers
 
         try:
-            computer_card_host(orch, user_id, chat_id, args)
+            card_host = computer_card_host(orch, user_id, chat_id, args)
         except ComputerHostError as exc:
-            return (f"{exc.code}: {exc.message}", [Alert(message=exc.message, variant="error").to_dict()])
+            return Refusal((f"{exc.code}: {exc.message}", [Alert(message=exc.message, variant="error").to_dict()]))
         if (grant_covers(orch, websocket, user_id, chat_id, tool_name, args)
                 or bypass_covers(orch, websocket, user_id, chat_id, agent_id, tool_name, args, ())):
             return None
+    review_parts = []
+    if agent_id == "computer-use-1" and card_host.platform == "macos":
+        authority = capture_computer_approval(orch, websocket, user_id, chat_id, args)
+        if authority is None or (authority.session.state == "paused"
+                and computer_resume_target(websocket, authority, tool_name, args) is None):
+            message = "The computer session cannot authorize this action. Resume it on the Mac and re-request it."
+            return Refusal((message, [Alert(message=message, variant="error").to_dict()]))
+    if agent_id == "computer-use-1" and card_host.platform == "macos" and tool_name in {"write_file", "delete_path"}:
+        from astralprims import CodeBlock, Text
+        from orchestrator import hitl, source_bound
+        from orchestrator.hitl_confirmation import _review_arguments
+
+        shown = {key: value for key, value in args.items() if key != "computer"}
+        preview, reviewable = _review_arguments(shown)
+        if not reviewable:
+            message = "Review unavailable: remove sensitive or oversized arguments before requesting this action."
+            return Refusal((message, [Alert(message=message, variant="error").to_dict()]))
+        action = source_bound.declaration(orch.tool_permissions.get_tool_scope_map(agent_id), agent_id, tool_name)
+        risks = {*source_bound.review_risks(action), *hitl.assess_risk(tool_name, args, actor_principal=user_id,
+                                                                    agent_id=agent_id)}
+        origin = orch._source_ledger(user_id, chat_id).origin_of(args).value
+        review_parts = [Text(content=f"Risks: {', '.join(sorted(risks))}. Source: {origin}.",
+                             variant="body").to_dict(), CodeBlock(code=preview, language="json").to_dict()]
     pending_key = (user_id, agent_id, tool_name, _fingerprint(args))
     if policy.retry_grace_s > 0:
         grace = _RETRY_GRACE.pop(pending_key, None)
@@ -946,7 +1011,8 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
         if pending is not None and pending[1] > time.time():
             return (policy.refusal_text, [Alert(message="Still waiting for your approval of the "
                                                 "action above.", variant="warning").to_dict()])
-    pid, card = _create_proposal(orch, user_id, chat_id, agent_id, tool_name, args, websocket=websocket)
+    pid, card = _create_proposal(orch, user_id, chat_id, agent_id, tool_name, args, websocket=websocket,
+                                 review_parts=review_parts)
     if policy.dedupe_pending:
         _PENDING_CARDS[pending_key] = (pid, time.time() + PROPOSAL_TTL_S)
     return (policy.refusal_text, [card])
@@ -1000,6 +1066,11 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
                     websocket, computer_authority, row.tool_name, row.arguments) is None)
                 or not computer_approval_current(orch, websocket, computer_authority,
                                                  allow_local_pause=resume_requested or decision == "decline")):
+            _forget_pending(str(proposal_id))
+            await _audit_async(user_id, "remote_op.decision_refused", "computer decision lost its authority",
+                               proposal_id=proposal_id, machine_id=row.machine_id, verb=row.tool_name,
+                               outcome="failure", chat_id=row.conversation_id)
+            await _replace_card(orch, row, "Expired", "The computer session changed. Re-request this action.")
             await _say("This computer session changed. Re-request the action in its current conversation.")
             return
     elif resume_requested:
