@@ -106,7 +106,8 @@ async def test_omitted_computer_keeps_origin_session_with_two_project_hosts(task
     assert response.result["_data"]["approval_source"] == "project_grant"
     await orch.computer_sessions.end(session, "consent_revoked")
 
-async def test_standing_write_crosses_both_gates_worker_bridge_and_native_rpc(task_runtime, monkeypatch):
+@pytest.mark.parametrize("preview", ["unsupported", "missing", "present"])
+async def test_standing_write_crosses_both_gates_worker_bridge_and_native_rpc(task_runtime, monkeypatch, preview):
     import asyncio
     import json
     from agents.computer_use import mcp_tools
@@ -117,7 +118,7 @@ async def test_standing_write_crosses_both_gates_worker_bridge_and_native_rpc(ta
     orch.ui_clients = [ws, host.websocket]
     orch.computer_hosts._orch = orch
     orch.computer_sessions._orch = orch
-    host.descriptor["verbs"] = ["write_file"]
+    host.descriptor["verbs"] = ["write_file"] + (["read_file"] if preview != "unsupported" else [])
     monkeypatch.setattr(mcp_tools, "_ORCH", orch)
     monkeypatch.setattr(mcp_tools, "_LOOP", asyncio.get_running_loop())
     delivered = []
@@ -125,8 +126,12 @@ async def test_standing_write_crosses_both_gates_worker_bridge_and_native_rpc(ta
         frame = json.loads(raw)
         if frame.get("type") == "computer_request":
             delivered.append(frame)
-            orch.computer_hosts.handle_response(socket, "owner-a", {"request_id": frame["request_id"],
-                "ok": True, "result": {"path": frame["args"]["path"], "bytes_written": 5}})
+            if frame["verb"] == "read_file":
+                response = ({"ok": False, "error": {"code": "not_found", "message": "Missing file", "effect_state": "not_started"}}
+                    if preview == "missing" else {"ok": True, "result": {"text": "old", "truncated": False}})
+            else:
+                response = {"ok": True, "result": {"path": frame["args"]["path"], "bytes_written": 5}}
+            orch.computer_hosts.handle_response(socket, "owner-a", {"request_id": frame["request_id"], **response})
         return True
     orch._safe_send = send
     async def execute(websocket, agent, tool, args, **kwargs):
@@ -138,8 +143,12 @@ async def test_standing_write_crosses_both_gates_worker_bridge_and_native_rpc(ta
     response = await _call(task_runtime, "write_file", path="note.md", content="hello")
     assert response.error is None and "code" not in response.result["_data"], response
     assert response.result["_data"]["approval_source"] == "project_grant"
-    assert len(delivered) == 1 and delivered[0]["args"]["path"] == "/tmp/project-a/note.md"
-    assert delivered[0]["project_context"] == session.project_origin.context.to_dict()
+    assert [frame["verb"] for frame in delivered] == (["read_file"] if preview != "unsupported" else []) + ["write_file"]
+    assert all(frame["args"]["path"] == "/tmp/project-a/note.md" for frame in delivered)
+    assert all(frame["project_context"] == session.project_origin.context.to_dict() for frame in delivered)
+    assert session.state == "active"
+    if preview == "missing":
+        assert delivered[-1]["args"]["if_exists"] == "refuse"
     assert not getattr(orch, "_hitl_pending_calls", {}) and not remote_confirmation._PENDING_CARDS
     await orch.computer_sessions.end(session, "consent_revoked")
 
