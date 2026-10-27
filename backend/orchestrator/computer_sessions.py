@@ -327,6 +327,7 @@ class ComputerSessionManager:
         session.last_activity_at = time.time()
         self._sessions.pop(session.session_id, None)
         self.grants.revoke(session.session_id, _GRANT_REVOCATIONS.get(reason, "session_ended"))
+        self._registry.cancel_session_requests(session.owner_sub, session.host_id, session.session_id)
         jobs = [job for job, record in session.command_jobs.items() if record.get("state", "running") == "running"]
         session.command_jobs.clear()
         host = self._registry.get(session.owner_sub, session.host_id)
@@ -343,6 +344,9 @@ class ComputerSessionManager:
             outcome = cancel(session)
             if inspect.isawaitable(outcome):
                 await outcome
+
+    def cancel_requests(self, session: ComputerSession) -> int:
+        return self._registry.cancel_session_requests(session.owner_sub, session.host_id, session.session_id)
 
     async def interrupt_jobs(self, session: ComputerSession, signal: str = "INT") -> None:
         jobs = [job for job, record in session.command_jobs.items() if record.get("state", "running") == "running"]
