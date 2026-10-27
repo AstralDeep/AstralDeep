@@ -342,6 +342,8 @@ def _destructive_program(words: Sequence[str]) -> bool:
 
 
 class _CommandScan:
+    check = staticmethod(_destructive_program)
+
     def __init__(self, cwd: Optional[str], roots: Sequence[str]):
         self.cwd = cwd
         self.roots = list(roots) or ([cwd] if cwd else [])
@@ -377,7 +379,7 @@ class _CommandScan:
                     script = next((w for w in words[index + 1:] if not w.startswith("-")), None)
                     return script is not None and self.text(script, depth + 1)
             return False
-        return _destructive_program(words)
+        return self.check(words)
 
     def text(self, command: str, depth: int) -> bool:
         if depth > _MAX_NESTING:
@@ -485,6 +487,92 @@ def resolve_cwd(value: Any, roots: Any, host_name: str) -> str:
     if not any(folder == root["path"] or folder.startswith(root["path"] + "/") for root in folders):
         raise CwdRefusal("cwd_outside_workspace", f"cwd {folder[:200]} is outside every folder the user shared. {hint}")
     return folder
+
+
+_ESCALATING = frozenset({"sudo", "sudoedit", "su", "doas", "pkexec", "visudo", "dseditgroup", "sysadminctl"})
+_TRUST_EDITS = frozenset({"authorizationdb", "add-trusted-cert", "remove-trusted-cert", "trust-settings-import"})
+_SETID_MODE = re.compile(r"[ugoa]*[+=][rwxXt]*s[rwxXst]*|0?[2467][0-7]{3}")
+
+
+def _escalating_program(words: Sequence[str]) -> bool:
+    program, rest = _program(words[0]), list(words[1:])
+    if program in _ESCALATING:
+        return True
+    if program == "launchctl":
+        return any(word.startswith("system") or "/Library/LaunchDaemons" in word for word in rest)
+    if program == "osascript":
+        return any("administrator privileges" in word.lower() for word in rest)
+    if program == "security":
+        return _first_operand(words) in _TRUST_EDITS
+    if program == "dscl":
+        return any("admin" in word.lower() for word in rest)
+    if program == "chmod":
+        return any(_SETID_MODE.fullmatch(word) for word in rest if not word.startswith("-"))
+    return False
+
+
+class _EscalationScan(_CommandScan):
+    check = staticmethod(_escalating_program)
+
+    def _inside(self, target: str) -> bool:
+        return True
+
+
+def is_privilege_escalation(args: Mapping[str, Any]) -> bool:
+    shape = _command_shape(args)
+    if shape is None:
+        return True
+    scan = _EscalationScan(None, [])
+    kind, value = shape
+    return scan.invocation(value, 0) if kind == "argv" else scan.text(value, 0)
+
+
+ASTRAL_BUNDLE_PREFIX = "com.personalailabs.astraldeep"
+_ASTRAL_NAMES = frozenset({"astral", "astraldeep", "astral deep"})
+_ASTRAL_TEXT = re.compile(r"com\.personalailabs\.astraldeep|astral ?(?:deep)?\.app", re.IGNORECASE)
+SECURE_INPUT_BUNDLES: FrozenSet[str] = frozenset({
+    "com.apple.securityagent", "com.apple.loginwindow", "com.apple.keychainaccess", "com.apple.passwords",
+    "com.apple.systempreferences", "com.apple.systemsettings", "com.bitwarden.desktop", "org.keepassxc.keepassxc",
+    "com.lastpass.lastpass", "in.sinew.enpass-desktop", "com.dashlane.dashlanephonefinal", "me.proton.pass.electron",
+})
+_SECURE_INPUT_PREFIXES = ("com.1password.", "com.agilebits.onepassword")
+KEYBOARD_VERBS: FrozenSet[str] = frozenset({"type_text", "press_keys"})
+WINDOW_INPUT_VERBS: FrozenSet[str] = frozenset({
+    "click", "double_click", "right_click", "move", "drag", "scroll", "type_text", "press_keys", "focus_window",
+})
+BYPASS_VERBS: FrozenSet[str] = (OBSERVE_VERBS | INPUT_VERBS | CONSEQUENTIAL_VERBS
+                                | frozenset({"start_session", "end_session"}))
+
+
+def is_astral_app(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    stem = text.replace("\\", "/").rsplit("/", 1)[-1]
+    for suffix in (".exe", ".app"):
+        stem = stem.removesuffix(suffix)
+    return bool(text) and (text.startswith(ASTRAL_BUNDLE_PREFIX) or stem in _ASTRAL_NAMES)
+
+
+def is_secure_input_app(bundle: Any) -> bool:
+    folded = str(bundle or "").casefold()
+    return folded in SECURE_INPUT_BUNDLES or folded.startswith(_SECURE_INPUT_PREFIXES)
+
+
+def bypass_floor(tool: str, args: Mapping[str, Any], window_bundle: Optional[str]) -> bool:
+    if "terminal_app" in args:
+        return True
+    if tool == "run_command":
+        argv = args.get("argv")
+        text = " ".join(str(word) for word in argv) if isinstance(argv, list) else str(args.get("command") or "")
+        return is_privilege_escalation(args) or bool(_ASTRAL_TEXT.search(text))
+    if tool in {"write_file", "delete_path"}:
+        return bool(_ASTRAL_TEXT.search(str(args.get("path") or "")))
+    if tool == "open_app":
+        return is_shell_app(args.get("app")) or is_astral_app(args.get("app"))
+    if tool in WINDOW_INPUT_VERBS:
+        if not window_bundle or is_astral_app(window_bundle):
+            return True
+        return tool in KEYBOARD_VERBS and (is_secure_input_app(window_bundle) or is_shell_app(window_bundle))
+    return False
 
 
 def is_destructive_command(args: Mapping[str, Any], roots: Any = ()) -> bool:

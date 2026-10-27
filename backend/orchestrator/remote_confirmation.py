@@ -54,9 +54,11 @@ _PENDING_CARDS: Dict[tuple, tuple] = {}
 _RETRY_GRACE: Dict[Tuple[Any, ...], Tuple[str, float]] = {}
 
 
+_SOURCE_PROPOSAL = contextvars.ContextVar("source_review_remote_proposal", default=None)
+
+
 class Refusal(tuple):
     __slots__ = ()
-_SOURCE_PROPOSAL = contextvars.ContextVar("source_review_remote_proposal", default=None)
 
 
 @contextmanager
@@ -922,13 +924,14 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
                        variant="error").to_dict()])
 
     if agent_id == "computer-use-1":
-        from orchestrator.hitl_confirmation import grant_covers
+        from orchestrator.hitl_confirmation import bypass_covers, grant_covers
 
         try:
             computer_card_host(orch, user_id, chat_id, args)
         except ComputerHostError as exc:
             return (f"{exc.code}: {exc.message}", [Alert(message=exc.message, variant="error").to_dict()])
-        if grant_covers(orch, websocket, user_id, chat_id, tool_name, args):
+        if (grant_covers(orch, websocket, user_id, chat_id, tool_name, args)
+                or bypass_covers(orch, websocket, user_id, chat_id, agent_id, tool_name, args, ())):
             return None
     pending_key = (user_id, agent_id, tool_name, _fingerprint(args))
     if policy.retry_grace_s > 0:

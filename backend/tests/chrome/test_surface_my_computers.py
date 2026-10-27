@@ -50,8 +50,18 @@ def test_remote_control_on_card_keeps_badge_and_stop_without_explanation(enabled
     card, = components
     assert card["title"] == "This computer"
     kinds = [child["type"] for child in card["content"]]
-    assert kinds == ["badge", "button"]
+    assert kinds == ["badge", "button", "button"]
     assert card["content"][1]["payload"] == {"enabled": False}
+    assert (card["content"][2]["action"], card["content"][2]["label"], card["content"][2]["payload"]) == (
+        "chrome_computer_bypass_set", "Bypass permissions", {"host_id": "h1", "enabled": True})
+
+
+def test_bypass_on_shows_a_badge_and_offers_to_ask_again(enabled, monkeypatch):
+    card, = _components(monkeypatch, [], {"enabled": True, "name": "Studio", "host_id": "h1", "bypass": True})
+    assert [child["type"] for child in card["content"]] == ["badge", "badge", "button", "button"]
+    assert card["content"][1]["label"] == "bypass on"
+    assert (card["content"][3]["label"], card["content"][3]["payload"]) == (
+        "Ask for permission", {"host_id": "h1", "enabled": False})
 
 
 def test_remote_control_off_card_keeps_only_the_safety_line_beside_allow(enabled, monkeypatch):
