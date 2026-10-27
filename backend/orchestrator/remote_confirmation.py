@@ -232,7 +232,7 @@ async def resume_computer_approval(orch, websocket, authority, tool, args):
             or not computer_approval_current(orch, websocket, authority, allow_local_pause=True)):
         return None
     generation = authority.generation + (2 if authority.session.state == "paused" else 0)
-    await orch.computer_sessions.resume(authority.session)
+    await orch.computer_sessions.resume(authority.session, local=True)
     resumed = replace(authority, generation=generation)
     return resumed if computer_approval_current(orch, websocket, resumed) else None
 

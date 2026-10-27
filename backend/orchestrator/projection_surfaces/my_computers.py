@@ -1,6 +1,7 @@
 """Renders the 'My computers' surface listing the owner's remote-control-enabled
-desktops and their session controls (start/pause/resume/stop/forget). Shares handler
-keys between web render() and native components(), gated by FF_COMPUTER_USE.
+desktops and their session controls (start/pause/resume/stop/forget), and revokes one task
+grant named on a computer_session frame. Shares handler keys between web render() and native
+components(), gated by FF_COMPUTER_USE.
 """
 
 from __future__ import annotations
@@ -11,11 +12,13 @@ from typing import Any, Dict, List, Optional
 from webrender.chrome import esc, notice_block
 
 from orchestrator.computer_hosts import ComputerHostError
+from orchestrator.computer_sessions import LOCAL_RESUME_REFUSALS
 
 TITLE = "My computers"
 SURFACE_KEY = "my_computers"
 
 _DISABLED_MSG = "Remote control is not enabled on this server."
+_GRANT_BINDING = ("session_id", "host_id", "chat_id", "grant_id")
 
 _BTN = "px-3 py-2 rounded-lg text-sm font-medium bg-white/5 text-astral-text border border-white/10 hover:bg-white/10"
 _BTN_PRIMARY = ("px-3 py-2 rounded-lg text-sm font-medium bg-astral-primary/20 "
@@ -60,6 +63,10 @@ def _rows(orch, user_id: str) -> List[Dict[str, Any]]:
     return hosts
 
 
+def _remotely_resumable(s: Dict[str, Any]) -> bool:
+    return s["state"] == "paused" and s.get("pause_reason") not in LOCAL_RESUME_REFUSALS
+
+
 def _session_line(h: Dict[str, Any]) -> str:
     s = h.get("session")
     if not s:
@@ -84,11 +91,11 @@ def _host_html(h: Dict[str, Any]) -> str:
                            f"data-ui-payload='{{\"host_id\":\"{hid}\"}}'>Control this computer</button>")
         else:
             sid = esc(s["session_id"])
-            if s["state"] == "paused":
+            if _remotely_resumable(s):
                 buttons.append(f'<button type="button" class="{_BTN_PRIMARY}" '
                                f'data-ui-action="chrome_computer_session_resume" '
                                f"data-ui-payload='{{\"session_id\":\"{sid}\"}}'>Resume</button>")
-            else:
+            elif s["state"] != "paused":
                 buttons.append(f'<button type="button" class="{_BTN}" '
                                f'data-ui-action="chrome_computer_session_pause" '
                                f"data-ui-payload='{{\"session_id\":\"{sid}\"}}'>Pause</button>")
@@ -212,10 +219,10 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
                 buttons.append(_sdui.button("Control this computer", "chrome_computer_session_start",
                                             payload={"host_id": h["host_id"]}))
             else:
-                if s["state"] == "paused":
+                if _remotely_resumable(s):
                     buttons.append(_sdui.button("Resume", "chrome_computer_session_resume",
                                                 payload={"session_id": s["session_id"]}))
-                else:
+                elif s["state"] != "paused":
                     buttons.append(_sdui.button("Pause", "chrome_computer_session_pause",
                                                 payload={"session_id": s["session_id"]}, variant="secondary"))
                 buttons.append(_sdui.button("Stop", "chrome_computer_session_stop",
@@ -283,11 +290,25 @@ async def _h_session_resume(orch, websocket, user_id, roles, payload):
     try:
         await orch.computer_sessions.resume(session)
     except ComputerHostError as exc:
+        if exc.code == "local_resume_required":
+            return (SURFACE_KEY, {}, notice_block(
+                "error", f"{esc(session.host_name)} was paused at that computer. Resume it there."))
         if exc.code != "local_pause_requires_local_resume":
             raise
         return (SURFACE_KEY, {}, notice_block(
             "error", f"{esc(session.host_name)} was paused on that Mac. Resume it there."))
     return (SURFACE_KEY, {}, notice_block("success", f"Resumed {esc(session.host_name)}."))
+
+
+async def _h_grant_revoke(orch, websocket, user_id, roles, payload):
+    if not _enabled():
+        return (SURFACE_KEY, {}, notice_block("error", _DISABLED_MSG))
+    values = [payload.get(name) for name in _GRANT_BINDING] if isinstance(payload, dict) else []
+    if (not values or set(payload) - set(_GRANT_BINDING) - {"surface"}
+            or not all(isinstance(value, str) and 0 < len(value) <= 256 for value in values)
+            or not await orch.computer_sessions.revoke_grant(user_id, *values)):
+        return (SURFACE_KEY, {}, notice_block("error", "That grant is not active."))
+    return (SURFACE_KEY, {}, notice_block("success", "Grant revoked."))
 
 
 async def _h_forget(orch, websocket, user_id, roles, payload):
@@ -305,4 +326,5 @@ HANDLERS = {
     "chrome_computer_session_pause": _h_session_pause,
     "chrome_computer_session_resume": _h_session_resume,
     "chrome_computer_forget": _h_forget,
+    "chrome_computer_grant_revoke": _h_grant_revoke,
 }

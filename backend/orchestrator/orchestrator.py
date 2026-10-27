@@ -10771,12 +10771,18 @@ class Orchestrator:
                 elif msg.action == "get_history":
                     await self._push_history_surface(websocket, loading=True)
                     chats = await asyncio.to_thread(
-                        self.history.get_recent_chats, user_id=user_id)
+                        self.history.get_recent_chats, user_id=user_id,
+                        include_archived=(msg.payload or {}).get("include_archived") is True)
                     await self._safe_send(websocket, json.dumps({
                         "type": "history_list",
                         "chats": chats
                     }))
                     await self._push_history_surface(websocket, chats=chats)
+
+                elif (msg.action == "chat_rename" or msg.action == "chat_pin" or msg.action == "chat_unpin"
+                      or msg.action == "chat_archive" or msg.action == "chat_unarchive"):
+                    from orchestrator import chat_organization
+                    await chat_organization.handle(self, websocket, user_id, msg.action, msg.payload)
 
                 elif msg.action == "load_chat":
                     chat_id = msg.payload.get("chat_id")
@@ -17713,6 +17719,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
             if _conf is not None:
                 _msg, _comps = _conf
+                if agent_id == "computer-use-1" and tool_name == "write_file":
+                    from orchestrator.write_review import attach_write_diff
+                    _comps = await attach_write_diff(self, websocket, user_id, chat_id, args, _comps)
                 _policy = remote_confirmation.policy_for(agent_id)
                 if (_policy is not None and _policy.card_as_result
                         and (agent_id != "gaiakeep-1" or remote_confirmation.is_approval_card_result(_comps))):
