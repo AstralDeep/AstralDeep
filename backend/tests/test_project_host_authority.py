@@ -622,3 +622,53 @@ async def test_direct_host_request_keeps_one_deadline_through_membership_and_out
         assert error.value.code == ("timeout" if phase == "before_send" else "outcome_uncertain")
         assert error.value.effect_state == ("not_started" if phase == "before_send" else None)
         assert len(delivered) == (0 if phase == "before_send" else 1)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["pause", "end"])
+async def test_project_lifecycle_reaches_host_before_audit_without_refused_cleanup_rpc(monkeypatch, action):
+    import json
+    from orchestrator.computer_sessions import ComputerSessionManager
+
+    _, orch, ws, host, _, _ = setup(monkeypatch)
+    controller = object()
+    orch.ui_sessions[controller] = {"sub": OWNER}
+    orch.ui_clients = [controller, ws]
+    orch._get_user_id = lambda socket: orch.ui_sessions[socket]["sub"]
+    manager = ComputerSessionManager(orch, orch.computer_hosts)
+    orch.computer_sessions = manager
+    async def nothing(*args, **kwargs):
+        pass
+    manager._audit = nothing
+    manager._ensure_sweeper = lambda: None
+    frames, attempted = [], []
+    async def send(socket, raw):
+        frames.append((socket, json.loads(raw)))
+        return True
+    orch._safe_send = send
+    session = await manager.start(OWNER, host, controller, "chat", wait_for_ack=False)
+    session.command_jobs["job"] = {"state": "running"}
+    frames.clear()
+    original_request = orch.computer_hosts.request
+    async def request(*args, **kwargs):
+        attempted.append(args)
+        return await original_request(*args, **kwargs)
+    monkeypatch.setattr(orch.computer_hosts, "request", request)
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def audit(*args, **kwargs):
+        entered.set()
+        await release.wait()
+    manager._audit = audit
+    work = asyncio.create_task(manager.pause(session, "local_input") if action == "pause"
+                               else manager.end(session, "user_stop", cancel_turn=False))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        assert frames and frames[0][0] is ws
+        assert frames[0][1]["state"] == ("paused" if action == "pause" else "ended")
+        assert frames[0][1]["project_context"] == session.project_origin.context.to_dict()
+        assert not attempted
+        if action == "pause":
+            await manager.interrupt_jobs(session)
+            assert not attempted
+    finally:
+        release.set()
+        await work

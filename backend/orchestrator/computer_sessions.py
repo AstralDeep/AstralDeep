@@ -377,8 +377,10 @@ class ComputerSessionManager:
         session.pause_reason = reason
         session.last_activity_at = time.time()
         self.grants.revoke(session.session_id, "takeover" if reason == "local_input" else "pause")
+        if push and session.project_origin is not None:
+            await self._push(session)
         await self._audit(session, "computer_session.paused", f"paused ({reason})")
-        if push:
+        if push and session.project_origin is None:
             await self._push(session)
 
     async def resume(self, session: ComputerSession, *, push: bool = True, local: bool = False) -> None:
@@ -416,12 +418,15 @@ class ComputerSessionManager:
         jobs = [job for job, record in session.command_jobs.items() if record.get("state", "running") == "running"]
         session.command_jobs.clear()
         host = self._registry.get(session.owner_sub, session.host_id)
-        if jobs and host is not None and reason in _KILL_REASONS:
+        if session.project_origin is not None:
+            await self._push(session)
+        elif jobs and host is not None and reason in _KILL_REASONS:
             await self._signal_jobs(host, session, jobs, "KILL")
         self._forget_browser(session)
         await self._audit(session, "computer_session.ended", f"ended ({reason})",
                           outcome="success" if reason in STOP_REASONS else "failure")
-        await self._push(session)
+        if session.project_origin is None:
+            await self._push(session)
         logger.info("076: session %s ended (%s) host=%s verbs=%d",
                     session.session_id[:12], reason, session.host_name, session.verbs_run)
         cancel = getattr(self._orch, "cancel_computer_turn", None)
@@ -437,7 +442,10 @@ class ComputerSessionManager:
         jobs = [job for job, record in session.command_jobs.items() if record.get("state", "running") == "running"]
         host = self._registry.get(session.owner_sub, session.host_id)
         if jobs and host is not None and session.state != ENDED:
-            await self._signal_jobs(host, session, jobs, signal)
+            if session.project_origin is not None and session.state == PAUSED:
+                await self._push(session)
+            else:
+                await self._signal_jobs(host, session, jobs, signal)
 
     async def _signal_jobs(self, host: ComputerHost, session: ComputerSession, jobs: List[str], signal: str) -> None:
         results = await asyncio.gather(*(self._registry.request(
@@ -551,7 +559,12 @@ class ComputerSessionManager:
     async def _push(self, session: ComputerSession) -> None:
         frame = session.frame(self.grant_rows(session) if session.state != ENDED else (),
                               self.bypass_on(session.owner_sub, session.host_id))
-        for ws in list(self._orch.ui_clients):
+        clients = list(self._orch.ui_clients)
+        host = self._registry.get(session.owner_sub, session.host_id)
+        if session.project_origin is not None and host is not None and host.websocket in clients:
+            clients.remove(host.websocket)
+            clients.insert(0, host.websocket)
+        for ws in clients:
             try:
                 if self._orch._get_user_id(ws) != session.owner_sub:
                     continue
