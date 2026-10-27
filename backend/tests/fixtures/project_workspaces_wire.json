@@ -1,0 +1,28 @@
+{
+  "manifest": {
+    "generation": 3,
+    "projects": [
+      {
+        "project_id": "12345678-1234-1234-9234-123456789abc",
+        "grant_revision": 2,
+        "roots": [
+          {
+            "name": "Primary 世界",
+            "path": "/tmp/one"
+          },
+          {
+            "name": "Second",
+            "path": "/tmp/two"
+          }
+        ]
+      }
+    ]
+  },
+  "sha256": "e119dba667332513642c1e1dc88a403b82c267f78f37b153562857b40f31093b",
+  "context": {
+    "chat_id": " legacy\nchat ",
+    "project_id": "12345678-1234-1234-9234-123456789abc",
+    "grant_revision": 2,
+    "manifest_generation": 3
+  }
+}
