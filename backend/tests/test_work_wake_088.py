@@ -32,7 +32,7 @@ def test_closed_manual_owner_request_contract():
     ("expected_revision", True), ("expected_revision", 0),
     ("owner_revision", True), ("owner_revision", -1),
     ("owner_revision", 2**53), ("owner_event_id", "provider-event"),
-    ("owner_event_id", str(uuid4()).upper()), ("submission_id", "caller-key"),
+    ("owner_event_id", "9F1C2B7E-3D4A-4C5B-8E6F-7A8B9C0D1E2F"), ("submission_id", "caller-key"),
     ("event_digest", "0" * 64), ("source_revision", 1),
     ("event_key", "provider:remote"), ("authority", {}),
 ])

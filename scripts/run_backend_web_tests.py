@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Runs every backend/module test suite, or one whole-suite group of them, in isolated
 processes against a caller-provisioned disposable PostgreSQL server and writes JUnit results
-and coverage reports; a CI test producer only, not a production-readiness decision.
+and coverage reports, splitting backend/tests across pytest-xdist workers that each get their own
+database; a CI test producer only, not a production-readiness decision.
 merge_backend_web_coverage.py reuses its plan and report writer for the groups.
 """
 
@@ -23,6 +24,8 @@ POLICY_ROOT = Path(__file__).resolve().parents[1]
 DEDICATED_GROUP_SUITES = {"tests": "backend-tests", "persistent_agents": "backend-persistent_agents-tests"}
 GROUPS = ("all", *DEDICATED_GROUP_SUITES, "modules")
 SUITE_TIMEOUT_SECONDS = 1800
+XDIST_WORKERS = {"backend-tests": 4}
+COVERAGE_OMIT = ("*/tests/*", "*/test_*", "*/voice_agent/*")
 
 
 def source_identity(root: Path) -> str:
@@ -181,6 +184,22 @@ def isolated_suite_database(environ: dict[str, str]):
             connection.close()
 
 
+def suite_command(root: Path, output: Path, suite: str, name: str, junit: Path) -> list[str]:
+    options = [suite, "-q", "-ra", "--tb=short", "-p", "no:cacheprovider",
+               "-p", "backend_web_test_reporter", "-o", "faulthandler_timeout=120", f"--junitxml={junit}"]
+    workers = XDIST_WORKERS.get(name)
+    if workers is None:
+        return [sys.executable, "-m", "coverage", "run", "--append", "--branch",
+                f"--source={root / 'backend'},{root / 'scripts'}", f"--omit={','.join(COVERAGE_OMIT)}",
+                "-m", "pytest", *options]
+    config = output / "xdist-coverage.rc"
+    config.write_text("[run]\nomit =\n" + "".join(f"    {pattern}\n" for pattern in COVERAGE_OMIT),
+                      encoding="utf-8")
+    return [sys.executable, "-m", "pytest", *options, "-n", str(workers), "--dist", "loadfile",
+            f"--cov={root / 'backend'}", f"--cov={root / 'scripts'}", "--cov-branch", "--cov-append",
+            f"--cov-config={config}", "--cov-report="]
+
+
 def write_coverage_reports(root: Path, output: Path, environ: dict[str, str]) -> bool:
     written = True
     for domain, source in (("backend", "backend"), ("tooling", "scripts")):
@@ -226,15 +245,7 @@ def run(root: Path, output: Path, *, timeout: int = SUITE_TIMEOUT_SECONDS, group
         junit.unlink(missing_ok=True)
         inventory = output / f"{name}.inventory.json"
         inventory.unlink(missing_ok=True)
-        command = [
-            sys.executable, "-m", "coverage", "run", "--append", "--branch",
-            f"--source={root / 'backend'},{root / 'scripts'}",
-            "--omit=*/tests/*,*/test_*,*/voice_agent/*",
-            "-m", "pytest", suite, "-q", "-ra", "--tb=short", "-p", "no:cacheprovider",
-            "-p", "backend_web_test_reporter",
-            "-o", "faulthandler_timeout=120",
-            f"--junitxml={junit}",
-        ]
+        command = suite_command(root, output, suite, name, junit)
         print(f"Running {name}", flush=True)
         with isolated_suite_database(environ) as suite_environment, (
             output / f"{name}.log"

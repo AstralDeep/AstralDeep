@@ -157,6 +157,22 @@ def test_merged_group_reports_equal_one_complete_run(tmp_path, monkeypatch):
     }
 
 
+def test_xdist_workers_record_the_same_coverage_as_one_traced_process(tmp_path, monkeypatch):
+    workspace = _workspace((tmp_path / "workspace").resolve())
+    monkeypatch.setattr(gate.sys, "version_info", (3, 11))
+    monkeypatch.setattr(gate, "require_isolated_postgres", lambda environ: None)
+    monkeypatch.setattr(gate, "isolated_suite_database", lambda environ: nullcontext(environ))
+    for key in ("COVERAGE_FILE", "COVERAGE_PROCESS_START", "COVERAGE_RCFILE"):
+        monkeypatch.delenv(key, raising=False)
+    evidence = workspace / "build"
+    assert gate.run(workspace, evidence / "xdist") == 0
+    assert "-n" in json.loads((evidence / "xdist/test-results.json").read_text())["suites"][2]["command"]
+    monkeypatch.setattr(gate, "XDIST_WORKERS", {})
+    assert gate.run(workspace, evidence / "traced") == 0
+    for report in ("backend-python.xml", "tooling-python.xml"):
+        assert _report_facts(evidence / "xdist" / report) == _report_facts(evidence / "traced" / report)
+
+
 def _digest(name: str) -> str:
     return hashlib.sha256((gate.POLICY_ROOT / "scripts" / name).read_bytes()).hexdigest()
 

@@ -3,7 +3,7 @@ Only a canonical request generation can serialize the requested owner modal.
 """
 
 import json
-from uuid import uuid1, uuid4
+from uuid import uuid4
 
 import pytest
 
@@ -20,8 +20,8 @@ def test_requested_evidence_modal_preserves_its_exact_generation_and_payload():
     assert data["html"] == frame.html
 
 
-@pytest.mark.parametrize("generation", [None, "", "stale", 1, True, [], {}, str(uuid1()),
-                                       str(uuid4()).upper(), " " + str(uuid4())])
+@pytest.mark.parametrize("generation", [None, "", "stale", 1, True, [], {}, "6fa459ea-ee8a-11ec-8e2f-0242ac120002",
+                                       "9F1C2B7E-3D4A-4C5B-8E6F-7A8B9C0D1E2F", " " + "3b241101-e2bb-4255-8caf-4136c566a962"])
 def test_evidence_modal_cannot_serialize_a_missing_or_malformed_generation(generation):
     with pytest.raises(ProtocolValidationError):
         ChromeRender(surface_key="evidence", request_generation=generation).to_json()

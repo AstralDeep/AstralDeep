@@ -43,7 +43,11 @@ The required Deep CI aggregate now includes:
 Every CI job has at most a 30-minute budget, and the suite runner gives each
 suite a 30-minute (1800 s) timeout. Protected qualification runs every suite
 under the same 1800 s per-suite cap. The backend suites run as a three-job
-matrix of whole-suite groups: `tests` is the `backend/tests` suite,
+matrix of whole-suite groups: `tests` is the `backend/tests` suite, which runs on four `pytest-xdist` workers
+(`--dist loadfile`), each moved by `backend/tests/conftest.py` onto its own
+`<suite database>_<worker>` database created from `template0`, and measured
+by `pytest-cov` with the same source, branch and omit settings as the other
+suites' `coverage run`,
 `persistent_agents` is the `backend/persistent_agents/tests` suite, and
 `modules` is every other backend suite, the voice concurrency probe and the
 tooling suite. No suite was pruned to fit: once the Plane-backed test
