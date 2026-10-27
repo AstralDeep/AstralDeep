@@ -17,6 +17,7 @@ FORBIDDEN_PREFIXES = (
     "security_benchmark",
     "answer_behavior",
     "clinical_diagnostic",
+    "prompt_optimization",
     "agentdojo",
     "agent_security_bench",
     "injecagent",
