@@ -91,7 +91,7 @@ class ComputerHostRegistry:
         self._hosts: Dict[Tuple[str, str], ComputerHost] = {}
         self._by_ws: Dict[int, Tuple[str, str]] = {}
         self._offline: Dict[Tuple[str, str], ComputerHost] = {}
-        self._pending: Dict[str, Tuple[asyncio.Future, str, str, bool]] = {}
+        self._pending: Dict[str, Tuple[asyncio.Future, str, str, str, str]] = {}
         self._dropped_frames = 0
 
     def register(self, owner_sub: str, websocket, descriptor: ComputerHostDescriptor | Dict[str, Any]
@@ -117,11 +117,21 @@ class ComputerHostRegistry:
         return host, superseded
 
     def _fail_pending(self, key) -> None:
-        for fut, owner, host_id, effectful in list(self._pending.values()):
+        for fut, owner, host_id, verb, _session in list(self._pending.values()):
             if (owner, host_id) == key and not fut.done():
                 fut.set_exception(ComputerHostError(
-                    "outcome_uncertain" if effectful else "host_offline",
+                    "host_offline" if verb in OBSERVE_VERBS else "outcome_uncertain",
                     "Host authority changed after delivery; inspect current state before retrying"))
+
+    def cancel_session_requests(self, owner_sub: str, host_id: str, session_id: str) -> int:
+        cancelled = 0
+        for fut, owner, host, verb, session in list(self._pending.values()):
+            if (owner, host, session) == (owner_sub, host_id, session_id) and not fut.done():
+                fut.set_exception(ComputerHostError(
+                    "cancelled" if verb in OBSERVE_VERBS else "outcome_uncertain",
+                    f"The turn was cancelled while waiting for {verb}; inspect current state before retrying"))
+                cancelled += 1
+        return cancelled
 
     def withdraw(self, owner_sub: str, host_id: str) -> Optional[ComputerHost]:
         key = (owner_sub, host_id)
@@ -222,7 +232,7 @@ class ComputerHostRegistry:
         loop = asyncio.get_running_loop()
         request_id = f"creq_{uuid.uuid4().hex}"
         fut: asyncio.Future = loop.create_future()
-        self._pending[request_id] = (fut, host.owner_sub, host.host_id, verb not in OBSERVE_VERBS)
+        self._pending[request_id] = (fut, host.owner_sub, host.host_id, verb, session_id)
         frame = json.dumps({
             "type": "computer_request",
             "request_id": request_id,
@@ -261,7 +271,7 @@ class ComputerHostRegistry:
         entry = self._pending.get(request_id)
         if entry is None:
             return False
-        fut, owner, host_id, _ = entry
+        fut, owner, host_id, _verb, _session = entry
         if owner != owner_sub:
             logger.warning("076: computer_response owner mismatch (dropped)")
             return False

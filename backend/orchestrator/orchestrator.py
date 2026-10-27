@@ -1755,6 +1755,7 @@ class Orchestrator:
         if sessions is not None and user_id and chat_id:
             for session in sessions.live_for_owner(user_id):
                 if session.chat_id == chat_id and session.controller_ws_id == id(websocket):
+                    sessions.cancel_requests(session)
                     await sessions.interrupt_jobs(session)
 
     def _take_tool_cancel(self) -> bool:

@@ -860,12 +860,15 @@ def continue_after_approval(orch, websocket, owner, chat, message, display, orig
     from orchestrator.detached_context import detached_context
     from persistent_agents.models import AssignmentError
 
+    task = getattr(orch, "_hitl_task_origins", {}).get((owner, chat))
+
     async def run():
         from orchestrator.turn_guidance_authority import bind_http_guidance, use_turn_guidance
 
         try:
             if guard is not None and not guard():
                 return
+            await announce_turn(orch, websocket, "thinking", "Continuing after approval")
             if origin is None:
                 await orch._serialized_chat(websocket, message, chat, display, user_id=owner, continuation_guard=guard)
                 return
@@ -877,8 +880,40 @@ def continue_after_approval(orch, websocket, owner, chat, message, display, orig
         finally:
             if origin is not None:
                 origin.close()
+            if getattr(orch, "_hitl_task_origins", {}).get((owner, chat)) in (None, task):
+                await announce_turn(orch, websocket, "done")
 
     return asyncio.create_task(run(), context=detached_context(orch), name=name)
+
+
+async def announce_turn(orch, websocket, status, message="") -> None:
+    send = getattr(orch, "_safe_send", None)
+    if websocket is not None and callable(send):
+        await send(websocket, json.dumps({"type": "chat_status", "status": status, "message": message}))
+
+
+def claim_turn_effect(orch, websocket, chat):
+    key = (id(websocket), chat)
+    tasks = getattr(orch, "_turn_tool_tasks", None)
+    if not isinstance(tasks, dict):
+        tasks = orch._turn_tool_tasks = {}
+    tasks[key] = asyncio.current_task()
+    return key
+
+
+def release_turn_effect(orch, key) -> None:
+    release = getattr(orch, "_release_tool_dispatch", None)
+    if callable(release):
+        release(key)
+        return
+    tasks = getattr(orch, "_turn_tool_tasks", {})
+    if tasks.get(key) is asyncio.current_task():
+        tasks.pop(key, None)
+
+
+def turn_effect_cancelled(orch) -> bool:
+    take = getattr(orch, "_take_tool_cancel", None)
+    return bool(callable(take) and take())
 
 
 async def _finish_card(orch, websocket, call, title, message, components=None):
@@ -957,9 +992,7 @@ async def _handle_decision(orch, websocket, owner, payload, admission_check, hel
         await orch.send_ui_render(websocket, [Alert(message="This confirmation is unavailable in this conversation. "
             "It may have expired or already been handled.", variant="warning").to_dict()], target="chat")
         return
-    from orchestrator.remote_confirmation import (
-        computer_resume_target, pause_failed_computer_approval, resume_computer_approval,
-    )
+    from orchestrator.remote_confirmation import computer_resume_target, resume_computer_approval
 
     if resume_requested and computer_resume_target(
             websocket, call.computer_authority, call.tool, json.loads(call.arguments)) is None:
@@ -1021,11 +1054,30 @@ async def _handle_decision(orch, websocket, owner, payload, admission_check, hel
             await _finish_card(orch, websocket, call, "Unavailable", "The local resume authority changed. Reissue the action.")
             return
         call = replace(call, computer_authority=authority)
+    await announce_turn(orch, websocket, "executing", f"Running: {call.tool}...")
+    if not await _decided_effect(orch, websocket, owner, call, resume_requested, origin, guided, held):
+        await announce_turn(orch, websocket, "done")
+
+
+async def _decided_effect(orch, websocket, owner, call, resume_requested, origin, guided, held) -> bool:
+    from orchestrator.remote_confirmation import pause_failed_computer_approval
+
     token = _APPROVAL.set(Approval(orch, call))
+    effect_key = claim_turn_effect(orch, websocket, call.chat)
     try:
-        tool_call = SimpleNamespace(id=f"hitl-{call.request_id}", function=SimpleNamespace(
-            name=call.tool, arguments=call.arguments))
-        response = await orch.execute_single_tool(websocket, tool_call, {call.tool: call.agent}, call.chat, user_id=owner)
+        try:
+            tool_call = SimpleNamespace(id=f"hitl-{call.request_id}", function=SimpleNamespace(
+                name=call.tool, arguments=call.arguments))
+            response = await orch.execute_single_tool(websocket, tool_call, {call.tool: call.agent}, call.chat,
+                                                      user_id=owner)
+            cancelled = False
+        except asyncio.CancelledError:
+            if not turn_effect_cancelled(orch):
+                raise
+            response, cancelled = None, True
+        finally:
+            _APPROVAL.reset(token)
+            release_turn_effect(orch, effect_key)
     except asyncio.CancelledError:
         if resume_requested:
             await pause_failed_computer_approval(orch, websocket, call.computer_authority)
@@ -1037,9 +1089,13 @@ async def _handle_decision(orch, websocket, owner, payload, admission_check, hel
             await pause_failed_computer_approval(orch, websocket, call.computer_authority)
         logger.exception("Approved HITL dispatch failed")
         await _finish_card(orch, websocket, call, "Failed", "The approved action could not complete. Reissue it to retry.")
-        return
-    finally:
-        _APPROVAL.reset(token)
+        return False
+    if cancelled:
+        if resume_requested:
+            await pause_failed_computer_approval(orch, websocket, call.computer_authority)
+        await _finish_card(orch, websocket, call, "Cancelled",
+                           "Cancelled. The action may have started; inspect current state before retrying.")
+        return False
     from orchestrator.remote_confirmation import _computer_use_on_approved, successful_result
 
     failed = not successful_result(response)
@@ -1060,26 +1116,28 @@ async def _handle_decision(orch, websocket, owner, payload, admission_check, hel
             await _finish_card(orch, websocket, call, "Review changed",
                                "The review requirements changed and this Mac remains paused. Resume the session "
                                "explicitly, then reissue the action for a fresh review.")
-            return
+            return False
         await _finish_card(orch, websocket, call, "Further review needed",
                            "The action still needs approval. Review the new card before it can run.",
                            response.ui_components)
-        return
+        return False
     await _finish_card(orch, websocket, call, "Outcome uncertain" if uncertain else "Blocked" if failed else "Approved",
                        "The action outcome is uncertain. Inspect current state before issuing another action." if uncertain
                        else "The approved action was blocked or failed. See the tool message for details." if failed
                        else "Approval used — the action was sent through the normal permission and privacy checks.",
                        response.ui_components if response and not failed else None)
     if failed or not _current_session(orch, websocket, call):
-        return
+        return False
     if call.computer_authority is not None:
         row = SimpleNamespace(owner_id=call.owner, conversation_id=call.chat,
             machine_id=call.computer_authority.host.host_id, tool_name=call.tool,
             arguments=json.loads(call.arguments))
         _computer_use_on_approved(orch, row, websocket, call.computer_authority)
-    if call.task is not None and guided:
-        if origin is not None:
-            held.remove(origin)
-        continue_after_approval(orch, websocket, call.owner, call.chat, CONTINUATION_TEXT, "Approved — continuing",
-                                origin, guard=lambda: _current_session(orch, websocket, call),
-                                name=f"hitl-continue-{call.request_id}")
+    if call.task is None or not guided:
+        return False
+    if origin is not None:
+        held.remove(origin)
+    continue_after_approval(orch, websocket, call.owner, call.chat, CONTINUATION_TEXT, "Approved — continuing",
+                            origin, guard=lambda: _current_session(orch, websocket, call),
+                            name=f"hitl-continue-{call.request_id}")
+    return True
