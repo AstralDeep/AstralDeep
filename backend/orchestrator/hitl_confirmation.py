@@ -50,7 +50,11 @@ class GrantOffer:
 @dataclass(frozen=True)
 class GrantRequest:
     target: dict
-    offer: GrantOffer | None = None
+    offers: tuple = ()
+
+    @property
+    def offer(self) -> GrantOffer | None:
+        return self.offers[0] if self.offers else None
 
 
 @dataclass(frozen=True)
@@ -68,7 +72,7 @@ class PendingCall:
     remote_proposal: str | None = None
     websocket: object = None
     cancellation: object = None
-    grant_offer: GrantOffer | None = None
+    grant_offers: tuple = ()
     grant_id: str | None = None
 
 
@@ -412,20 +416,22 @@ def _input_request(authority, tool, args) -> GrantRequest | None:
             return None
         if _BUNDLE_ID.fullmatch(bundle) is None or bundle.lower().endswith(".app"):
             return None
-        scope = {"kind": "app", "bundle_id": bundle}
-        target, label = {"bundle_id": bundle}, policy.input_grant_label(policy.application_name(bundle))
+        target, offers = {"bundle_id": bundle}, []
     else:
         hwnd = args.get("hwnd")
         entry = authority.session.window_cache.get(hwnd) if type(hwnd) is int else None
         if entry is None or not entry["bundle_id"]:
             return None
         bundle = entry["bundle_id"]
-        scope = {"kind": "window", "bundle_id": bundle, "hwnd": hwnd}
+        if not is_grantable_application(bundle, "window"):
+            return None
         target = {"bundle_id": bundle, "hwnd": hwnd}
-        label = policy.input_grant_label(policy.application_name(bundle), entry["title"] or None)
-    if not is_grantable_application(bundle, scope["kind"]):
-        return None
-    return GrantRequest(target, GrantOffer(label, scope, ("input",)))
+        offers = [GrantOffer(policy.window_grant_label(policy.application_name(bundle), entry["title"]),
+                             {"kind": "window", "bundle_id": bundle, "hwnd": hwnd}, ("input",))]
+    if is_grantable_application(bundle, "app"):
+        offers.append(GrantOffer(policy.input_grant_label(policy.application_name(bundle)),
+                                 {"kind": "app", "bundle_id": bundle}, ("input",)))
+    return GrantRequest(target, tuple(offers)) if offers else None
 
 
 def _command_request(authority, args) -> GrantRequest:
@@ -437,9 +443,9 @@ def _command_request(authority, args) -> GrantRequest:
     target = {"argv0": grant["argv0"] if grant else first, "cwd": args.get("cwd"), "destructive": grant is None}
     if grant is None:
         return GrantRequest(target)
-    return GrantRequest(target, GrantOffer(policy.command_grant_label(grant["argv0"], grant["folder"]),
-                                           {"kind": "command"}, ("command",),
-                                           {"argv0": grant["argv0"], "root": grant["root"]}))
+    return GrantRequest(target, (GrantOffer(policy.command_grant_label(grant["argv0"], grant["folder"]),
+                                            {"kind": "command"}, ("command",),
+                                            {"argv0": grant["argv0"], "root": grant["root"]}),))
 
 
 def _browser_request(authority, tool, args) -> GrantRequest:
@@ -449,7 +455,8 @@ def _browser_request(authority, tool, args) -> GrantRequest:
     origin = browser_tools.origin_of(args.get("url")) if tool == "browser_navigate" else None
     if origin is None or target.get("destructive") or target.get("origin") != origin:
         return GrantRequest(target)
-    return GrantRequest(target, GrantOffer(None, {"kind": "origin", "origin": origin}, ("browser",), on_approve=True))
+    return GrantRequest(target, (GrantOffer(None, {"kind": "origin", "origin": origin}, ("browser",),
+                                            on_approve=True),))
 
 
 def grant_request(authority, tool, args) -> GrantRequest | None:
@@ -753,11 +760,11 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             if len(pending) >= 128 or sum(item.owner == owner for item in pending.values()) >= 32:
                 return _refused("Too many pending confirmations. Resolve an existing request and retry.")
             request = grant_request(computer, tool, args)
-            offer = request.offer if request is not None and request.offer is not None and request.offer.label else None
+            offers = tuple(offer for offer in request.offers if offer.label) if request is not None else ()
             call = PendingCall(str(uuid.uuid4()), owner, chat, agent, tool,
                                encoded, tuple(sorted(risks)), time.monotonic() + TTL_SECONDS,
                                task, computer, remote_proposal,
-                               websocket, witness, grant_offer=offer)
+                               websocket, witness, grant_offers=offers)
             pending[call.request_id] = call
             try:
                 await _audit(orch, call, "proposed")
@@ -769,9 +776,10 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             return _refused("This confirmation is no longer valid for the active conversation.")
         summary = confirmation_request(tool, list(call.risks)).summary
         context = await _computer_context(call.computer_authority, tool, args) if call.computer_authority else []
-        grant = [Button(label=call.grant_offer.label, action="authorize_action", variant="secondary",
-                        payload={"hitl_request_id": call.request_id, "decision": "grant_task"})
-                 ] if call.grant_offer is not None else []
+        grant = [Button(label=offer.label, action="authorize_action", variant="secondary",
+                        payload={"hitl_request_id": call.request_id, "decision": "grant_task",
+                                 "grant_scope": offer.scope["kind"]})
+                 for offer in call.grant_offers]
         on_host = [Text(content=f"On {card_host.name}", variant="body")] if card_host is not None else []
         card = Card(title="Review action", id=f"hitl_{call.request_id}", content=[
             Text(content=f"Tool: {tool} · Agent: {agent}", variant="body"),
@@ -892,18 +900,27 @@ async def handle_decision(orch, websocket, owner, payload, *, admission_check=No
             origin.close()
 
 
+def _chosen_offer(call, payload) -> GrantOffer | None:
+    if not call.grant_offers:
+        return None
+    wanted = payload.get("grant_scope", call.grant_offers[0].scope["kind"])
+    return next((offer for offer in call.grant_offers if offer.scope["kind"] == wanted), None)
+
+
 async def _handle_decision(orch, websocket, owner, payload, admission_check, held) -> None:
     pending = _pending(orch)
     request_id = payload.get("hitl_request_id") if isinstance(payload, dict) else None
     call = pending.get(request_id) if isinstance(request_id, str) else None
     resume_requested = isinstance(payload, dict) and payload.get("decision") == "approve_and_resume"
     grant_requested = isinstance(payload, dict) and payload.get("decision") == "grant_task"
+    offer = _chosen_offer(call, payload) if grant_requested and call is not None else None
     valid = not (call is None or call.owner != owner or not _attended(orch, websocket, owner)
             or getattr(orch, "_ws_active_chat", {}).get(id(websocket)) != call.chat
             or not {"hitl_request_id", "decision"}.issubset(payload)
-            or set(payload) - {"hitl_request_id", "decision", "chat_id", "component_id"}
+            or set(payload) - {"hitl_request_id", "decision", "chat_id", "component_id", "grant_scope"}
             or payload.get("decision") not in ("approve", "approve_and_resume", "grant_task", "decline")
-            or grant_requested and (call.grant_offer is None or call.computer_authority is None)
+            or "grant_scope" in payload and not grant_requested
+            or grant_requested and (offer is None or call.computer_authority is None)
             or "chat_id" in payload and payload["chat_id"] != call.chat
             or admission_check is not None and not admission_check())
     if valid and "component_id" in payload:
@@ -914,11 +931,12 @@ async def _handle_decision(orch, websocket, owner, payload, admission_check, hel
             else:
                 row = await orch.workspace.aget_by_component_id(call.chat, owner, expected)
                 component = (row or {}).get("component_data", {})
+                pressed = {key: payload[key] for key in ("hitl_request_id", "decision", "grant_scope") if key in payload}
                 valid = (isinstance(component, dict) and component.get("type") == "card"
                     and component.get("id") == f"hitl_{call.request_id}"
                     and any(isinstance(item, dict) and item.get("type") == "button"
                         and item.get("action") == "authorize_action" and item.get("disabled") is not True
-                        and item.get("payload") == {"hitl_request_id": request_id, "decision": payload["decision"]}
+                        and item.get("payload") == pressed
                         for item in component.get("content", [])))
         except Exception:
             valid = False
@@ -977,7 +995,7 @@ async def _handle_decision(orch, websocket, owner, payload, admission_check, hel
         await _finish_card(orch, websocket, call, "Unavailable", "The session changed or this confirmation expired. Reissue the action.")
         return
     if grant_requested:
-        authority, offer = call.computer_authority, call.grant_offer
+        authority = call.computer_authority
         task_id = getattr(call.task[1], "task_id", None) if call.task is not None else None
         try:
             orch.computer_sessions.grants.create(

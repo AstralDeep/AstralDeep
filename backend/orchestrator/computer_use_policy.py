@@ -508,6 +508,12 @@ def input_grant_label(app_name: str, window_title: Optional[str] = None) -> str:
     return f'Allow for this task in window "{title}"' if title else f"Allow for this task in {_label_text(app_name)}"
 
 
+def window_grant_label(app_name: str, window_title: Optional[str]) -> str:
+    if _label_text(window_title):
+        return input_grant_label(app_name, window_title)
+    return f"Allow for this task in this {_label_text(app_name)} window"
+
+
 def command_grant_label(argv0: str, folder: str) -> str:
     return f"Allow {_label_text(argv0)} in {_label_text(folder)} for this task"
 
