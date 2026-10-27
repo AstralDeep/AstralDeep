@@ -1,6 +1,7 @@
 """Holds attended human-in-the-loop approvals bound to one server-held pending call for
 fifteen minutes, never client-supplied arguments; handle_decision() re-enters evaluate() to
-release the approved dispatch, and computer task grants from computer_sessions stand in for a card.
+release the approved dispatch, and computer task grants or a host's bypass switch from computer_sessions
+stand in for a card outside the bypass floor.
 Owner settings surfaces confirm destructive controls through a single-use confirmation bound to
 the same signed-in socket, owner, action and target.
 """
@@ -74,6 +75,7 @@ class PendingCall:
     cancellation: object = None
     grant_offers: tuple = ()
     grant_id: str | None = None
+    approval_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -128,6 +130,10 @@ def _pending(orch) -> dict[str, PendingCall]:
     current = {key: call for key, call in current.items() if call.expires > time.monotonic()}
     orch._hitl_pending_calls = current
     return current
+
+
+def attended(orch, websocket, owner: str) -> bool:
+    return _attended(orch, websocket, owner)
 
 
 def _attended(orch, websocket, owner: str) -> bool:
@@ -324,7 +330,8 @@ async def _audit(orch, call: PendingCall, transition: str) -> None:
             inputs_meta={"agent_id": call.agent, "tool": call.tool,
                          "risks": list(call.risks),
                          "arguments_sha256": hashlib.sha256(
-                             call.arguments.encode("utf-8")).hexdigest()},
+                             call.arguments.encode("utf-8")).hexdigest(),
+                         **({"approval_source": call.approval_source} if call.approval_source else {})},
             started_at=now_utc(), completed_at=now_utc(),
         ))
         if "source_bound" in call.risks and receipt is None:
@@ -562,6 +569,52 @@ async def granted_dispatch(orch, websocket, owner, chat, agent, tool, args, risk
     return await _dispatch_approved(orch, websocket, call)
 
 
+def bypass_covers(orch, websocket, owner, chat, agent, tool, args, risks) -> bool:
+    from orchestrator import computer_use_policy as policy
+    from orchestrator.computer_hosts import ComputerHostError
+    from orchestrator.hitl import CROSS_PRINCIPAL, UNTRUSTED_TAINTED
+    from orchestrator.remote_confirmation import computer_card_host
+
+    sessions = getattr(orch, "computer_sessions", None)
+    if (agent != policy.AGENT_ID or tool not in policy.BYPASS_VERBS or not isinstance(args, dict)
+            or sessions is None or not _attended(orch, websocket, owner)
+            or {"terminal_input", CROSS_PRINCIPAL, UNTRUSTED_TAINTED} & set(risks)):
+        return False
+    try:
+        host = computer_card_host(orch, owner, chat, args)
+    except ComputerHostError:
+        return False
+    if not sessions.bypass_on(owner, host.host_id) or _tainted_sink(orch, chat, agent, tool, args):
+        return False
+    session = sessions.live_for_host(owner, host.host_id)
+    hwnd = args.get("hwnd")
+    entry = session.window_cache.get(hwnd) if session is not None and type(hwnd) is int else None
+    return not policy.bypass_floor(tool, args, entry["bundle_id"] if entry else None)
+
+
+async def bypass_dispatch(orch, websocket, owner, chat, agent, tool, args, risks, *, authority=None):
+    from orchestrator.remote_confirmation import source_review_proposal
+
+    if approved_call(orch, owner, chat, agent, tool) or not bypass_covers(
+            orch, websocket, owner, chat, agent, tool, args, risks):
+        return None
+    call = PendingCall(str(uuid.uuid4()), owner, chat, agent, tool, _arguments(args), tuple(sorted(risks)),
+                       time.monotonic() + TTL_SECONDS, _task(orch, websocket, owner, chat), authority,
+                       source_review_proposal(orch, owner, chat, agent, tool, args), websocket,
+                       cancellation_witness(orch, websocket, owner, chat, create=True), approval_source="bypass")
+    if not _current_session(orch, websocket, call):
+        return None
+    try:
+        await _audit(orch, call, "bypass")
+    except Exception:
+        return _refused("Action audit is unavailable. The action was not run.")
+    response = await _dispatch_approved(orch, websocket, call)
+    data = response.result.get("_data") if isinstance(response.result, dict) else None
+    if isinstance(data, dict):
+        response.result = {**response.result, "_data": {**data, "approval_source": "bypass"}}
+    return response
+
+
 def _consumed_command_review(orch, owner, chat, tool, args, proposal_id) -> bool:
     from orchestrator.remote_confirmation import _fingerprint, _proposal_context
 
@@ -761,6 +814,11 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
                                                  authority=computer))
             if granted is not None:
                 return granted
+        if agent == "computer-use-1":
+            bypassed = await bypass_dispatch(orch, websocket, owner, chat, agent, tool, args, risks,
+                                             authority=computer)
+            if bypassed is not None:
+                return bypassed
         call = next((item for item in pending.values() if
                      (item.owner, item.chat, item.agent, item.tool, item.arguments, item.risks, item.remote_proposal)
                      == (owner, chat, agent, tool, encoded, tuple(sorted(risks)), remote_proposal)

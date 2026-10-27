@@ -1817,6 +1817,7 @@ class Orchestrator:
             if previous is None or (previous.owner_sub, previous.host_id) in ended:
                 continue
             ended.add((previous.owner_sub, previous.host_id))
+            await self.computer_sessions.clear_bypass(previous.owner_sub, previous.host_id, "host_replaced")
             await self.computer_sessions.end_all_for_host(
                 previous.owner_sub, previous.host_id, "host_superseded")
         await self.computer_hosts.push_presence(host, "online")
@@ -1825,6 +1826,7 @@ class Orchestrator:
         host = self.computer_hosts.on_socket_closed(websocket)
         if host is None:
             return
+        await self.computer_sessions.clear_bypass(host.owner_sub, host.host_id, "host_offline")
         await self.computer_sessions.end_all_for_host(host.owner_sub, host.host_id, "host_offline")
         await self.computer_hosts.push_presence(host, "offline")
 
@@ -1875,6 +1877,7 @@ class Orchestrator:
         if host is None:
             return
         if event == "withdraw":
+            await self.computer_sessions.clear_bypass(owner_sub, host.host_id, "access_disabled")
             await self.computer_sessions.end_all_for_host(owner_sub, host.host_id, "consent_revoked")
             self.computer_hosts.withdraw(owner_sub, host.host_id)
             await self.computer_hosts.push_presence(host, "offline")
