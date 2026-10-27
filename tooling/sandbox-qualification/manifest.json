@@ -1,0 +1,53 @@
+{
+  "manifest_version": 1,
+  "purpose": "Opt-in Linux sandbox-runtime qualification pilot for one harmless scratch-file effect (backend/orchestrator/sandbox_qualification.py). Qualification only: no production launch path, schema, shared contract, component pin, or release artifact changes.",
+  "artifact": {
+    "package": "@anthropic-ai/sandbox-runtime",
+    "version": "0.0.78",
+    "registry": "https://registry.npmjs.org",
+    "tarball_url": "https://registry.npmjs.org/@anthropic-ai/sandbox-runtime/-/sandbox-runtime-0.0.78.tgz",
+    "sha512": "60021cc9b5d3a7b3199018dab27911d44df2c677fbbba9149325b4bd9aedb0067db7224631aba05844e6aae3d9b3462f5b4b11d159d978c7d2d20b0dff042255",
+    "sha512_sri": "sha512-YAIcybXTp7MZkBjasnkR1E3yxnf7u6kUkyW0vZrtsAZ9tyJGMaugWETmquPZs0YvW0sR0VnZeMfS0gsN/wQiVQ==",
+    "size_bytes": 3948109,
+    "license": "Apache-2.0",
+    "acquisition": "Downloaded at most once per pinned digest into an explicit cache directory, integrity-verified against this manifest before extraction; no unpinned npx download ever runs, and CI never downloads because unsupported hosts fail closed before the artifact matters."
+  },
+  "runtime": {
+    "language": "node",
+    "minimum_node_version": "22.12.0",
+    "linux_primitives": [
+      "bubblewrap (bwrap) on PATH or pinned absolute path",
+      "socat on PATH or pinned absolute path",
+      "ripgrep (rg) on PATH",
+      "unprivileged user namespaces (CLONE_NEWUSER)",
+      "network namespaces (CLONE_NEWNET)",
+      "seccomp-BPF via the vendored apply-seccomp helper (vendor/seccomp/x64 and vendor/seccomp/arm64)"
+    ],
+    "architecture_profile": {
+      "qualified": [
+        "linux/amd64 (SRT arch x64)",
+        "linux/arm64 (SRT arch arm64)"
+      ],
+      "documented_profile": "ubuntu-24.04 on linux/amd64 or linux/arm64 with the distribution bubblewrap/socat/ripgrep packages, unprivileged user and network namespaces permitted by the host kernel and container runtime, and the vendor apply-seccomp binary; no host AppArmor or user-namespace policy is weakened for the pilot",
+      "everything_else": "reports unavailable and never launches an effect"
+    },
+    "upstream_warnings_treated_as_hard_failures": [
+      "seccomp not available - unix socket access not restricted",
+      "apply-seccomp binary not available - unix socket blocking disabled",
+      "Sandbox dependencies not available"
+    ]
+  },
+  "boundaries": {
+    "in_scope": "One short-lived, no-network, harmless local scratch-file effect per verified receipt, launched through the existing ProcessSupervisor and the existing generated-executor LETS receipt verifier.",
+    "out_of_scope": [
+      "SRT control-fd config updates",
+      "long-lived draft agents",
+      "interactive terminals and PTYs",
+      "Windows and macOS hosts",
+      "nested weak container mode",
+      "AppleEvents",
+      "provider egress through the SRT proxy",
+      "any production draft-launch change"
+    ]
+  }
+}
