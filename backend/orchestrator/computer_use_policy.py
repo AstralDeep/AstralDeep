@@ -563,7 +563,7 @@ WINDOW_INPUT_VERBS: FrozenSet[str] = frozenset({
     "click", "double_click", "right_click", "move", "drag", "scroll", "type_text", "press_keys", "focus_window",
 })
 BYPASS_VERBS: FrozenSet[str] = (OBSERVE_VERBS | INPUT_VERBS | CONSEQUENTIAL_VERBS
-                                | frozenset({"start_session", "end_session", "resume_session", "confirm_action"}))
+                                | frozenset({"list_computers", "start_session", "end_session", "resume_session", "confirm_action"}))
 
 
 def is_astral_app(value: Any) -> bool:

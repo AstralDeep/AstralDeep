@@ -588,6 +588,11 @@ def consent_decision(orch, websocket, owner, chat, agent, tool, args, risks) -> 
         host = computer_card_host(orch, owner, chat, args)
     except ComputerHostError:
         return "review", None
+    session = sessions.live_for_host(owner, host.host_id)
+    if (session is not None and session.state == "paused" and tool not in {"end_session", "wait", "list_computers"}
+            and (session.pause_reason != "approval_not_completed"
+                 or capture_computer_approval(orch, websocket, owner, chat, args) is None)):
+        return "refuse", "This Mac is paused. Resume it on the Mac before continuing."
     if not sessions.bypass_on(owner, host.host_id):
         approval = _APPROVAL.get()
         if (isinstance(approval, Approval) and approval.orchestrator is orch
@@ -596,14 +601,9 @@ def consent_decision(orch, websocket, owner, chat, agent, tool, args, risks) -> 
                 == (owner, chat, agent, tool)):
             return "refuse", "Bypass authority was revoked. Nothing was run."
         return "review", None
-    session = sessions.live_for_host(owner, host.host_id)
     if (tool not in policy.BYPASS_VERBS or not _attended(orch, websocket, owner)
             or {CROSS_PRINCIPAL, UNTRUSTED_TAINTED} & set(risks) or _tainted_sink(orch, chat, agent, tool, args)):
         return "refuse", "This action is outside this Mac's current authority. Choose an allowed target."
-    if session is not None and session.state == "paused":
-        if (session.pause_reason != "approval_not_completed"
-                or capture_computer_approval(orch, websocket, owner, chat, args) is None):
-            return "refuse", "This Mac is paused. Resume it on the Mac before continuing."
     hwnd = args.get("hwnd")
     entry = session.window_cache.get(hwnd) if session is not None and type(hwnd) is int else None
     if policy.bypass_floor(tool, args, entry["bundle_id"] if entry else None):
@@ -845,7 +845,7 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             refusal = bypass_refusal(orch, websocket, owner, chat, agent, tool, args, risks)
             if refusal is not None:
                 return _refused(refusal)
-        if agent == "computer-use-1" and tool in HOST_VERBS | {"confirm_action"}:
+        if agent == "computer-use-1" and tool in HOST_VERBS | {"confirm_action", "resume_session"}:
             computer = capture_computer_approval(orch, websocket, owner, chat, args)
             if computer is None:
                 return _refused("The computer session is no longer current. Reissue the action in its active conversation.")

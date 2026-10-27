@@ -221,3 +221,22 @@ async def test_missing_file_summary_says_create_even_when_overwrite_was_requeste
     card, _calls = await _card(task_runtime, monkeypatch, ComputerHostError("not_found", "missing"), content=content)
     assert "(create)" in card["content"][0]["content"]
     assert "(overwrite)" not in card["content"][0]["content"]
+
+
+async def test_missing_file_binds_absence_before_review_and_exact_dispatch(task_runtime, monkeypatch):
+    from orchestrator import remote_confirmation as rc
+    from tests.test_computer_grant_flow_102 import OWNER
+
+    orch, ws, effects, *_ = task_runtime
+    card, calls = await _card(task_runtime, monkeypatch, ComputerHostError("not_found", "missing"))
+    payload = next(part["payload"] for part in card["content"] if part.get("payload", {}).get("decision") == "approve")
+    context = rc._proposal_context(orch)
+    row = context.call(context.repository.get, owner_id=OWNER, proposal_id=payload["proposal_id"])
+    assert row.arguments["if_exists"] == "refuse"
+    assert row.args_fingerprint == rc._fingerprint(row.arguments)
+    preview = next(part for part in card["content"] if part.get("language") == "json")
+    import json
+    assert json.loads(preview["code"])["if_exists"] == "refuse"
+    await rc.handle_decision(orch, ws, OWNER, payload)
+    assert len(effects) == 1 and effects[0][1]["if_exists"] == "refuse"
+    assert len(calls) == 1

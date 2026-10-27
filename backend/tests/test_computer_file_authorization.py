@@ -71,6 +71,7 @@ async def test_bypass_denials_never_fall_through_to_an_approval(task_runtime, to
 
 
 @pytest.mark.parametrize("tool,args", [
+    ("start_session", {}),
     ("open_app", {"app": "Terminal"}),
     ("confirm_action", {"summary": "Complete the requested task"}),
     ("resume_session", {}),
@@ -347,3 +348,74 @@ async def test_bypass_task_change_during_server_resume_is_refused_without_review
     response = await _call(task_runtime, "type_text", text="hello", hwnd=42)
     assert response.error and not effects
     assert not rc._PENDING_CARDS and not getattr(orch, "_hitl_pending_calls", {})
+
+
+@pytest.mark.parametrize("reason", ["local_input", "local_pause", "manual_pause", "approval_not_completed"])
+async def test_review_mode_resume_cannot_offer_a_card_for_human_or_unanchored_pause(task_runtime, reason):
+    orch, _ws, effects, *_ = task_runtime
+    session, _host = await _mac(task_runtime, remote=True)
+    await orch.computer_sessions.pause(session, reason)
+    response = await _call(task_runtime, "resume_session")
+    assert response.error and not effects and session.state == "paused"
+    assert not rc._PENDING_CARDS and not getattr(orch, "_hitl_pending_calls", {})
+
+
+async def test_review_mode_server_resume_is_bound_and_explicit(task_runtime):
+    orch, ws, effects, *_ = task_runtime
+    session, host = await _mac(task_runtime, remote=True)
+    host.websocket = ws
+    authority = rc.capture_computer_approval(orch, ws, OWNER, CHAT, {})
+    await rc.pause_failed_computer_approval(orch, ws, authority)
+    response = await _call(task_runtime, "resume_session")
+    from orchestrator import hitl_confirmation as hc
+    payload = next(part["payload"] for part in response.ui_components[0]["content"]
+                   if part.get("payload", {}).get("decision") == "approve_and_resume")
+    await hc.handle_decision(orch, ws, OWNER, payload)
+    assert session.state == "active" and [tool for tool, _args in effects] == ["resume_session"]
+
+
+@pytest.mark.parametrize("bypass", [False, True])
+async def test_computer_discovery_is_available_without_review_in_both_modes(task_runtime, bypass):
+    orch, _ws, effects, *_ = task_runtime
+    if bypass:
+        await _bypassed(task_runtime)
+    else:
+        await _mac(task_runtime)
+    orch.tool_permissions.get_tool_scope_map.return_value = {**SCOPES, "list_computers": "tools:read"}
+    response = await _call(task_runtime, "list_computers")
+    assert response.error is None and [tool for tool, _args in effects] == ["list_computers"]
+    assert not rc._PENDING_CARDS and not getattr(orch, "_hitl_pending_calls", {})
+
+
+@pytest.mark.parametrize("bypass", [False, True])
+async def test_rejected_browser_url_is_an_error_without_a_waiting_state(task_runtime, bypass):
+    orch, _ws, effects, *_ = task_runtime
+    if bypass:
+        await _bypassed(task_runtime)
+    else:
+        await _mac(task_runtime, remote=True)
+    response = await _call(task_runtime, "browser_navigate", url="file:///tmp/notes.md")
+    assert response.error and "url_rejected" in response.error["message"]
+    assert "confirmation_required" not in json.dumps(response.result)
+    assert not effects and not rc._PENDING_CARDS and not getattr(orch, "_hitl_pending_calls", {})
+
+
+async def test_invalid_review_marker_is_an_error_in_bypass(task_runtime):
+    orch, _ws, effects, *_ = task_runtime
+    await _bypassed(task_runtime)
+    response = await _call(task_runtime, "run_command", argv=["ls"], cwd=ROOT, _remote_op_proposal_id="expired")
+    assert response.error and "no longer valid" in response.error["message"]
+    assert "confirmation_required" not in json.dumps(response.result)
+    assert not effects and not rc._PENDING_CARDS and not getattr(orch, "_hitl_pending_calls", {})
+
+
+async def test_invalid_previously_reviewed_operation_is_an_error_in_bypass(task_runtime, monkeypatch):
+    from orchestrator import hitl_confirmation as hc
+
+    orch, _ws, effects, *_ = task_runtime
+    await _bypassed(task_runtime)
+    monkeypatch.setattr(hc, "reviewed_remote_proposal", lambda *_args: "expired")
+    response = await _call(task_runtime, "run_command", argv=["ls"], cwd=ROOT)
+    assert response.error and "expired or changed" in response.error["message"]
+    assert "confirmation_required" not in json.dumps(response.result)
+    assert not effects and not rc._PENDING_CARDS and not getattr(orch, "_hitl_pending_calls", {})

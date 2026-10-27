@@ -262,6 +262,8 @@ def computer_resume_target(websocket, authority, tool, args) -> str | None:
             return None
         label = authority.session.window_labels.get(hwnd)
         return f"{label} (window {hwnd})" if label else f"window {hwnd}"
+    if tool == "resume_session" and authority.session.pause_reason == "approval_not_completed":
+        return authority.host.name
     if (tool == "run_command" and authority.session.pause_reason == "approval_not_completed"
             and isinstance(args.get("cwd"), str)):
         return args["cwd"][:200]
@@ -904,10 +906,10 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
         _audit_sync(user_id, "remote_op.refused_unattended",
                     f"refused unattended {tool_name}", machine_id=machine_ref,
                     verb=tool_name, outcome="failure", chat_id=chat_id)
-        return ("unattended_refused: remote-control operations need a live person; "
-                "re-issue it interactively.",
-                [Alert(message="Remote-control operations can't run unattended — "
-                               "re-issue this interactively.", variant="error").to_dict()])
+        return Refusal(("unattended_refused: remote-control operations need a live person; "
+                        "re-issue it interactively.",
+                        [Alert(message="Remote-control operations can't run unattended — "
+                                       "re-issue this interactively.", variant="error").to_dict()]))
 
     if classification is None:
         return None
@@ -921,9 +923,8 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
             and _computer_policy().canonical_browser_url(args["url"]) is None):
         _audit_sync(user_id, "remote_op.refused_url", "refused browser_navigate to a rejected address",
                     machine_id=machine_ref, verb=tool_name, outcome="failure", chat_id=chat_id)
-        return ("url_rejected: the browser pane only opens http and https addresses with a plain host name; "
-                "no approval was requested.",
-                [Alert(message="That address cannot be opened in the browser pane.", variant="error").to_dict()])
+        return Refusal(("url_rejected: the browser pane only opens http and https addresses with a plain host name.",
+                        [Alert(message="That address cannot be opened in the browser pane.", variant="error").to_dict()]))
 
     from persistent_agents.dispatch_context import current_dispatch
     if current_dispatch() is not None and classification == "if_exists":
@@ -945,8 +946,10 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
                 and row.conversation_id == chat_id and row.agent_id == agent_id and row.tool_name == tool_name
                 and row.args_fingerprint == _fingerprint(args) and row.expires_at > time.time()):
             return None
-        return ("The previously reviewed operation expired or changed. Re-request the action.",
-                [Alert(message="Previous operation review is no longer current.", variant="warning").to_dict()])
+        _audit_sync(user_id, "remote_op.review_invalid", "previously reviewed operation expired or changed",
+                    proposal_id=reviewed, machine_id=machine_ref, verb=tool_name, outcome="failure", chat_id=chat_id)
+        return Refusal(("The previously reviewed operation expired or changed. Re-request the action.",
+                        [Alert(message="Previous operation review is no longer current.", variant="warning").to_dict()]))
 
     marker = args.get(_MARKER)
     if marker:
@@ -960,10 +963,10 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
         _audit_sync(user_id, "remote_op.approval_invalid",
                     f"invalid approval for {tool_name}", proposal_id=str(marker),
                     machine_id=machine_ref, verb=tool_name, outcome="failure", chat_id=chat_id)
-        return ("This approval is no longer valid (already used, expired, or the "
-                "arguments changed). Re-request the operation.",
-                [Alert(message="Approval no longer valid — re-request the operation.",
-                       variant="error").to_dict()])
+        return Refusal(("This action authority is no longer valid (already used, expired, or the "
+                        "arguments changed). Re-request the operation.",
+                        [Alert(message="Action authority expired or changed. Re-request the operation.",
+                               variant="error").to_dict()]))
 
     if agent_id == "computer-use-1":
         from orchestrator.hitl_confirmation import bypass_covers, grant_covers

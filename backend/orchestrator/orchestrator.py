@@ -17704,6 +17704,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from orchestrator import remote_confirmation
             from orchestrator.terminal_security import TerminalError
 
+            _write_snapshot = None
+            if agent_id == "computer-use-1" and tool_name == "write_file":
+                from orchestrator.write_review import prepare_write_review
+
+                _write_snapshot = await prepare_write_review(self, websocket, user_id, chat_id, args)
             try:
                 _conf = await asyncio.to_thread(
                     remote_confirmation.evaluate, self, websocket, agent_id, tool_name,
@@ -17727,7 +17732,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 _msg, _comps = _conf
                 if agent_id == "computer-use-1" and tool_name == "write_file":
                     from orchestrator.write_review import attach_write_diff
-                    _comps = await attach_write_diff(self, websocket, user_id, chat_id, args, _comps)
+                    _comps = await attach_write_diff(self, websocket, user_id, chat_id, args, _comps,
+                                                     snapshot=_write_snapshot)
                 _policy = remote_confirmation.policy_for(agent_id)
                 if (_policy is not None and _policy.card_as_result
                         and not isinstance(_conf, remote_confirmation.Refusal)
