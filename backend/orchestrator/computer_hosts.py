@@ -1,6 +1,7 @@
 """Owner-scoped registry of a user's remote-controllable desktop clients, correlating
 computer_request/computer_response frames and pushing presence; backs the My
-Computers surface and computer_sessions.py.
+Computers surface and computer_sessions.py. Listings show one row per platform and
+name, so an offline registration replaced by a newer one of the same computer is hidden.
 """
 
 from __future__ import annotations
@@ -83,6 +84,10 @@ class ComputerHost:
             "offline_reason": None if online else self.offline_reason,
             "last_seen": int(self.last_seen),
         }
+
+
+def _identity(row: Dict[str, Any]) -> Tuple[str, str]:
+    return row["platform"], " ".join(row["name"].split()).casefold()
 
 
 class ComputerHostRegistry:
@@ -173,13 +178,19 @@ class ComputerHostRegistry:
     def list_for_owner(self, owner_sub: str) -> List[Dict[str, Any]]:
         now = time.time()
         out = [h.public(True) for h in self.online_for_owner(owner_sub)]
+        offline: Dict[Tuple[str, str], Dict[str, Any]] = {}
         for (o, _), h in list(self._offline.items()):
             if o != owner_sub:
                 continue
             if now - h.last_seen > LAST_SEEN_TTL_S:
                 self._offline.pop((o, h.host_id), None)
                 continue
-            out.append(h.public(False))
+            row = h.public(False)
+            identity = _identity(row)
+            if identity not in offline or row["last_seen"] > offline[identity]["last_seen"]:
+                offline[identity] = row
+        online = {_identity(row) for row in out}
+        out.extend(row for identity, row in offline.items() if identity not in online)
         out.sort(key=lambda d: (not d["online"], d["name"].lower()))
         return out
 
@@ -190,8 +201,8 @@ class ComputerHostRegistry:
                 return online[0]
             if not online:
                 known = [h for (o, _), h in self._offline.items() if o == owner_sub]
-                if len(known) == 1:
-                    raise known[0].unavailable()
+                if len({_identity(h.public(False)) for h in known}) == 1:
+                    raise max(known, key=lambda h: h.last_seen).unavailable()
                 raise ComputerHostError(
                     "computer_unavailable",
                     "none of your computers is online — open the AstralDeep desktop client "
