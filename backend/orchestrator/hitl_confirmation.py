@@ -335,6 +335,15 @@ async def _audit(orch, call: PendingCall, transition: str) -> None:
         logger.debug("HITL audit unavailable", exc_info=True)
 
 
+async def audit_de_escalation(orch, owner, chat, agent, tool, args) -> None:
+    try:
+        encoded = _arguments(args)
+    except (TypeError, ValueError):
+        encoded = "{}"
+    await _audit(orch, PendingCall(str(uuid.uuid4()), owner, chat, agent, tool, encoded, ("de_escalation",),
+                                   time.monotonic()), "de_escalation")
+
+
 async def audit_pre_effect(orch, call: PendingCall) -> None:
     if "source_bound" not in call.risks:
         raise ValueError("source-bound approval required")

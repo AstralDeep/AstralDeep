@@ -5333,6 +5333,8 @@ class Orchestrator:
         host_reads = getattr(self, "_source_bound_read_tools", set())
         self._source_bound_read_tools = {
             item for item in host_reads if item[0] != card.agent_id}
+        self._source_bound_de_escalations = {
+            item for item in getattr(self, "_source_bound_de_escalations", set()) if item[0] != card.agent_id}
 
         from shared.schema_validation import validate_tool_schema
 
@@ -17544,7 +17546,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         try:
             action = source_bound.registered_action(
                 self.tool_permissions.get_tool_scope_map(agent_id), agent_id, tool_name,
-                getattr(self, "_source_bound_read_tools", ()))
+                getattr(self, "_source_bound_read_tools", ()), getattr(self, "_source_bound_de_escalations", ()))
         except (AttributeError, TypeError, ValueError) as exc:
             logger.warning("Source-bound declaration unavailable: %s", exc)
             await self._audit_gate_denial(
@@ -17809,6 +17811,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 args, tuple(set(review_risks)))
             if pending is not None:
                 return GateRefusal(response=pending)
+        elif user_id and agent_id and action.effect is source_bound.Effect.DE_ESCALATION:
+            from orchestrator import hitl_confirmation
+
+            await hitl_confirmation.audit_de_escalation(self, user_id, chat_id, agent_id, tool_name, args)
 
         if user_id:
             from orchestrator import taint as _taint
@@ -19227,7 +19233,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             try:
                 action = source_bound.registered_action(
                     self.tool_permissions.get_tool_scope_map(agent_id), agent_id, tool_name,
-                    getattr(self, "_source_bound_read_tools", ()))
+                    getattr(self, "_source_bound_read_tools", ()), getattr(self, "_source_bound_de_escalations", ()))
             except (AttributeError, TypeError, ValueError):
                 return MCPResponse(error={"code": "effect_declaration_unavailable",
                     "message": "Tool effect declaration is unavailable.", "retryable": False})

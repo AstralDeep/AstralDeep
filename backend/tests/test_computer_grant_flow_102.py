@@ -33,7 +33,7 @@ NOTES = {"hwnd": 43, "title": "Groceries", "process": "com.apple.Notes", "bundle
          "rect": [0, 0, 800, 600], "focused": False}
 SAFARI = {"hwnd": 44, "title": "Bank", "process": "com.apple.Safari", "bundle_id": "com.apple.Safari",
           "rect": [0, 0, 800, 600], "focused": False}
-SCOPES = {"start_session": "tools:write", "interrupt_command": "tools:write", "type_text": "tools:write", "press_keys": "tools:write", "click": "tools:write", "drag": "tools:write",
+SCOPES = {"start_session": "tools:write", "end_session": "tools:write", "resume_session": "tools:write", "interrupt_command": "tools:write", "type_text": "tools:write", "press_keys": "tools:write", "click": "tools:write", "drag": "tools:write",
           "scroll": "tools:write", "open_app": "tools:write", "run_command": "tools:execute",
           "browser_navigate": "tools:write", "browser_click": "tools:write", "browser_scroll": "tools:write",
           "set_clipboard": "tools:write"}
@@ -517,6 +517,46 @@ async def test_interrupt_of_a_tracked_job_is_a_control_action_without_a_card(tas
     assert "hitl.control" in actions and "hitl.effect_started" in actions
     unknown = await _call(task_runtime, "interrupt_command", job_id="job-9", signal="INT")
     assert unknown.result["_data"]["status"] == "confirmation_required" and len(effects) == 1
+
+
+async def test_end_session_is_a_de_escalation_that_runs_without_a_card_and_is_audited(task_runtime):
+    orch, ws, effects, *_ = task_runtime
+    await _mac(task_runtime)
+    orch._source_bound_de_escalations = {("computer-use-1", "end_session")}
+    response = await _call(task_runtime, "end_session")
+    assert response.error is None and response.result["_data"]["ok"]
+    assert [tool for tool, _args in effects] == ["end_session"] and not getattr(orch, "_hitl_pending_calls", {})
+    events = [call.args[0] for call in orch.audit_recorder.record.await_args_list]
+    assert [event.action_type for event in events] == ["hitl.de_escalation"]
+    assert events[0].inputs_meta["risks"] == ["de_escalation"] and events[0].conversation_id == CHAT
+    resume = await _call(task_runtime, "resume_session")
+    assert resume.result["_data"]["status"] == "confirmation_required" and len(effects) == 1
+
+
+async def test_end_session_without_the_host_declaration_keeps_its_review(task_runtime):
+    orch, ws, effects, *_ = task_runtime
+    await _mac(task_runtime)
+    response = await _call(task_runtime, "end_session")
+    assert response.result["_data"]["status"] == "confirmation_required" and not effects
+
+
+async def test_de_escalation_audit_failure_does_not_block_ending(task_runtime):
+    orch, ws, effects, *_ = task_runtime
+    await _mac(task_runtime)
+    orch._source_bound_de_escalations = {("computer-use-1", "end_session")}
+    orch.audit_recorder.record.side_effect = RuntimeError("audit down")
+    response = await _call(task_runtime, "end_session")
+    assert response.result["_data"]["ok"] and [tool for tool, _args in effects] == ["end_session"]
+
+
+async def test_de_escalation_audit_records_unencodable_arguments_by_an_empty_digest(task_runtime):
+    import hashlib
+
+    orch, *_ = task_runtime
+    await hc.audit_de_escalation(orch, OWNER, CHAT, "computer-use-1", "end_session", {"x": "y" * 70000})
+    event = orch.audit_recorder.record.await_args.args[0]
+    assert event.action_type == "hitl.de_escalation"
+    assert event.inputs_meta["arguments_sha256"] == hashlib.sha256(b"{}").hexdigest()
 
 
 def _all_text(response):

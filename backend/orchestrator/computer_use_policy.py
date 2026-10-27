@@ -41,6 +41,7 @@ CONSEQUENTIAL_VERBS: FrozenSet[str] = frozenset({
 SESSION_VERBS: FrozenSet[str] = frozenset({
     "list_computers", "start_session", "end_session", "resume_session", "confirm_action",
 })
+DE_ESCALATION_VERBS: FrozenSet[str] = frozenset({"end_session"})
 
 HOST_VERBS: FrozenSet[str] = OBSERVE_VERBS | INPUT_VERBS | CONSEQUENTIAL_VERBS
 
