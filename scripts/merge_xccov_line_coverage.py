@@ -254,7 +254,7 @@ def _same_shard_domain(first: Mapping[str, Any], other: Mapping[str, Any]) -> bo
             for key, value in domain["binary"].items()
             if key not in SHARD_BINARY_FIELDS
         }
-        return {**domain, "binary": binary}
+        return {**domain, "binary": binary, "observed_sources": None}
 
     return comparable(first) == comparable(other)
 
@@ -339,7 +339,13 @@ def merge_xccov_reports(
                         producer not in native_domains
                         or _same_shard_domain(native_domains[producer], domain)
                     )
-                    native_domains.setdefault(producer, domain)
+                    observed = set(domain["observed_sources"])
+                    if producer in native_domains:
+                        observed |= set(native_domains[producer]["observed_sources"])
+                    native_domains[producer] = {
+                        **native_domains.get(producer, domain),
+                        "observed_sources": sorted(observed),
+                    }
                     document = envelope["coverage"]
                 except native_policy.DomainError as exc:
                     raise MergeError("native_domain_mismatch", "native domain does not match lane/source") from exc
