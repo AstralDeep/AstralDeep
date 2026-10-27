@@ -845,21 +845,32 @@ async def test_agent_verbs_against_a_fake_host(monkeypatch):
 
     await orch.computer_sessions.on_host_event(OWNER, host.host_id, "paused", session.session_id, "local_input")
     paused = await asyncio.to_thread(mcp_tools.screenshot, **ctx)
-    assert paused["_data"]["code"] == "paused"
+    assert paused["_data"]["code"] == "local_resume_required"
     before = len(host_ws.frames("computer_request"))
     waited = await asyncio.to_thread(mcp_tools.wait, seconds=0.1, **ctx)
-    assert waited["_data"]["state"] == "paused" and waited["_data"]["pause_reason"] == "local_input"
+    assert waited["_data"]["code"] == "local_resume_required" and "press Resume" in waited["_data"]["next_action"]
     assert len(host_ws.frames("computer_request")) == before
+    refused = await asyncio.to_thread(mcp_tools.resume_session, **ctx)
+    assert refused["_data"]["code"] == "local_resume_required" and session.state == "paused"
+    await orch.computer_sessions.on_host_event(OWNER, host.host_id, "resumed", session.session_id, None)
+    await orch.computer_sessions.pause(session, "user_pause")
     monkeypatch.setattr(mcp_tools, "RESUME_SETTLE_SECONDS", 0.05)
     orig_resume = orch.computer_sessions.resume
 
-    async def _resume_then_repause(sess):
+    async def _resume_then_repause(sess, reason):
         await orig_resume(sess)
-        await orch.computer_sessions.on_host_event(OWNER, host.host_id, "paused", sess.session_id, "local_input")
-    monkeypatch.setattr(orch.computer_sessions, "resume", _resume_then_repause)
-    again = await asyncio.to_thread(mcp_tools.resume_session, **ctx)
-    assert again["_data"]["code"] == "paused" and "wait" in again["_data"]["next_action"]
-    monkeypatch.setattr(orch.computer_sessions, "resume", orig_resume)
+        if reason == "local_input":
+            await orch.computer_sessions.on_host_event(OWNER, host.host_id, "paused", sess.session_id, reason)
+        else:
+            await orch.computer_sessions.pause(sess, reason)
+    for reason, code, hint in (("approval_not_completed", "paused", "wait"),
+                               ("local_input", "local_resume_required", "press Resume")):
+        monkeypatch.setattr(orch.computer_sessions, "resume", lambda sess, r=reason: _resume_then_repause(sess, r))
+        again = await asyncio.to_thread(mcp_tools.resume_session, **ctx)
+        assert again["_data"]["code"] == code and hint in again["_data"]["next_action"]
+        monkeypatch.setattr(orch.computer_sessions, "resume", orig_resume)
+        await orch.computer_sessions.resume(session, local=True)
+        await orch.computer_sessions.pause(session, "user_pause")
     resumed = await asyncio.to_thread(mcp_tools.resume_session, **ctx)
     assert resumed["_data"]["state"] == "active"
     ended = await asyncio.to_thread(mcp_tools.end_session, **ctx)

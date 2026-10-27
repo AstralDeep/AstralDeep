@@ -120,7 +120,7 @@ async def test_grant_survives_turns_and_is_revoked_with_the_session_pause(task_r
     hc.begin_task(orch, ws, OWNER, CHAT)
     assert (await _call(task_runtime, "type_text", text="b", hwnd=42)).result["_data"]["ok"]
     await orch.computer_sessions.pause(session, "local_input")
-    await orch.computer_sessions.resume(session)
+    await orch.computer_sessions.resume(session, local=True)
     again = await _call(task_runtime, "type_text", text="c", hwnd=42)
     assert again.result["_data"]["status"] == "confirmation_required" and len(effects) == 2
 
@@ -462,3 +462,28 @@ async def test_only_plain_argv_command_cards_offer_a_grant(task_runtime, args, g
     card = await _call(task_runtime, "run_command", cwd=ROOT, **args)
     labels = [b["label"] for b in _buttons(card)]
     assert labels == (["Approve", "Allow wc in x for this task", "Decline"] if grantable else ["Approve", "Decline"])
+
+
+async def test_owner_revoke_from_the_session_frame_ends_later_effects_and_refuses_others(task_runtime, monkeypatch):
+    from orchestrator.projection_surfaces import my_computers
+
+    orch, ws, effects, *_ = task_runtime
+    session, host = await _mac(task_runtime)
+    monkeypatch.setattr(my_computers, "_enabled", lambda: True)
+    first = await _call(task_runtime, "type_text", text="a", hwnd=42)
+    await hc.handle_decision(orch, ws, OWNER, _payload(first, "grant_task"))
+    hc.begin_task(orch, ws, OWNER, CHAT)
+    grant, = orch.computer_sessions.grants.list(session.session_id)
+    payload = {"grant_id": grant.grant_id, "session_id": session.session_id, "host_id": host.host_id, "chat_id": CHAT}
+    _key, _params, denied = await my_computers.HANDLERS["chrome_computer_grant_revoke"](
+        orch, ws, "someone-else", ["user"], payload)
+    assert "not active" in denied and orch.computer_sessions.grants.list(session.session_id) == (grant,)
+    assert (await _call(task_runtime, "type_text", text="b", hwnd=42)).result["_data"]["ok"] and len(effects) == 2
+    _key, _params, notice = await my_computers.HANDLERS["chrome_computer_grant_revoke"](
+        orch, ws, OWNER, ["user"], payload)
+    assert "Grant revoked." in notice and orch.computer_sessions.grants.list(session.session_id) == ()
+    again = await _call(task_runtime, "type_text", text="c", hwnd=42)
+    assert again.result["_data"]["status"] == "confirmation_required" and len(effects) == 2
+    _key, _params, unknown = await my_computers.HANDLERS["chrome_computer_grant_revoke"](
+        orch, ws, OWNER, ["user"], payload)
+    assert "not active" in unknown

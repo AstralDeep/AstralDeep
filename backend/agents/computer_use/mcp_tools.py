@@ -74,6 +74,9 @@ _MAX_CHUNKS = 64
 _MAX_JOBS = 64
 _COMMAND_DEADLINE_MARGIN_S = 10
 _BACKGROUND_START_S = 30.0
+_LOCAL_PAUSES = frozenset({"local_input", "local_pause"})
+_LOCAL_RESUME_HINT = ("ask the user to press Resume on {host}; do not call resume_session, wait or any other computer "
+                      "tool until they say it is resumed")
 
 
 def register_deps(orchestrator) -> None:
@@ -124,9 +127,17 @@ def _host_error(exc: ComputerHostError) -> Dict[str, Any]:
         hint = "call start_session first"
     elif exc.code == "paused":
         hint = "someone is using the computer; call resume_session when it is free"
-    elif exc.code == "local_pause_requires_local_resume":
-        hint = "ask the user to press Resume on that computer; do not call resume_session again"
+    elif exc.code in {"local_pause_requires_local_resume", "local_resume_required"}:
+        return _fail(exc.code, f"Stop now and end your turn. {exc.message}",
+                     next_action=_LOCAL_RESUME_HINT.format(host="that computer"), **extra)
     return _fail(exc.code, exc.message, next_action=hint, **extra)
+
+
+def _local_pause_refusal(host) -> Dict[str, Any]:
+    return _fail("local_resume_required",
+                 f"Stop now and end your turn. {host.name} was paused by the person at it; only its own Resume "
+                 "control can continue the session",
+                 next_action=_LOCAL_RESUME_HINT.format(host=host.name))
 
 
 def _bridge(coro, timeout: float, loop=None):
@@ -154,6 +165,8 @@ def _require_session(user_id: str, host) -> Tuple[Any, Optional[Dict[str, Any]]]
     if session is None:
         return None, _fail("no_session", f"no remote-control session on {host.name}",
                            next_action="call start_session first")
+    if session.state == "paused" and session.pause_reason in _LOCAL_PAUSES:
+        return None, _local_pause_refusal(host)
     if session.state == "paused":
         return None, _fail("paused", f"{host.name} is paused ({session.pause_reason or 'someone is using it'})",
                            next_action="wait, then call resume_session")
@@ -347,6 +360,8 @@ def start_session(**kwargs) -> Dict[str, Any]:
         return _host_error(exc)
     except Exception as exc:  # noqa: BLE001
         return _fail("failed", f"could not start the session: {exc}")
+    if session.state == "paused" and session.pause_reason in _LOCAL_PAUSES:
+        return _local_pause_refusal(host)
     vision = "yes" if session.images_supported else "no — non-visual mode"
     data = {"session_id": session.session_id, "host_id": host.host_id, "computer": host.name,
             "platform": host.platform, "screens": host.screens, "state": session.state,
@@ -401,6 +416,8 @@ def resume_session(**kwargs) -> Dict[str, Any]:
         state = _bridge(_resume_and_verify(), TIMEOUTS["resume_session"], _loop(kwargs))
     except ComputerHostError as exc:
         return _host_error(exc)
+    if state == "paused" and session.pause_reason in _LOCAL_PAUSES:
+        return _local_pause_refusal(host)
     if state == "paused":
         return _fail("paused", f"someone is still using {host.name}; the session paused again "
                                f"({session.pause_reason or 'local input'})",
@@ -559,6 +576,8 @@ def wait(**kwargs) -> Dict[str, Any]:
         return _fail("out_of_range", "seconds must be a number")
     if not (0.1 <= seconds <= MAX_WAIT_SECONDS):
         return _fail("out_of_range", f"seconds must be between 0.1 and {MAX_WAIT_SECONDS}")
+    if session.state == "paused" and session.pause_reason in _LOCAL_PAUSES:
+        return _local_pause_refusal(host)
     if session.state == "active":
         _result, err = _run(host, session, "wait", {"seconds": seconds}, _loop(kwargs))
         if err:

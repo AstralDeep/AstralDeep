@@ -1,6 +1,7 @@
 """Render shared emergency stop controls through Projection and astralprims.
 Current human request authority binds each owner stop, responder check, and
-explicit resume to the same coordinator used by REST and CLI clients.
+explicit resume to the same coordinator used by REST and CLI clients; the stop
+control is a danger button everywhere ROTE keeps one, and primary on the watch.
 """
 
 from __future__ import annotations
@@ -42,6 +43,17 @@ _BADGE_CLASSES = {
     "error": "border-red-500/20 bg-red-500/10 text-red-400",
 }
 _ACTION_GUIDANCE = "Stop applies locally immediately. Resume requires your current signed-in owner session."
+
+
+def _stop_variant(orch) -> str:
+    from orchestrator.chrome_events import current_surface_socket
+
+    websocket = current_surface_socket.get()
+    try:
+        device = orch.rote.get_profile(websocket).device_type if websocket is not None else None
+    except Exception:
+        device = None
+    return "primary" if getattr(device, "value", device) == "watch" else "danger"
 
 
 def _coordinator(orch):
@@ -103,7 +115,7 @@ async def render(orch, user_id, roles, params) -> str:
         f'text-astral-text">Emergency stop</h2>{_badge_html(state)}</div>'
         + body
         + f'<p class="text-sm text-astral-text">{esc(_ACTION_GUIDANCE)}</p>'
-        + render_children(_controls(status))
+        + render_children(_controls(status, _stop_variant(orch)))
         + "</section>"
     )
 
@@ -116,11 +128,11 @@ async def components(orch, user_id, roles, params):
     label, _variant = _BADGES.get(state, _BADGES["running"])
     content = [_sdui.text(row, "caption") for row in _rows(status)]
     content.append(_sdui.text(_ACTION_GUIDANCE, "caption"))
-    content.extend(_controls(status))
+    content.extend(_controls(status, _stop_variant(orch)))
     return [_sdui.card(f"Emergency stop — {label}", content, variant="default")]
 
 
-def _controls(status):
+def _controls(status, stop_variant="danger"):
     controls = []
     revision = status.get("revision")
     if status.get("engaged") and type(revision) is int and 0 < revision <= 9007199254740991:
@@ -128,7 +140,7 @@ def _controls(status):
             {"surface": SURFACE_KEY, "expected_revision": revision}, "primary"))
     elif not status.get("engaged"):
         controls.append(_sdui.button("Stop everything now", "chrome_safety_stop",
-                                    {"surface": SURFACE_KEY}, "primary"))
+                                    {"surface": SURFACE_KEY}, stop_variant))
     controls.append(_sdui.button("Recheck responders", "chrome_safety_verify",
                                 {"surface": SURFACE_KEY}, "primary"))
     for control in controls:

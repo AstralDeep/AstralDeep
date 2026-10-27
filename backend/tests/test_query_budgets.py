@@ -1,6 +1,6 @@
 """Tests for backend/orchestrator/history.py's get_recent_chats and
-tool_permissions.py's get_effective_tool_permissions: each resolves in a single Plane
-round trip, with previews, ordering and merged-scope results unchanged.
+tool_permissions.py's get_effective_tool_permissions: each resolves in a constant number of
+Plane round trips, with previews, ordering and merged-scope results unchanged.
 """
 
 import os
@@ -101,7 +101,7 @@ def test_recent_chats_single_query(hm, plane_runtime, user_id):
     with _count_plane_queries(plane_runtime) as counter:
         chats = hm.get_recent_chats(user_id=user_id)
 
-    assert counter.count == 1
+    assert counter.count == 2, "one owner chat-organization read + ONE listing read"
     assert [c["id"] for c in chats] == [c3, c2, c1]
 
     by_id = {c["id"]: c for c in chats}
@@ -110,7 +110,7 @@ def test_recent_chats_single_query(hm, plane_runtime, user_id):
     assert by_id[c3]["preview"] == "z" * PREVIEW_MAX_CHARS + "..."
     for entry in chats:
         assert set(entry.keys()) == {
-            "id", "title", "agent_id", "updated_at", "preview", "has_saved_components",
+            "id", "title", "agent_id", "updated_at", "preview", "has_saved_components", "pinned", "archived",
         }
         assert entry["has_saved_components"] is False
 
@@ -124,7 +124,7 @@ def test_recent_chats_saved_component_flag_still_one_query(
     with _count_plane_queries(plane_runtime) as counter:
         chats = hm.get_recent_chats(user_id=user_id)
 
-    assert counter.count == 1
+    assert counter.count == 2
     by_id = {c["id"]: c for c in chats}
     assert by_id[c2]["has_saved_components"] is True
     assert by_id[c1]["has_saved_components"] is False

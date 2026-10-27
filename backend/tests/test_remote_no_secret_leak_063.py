@@ -372,8 +372,13 @@ async def test_password_credential_and_delete_leak_nothing(env):
     mid, add_piece = await _register(env, cred_type="password")
     pieces.append(add_piece)
     assert env.credmgr.get_machine_credential(mid, USER)["secret"] == SENTINEL_PASSWORD
-    del_ret = await surface._h_machine_delete(env.orch, None, USER, ["user"],
-                                              {"machine_id": mid})
+    ws = object()
+    env.orch.ui_sessions, env.orch._ws_active_chat = {ws: {"sub": USER}}, {}
+    prompt = await surface._h_machine_delete(env.orch, ws, USER, ["user"], {"machine_id": mid})
+    del_ret = await surface._h_machine_delete(env.orch, ws, USER, ["user"], {
+        "machine_id": mid, "confirmation_id": prompt[1]["confirm"]["confirmation_id"]})
+    assert mid not in env.db.machines
+    pieces.append(("chrome_machine_delete prompt", _dump(prompt)))
     pieces.append(("chrome_machine_delete return", _dump(del_ret)))
     pieces.extend(_channel_pieces(env))
     _assert_clean(pieces)

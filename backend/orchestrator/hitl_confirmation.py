@@ -1,6 +1,8 @@
 """Holds attended human-in-the-loop approvals bound to one server-held pending call for
 fifteen minutes, never client-supplied arguments; handle_decision() re-enters evaluate() to
 release the approved dispatch, and computer task grants from computer_sessions stand in for a card.
+Owner settings surfaces confirm destructive controls through a single-use confirmation bound to
+the same signed-in socket, owner, action and target.
 """
 
 from __future__ import annotations
@@ -24,6 +26,9 @@ from shared.protocol import MCPResponse
 
 logger = logging.getLogger(__name__)
 TTL_SECONDS = 900
+SURFACE_CONFIRMATION_TTL_S = 120
+SURFACE_CONFIRMATIONS_PER_OWNER = 16
+_SURFACE_CONFIRMATIONS_TOTAL = 128
 POINTER_VERBS = frozenset({"click", "double_click", "right_click", "move", "drag", "scroll"})
 POINTER_REFUSAL = "Call list_windows and pass hwnd for the target window."
 CONTROL_VERBS = frozenset({"interrupt_command"})
@@ -65,6 +70,16 @@ class PendingCall:
     cancellation: object = None
     grant_offer: GrantOffer | None = None
     grant_id: str | None = None
+
+
+@dataclass(frozen=True)
+class SurfaceConfirmation:
+    confirmation_id: str
+    owner: str
+    websocket: object
+    action: str
+    target: str
+    expires: float
 
 
 @dataclass
@@ -326,6 +341,58 @@ async def audit_effect_outcome(orch, call: PendingCall, *, uncertain: bool) -> N
     if "source_bound" not in call.risks:
         raise ValueError("source-bound approval required")
     await _audit(orch, call, "effect_uncertain" if uncertain else "effect_response_success")
+
+
+def _surface_confirmations(orch) -> dict[str, SurfaceConfirmation]:
+    now = time.monotonic()
+    current = {key: item for key, item in getattr(orch, "_hitl_surface_confirmations", {}).items()
+               if item.expires > now}
+    orch._hitl_surface_confirmations = current
+    return current
+
+
+def _surface_call(orch, entry: SurfaceConfirmation) -> PendingCall:
+    from orchestrator.hitl import IRREVERSIBLE
+
+    chat = getattr(orch, "_ws_active_chat", {}).get(id(entry.websocket))
+    return PendingCall(entry.confirmation_id, entry.owner, chat, "owner-surface", entry.action, entry.target,
+                       (IRREVERSIBLE,), entry.expires)
+
+
+async def request_surface_confirmation(orch, websocket, owner, action, target) -> str | None:
+    try:
+        encoded = _arguments(target)
+    except (TypeError, ValueError):
+        return None
+    if not _attended(orch, websocket, owner):
+        return None
+    confirmations = _surface_confirmations(orch)
+    for item in confirmations.values():
+        if (item.websocket is websocket and (item.owner, item.action, item.target) == (owner, action, encoded)):
+            return item.confirmation_id
+    if (len(confirmations) >= _SURFACE_CONFIRMATIONS_TOTAL
+            or sum(item.owner == owner for item in confirmations.values()) >= SURFACE_CONFIRMATIONS_PER_OWNER):
+        return None
+    entry = SurfaceConfirmation(uuid.uuid4().hex, owner, websocket, action, encoded,
+                                time.monotonic() + SURFACE_CONFIRMATION_TTL_S)
+    confirmations[entry.confirmation_id] = entry
+    await _audit(orch, _surface_call(orch, entry), "proposed")
+    return entry.confirmation_id
+
+
+async def consume_surface_confirmation(orch, websocket, owner, action, target, confirmation_id) -> bool:
+    try:
+        encoded = _arguments(target)
+    except (TypeError, ValueError):
+        return False
+    confirmations = _surface_confirmations(orch)
+    entry = confirmations.get(confirmation_id) if isinstance(confirmation_id, str) else None
+    if (entry is None or entry.websocket is not websocket or (entry.owner, entry.action, entry.target)
+            != (owner, action, encoded) or not _attended(orch, websocket, owner)):
+        return False
+    confirmations.pop(confirmation_id)
+    await _audit(orch, _surface_call(orch, entry), "consumed")
+    return True
 
 
 def _refused(message: str) -> MCPResponse:
@@ -720,6 +787,12 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             Button(label="Decline", action="authorize_action", variant="secondary",
                    payload={"hitl_request_id": call.request_id, "decision": "decline"}),
         ]).to_dict()
+        if agent == "computer-use-1" and tool == "write_file":
+            from orchestrator.write_review import review_components
+
+            index = next(index for index, item in enumerate(card["content"]) if item.get("type") == "code") + 1
+            card["content"][index:index] = await review_components(orch, websocket, owner, chat, args,
+                                                                   f"hitl_{call.request_id}_diff")
         from orchestrator.remote_confirmation import computer_resume_target
 
         target = computer_resume_target(websocket, call.computer_authority, tool, args)

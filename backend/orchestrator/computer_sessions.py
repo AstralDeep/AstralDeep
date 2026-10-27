@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from orchestrator.computer_grants import GrantStore
+from orchestrator.computer_grants import EVENT_CREATED, EVENT_EXPIRED, EVENT_REVOKED, EVENT_USED, GrantStore
 from orchestrator.computer_hosts import ComputerHost, ComputerHostError, ComputerHostRegistry
 
 logger = logging.getLogger("ComputerSessions")
@@ -38,12 +38,15 @@ END_REASONS = frozenset({
     "controller_offline", "flag_off",
 })
 STOP_REASONS = frozenset({"user_stop", "local_stop"})
+LOCAL_RESUME_REFUSALS = {"local_pause": "local_pause_requires_local_resume", "local_input": "local_resume_required"}
 _GRANT_REVOCATIONS = {
     "user_stop": "stop", "local_stop": "stop", "host_superseded": "host_replaced", "host_offline": "socket_lost",
     "host_silent": "socket_lost", "host_unresponsive": "socket_lost", "consent_revoked": "authority_changed",
 }
 _KILL_REASONS = END_REASONS - {"local_stop", "host_offline", "host_superseded", "host_silent",
                                "host_unresponsive", "consent_revoked"}
+_FRAME_GRANT_KINDS = {"app": "application", "window": "application", "command": "program", "origin": "origin"}
+_PUSHED_REVOCATIONS = frozenset({"replaced", "chat_changed"})
 JOB_KILL_TIMEOUT_S = 3.0
 MAX_COMMAND_JOBS = 64
 SCREENSHOT_CACHE_BYTES = 3 * 1024 * 1024
@@ -164,8 +167,8 @@ class ComputerSession:
             "verbs_run": self.verbs_run,
         }
 
-    def frame(self) -> str:
-        return json.dumps({"type": "computer_session", **self.public()})
+    def frame(self, grants: Sequence[Dict[str, Any]] = ()) -> str:
+        return json.dumps({"type": "computer_session", **self.public(), "grants": list(grants)})
 
 
 class ComputerSessionManager:
@@ -175,6 +178,7 @@ class ComputerSessionManager:
         self._sessions: Dict[str, ComputerSession] = {}
         self._sweeper: Optional[asyncio.Task] = None
         self._audit_tasks: set = set()
+        self._push_pending: set = set()
         self.grants = GrantStore(events=self._grant_event)
 
     def get(self, session_id: str) -> Optional[ComputerSession]:
@@ -297,10 +301,12 @@ class ComputerSessionManager:
     async def resume(self, session: ComputerSession, *, push: bool = True, local: bool = False) -> None:
         if session.state != PAUSED:
             return
-        if session.pause_reason == "local_pause" and not local:
-            raise ComputerHostError("local_pause_requires_local_resume",
-                                    f"{session.host_name} was paused at the computer; only its own Resume "
-                                    "control can continue the session")
+        refusal = None if local else LOCAL_RESUME_REFUSALS.get(session.pause_reason or "")
+        if refusal is not None:
+            await self._audit(session, "computer_session.resume_refused", f"resume refused ({refusal})",
+                              outcome="failure", meta={"reason": refusal, "pause_reason": session.pause_reason})
+            raise ComputerHostError(refusal, f"{session.host_name} was paused at the computer; only its own Resume "
+                                             "control can continue the session")
         session.state = ACTIVE
         session.authority_generation += 1
         session.pause_reason = None
@@ -385,7 +391,11 @@ class ComputerSessionManager:
             if not session.acked.is_set():
                 session.acked.set()
         elif event == "paused":
-            await self.pause(session, reason or "local_input")
+            local = reason if reason in LOCAL_RESUME_REFUSALS else "local_input"
+            if session.state == PAUSED and session.pause_reason == local:
+                await self._push(session)
+            else:
+                await self.pause(session, local)
         elif event == "resumed":
             await self.resume(session, local=True)
         elif event == "stopped":
@@ -401,8 +411,56 @@ class ComputerSessionManager:
         except Exception:  # noqa: BLE001
             return f"ws-{id(websocket)}"
 
+    def grant_rows(self, session: ComputerSession) -> List[Dict[str, Any]]:
+        now = time.time()
+        rows = []
+        for grant in self.grants.list(session.session_id):
+            if grant.expired_reason(now) is not None:
+                continue
+            scope = grant.scope
+            detail: Dict[str, Any] = {"kind": scope["kind"]}
+            if scope["kind"] == "window":
+                detail["hwnd"] = scope["hwnd"]
+            if scope["kind"] == "command":
+                detail["root"] = grant.command["root"]
+            target = (grant.command["argv0"] if scope["kind"] == "command"
+                      else scope["origin"] if scope["kind"] == "origin" else scope["bundle_id"])
+            rows.append({"id": grant.grant_id, "kind": _FRAME_GRANT_KINDS[scope["kind"]], "target": target,
+                         "expires_at": int(grant.expires_at), "scope": detail})
+        return rows
+
+    async def revoke_grant(self, owner_sub: str, session_id: str, host_id: str, chat_id: str,
+                           grant_id: str) -> bool:
+        session = self._sessions.get(session_id)
+        grant = next((g for g in self.grants.list(session_id) if g.grant_id == grant_id), None)
+        if (session is None or grant is None or session.state == ENDED
+                or (session.owner_sub, session.host_id, session.chat_id) != (owner_sub, host_id, chat_id)
+                or (grant.owner_id, grant.host_id, grant.chat_id) != (owner_sub, host_id, chat_id)
+                or self.grants.revoke_grant(grant_id, "user_revoked") is None):
+            return False
+        await self._push(session)
+        return True
+
+    def _schedule_push(self, session_id: Any) -> None:
+        session = self._sessions.get(session_id) if isinstance(session_id, str) else None
+        if session is None or session.state == ENDED or session_id in self._push_pending:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._push_pending.add(session_id)
+        task = loop.create_task(self._push_later(session))
+        self._audit_tasks.add(task)
+        task.add_done_callback(self._audit_tasks.discard)
+
+    async def _push_later(self, session: ComputerSession) -> None:
+        self._push_pending.discard(session.session_id)
+        if self._sessions.get(session.session_id) is session and session.state != ENDED:
+            await self._push(session)
+
     async def _push(self, session: ComputerSession) -> None:
-        frame = session.frame()
+        frame = session.frame(self.grant_rows(session) if session.state != ENDED else ())
         for ws in list(self._orch.ui_clients):
             try:
                 if self._orch._get_user_id(ws) != session.owner_sub:
@@ -412,7 +470,7 @@ class ComputerSessionManager:
                 logger.debug("076: computer_session push failed", exc_info=True)
 
     async def _audit(self, session: ComputerSession, action_type: str, description: str,
-                     *, outcome: str = "success") -> None:
+                     *, outcome: str = "success", meta: Optional[Dict[str, Any]] = None) -> None:
         try:
             from datetime import datetime, timezone
 
@@ -431,13 +489,16 @@ class ComputerSessionManager:
                 correlation_id=session.session_id,
                 outcome=outcome,
                 inputs_meta={"host_id": session.host_id, "controller": session.controller_label,
-                             "verbs_run": session.verbs_run},
+                             "verbs_run": session.verbs_run, **(meta or {})},
                 started_at=datetime.now(timezone.utc),
             ))
         except Exception:  # noqa: BLE001
             logger.debug("076: session audit failed (%s)", action_type, exc_info=True)
 
     def _grant_event(self, name: str, payload: Dict[str, Any]) -> None:
+        if name in {EVENT_CREATED, EVENT_USED, EVENT_EXPIRED} or (
+                name == EVENT_REVOKED and payload.get("reason") in _PUSHED_REVOCATIONS):
+            self._schedule_push(payload.get("session_id"))
         try:
             from datetime import datetime, timezone
 
