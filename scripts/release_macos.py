@@ -1,5 +1,5 @@
-"""Builds, notarizes, signs and stages a Sparkle-updatable AstralDeep Mac release on the owner's Mac.
-Nothing reaches GitHub without --publish; the website change is committed on a new branch and offered as a pull request.
+"""Builds, notarizes, signs and stages a Sparkle-updatable AstralDeep Mac disk image on the owner's Mac or in the release-macos workflow.
+Nothing reaches GitHub without --publish; the downloads record, appcast and signed policy become release assets the website discovers.
 Policy signatures come from Sparkle's `sign_update -p`, which emits a raw Ed25519 signature over the exact file bytes.
 """
 
@@ -11,6 +11,7 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import os
 import platform
 import plistlib
 import re
@@ -20,9 +21,10 @@ import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 TEAM_ID = "593LGH35GS"
@@ -36,9 +38,13 @@ PIN_PATH = "components/AstralProjection"
 SPARKLE_PUBLIC_KEY = "eg4hW6POM2f99hfVp8K+U5bx5Hpl8+P+IYLuW0+pPzw="
 SPARKLE_NAMESPACE = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 FEED_URL = "https://astraldeep.github.io/appcast.xml"
-SITE_URL = "https://astraldeep.github.io"
+SITE_HOST = "astraldeep.github.io"
+SITE_URL = f"https://{SITE_HOST}"
+POLICY_URL = f"{SITE_URL}/data/mac-update-policy.json"
+LIVE_LIMIT = 2 * 1024 * 1024
+SYNC_ATTEMPTS = 10
+SYNC_DELAY = 60.0
 RELEASE_REPO = "AstralDeep/AstralDeep"
-SITE_REPO = "AstralDeep/astraldeep.github.io"
 RELEASE_ROOT = f"https://github.com/{RELEASE_REPO}/releases"
 FIRST_MINIMUM_BUILD = 70
 POLICY_LIFETIME = dt.timedelta(days=180)
@@ -47,6 +53,7 @@ STATE_FILE = "release-state.json"
 SPARKLE_BIN = "SourcePackages/artifacts/sparkle/Sparkle/bin"
 PLACEHOLDER_SHA = "0" * 40
 VERSION = re.compile(r"[1-9]\d*\.\d+(?:\.\d+)?")
+RELEASE_TAG = re.compile(rf"macos-v({VERSION.pattern})-(\d+)")
 COMMIT = re.compile(r"[a-f0-9]{40}")
 
 
@@ -142,9 +149,10 @@ class Release:
     def __init__(
         self, args: argparse.Namespace, runner: Runner, *, deep: Path = ROOT,
         clock: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.timezone.utc),
-        sleep: Callable[[float], None] = time.sleep,
+        sleep: Callable[[float], None] = time.sleep, environ: Mapping[str, str] = os.environ,
     ) -> None:
         self.args = args
+        self.environ = environ
         self.runner = runner
         self.deep = deep
         self.clock = clock
@@ -155,17 +163,17 @@ class Release:
         self.build: int = args.build
         self.channel: str = args.channel
         self.tag = f"macos-v{self.version}-{self.build}"
-        self.archive_name = f"AstralDeep-{self.version}-{self.build}-arm64.zip"
-        self.stem = self.archive_name.removesuffix(".zip")
+        self.archive_name = f"AstralDeep-{self.version}-{self.build}-arm64.dmg"
+        self.stem = self.archive_name.removesuffix(".dmg")
         self.release_url = f"{RELEASE_ROOT}/tag/{self.tag}"
         self.asset_base = f"{RELEASE_ROOT}/download/{self.tag}"
         self.asset_url = f"{self.asset_base}/{self.archive_name}"
         self.projection = args.projection or deep / PIN_PATH
-        self.website = args.website or deep.parent / "astraldeep.github.io"
         self.staging = Path(args.staging_dir or deep / "build" / "release-macos" / self.tag / "stage")
         self.work = Path(args.work_dir or self.staging.parent / "work")
         self.state: dict[str, object] = {}
         self.deep_sha = PLACEHOLDER_SHA
+        self.latest: dict[str, object] | None = None
         self.live_appcast: Path | None = None
 
     @property
@@ -173,6 +181,12 @@ class Release:
         if self.args.ed_key_file:
             return ["--ed-key-file", str(self.args.ed_key_file)]
         return ["--account", self.args.ed_account]
+
+    def notary_args(self) -> list[str]:
+        if self.args.notary_key:
+            return ["--key", str(self.args.notary_key), "--key-id", self.args.notary_key_id,
+                    "--issuer", self.args.notary_issuer]
+        return ["--keychain-profile", NOTARY_PROFILE]
 
     def tool(self, name: str) -> str:
         return str(self.sparkle_bin / name)
@@ -195,6 +209,9 @@ class Release:
             raise ReleaseError("Channel must be stable or preview")
         if self.args.ed_key_file and self.args.ed_account != "ed25519":
             raise ReleaseError("Use either --ed-account or --ed-key-file, not both")
+        notary = (self.args.notary_key, self.args.notary_key_id, self.args.notary_issuer)
+        if any(notary) and not all(notary):
+            raise ReleaseError("--notary-key, --notary-key-id and --notary-issuer travel together")
         if self.args.minimum_build is not None and not 1 <= self.args.minimum_build <= self.build:
             raise ReleaseError("--minimum-build must be between 1 and the release build")
         notes = Path(self.args.notes)
@@ -208,9 +225,7 @@ class Release:
     def preflight(self) -> None:
         if not self.dry and platform.system() != "Darwin":
             raise ReleaseError("Mac releases are built on macOS")
-        needed = ["git", "xcodebuild", "ditto", "xcrun", "codesign", "spctl", "lipo"]
-        if self.args.publish:
-            needed += ["gh", "npm", "curl"]
+        needed = ["git", "xcodebuild", "ditto", "xcrun", "codesign", "spctl", "lipo", "hdiutil", "gh", "curl"]
         missing = [name for name in needed if not self.dry and not shutil.which(name)]
         if missing:
             raise ReleaseError(f"Missing tools: {', '.join(missing)}")
@@ -226,26 +241,79 @@ class Release:
             raise ReleaseError("Deep's Projection pin, the Projection checkout and --projection-commit must be the same commit")
         if not COMMIT.fullmatch(self.deep_sha):
             raise ReleaseError("Deep HEAD is not a commit")
-        if self.args.publish:
-            if self.git(self.website, "status", "--porcelain").stdout.strip():
-                raise ReleaseError("Website working tree is not clean")
-        live = self.live_downloads()
-        if live and self.build <= int(live["build"]):
-            raise ReleaseError(f"Build {self.build} must exceed the published build {live['build']}")
+        self.latest = self.latest_release()
+        if self.latest and self.build <= int(self.latest["build"]):
+            raise ReleaseError(
+                f"Build {self.build} must exceed the published build {self.latest['build']} ({self.latest['tag']})")
         if self.args.publish_staged:
             return
         for path in (self.staging, self.work):
             if path.exists() and any(path.iterdir()):
                 raise ReleaseError(f"{path} is not empty; choose another directory so only the newest archive is staged")
 
-    def live_downloads(self) -> dict[str, object] | None:
-        path = self.website / "data" / "downloads.json"
-        if self.dry and not path.exists():
-            return None
+    def latest_release(self) -> dict[str, object] | None:
+        listed = self.runner.run(
+            ["gh", "api", "--paginate", "--slurp", f"repos/{RELEASE_REPO}/releases?per_page=100"], preview="[]")
+        newest: dict[str, object] | None = None
         try:
-            return json.loads(path.read_text(encoding="utf-8")).get("macos")
-        except (OSError, ValueError) as error:
-            raise ReleaseError(f"Website downloads record is unreadable: {error}") from error
+            for entry in (entry for page in json.loads(listed.stdout) for entry in page):
+                match = RELEASE_TAG.fullmatch(str(entry["tag_name"]))
+                if entry["draft"] or not match:
+                    continue
+                build = int(match.group(2))
+                if newest is None or build > int(newest["build"]):
+                    newest = {
+                        "tag": match.group(0), "version": match.group(1), "build": build,
+                        "target": str(entry.get("target_commitish", "")),
+                        "assets": {str(asset["name"]): asset.get("digest") for asset in entry.get("assets", [])},
+                    }
+        except (ValueError, KeyError, TypeError, AttributeError) as error:
+            raise ReleaseError(f"GitHub release list is unreadable: {error}") from error
+        return newest
+
+    def fetch_live(self, url: str, destination: Path) -> bool:
+        if not self.dry:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.unlink(missing_ok=True)
+        fetched = self.runner.run([
+            "curl", "--silent", "--show-error", "--location", "--proto", "=https", "--proto-redir", "=https",
+            "--max-redirs", "2", "--max-filesize", str(LIVE_LIMIT), "--fail", "--output", destination,
+            "--write-out", "%{http_code} %{url_effective}", url,
+        ], check=False, preview=f"404 {url}")
+        code, _, final = fetched.stdout.strip().partition(" ")
+        where = urlsplit(final)
+        if where.scheme != "https" or where.hostname != SITE_HOST:
+            problem = f"ended at {final or 'nothing'}, outside {SITE_HOST}"
+        elif code == "404":
+            return False
+        elif fetched.returncode == 63:
+            problem = f"exceeds {LIVE_LIMIT} bytes"
+        elif fetched.returncode or code != "200":
+            problem = f"answered {code or 'nothing'} (curl status {fetched.returncode})"
+        elif not self.dry and (not destination.is_file() or destination.stat().st_size > LIVE_LIMIT):
+            problem = "body is missing or too large"
+        else:
+            return True
+        if not self.dry:
+            destination.unlink(missing_ok=True)
+        raise ReleaseError(f"{url} {problem}")
+
+    def fetch_synced(self, url: str, destination: Path, name: str) -> bool:
+        assets = self.latest["assets"] if self.latest else {}
+        if name not in assets or self.dry:
+            return self.fetch_live(url, destination)
+        if not assets[name]:
+            raise ReleaseError(f"{self.latest['tag']} lists {name} without a digest; its successor cannot be checked")
+        found = False
+        for attempt in range(SYNC_ATTEMPTS):
+            found = self.fetch_live(url, destination)
+            if found and f"sha256:{sha256_file(destination)}" == assets[name]:
+                return True
+            if attempt + 1 < SYNC_ATTEMPTS:
+                self.sleep(SYNC_DELAY)
+        if not found:
+            raise ReleaseError(f"The site serves no {name} although {self.latest['tag']} published one; refusing to drop it")
+        raise ReleaseError(f"The site still serves an older {name} than {self.latest['tag']}; rerun once the site syncs")
 
     def inspect(self, app: Path) -> dict[str, object]:
         if self.dry:
@@ -281,6 +349,28 @@ class Release:
     def zip(self, app: Path, destination: Path) -> None:
         self.runner.run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", app, destination])
 
+    def submit(self, path: Path) -> str:
+        sent = self.runner.run(
+            ["xcrun", "notarytool", "submit", path, *self.notary_args(), "--wait", "--output-format", "json"],
+            preview=json.dumps({"id": "<submission-id>", "status": "Accepted"}))
+        try:
+            outcome = json.loads(sent.stdout)
+            status, identifier = str(outcome["status"]), str(outcome["id"])
+        except (ValueError, KeyError, TypeError) as error:
+            raise ReleaseError("notarytool returned no submission status") from error
+        if status != "Accepted":
+            raise ReleaseError(f"Notarization {identifier} ended as {status}; see `xcrun notarytool log {identifier}`")
+        return identifier
+
+    def staple(self, path: Path) -> None:
+        self.runner.run(["xcrun", "stapler", "staple", path])
+        self.validate_ticket(path)
+
+    def validate_ticket(self, path: Path) -> None:
+        validated = self.runner.run(["xcrun", "stapler", "validate", path], preview="The validate action worked!")
+        if "worked" not in validated.stdout:
+            raise ReleaseError("Stapled ticket did not validate")
+
     def build_app(self) -> tuple[Path, dict[str, object]]:
         archive = self.work / "AstralDeep.xcarchive"
         export = self.work / "export"
@@ -296,7 +386,7 @@ class Release:
             "-configuration", CONFIGURATION, "-destination", "generic/platform=macOS",
             "-archivePath", archive, "-derivedDataPath", self.work / "dd",
             f"ASTRAL_DEVELOPMENT_TEAM={TEAM_ID}", "CODE_SIGN_STYLE=Manual", f"CODE_SIGN_IDENTITY={SIGNING_IDENTITY}",
-            "ARCHS=arm64",
+            "ARCHS=arm64", f"MARKETING_VERSION={self.version}", f"CURRENT_PROJECT_VERSION={self.build}",
         ])
         self.runner.run([
             "xcodebuild", "-exportArchive", "-archivePath", archive, "-exportPath", export,
@@ -308,32 +398,21 @@ class Release:
         return app, identity
 
     def notarize(self, app: Path, identity: dict[str, object]) -> dict[str, str]:
-        submission = self.work / "notarize" / self.archive_name
+        submission = self.work / "notarize" / f"{self.stem}.zip"
         if not self.dry:
             submission.parent.mkdir(parents=True, exist_ok=True)
         self.zip(app, submission)
-        sent = self.runner.run(
-            ["xcrun", "notarytool", "submit", submission, "--keychain-profile", NOTARY_PROFILE, "--wait",
-             "--output-format", "json"],
-            preview=json.dumps({"id": "<submission-id>", "status": "Accepted"}))
-        try:
-            outcome = json.loads(sent.stdout)
-            status, identifier = str(outcome["status"]), str(outcome["id"])
-        except (ValueError, KeyError, TypeError) as error:
-            raise ReleaseError("notarytool returned no submission status") from error
-        if status != "Accepted":
-            raise ReleaseError(f"Notarization {identifier} ended as {status}; see `xcrun notarytool log {identifier}`")
-        self.runner.run(["xcrun", "stapler", "staple", app])
-        validated = self.runner.run(["xcrun", "stapler", "validate", app], preview="The validate action worked!")
-        if "worked" not in validated.stdout:
-            raise ReleaseError("Stapled ticket did not validate")
-        assessed = self.runner.run(
-            ["spctl", "--assess", "--type", "execute", "--verbose=4", app],
-            preview=f"{app}: accepted\nsource=Notarized Developer ID")
-        gatekeeper = self.gatekeeper(assessed)
+        identifier = self.submit(submission)
+        self.staple(app)
+        gatekeeper = self.assess_app(app)
         if self.inspect(app) != identity:
             raise ReleaseError("App identity changed while notarizing")
         return {"submission": identifier, "gatekeeper": gatekeeper}
+
+    def assess_app(self, app: Path) -> str:
+        return self.gatekeeper(self.runner.run(
+            ["spctl", "--assess", "--type", "execute", "--verbose=4", app],
+            preview=f"{app}: accepted\nsource=Notarized Developer ID"))
 
     @staticmethod
     def gatekeeper(assessed: Result) -> str:
@@ -343,40 +422,57 @@ class Release:
             raise ReleaseError("Gatekeeper did not accept the app as Notarized Developer ID")
         return f"accepted: {source.group(1).strip()}"
 
-    def package(self, app: Path, identity: dict[str, object]) -> Path:
+    def package(self, app: Path, identity: dict[str, object]) -> tuple[Path, dict[str, str]]:
+        volume = self.work / "volume"
+        mount = self.work / "mount"
+        image = self.staging / self.archive_name
         if not self.dry:
-            self.staging.mkdir(parents=True, exist_ok=True)
-        archive = self.staging / self.archive_name
-        self.zip(app, archive)
-        extracted = self.work / "extract"
-        if not self.dry:
-            extracted.mkdir(parents=True, exist_ok=True)
-        self.runner.run(["ditto", "-x", "-k", archive, extracted])
-        copy = extracted / "AstralDeep.app"
-        if self.inspect(copy) != identity:
-            raise ReleaseError("Fresh extraction of the archive differs from the notarized app")
-        self.gatekeeper(self.runner.run(
-            ["spctl", "--assess", "--type", "execute", "--verbose=4", copy],
-            preview=f"{copy}: accepted\nsource=Notarized Developer ID"))
-        self.runner.run(["xcrun", "stapler", "validate", copy], preview="The validate action worked!")
-        return archive
+            for path in (self.staging, volume, mount):
+                path.mkdir(parents=True, exist_ok=True)
+        self.runner.run(["ditto", app, volume / "AstralDeep.app"])
+        if self.dry:
+            self.out(f"link {volume}/Applications -> /Applications")
+        else:
+            (volume / "Applications").symlink_to("/Applications", target_is_directory=True)
+        self.runner.run([
+            "hdiutil", "create", "-volname", "AstralDeep", "-srcfolder", volume, "-fs", "HFS+", "-format", "UDZO", image,
+        ])
+        self.runner.run(["codesign", "--sign", SIGNING_IDENTITY, "--timestamp", image])
+        identifier = self.submit(image)
+        self.staple(image)
+        gatekeeper = self.gatekeeper(self.runner.run(
+            ["spctl", "--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=4", image],
+            preview=f"{image}: accepted\nsource=Notarized Developer ID"))
+        self.runner.run(["hdiutil", "attach", "-nobrowse", "-readonly", "-mountpoint", mount, image])
+        try:
+            mounted = mount / "AstralDeep.app"
+            if self.inspect(mounted) != identity:
+                raise ReleaseError("The app inside the disk image differs from the notarized app")
+            self.assess_app(mounted)
+            self.validate_ticket(mounted)
+        finally:
+            detached = self.runner.run(["hdiutil", "detach", mount], check=False)
+        if detached.returncode:
+            raise ReleaseError(f"{mount} could not be detached")
+        return image, {"submission": identifier, "gatekeeper": gatekeeper}
 
     def stage(self, archive: Path) -> dict[str, object]:
         notes = self.staging / f"{self.stem}.md"
         appcast = self.staging / "appcast.xml"
-        live = self.website / "site" / "appcast.xml"
+        live = self.work / "live" / "appcast.xml"
         digest = "0" * 64 if self.dry else sha256_file(archive)
         size = 1 if self.dry else archive.stat().st_size
         if not self.dry:
             missing = [name for name in ("sign_update", "generate_appcast") if not Path(self.tool(name)).is_file()]
             if missing:
                 raise ReleaseError(f"Sparkle tools not found in {self.sparkle_bin}: {missing}; pass --sparkle-bin")
+        found = self.fetch_synced(FEED_URL, live, "appcast.xml")
+        self.live_appcast = live if found else None
+        if not self.dry:
             shutil.copyfile(self.args.notes, notes)
-            if live.is_file():
+            if found:
                 shutil.copyfile(live, appcast)
-                self.state["liveAppcastSha256"] = sha256_file(live)
-            else:
-                self.state["liveAppcastSha256"] = None
+            self.state["liveAppcastSha256"] = sha256_file(live) if found else None
         signed = self.runner.run(
             [self.tool("sign_update"), *self.edkey, archive],
             preview=f'sparkle:edSignature="{"A" * 86}==" length="{size}"')
@@ -412,17 +508,17 @@ class Release:
         wrong = [key for key, value in want.items() if newest.get(key) != value]
         if wrong:
             raise ReleaseError(f"Generated appcast newest item disagrees with the archive: {wrong}")
-        live = self.website / "site" / "appcast.xml"
-        if live.is_file():
+        if self.live_appcast is not None:
             kept = {item["build"]: item for item in items}
-            for old in parse_appcast(live):
+            for old in parse_appcast(self.live_appcast):
                 now = kept.get(old["build"])
                 if now is not None and (now["url"], now["length"], now["signature"]) != (old["url"], old["length"], old["signature"]):
                     raise ReleaseError(f"generate_appcast rewrote the existing item for build {old['build']}")
 
     def live_policy(self) -> dict[str, object] | None:
-        path = self.website / "site" / "data" / "mac-update-policy.json"
-        if not path.is_file():
+        path = self.work / "live" / "mac-update-policy.json"
+        found = self.fetch_synced(POLICY_URL, path, "mac-update-policy.json")
+        if not found:
             return None
         try:
             policy = json.loads(path.read_text(encoding="utf-8"))
@@ -464,12 +560,14 @@ class Release:
     def downloads_record(self, identity: dict[str, object], archive: dict[str, object]) -> dict[str, object]:
         return {"schemaVersion": 1, "macos": {
             "version": self.version, "build": self.build, "minimumMacOS": identity["minimumMacOS"],
-            "architecture": "arm64", "format": "zip", "bytes": archive["bytes"], "sha256": archive["sha256"],
+            "architecture": "arm64", "format": "dmg", "bytes": archive["bytes"], "sha256": archive["sha256"],
             "url": self.asset_url, "releaseURL": self.release_url, "checksumsURL": f"{self.asset_base}/SHA256SUMS",
             "source": {"deep": self.deep_sha, "projection": self.args.projection_commit}, "channel": self.channel,
         }}
 
-    def provenance(self, identity: dict[str, object], archive: dict[str, object], apple: dict[str, str]) -> dict[str, object]:
+    def provenance(
+        self, identity: dict[str, object], archive: dict[str, object], apple: dict[str, str], image: dict[str, str],
+    ) -> dict[str, object]:
         return {
             "schemaVersion": 1, "product": "AstralDeep", "version": self.version, "build": self.build,
             "bundleIdentifier": BUNDLE_ID, "minimumMacOS": identity["minimumMacOS"], "architecture": "arm64",
@@ -479,29 +577,40 @@ class Release:
             "appExecutableSha256": identity["executableSHA256"],
             "apple": {
                 "teamIdentifier": TEAM_ID, "notarizationSubmission": apple["submission"],
+                "diskImageNotarizationSubmission": image["submission"],
                 "stapledTicketValidation": "passed", "strictSignatureValidation": "passed",
-                "gatekeeperAssessment": apple["gatekeeper"],
+                "gatekeeperAssessment": apple["gatekeeper"], "diskImageGatekeeperAssessment": image["gatekeeper"],
             },
             "verification": {
-                "archiveFreshExtraction": "passed", "sparkleEmbeddedKeyAndFeed": "passed",
+                "diskImageMountedIdentity": "passed", "sparkleEmbeddedKeyAndFeed": "passed",
                 "appcastEnclosureSignature": "passed", "updatePolicySignature": "passed",
             },
             "publication": {
-                "method": "scripts/release_macos.py --publish", "approvalSource": "explicit --publish by the repository owner",
+                "method": "scripts/release_macos.py --publish", **self.approval(),
                 "recordedAt": self.clock().isoformat(), "canonicalProtectedPublisherApproval": False,
                 "broaderComputerHarnessQualification": False,
                 "scope": "This exact archive, its Sparkle appcast item and the signed minimum-build policy only",
             },
             "limitations": [
                 "Apple silicon only; macOS 14 or later.",
-                "Published from the owner's Mac; the protected Mac publisher is not yet configured.",
+                "Published by the owner's Mac or the release-macos workflow; both verify the same identities.",
             ],
         }
 
+    def approval(self) -> dict[str, str]:
+        if self.environ.get("GITHUB_ACTIONS") != "true":
+            return {"approvalSource": "explicit --publish by the repository owner"}
+        run = "/".join(self.environ.get(key, "") for key in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY"))
+        return {
+            "approvalSource": f"{self.environ.get('GITHUB_EVENT_NAME', '')} on main through .github/workflows/release-macos.yml",
+            "workflowRun": f"{run}/actions/runs/{self.environ.get('GITHUB_RUN_ID', '')}",
+        }
+
     def write_outputs(
-        self, identity: dict[str, object], archive: dict[str, object], apple: dict[str, str], policy: dict[str, object],
+        self, identity: dict[str, object], archive: dict[str, object], apple: dict[str, str], image: dict[str, str],
+        policy: dict[str, object],
     ) -> None:
-        provenance = self.provenance(identity, archive, apple)
+        provenance = self.provenance(identity, archive, apple, image)
         downloads = self.downloads_record(identity, archive)
         self.state.update({
             "version": self.version, "build": self.build, "channel": self.channel, "tag": self.tag,
@@ -518,11 +627,7 @@ class Release:
         if self.dry:
             return
         archive = self.staging / self.archive_name
-        required = [
-            self.archive_name, f"{self.stem}.md", "appcast.xml", "SHA256SUMS", "release-provenance.json",
-            "downloads.json", "mac-update-policy.json", "mac-update-policy.json.sig",
-        ]
-        absent = [name for name in required if not (self.staging / name).is_file()]
+        absent = [path.name for path in self.release_assets() if not path.is_file()]
         if absent:
             raise ReleaseError(f"Staged build is incomplete: {absent}")
         recorded = self.state.get("archive") or {}
@@ -533,8 +638,8 @@ class Release:
             raise ReleaseError("Staged archive changed after it was built")
         if self.state.get("deep") != self.deep_sha:
             raise ReleaseError("Deep moved since the build; rebuild instead of publishing a stale archive")
-        live = self.website / "site" / "appcast.xml"
-        now = sha256_file(live) if live.is_file() else None
+        live = self.work / "live" / "appcast-now.xml"
+        now = sha256_file(live) if self.fetch_live(FEED_URL, live) else None
         if now != self.state.get("liveAppcastSha256"):
             raise ReleaseError("The live appcast changed since staging; rebuild so older items are preserved")
 
@@ -549,27 +654,39 @@ class Release:
                 self.sleep(delay)
         raise ReleaseError(f"{url} never answered 200")
 
+    def release_assets(self) -> list[Path]:
+        names = [
+            self.archive_name, "SHA256SUMS", "release-provenance.json", f"{self.stem}.md", "downloads.json",
+            "appcast.xml", "mac-update-policy.json", "mac-update-policy.json.sig",
+        ]
+        return [self.staging / name for name in names]
+
     def publish_release(self) -> None:
         run = self.runner.run
         existing = run(["gh", "release", "view", self.tag, "--repo", RELEASE_REPO], check=False, preview="release not found")
         if existing.returncode == 0 and not self.dry:
             raise ReleaseError(f"Release {self.tag} already exists; immutable releases cannot be replaced")
         run(["gh", "api", f"repos/{RELEASE_REPO}/commits/{self.deep_sha}", "--jq", ".sha"], preview=self.deep_sha)
-        assets = [self.staging / self.archive_name, self.staging / "SHA256SUMS", self.staging / "release-provenance.json"]
+        assets = self.release_assets()
         create = ["gh", "release", "create", self.tag, "--repo", RELEASE_REPO, "--target", self.deep_sha,
                   "--title", f"AstralDeep {self.version} ({self.build})", "--notes-file", self.staging / f"{self.stem}.md",
                   "--draft", "--latest=false"]
         if self.channel == "preview":
             create.append("--prerelease")
         run([*create, *assets], remote_write=True)
-        edit = ["gh", "release", "edit", self.tag, "--repo", RELEASE_REPO, "--draft=false"]
+        edit = ["gh", "release", "edit", self.tag, "--repo", RELEASE_REPO, "--draft=false", "--latest=false"]
         if self.channel == "preview":
             edit.append("--prerelease")
         run(edit, remote_write=True)
         info = run(["gh", "api", f"repos/{RELEASE_REPO}/releases/tags/{self.tag}"],
                    preview=json.dumps({"immutable": True, "draft": False, "prerelease": self.channel == "preview", "assets": []}))
+        latest = run(["gh", "api", f"repos/{RELEASE_REPO}/releases/latest", "--jq", ".tag_name"], check=False)
         if self.dry:
             return
+        if latest.returncode and "HTTP 404" not in latest.stderr:
+            raise ReleaseError(f"Could not confirm the Latest release: {latest.stderr.strip()[-300:]}")
+        if not latest.returncode and latest.stdout.strip() == self.tag:
+            raise ReleaseError(f"{self.tag} became the repository's Latest release; mark the newest Windows release Latest again")
         published = json.loads(info.stdout)
         if published.get("immutable") is not True or published.get("draft") is not False \
                 or published.get("prerelease") is not (self.channel == "preview"):
@@ -581,37 +698,6 @@ class Release:
         for path in assets:
             self.wait_for_asset(f"{self.asset_base}/{path.name}")
 
-    def publish_website(self) -> str:
-        site = self.website
-        branch = f"release/{self.tag}"
-        self.git(site, "fetch", "origin", "main")
-        self.git(site, "switch", "-c", branch, "origin/main")
-        targets = {
-            "appcast.xml": "site/appcast.xml", "downloads.json": "data/downloads.json",
-            "mac-update-policy.json": "site/data/mac-update-policy.json",
-            "mac-update-policy.json.sig": "site/data/mac-update-policy.json.sig",
-        }
-        if not self.dry:
-            for source, target in targets.items():
-                destination = site / target
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(self.staging / source, destination)
-        else:
-            self.out(f"copy {', '.join(targets)} from {self.staging} into {site}")
-        for script in ("test", "run check", "run build"):
-            self.runner.run(["npm", *script.split()], cwd=site)
-        self.git(site, "add", *targets.values())
-        self.git(site, "commit", "-m", f"Publish AstralDeep {self.version} ({self.build}) for Mac updates")
-        if self.args.no_pull_request:
-            return branch
-        self.runner.run(["git", "-C", site, "push", "-u", "origin", branch], remote_write=True)
-        self.runner.run([
-            "gh", "pr", "create", "--repo", SITE_REPO, "--base", "main", "--head", branch,
-            "--title", f"Publish AstralDeep {self.version} ({self.build}) for Mac updates",
-            "--body", f"Appcast, Downloads record and signed minimum-build policy for {self.tag}.",
-        ], remote_write=True)
-        return branch
-
     def execute(self) -> Path:
         self.validate()
         self.preflight()
@@ -621,17 +707,16 @@ class Release:
         else:
             app, identity = self.build_app()
             apple = self.notarize(app, identity)
-            archive_path = self.package(app, identity)
+            archive_path, image = self.package(app, identity)
             archive = self.stage(archive_path)
             policy = self.policy()
-            self.write_outputs(identity, archive, apple, policy)
+            self.write_outputs(identity, archive, apple, image, policy)
         if not self.args.publish:
             self.out(f"Staged {self.tag} in {self.staging}; nothing was published.")
             self.out("Publish exactly these bytes with the same arguments plus --publish --publish-staged.")
         else:
             self.publish_release()
-            branch = self.publish_website()
-            self.out(f"Published {self.tag}; website branch {branch}")
+            self.out(f"Published {self.tag} at {self.release_url}; the website discovers it from the release assets.")
         if self.dry:
             self.out("Dry run: the commands above were printed, not executed.")
         return self.staging
@@ -654,15 +739,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--notes", required=True, type=Path)
     parser.add_argument("--ed-account", default="ed25519")
     parser.add_argument("--ed-key-file", type=Path)
+    parser.add_argument("--notary-key", type=Path)
+    parser.add_argument("--notary-key-id")
+    parser.add_argument("--notary-issuer")
     parser.add_argument("--minimum-build", type=int)
     parser.add_argument("--policy-expires", type=parse_expiry)
     parser.add_argument("--publish", action="store_true")
     parser.add_argument("--publish-staged", action="store_true")
-    parser.add_argument("--no-pull-request", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--staging-dir", type=Path)
     parser.add_argument("--work-dir", type=Path)
-    parser.add_argument("--website", type=Path)
     parser.add_argument("--projection", type=Path)
     parser.add_argument("--sparkle-bin", type=Path)
     return parser
