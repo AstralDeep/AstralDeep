@@ -67,6 +67,7 @@ class FeatureFlags:
             "rail_caption_variant": self._read("FF_RAIL_CAPTION_VARIANT", False),
             "framework_credentials": self._read("FF_FRAMEWORK_CREDENTIALS", False),
             "harness_profile_selection": self._read("FF_HARNESS_PROFILE_SELECTION", False),
+            "prompt_prefix_cache": self._read("FF_PROMPT_PREFIX_CACHE", False),
         }
 
     @staticmethod
