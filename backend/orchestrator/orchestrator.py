@@ -17726,6 +17726,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     _comps = await attach_write_diff(self, websocket, user_id, chat_id, args, _comps)
                 _policy = remote_confirmation.policy_for(agent_id)
                 if (_policy is not None and _policy.card_as_result
+                        and not isinstance(_conf, remote_confirmation.Refusal)
                         and (agent_id != "gaiakeep-1" or remote_confirmation.is_approval_card_result(_comps))):
                     return GateRefusal(
                         response=MCPResponse(
@@ -19372,6 +19373,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             max_retries = 1
 
         default_timeout = TOOL_TIMEOUT_OVERRIDES.get(tool_name, 30.0)
+        if agent_id == "computer-use-1":
+            from orchestrator.computer_use_policy import dispatch_timeout
+
+            default_timeout = dispatch_timeout(tool_name, args if isinstance(args, dict) else {})
         if agent_id == "gaiakeep-1":
             from orchestrator.gaiakeep_dispatch import DEFAULT_TIMEOUT
 
