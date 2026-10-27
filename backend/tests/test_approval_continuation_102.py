@@ -55,6 +55,10 @@ def guided(task_runtime, monkeypatch):
 async def _settle():
     for _ in range(20):
         await asyncio.sleep(0)
+    resumes = [task for task in asyncio.all_tasks()
+               if task.get_name().startswith(("hitl-continue-", "remote-op-continue-"))]
+    if resumes:
+        await asyncio.wait_for(asyncio.gather(*resumes), timeout=120)
 
 
 @pytest.mark.parametrize("decision", ["approve", "grant_task"])

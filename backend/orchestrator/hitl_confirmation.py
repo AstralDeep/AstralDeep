@@ -707,7 +707,8 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             encoded = _arguments(args)
         except Exception:
             return _refused("Review unavailable: action targets could not be resolved. Reissue the action when they are available.")
-        shown = {key: value for key, value in args.items() if key != "computer"} if agent == "computer-use-1" else args
+        shown = {key: value for key, value in args.items()
+                 if not (key == "computer" and agent == "computer-use-1") and not (key == "user_id" and value == owner)}
         preview, reviewable = await asyncio.to_thread(_review_arguments, shown)
         if not reviewable:
             return _refused("Review unavailable: this action includes sensitive or oversized arguments that cannot be "
