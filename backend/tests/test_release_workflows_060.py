@@ -1827,9 +1827,9 @@ def test_only_ordinary_ci_records_unmeasurable_changed_lines_as_not_applicable()
             assert "--empty-diff" not in path.read_text(encoding="utf-8"), path.name
 
 
-def test_backend_suites_run_as_three_whole_suite_groups_with_merged_coverage() -> None:
+def test_backend_suites_run_as_whole_suite_groups_with_merged_coverage() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
-    groups = ("tests", "persistent_agents", "modules")
+    groups = ("tests_1", "tests_2", "persistent_agents", "modules")
     web = _workflow_job(workflow, "backend-web")
     assert (
         "    strategy:\n      fail-fast: false\n      matrix:\n        group:\n"

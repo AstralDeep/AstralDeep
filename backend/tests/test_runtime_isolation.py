@@ -5,6 +5,7 @@ database URLs, and conftest.py applies it in every worker of the running session
 
 from contextlib import closing
 import os
+import sys
 
 import psycopg2
 from psycopg2.extensions import parse_dsn
@@ -71,6 +72,15 @@ def test_serial_or_shared_runs_keep_the_suite_database(change):
     before = dict(environ)
     assert worker_database(environ) is None and isolate_worker_database(environ) is None
     assert environ == before
+
+
+@pytest.mark.parametrize("worker", [None, "gw0"])
+def test_runs_that_do_not_isolate_never_load_the_database_driver(monkeypatch, worker):
+    monkeypatch.setitem(sys.modules, "psycopg2", None)
+    environ = {"DATABASE_URL": "dbname=ad_gate_suite", "ASTRAL_TEST_ISOLATED": "0" if worker else "1"}
+    if worker:
+        environ["PYTEST_XDIST_WORKER"] = worker
+    assert worker_database(environ) is None and isolate_worker_database(environ) is None
 
 
 @pytest.mark.parametrize("environ", [environment("dbname=ad_gate_suite", "gw0;drop"),

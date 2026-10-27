@@ -108,7 +108,8 @@ jobs:
       fail-fast: false
       matrix:
         group:
-          - tests
+          - tests_1
+          - tests_2
           - persistent_agents
           - modules
     steps:
@@ -421,8 +422,12 @@ jobs:
           cache-dependency-path: tooling/backend-ci/requirements.lock.txt
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: backend-web-test-evidence-tests
-          path: build/backend-web-groups/tests
+          name: backend-web-test-evidence-tests_1
+          path: build/backend-web-groups/tests_1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: backend-web-test-evidence-tests_2
+          path: build/backend-web-groups/tests_2
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: backend-web-test-evidence-persistent_agents
@@ -440,7 +445,8 @@ jobs:
           set -euo pipefail
           python -m pip install --require-hashes -r tooling/backend-ci/requirements.lock.txt
           python scripts/merge_backend_web_coverage.py --root . --output build/backend-web \
-            --evidence build/backend-web-groups/tests \
+            --evidence build/backend-web-groups/tests_1 \
+            --evidence build/backend-web-groups/tests_2 \
             --evidence build/backend-web-groups/persistent_agents \
             --evidence build/backend-web-groups/modules
       - name: Enforce immutable event or reviewed PR-base comparison

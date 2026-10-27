@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Runs every backend/module test suite, or one whole-suite group of them, in isolated
-processes against a caller-provisioned disposable PostgreSQL server and writes JUnit results
-and coverage reports, splitting backend/tests across pytest-xdist workers that each get their own
-database; a CI test producer only, not a production-readiness decision.
-merge_backend_web_coverage.py reuses its plan and report writer for the groups.
+processes against a caller-provisioned disposable PostgreSQL server and writes JUnit results and
+coverage reports; backend/tests runs as two file shards, each on pytest-xdist workers with their
+own databases. A CI test producer only, not a production-readiness decision, whose plan and report
+writer merge_backend_web_coverage.py reuses for the groups.
 """
 
 from __future__ import annotations
@@ -21,10 +21,14 @@ from uuid import uuid4
 
 
 POLICY_ROOT = Path(__file__).resolve().parents[1]
-DEDICATED_GROUP_SUITES = {"tests": "backend-tests", "persistent_agents": "backend-persistent_agents-tests"}
+SHARDED_SUITES = {Path("tests"): ("backend-tests-1", "backend-tests-2")}
+SUITE_SHARDS = {name: f"{index}/{len(names)}" for names in SHARDED_SUITES.values()
+                for index, name in enumerate(names, 1)}
+DEDICATED_GROUP_SUITES = {"tests_1": "backend-tests-1", "tests_2": "backend-tests-2",
+                          "persistent_agents": "backend-persistent_agents-tests"}
 GROUPS = ("all", *DEDICATED_GROUP_SUITES, "modules")
 SUITE_TIMEOUT_SECONDS = 1800
-XDIST_WORKERS = {"backend-tests": 4}
+XDIST_WORKERS = dict.fromkeys(SUITE_SHARDS, 4)
 COVERAGE_OMIT = ("*/tests/*", "*/test_*", "*/voice_agent/*")
 
 
@@ -46,8 +50,8 @@ def source_identity(root: Path) -> str:
 
 
 def suite_commands(root: Path) -> list[tuple[Path, str, str]]:
-    commands = [(root / "backend", str(suite), f"backend-{suite.as_posix().replace('/', '-')}")
-                for suite in suite_paths(root)]
+    commands = [(root / "backend", str(suite), name) for suite in suite_paths(root)
+                for name in SHARDED_SUITES.get(suite, (f"backend-{suite.as_posix().replace('/', '-')}",))]
     commands.append((root / "backend", "tests/perf/voice_concurrent_turns.py", "perf-voice_concurrent_turns.py"))
     commands.append((root, "scripts/tests", "tooling"))
     return commands
@@ -252,6 +256,9 @@ def run(root: Path, output: Path, *, timeout: int = SUITE_TIMEOUT_SECONDS, group
         ).open("w", encoding="utf-8") as log:
             suite_environment.update({"BQ_SUITE_INVENTORY_PATH": str(inventory),
                                       "BQ_SUITE_NAME": name, "BQ_SOURCE_COMMIT": source_commit})
+            suite_environment.pop("BQ_SUITE_SHARD", None)
+            if name in SUITE_SHARDS:
+                suite_environment["BQ_SUITE_SHARD"] = SUITE_SHARDS[name]
             try:
                 process = subprocess.run(command, cwd=cwd, env=suite_environment, stdout=log,
                                          stderr=subprocess.STDOUT, timeout=timeout, check=False)

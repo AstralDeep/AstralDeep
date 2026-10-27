@@ -187,7 +187,7 @@ def test_run_never_masks_failure_and_preserves_evidence(tmp_path, monkeypatch, s
     assert result == (0 if scenario == "pass" else 1)
     evidence = json.loads((output / "test-results.json").read_text(encoding="utf-8"))
     assert evidence["production_qualified"] is False
-    assert len(evidence["suites"]) == 7
+    assert len(evidence["suites"]) == 8
     assert seen[0][-1] == "erase"
     assert "xml" in seen[-1]
     assert evidence["source_commit"] == "a" * 40
@@ -199,7 +199,7 @@ def test_only_the_tests_suite_runs_on_xdist_workers_with_the_same_coverage(tmp_p
     output.mkdir()
     serial = gate.suite_command(tmp_path, output, "persistent_agents/tests", "backend-persistent_agents-tests",
                                 output / "serial.xml")
-    parallel = gate.suite_command(tmp_path, output, "tests", "backend-tests", output / "parallel.xml")
+    parallel = gate.suite_command(tmp_path, output, "tests", "backend-tests-2", output / "parallel.xml")
     assert serial[1:4] == ["-m", "coverage", "run"] and "-n" not in serial and "--branch" in serial
     assert f"--source={tmp_path / 'backend'},{tmp_path / 'scripts'}" in serial
     assert parallel[1:4] == ["-m", "pytest", "tests"]
@@ -292,12 +292,12 @@ def test_main_resolves_paths_and_propagates_gate_result(tmp_path, monkeypatch):
 
 ALL_SUITES = [
     "backend-agents-journal_review-tests", "backend-audit-tests", "backend-evaluation-suites",
-    "backend-persistent_agents-tests", "backend-tests",
+    "backend-persistent_agents-tests", "backend-tests-1", "backend-tests-2",
     "perf-voice_concurrent_turns.py", "tooling",
 ]
 
 
-def _passing_suites(monkeypatch, *, timeout_suite=None):
+def _passing_suites(monkeypatch, *, timeout_suite=None, shards=None):
     monkeypatch.setattr(gate.sys, "version_info", (3, 11))
     monkeypatch.setattr(gate, "require_isolated_postgres", lambda env: None)
     monkeypatch.setattr(gate, "source_identity", lambda root: "a" * 40)
@@ -309,6 +309,8 @@ def _passing_suites(monkeypatch, *, timeout_suite=None):
         if report:
             environment = kwargs["env"]
             timeouts[environment["BQ_SUITE_NAME"]] = kwargs["timeout"]
+            if shards is not None:
+                shards[environment["BQ_SUITE_NAME"]] = environment.get("BQ_SUITE_SHARD")
             if environment["BQ_SUITE_NAME"] == timeout_suite:
                 raise subprocess.TimeoutExpired(command, kwargs["timeout"])
             Path(report).write_text('<testsuites><testsuite><testcase name="one"/></testsuite></testsuites>',
@@ -324,10 +326,11 @@ def _passing_suites(monkeypatch, *, timeout_suite=None):
 
 
 GROUP_SUITES = {
-    "tests": ["backend-tests"],
+    "tests_1": ["backend-tests-1"],
+    "tests_2": ["backend-tests-2"],
     "persistent_agents": ["backend-persistent_agents-tests"],
     "modules": [name for name in ALL_SUITES
-                if name not in {"backend-tests", "backend-persistent_agents-tests"}],
+                if name not in {"backend-tests-1", "backend-tests-2", "backend-persistent_agents-tests"}],
 }
 
 
@@ -347,10 +350,50 @@ def test_suite_groups_plan_whole_suites_and_record_the_group(tmp_path, monkeypat
     assert evidence["status"] == "pass"
 
 
+def test_backend_tests_run_as_two_file_shards_and_other_suites_whole(tmp_path, monkeypatch):
+    shards = {}
+    _passing_suites(monkeypatch, shards=shards)
+    assert gate.run(_tree(tmp_path), tmp_path / "evidence") == 0
+    assert shards == {name: {"backend-tests-1": "1/2", "backend-tests-2": "2/2"}.get(name) for name in ALL_SUITES}
+    commands = gate.suite_commands(_tree(tmp_path / "again"))
+    assert [(cwd.name, path) for cwd, path, name in commands if name.startswith("backend-tests-")] == [
+        ("backend", "tests"), ("backend", "tests")]
+
+
+def _items(*nodeids):
+    return [SimpleNamespace(nodeid=nodeid) for nodeid in nodeids]
+
+
+def test_shard_selection_partitions_whole_files_deterministically(monkeypatch):
+    nodeids = ["tests/test_one.py::test_a", "tests/test_one.py::test_b[1]", "tests/test_two.py::test_c",
+               "tests/test_three.py::Case::test_d", "tests/sub/test_four.py::test_e"]
+    deselected = []
+    config = SimpleNamespace(hook=SimpleNamespace(pytest_deselected=lambda items: deselected.extend(items)))
+    chosen = []
+    for shard in ("1/2", "2/2"):
+        monkeypatch.setenv("BQ_SUITE_SHARD", shard)
+        items = _items(*nodeids)
+        backend_web_test_reporter.pytest_collection_modifyitems(None, config, items)
+        chosen.append([item.nodeid for item in items])
+    assert chosen == [[nodeids[0], nodeids[1], nodeids[2], nodeids[4]], [nodeids[3]]]
+    assert sorted(item.nodeid for item in deselected) == sorted(nodeids)
+    monkeypatch.delenv("BQ_SUITE_SHARD")
+    items = _items(*nodeids)
+    backend_web_test_reporter.pytest_collection_modifyitems(None, config, items)
+    assert [item.nodeid for item in items] == nodeids
+
+
+@pytest.mark.parametrize("shard", ["0/2", "3/2", "1/0", "1", "a/b", "1/2 "])
+def test_malformed_shards_are_refused(monkeypatch, shard):
+    monkeypatch.setenv("BQ_SUITE_SHARD", shard)
+    with pytest.raises(ValueError, match="suite shard"):
+        backend_web_test_reporter.pytest_collection_modifyitems(None, SimpleNamespace(), _items("t.py::x"))
+
+
 def test_whole_suite_groups_partition_the_complete_plan(tmp_path):
     commands = gate.suite_commands(_tree(tmp_path))
     groups = {group: gate.group_commands(commands, group) for group in GROUP_SUITES}
-    assert gate.GROUPS == ("all", "tests", "persistent_agents", "modules")
+    assert gate.GROUPS == ("all", "tests_1", "tests_2", "persistent_agents", "modules")
     assert gate.group_commands(commands, "all") == commands
     assert {group: [name for _cwd, _path, name in selected] for group, selected in groups.items()} == GROUP_SUITES
     assert sorted(command for selected in groups.values() for command in selected) == sorted(commands)
@@ -410,7 +453,7 @@ if arguments[:1] == ["run"] and any(argument.endswith("-negative") for argument 
 
 
 @pytest.mark.parametrize("group,expected", [
-    (None, "all"), ("all", "all"), ("tests", "tests"), ("persistent_agents", "persistent_agents"),
+    (None, "all"), ("all", "all"), ("tests_1", "tests_1"), ("tests_2", "tests_2"), ("persistent_agents", "persistent_agents"),
     ("modules", "modules"), ("everything", None),
 ])
 def test_image_gate_passes_only_a_known_group_to_the_suite_runner(tmp_path, group, expected):
