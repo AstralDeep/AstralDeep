@@ -184,6 +184,7 @@ class ComputerSessionManager:
         self._sweeper: Optional[asyncio.Task] = None
         self._audit_tasks: set = set()
         self._push_pending: set = set()
+        self.review_generations: dict[tuple[str, str], int] = {}
         self._bypass: Dict[Tuple[str, str], ComputerHost] = {}
         self.grants = GrantStore(events=self._grant_event)
 
@@ -209,6 +210,11 @@ class ComputerSessionManager:
         return True
 
     async def _bypass_changed(self, owner_sub: str, host_id: str, name: str, enabled: bool, reason: str) -> None:
+        if enabled:
+            from orchestrator.approval_receipts import withdraw_computer_reviews
+            key = (owner_sub, host_id)
+            self.review_generations[key] = self.review_generations.get(key, 0) + 1
+            await withdraw_computer_reviews(self._orch, owner_sub, host_id)
         try:
             from datetime import datetime, timezone
 

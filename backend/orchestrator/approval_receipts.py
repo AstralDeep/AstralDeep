@@ -1,4 +1,4 @@
-"""Serializes explicit approval decisions into canonical owner/connection/chat-bound receipts.
+"""Serializes explicit decisions and mode-change withdrawals into canonical owner/connection/chat-bound receipts.
 Negotiated Mac clients consume these optional chat-status fields without inferring approval from a click.
 """
 
@@ -127,3 +127,62 @@ async def run(orch, websocket, owner, payload, request_key, handler):
         if not receipt.future.done():
             receipt.future.set_result(None)
         await _send(receipt)
+
+
+async def withdraw_computer_reviews(orch, owner, host_id):
+    from types import SimpleNamespace
+
+    from orchestrator import hitl_confirmation as hitl, remote_confirmation as remote
+
+    def matches(authority):
+        return (authority is not None and not getattr(authority, "accepted", False)
+                and authority.owner == owner and authority.host.host_id == host_id)
+
+    retired = []
+    pending = getattr(orch, "_hitl_pending_calls", {})
+    for request, call in list(pending.items()):
+        authority = call.computer_authority
+        if authority is None and getattr(call, "review_host", None) is not None:
+            authority = SimpleNamespace(owner=call.owner, host=call.review_host, websocket=call.websocket,
+                                        chat=call.chat, accepted=call.review_accepted)
+        if matches(authority):
+            pending.pop(request, None)
+            retired.append((request, authority, call))
+    authorities = getattr(orch, "_computer_approval_authorities", {})
+    for request, entry in list(authorities.items()):
+        if matches(entry[0]):
+            authorities.pop(request, None)
+            remote._forget_pending(request)
+            retired.append((request, entry[0], None))
+    message = "Computer approval mode changed. This pending review authority was withdrawn; check the action outcome before retrying."
+    for request, authority, call in retired:
+        ws = authority.websocket
+        claims = getattr(orch, "ui_sessions", {}).get(ws) or {}
+        connection = (getattr(call, "review_connection", None) if call is not None else
+                      getattr(authority, "controller_context", None))
+        generation = (getattr(call, "review_connection_generation", None) if call is not None else
+                      getattr(authority, "connection_generation", None))
+        cache = getattr(orch, "_approval_decision_receipts", None)
+        if cache is None:
+            cache = orch._approval_decision_receipts = {}
+        now = time.monotonic()
+        for key, value in list(cache.items()):
+            if not value.current() or value.future.done() and value.expires <= now:
+                cache.pop(key, None)
+        key = (owner, id(connection), request)
+        if key in cache:
+            continue
+        if connection is not None and claims.get("sub") == owner and claims.get("_project_workspaces_v1") is True:
+            receipt = Receipt(orch, ws, connection, generation, owner, authority.chat,
+                              request, "withdraw", asyncio.get_running_loop().create_future(), now + TTL,
+                              state="cancelled", message=message)
+            receipt.future.set_result(None)
+            if len(cache) < MAXIMUM:
+                cache[key] = receipt
+            await _send(receipt)
+        if call is not None:
+            await hitl._finish_card(orch, ws, call, "Review withdrawn", message, notify=False)
+        else:
+            row = SimpleNamespace(proposal_id=request, owner_id=owner, conversation_id=authority.chat,
+                                  agent_id="computer-use-1")
+            await remote._replace_card(orch, row, "Review withdrawn", message)

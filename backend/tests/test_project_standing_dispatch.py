@@ -220,3 +220,27 @@ async def test_gate_wrapper_does_not_reclassify_body_exception_as_admission_deni
         await orch._run_gate_stack(ws, "computer-use-1", "write_file", {"path": "a", "content": "x"}, "chat-a", "owner-a")
     denial.assert_not_called()
     await orch.computer_sessions.end(session, "consent_revoked")
+
+
+async def test_text_only_sessionless_review_is_bound_and_withdrawn_before_late_decision(task_runtime, monkeypatch):
+    from orchestrator import hitl_confirmation as hitl
+    from shared.project_workspaces import ProjectManifest
+    from tests.test_computer_grant_flow_102 import _payload
+    orch, ws, effects, *_ = task_runtime
+    session, host = await project_runtime(task_runtime, monkeypatch)
+    await orch.computer_sessions.end(session, "consent_revoked")
+    orch.computer_sessions._orch = orch
+    host.project_manifest = ProjectManifest.from_dict({"generation": 2, "projects": []})
+    card = await _call(task_runtime, "start_session")
+    call, = orch._hitl_pending_calls.values()
+    assert call.review_host is host and call.review_connection is orch._connection_contexts[id(ws)]
+    assert call.project_origin is not None and call.computer_authority is None
+    async def presentation(*args, **kwargs):
+        pass
+    monkeypatch.setattr(hitl, "_finish_card", presentation)
+    await orch.computer_sessions.set_bypass(host, True)
+    assert not orch._hitl_pending_calls
+    assert not hitl._current_session(orch, ws, call)
+    await orch.computer_sessions.set_bypass(host, False)
+    await hitl.handle_decision(orch, ws, call.owner, _payload(card, "approve"))
+    assert not effects and not orch.computer_sessions.live_for_owner(call.owner)

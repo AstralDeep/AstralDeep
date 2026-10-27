@@ -153,6 +153,8 @@ class ComputerApproval:
     connection_generation: object = None
     project_origin: object = None
     standing: bool = False
+    review_generation: int = 0
+    accepted: bool = False
 
 
 def _resolve_command_folder(orch, user_id, chat_id, args):
@@ -222,7 +224,8 @@ def capture_computer_approval(orch, websocket, owner, chat, args, *, standing=Fa
             return None
         authority = ComputerApproval(owner, chat, websocket, host, session, session.authority_generation,
             getattr(orch, "_hitl_task_origins", {}).get((owner, chat)), context,
-            getattr(context, "connection_generation", None), getattr(session, "project_origin", None), standing)
+            getattr(context, "connection_generation", None), getattr(session, "project_origin", None), standing,
+            getattr(orch.computer_sessions, "review_generations", {}).get((owner, host.host_id), 0))
         if session.state == "paused" and session.pause_reason == "approval_not_completed":
             authority = getattr(session, "approval_pause_authority", None)
             return authority if computer_approval_current(orch, websocket, authority, allow_local_pause=True) else None
@@ -233,6 +236,9 @@ def capture_computer_approval(orch, websocket, owner, chat, args, *, standing=Fa
 
 def computer_approval_current(orch, websocket, authority, *, allow_local_pause=False) -> bool:
     if not isinstance(authority, ComputerApproval):
+        return False
+    if (not authority.standing and not authority.accepted and authority.review_generation !=
+            getattr(orch.computer_sessions, "review_generations", {}).get((authority.owner, authority.host.host_id), 0)):
         return False
     claims = orch.ui_sessions.get(websocket) or {}
     contexts = getattr(orch, "_connection_contexts", None)
@@ -264,6 +270,12 @@ def computer_approval_current(orch, websocket, authority, *, allow_local_pause=F
             and orch.computer_sessions.get(session.session_id) is session
             and session.owner_sub == authority.owner and session.chat_id == authority.chat
             and session.controller_ws_id == id(websocket) and state_current)
+
+
+def accept_computer_approval(orch, websocket, authority):
+    from dataclasses import replace
+
+    return replace(authority, accepted=True) if computer_approval_current(orch, websocket, authority) else None
 
 
 def computer_resume_target(websocket, authority, tool, args) -> str | None:
@@ -788,6 +800,8 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
         Button(label="Decline", action="remote_op_decision", variant="secondary",
                payload={"proposal_id": proposal_id, "decision": "decline"}),
     ], id=card_component_id(proposal_id) if policy.card_as_result or agent_id == "gaiakeep-1" else None).to_dict()
+    if agent_id == "computer-use-1" and card_host is not None:
+        card["computer_host_id"] = card_host.host_id
     if offer is not None and offer.label and authority is not None:
         card["content"].insert(len(card["content"]) - 1, Button(
             label=offer.label, action="remote_op_decision", variant="secondary",
@@ -1211,6 +1225,15 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
         if computer_authority is None:
             await _say("The local resume authority changed. Re-request the action.")
             return
+    if computer_authority is not None:
+        computer_authority = accept_computer_approval(orch, websocket, computer_authority)
+        if computer_authority is None:
+            await _say("Computer approval mode or authority changed. Reissue the action.")
+            return
+        authorities = getattr(orch, "_computer_approval_authorities", {})
+        entry = authorities.get(str(proposal_id))
+        if entry is not None:
+            authorities[str(proposal_id)] = (computer_authority, *entry[1:])
     from orchestrator.approval_receipts import note
     note(orch, proposal_id, "accepted", "Approval accepted. The action remains subject to effect-time checks.")
     await _replace_card(orch, row, "Approved ✓", f"{row.summary} — running now.")

@@ -77,6 +77,11 @@ class PendingCall:
     grant_id: str | None = None
     approval_source: str | None = None
     project_origin: object = None
+    review_host: object = None
+    review_generation: int = 0
+    review_connection: object = None
+    review_connection_generation: object = None
+    review_accepted: bool = False
 
 
 @dataclass(frozen=True)
@@ -151,6 +156,15 @@ def _current_session(orch, websocket, call: PendingCall, *, allow_local_pause=Fa
     from orchestrator.remote_confirmation import computer_approval_current
 
     from orchestrator.project_authority import origin_current
+    if call.review_host is not None:
+        if (orch.computer_hosts.get(call.owner, call.review_host.host_id) is not call.review_host
+                or call.review_connection is None
+                or getattr(orch, "_connection_contexts", {}).get(id(websocket)) is not call.review_connection
+                or not call.review_connection.registered or call.review_connection.closing
+                or call.review_connection.connection_generation != call.review_connection_generation
+                or not call.review_accepted and call.review_generation !=
+                getattr(orch.computer_sessions, "review_generations", {}).get((call.owner, call.review_host.host_id), 0)):
+            return False
     if call.project_origin is not None and not origin_current(orch, call.project_origin):
         return False
     if call.approval_source in {"bypass", "project_grant"} and not bypass_covers(
@@ -929,7 +943,15 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             call = PendingCall(str(uuid.uuid4()), owner, chat, agent, tool,
                                encoded, tuple(sorted(risks)), time.monotonic() + TTL_SECONDS,
                                task, computer, remote_proposal,
-                               websocket, witness, grant_offers=offers)
+                               websocket, witness, grant_offers=offers,
+                               review_host=card_host,
+                               review_generation=getattr(orch.computer_sessions, "review_generations", {}).get(
+                                   (owner, card_host.host_id), 0) if card_host is not None else 0,
+                               review_connection=getattr(orch, "_connection_contexts", {}).get(id(websocket)))
+            if card_host is not None:
+                from orchestrator.project_authority import current_origin
+                call = replace(call, project_origin=current_origin(orch, owner, chat, card_host),
+                               review_connection_generation=getattr(call.review_connection, "connection_generation", None))
             pending[call.request_id] = call
             try:
                 await _audit(orch, call, "proposed")
@@ -961,6 +983,8 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             Button(label="Decline", action="authorize_action", variant="secondary",
                    payload={"hitl_request_id": call.request_id, "decision": "decline"}),
         ]).to_dict()
+        if agent == "computer-use-1" and card_host is not None:
+            card["computer_host_id"] = card_host.host_id
         if agent == "computer-use-1" and tool == "write_file":
             from orchestrator.write_review import review_components
 
@@ -1072,7 +1096,7 @@ def turn_effect_cancelled(orch) -> bool:
     return bool(callable(take) and take())
 
 
-async def _finish_card(orch, websocket, call, title, message, components=None):
+async def _finish_card(orch, websocket, call, title, message, components=None, *, notify=True):
     from orchestrator.approval_receipts import note
     state = {"Outcome uncertain": "uncertain", "Cancelled": "uncertain", "Unavailable": "refused",
              "Failed": "error", "Blocked": "refused", "Review changed": "refused",
@@ -1094,7 +1118,8 @@ async def _finish_card(orch, websocket, call, title, message, components=None):
             await orch.send_ui_upsert(None, call.chat, call.owner, ops)
     except Exception:
         logger.debug("HITL card replacement unavailable", exc_info=True)
-    await orch.send_ui_render(websocket, [Alert(message=message, variant="info").to_dict()], target="chat")
+    if notify:
+        await orch.send_ui_render(websocket, [Alert(message=message, variant="info").to_dict()], target="chat")
 
 
 async def handle_decision(orch, websocket, owner, payload, *, admission_check=None) -> None:
@@ -1226,6 +1251,14 @@ async def _handle_decision(orch, websocket, owner, payload, admission_check, hel
             await _finish_card(orch, websocket, call, "Unavailable", "The local resume authority changed. Reissue the action.")
             return
         call = replace(call, computer_authority=authority)
+    if call.computer_authority is not None:
+        from orchestrator.remote_confirmation import accept_computer_approval
+        accepted = accept_computer_approval(orch, websocket, call.computer_authority)
+        if accepted is None:
+            await _finish_card(orch, websocket, call, "Unavailable", "Computer approval mode or authority changed. Reissue the action.")
+            return
+        call = replace(call, computer_authority=accepted)
+    call = replace(call, review_accepted=True)
     from orchestrator.approval_receipts import note
     note(orch, call.request_id, "accepted", "Approval accepted. The action remains subject to effect-time checks.")
     await announce_turn(orch, websocket, "executing", f"Running: {call.tool}...")

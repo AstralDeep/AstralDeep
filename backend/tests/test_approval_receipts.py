@@ -135,3 +135,77 @@ async def test_origin_chat_and_first_decision_survive_navigation():
         pytest.fail("navigation must not replay a consumed decision")
     await receipts.run(orch, ws, "owner", payload, "hitl_request_id", forbidden)
     assert len(sent) == 2 and sent[0] == sent[1] and sent[0]["chat_id"] == "origin-chat"
+
+@pytest.mark.asyncio
+async def test_bypass_withdraws_only_owning_computer_reviews_before_delivery(monkeypatch):
+    from orchestrator import hitl_confirmation as hitl, remote_confirmation as remote
+    orch, ws, sent = runtime()
+    host = SimpleNamespace(host_id="mac", owner_sub="owner")
+    authority = SimpleNamespace(owner="owner", host=host, websocket=ws, chat="chat", controller_context=orch._connection_contexts[id(ws)], connection_generation="connection")
+    other = SimpleNamespace(owner="owner", host=SimpleNamespace(host_id="other"), websocket=ws, chat="chat")
+    call = SimpleNamespace(owner="owner", computer_authority=authority, request_id=REQUEST, websocket=ws, chat="chat", review_connection=orch._connection_contexts[id(ws)], review_connection_generation="connection")
+    orch._hitl_pending_calls = {REQUEST: call, "noncomputer": SimpleNamespace(computer_authority=None)}
+    orch._computer_approval_authorities = {"ab" * 16: (authority, 999999), "cd" * 16: (other, 999999)}
+    finished = []
+    async def card(*args, **kwargs):
+        assert REQUEST not in orch._hitl_pending_calls
+        assert "ab" * 16 not in orch._computer_approval_authorities
+        if len(args) == 5:
+            assert kwargs == {"notify": False}
+        finished.append(args)
+    monkeypatch.setattr(hitl, "_finish_card", card)
+    monkeypatch.setattr(remote, "_replace_card", card)
+    await receipts.withdraw_computer_reviews(orch, "owner", "mac")
+    assert list(orch._hitl_pending_calls) == ["noncomputer"]
+    assert list(orch._computer_approval_authorities) == ["cd" * 16]
+    assert len(finished) == 2
+    assert len(sent) == 2
+    assert all(item["approval_decision"]["decision"] == "withdraw" and
+               item["approval_decision"]["state"] == "cancelled" for item in sent)
+    async def forbidden():
+        pytest.fail("withdrawn request cannot be replayed")
+    await receipts.run(orch, ws, "owner", {"hitl_request_id": REQUEST, "decision": "approve"},
+                       "hitl_request_id", forbidden)
+    assert sent[-1] == sent[0]
+
+
+@pytest.mark.asyncio
+async def test_bypass_withdrawal_preserves_inflight_canonical_receipt(monkeypatch):
+    from orchestrator import hitl_confirmation as hitl
+    orch, ws, sent = runtime()
+    authority = SimpleNamespace(owner="owner", host=SimpleNamespace(host_id="mac"), websocket=ws, chat="chat", controller_context=orch._connection_contexts[id(ws)], connection_generation="connection")
+    orch._hitl_pending_calls = {REQUEST: SimpleNamespace(computer_authority=authority, owner="owner",
+        request_id=REQUEST, websocket=ws, chat="chat", review_connection=orch._connection_contexts[id(ws)], review_connection_generation="connection")}
+    async def card(*args, **kwargs):
+        pass
+    monkeypatch.setattr(hitl, "_finish_card", card)
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def accepted():
+        receipts.note(orch, REQUEST, "accepted", "Accepted")
+        entered.set()
+        await release.wait()
+    task = asyncio.create_task(receipts.run(orch, ws, "owner", {"hitl_request_id": REQUEST, "decision": "approve"},
+                                           "hitl_request_id", accepted))
+    await entered.wait()
+    await receipts.withdraw_computer_reviews(orch, "owner", "mac")
+    assert sent == []
+    release.set()
+    await task
+    assert sent[0]["approval_decision"]["state"] == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_withdrawal_does_not_rebind_old_card_to_new_connection_generation(monkeypatch):
+    from orchestrator import hitl_confirmation as hitl
+    orch, ws, sent = runtime()
+    connection = orch._connection_contexts[id(ws)]
+    authority = SimpleNamespace(owner="owner", host=SimpleNamespace(host_id="mac"), websocket=ws, chat="chat")
+    orch._hitl_pending_calls = {REQUEST: SimpleNamespace(computer_authority=authority, owner="owner",
+        request_id=REQUEST, websocket=ws, chat="chat", review_connection=connection,
+        review_connection_generation="connection")}
+    async def card(*args, **kwargs):
+        pass
+    monkeypatch.setattr(hitl, "_finish_card", card)
+    connection.connection_generation = "new-connection"
+    await receipts.withdraw_computer_reviews(orch, "owner", "mac")
+    assert not orch._hitl_pending_calls and not sent
