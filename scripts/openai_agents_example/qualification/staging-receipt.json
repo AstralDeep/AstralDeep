@@ -1,0 +1,77 @@
+{
+  "base_url": "http://localhost:8001",
+  "boundaries": {
+    "interval_seconds": 2.0,
+    "max_polls": 30,
+    "timeout_seconds": 60.0
+  },
+  "candidate": {
+    "source_revision": "3aa7d0b9468817b774e43ef32224780a62be6007"
+  },
+  "checks": [
+    {
+      "detail": null,
+      "name": "tracing_disabled_before_first_request",
+      "outcome": "passed"
+    },
+    {
+      "detail": null,
+      "name": "mcp_protected_resource_metadata",
+      "outcome": "passed"
+    },
+    {
+      "detail": null,
+      "name": "mcp_tools_listing_scoped",
+      "outcome": "passed"
+    },
+    {
+      "detail": "operation_id=b5e741e4-2bb7-4def-af20-0e941c07cf45",
+      "name": "work_submit_idempotent_retry",
+      "outcome": "passed"
+    },
+    {
+      "detail": "disposition=cancelled",
+      "name": "work_poll_events_bounded",
+      "outcome": "passed"
+    },
+    {
+      "detail": null,
+      "name": "work_artifact_access",
+      "outcome": "passed"
+    },
+    {
+      "detail": "applied=True replay_disposition=cancelled",
+      "name": "work_cancel",
+      "outcome": "passed"
+    },
+    {
+      "detail": "refusal=assignment_sensitive_content_refused",
+      "name": "phi_submission_refused",
+      "outcome": "passed"
+    },
+    {
+      "detail": "refusal=Tool is unavailable or no longer authorized",
+      "name": "permission_denied_out_of_scope",
+      "outcome": "passed"
+    },
+    {
+      "detail": "refusal=work_not_found",
+      "name": "cross_owner_isolated",
+      "outcome": "passed"
+    },
+    {
+      "detail": "status=401",
+      "name": "revoked_credential_refused",
+      "outcome": "passed"
+    },
+    {
+      "detail": "refusals=astral_decide_operation=Tool is unavailable or no longer authorized;astral_reconcile_operation=Tool is unavailable or no longer authorized;astral_delete_operation=Tool is unavailable or no longer authorized",
+      "name": "human_only_actions_denied",
+      "outcome": "passed"
+    }
+  ],
+  "credential_source": "operator_connections_surface",
+  "failures": [],
+  "generated_at": "2026-10-27T14:45:44.166883+00:00",
+  "receipt_kind": "synthetic_staging_qualification"
+}
