@@ -259,6 +259,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "ci_review_diagnostics.py",
         "ci_network_fixture.py",
         "ci_fence_fixture_verifier.py",
+        "ci_plane_lane.py",
         "apple_coverage_artifacts.py",
         "backend_web_service_materials.py",
         "backend_web_test_reporter.py",
