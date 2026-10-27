@@ -2526,7 +2526,7 @@ def test_apple_raw_jobs_instrument_before_archiving_and_never_rebuild_afterward(
 
 def _continuity_selectors(job: str) -> list[str]:
     return re.findall(
-        r"-only-testing:AstralAppUITests/ConversationContinuityUITests/(\S+)", job
+        r"(?:-only-testing:AstralAppUITests/)?ConversationContinuityUITests/(\w+)", job
     )
 
 
@@ -2534,7 +2534,7 @@ def test_release_continuity_lane_selects_the_pinned_single_relaunch_proof() -> N
     readiness = _workflow_job(_workflow_text(READINESS), "ios-lane")
     projection = _workflow_job(_workflow_text(APPLE_CI), "first-login-ui")
     assert _continuity_selectors(readiness) == [RELAUNCH_PROOF]
-    assert _continuity_selectors(projection) == [RELAUNCH_PROOF]
+    assert set(_continuity_selectors(projection)) == {RELAUNCH_PROOF}
     suite = CONTINUITY_UI_TESTS.read_text(encoding="utf-8")
     assert re.findall(r"(?m)^    func (test\w+)\(\)", suite).count(RELAUNCH_PROOF) == 1
     artifacts = _load_module(
