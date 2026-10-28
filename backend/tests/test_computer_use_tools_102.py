@@ -307,6 +307,108 @@ async def test_invalid_commands_are_refused_before_launch(world, args, code):
     assert result["_data"]["code"] == code and not world.requests("run_command")
 
 
+SHARED = [{"name": "x", "path": ROOT}, {"name": "AstralTest", "path": "/Users/sam/AstralTest"}]
+
+
+@pytest.mark.parametrize("cwd,resolved", [
+    (ROOT + "/notes", ROOT + "/notes"), ("//Users/sam/Projects/x/./a/", ROOT + "/a"), ("x", ROOT),
+    ("x/notes/", ROOT + "/notes"), ("AstralTest/sub", "/Users/sam/AstralTest/sub"),
+    ("~/AstralTest", "/Users/sam/AstralTest"), ("~/Projects/x/./a", ROOT + "/a"),
+])
+def test_cwd_resolves_absolute_root_named_and_home_relative_folders(cwd, resolved):
+    assert policy.resolve_cwd(cwd, SHARED, "Mac") == resolved
+
+
+@pytest.mark.parametrize("cwd,roots,code,fragment", [
+    ("/Users/riley/AstralTest", SHARED, "cwd_outside_workspace", "AstralTest = /Users/sam/AstralTest"),
+    ("~/Documents", SHARED, "cwd_outside_workspace", "x = " + ROOT),
+    ("/Users/sam/Projects/xy", SHARED, "cwd_outside_workspace", "outside every folder"),
+    ("~riley/x", SHARED, "out_of_range", "name of one shared folder"),
+    ("notes", SHARED, "out_of_range", "name of one shared folder"),
+    ("x/../y", SHARED, "out_of_range", "shared folder"), ("", SHARED, "out_of_range", "shared folder"),
+    (None, SHARED, "out_of_range", "shared folder"), (5, SHARED, "out_of_range", "shared folder"),
+    ("x\x00", SHARED, "out_of_range", "shared folder"), ("/" + "a" * 1024, SHARED, "out_of_range", "shared folder"),
+    (ROOT, [], "cwd_outside_workspace", "Mac shares no workspace folder"),
+    ("~/x", [{"name": "a", "path": "/Users/a/x"}, {"name": "b", "path": "/Users/b/y"}], "out_of_range", "~"),
+    ("~/x", [{"name": "data", "path": "/Volumes/Data/x"}], "out_of_range", "~"),
+    ("src/a", [{"name": "src", "path": "/p1"}, {"name": "src", "path": "/p2"}], "out_of_range", "/p1"),
+])
+def test_cwd_outside_or_unresolvable_names_the_shared_folders(cwd, roots, code, fragment):
+    with pytest.raises(policy.CwdRefusal) as refused:
+        policy.resolve_cwd(cwd, roots, "Mac")
+    assert refused.value.code == code and fragment in str(refused.value)
+
+
+def test_cwd_prefers_the_longest_matching_folder_name():
+    roots = [{"name": "proj", "path": "/p1"}, {"name": "proj/sub", "path": "/p2"}]
+    assert policy.resolve_cwd("proj/sub/x", roots, "Mac") == "/p2/x"
+    assert policy.resolve_cwd("proj/other", roots, "Mac") == "/p1/other"
+
+
+@pytest.mark.parametrize("cwd,sent", [("x/notes", ROOT + "/notes"), ("~/Projects/x", ROOT)])
+async def test_run_command_sends_the_resolved_absolute_folder(world, gate, cwd, sent):
+    world.replies["run_command"] = {"ok": True, "result": {"exit_code": 0, "stdout": "", "stderr": ""}}
+    result = await world.call("run_command", argv=["ls"], cwd=cwd)
+    assert result["_data"]["exit_code"] == 0 and world.requests("run_command")[-1]["args"]["cwd"] == sent
+
+
+@pytest.mark.parametrize("verb,args,deadline", [
+    ("run_command", {"timeout_s": 60}, 70.0), ("run_command", {}, 70.0), ("run_command", {"timeout_s": 600}, 610.0),
+    ("run_command", {"timeout_s": 5000}, 610.0), ("run_command", {"timeout_s": "5"}, 70.0),
+    ("run_command", {"timeout_s": True}, 70.0), ("run_command", {"timeout_s": float("nan")}, 70.0),
+    ("run_command", {"timeout_s": 60, "background": True}, 30.0), ("click", {}, 10.0), ("unknown_verb", {}, 30.0),
+])
+def test_dispatch_deadline_is_the_host_deadline_plus_grace(verb, args, deadline):
+    assert policy.host_deadline(verb, args) == deadline
+    assert policy.dispatch_timeout(verb, args) == deadline + policy.HOST_DEADLINE_GRACE_S
+
+
+async def test_the_dispatcher_bounds_computer_tools_by_their_own_deadline():
+    from types import SimpleNamespace
+
+    from orchestrator.orchestrator import Orchestrator
+    from shared.protocol import MCPResponse
+
+    seen = []
+
+    async def execute_tool_and_wait(agent, tool, args, timeout=None, **kwargs):
+        seen.append((agent, tool, timeout))
+        return MCPResponse(result={"_data": {"ok": True}})
+    dispatcher = SimpleNamespace(MAX_RETRIES=1, RETRY_BACKOFF=[], execute_tool_and_wait=execute_tool_and_wait,
+                                 _protected_dispatch_channel=lambda websocket, explicit=None: "web")
+    for agent, tool, args in (("computer-use-1", "run_command", {"timeout_s": 120}),
+                              ("computer-use-1", "screenshot", {}), ("general-1", "run_command", {"timeout_s": 120})):
+        await Orchestrator._execute_with_retry_loop(dispatcher, None, agent, tool, args, user_id=OWNER,
+                                                    audit_conversation_id=CHAT)
+    assert seen == [("computer-use-1", "run_command", 130.0 + policy.HOST_DEADLINE_GRACE_S),
+                    ("computer-use-1", "screenshot", 15.0 + policy.HOST_DEADLINE_GRACE_S),
+                    ("general-1", "run_command", 30.0)]
+
+
+async def test_a_host_that_never_answers_yields_a_clear_command_error(world, gate, monkeypatch):
+    monkeypatch.setitem(policy.TIMEOUTS, "run_command", 0.2)
+    world.host_ws.push = world.host_ws.sent.append
+    result = await world.call("run_command", argv=["sleep", "30"], cwd=ROOT, timeout_s=1)
+    assert result["_data"]["code"] == "outcome_uncertain"
+    assert "Mac did not answer run_command" in result["_data"]["message"]
+    assert not world.orch.computer_hosts._pending
+
+
+@pytest.mark.parametrize("verb,code", [("click", "outcome_uncertain"), ("screenshot", "timeout")])
+async def test_a_host_send_that_never_completes_is_bounded_by_the_request_deadline(world, verb, code):
+    async def stuck(_ws, _data):
+        await asyncio.Event().wait()
+
+    world.orch._safe_send = stuck
+    try:
+        with pytest.raises(ComputerHostError) as refused:
+            await world.orch.computer_hosts.request(world.host, world.session.session_id, verb, {}, 0.05)
+    finally:
+        del world.orch._safe_send
+    assert refused.value.code == code and "did not answer" in refused.value.message
+    assert not world.orch.computer_hosts._pending
+
+
 async def test_background_jobs_are_tracked_read_and_interrupted(world, gate):
     world.replies["run_command"] = {"ok": True, "result": {"job_id": JOB.upper(), "started_at": "2026-10-26T00:00:00Z"}}
     started = await world.call("run_command", argv=["tail", "-f", "log.txt"], cwd=ROOT, background=True,

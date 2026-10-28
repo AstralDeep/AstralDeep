@@ -47,8 +47,6 @@ def retire(runtime):
 def test_retired_restore_cannot_reuse_original_consent_or_encrypted_grant(
     fixture, runtime, recreate, monkeypatch
 ):
-    # The operators already quiesced writers on this fresh clone; the 100ms request-path
-    # lock bound must not fail the retirement under shared-runner load.
     unbounded_request_execution_waits(monkeypatch)
     sessions, grants, owner, sid = fixture
     selected = consent_from_store(sessions, owner, sid)

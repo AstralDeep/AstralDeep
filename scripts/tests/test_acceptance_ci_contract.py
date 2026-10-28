@@ -23,9 +23,8 @@ def job(text, name):
 
 def test_acceptance_cases_run_in_the_complete_owner_suite_groups():
     commands = suite_commands(ROOT)
-    assert (ROOT / "backend", "tests", "backend-tests") in group_commands(
-        commands, "tests"
-    )
+    for group, suite in (("tests_1", "backend-tests-1"), ("tests_2", "backend-tests-2")):
+        assert group_commands(commands, group) == [(ROOT / "backend", "tests", suite)]
     assert (ROOT, "scripts/tests", "tooling") in group_commands(commands, "modules")
     for name in (
         "test_phi_clinical_acceptance.py",

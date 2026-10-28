@@ -1757,6 +1757,7 @@ class Orchestrator:
         if sessions is not None and user_id and chat_id:
             for session in sessions.live_for_owner(user_id):
                 if session.chat_id == chat_id and session.controller_ws_id == id(websocket):
+                    sessions.cancel_requests(session)
                     await sessions.interrupt_jobs(session)
 
     def _take_tool_cancel(self) -> bool:
@@ -1818,6 +1819,7 @@ class Orchestrator:
             if previous is None or (previous.owner_sub, previous.host_id) in ended:
                 continue
             ended.add((previous.owner_sub, previous.host_id))
+            await self.computer_sessions.clear_bypass(previous.owner_sub, previous.host_id, "host_replaced")
             await self.computer_sessions.end_all_for_host(
                 previous.owner_sub, previous.host_id, "host_superseded")
         await self.computer_hosts.push_presence(host, "online")
@@ -1826,6 +1828,7 @@ class Orchestrator:
         host = self.computer_hosts.on_socket_closed(websocket)
         if host is None:
             return
+        await self.computer_sessions.clear_bypass(host.owner_sub, host.host_id, "host_offline")
         await self.computer_sessions.end_all_for_host(host.owner_sub, host.host_id, "host_offline")
         await self.computer_hosts.push_presence(host, "offline")
 
@@ -1876,6 +1879,7 @@ class Orchestrator:
         if host is None:
             return
         if event == "withdraw":
+            await self.computer_sessions.clear_bypass(owner_sub, host.host_id, "access_disabled")
             await self.computer_sessions.end_all_for_host(owner_sub, host.host_id, "consent_revoked")
             self.computer_hosts.withdraw(owner_sub, host.host_id)
             await self.computer_hosts.push_presence(host, "offline")
@@ -5335,6 +5339,8 @@ class Orchestrator:
         host_reads = getattr(self, "_source_bound_read_tools", set())
         self._source_bound_read_tools = {
             item for item in host_reads if item[0] != card.agent_id}
+        self._source_bound_de_escalations = {
+            item for item in getattr(self, "_source_bound_de_escalations", set()) if item[0] != card.agent_id}
 
         from shared.schema_validation import validate_tool_schema
 
@@ -17610,7 +17616,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         try:
             action = source_bound.registered_action(
                 self.tool_permissions.get_tool_scope_map(agent_id), agent_id, tool_name,
-                getattr(self, "_source_bound_read_tools", ()))
+                getattr(self, "_source_bound_read_tools", ()), getattr(self, "_source_bound_de_escalations", ()))
         except (AttributeError, TypeError, ValueError) as exc:
             logger.warning("Source-bound declaration unavailable: %s", exc)
             await self._audit_gate_denial(
@@ -17790,6 +17796,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     _comps = await attach_write_diff(self, websocket, user_id, chat_id, args, _comps)
                 _policy = remote_confirmation.policy_for(agent_id)
                 if (_policy is not None and _policy.card_as_result
+                        and not isinstance(_conf, remote_confirmation.Refusal)
                         and (agent_id != "gaiakeep-1" or remote_confirmation.is_approval_card_result(_comps))):
                     return GateRefusal(
                         response=MCPResponse(
@@ -17875,6 +17882,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 args, tuple(set(review_risks)))
             if pending is not None:
                 return GateRefusal(response=pending)
+        elif user_id and agent_id and action.effect is source_bound.Effect.DE_ESCALATION:
+            from orchestrator import hitl_confirmation
+
+            await hitl_confirmation.audit_de_escalation(self, user_id, chat_id, agent_id, tool_name, args)
 
         if user_id:
             from orchestrator import taint as _taint
@@ -19293,7 +19304,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             try:
                 action = source_bound.registered_action(
                     self.tool_permissions.get_tool_scope_map(agent_id), agent_id, tool_name,
-                    getattr(self, "_source_bound_read_tools", ()))
+                    getattr(self, "_source_bound_read_tools", ()), getattr(self, "_source_bound_de_escalations", ()))
             except (AttributeError, TypeError, ValueError):
                 return MCPResponse(error={"code": "effect_declaration_unavailable",
                     "message": "Tool effect declaration is unavailable.", "retryable": False})
@@ -19432,6 +19443,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             max_retries = 1
 
         default_timeout = TOOL_TIMEOUT_OVERRIDES.get(tool_name, 30.0)
+        if agent_id == "computer-use-1":
+            from orchestrator.computer_use_policy import dispatch_timeout
+
+            default_timeout = dispatch_timeout(tool_name, args if isinstance(args, dict) else {})
         if agent_id == "gaiakeep-1":
             from orchestrator.gaiakeep_dispatch import DEFAULT_TIMEOUT
 

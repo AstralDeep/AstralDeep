@@ -694,6 +694,75 @@ def test_listing_skips_rows_whose_envelope_belongs_to_another_owner(
     assert forged.page_id not in (page.page_id for page in pages)
 
 
+def test_process_restart_recovers_pages_history_links_and_the_audit_chain(
+    plane_runtime, audit_repo, credential_manager, service
+):
+    neighbor = service.create_page(
+        owner_id=OWNER_A, page=_page(slug=_unique_slug("restart-neighbor"))
+    )
+    slug = _unique_slug("restart")
+    created = service.create_page(
+        owner_id=OWNER_A,
+        page=_page(slug=slug, body="Restart baseline body.", links=(neighbor.slug,)),
+    )
+    updated = service.update_page(
+        owner_id=OWNER_A, project_id="atlas-project", reference=created.page_id,
+        title=None, body="Restart revised body.", sources=None, links=None,
+        expected_revision=1,
+    )
+    assert updated.revision == 2
+
+    restarted_audit = AuditRepository(
+        plane_runtime=plane_runtime, plane_repositories=plane_runtime.repositories
+    )
+    restarted_keys = CredentialManager(
+        plane_runtime=plane_runtime, data_dir=credential_manager.data_dir
+    )
+    restarted = _service(plane_runtime, restarted_audit, restarted_keys)
+
+    recovered = restarted.get_page(
+        owner_id=OWNER_A, project_id="atlas-project", reference=created.page_id
+    )
+    assert recovered.body == "Restart revised body."
+    assert recovered.revision == 2
+    assert recovered.sources == created.sources
+
+    history = restarted.page_history(
+        owner_id=OWNER_A, project_id="atlas-project", reference=created.page_id
+    )
+    assert [entry.revision for entry in history] == [2, 1]
+    baseline = restarted.get_page(
+        owner_id=OWNER_A, project_id="atlas-project",
+        reference=created.page_id, revision=1,
+    )
+    assert baseline.body == "Restart baseline body."
+
+    neighbors = restarted.page_links(
+        owner_id=OWNER_A, project_id="atlas-project", reference=created.page_id
+    )
+    assert neighbor.page_id in {entry.page_id for entry in neighbors}
+
+    advanced = restarted.update_page(
+        owner_id=OWNER_A, project_id="atlas-project", reference=created.page_id,
+        title=None, body="Restart post-recovery body.", sources=None, links=None,
+        expected_revision=2,
+    )
+    assert advanced.revision == 3
+    with pytest.raises(AtlasConflict) as stale:
+        restarted.update_page(
+            owner_id=OWNER_A, project_id="atlas-project", reference=created.page_id,
+            title=None, body="stale after restart", sources=None, links=None,
+            expected_revision=1,
+        )
+    assert stale.value.code == "page_revision_conflict"
+    assert stale.value.current_revision == 3
+    with pytest.raises(AtlasNotFound):
+        restarted.get_page(
+            owner_id=OWNER_B, project_id="atlas-project", reference=created.page_id
+        )
+    assert audit_repo.verify_chain(OWNER_A) is None
+
+
 def test_stale_update_conflict_is_reported_when_the_head_vanishes_mid_edit(
     service, monkeypatch
 ):
