@@ -1,0 +1,248 @@
+{
+  "source": "https://github.com/huggingface/text-embeddings-inference/blob/56964585069318d01ddeeec9454a952a66f1d3a2/docs/openapi.json",
+  "source_sha256": "83269464f2a6d3f4c36280ece0311f9cc0318e539928bb4fa106e091c017496f",
+  "license": "Apache-2.0",
+  "notice": "Schemas extracted without modification from Hugging Face Text Embeddings Inference OpenAPI; wire-contract evidence only, not a model run.",
+  "components": {
+    "schemas": {
+      "Embedding": {
+        "oneOf": [
+          {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            }
+          },
+          {
+            "type": "string"
+          }
+        ]
+      },
+      "EncodingFormat": {
+        "type": "string",
+        "enum": [
+          "float",
+          "base64"
+        ]
+      },
+      "Input": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/InputType"
+          },
+          {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InputType"
+            }
+          }
+        ]
+      },
+      "InputType": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ]
+      },
+      "OpenAICompatEmbedding": {
+        "type": "object",
+        "required": [
+          "object",
+          "embedding",
+          "index"
+        ],
+        "properties": {
+          "embedding": {
+            "$ref": "#/components/schemas/Embedding"
+          },
+          "index": {
+            "type": "integer",
+            "example": "0",
+            "minimum": 0
+          },
+          "object": {
+            "type": "string",
+            "example": "embedding"
+          }
+        }
+      },
+      "OpenAICompatRequest": {
+        "type": "object",
+        "required": [
+          "input"
+        ],
+        "properties": {
+          "dimensions": {
+            "type": "integer",
+            "default": "null",
+            "example": "null",
+            "nullable": true,
+            "minimum": 0
+          },
+          "encoding_format": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EncodingFormat"
+              }
+            ],
+            "default": "float"
+          },
+          "input": {
+            "$ref": "#/components/schemas/Input"
+          },
+          "model": {
+            "type": "string",
+            "example": "null",
+            "nullable": true
+          },
+          "user": {
+            "type": "string",
+            "example": "null",
+            "nullable": true
+          }
+        }
+      },
+      "OpenAICompatResponse": {
+        "type": "object",
+        "required": [
+          "object",
+          "data",
+          "model",
+          "usage"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OpenAICompatEmbedding"
+            }
+          },
+          "model": {
+            "type": "string",
+            "example": "thenlper/gte-base"
+          },
+          "object": {
+            "type": "string",
+            "example": "list"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/OpenAICompatUsage"
+          }
+        }
+      },
+      "OpenAICompatUsage": {
+        "type": "object",
+        "required": [
+          "prompt_tokens",
+          "total_tokens"
+        ],
+        "properties": {
+          "prompt_tokens": {
+            "type": "integer",
+            "example": "512",
+            "minimum": 0
+          },
+          "total_tokens": {
+            "type": "integer",
+            "example": "512",
+            "minimum": 0
+          }
+        }
+      },
+      "Rank": {
+        "type": "object",
+        "required": [
+          "index",
+          "score"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "example": "0",
+            "minimum": 0
+          },
+          "score": {
+            "type": "number",
+            "format": "float",
+            "example": "1.0"
+          },
+          "text": {
+            "type": "string",
+            "default": "null",
+            "example": "Deep Learning is ...",
+            "nullable": true
+          }
+        }
+      },
+      "RerankRequest": {
+        "type": "object",
+        "required": [
+          "query",
+          "texts"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "example": "What is Deep Learning?"
+          },
+          "raw_scores": {
+            "type": "boolean",
+            "default": "false",
+            "example": "false"
+          },
+          "return_text": {
+            "type": "boolean",
+            "default": "false",
+            "example": "false"
+          },
+          "texts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "Deep Learning is ..."
+            ]
+          },
+          "truncate": {
+            "type": "boolean",
+            "default": "false",
+            "example": "false",
+            "nullable": true
+          },
+          "truncation_direction": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TruncationDirection"
+              }
+            ],
+            "default": "right"
+          }
+        }
+      },
+      "RerankResponse": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Rank"
+        }
+      },
+      "TruncationDirection": {
+        "type": "string",
+        "enum": [
+          "Left",
+          "Right"
+        ]
+      }
+    }
+  }
+}
