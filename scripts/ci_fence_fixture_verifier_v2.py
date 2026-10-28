@@ -1,5 +1,5 @@
 """Reads protected Fence evidence for an explicitly selected immutable released bundle.
-This dormant adapter preserves controlled peer denial checks and cannot install, activate, or authorize Fence.
+This adapter preserves controlled peer denial checks and cannot install, activate, or authorize Fence.
 """
 
 from __future__ import annotations
