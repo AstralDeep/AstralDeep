@@ -507,6 +507,20 @@ def proc_namespace_fixture(tmp_path):
     _proc_fixture_entry(root, 7, 1, 700, (7,), "host")
     session = sq.prepare_session(session_dir=tmp_path / "session")
     (session.scratch_dir / sq.DESCENDANT_PID_NAME).write_text("7")
+    (root / "400" / "cmdline").write_bytes(
+        b"\0".join(
+            [
+                os.fsencode(shutil.which("python3") or sys.executable),
+                b"-c",
+                b"import time; time.sleep(300)",
+                session.qualification_id.encode(),
+            ]
+        )
+        + b"\0"
+    )
+    (root / "400" / "exe").symlink_to(
+        Path(shutil.which("python3") or sys.executable).resolve()
+    )
     process = SimpleNamespace(
         pid=100, wait_for_line=lambda *args, **kwargs: b"ASTRAL_SRT_DESCENDANT:7\n"
     )
@@ -561,6 +575,47 @@ def test_descendant_mapping_rejects_shared_pid_namespace(proc_namespace_fixture)
 def test_descendant_mapping_rejects_ambiguous_namespaces(proc_namespace_fixture):
     root, session, process = proc_namespace_fixture
     _proc_fixture_entry(root, 500, 200, 5000, (500, 7), "other-sandbox")
+    (root / "500" / "cmdline").write_bytes((root / "400" / "cmdline").read_bytes())
+    (root / "500" / "exe").symlink_to(
+        Path(shutil.which("python3") or sys.executable).resolve()
+    )
+    with pytest.raises(
+        sq.SandboxQualificationError, match="descendant_host_identity_unavailable"
+    ):
+        sq.capture_descendant_identity(process, session, timeout=1, proc_root=root)
+
+
+def test_descendant_mapping_distinguishes_nested_srt_helper_pid_collision(
+    proc_namespace_fixture,
+):
+    root, session, process = proc_namespace_fixture
+    _proc_fixture_entry(root, 500, 200, 5000, (500, 7), "outer-srt")
+    (root / "500" / "cmdline").write_bytes(b"/usr/bin/socat\0-proxy-helper\0")
+    identity = sq.capture_descendant_identity(
+        process, session, timeout=1, proc_root=root
+    )
+    assert identity.pid == 400
+
+
+def test_descendant_mapping_requires_server_owned_nonce(proc_namespace_fixture):
+    root, session, process = proc_namespace_fixture
+    (root / "400" / "cmdline").write_bytes(
+        (root / "400" / "cmdline")
+        .read_bytes()
+        .replace(session.qualification_id.encode(), b"f" * 32)
+    )
+    with pytest.raises(
+        sq.SandboxQualificationError, match="descendant_host_identity_unavailable"
+    ):
+        sq.capture_descendant_identity(process, session, timeout=1, proc_root=root)
+
+
+def test_descendant_mapping_rejects_rewritten_argv_on_wrong_binary(
+    proc_namespace_fixture,
+):
+    root, session, process = proc_namespace_fixture
+    (root / "400" / "exe").unlink()
+    (root / "400" / "exe").symlink_to(TRUE_COMMAND)
     with pytest.raises(
         sq.SandboxQualificationError, match="descendant_host_identity_unavailable"
     ):
@@ -711,6 +766,15 @@ def test_extract_rejects_corrupt_and_incomplete_artifacts(tmp_path: Path):
     tampered.write_bytes(bytes(tampered_data))
     with pytest.raises(sq.SandboxQualificationError, match="artifact_digest_mismatch"):
         sq.extract_srt_artifact(tampered, tmp_path / "out2", pin)
+
+
+def test_extract_refuses_python_without_safe_data_filter(tmp_path, monkeypatch):
+    tarball, pin = _stub_artifact(tmp_path / "src", stderr_line="unused")
+    monkeypatch.delattr(sq.tarfile, "data_filter")
+    with pytest.raises(
+        sq.SandboxQualificationError, match="python_data_filter_unavailable"
+    ):
+        sq.extract_srt_artifact(tarball, tmp_path / "extracted", pin)
 
 
 def test_prepare_runtime_requires_supported_arch(tmp_path: Path, stub_runtime):

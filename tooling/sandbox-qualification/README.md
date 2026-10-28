@@ -33,6 +33,20 @@ The host must already permit these primitives. Do not weaken AppArmor, Docker se
 or user-namespace policy, enable privileged containers, or select SRT's weak nested mode.
 Record the exact host/kernel and installed tool versions alongside candidate evidence.
 Unsupported hosts report exit 4 (`unavailable`) before receipt consumption or effects.
+Python 3.11 must include `tarfile.data_filter`; older patch releases without safe filtered
+extraction report `python_data_filter_unavailable` instead of using an unsafe fallback.
+
+The actual Debian 12/Linux 6.1 x64 pilot at candidate `88069940` failed the scratch-only
+write policy. The pinned vendor deliberately permits writes in private overlays created
+by read denial, including `/tmp`, `/dev/shm`, and the hidden session directory. The
+corresponding host paths remained absent. This is a failed, non-promotable policy
+qualification; an authorized scratch write succeeding does not override it.
+
+Each launch has a separate 30-second startup admission. Hanging payloads have a bounded
+two-second execution interval after their readiness witness. Descendant witnesses bind
+the namespace PID to one host descendant's current ancestry, start ticks, namespace,
+expected executable, exact arguments, and opaque per-launch identity. Ambiguous matches
+fail closed. Namespace-local PID numbers alone never identify a host process.
 
 From the repository root with declared Python/component dependencies installed:
 

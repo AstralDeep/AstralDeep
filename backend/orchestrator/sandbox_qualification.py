@@ -17,7 +17,6 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -71,6 +70,7 @@ MARKER_PREFIX: Final = "marker-"
 STOLEN_SECRET_NAME: Final = "stolen-secret.txt"
 DESCENDANT_PID_NAME: Final = "descendant.pid"
 DESCENDANT_READY_PREFIX: Final = b"ASTRAL_SRT_DESCENDANT:"
+EFFECT_READY_PREFIX: Final = b"ASTRAL_SRT_EFFECT_READY:"
 OUTSIDE_WRITE_ROOTS: Final = ("/tmp", "/var/tmp", "/dev/shm")
 CONNECT_TARGETS: Final = (
     ("127.0.0.1", 0),
@@ -523,6 +523,8 @@ def install_locked_srt(
 def extract_srt_artifact(
     tarball_path: Path, extract_dir: Path, pin: SrtArtifactPin
 ) -> Path:
+    if not hasattr(tarfile, "data_filter"):
+        raise SandboxQualificationError("python_data_filter_unavailable")
     verify_artifact_bytes(tarball_path.read_bytes(), pin)
     extract_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -1035,7 +1037,7 @@ elif mode == "symlink_escape":
     extra["attempts"] = attempts
 elif mode == "spawn_descendant":
     child = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(%d)" % spec["descendant_hold_seconds"]]
+        [sys.executable, "-c", "import time; time.sleep(%d)" % spec["descendant_hold_seconds"], spec["descendant_identity"]]
     )
     with open(os.path.join(scratch, spec["descendant_pid_file"]), "w", encoding="utf-8") as sink:
         sink.write(str(child.pid))
@@ -1049,6 +1051,7 @@ elif mode == "exhaust_output":
         sys.stdout.write(chunk)
     sys.stdout.flush()
 elif mode == "hang":
+    print("ASTRAL_SRT_EFFECT_READY:hang", flush=True)
     time.sleep(spec["hold_seconds"])
 
 write_marker()
@@ -1149,6 +1152,7 @@ def build_effect_spec(
     elif mode == "spawn_descendant":
         spec["descendant_pid_file"] = DESCENDANT_PID_NAME
         spec["descendant_hold_seconds"] = 300
+        spec["descendant_identity"] = session.qualification_id
         spec["hold_seconds"] = 120
     elif mode == "exhaust_output":
         spec["exhaust_chunks"] = 700
@@ -1496,6 +1500,7 @@ def capture_descendant_identity(
                 identity.pid_namespace_inode == root_identity.pid_namespace_inode
                 or len(identity.namespace_pids) <= len(root_identity.namespace_pids)
                 or identity.namespace_pids[-1] != namespace_pid
+                or not _descendant_command_matches(identity.pid, session, proc_root)
             ):
                 continue
             parent = identity.parent_pid
@@ -1518,11 +1523,33 @@ def capture_descendant_identity(
             _host_process_identity(entry.pid, proc_root) != entry for entry in lineage
         ):
             raise ValueError
+        if not _descendant_command_matches(candidate.pid, session, proc_root):
+            raise ValueError
         return candidate
     except (OSError, ValueError, IndexError, StopIteration, EOFError, TimeoutError):
         raise SandboxQualificationError(
             "descendant_host_identity_unavailable"
         ) from None
+
+
+def _descendant_command_matches(
+    pid: int, session: QualificationSession, proc_root: Path
+) -> bool:
+    try:
+        arguments = (
+            (proc_root / str(pid) / "cmdline").read_bytes().rstrip(b"\0").split(b"\0")
+        )
+        expected = [
+            os.fsencode(shutil.which("python3") or sys.executable),
+            b"-c",
+            b"import time; time.sleep(300)",
+            session.qualification_id.encode(),
+        ]
+        return arguments == expected and (proc_root / str(pid) / "exe").samefile(
+            Path(os.fsdecode(expected[0])).resolve()
+        )
+    except OSError:
+        return False
 
 
 def _descendant_identity_label(identity: HostProcessIdentity) -> str:
@@ -1676,7 +1703,7 @@ def run_sandbox_qualification(
     support: SandboxSupport | None = None,
     session_dir: Path | None = None,
     scratch_root: Path | None = None,
-    per_launch_deadline_seconds: float = 20.0,
+    per_launch_deadline_seconds: float = 30.0,
     hang_deadline_seconds: float = 2.0,
     artifact_cache_dir: Path | None = None,
     allow_artifact_download: bool = False,
@@ -1829,11 +1856,10 @@ def run_sandbox_qualification(
                 else per_launch_deadline_seconds
             )
             descendant_identity = None
-            started = time.monotonic()
             if mode == "spawn_descendant":
                 try:
                     descendant_identity = capture_descendant_identity(
-                        process, session, timeout=deadline
+                        process, session, timeout=per_launch_deadline_seconds
                     )
                     checks.append(
                         _check(
@@ -1844,9 +1870,19 @@ def run_sandbox_qualification(
                     )
                 except SandboxQualificationError as error:
                     checks.append(_check("descendant_pid_namespace", False, error.code))
+            elif mode == "hang":
+                try:
+                    process.wait_for_line(
+                        OutputStream.STDOUT,
+                        prefix=EFFECT_READY_PREFIX,
+                        timeout=per_launch_deadline_seconds,
+                    )
+                    checks.append(_check("effect_ready", True, mode))
+                except (TimeoutError, EOFError):
+                    checks.append(_check("effect_ready", False, "startup_not_observed"))
             snapshot, reason, timed_out = await_effect(
                 process,
-                deadline_seconds=max(0, deadline - (time.monotonic() - started)),
+                deadline_seconds=deadline,
             )
             modes_run.append(mode)
             checks.extend(launch_outcome_checks(snapshot))
