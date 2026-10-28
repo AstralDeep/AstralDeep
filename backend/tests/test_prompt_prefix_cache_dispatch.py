@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from llm_config.types import CredentialSource, LLMUnavailable
+from orchestrator.context_engineering import compose_system_prompt
 from orchestrator.orchestrator import CHAT_SYSTEM_TEMPLATE, Orchestrator
 from tests.test_call_llm_wave0 import _FakeClient, _FakeCompletions
 
@@ -19,6 +20,12 @@ async def test_cache_flag_preserves_ordinary_request_and_usage(monkeypatch, cach
 
     monkeypatch.setattr(model_router, "router_enabled", lambda: False)
     monkeypatch.setitem(flags._flags, "prompt_prefix_cache", cache_enabled)
+    import llm_config.native_messages as native
+
+    def blocked(**_):
+        raise RuntimeError("unqualified native request attempted")
+
+    monkeypatch.setattr(native, "send_native_message", blocked, raising=False)
     comp = _FakeCompletions(content="ordinary provider response")
     client = _FakeClient(comp)
     client.api_key = "owner-fixture-key"
@@ -41,7 +48,7 @@ async def test_cache_flag_preserves_ordinary_request_and_usage(monkeypatch, cach
     orch._record_llm_call = noop
     orch._record_llm_unconfigured = noop
     orch._emit_llm_usage_report = noop
-    messages = [{"role": "system", "content": CHAT_SYSTEM_TEMPLATE}, {"role": "user", "content": "private owner question"}]
+    messages = [{"role": "system", "content": compose_system_prompt(CHAT_SYSTEM_TEMPLATE)}, {"role": "user", "content": "private owner question"}]
     message, usage = await orch._call_llm(None, messages, None)
     assert message.content == "ordinary provider response"
     assert usage.total_tokens == 10
