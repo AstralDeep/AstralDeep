@@ -1,9 +1,9 @@
-# Dormant Fence verifier compatibility
+# Fence verifier compatibility and activation
 
-`scripts/ci_fence_fixture_verifier_v2.py` is an inactive, read-only compatibility
-adapter. The active lint workflow, old verifier, peer, reviewed helper commit and
-digests, source-conformance policy, and active inventory remain unchanged. This
-companion neither installs nor activates Fence and creates no new authority path.
+`scripts/ci_fence_fixture_verifier_v2.py` is the read-only compatibility adapter
+qualified separately in PR492 and merged at `a1bfc19ccd9d1cc58c8298ce26718e92b76b3fb2`.
+The activation candidate uses its exact merged bytes and unchanged peer through the
+existing protected loader. The active caller explicitly selects only v0.12.5.
 A passing source or parser check does not authorize activation or merge.
 
 The new adapter accepts only two complete, published action identities:
@@ -13,12 +13,12 @@ The new adapter accepts only two complete, published action identities:
 | v0.10.5 | `abc5790eac3445fe3854eea6b506aa7d31bed67c` | `567ebd3787467b0ea8eaddc00f5ad9247ace585b` |
 | v0.12.5 | `f9751ca5d767dc0199e88733c2b286bd4800a008` | `424c1ac6cc2f844986f38defc6d43150796f35f5` |
 
-The future reviewed caller must explicitly provide the complete action SHA to
+The authenticated reviewed caller must explicitly provide the complete action SHA to
 `verify(..., action_pin=...)`, or use the required `--action-pin` argument. Version
 labels, source SHAs, unknown pins, environment variables and evidence documents
 cannot select a profile. Immutable profile tables bind all six protected runtime
 file hashes; a different complete bundle or a mixed tuple is refused. The
-[separate dormant inventory](../tooling/ci-peer/inputs-v2.json) documents those
+[compatibility inventory](../tooling/ci-peer/inputs-v2.json) documents those
 identities and is never a runtime configuration input.
 
 Profile selection is scoped to one call. Nested profile changes are refused;
@@ -54,10 +54,4 @@ no provider or release service is contacted by those tests. Native parser checks
 against exact released libraries are diagnostic compatibility evidence, and are
 separate from actual packet-policy qualification.
 
-Future activation requires a separately reviewed, genuinely merged and qualified
-helper commit; exact Git-object and file hashes; the existing protected loader;
-a coordinated source-conformance/workflow update; and fresh actual supported
-hosted-runner evidence. This companion's first ordinary CI must pass the existing
-old-Fence workflow on a genuinely supported layout. If setup fails, hold the
-candidate. Do not retry a whole job for a favorable runner, change its label or
-DNS, substitute a diagnostic job, waive trust, or bypass a required check.
+Activation retains the separately qualified merged helper anchor, exact Git-object and candidate-file hashes, protected loader, source-conformance/workflow checks and all enforcement assertions. Fresh actual supported hosted-runner controlled-denial, checksum, native-post and cleanup evidence is required. If setup or any required check fails, hold the candidate. Do not retry a whole job for a favorable runner, change its label or DNS, substitute a diagnostic job, waive trust or bypass a required check.

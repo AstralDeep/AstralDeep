@@ -11,6 +11,8 @@ backend/logs/
 **/answer_behavior/_artifacts/
 # Clinical diagnostic run artifacts (eval-only, generated).
 **/clinical_diagnostic/_artifacts/
+# Prompt-optimization workbench run artifacts (eval-only, generated).
+**/prompt_optimization/_artifacts/
 # Verification & build-verification bundles (screenshots, contact sheets,
 # PR bodies, review sheets) - generated for review, not needed in the repo.
 verification-*/
