@@ -22,7 +22,10 @@ from astralplane.repositories.assignments import (
     AssignmentTaskResult,
 )
 from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
-from orchestrator.session_authority import refresh_operation_execution_authority
+from orchestrator.framework_operation_authority import (
+    assert_operation_owner,
+    refresh_assignment_execution_authority,
+)
 from orchestrator.work_admission import (
     AdmissionClass,
     ExecutionFence,
@@ -199,10 +202,9 @@ class AssignmentRunner:
         task.add_done_callback(lambda completed, key=identity: self._finished(key, completed))
 
     async def _operation_authority(self, record):
-        authority = await refresh_operation_execution_authority(
-            owner_id=record.owner_id, assignment_id=record.assignment_id,
+        authority = await refresh_assignment_execution_authority(record,
             sessions=self.one_shot.sessions, plane_runtime=self.store.plane_runtime)
-        self.service._owner(record.owner_id, authority.claims)
+        assert_operation_owner(self.service, authority, record)
         return authority
 
     def fixed_research_ready(self, *, service, sessions) -> bool:
@@ -293,7 +295,7 @@ class AssignmentRunner:
                 self._assert_operation_capability(candidate)
                 authority = await self._operation_authority(candidate)
                 def claim_current(tx, repo, current):
-                    self.service._owner(current.owner_id, authority.claims)
+                    assert_operation_owner(self.service, authority, current)
                     self._assert_operation_capability(current)
                     return repo.claim_operation_for_administration(tx, owner_id=current.owner_id,
                         assignment_id=current.assignment_id,
@@ -462,7 +464,7 @@ class AssignmentRunner:
             executor._episode_lease = lease
 
             def bind(tx, repository, current):
-                self.service._owner(current.owner_id, authority.claims)
+                assert_operation_owner(self.service, authority, current)
                 self._assert_operation_capability(current)
                 repository.bind_operation(tx, fence=claim.fence, binding=executor.binding)
                 return repository.assert_current_assignment_execution(tx, fence=claim.fence,
@@ -504,7 +506,7 @@ class AssignmentRunner:
                     authority = await self._operation_authority(executor.record)
 
                     def renew(tx, repository, current):
-                        self.service._owner(current.owner_id, authority.claims)
+                        assert_operation_owner(self.service, authority, current)
                         repository.renew_claim(tx, fence=executor.claim.fence,
                                               lease_seconds=self.config.lease_seconds)
                         return self.orch.work_admission.renew_execution_lease(
@@ -519,7 +521,7 @@ class AssignmentRunner:
 
     async def _hold_operation(self, executor, authority):
         def hold(tx, repository, current):
-            self.service._owner(current.owner_id, authority.claims)
+            assert_operation_owner(self.service, authority, current)
             completion = AssignmentEpisodeCompletion(expected_state_version=current.state_version,
                 checkpoint=current.checkpoint, completion_digest=digest([
                     executor.claim.fence.claim_generation, "assignment_failed"]),
@@ -593,7 +595,7 @@ class AssignmentRunner:
                          else await self._operation_authority(executor.record))
 
             def finish(tx, repository, current):
-                self.service._owner(current.owner_id, authority.claims)
+                assert_operation_owner(self.service, authority, current)
                 if (current.owner_id != record.owner_id or current.assignment_id != record.assignment_id
                         or current.execution_profile != record.execution_profile
                         or current.instruction_revision != record.instruction_revision

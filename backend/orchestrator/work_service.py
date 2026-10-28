@@ -254,9 +254,12 @@ class WorkService:
                     raise AssignmentError("work_not_found", 404)
                 public = _public(value, owner_id)
                 if include_result:
+                    from orchestrator.work_chat_result import project_chat_result
                     from orchestrator.work_result import project_research_result
+                    project = (project_chat_result if value.assignment.operation.get("kind") == "chat"
+                               else project_research_result)
                     result = {"id": public["id"], "revision": public["revision"],
-                            "result": project_research_result(tx, repository,
+                            "result": project(tx, repository,
                                 owner_id=owner_id, read=value)}
                     return {"operation": public, "result": result} if include_operation else result
                 return public

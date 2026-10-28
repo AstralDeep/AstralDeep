@@ -178,9 +178,8 @@ class ActionExecutor:
                 if _research._ephemeral is not None:
                     _research._ephemeral.assert_executor(self)
             if authority is None:
-                from orchestrator.session_authority import refresh_operation_execution_authority
-                authority = await refresh_operation_execution_authority(
-                    owner_id=self.claim.fence.owner_id, assignment_id=self.claim.fence.assignment_id,
+                from orchestrator.framework_operation_authority import refresh_assignment_execution_authority
+                authority = await refresh_assignment_execution_authority(self.record,
                     sessions=self.operation_sessions, plane_runtime=self.store.plane_runtime)
             current = await self.store.call_for_operation("assert_current_assignment_execution",
                 fence=self.claim.fence, binding=self.binding, authority=authority.observation)
@@ -684,7 +683,8 @@ class ActionExecutor:
         captured = None
         def capture(tx, repository, current):
             nonlocal captured
-            now = self.store.plane_runtime.repositories.history.sessions.assert_current_execution(
+            from orchestrator.framework_operation_authority import authority_repository
+            now = authority_repository(self.store.plane_runtime, authority).assert_current_execution(
                 tx, observation=authority.observation).observed_at
             captured = ResearchGuidance.capture(tx, repository, current, orchestrator=self.orch,
                 runtime=self.store.plane_runtime, now=now, service=self.service,
@@ -943,10 +943,10 @@ class ActionExecutor:
             raise DispatchDenied("assignment_attempt_already_reserved")
         invocation = object()
         authority = operation_checks["authority"]
-        expected_session = authority.claims
-        expected_session.update(_raw_token=authority.subject_token, _invocation_channel="background")
-        private_session = authority.claims
-        private_session.update(_raw_token=authority.subject_token, _invocation_channel="background")
+        context_id = self.record.definition.conversation_id or self.record.assignment_id
+        from orchestrator.framework_operation_authority import invocation_principal
+        expected_session = invocation_principal(authority)
+        private_session = invocation_principal(authority)
         self.orch.ui_sessions[invocation] = private_session
         checks = operation_checks
         candidate_permit = None
@@ -955,7 +955,7 @@ class ActionExecutor:
 
         def session_current():
             if (self.orch.ui_sessions.get(invocation) is not private_session
-                    or private_session != expected_session):
+                    or private_session != expected_session or context.conversation_id != context_id):
                 raise DispatchDenied("assignment_authorization_required")
 
         async def authorize():
@@ -1073,8 +1073,9 @@ class ActionExecutor:
 
         context = PersistentDispatchContext(owner_id=private.owner_id, kind="model", agent_id=None,
             tool_name=None, arguments=private.request_route, timeout_seconds=private.timeout_seconds,
-            max_input_bytes=65536, max_output_tokens=private.profile.output_tokens, authorize=authorize, start=start, observe=observe,
-            strict_final_arguments=True, research_input=private)
+            max_input_bytes=65536, max_output_tokens=private.profile.output_tokens,
+            authorize=authorize, start=start, observe=observe, strict_final_arguments=True,
+            research_input=private, conversation_id=context_id)
         try:
             with bind_dispatch(context), turn_permission_memo():
                 await self.orch._call_llm(invocation, private.body()["messages"],
