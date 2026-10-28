@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "upstream_repository": "https://github.com/openai/codex-security",
+  "upstream_commit": "f894f1ff64b1a332001f48593c1622b85701f9f3",
+  "scanner_version": "0.2.0",
+  "plugin_version": "0.1.95",
+  "profile": "source-plugin-mock",
+  "node_image": "node:24-bookworm@sha256:e2007d1f4e652444f88d9bb196256d2d035269015e3d27a0d47c1d0cb5192a98",
+  "node_version": "24.22.1",
+  "pnpm_version": "11.25.0",
+  "pnpm_integrity": "sha512-XN6SW08HX3Jetx+64YpC/+eEUkeJ8ZthxzHLhyHsKKruFg4BqNWvT+2ypCzb8wDv4j2zVrDUoXtNY+EfirfJVg==",
+  "files": {
+    "scanner/sdk/typescript/package.json": "d4b506bcbb4b58979579776bbaa35cea636d724293de3e31d86d0cfcaace3d91",
+    "scanner/sdk/typescript/pnpm-lock.yaml": "8139eb7ffa7e1bca07f9b5a5895409d6c8d201e1427cf1443d6b57bf534800f6",
+    "scanner/sdk/typescript/pnpm-workspace.yaml": "1814f929f6f8e1924b4e07c40ef0ea0693dd76d56e32033278cf679855ee1747",
+    "scanner/sdk/typescript/bin/codex-security.mjs": "8464effc0af5c05c2d58703de9f43c315b0c9e4e66299937c5cf8a304294e326",
+    "scanner/sdk/typescript/dist/cli.js": "17118c25249cd24602cefdcda998f0f64d9ebacd82ee0ad6e82242d07a920f2a"
+  },
+  "source_archive_sha256": "4b31e070605bec72aa82b661f21bea245ad0bee84fee7544c884960516a324bf",
+  "host_prerequisites": {
+    "python": "3.11",
+    "bubblewrap_qualified_attempt": "0.8.0 (Debian 0.8.0-2+deb12u1)",
+    "git": "system Git; fsmonitor and hooks disabled"
+  }
+}

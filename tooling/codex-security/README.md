@@ -1,135 +1,145 @@
-# Codex Security report-only review (isolated developer environment)
+# Private Codex Security synthetic workflow
 
-Codex Security (https://github.com/openai/codex-security, reviewed source pinned at commit
-`f894f1ff64b1a332001f48593c1622b85701f9f3`, accessed 2026-10-06) offers source-oriented
-candidate findings and coverage receipts. This directory defines the opt-in, isolated,
-**report-only** developer workflow that runs it against an approved AstralDeep checkout.
-It is a developer tool, not an Astral runtime gate, a security gate, or a CI gate: no CI
-job invokes it, no report is committed, and no automatic remediation exists. Findings are
-candidates for human triage against actual code — never claims of vulnerabilities.
+This opt-in developer CLI qualifies report plumbing using the actual reviewed
+[Codex Security source](https://github.com/openai/codex-security/tree/f894f1ff64b1a332001f48593c1622b85701f9f3)
+(retrieved 2026-10-28). It runs the upstream `scan --mock` profile, which creates
+fictional findings without security analysis, source execution, model calls or
+provider credentials. Every wrapper report and exported artifact is labeled synthetic.
+`complete` means that this synthetic workflow completed; it never means that the
+checkout received a clean security review. There is no remediation, publishing,
+preview server, product integration, mandatory CI gate or release decision.
 
-The wrapper is `backend/devtools/codex_security_review.py`. It is Python 3.11 standard-library only
-and adds **no third-party runtime or tooling dependency** to any product or CI manifest;
-nothing here is installed into the production image.
+Paid scans are **unavailable**. At this pin, upstream's `--max-cost` reacts to cost
+progress and does not provide a hard call/cost reservation before provider work.
+The wrapper therefore admits exactly zero model calls and zero provider cost,
+fixes the mock profile and model, rejects nonzero call/cost policy values, and
+rejects `--egress-approve` before invoking the scanner. It never forwards API keys,
+Codex login state, provider environment variables or ambient Node/Python hooks.
+A future paid profile requires a reviewed admission and egress boundary; changing
+an environment variable or sharing the host network cannot enable one.
 
-## Isolated developer environment
+## Locked developer runtime
 
-Create a dedicated virtual environment, separate from the product image and from other
-tooling environments, and install the provider tool only from the reviewed source pin:
+The wrapper uses Python 3.11 standard-library APIs, system Git, and Bubblewrap on
+Linux with working unprivileged namespaces. Its separate scanner root filesystem
+contains the real Node package `@openai/codex-security` 0.2.0 and plugin 0.1.95.
+`runtime-lock.json` pins the upstream Git archive, full upstream pnpm dependency
+lock, workspace settings, package manifest, CLI launcher and compiled CLI bytes.
+The image and pnpm tarball are pinned by digest in `Runtime.Dockerfile`. Node is
+24.22.1 and pnpm is 11.25.0. The source-plugin mock profile uses the upstream
+Python helpers; it does not build or claim the native plugin's universal package
+or paid SDK runtime. No scanner dependency enters a product or CI manifest.
 
-```sh
-python3.11 -m venv ~/.venvs/codex-security-review
-~/.venvs/codex-security-review/bin/python -m pip install --upgrade pip
-git clone https://github.com/openai/codex-security /tmp/codex-security-src
-git -C /tmp/codex-security-src checkout f894f1ff64b1a332001f48593c1622b85701f9f3
-~/.venvs/codex-security-review/bin/python -m pip install --no-deps /tmp/codex-security-src
-```
-
-`--no-deps` keeps the install surface exactly at the reviewed tool: review and install any
-provider-declared dependencies explicitly, from pinned versions, before enabling them.
-Runtime prerequisites of the wrapper itself: Python 3.11, `git`, and Bubblewrap (`bwrap`)
-with working unprivileged user namespaces. AppArmor or seccomp restrictions that break the
-Bubblewrap probe are preserved verbatim and fail the run — they are never weakened or
-bypassed. macOS and Windows are unsupported by this sandbox profile.
-
-## Policy
-
-`review-policy.json` is the digest-bound configuration every report binds to:
-
-- Reviewed provider source pin (`provider.reviewed_source`) — the wrapper refuses any other
-  commit. Changing the pin requires a new source review and a code change
-  (`REVIEWED_PROVIDER_COMMIT` in the wrapper must keep matching).
-- Source scope and exclusions (`scope`) — only git-tracked files under the declared include
-  roots are inventoried, so `.env`, secrets, uploads, generated/user code, `backend/data`,
-  `backend/tmp`, `backend/logs`, synthesized `backend/knowledge`, clinical-data artifact
-  directories, and submodule internals are excluded by construction; the exclusion list is
-  defense in depth on top of that.
-- Sandbox (`sandbox`) — the provider runs under Bubblewrap with all namespaces unshared, a
-  cleared environment, a read-only root, tmpfs masks over sensitive directories, and
-  `/dev/null` masks over sensitive files (`.env`, keys, certificates). Network stays
-  unshared unless egress is explicitly approved for the run.
-- Budgets (`budgets`) — maximum runs, provider calls per run, total cost in USD, wall-clock
-  seconds, and per-artifact bytes, enforced from a private append-only ledger.
-- Reports (`reports`) — the private report root must be git-ignored
-  (`backend/tmp/codex-security` by default). The wrapper refuses tracked locations.
-- Preview (`preview`) — permanently disabled. The CLI path is the only path; the wrapper
-  never starts a server and `codex_security_review.py preview` always refuses, so no
-  unauthenticated findings API can be exposed by this workflow.
-
-## Usage
-
-From the approved checkout toplevel (the wrapper refuses a subdirectory):
+Build in a dedicated temporary directory, with no credentials or private files in
+its Docker build context. The archive must come from the exact upstream commit;
+the Dockerfile checks its SHA-256 before extracting or building it:
 
 ```sh
-# Read-only plan: resolved scope, exclusion counts, digests, budgets. No egress, no writes.
-~/.venvs/codex-security-review/bin/python backend/devtools/codex_security_review.py plan
-
-# One sandboxed, offline (egress-unshared) run with synthetic/frozen provider behavior:
-... run --approve --provider-command ~/.venvs/codex-security-review/bin/codex-security
-
-# One paid/provider-backed scan: explicit egress approval per run; the sandbox passes the
-# policy endpoint allowlist (api.openai.com:443) to the provider and CODEX_SECURITY_* env:
-... run --approve --egress-approve \
-    --provider-command ~/.venvs/codex-security-review/bin/codex-security
-
-# Re-verify a finished run against the exact source tree and policy:
-... verify --run-dir backend/tmp/codex-security/<run-id>
+git clone https://github.com/openai/codex-security /tmp/codex-security-source
+git -C /tmp/codex-security-source checkout --detach f894f1ff64b1a332001f48593c1622b85701f9f3
+mkdir -m 700 /tmp/codex-security-runtime-build
+git -C /tmp/codex-security-source archive --format=tar \
+  --output=/tmp/codex-security-runtime-build/upstream.tar \
+  f894f1ff64b1a332001f48593c1622b85701f9f3
+cp tooling/codex-security/Runtime.Dockerfile /tmp/codex-security-runtime-build/Dockerfile
+cp tooling/codex-security/runtime-lock.json /tmp/codex-security-runtime-build/runtime-lock.json
+docker build -t codex-security-mock:reviewed /tmp/codex-security-runtime-build
 ```
 
-`run` requires `--approve` (explicit operator opt-in for this checkout) and records the
-approval in the report. `--egress-approve` is per-run, never persisted in the tracked
-policy; without it the sandbox has no network namespace at all. Set
-`CODEX_SECURITY_PROVIDER_API_KEY` in the wrapper's environment only when needed; it is
-forwarded to the sandboxed provider solely when egress is approved and is never logged or
-written to any report.
+Export that dedicated image into a new, empty directory on the Linux scanner host:
 
-## Provider adapter contract
-
-The wrapper invokes `<provider-command> scan --output-dir <run>/raw` with environment
-`CODEX_SECURITY_SOURCE_ROOT`, `CODEX_SECURITY_OUTPUT_DIR`, `CODEX_SECURITY_MAX_CALLS`,
-`CODEX_SECURITY_EGRESS_ALLOWLIST`, and `CODEX_SECURITY_EGRESS_APPROVED`. The provider must
-write `raw/result.json`:
-
-```json
-{
-  "schema_version": 1,
-  "status": "complete|partial|interrupted|error",
-  "provider": {"tool": "codex-security", "version": "<string>"},
-  "calls_used": 0,
-  "cost_usd": 0.0,
-  "artifacts": {"sarif": "findings.sarif", "coverage_receipt": "coverage-receipt.json"}
-}
+```sh
+docker create --name codex-security-runtime-export codex-security-mock:reviewed
+docker export --output /tmp/codex-security-rootfs.tar codex-security-runtime-export
+mkdir -m 700 /tmp/codex-security-rootfs
+tar --extract --file /tmp/codex-security-rootfs.tar \
+  --directory /tmp/codex-security-rootfs --no-same-owner
+docker rm codex-security-runtime-export
 ```
 
-`sarif`/`coverage_receipt` are optional simple filenames inside the raw directory. The
-wrapper sanitizes both (repository-relative paths; code snippets and context regions
-stripped; any reference to an excluded path or a path outside the checkout fails the run)
-and writes them only to the private run directory. A run ends in exactly one of:
-`complete` (clean scan, sanitized SARIF + coverage receipt written), `partial` (scan
-finished but incomplete, artifacts still written and labeled), `interrupted` (signal or
-wall-clock cap; raw evidence preserved, no sanitized findings), `stopped` (budget boundary:
-refused before start, or call/cost budget exceeded mid-run — no sanitized findings), or
-`error` (provider failure, contract violation, or sanitization violation — raw evidence
-preserved for diagnosis). Only `complete` means a finished clean scan; everything else is
-visibly distinct in `report.json` and the ledger.
+The export container is never started. Extract only the dedicated image just
+built, into that empty directory; the exported filesystem includes system links.
+Do not use the workstation root or copy host directories, credentials, Git state
+or private data into it. Keep the artifact immutable while reviewing and running
+it. Calculate its exact approval digest:
 
-## Reports and verification
+```sh
+PYTHONPATH=backend python3.11 -c \
+  'from pathlib import Path; import sys; from devtools.codex_security_review import tree_digest; print(tree_digest(Path(sys.argv[1])))' \
+  /path/to/dedicated-rootfs
+```
 
-Each run writes `report.json` (status, source commit + source digest, policy
-`config_digest`, provider pin and reported version, budget limits/usage, egress decision,
-sanitized-artifact SHA-256 digests, and a tamper-evident `report_digest`) plus the
-sanitized artifacts and the preserved raw evidence, all mode 0600 under the private root,
-outside tracked product data. `append`-only `ledger.json` records every run and refusal
-for budget enforcement. `verify` recomputes the report digest, artifact digests, policy
-digest, source commit and live source digest, and the ledger receipt, and fails closed on
-any drift. Exit codes: `0` complete/partial or verified; `1` verification failed; `2`
-denial/preflight failure/preview refusal; `3` stopped; `4` interrupted; `5` error.
+The operator must approve this artifact digest with `--runtime-sha256`. Before
+launch, the wrapper recomputes the entire rootfs tree digest, checks its embedded
+lock and reviewed file/build hashes, and refuses substitutions. The approval
+trusts the operator's dedicated image acquisition/build, not an arbitrary
+`--provider-command` or a version string returned by a child. The rootfs must be
+separate from the source checkout. Namespace/preflight failures remain denials;
+macOS and Windows cannot run this Bubblewrap profile.
 
-## Tests and limits
+## Source, environment and network boundaries
 
-`backend/tests/test_codex_security_review.py` exercises success, partial, interrupted,
-stopped, error, denial, and recovery paths offline against frozen synthetic provider
-fixtures and a recording sandbox fake — no provider account, no network, no CI dependency.
-The synthetic fixtures are not vulnerability claims; triage any real finding against the
-actual reviewed code before acting. Required CI stays deterministic, offline, and
-unchanged by this workflow.
+The policy inventories only tracked regular files under its include roots. It
+excludes credentials, `.env`, uploads, data/tmp/logs/knowledge, clinical artifacts,
+attachments, generated directories and component submodules. Untracked files and
+Git history never enter the snapshot. File reads reject symlinks in every path
+component, hard links, special files and source changes during copying. Git
+inventory runs with a cleared environment, fsmonitor disabled and no hooks.
+
+The child sees a minimal root made from the approved runtime, the materialized
+snapshot mounted read-only at `/source`, a private output mount at `/output`, and
+fresh temporary/home/process/device mounts. The original checkout and host root
+are never mounted. All namespaces, including network, are unshared and all
+capabilities are dropped. Outbound egress is denied by the network namespace;
+there is no shared-network fallback or advisory allowlist. Both the host launcher
+and sandbox environment use explicit allowlists. The source snapshot is removed
+after the child exits.
+
+## Use and reports
+
+```sh
+python3.11 backend/devtools/codex_security_review.py plan
+python3.11 backend/devtools/codex_security_review.py run --approve \
+  --runtime-root /path/to/dedicated-rootfs --runtime-sha256 <approved-tree-sha256>
+python3.11 backend/devtools/codex_security_review.py verify \
+  --run-dir backend/tmp/codex-security/<run-id>
+```
+
+The private report root must be inside a git-ignored checkout directory, owned by
+the current user, mode 0700, and free of symlink traversal. Raw and sanitized files
+remain private; they are never committed. An exclusive admission lock serializes
+runs. The ledger reserves each run **before** starting the child; failure,
+interruption or a wrapper crash cannot refund that run. The watchdog terminates
+the process group when the bounded execution duration expires. Artifact parsing
+has a byte limit. Status distinguishes complete, partial, interrupted, stopped
+(admission exhausted), error, and preflight denial.
+
+The adapter reads upstream's actual `scan-manifest.json`, `findings.json`,
+`coverage.json` and `exports/results.sarif`. It validates producer/schema/mock and
+scan identities, checks the manifest's findings/coverage digests, and maps coverage
+completeness to complete/partial status. There is no invented `result.json`
+contract. Sanitized SARIF and coverage files strip code/snippets and reject
+outside, traversal or excluded paths. Fictional `mock/` paths are upstream test
+examples, not paths or vulnerabilities found in AstralDeep. The report binds the
+source commit plus actual snapshot content, policy, approved runtime, and sanitized
+artifact digests; `verify` checks those records and the ledger receipt.
+
+Exit codes: 0 complete/partial or verified; 1 verification failed; 2 denied;
+3 admission stopped; 4 interrupted; 5 error. `preview` always refuses.
+
+## Evidence and limits
+
+Frozen fixtures in `backend/tests/fixtures/codex_security/` come from an actual
+execution of this source pin's CLI, built with its frozen dependency graph. They
+exercise the real artifact schema. Recording sandbox doubles test launcher
+arguments, admission, copying, cancellation and error handling; they do not prove
+kernel containment. `FIXTURE-PROVENANCE.md` records the exact acquisition and
+commands. Required CI remains offline and unchanged.
+
+The dedicated locked runtime built and its real upstream mock scan completed in
+a network-disabled Linux container. A real Bubblewrap 0.8.0 probe in an ordinary
+unprivileged task container was denied because the host does not allow the needed
+namespaces. **Real supported-host Bubblewrap execution and filesystem/network
+canaries remain unqualified.** Preserve that failure and keep the workflow's
+containment acceptance blocked until a supported Linux runner passes. No paid
+scan, actual vulnerability finding, deployment or release qualification is claimed.

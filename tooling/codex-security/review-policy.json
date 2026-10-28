@@ -8,37 +8,12 @@
       "commit": "f894f1ff64b1a332001f48593c1622b85701f9f3",
       "reviewed_on": "2026-10-06"
     },
-    "args": ["scan", "--output-dir", "{output_dir}"],
-    "result_file": "result.json",
-    "endpoint_allowlist": ["api.openai.com:443"]
+    "endpoint_allowlist": [],
+    "profile": "upstream-mock",
+    "model": "gpt-5.6-sol"
   },
   "sandbox": {
-    "program": "bwrap",
-    "mask_files": [
-      ".env",
-      ".env.*",
-      "*.pem",
-      "*.key",
-      "*.p12",
-      "*.pfx",
-      "*.keystore",
-      "*.jks",
-      "id_rsa*",
-      "id_ecdsa*",
-      "id_ed25519*",
-      "*.secrets.json"
-    ],
-    "mask_dirs": [
-      "backend/data",
-      "backend/tmp",
-      "backend/logs",
-      "backend/knowledge",
-      "data",
-      "tmp_uploads",
-      "backend/security_benchmark/_artifacts",
-      "backend/clinical_diagnostic/_artifacts",
-      "backend/answer_behavior/_artifacts"
-    ]
+    "program": "bwrap"
   },
   "scope": {
     "include_roots": [
@@ -69,7 +44,12 @@
       "backend/security_benchmark/_artifacts",
       "backend/clinical_diagnostic/_artifacts",
       "backend/answer_behavior/_artifacts",
-      "backend/attachments"
+      "backend/attachments",
+      "backend/uploads",
+      "backend/generated",
+      "backend/agents/drafts",
+      "backend/clinical_data",
+      "uploads"
     ],
     "exclude_names": [
       ".env",
@@ -83,15 +63,22 @@
       "id_rsa*",
       "id_ecdsa*",
       "id_ed25519*",
-      "*.secrets.json"
+      "*.secrets.json",
+      ".git",
+      "credentials.json",
+      "auth.json",
+      "secrets.json",
+      "*.sqlite",
+      "*.sqlite3",
+      "*.db"
     ],
     "max_files": 20000,
     "max_bytes": 536870912
   },
   "budgets": {
     "max_runs": 20,
-    "max_calls_per_run": 60,
-    "max_cost_usd": 25.0,
+    "max_calls_per_run": 0,
+    "max_cost_usd": 0,
     "max_seconds": 1800,
     "max_artifact_bytes": 67108864
   },

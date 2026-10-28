@@ -1,8 +1,0 @@
-{
-  "schema_version": 2,
-  "status": "complete",
-  "provider": {"tool": "codex-security", "version": "0.1.0-synthetic"},
-  "calls_used": 1,
-  "cost_usd": 0.01,
-  "artifacts": {"sarif": null, "coverage_receipt": null}
-}
