@@ -836,6 +836,7 @@ class _NoCacheStaticFiles(StaticFiles):
         return response
 
 TOOL_TIMEOUT_OVERRIDES = {
+    "sandbox_qualification_scratch_write": 180.0,
     "research_brief": 150.0,
     "fetch_page": 45.0,
     "summarize_url": 60.0,
@@ -1561,6 +1562,17 @@ class Orchestrator:
         owner_hint: Optional[str],
     ):
         from orchestrator.governed_dispatch import DispatchRuntime
+
+        from orchestrator.sandbox_tool_sessions import AGENT_ID, ToolDenied, trusted_service
+        if agent_id == AGENT_ID:
+            service = trusted_service(self)
+            if service is None:
+                raise ToolDenied()
+            runtime = await service.runtime_for_owner(owner_hint)
+            if runtime is not None:
+                return runtime
+            return DispatchRuntime(owner_hint, agent_id, "builtin", None, None, None, False,
+                                   "dispatch_mediated_only")
 
         registered = getattr(self, "_governed_dispatch_runtimes", {}).get(agent_id)
         if registered is not None:
@@ -17907,7 +17919,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             ):
                 args["user_id"] = user_id
 
-        if user_id and agent_id:
+        if user_id and agent_id and agent_id != "sandbox-qualification-runner":
             creds = await asyncio.to_thread(
                 self.credential_manager.get_agent_credentials_encrypted, user_id, agent_id)
             if creds:
@@ -17915,7 +17927,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 args["_credentials_encrypted"] = True
 
         # Plaintext creds: only for in-process, trusted agents
-        if agent_id in self.local_agents:
+        if agent_id in self.local_agents and agent_id != "sandbox-qualification-runner":
             _llm_ctx_user = self._llm_context_user_id(websocket)
             if _llm_ctx_user is None:
                 _llm_cfg = await self._llm_store.get_system()
@@ -20129,6 +20141,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     error={"message": str(exc), "retryable": True}))
 
         try:
+            if agent_id == "sandbox-qualification-runner":
+                from orchestrator.sandbox_tool_sessions import bind_dispatch
+                bind_dispatch(self, request, call_args, ui_websocket)
             agent = self.local_agents[agent_id]
             loopback = LoopbackSocket(self, agent_id)
             task = asyncio.create_task(agent.handle_mcp_request(loopback, request))
@@ -24153,6 +24168,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             raise
 
     async def _close_started_services_once(self) -> None:
+        qualification_agent = getattr(self, "local_agents", {}).get("sandbox-qualification-runner")
+        if qualification_agent is not None:
+            from agents.sandbox_qualification.sandbox_qualification_agent import SandboxQualificationAgent
+            from orchestrator.sandbox_tool_sessions import QualificationToolSessions
+            if (type(qualification_agent) is SandboxQualificationAgent
+                    and type(qualification_agent.sessions) is QualificationToolSessions
+                    and qualification_agent.sessions.orchestrator is self):
+                await qualification_agent.sessions.shutdown()
         terminal_sessions = getattr(self, "terminal_sessions", None)
         if terminal_sessions is not None:
             await asyncio.to_thread(terminal_sessions.shutdown)

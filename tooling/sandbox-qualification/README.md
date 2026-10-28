@@ -3,7 +3,8 @@
 This opt-in Linux runner qualifies one harmless local scratch-file write and its denial
 profile through `orchestrator/generated_lets_executor.py` and
 `shared.process_supervision.ProcessSupervisor`. It does not change production launches,
-authority, schema, contracts, component pins, flags, or release artifacts. A declaration,
+schema, contracts, component pins, or release artifacts. The separate registered route is
+opt-in and remains subject to normal authority. A declaration,
 unit-test double, CLI smoke, or unavailable result is not containment qualification.
 
 ## Reproducible installation
@@ -78,12 +79,66 @@ and local binding remain disabled. The child receives a fixed minimal environmen
 only its standard pipes. Missing primitives and upstream degradation warnings are hard
 failures, with no unsandboxed fallback.
 
-## Permit plan/bundle and outstanding dispatch integration
+## Registered ordinary dispatch route
 
-Normal dispatch registration and owner/tool-policy permit issuance for this qualification
-tool remain unimplemented and unqualified. The plan/bundle path preserves standard
-executor verification of supplied permits; it does not establish an ordinary dispatch
-route. That route and its real authorization evidence remain a separate merge hold.
+`FF_SANDBOX_QUALIFICATION` defaults off. With in-process agents enabled, enabling it
+registers the fixed `sandbox-qualification-runner` agent and
+`sandbox_qualification_scratch_write` tool through the ordinary registration and
+permission catalog. The public schema accepts only a fixed `mode` and an opaque
+`qualification_id`. It accepts no command, code, path, owner, runtime, lease, issuer,
+permit, signer, key, or authority override.
+
+The route retains Keycloak owner/scope, tool permission, PHI, source review, exact
+attended human approval, and hash-chained audit gates. A framework MCP caller cannot
+satisfy the human approval. The host context also binds the current Keycloak session,
+chat, pending callback, and exact installed agent/card/server/actuator implementation.
+Displacement, logout, timeout, source change, and current permission loss fail closed.
+No provider or agent credentials are injected into this diagnostic agent.
+
+Call `{"mode":"prepare"}` through the ordinary tool workflow after explicitly granting
+its write permission. Preparation launches no sandbox payload. It remains a neutral
+host control-plane call and uses the existing lifecycle coordinator to admit a fresh,
+owner-bound, fixed server-dynamic worker with only `tools:write`. LETS must be ready in
+`enforce` mode with this cohort and agent permitted by the existing configuration.
+Admission denial or outage cannot return a ready ID. The host derives the executor's
+current audience and binding from that admission and normal configured signed trust;
+there is no signing or test-permit path in the agent. Only after successful current
+admission, preparation installs the hash-locked packages privately and runs the fixed
+CLI/help and namespace admission preflight. Failed or unavailable preflight cannot expose
+a ready ID. Later calls reverify the prepared descriptor and every executable/package
+asset before fresh gateway issuance and immediately before actuator claim; npm and the
+admission preflight never run after a permit has been issued.
+
+Subsequent calls use the returned ID and one mode from `authorized`, `read_secret`,
+`write_outside`, `network_connect`, `unix_ipc`, `symlink_escape`, `spawn_descendant`,
+`exhaust_output`, or `hang`. The ordinary final dispatch obtains a fresh permit for the
+exact wire arguments; the fixed actuator verifies and claims it immediately before
+launch. The authorized scratch golden must succeed before another profile is allowed.
+Each mode is single use, serial, and bound to the current admitted owner/runtime/source/
+lease and original human session. Failure or unavailability closes the pilot. A successful
+single profile is only `probe`, never a full containment or production capability claim.
+The known pinned private-overlay write result therefore remains a failed diagnostic.
+
+`{"mode":"close","qualification_id":"<ID>"}` closes the pilot under ordinary approval
+and an exact permit. There are at most two active reservations globally, one per owner,
+four retained state entries, and a five-minute lifetime. Reservations precede private
+file creation. Each session owns its bounded verified package copies/installations,
+process supervisor, executor helper, and private scratch/control trees. Expiry,
+cancellation, revocation, callback loss, and shutdown stop and join owned work. Local
+artifacts are removed; normal coordinator closure governs durable authority. A pending
+closure reports `closing`, retains its capacity reservation, and relies on the existing
+LETS reconciliation path rather than claiming successful authority removal. Replay and
+anchor roots are removed only after confirmed terminal closure.
+
+Local fixture tests exercise these seams with independently signed standard receipts.
+Actual ordinary issuance through configured Keycloak/Plane/LETS and legitimate attended
+review remains a distinct required qualification; fixtures do not establish it.
+
+## Operator permit plan/bundle
+
+The separate operator plan/bundle path preserves standard executor verification of
+supplied permits. It does not replace the registered route's ordinary admission,
+permission, human review, or authorization evidence.
 
 Prepare the exact wire arguments for an eventual qualified owner-bound authorization adapter:
 

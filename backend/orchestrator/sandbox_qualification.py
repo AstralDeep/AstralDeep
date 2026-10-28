@@ -1336,7 +1336,10 @@ def _check(name: str, held: bool, detail: str) -> QualificationCheck:
 
 
 def authorized_effect_checks(
-    session: QualificationSession, snapshot: ProcessSnapshot
+    session: QualificationSession,
+    snapshot: ProcessSnapshot,
+    *,
+    marker_mode: str = AUTHORIZED_MODE,
 ) -> tuple[QualificationCheck, ...]:
     output_path = session.scratch_dir / EFFECT_OUTPUT_NAME
     expected = effect_content(session)
@@ -1345,7 +1348,7 @@ def authorized_effect_checks(
     actual = output_path.read_text(encoding="utf-8")
     if actual != expected:
         return (_check("authorized_effect", False, "authorized_content_mismatch"),)
-    marker = read_marker(session, AUTHORIZED_MODE)
+    marker = read_marker(session, marker_mode)
     if marker is None or marker.get("observed") != "ok":
         return (_check("authorized_effect", False, "effect_marker_incomplete"),)
     digest = hashlib.sha256(actual.encode("utf-8")).hexdigest()
@@ -1931,7 +1934,9 @@ def run_sandbox_qualification(
                     )
             elif mode == "exhaust_output":
                 checks.extend(output_bound_checks(snapshot, expect_dropped=True))
-                checks.extend(authorized_effect_checks(session, snapshot))
+                checks.extend(
+                    authorized_effect_checks(session, snapshot, marker_mode=mode)
+                )
             if any(not check.held for check in checks):
                 return _fail_closed_record(
                     tuple(
