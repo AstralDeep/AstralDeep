@@ -54,3 +54,23 @@ def submit_connection(orchestrator, context, frame, request):
                                             origin=origin, owner_id=owner)
     origin.assert_current()
     return result
+
+
+_ADMISSION_STATUSES = {
+    "harness_owner_invalid": 403, "harness_component_unavailable": 503,
+    "harness_selection_disabled": 409, "harness_selection_conflict": 409,
+    "harness_qualification_missing": 409, "harness_profile_unknown": 422,
+    "harness_capture_invalid": 503, "harness_capture_changed": 503,
+    "harness_config_unavailable": 503, "harness_config_changed": 503,
+    "harness_artifact_unavailable": 503, "harness_profile_unsupported": 503,
+    "harness_unavailable": 503,
+}
+
+
+def admission_refusal(error):
+    if type(error) is not HarnessSelectionError:
+        return {"code": "operation_failed", "retryable": True}
+    if (type(error.code) is not str or type(error.status) is not int
+            or _ADMISSION_STATUSES.get(error.code) != error.status):
+        return {"code": "operation_failed", "retryable": False}
+    return {"code": error.code, "retryable": error.status == 503}

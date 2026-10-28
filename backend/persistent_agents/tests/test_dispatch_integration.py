@@ -111,6 +111,8 @@ async def test_logical_dispatch_rejects_changed_owner_tool_or_arguments_before_r
 
 def model_hub(completions):
     hub = Orchestrator.__new__(Orchestrator)
+    from tests.helpers.harness_host import bind_default_model_harness
+    bind_default_model_harness(hub)
     hub._llm_unsupported_params = {}
     hub.llm_reasoning_effort = None
     hub.audit_recorder = None

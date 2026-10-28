@@ -7220,8 +7220,9 @@ class Orchestrator:
                 if hasattr(self, "ui_sessions") and hasattr(context, "websocket")
                 else None
             ),
-            ingress_registration=(self, context, context.websocket, context.connection_generation,
-                                  getattr(self, "ui_sessions", {}).get(context.websocket)),
+            ingress_registration=((self, context, context.websocket, context.connection_generation,
+                                   self.ui_sessions.get(context.websocket))
+                                  if hasattr(self, "ui_sessions") and hasattr(context, "websocket") else None),
         )
 
     async def _enqueue_connection_frame(
@@ -7576,7 +7577,7 @@ class Orchestrator:
         self,
         context: ConnectionContext,
     ) -> None:
-        # Yield coalesces the burst; not a no-op
+        from orchestrator.harness.host_admission import admission_refusal
         await asyncio.sleep(0)
         while context.ingress:
             batch = list(context.ingress)
@@ -7625,8 +7626,7 @@ class Orchestrator:
                     await self._send_connection_admission_refusal(
                         context,
                         frame,
-                        code="operation_failed",
-                        retryable=True,
+                        **admission_refusal(result),
                     )
                     continue
                 if not result.accepted:
