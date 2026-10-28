@@ -789,8 +789,11 @@ def _provider_state(
     if not isinstance(branch, str) or not branch:
         raise BootstrapError("pull request lacks a head branch")
     previous_head = _require_sha(head.get("sha"), field="pull request head SHA")
-    if base.get("ref") != default_branch or base.get("sha") != default_sha:
+    base_snapshot = _require_sha(base.get("sha"), field="pull request base snapshot SHA")
+    if base.get("ref") != default_branch:
         raise BootstrapError("pull request base must equal the current provider default")
+    if base_snapshot != default_sha and not _is_ancestor(repo, base_snapshot, default_sha):
+        raise BootstrapError("pull request base snapshot is not an ancestor of the current default")
     branch_info, branch_time = _provider_json(
         policy_root, f"repos/{github_repository}/branches/{quote(branch, safe='')}"
     )

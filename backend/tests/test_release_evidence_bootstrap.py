@@ -437,6 +437,65 @@ def test_provider_state_binds_repo_default_pr_branch_and_ancestry(
     assert state.changed_paths == ("one.txt", "two.txt")
 
 
+def test_provider_state_uses_live_default_when_pull_base_snapshot_is_an_ancestor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, policy = tmp_path / "repo", tmp_path / "policy"
+    repo.mkdir()
+    policy.mkdir()
+    snapshot = "e" * 40
+    pull = _pull(base={"ref": "main", "sha": snapshot, "repo": {"full_name": REPOSITORY}})
+    _install_provider_state_fakes(monkeypatch, repo, policy, pull=pull)
+    ancestry = []
+
+    def is_ancestor(root, ancestor, descendant):
+        assert root == repo
+        ancestry.append((ancestor, descendant))
+        return True
+
+    monkeypatch.setattr(bootstrap, "_is_ancestor", is_ancestor)
+    state = bootstrap._provider_state(repo, policy, github_repository=REPOSITORY,
+                                      pr_number=151, candidate_sha=CANDIDATE)
+    assert state.default_sha == BASE
+    assert state.previous_head == PREVIOUS
+    assert ancestry == [(snapshot, BASE), (BASE, CANDIDATE), (PREVIOUS, CANDIDATE)]
+
+
+@pytest.mark.parametrize(
+    "ancestors,message",
+    [
+        ([False], "base snapshot"),
+        ([True, False], "not an ancestor"),
+        ([True, True, False], "fast-forward"),
+    ],
+)
+def test_provider_state_never_substitutes_a_pull_snapshot_for_current_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ancestors, message
+) -> None:
+    repo, policy = tmp_path / "repo", tmp_path / "policy"
+    repo.mkdir()
+    policy.mkdir()
+    pull = _pull(base={"ref": "main", "sha": "e" * 40, "repo": {"full_name": REPOSITORY}})
+    _install_provider_state_fakes(monkeypatch, repo, policy, pull=pull, ancestors=ancestors)
+    with pytest.raises(bootstrap.BootstrapError, match=message):
+        bootstrap._provider_state(repo, policy, github_repository=REPOSITORY,
+                                  pr_number=151, candidate_sha=CANDIDATE)
+
+
+@pytest.mark.parametrize("snapshot", [None, "", "e" * 39, "E" * 40, True])
+def test_provider_state_rejects_malformed_pull_base_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, snapshot
+) -> None:
+    repo, policy = tmp_path / "repo", tmp_path / "policy"
+    repo.mkdir()
+    policy.mkdir()
+    pull = _pull(base={"ref": "main", "sha": snapshot, "repo": {"full_name": REPOSITORY}})
+    _install_provider_state_fakes(monkeypatch, repo, policy, pull=pull)
+    with pytest.raises(bootstrap.BootstrapError, match="pull request base snapshot SHA"):
+        bootstrap._provider_state(repo, policy, github_repository=REPOSITORY,
+                                  pr_number=151, candidate_sha=CANDIDATE)
+
+
 @pytest.mark.parametrize(
     ("pull", "protected", "ancestors", "message"),
     [
