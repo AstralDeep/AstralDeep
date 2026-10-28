@@ -17791,15 +17791,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from orchestrator import remote_confirmation
             from orchestrator.terminal_security import TerminalError
 
+            _review_publication = remote_confirmation.capture_manual_review(
+                self, websocket, user_id, chat_id, agent_id, tool_name, args)
             _write_snapshot = None
             if agent_id == "computer-use-1" and tool_name == "write_file":
                 from orchestrator.write_review import prepare_write_review
 
                 _write_snapshot = await prepare_write_review(self, websocket, user_id, chat_id, args)
             try:
-                _conf = await asyncio.to_thread(
-                    remote_confirmation.evaluate, self, websocket, agent_id, tool_name,
-                    args, chat_id, user_id)
+                _conf = remote_confirmation.review_publication_refusal(self, websocket, _review_publication)
+                if _conf is None:
+                    _conf = await asyncio.to_thread(
+                        remote_confirmation.evaluate, self, websocket, agent_id, tool_name,
+                        args, chat_id, user_id)
+                _conf = remote_confirmation.review_publication_refusal(
+                    self, websocket, _review_publication, _conf) or _conf
             except TerminalError as exc:
                 if agent_id != "terminal-shell-1":
                     raise
@@ -17821,6 +17827,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     from orchestrator.write_review import attach_write_diff
                     _comps = await attach_write_diff(self, websocket, user_id, chat_id, args, _comps,
                                                      snapshot=_write_snapshot)
+                _obsolete = remote_confirmation.review_publication_refusal(
+                    self, websocket, _review_publication, _conf)
+                if _obsolete is not None:
+                    _conf = _obsolete
+                    _msg, _comps = _obsolete
                 _policy = remote_confirmation.policy_for(agent_id)
                 if (_policy is not None and _policy.card_as_result
                         and not isinstance(_conf, remote_confirmation.Refusal)
@@ -17832,7 +17843,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         render_components=None, render_target=None)
                 return GateRefusal(
                     response=MCPResponse(
-                        error={"message": _msg, "retryable": False}),
+                        error={"message": _msg, "retryable": False,
+                               **({"code": "COMPUTER_REVIEW_CHANGED"}
+                                  if isinstance(_conf, remote_confirmation.ObsoleteReview) else {})}),
                     render_components=_comps, render_target="chat")
 
         if user_id:

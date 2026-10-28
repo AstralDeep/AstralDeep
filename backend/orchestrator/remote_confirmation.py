@@ -61,6 +61,10 @@ class Refusal(tuple):
     __slots__ = ()
 
 
+class ObsoleteReview(Refusal):
+    __slots__ = ()
+
+
 @contextmanager
 def source_review_scope(orch, row):
     token = _SOURCE_PROPOSAL.set((orch, row.proposal_id, row.owner_id, row.conversation_id,
@@ -270,6 +274,34 @@ def computer_approval_current(orch, websocket, authority, *, allow_local_pause=F
             and orch.computer_sessions.get(session.session_id) is session
             and session.owner_sub == authority.owner and session.chat_id == authority.chat
             and session.controller_ws_id == id(websocket) and state_current)
+
+
+def capture_manual_review(orch, websocket, owner, chat, agent, tool, args):
+    from orchestrator.hitl_confirmation import consent_decision, grant_covers, matching_approval
+
+    if (agent != "computer-use-1" or args.get(_MARKER)
+            or matching_approval(orch, owner, chat, agent, tool, args)
+            or consent_decision(orch, websocket, owner, chat, agent, tool, args, ())[0] == "standing"
+            or grant_covers(orch, websocket, owner, chat, tool, args)):
+        return None
+    return capture_computer_approval(orch, websocket, owner, chat, args)
+
+
+def review_publication_refusal(orch, websocket, authority, result=None):
+    if authority is None or computer_approval_current(orch, websocket, authority, allow_local_pause=True):
+        return None
+    if result is not None:
+        for card in result[1]:
+            if not isinstance(card, dict) or card.get("computer_host_id") != authority.host.host_id:
+                continue
+            request = str(card.get("id", "")).removeprefix("au_approval_")
+            authorities = getattr(orch, "_computer_approval_authorities", {})
+            entry = authorities.get(request)
+            if (entry is not None and not entry[0].accepted and entry[0].host is authority.host
+                    and entry[0].websocket is websocket and entry[0].chat == authority.chat):
+                authorities.pop(request, None)
+            _forget_pending(request)
+    return ObsoleteReview(("Computer review authority changed during preparation. Nothing was run; reissue the action.", []))
 
 
 def accept_computer_approval(orch, websocket, authority):

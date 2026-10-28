@@ -263,8 +263,8 @@ async def test_bypass_transition_binds_missing_file_before_any_create_review(tas
 
     monkeypatch.setattr(wr, "prepare_write_review", toggle_after_preparation)
     response = await _call(task_runtime, "write_file", path=PATH, content="new", if_exists="overwrite")
-    assert response.error is None
     if initial_bypass:
+        assert response.error is None
         card, = response.ui_components
         payload = next(part["payload"] for part in card["content"]
                        if part.get("payload", {}).get("decision") == "approve")
@@ -275,9 +275,17 @@ async def test_bypass_transition_binds_missing_file_before_any_create_review(tas
         assert json.loads(preview["code"])["if_exists"] == "refuse"
         await rc.handle_decision(orch, ws, OWNER, payload)
     else:
-        assert not response.ui_components and not rc._PENDING_CARDS
+        assert response.error is not None
+        from orchestrator.tool_feedback import tool_failure_content
+        failure = json.loads(tool_failure_content("write_file", response.error))
+        assert failure["code"] == "COMPUTER_REVIEW_CHANGED" and "fresh request" in failure["message"]
+        assert failure["retryable"] is False
+        assert not response.ui_components and not rc._PENDING_CARDS and not effects
+        monkeypatch.setattr(wr, "prepare_write_review", prepare)
+        response = await _call(task_runtime, "write_file", path=PATH, content="new", if_exists="overwrite")
+        assert response.error is None and not response.ui_components
     assert len(effects) == 1 and effects[0][1]["if_exists"] == "refuse"
-    assert len(calls) == 1
+    assert len(calls) == (1 if initial_bypass else 2)
 
 
 async def test_unbound_overwrite_review_never_claims_create_after_a_late_missing_read(task_runtime, monkeypatch):

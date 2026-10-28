@@ -448,8 +448,11 @@ async def consume_surface_confirmation(orch, websocket, owner, action, target, c
     return True
 
 
-def _refused(message: str) -> MCPResponse:
-    return MCPResponse(error={"message": message, "retryable": False})
+def _refused(message: str, *, code: str | None = None) -> MCPResponse:
+    error = {"message": message, "retryable": False}
+    if code is not None:
+        error["code"] = code
+    return MCPResponse(error=error)
 
 
 def _input_request(authority, tool, args) -> GrantRequest | None:
@@ -885,6 +888,9 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
                 return None
         if not chat or not _attended(orch, websocket, owner):
             return _refused("Confirmation requires an interactive signed-in conversation. Reissue the action there.")
+        from orchestrator.remote_confirmation import capture_manual_review, review_publication_refusal
+
+        publication = capture_manual_review(orch, websocket, owner, chat, agent, tool, args)
         try:
             args = json.loads(encoded)
             if agent != "terminal-shell-1":
@@ -902,6 +908,9 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             host = computer_card_host(orch, owner, chat, args)
             project_targets = project_review_targets(orch, owner, chat, host, tool, args)
         preview, reviewable = await asyncio.to_thread(_review_arguments, shown, project_targets=project_targets)
+        obsolete = review_publication_refusal(orch, websocket, publication)
+        if obsolete is not None:
+            return _refused(obsolete[0], code="COMPUTER_REVIEW_CHANGED")
         if not reviewable:
             return _refused("Review unavailable: this action includes sensitive or oversized arguments that cannot be "
                             "shown completely. Remove private identifiers or credentials, or use a smaller action.")
@@ -979,6 +988,9 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             return _refused("This confirmation is no longer valid for the active conversation.")
         summary = confirmation_request(tool, list(call.risks)).summary
         context = await _computer_context(call.computer_authority, tool, args) if call.computer_authority else []
+        if pending.get(call.request_id) is not call or not _current_session(orch, websocket, call, allow_local_pause=True):
+            pending.pop(call.request_id, None)
+            return _refused("This confirmation changed during preparation. Reissue the action.", code="COMPUTER_REVIEW_CHANGED")
         grant = [Button(label=offer.label, action="authorize_action", variant="secondary",
                         payload={"hitl_request_id": call.request_id, "decision": "grant_task",
                                  "grant_scope": offer.scope["kind"]})
@@ -1019,6 +1031,9 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             card["content"].insert(index, Text(content="This decision explicitly resumes this Mac session. Any focus change "
                 "is limited to the reviewed target. Current policy and privacy checks still apply before the exact action.",
                 variant="caption").to_dict())
+        if pending.get(call.request_id) is not call or not _current_session(orch, websocket, call, allow_local_pause=True):
+            pending.pop(call.request_id, None)
+            return _refused("This confirmation changed during preparation. Reissue the action.", code="COMPUTER_REVIEW_CHANGED")
         return MCPResponse(result={"_data": {"status": "confirmation_required",
                            "message": "An approval card is available. End this turn and wait for the user's decision; "
                                       "do not retry the action or ask again in text."}}, ui_components=[card])
