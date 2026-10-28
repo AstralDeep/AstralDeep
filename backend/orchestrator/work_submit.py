@@ -145,6 +145,8 @@ class WorkSubmissionResult:
 class _ResearchAdmission:
     selection: object = field(repr=False)
     key: object = field(repr=False)
+    harness: object = field(default=None, repr=False)
+    record: object = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -157,11 +159,14 @@ class _SelectedAdmission:
 @dataclass(frozen=True, slots=True)
 class FixedResearchPreflight:
     config_store: object = field(repr=False)
+    harness: object = field(init=False, repr=False)
 
     def __post_init__(self):
         from llm_config.user_store import UserLLMConfigStore
         if type(self.config_store) is not UserLLMConfigStore:
             raise TypeError("fixed research requires the USER configuration store")
+        from orchestrator.harness.selection_service import HarnessSelectionService
+        object.__setattr__(self, "harness", HarnessSelectionService(config_store=self.config_store))
 
     async def prepare(self, *, owner_id, runtime, definition, source_bound):
         from llm_config import research_profile as profile
@@ -192,19 +197,68 @@ class FixedResearchPreflight:
     async def _capture(self, *, owner_id, runtime, definition, minimum):
         from audit.pii import private_binding_key
         from llm_config import research_profile as profile
+        from orchestrator.harness.production_profiles import HarnessSelectionError
+        choice = await self.harness.choice(owner_id)
+        selected_profile = (profile.OPENAI_PROFILE if choice is None or choice.deployment is None
+                            else choice.deployment.profile)
+        minimum = dict(minimum)
+        minimum["tokens"] += selected_profile.reserved_tokens - profile.RESERVED_TOKENS
+        minimum["elapsed_ms"] += selected_profile.reserved_milliseconds - profile.RESERVED_MILLISECONDS
         if any(definition.limits[name] < amount for name, amount in minimum.items()):
             raise AssignmentError("work_research_budget_insufficient", 422)
         try:
             if self.config_store._repository.plane_runtime is not runtime:
                 raise ValueError
+            harness = await self.harness.prepare_choice(choice)
+            if harness is not None and harness.capture is not None:
+                return _ResearchAdmission(harness.config, harness.key, harness)
             key = private_binding_key()
             selection = profile.select_config(
                 await self.config_store.capture_user(owner_id),
                 store=self.config_store, binding_key=key,
             )
-            return _ResearchAdmission(selection, key)
+            return _ResearchAdmission(selection, key, harness)
+        except HarnessSelectionError:
+            raise
         except Exception:
             raise AssignmentError("work_research_profile_unavailable", 503) from None
+
+    async def prepare_existing(self, record, *, runtime, source_bound=None):
+        from audit.pii import private_binding_key
+        from llm_config import research_profile as profile
+        from orchestrator.harness.production_profiles import HarnessSelectionError, profile_for_record
+        from orchestrator.harness.selection_service import select_captured_config
+        if type(record) is not AssignmentRecord or self.config_store._repository.plane_runtime is not runtime:
+            raise AssignmentError("work_research_profile_unavailable", 503)
+        declared = profile_for_record(record)
+        minimum = dict(source_bound or {"model_calls": 0, "tokens": 0, "elapsed_ms": 0})
+        minimum["model_calls"] += 1
+        minimum["tokens"] += declared.reserved_tokens
+        minimum["elapsed_ms"] += declared.reserved_milliseconds
+        if any(record.definition.limits[name] < amount for name, amount in minimum.items()):
+            raise AssignmentError("work_research_budget_insufficient", 422)
+        try:
+            captured = getattr(record, "harness_capture", None)
+            if captured is not None:
+                selected, key = await select_captured_config(captured, store=self.config_store,
+                                                            owner_id=record.owner_id)
+            else:
+                key = private_binding_key()
+                selected = profile.select_config(await self.config_store.capture_user(record.owner_id),
+                    store=self.config_store, binding_key=key)
+            return _ResearchAdmission(selected, key, record=record)
+        except HarnessSelectionError:
+            raise
+        except Exception:
+            raise AssignmentError("work_research_profile_unavailable", 503) from None
+
+    @staticmethod
+    def creation_fields(prepared):
+        if prepared is not None and prepared.record is not None:
+            raise AssignmentError("harness_capture_invalid", 503)
+        return ({} if prepared is None or prepared.harness is None else {
+            "harness_selection": prepared.harness.selection,
+            "harness_capture": prepared.harness.capture})
 
     @staticmethod
     def assert_key(prepared):
@@ -218,16 +272,32 @@ class FixedResearchPreflight:
             raise AssignmentError("work_research_profile_unavailable", 503) from None
 
     def assert_current(self, transaction, *, runtime, owner_id, prepared):
+        from orchestrator.harness.production_profiles import HarnessSelectionError
         try:
             if (type(prepared) is not _ResearchAdmission
                     or self.config_store._repository.plane_runtime is not runtime
                     or prepared.selection.owner_id != owner_id):
                 raise ValueError
+            if prepared.record is None:
+                self.harness.assert_current(transaction, prepared.harness)
+            else:
+                original = prepared.record
+                current = runtime.repositories.assignments.get_assignment(transaction,
+                    owner_id=owner_id, assignment_id=original.assignment_id)
+                if (current is None or original.owner_id != owner_id
+                        or getattr(current, "harness_capture", None)
+                        != getattr(original, "harness_capture", None)):
+                    raise HarnessSelectionError("harness_capture_changed")
+                if getattr(original, "harness_capture", None) is not None:
+                    from orchestrator.harness.production_profiles import deployment_for_capture
+                    deployment_for_capture(original.harness_capture)
             row = runtime.repositories.encrypted_llm_config.get_user_for_update(
                 transaction, owner_id=owner_id)
             if not prepared.selection.matches(row):
                 raise ValueError
             self.assert_key(prepared)
+        except HarnessSelectionError:
+            raise
         except Exception:
             raise AssignmentError("work_research_profile_unavailable", 503) from None
 
@@ -386,10 +456,11 @@ class WorkSubmitService:
         self.research_preflight.assert_key(prepared)
         selected.boundary.assert_current()
 
-    def _agent_selection_policy(self, revision, definition):
+    def _agent_selection_policy(self, revision, definition, selected_profile=None):
         from llm_config import research_profile
         from orchestrator.agent_authoring import byo_enabled
         from orchestrator.projection_surfaces.authoring import DeclarativeAgentService
+        selected_profile = selected_profile or research_profile.OPENAI_PROFILE
         parsed = DeclarativeAgentService._stored_definition(revision)
         limits = parsed.to_dict()["limits"]
         if not byo_enabled() or not parsed.fixed_research_shape:
@@ -398,7 +469,7 @@ class WorkSubmitService:
                 for period in ("daily", "lifetime")
                 for name in ("model_calls", "tool_calls", "tokens", "elapsed_ms"))
                 or definition.limits["max_retries"] > limits["max_retries"]
-                or limits["step_timeout_ms"] < max(research_profile.RESERVED_MILLISECONDS,
+                or limits["step_timeout_ms"] < max(selected_profile.reserved_milliseconds,
                     self.assignments.tool_bound("web-research-1:fetch_page")["elapsed_ms"])
                 or any(limits[period]["spend_micro_units"] is not None for period in ("daily", "lifetime"))):
             raise AssignmentError("work_selected_agent_budget_refused", 422)
@@ -414,7 +485,7 @@ class WorkSubmitService:
             agent=None if reference is None else (reference["agent_id"], reference["revision_id"]),
             references=references, binding_key=prepared.key, now=now)
         if result.agent_revision is not None:
-            self._agent_selection_policy(result.agent_revision, definition)
+            self._agent_selection_policy(result.agent_revision, definition, prepared.selection.profile)
         return result
 
     async def _prepare_selection(self, context, observation, selection, definition, prepared):
@@ -528,7 +599,8 @@ class WorkSubmitService:
                     raise AssignmentError("work_repository_unavailable", 503)
                 record = _sync(create(transaction, owner_id=context.owner_id, assignment_id=identity,
                     origin_namespace=_NAMESPACE, caller_key=body["caller_key"], command_digest=signature,
-                    definition=definition, operation=operation, authority=observation))
+                    definition=definition, operation=operation, authority=observation,
+                    **FixedResearchPreflight.creation_fields(prepared)))
                 if (not isinstance(record, AssignmentRecord) or record.assignment_id != identity
                         or record.owner_id != context.owner_id or record.execution_profile != "one_shot"):
                     raise AssignmentError("work_repository_unavailable", 503)
@@ -564,7 +636,7 @@ class WorkSubmitService:
                 if selected is not None:
                     self._selection_current(context, prepared, selected)
                     if selected.agent_revision is not None:
-                        self._agent_selection_policy(selected.agent_revision, definition)
+                        self._agent_selection_policy(selected.agent_revision, definition, prepared.selection.profile)
                     record = repository.assert_selected_input_current(transaction,
                         owner_id=context.owner_id, assignment_id=identity,
                         expected_instruction_revision=record.instruction_revision,
@@ -573,7 +645,7 @@ class WorkSubmitService:
                         authority_valid_until=observation.valid_until)
                     self._selection_current(context, prepared, selected)
                     if selected.agent_revision is not None:
-                        self._agent_selection_policy(selected.agent_revision, definition)
+                        self._agent_selection_policy(selected.agent_revision, definition, prepared.selection.profile)
                     self._check_new_admission()
                 return WorkSubmissionResult(record, True)
 

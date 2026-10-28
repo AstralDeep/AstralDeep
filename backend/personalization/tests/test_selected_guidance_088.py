@@ -632,3 +632,16 @@ def test_source_free_empty_selection_is_absent_but_not_unbounded():
         prepare_selected_guidance(
             **args, approved_guidance_bytes=prepared.byte_count - 1
         )
+
+
+def test_explicit_bound_local_profile_composes_and_reconstructs_same_guidance(bundle):
+    selected_profile = profile.LOCAL_PROFILE.bind(
+        model="qualified-local-test", base_url="http://127.0.0.1:1234/v1")
+    local = compose_selected_research_input(**bundle, profile_spec=selected_profile)
+    body = json.loads(local.request.body)
+    assert body["model"] == selected_profile.model and body["max_completion_tokens"] == 1024
+    assert reconstruct_selected_research_input(local.envelope,
+        **bundle, profile_spec=selected_profile) == local
+    legacy = compose_selected_research_input(**bundle)
+    assert json.loads(legacy.request.body)["model"] == profile.MODEL
+    assert local.envelope == legacy.envelope

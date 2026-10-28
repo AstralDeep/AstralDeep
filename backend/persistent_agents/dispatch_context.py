@@ -60,6 +60,9 @@ class PersistentDispatchContext:
     strict_final_arguments: bool = False
     conversation_id: str | None = None
     research_input: Any = field(default=None, repr=False)
+    operation_owner: Any = field(default=None, repr=False)
+    operation_fence: Any = field(default=None, repr=False)
+    harness_capture: Any = field(default=None, repr=False)
     _consumed: bool = field(default=False, init=False)
     _arguments_json: str = field(default="", init=False, repr=False)
 
@@ -71,10 +74,12 @@ class PersistentDispatchContext:
             raise ValueError("invalid persistent dispatch bounds")
         self._arguments_json = canonical(self.arguments)
         if self.research_input is not None:
-            from persistent_agents.research_input import ResearchInput, route
+            from persistent_agents.research_input import ResearchInput
             if (type(self.research_input) is not ResearchInput or self.kind != "model"
-                    or self.owner_id != self.research_input.owner_id or self.arguments != route()
-                    or self.timeout_seconds != 65 or self.max_output_tokens != 1024
+                    or self.owner_id != self.research_input.owner_id
+                    or self.arguments != self.research_input.request_route
+                    or self.timeout_seconds != self.research_input.timeout_seconds
+                    or self.max_output_tokens != self.research_input.profile.output_tokens
                     or not self.strict_final_arguments):
                 raise DispatchDenied("assignment_research_binding_changed")
 

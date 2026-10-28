@@ -186,16 +186,16 @@ async def test_private_argument_types_and_absent_identity_are_closed(api, kind):
 async def test_body_snapshot_and_immutable_event_digest_survive_await(api, monkeypatch):
     record, body = await waiting(api)
     original = body.model_dump()
-    before_prepare = FixedResearchPreflight.prepare
+    before_prepare = FixedResearchPreflight.prepare_existing
 
-    async def prepare(self, **kwargs):
-        result = await before_prepare(self, **kwargs)
+    async def prepare(self, *args, **kwargs):
+        result = await before_prepare(self, *args, **kwargs)
         body.submission_id = str(uuid4())
         body.owner_event_id = str(uuid4())
         body.owner_revision = 100
         return result
 
-    monkeypatch.setattr(FixedResearchPreflight, "prepare", prepare)
+    monkeypatch.setattr(FixedResearchPreflight, "prepare_existing", prepare)
     await service_for(api).wake(record.assignment_id, body, caller=await caller(api, api.fixture[2]))
     after = current(api.runtime, record)
     expected = digest({"api_version": 1, "operation_id": record.assignment_id, "command": "wake",
@@ -208,11 +208,11 @@ async def test_body_snapshot_and_immutable_event_digest_survive_await(api, monke
 @pytest.mark.parametrize("change", ["control", "config", "key", "caller"])
 async def test_changed_original_selection_or_prerequisite_rolls_back(api, monkeypatch, change):
     record, body = await waiting(api)
-    before_prepare = FixedResearchPreflight.prepare
+    before_prepare = FixedResearchPreflight.prepare_existing
     expected = [record]
 
-    async def prepare(self, **kwargs):
-        result = await before_prepare(self, **kwargs)
+    async def prepare(self, *args, **kwargs):
+        result = await before_prepare(self, *args, **kwargs)
         if change == "control":
             expected[0] = control(api.runtime, record)
         elif change == "config":
@@ -224,7 +224,7 @@ async def test_changed_original_selection_or_prerequisite_rolls_back(api, monkey
             replace_session_record(api.runtime, get_session_record(api.runtime, api.fixture[2]))
         return result
 
-    monkeypatch.setattr(FixedResearchPreflight, "prepare", prepare)
+    monkeypatch.setattr(FixedResearchPreflight, "prepare_existing", prepare)
     with pytest.raises(AssignmentError):
         await service_for(api).wake(record.assignment_id, body, caller=await caller(api, api.fixture[2]))
     unchanged(api, expected[0])
@@ -247,11 +247,11 @@ async def test_missing_original_session_cannot_be_replaced_by_independent_caller
 
 async def test_final_receipt_recheck_precedes_stale_selected_record_cas(api, monkeypatch):
     record, body = await waiting(api)
-    before_prepare = FixedResearchPreflight.prepare
+    before_prepare = FixedResearchPreflight.prepare_existing
     external = []
 
-    async def prepare(self, **kwargs):
-        result = await before_prepare(self, **kwargs)
+    async def prepare(self, *args, **kwargs):
+        result = await before_prepare(self, *args, **kwargs)
         signature = digest({"api_version": 1, "operation_id": record.assignment_id, "command": "wake",
                             **body.model_dump(exclude={"expected_revision"})})
         with api.runtime.transaction() as tx:
@@ -265,7 +265,7 @@ async def test_final_receipt_recheck_precedes_stale_selected_record_cas(api, mon
         external.append(current(api.runtime, record))
         return result
 
-    monkeypatch.setattr(FixedResearchPreflight, "prepare", prepare)
+    monkeypatch.setattr(FixedResearchPreflight, "prepare_existing", prepare)
     reply = await service_for(api).wake(record.assignment_id, body, caller=await caller(api, api.fixture[2]))
     assert reply["applied"] is False and current(api.runtime, record) == external[0]
     assert len(wake_audits(api)) == 1
@@ -318,7 +318,7 @@ async def test_cancellation_before_acceptance_cannot_later_wake(api, monkeypatch
     async def prepare(*args, **kwargs):
         entered.set()
         await asyncio.Future()
-    monkeypatch.setattr(FixedResearchPreflight, "prepare", prepare)
+    monkeypatch.setattr(FixedResearchPreflight, "prepare_existing", prepare)
     task = asyncio.create_task(service_for(api).wake(record.assignment_id, body,
         caller=await caller(api, api.fixture[2])))
     await asyncio.wait_for(entered.wait(), 3)

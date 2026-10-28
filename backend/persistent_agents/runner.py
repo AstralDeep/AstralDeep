@@ -242,8 +242,9 @@ class AssignmentRunner:
     def _assert_operation_capability(self, record):
         if not self._fixed_research() and not self._fixed_chat():
             return
-        from llm_config import research_profile as profile
+        from orchestrator.harness.production_profiles import profile_for_record
         from persistent_agents.research_episode import source_request
+        profile = profile_for_record(record)
 
         if (not self.fixed_research_ready(service=self.service, sessions=self.one_shot.sessions)
                 or type(record) is not AssignmentRecord or record.operation is None
@@ -255,8 +256,8 @@ class AssignmentRunner:
             if not self._fixed_chat():
                 raise DispatchDenied("assignment_operation_profile_unavailable")
             chat_definition(record)
-            minimum = {"model_calls": 1, "tokens": profile.RESERVED_TOKENS,
-                       "elapsed_ms": profile.RESERVED_MILLISECONDS}
+            minimum = {"model_calls": 1, "tokens": profile.reserved_tokens,
+                       "elapsed_ms": profile.reserved_milliseconds}
             if any(type(record.definition.limits.get(name)) is not int
                    or record.definition.limits[name] < amount for name, amount in minimum.items()):
                 raise DispatchDenied("assignment_operation_profile_unavailable")
@@ -268,8 +269,8 @@ class AssignmentRunner:
             raise DispatchDenied("assignment_operation_profile_unavailable")
         minimum = self.service.tool_bound(request["agent_id"] + ":" + request["tool_name"])
         minimum["model_calls"] += 1
-        minimum["tokens"] += profile.RESERVED_TOKENS
-        minimum["elapsed_ms"] += profile.RESERVED_MILLISECONDS
+        minimum["tokens"] += profile.reserved_tokens
+        minimum["elapsed_ms"] += profile.reserved_milliseconds
         if any(type(record.definition.limits.get(name)) is not int
                or record.definition.limits[name] < amount for name, amount in minimum.items()):
             raise DispatchDenied("assignment_operation_profile_unavailable")
@@ -343,6 +344,9 @@ class AssignmentRunner:
         record = claim.assignment
         category = AdmissionClass.INTERACTIVE if interactive else AdmissionClass.BACKGROUND
         namespace = "one_shot_assignment" if record.execution_profile == "one_shot" else "persistent_assignment"
+        captured = getattr(record, "harness_capture", None)
+        capture_fields = ({} if captured is None else {"harness_capture": captured,
+                           "harness_assignment_id": uuid.UUID(record.assignment_id)})
         request = OperationRequest(
             operation_kind=namespace, admission_class=category,
             owner=OperationOwner(OwnerScope.USER, record.owner_id, None),
@@ -351,7 +355,7 @@ class AssignmentRunner:
             normalized_input_digest=digest([record.assignment_id, record.instruction_revision,
                                             record.control_epoch, claim.fence.claim_generation]),
             chat_id=record.definition.conversation_id, parent_operation_id=None,
-            connection_generation=None, request_generation=None,
+            connection_generation=None, request_generation=None, **capture_fields,
         )
         admission = await asyncio.to_thread(self.orch.work_admission.submit, request)
         if not admission.accepted:
@@ -364,6 +368,20 @@ class AssignmentRunner:
                 operation_id=admission.operation_id, terminal_code="assignment_admission_unavailable",
             )
             raise DispatchDenied("assignment_admission_unavailable")
+        if captured is not None:
+            from orchestrator.harness.selection_service import select_captured_config
+            try:
+                service = self.orch.harness_selection
+                selected, key = await select_captured_config(captured,
+                    store=service.config_store, owner_id=record.owner_id)
+                await asyncio.to_thread(self.orch.work_admission.harness_capture,
+                    owner=request.owner, fence=operation.fence, service=service,
+                    owner_id=record.owner_id, expected=captured, config=selected, key=key)
+            except Exception:
+                await asyncio.to_thread(self.orch.work_admission.terminalize, operation.fence,
+                    state=OperationState.FAILED, terminal_code="harness_unavailable",
+                    safe_summary="Selected execution profile unavailable")
+                raise DispatchDenied("harness_unavailable") from None
         return operation.fence
 
     async def _renew(self, executor, episode):

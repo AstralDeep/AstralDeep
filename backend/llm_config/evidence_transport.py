@@ -3,7 +3,6 @@ Each physical attempt uses shared egress validation and a separate verified tran
 """
 
 from dataclasses import dataclass
-import ipaddress
 import os
 import re
 from types import SimpleNamespace
@@ -13,6 +12,7 @@ from openai import DefaultHttpxClient, OpenAI
 
 from llm_config.client_factory import KEYLESS_API_KEY_SENTINEL
 from shared import external_http
+from shared.net_guard import is_private_http_address as _private_address
 
 
 class EvidenceTransportError(ValueError):
@@ -26,16 +26,6 @@ class _Endpoint:
     port: int
     path: str
 
-
-_PRIVATE_NETWORKS = tuple(ipaddress.ip_network(value) for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
-
-
-def _private_address(value):
-    address = ipaddress.ip_address(value)
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
-        address = address.ipv4_mapped
-    return address.is_loopback or isinstance(address, ipaddress.IPv4Address) and any(
-        address in network for network in _PRIVATE_NETWORKS)
 
 
 def _private_hosts():

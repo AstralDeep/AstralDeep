@@ -180,6 +180,7 @@ async def record_llm_call(
     upstream_error_class: Optional[str] = None,
     correlation_id: Optional[str] = None,
     routed_model: Optional[str] = None,
+    harness_capture: object = None,
 ) -> None:
     if outcome not in ("success", "failure"):
         raise ValueError(f"unknown outcome: {outcome!r}")
@@ -192,6 +193,13 @@ async def record_llm_call(
     }
     if routed_model and routed_model != resolved.model:
         inputs_meta["configured_model"] = resolved.model
+    if harness_capture is not None:
+        from astralplane.repositories.harness_capture import HarnessCapture
+        if type(harness_capture) is not HarnessCapture:
+            raise ValueError("audit harness identity must be a typed capture")
+        identity = harness_capture.identity
+        inputs_meta["harness"] = {"profile": identity.profile, "version": identity.version,
+            "artifact_digest": identity.artifact_digest, "research_profile": harness_capture.research_profile}
     outputs_meta: Dict[str, Any] = {}
     if total_tokens is not None:
         outputs_meta["total_tokens"] = int(total_tokens)

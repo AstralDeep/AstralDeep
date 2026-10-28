@@ -5,16 +5,22 @@ record, and maps upstream errors to typed exceptions.
 
 import ipaddress
 import logging
+import math
+import re
 import os
 import socket
 from typing import Any, Dict, Iterable, Optional
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlsplit, urlunparse
 
 import httpx
 import requests
+from urllib3.connection import HTTPConnection
+from urllib3.connectionpool import HTTPConnectionPool
+from urllib3.exceptions import NewConnectionError
 
 # Private import on purpose: keeps both SSRF guards in sync
 from shared.net_guard import _effective_ip as _decode_embedded_ipv4
+from shared.net_guard import is_private_http_address
 
 logger = logging.getLogger("external_http")
 
@@ -132,6 +138,121 @@ def validate_egress_url(
             )
 
 
+_PRIVATE_HTTP_AUTHORITY = object()
+
+
+class _PrivateHttpCapture:
+    __slots__ = ("_authority", "url", "hosts", "family", "address", "port", "host_header")
+
+    def __init__(self, authority, url, hosts, family, address, port, host_header):
+        if authority is not _PRIVATE_HTTP_AUTHORITY:
+            raise EgressBlockedError("private HTTP capture unavailable")
+        for name, value in zip(self.__slots__,
+                (authority, url, hosts, family, address, port, host_header), strict=True):
+            object.__setattr__(self, name, value)
+
+    def __setattr__(self, name, value):
+        raise AttributeError("private HTTP capture is immutable")
+
+
+def _private_http_url(value):
+    if (type(value) is not str or not 1 <= len(value) <= 4096
+            or any(not 33 <= ord(char) <= 126 for char in value)):
+        raise ValueError
+    parsed = urlsplit(value)
+    if (parsed.scheme != "http" or not parsed.hostname or parsed.username is not None
+            or parsed.password is not None or parsed.query or parsed.fragment
+            or not re.fullmatch(r"[A-Za-z0-9._~!$&'()*+,;=:@/-]*", parsed.path)
+            or "//" in parsed.path or any(segment in {".", ".."} for segment in parsed.path.split("/"))):
+        raise ValueError
+    port = parsed.port if parsed.port is not None else 80
+    if not 1 <= port <= 65535:
+        raise ValueError
+    canonical = requests.Request("POST", value).prepare().url
+    return canonical, parsed.hostname, port, urlsplit(canonical).netloc
+
+
+def _resolve_private_http_addresses(host, port):
+    return socket.getaddrinfo(host, port, family=socket.AF_UNSPEC,
+                              type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)
+
+
+def capture_private_http_target(url, *, allowed_private_hosts):
+    try:
+        canonical, host, port, host_header = _private_http_url(url)
+        hosts = allowed_private_hosts
+        if (type(hosts) is not tuple or len(hosts) > 32 or hosts != tuple(sorted(set(hosts)))
+                or any(type(item) is not str or re.fullmatch(r"[a-z0-9.:-]{1,253}", item) is None for item in hosts)
+                or host not in hosts):
+            raise ValueError
+        validate_egress_url(url, allowed_private_hosts=hosts)
+        records = _resolve_private_http_addresses(host, port)
+        if type(records) not in (list, tuple) or not 1 <= len(records) <= 8:
+            raise ValueError
+        approved = []
+        for record in records:
+            if (type(record) is not tuple or len(record) != 5
+                    or record[0] not in (socket.AF_INET, socket.AF_INET6)
+                    or record[1] != socket.SOCK_STREAM or record[2] != socket.IPPROTO_TCP
+                    or type(record[4]) is not tuple or len(record[4]) < 2):
+                raise ValueError
+            address = ipaddress.ip_address(record[4][0])
+            if ("%" in str(address) or not is_private_http_address(str(address))
+                    or address.version != (4 if record[0] == socket.AF_INET else 6)):
+                raise ValueError
+            approved.append((record[0], address.compressed))
+        family, address = approved[0]
+        return _PrivateHttpCapture(_PRIVATE_HTTP_AUTHORITY, canonical, hosts,
+                                   family, address, port, host_header)
+    except (ValueError, TypeError, OSError, requests.RequestException):
+        raise EgressBlockedError("private HTTP capture unavailable") from None
+
+
+class _PrivateHttpAdapter(requests.adapters.HTTPAdapter):
+    def __init__(self, captured):
+        super().__init__(max_retries=0)
+        class Connection(HTTPConnection):
+            def _new_conn(self):
+                connection = socket.socket(captured.family, socket.SOCK_STREAM, socket.IPPROTO_TCP)
+                try:
+                    if (type(self.timeout) not in (int, float) or not math.isfinite(self.timeout)
+                            or self.timeout <= 0):
+                        raise ValueError
+                    connection.settimeout(self.timeout)
+                    for option in self.socket_options or ():
+                        connection.setsockopt(*option)
+                    address = ((captured.address, captured.port) if captured.family == socket.AF_INET
+                               else (captured.address, captured.port, 0, 0))
+                    connection.connect(address)
+                    return connection
+                except (OSError, ValueError):
+                    connection.close()
+                    raise NewConnectionError(self, "private HTTP connection failed") from None
+        self._captured = captured
+        self._pool = HTTPConnectionPool(captured.address, captured.port, maxsize=1, block=True,
+                                        retries=False)
+        self._pool.ConnectionCls = Connection
+
+    def get_connection_with_tls_context(self, request, verify, proxies=None, cert=None):
+        if request.url != self._captured.url or request.method != "POST" or proxies:
+            raise EgressBlockedError("private HTTP request changed")
+        return self._pool
+
+    def get_connection(self, url, proxies=None):
+        if url != self._captured.url or proxies:
+            raise EgressBlockedError("private HTTP request changed")
+        return self._pool
+
+    def add_headers(self, request, **kwargs):
+        if request.url != self._captured.url or "Host" in request.headers:
+            raise EgressBlockedError("private HTTP Host changed")
+        request.headers["Host"] = self._captured.host_header
+
+    def close(self):
+        self._pool.close()
+        super().close()
+
+
 def request(
     method: str,
     url: str,
@@ -148,7 +269,19 @@ def request(
     allowed_private_hosts: Optional[Iterable[str]] = None,
     require_identity_encoding: bool = False,
     trust_environment: bool = True,
+    _private_http_capture: object = None,
 ) -> requests.Response:
+    if _private_http_capture is not None:
+        capture = _private_http_capture
+        try:
+            if (type(capture) is not _PrivateHttpCapture or capture._authority is not _PRIVATE_HTTP_AUTHORITY
+                    or _private_http_url(url)[0] != capture.url or allowed_private_hosts != capture.hosts
+                    or method != "POST" or trust_environment is not False
+                    or allow_redirects is not False or require_identity_encoding is not True
+                    or any(name.lower() == "host" for name in (extra_headers or {}))):
+                raise ValueError
+        except (AttributeError, ValueError, TypeError):
+            raise EgressBlockedError("private HTTP request changed") from None
     validate_egress_url(url, allowed_private_hosts=allowed_private_hosts)
     headers: Dict[str, str] = {}
     if isinstance(api_key, str) and api_key.strip():
@@ -179,6 +312,8 @@ def request(
         else:
             with requests.Session() as session:
                 session.trust_env = False
+                if _private_http_capture is not None:
+                    session.mount("http://", _PrivateHttpAdapter(_private_http_capture))
                 resp = session.request(method.upper(), url, **options)
     except (requests.ConnectionError, requests.Timeout) as e:
         raise ServiceUnreachableError(f"Could not reach {url}: {e}") from e

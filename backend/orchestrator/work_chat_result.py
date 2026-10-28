@@ -21,10 +21,11 @@ from astralplane.repositories.assignment_models import (
     AssignmentTransientInput,
 )
 from audit.pii import private_binding_key
-from llm_config import research_profile as profile
+from orchestrator.harness.production_profiles import HarnessSelectionError, profile_for_record
 from persistent_agents.chat_episode import (
     CHAT_KEY_PREFIX,
     CHAT_PROFILE,
+    LOCAL_CHAT_PROFILE,
     chat_action_key,
     chat_result_value,
 )
@@ -46,14 +47,14 @@ def _chat_model(record, model, expected_key):
              and re.fullmatch(r"[a-f0-9]{64}", transient.payload_binding) is not None)
     _require(type(transient.binding_key_id) is str
              and re.fullmatch(r"[a-z][a-z0-9_]{0,31}", transient.binding_key_id) is not None)
-    _require(thaw(model.intent.request) == route()
+    _require(thaw(model.intent.request) == route(record)
              and model.intent.action_key == expected_key
              and model.intent.request_digest == transient.payload_binding
              and model.intent.boundary == "unreplayable"
              and type(model.intent.maximum) is AssignmentResourceAmount
              and model.intent.maximum == AssignmentResourceAmount(
-                 model_calls=1, tokens=profile.RESERVED_TOKENS,
-                 elapsed_ms=profile.RESERVED_MILLISECONDS))
+                 model_calls=1, tokens=profile_for_record(record).reserved_tokens,
+                 elapsed_ms=profile_for_record(record).reserved_milliseconds))
     return transient
 
 
@@ -64,13 +65,14 @@ def _answer(record, model, transient):
         "binding_key_id": transient.binding_key_id,
     })
     answer = result["result"]
+    profile_name = LOCAL_CHAT_PROFILE if profile_for_record(record).local else CHAT_PROFILE
     _require(type(answer) is dict and set(answer) == {"version", "profile", "text"}
-             and answer["profile"] == CHAT_PROFILE
-             and answer == chat_result_value(answer["text"]))
+             and answer["profile"] == profile_name
+             and answer == {**chat_result_value(answer["text"]), "profile": profile_name})
     key = private_binding_key(transient.binding_key_id)
     _require(key.verify("result", receipt_payload(payload_binding=transient.payload_binding,
         action_id=model.action_id, attempt_id=attempt["attempt_id"], outcome="succeeded",
-        result=answer, actual=result["actual"], profile_name=CHAT_PROFILE),
+        result=answer, actual=result["actual"], profile_name=profile_name),
         result["result_digest"]))
     expected = {"version": 1, "kind": "chat", "text": answer["text"],
                 "model_action_id": model.action_id}
@@ -123,5 +125,6 @@ def project_chat_result(transaction, repository, *, owner_id, read):
         _require(type(final) is AssignmentOperationRead and _same(final, current))
         return _envelope(content=answer)
     except (ValueError, TypeError, AttributeError, KeyError, OverflowError,
-            RepositoryConflictError, RepositoryDataError, RepositoryNotFoundError, DispatchDenied):
+            RepositoryConflictError, RepositoryDataError, RepositoryNotFoundError,
+            DispatchDenied, HarnessSelectionError):
         return _envelope("unavailable")
