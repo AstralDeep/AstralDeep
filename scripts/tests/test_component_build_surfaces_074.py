@@ -225,6 +225,29 @@ def test_apple_archives_preserve_the_qualified_project_version() -> None:
         assert "GITHUB_RUN_NUMBER" not in arguments
 
 
+def test_projection_browser_retry_preserves_the_full_gate_and_raw_observations() -> None:
+    workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    job = _workflow_job(workflow, "projection-backend-web")
+    assert "timeout-minutes: 30" in job
+    assert job.count("--retries=") == 1
+    target = next(line for line in job.splitlines() if "--retries=" in line)
+    assert '--grep "$signout_pattern" --retries=1' in target
+    assert 'signout_pattern="(^| )sign-out erases the selection immediately$"' in job
+    assert 'playwright test tests/selection-088.spec.js --browser=chromium --workers=1' in job
+    assert '--grep-invert "$signout_pattern"' in job
+    assert '--grep "$signout_pattern" --list --reporter=json' in job
+    assert 'python3 /deep-ci/ci_browser_retry.py select' in job
+    assert 'test "$target_status" -eq 0' in job
+    assert '--trace=retain-on-failure' in job and '--reporter=line,json' in job
+    assert '--ordinary "$evidence/client-v8/selection-088.json"' in job
+    assert '--retried "$evidence/signout-client-v8/selection-088.json"' in job
+    assert '--output "$evidence/selection-browser-v8.json"' in job
+    assert '--input build/backend-web/selection-browser-v8.json' in job
+    assert 'if: always()' in job
+    assert 'components/AstralProjection/build/backend-web' in job
+    assert 'scripts/tests/test_ci_browser_retry.py' in _workflow_job(workflow, "release-tooling-tests")
+
+
 def test_store_and_signing_workflows_require_explicit_release_events() -> None:
     apple = (REPOSITORY_ROOT / ".github/workflows/apple-release.yml").read_text(
         encoding="utf-8"
