@@ -73,7 +73,22 @@ rejected. The session tree and SRT's `/tmp/claude` convenience remain write-deni
 SRT's deny-over-allow precedence is preserved.
 
 Reads are denied at `/` and restored only for explicit runtime trees, the vendored
-seccomp helper, effect source/spec, and scratch. Writes are allowed only to scratch.
+seccomp helper, effect source/spec, and scratch. SRT hides read-denied directories
+with private writable tmpfs mounts. The first-party `sandbox_bwrap.py` adapter seals
+those data mounts and `/dev` read-only after mount setup while preserving the
+separate scratch bind. It retains SRT's user, PID and network namespaces, capability
+drop and seccomp helper. The private process/kernel interfaces and standard streams
+retain their existing runtime behavior; this adapter does not change host policy.
+
+Each control directory also contains an exclusive `0500` adapter copy and `0400`
+closed binary/scratch configuration. Source, configuration and profile bytes,
+owner, regular-file identity, link count and modes are rechecked before an effect.
+The adapter accepts only the pinned generated option vocabulary and exact benign
+namespace dependency probe. Bounded regular argument files are consumed and closed;
+malformed, unknown or weakened arguments return a fixed unavailable error. No
+argument or environment values are logged. These checks supplement the existing
+captured runtime asset and dispatch authority fences. Writes to ordinary data paths
+outside scratch remain denied, including paths hidden by SRT's private overlays.
 The network allowlist is empty with deny-all and strict allowlist enabled; Unix sockets
 and local binding remain disabled. The child receives a fixed minimal environment and
 only its standard pipes. Missing primitives and upstream degradation warnings are hard

@@ -1,5 +1,5 @@
-"""Qualify a pinned Linux sandbox through the generated LETS executor and ProcessSupervisor.
-Parent-side containment checks fail closed before effects on unsupported hosts; production dispatch does not import this module.
+"""Qualifies the pinned Linux sandbox for its registered pilot and operator diagnostics through the LETS executor.
+Parent-side checks and the immutable mount adapter constrain ProcessSupervisor effects and refuse unsupported hosts.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import os
 import select
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tarfile
@@ -41,6 +42,7 @@ from shared.process_supervision import (
     TerminationReason,
 )
 from shared import external_http
+from orchestrator import sandbox_bwrap
 
 QUALIFICATION_OWNER_KIND: Final = "sandbox-qualification"
 QUALIFICATION_AGENT_ID: Final = "sandbox-qualification-runner"
@@ -816,7 +818,7 @@ def build_srt_settings(
             "denyWrite": ["/tmp/claude", str(session.session_dir)],
         },
         "seccomp": {"applyPath": str(runtime.apply_seccomp_path)},
-        "bwrapPath": str(runtime.bwrap_path),
+        "bwrapPath": str(session.session_dir / "bwrap-seal.py"),
         "socatPath": str(runtime.socat_path),
     }
 
@@ -891,18 +893,50 @@ def validate_srt_settings(
         runtime.apply_seccomp_path
     ):
         raise SandboxQualificationError("profile_seccomp_not_pinned")
-    if settings.get("bwrapPath") != str(runtime.bwrap_path):
+    if settings.get("bwrapPath") != str(session.session_dir / "bwrap-seal.py"):
         raise SandboxQualificationError("profile_seccomp_not_pinned")
     if settings.get("socatPath") != str(runtime.socat_path):
         raise SandboxQualificationError("profile_seccomp_not_pinned")
 
 
 def write_immutable_profile(
-    session: QualificationSession, settings: Mapping[str, Any]
+    session: QualificationSession, settings: Mapping[str, Any], runtime: SrtRuntime
 ) -> bytes:
+    validate_srt_settings(settings, session=session, runtime=runtime)
+    for path, (content, mode) in _bwrap_files(session, runtime).items():
+        _write_exclusive_artifact(path, content, mode=mode)
     payload = canonical_profile_bytes(settings)
     _write_exclusive_artifact(session.profile_path, payload, mode=0o400)
     return payload
+
+
+def _bwrap_files(session: QualificationSession, runtime: SrtRuntime):
+    interpreter = shutil.which("python3") or sys.executable
+    if not Path(interpreter).is_absolute() or any(value.isspace() for value in interpreter):
+        raise SandboxQualificationError("session_bwrap_changed")
+    script = session.session_dir / "bwrap-seal.py"
+    source = (f"#!{interpreter}\n").encode("utf-8") + Path(sandbox_bwrap.__file__).read_bytes()
+    config = {"binary": str(runtime.bwrap_path), "scratch": str(session.scratch_dir)}
+    return {
+        script: (source, 0o500),
+        script.with_suffix(".json"): (canonical_profile_bytes(config), 0o400),
+    }
+
+
+def verify_bwrap_bundle(session: QualificationSession, runtime: SrtRuntime) -> None:
+    try:
+        expected = {**_bwrap_files(session, runtime),
+                    session.profile_path: (canonical_profile_bytes(build_srt_settings(session, runtime)), 0o400)}
+        for path, (content, mode) in expected.items():
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as stream:
+                metadata = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1
+                        or metadata.st_uid != os.getuid() or metadata.st_mode & 0o7777 != mode
+                        or metadata.st_size != len(content) or stream.read(len(content) + 1) != content):
+                    raise ValueError("immutable bundle changed")
+    except (OSError, ValueError, TypeError):
+        raise SandboxQualificationError("session_bwrap_changed") from None
 
 
 def _write_exclusive_artifact(path: Path, payload: bytes, *, mode: int) -> None:
@@ -1302,6 +1336,9 @@ def launch_sandboxed_effect(
     runtime: SrtRuntime,
     profile_path: Path,
 ) -> SupervisedProcess:
+    if profile_path != session.profile_path:
+        raise SandboxQualificationError("session_bwrap_changed")
+    verify_bwrap_bundle(session, runtime)
     command = (
         shutil.which("python3") or sys.executable,
         str(session.effect_script_path),
@@ -1771,7 +1808,7 @@ def run_sandbox_qualification(
         )
     settings = build_srt_settings(session, resolved_runtime)
     validate_srt_settings(settings, session=session, runtime=resolved_runtime)
-    profile_bytes = write_immutable_profile(session, settings)
+    profile_bytes = write_immutable_profile(session, settings, resolved_runtime)
     profile_sha256 = hashlib.sha256(profile_bytes).hexdigest()
     resolved_supervisor = supervisor if supervisor is not None else ProcessSupervisor()
     receipt_digests: list[str] = []

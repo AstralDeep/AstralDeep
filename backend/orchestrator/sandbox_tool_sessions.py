@@ -94,6 +94,7 @@ def _source():
         root / "agents/sandbox_qualification/sandbox_qualification_agent.py",
         root / "agents/sandbox_qualification/mcp_server.py",
         Path(sq.__file__),
+        Path(sq.sandbox_bwrap.__file__),
         root / "shared/base_agent.py",
         root.parent / "tooling/sandbox-qualification/manifest.json",
         root.parent / "tooling/sandbox-qualification/package.json",
@@ -630,7 +631,7 @@ class QualificationToolSessions:
         )
         settings = sq.build_srt_settings(session, runtime)
         sq.validate_srt_settings(settings, session=session, runtime=runtime)
-        profile = sq.write_immutable_profile(session, settings)
+        profile = sq.write_immutable_profile(session, settings, runtime)
         tcp, unix = None, None
         checks = []
         try:

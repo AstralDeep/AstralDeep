@@ -889,7 +889,7 @@ def test_profile_denies_network_and_limits_writes(tmp_path: Path, stub_runtime):
     assert filesystem["allowWrite"] == [str(session.scratch_dir)]
     assert "/tmp/claude" in filesystem["denyWrite"]
     assert settings["seccomp"]["applyPath"] == str(stub_runtime.apply_seccomp_path)
-    assert settings["bwrapPath"] == str(stub_runtime.bwrap_path)
+    assert settings["bwrapPath"] == str(session.session_dir / "bwrap-seal.py")
     assert settings["socatPath"] == str(stub_runtime.socat_path)
 
 
@@ -990,7 +990,7 @@ def test_profile_file_is_owner_read_only_and_deterministic(
 ):
     session = sq.prepare_session(session_dir=tmp_path / "session")
     settings = sq.build_srt_settings(session, stub_runtime)
-    payload = sq.write_immutable_profile(session, settings)
+    payload = sq.write_immutable_profile(session, settings, stub_runtime)
     mode = stat.S_IMODE(session.profile_path.stat().st_mode)
     assert mode == 0o400
     assert sq.canonical_profile_bytes(settings) == payload
@@ -1828,7 +1828,7 @@ def test_session_artifact_symlinks_are_never_followed(tmp_path, stub_runtime, ar
     with pytest.raises(sq.SandboxQualificationError, match="session_artifact_exists"):
         if artifact == "profile":
             sq.write_immutable_profile(
-                session, sq.build_srt_settings(session, stub_runtime)
+                session, sq.build_srt_settings(session, stub_runtime), stub_runtime
             )
         else:
             sq.write_effect_spec(session, {"mode": "authorized"})

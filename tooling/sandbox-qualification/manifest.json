@@ -39,7 +39,13 @@
     ],
     "package_lock_sha256": "5b6925032bd3fbda37e7847037a2feb04b485afb7a66a26da57d6c65b7f6664b",
     "minimum_npm_version": "10.9.0",
-    "installation": "package.json + lockfile v3; npm ci --offline --ignore-scripts --no-audit --no-fund"
+    "installation": "package.json + lockfile v3; npm ci --offline --ignore-scripts --no-audit --no-fund",
+    "private_mount_adapter": {
+      "implementation": "backend/orchestrator/sandbox_bwrap.py",
+      "policy": "Seal each generated private tmpfs and /dev mount read-only after SRT setup; preserve the separately bound scratch directory, existing namespace and seccomp fences.",
+      "configuration": "Exclusive owner-only source and closed binary/scratch configuration, rechecked before every effect; unknown or malformed generated arguments fail closed.",
+      "upstream_package_modified": false
+    }
   },
   "boundaries": {
     "in_scope": "One short-lived, no-network, harmless local scratch-file effect per verified receipt, launched through the existing ProcessSupervisor and the existing generated-executor LETS receipt verifier.",
