@@ -2320,11 +2320,11 @@ class TestDormantFenceProfiles:
                     Path("/node"), Path("/action"), report, ready, {}, "unit"
                 )
 
-    def test_dormant_inventory_matches_the_two_compiled_reviewed_bundles(self):
+    def test_inventory_matches_the_two_compiled_reviewed_bundles(self):
         module = importlib.import_module("scripts.ci_fence_fixture_verifier_v2")
         root = Path(__file__).parents[2]
         inventory = json.loads((root / "tooling/ci-peer/inputs-v2.json").read_text())
-        assert inventory["status"] == "dormant_not_activated"
+        assert inventory["status"] == "compatibility_inventory_explicit_v0125_caller"
         assert (
             inventory["selection"]
             == "explicit_reviewed_caller_complete_action_pin_only"
