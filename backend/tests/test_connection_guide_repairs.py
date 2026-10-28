@@ -206,3 +206,32 @@ async def test_shared_status_text_retains_readiness_without_color_only_meaning(m
     components = await surface.components_from_payload(payload)
     database = next(item for item in components if item.get("type") == "alert" and item.get("title") == "Database")
     assert "Ready" in database["message"]
+
+
+def test_lets_recheck_refreshes_stale_health_before_reporting(monkeypatch):
+    observed = {"reachable": False, "cached": True, "refreshes": 0}
+    def refresh(_):
+        observed["cached"] = observed["reachable"]
+        observed["refreshes"] += 1
+    def snapshot(_):
+        return SimpleNamespace(mode="enforce", application_ready=observed["cached"],
+            component_status="healthy" if observed["cached"] else "blocked", operator_code="lets_unavailable")
+    monkeypatch.setattr("orchestrator.lets_health_api.refresh_lets_reachability", refresh)
+    monkeypatch.setattr("orchestrator.lets_health_api.lets_snapshot", snapshot)
+    unavailable = cg._lets_check(fixtures.FakeOrch())
+    assert unavailable["status"] == cg.STATUS_UNAVAILABLE and unavailable["required"] is True
+    observed["reachable"] = True
+    recovered = cg._lets_check(fixtures.FakeOrch())
+    assert recovered["status"] == cg.STATUS_READY
+    assert observed["refreshes"] == 2
+
+
+def test_lets_refresh_failure_does_not_report_cached_success(monkeypatch):
+    def broken(_):
+        raise RuntimeError("private health refresh detail")
+    monkeypatch.setattr("orchestrator.lets_health_api.refresh_lets_reachability", broken)
+    monkeypatch.setattr("orchestrator.lets_health_api.lets_snapshot", lambda _: SimpleNamespace(
+        mode="enforce", application_ready=True, component_status="healthy", operator_code="lets_ready"))
+    check = cg._lets_check(fixtures.FakeOrch())
+    assert check["status"] == cg.STATUS_UNAVAILABLE and check["required"] is True
+    assert "private health refresh detail" not in json.dumps(check)

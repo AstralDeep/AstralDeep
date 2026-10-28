@@ -278,9 +278,10 @@ async def _publication_check(orch) -> dict[str, str | bool]:
 
 
 def _lets_check(orch) -> dict[str, str | bool]:
-    from orchestrator.lets_health_api import lets_snapshot
+    from orchestrator.lets_health_api import lets_snapshot, refresh_lets_reachability
 
     try:
+        refresh_lets_reachability(orch)
         snapshot = lets_snapshot(orch)
     except Exception:
         logger.warning("connection guide: LETS posture read failed", exc_info=True)
