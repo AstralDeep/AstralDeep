@@ -2726,11 +2726,7 @@ class HistoryManager:
                 regular += 1
             preview = _chat_preview(row.latest_message_content)
 
-            from orchestrator.projects import ProjectService
-
-            project_id = ProjectService(self).project_for_chat(user_id, row.conversation_id)
             results.append({
-                **({"project_id": project_id} if project_id is not None else {}),
                 "id": row.conversation_id,
                 "title": row.title,
                 "agent_id": row.agent_id,

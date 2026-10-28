@@ -131,6 +131,51 @@ def test_recent_chats_saved_component_flag_still_one_query(
     assert by_id[c3]["has_saved_components"] is False
 
 
+def test_recent_mixed_project_and_legacy_chats_keep_budget_and_authoritative_membership(
+    hm, plane_runtime, user_id
+):
+    from orchestrator.projects import ProjectError, ProjectService
+
+    legacy, member, latest = _seed_three_chats(hm, plane_runtime, user_id)
+    service = ProjectService(hm)
+    project = str(uuid.uuid4())
+    service.create(user_id, project, "Research")
+    with plane_runtime.transaction() as transaction:
+        plane_runtime.repositories.projects.attach_chat(
+            transaction, owner_id=user_id, project_id=project, chat_id=member)
+    hm.save_component(member, {"type": "table", "rows": []}, "table", user_id=user_id)
+    hm.set_chat_flag(member, "pinned", True, user_id)
+    hm.set_chat_flag(member, "archived", True, user_id)
+    for rank, chat_id in enumerate((legacy, member, latest), start=1):
+        plane_runtime.execute(
+            "UPDATE chats SET updated_at = ? WHERE id = ? AND user_id = ?",
+            (rank * 1000, chat_id, user_id))
+
+    with _count_plane_queries(plane_runtime) as counter:
+        chats = hm.get_recent_chats(user_id=user_id, include_archived=True)
+
+    assert counter.count == 2
+    assert [chat["id"] for chat in chats] == [latest, member, legacy]
+    assert [chat["preview"] for chat in chats] == [
+        "z" * PREVIEW_MAX_CHARS + "...",
+        "Here are your results. Holdings",
+        "the answer to the first question",
+    ]
+    assert all("project_id" not in chat for chat in chats)
+    assert [(chat["pinned"], chat["archived"], chat["has_saved_components"]) for chat in chats] == [
+        (False, False, False), (True, True, True), (False, False, False)]
+    assert hm.get_chat(member, user_id)["project_id"] == project
+    assert "project_id" not in hm.get_chat(legacy, user_id)
+    page = service.list_chats(user_id, project)
+    assert [(chat["id"], chat["project_id"]) for chat in page["chats"]] == [(member, project)]
+    foreign = user_id + "-foreign"
+    assert hm.get_recent_chats(user_id=foreign) == []
+    assert hm.get_chat(member, foreign) is None
+    assert service.project_for_chat(foreign, member) is None
+    with pytest.raises(ProjectError, match="project_not_found"):
+        service.list_chats(foreign, project)
+
+
 @pytest.fixture
 def perms(plane_runtime, user_id):
     manager = ToolPermissionManager(
