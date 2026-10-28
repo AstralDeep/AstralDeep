@@ -78,7 +78,7 @@ def manager(monkeypatch, tmp_path):
     )
     lifecycle = SimpleNamespace(
         admit_new_runtime=AsyncMock(),
-        latest_binding=Mock(),
+        latest_binding=Mock(return_value=None),
         close_runtime_generation=AsyncMock(),
     )
     host = SimpleNamespace(
@@ -1116,3 +1116,295 @@ def test_revoked_binding_is_rechecked_immediately_before_actuator_claim(local_ef
         effect.service._effect(effect.state, context(), {"mode": "authorized"}, {})
     effect.state.executor.verify_and_claim.assert_not_called()
     assert not effect.state.supervisor.snapshots()
+
+
+@pytest.mark.parametrize("boundary", ["assets", "binding", "claim"])
+def test_expiry_during_final_validation_never_launches(local_effect, monkeypatch, boundary):
+    effect = local_effect
+    state = effect.state
+    verify = effect.service._verify_runtime
+    latest = effect.service.orchestrator.lets_runtime.lifecycle.latest_binding
+    claim = state.executor.verify_and_claim
+
+    def verify_assets(current):
+        verify(current)
+        if boundary == "assets":
+            current.expires = time.monotonic() - 1
+
+    def current_binding(**kwargs):
+        current = latest(**kwargs)
+        if boundary == "binding":
+            state.expires = time.monotonic() - 1
+        return current
+
+    def consume(**kwargs):
+        claim(**kwargs)
+        if boundary == "claim":
+            state.expires = time.monotonic() - 1
+
+    monkeypatch.setattr(effect.service, "_verify_runtime", verify_assets)
+    monkeypatch.setattr(
+        effect.service.orchestrator.lets_runtime.lifecycle, "latest_binding", current_binding
+    )
+    spy = Mock(side_effect=consume)
+    monkeypatch.setattr(type(state.executor), "verify_and_claim", spy)
+    arguments = {"mode": "authorized", "qualification_id": state.identity}
+    with pytest.raises(route.ToolDenied):
+        effect.service._effect(state, context(), arguments, effect.permits(arguments))
+    assert spy.call_count == (1 if boundary == "claim" else 0)
+    assert not state.supervisor.snapshots()
+
+
+@pytest.mark.parametrize("loss", ["closed", "shutdown"])
+def test_final_context_validation_cannot_hide_a_concurrent_close(
+    local_effect, monkeypatch, loss
+):
+    effect = local_effect
+    lifecycle = effect.service.orchestrator.lets_runtime.lifecycle
+    latest = lifecycle.latest_binding
+    validating_final_context = False
+
+    def current_binding(**kwargs):
+        nonlocal validating_final_context
+        current = latest(**kwargs)
+        validating_final_context = True
+        return current
+
+    def current_context():
+        if validating_final_context:
+            if loss == "closed":
+                effect.state.closed = True
+            else:
+                effect.service._closing = True
+        return True
+
+    monkeypatch.setattr(lifecycle, "latest_binding", current_binding)
+    claim = Mock(wraps=effect.state.executor.verify_and_claim)
+    monkeypatch.setattr(type(effect.state.executor), "verify_and_claim", claim)
+    ctx = context()
+    ctx.current = current_context
+    args = {"mode": "authorized", "qualification_id": effect.state.identity}
+    with pytest.raises(route.ToolDenied):
+        effect.service._effect(effect.state, ctx, args, effect.permits(args))
+    claim.assert_not_called()
+    assert not effect.state.supervisor.snapshots()
+
+
+@pytest.mark.asyncio
+async def test_resolution_rechecks_expiry_after_current_binding(admitted_host):
+    host, state, lifecycle = admitted_host
+    ctx, _ = effect_context(host, "authorized", state.identity)
+
+    def expire(**kwargs):
+        state.expires = time.monotonic() - 1
+        return state.binding
+
+    lifecycle.latest_binding.side_effect = expire
+    with pytest.raises(route.ToolDenied):
+        await host.agent.sessions.resolve(ctx, state.identity)
+    await host.agent.sessions.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_runtime_resolution_rechecks_source_after_asset_validation(manager, monkeypatch):
+    service, lifecycle = manager
+
+    async def admit(**kwargs):
+        return SimpleNamespace(
+            protected=True,
+            binding=binding(kwargs["owner_id"], kwargs["runtime_id"]),
+            error_code=None,
+        )
+
+    lifecycle.admit_new_runtime.side_effect = admit
+    ready = await service.prepare(context())
+    state = service._states[ready["qualification_id"]]
+    source_current = Mock(return_value=True)
+    monkeypatch.setattr(service, "_implementation_current", source_current)
+    monkeypatch.setattr(
+        service, "_verify_runtime", lambda current: setattr(source_current, "return_value", False)
+    )
+    with pytest.raises(route.ToolDenied):
+        await service.runtime_for_owner("owner")
+    assert state.closed and state.root is None
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recovery", ["terminal", "active", "outage", "mismatch", "unknown"])
+async def test_closed_reservation_recovers_only_after_exact_terminal_confirmation(
+    manager, tmp_path, recovery
+):
+    service, lifecycle = manager
+
+    async def admit(**kwargs):
+        return SimpleNamespace(
+            protected=True,
+            binding=binding(kwargs["owner_id"], kwargs["runtime_id"]),
+            error_code=None,
+        )
+
+    lifecycle.admit_new_runtime.side_effect = admit
+    ready = await service.prepare(context())
+    state = service._states[ready["qualification_id"]]
+    roots = [tmp_path / "replay", tmp_path / "anchors"]
+    config = service.orchestrator.lets_runtime.config
+    config.executor_db_root, config.executor_authority_root = roots
+    for root in roots:
+        private = root / state.runtime_id
+        private.mkdir(parents=True)
+        (private / "retained").write_text("preserve until terminal")
+    lifecycle.close_runtime_generation.side_effect = OSError("synthetic outage")
+    await service._close(state)
+    assert state.closed and not state.settled and state.expiry_task is None
+    assert all((root / state.runtime_id / "retained").is_file() for root in roots)
+    terminal = binding(runtime_id=state.runtime_id)
+    terminal.state = SimpleNamespace(value="closed", terminal=True)
+    if recovery != "outage":
+        lifecycle.close_runtime_generation.side_effect = None
+        lifecycle.close_runtime_generation.return_value = SimpleNamespace(binding=terminal)
+    if recovery == "mismatch":
+        terminal.runtime_id = "other-runtime"
+    if recovery == "unknown":
+        lifecycle.close_runtime_generation.return_value = SimpleNamespace(binding=None)
+    lifecycle.latest_binding.return_value = state.binding if recovery == "active" else terminal
+    try:
+        if recovery in {"terminal", "active"}:
+            result = await service.prepare(context())
+            assert result["status"] == "ready" and state.settled
+            assert all(not (root / state.runtime_id).exists() for root in roots)
+        else:
+            with pytest.raises(route.ToolDenied, match="capacity"):
+                await service.prepare(context())
+            assert not state.settled
+            assert all((root / state.runtime_id / "retained").is_file() for root in roots)
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_unknown_admission_with_no_record_keeps_its_reservation(manager):
+    service, lifecycle = manager
+    lifecycle.admit_new_runtime.side_effect = OSError("unknown outcome")
+    lifecycle.latest_binding.return_value = None
+    with pytest.raises(OSError):
+        await service.prepare(context())
+    assert len(service._states) == 1
+    state = next(iter(service._states.values()))
+    assert state.closed and not state.settled
+    with pytest.raises(route.ToolDenied, match="capacity"):
+        await service.prepare(context())
+    discovered = binding(runtime_id=state.runtime_id)
+    terminal = binding(runtime_id=state.runtime_id)
+    terminal.state = SimpleNamespace(value="closed", terminal=True)
+    lifecycle.latest_binding.return_value = discovered
+    lifecycle.close_runtime_generation.return_value = SimpleNamespace(binding=terminal)
+    lifecycle.admit_new_runtime.side_effect = None
+    lifecycle.admit_new_runtime.return_value = SimpleNamespace(
+        protected=False, binding=None, error_code="denied"
+    )
+    with pytest.raises(route.ToolDenied, match="admission_denied"):
+        await service.prepare(context())
+    assert state.settled
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_close_and_cancelled_waiter_join_one_cleanup(admitted_host):
+    host, state, lifecycle = admitted_host
+    arrived, release = asyncio.Event(), asyncio.Event()
+    terminal = binding(runtime_id=state.runtime_id)
+    terminal.state = SimpleNamespace(value="closed", terminal=True)
+
+    async def close(**kwargs):
+        arrived.set()
+        await release.wait()
+        return SimpleNamespace(binding=terminal)
+
+    lifecycle.close_runtime_generation.side_effect = close
+    service = host.agent.sessions
+    first = asyncio.create_task(service._close(state))
+    await arrived.wait()
+    second = asyncio.create_task(service._close(state))
+    first.cancel()
+    await asyncio.sleep(0)
+    assert not first.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    await second
+    assert state.closed and state.settled and state.root is None
+    assert lifecycle.close_runtime_generation.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["admission", "executor", "preflight"])
+@pytest.mark.parametrize("cancel_shutdown", [False, True])
+async def test_shutdown_fences_and_joins_late_preparation(
+    manager, monkeypatch, stage, cancel_shutdown
+):
+    import threading
+
+    service, lifecycle = manager
+    arrived, release_async = asyncio.Event(), asyncio.Event()
+    release_thread = threading.Event()
+    loop = asyncio.get_running_loop()
+    helper = SimpleNamespace(close=Mock())
+    created = []
+
+    async def admit(**kwargs):
+        if stage == "admission":
+            arrived.set()
+            await release_async.wait()
+        return SimpleNamespace(
+            protected=True,
+            binding=binding(kwargs["owner_id"], kwargs["runtime_id"]),
+            error_code=None,
+        )
+
+    def executor(state, current):
+        if stage == "executor":
+            loop.call_soon_threadsafe(arrived.set)
+            release_thread.wait()
+        created.append(helper)
+        lifecycle.latest_binding.return_value = current
+        return helper
+
+    def preflight(state):
+        if stage == "preflight":
+            loop.call_soon_threadsafe(arrived.set)
+            release_thread.wait()
+
+    lifecycle.admit_new_runtime.side_effect = admit
+    lifecycle.latest_binding.return_value = None
+    monkeypatch.setattr(service, "_executor_for", executor)
+    monkeypatch.setattr(service, "_prepare_runtime", preflight)
+    prepare = asyncio.create_task(service.prepare(context()))
+    await arrived.wait()
+    shutdown = asyncio.create_task(service.shutdown())
+    await asyncio.sleep(0)
+    if cancel_shutdown:
+        shutdown.cancel()
+    release_async.set()
+    release_thread.set()
+    try:
+        if cancel_shutdown:
+            with pytest.raises(asyncio.CancelledError):
+                await shutdown
+        else:
+            await shutdown
+        result = await asyncio.gather(prepare, return_exceptions=True)
+        assert isinstance(result[0], (route.ToolDenied, asyncio.CancelledError))
+        assert helper.close.call_count == len(created)
+        assert all(
+            state.closed and state.root is None and state.executor is None
+            and state.expiry_task is None
+            for state in service._states.values()
+        )
+        with pytest.raises(route.ToolDenied):
+            await service.prepare(context("new-owner"))
+    finally:
+        release_async.set()
+        release_thread.set()
+        await asyncio.gather(prepare, shutdown, return_exceptions=True)
+        await service.shutdown()

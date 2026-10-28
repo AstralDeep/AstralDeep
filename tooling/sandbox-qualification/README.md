@@ -126,9 +126,20 @@ file creation. Each session owns its bounded verified package copies/installatio
 process supervisor, executor helper, and private scratch/control trees. Expiry,
 cancellation, revocation, callback loss, and shutdown stop and join owned work. Local
 artifacts are removed; normal coordinator closure governs durable authority. A pending
-closure reports `closing`, retains its capacity reservation, and relies on the existing
-LETS reconciliation path rather than claiming successful authority removal. Replay and
-anchor roots are removed only after confirmed terminal closure.
+closure reports `closing` and retains its capacity reservation. The next prepare attempt
+performs one serialized recovery pass over the bounded pending reservations through the
+normal coordinator; it cannot allocate new capacity until the exact admitted authority
+record is confirmed terminal. Outage, unknown admission outcome, missing state, or a
+different runtime/generation keeps the reservation. Replay and anchor roots are removed
+only after confirmed terminal closure. No background retry loop or new authority is
+created for this recovery.
+
+The monotonic session deadline and current human/owner context are checked after final
+asset and authority reads, before receipt consumption, and again before fixed launch.
+Shutdown fences new admissions with a closing epoch, cancels and joins outstanding
+preparations through late admission/helper/preflight completion and cleanup, and cannot
+return a late ready ID or start a new expiry task. Cancellation of the shutdown waiter
+still waits for that owned cleanup before propagating cancellation.
 
 Local fixture tests exercise these seams with independently signed standard receipts.
 Actual ordinary issuance through configured Keycloak/Plane/LETS and legitimate attended

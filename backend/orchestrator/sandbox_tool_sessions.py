@@ -260,6 +260,8 @@ class Session:
     settled: bool = False
     expiry_task: object = None
     worker: object = None
+    cleanup_task: object = None
+    admission_finished: bool = False
     launch_lock: object = field(default_factory=threading.Lock)
 
 
@@ -272,6 +274,11 @@ class QualificationToolSessions:
         self.orchestrator = orchestrator
         self._states = {}
         self._lock = asyncio.Lock()
+        self._reconcile_lock = asyncio.Lock()
+        self._prepares = set()
+        self._closing = False
+        self._epoch = 0
+        self._shutdown_task = None
         self._source_identity = _source()
 
     def _implementation_current(self):
@@ -322,10 +329,50 @@ class QualificationToolSessions:
         return executor
 
     async def prepare(self, context):
-        composition = self._composition()
-        if not context.current() or not self._implementation_current():
-            raise ToolDenied()
+        epoch = self._epoch
+        task = asyncio.current_task()
         async with self._lock:
+            self._assert_open(epoch)
+            if not context.current() or not self._implementation_current():
+                raise ToolDenied()
+            if len(self._prepares) >= self.MAX_ACTIVE:
+                raise ToolDenied("sandbox_qualification_capacity")
+            self._prepares.add(task)
+        try:
+            async with self._reconcile_lock:
+                for state in tuple(self._states.values()):
+                    self._assert_open(epoch)
+                    if not state.settled and state.closed:
+                        await self._close(state)
+            self._assert_open(epoch)
+            return await self._prepare(context, epoch)
+        finally:
+            self._prepares.discard(task)
+
+    def _assert_open(self, epoch):
+        if self._closing or epoch != self._epoch:
+            raise ToolDenied()
+
+    def _assert_current(self, state, context=None):
+        current = (
+            context.current() if context is not None else self._implementation_current()
+        )
+        if (
+            not current
+            or self._closing
+            or state.closed
+            or state.expires <= time.monotonic()
+        ):
+            raise ToolDenied()
+
+    def _assert_preparing(self, state, context, epoch):
+        self._assert_open(epoch)
+        self._assert_current(state, context)
+
+    async def _prepare(self, context, epoch):
+        composition = self._composition()
+        async with self._lock:
+            self._assert_open(epoch)
             active = [state for state in self._states.values() if not state.settled]
             if len(active) >= self.MAX_ACTIVE or any(
                 state.owner == context.owner for state in active
@@ -353,15 +400,28 @@ class QualificationToolSessions:
             state.root = Path(
                 tempfile.mkdtemp(prefix="astral-srt-tool-", dir=self._private_root())
             )
-            result = await composition.lifecycle.admit_new_runtime(
-                owner_id=state.owner,
-                agent_id=AGENT_ID,
-                runtime_id=state.runtime_id,
-                population=AuthorityPopulation.SERVER_DYNAMIC,
-                declared_scopes=(sq.TOOL_SCOPE,),
-                executor_conformant=True,
+            admission_task = asyncio.create_task(
+                composition.lifecycle.admit_new_runtime(
+                    owner_id=state.owner,
+                    agent_id=AGENT_ID,
+                    runtime_id=state.runtime_id,
+                    population=AuthorityPopulation.SERVER_DYNAMIC,
+                    declared_scopes=(sq.TOOL_SCOPE,),
+                    executor_conformant=True,
+                )
             )
+            try:
+                result = await asyncio.shield(admission_task)
+            except BaseException:
+                try:
+                    result = await _finish(admission_task)
+                    state.binding = result.binding
+                    state.admission_finished = True
+                except BaseException:
+                    pass
+                raise
             state.binding = result.binding
+            state.admission_finished = True
             if (
                 not result.protected
                 or result.error_code
@@ -369,6 +429,7 @@ class QualificationToolSessions:
                 or not context.current()
             ):
                 raise ToolDenied("sandbox_qualification_admission_denied")
+            self._assert_preparing(state, context, epoch)
             self._check_binding(state, state.binding)
             executor_task = asyncio.create_task(
                 asyncio.to_thread(self._executor_for, state, state.binding)
@@ -378,6 +439,7 @@ class QualificationToolSessions:
             except BaseException:
                 state.executor = await _finish(executor_task)
                 raise
+            self._assert_preparing(state, context, epoch)
             runtime_task = asyncio.create_task(
                 asyncio.to_thread(self._prepare_runtime, state)
             )
@@ -386,9 +448,9 @@ class QualificationToolSessions:
             except BaseException:
                 await _finish(runtime_task)
                 raise
+            self._assert_preparing(state, context, epoch)
             await self._current_binding(state)
-            if not context.current() or state.expires <= time.monotonic():
-                raise ToolDenied()
+            self._assert_preparing(state, context, epoch)
             state.expiry_task = asyncio.create_task(self._expire(state))
             return {
                 "status": "ready",
@@ -398,7 +460,7 @@ class QualificationToolSessions:
                 ).hexdigest(),
             }
         except BaseException:
-            await self._close(state)
+            await _finish(asyncio.create_task(self._close(state)))
             if state.settled:
                 self._states.pop(identity, None)
             raise
@@ -449,6 +511,7 @@ class QualificationToolSessions:
         ):
             raise ToolDenied()
         await self._current_binding(state)
+        self._assert_current(state, context)
         return state
 
     async def runtime_for_owner(self, owner):
@@ -462,12 +525,14 @@ class QualificationToolSessions:
         )
         if state is None:
             return None
-        if state.expires <= time.monotonic() or not self._implementation_current():
-            raise ToolDenied()
+        self._assert_current(state)
         binding = await self._current_binding(state)
         try:
+            self._assert_current(state)
             await asyncio.to_thread(self._verify_runtime, state)
+            self._assert_current(state)
             binding = await self._current_binding(state)
+            self._assert_current(state)
         except BaseException:
             await self._close(state)
             raise
@@ -517,6 +582,7 @@ class QualificationToolSessions:
             state.modes.add(mode)
         try:
             if mode == "close":
+                self._assert_current(state, context)
                 state.executor.verify_and_claim(
                     metadata=metadata,
                     final_arguments=arguments,
@@ -580,23 +646,23 @@ class QualificationToolSessions:
             )
             sq.write_effect_spec(session, spec)
             with state.launch_lock:
-                if state.closed or not context.current():
-                    raise ToolDenied()
+                self._assert_current(state, context)
                 self._verify_runtime(state)
+                self._assert_current(state, context)
                 current = self._composition().lifecycle.latest_binding(
                     owner_id=state.owner,
                     agent_id=AGENT_ID,
                     population=AuthorityPopulation.SERVER_DYNAMIC,
                 )
                 self._check_binding(state, current)
+                self._assert_current(state, context)
                 state.executor.verify_and_claim(
                     metadata=metadata,
                     final_arguments=arguments,
                     tool_id=TOOL_ID,
                     tool_scope=sq.TOOL_SCOPE,
                 )
-                if state.closed or not context.current():
-                    raise ToolDenied()
+                self._assert_current(state, context)
                 process = sq.launch_sandboxed_effect(
                     state.supervisor, session, runtime, session.profile_path
                 )
@@ -780,16 +846,27 @@ class QualificationToolSessions:
 
     async def _close(self, state):
         state.closed = True
+        expiry = state.expiry_task
+        state.expiry_task = None
+        if expiry is not None and expiry is not asyncio.current_task():
+            expiry.cancel()
+        task = state.cleanup_task
+        if task is None or task.done():
+            task = asyncio.create_task(self._cleanup(state))
+            state.cleanup_task = task
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await _finish(task)
+            raise
+        finally:
+            if expiry is not None and expiry is not asyncio.current_task():
+                await _finish(asyncio.gather(expiry, return_exceptions=True))
+
+    async def _cleanup(self, state):
         await asyncio.to_thread(self._stop_launches, state)
         if state.worker is not None and state.worker is not asyncio.current_task():
             await asyncio.gather(asyncio.shield(state.worker), return_exceptions=True)
-        if (
-            state.expiry_task is not None
-            and state.expiry_task is not asyncio.current_task()
-        ):
-            state.expiry_task.cancel()
-            await asyncio.gather(state.expiry_task, return_exceptions=True)
-            state.expiry_task = None
         if state.executor is not None:
             await asyncio.to_thread(state.executor.close)
             state.executor = None
@@ -801,9 +878,14 @@ class QualificationToolSessions:
                     agent_id=AGENT_ID,
                     population=AuthorityPopulation.SERVER_DYNAMIC,
                 )
-                if latest is not None and latest.runtime_id == state.runtime_id:
+                if latest is not None and (
+                    latest.owner_id == state.owner
+                    and latest.agent_id == AGENT_ID
+                    and latest.runtime_id == state.runtime_id
+                    and latest.population.value == "server_dynamic"
+                ):
                     state.binding = latest
-                else:
+                elif latest is None and state.admission_finished:
                     state.settled = True
             if state.binding is not None:
                 result = await self._composition().lifecycle.close_runtime_generation(
@@ -813,7 +895,19 @@ class QualificationToolSessions:
                     runtime_generation=state.binding.runtime_generation,
                     population=AuthorityPopulation.SERVER_DYNAMIC,
                 )
-                if result.binding is not None and result.binding.state.terminal:
+                terminal = result.binding
+                if (
+                    terminal is not None
+                    and terminal.state.terminal
+                    and terminal.population.value == "server_dynamic"
+                    and all(
+                        getattr(terminal, name) == getattr(state.binding, name)
+                        for name in (
+                            "owner_id", "agent_id", "runtime_id", "runtime_generation",
+                            "binding_id", "lease_id", "lineage_id",
+                        )
+                    )
+                ):
                     state.settled = True
                     remove_dynamic_runtime_roots(
                         self._composition().config, state.runtime_id
@@ -831,6 +925,22 @@ class QualificationToolSessions:
             self._terminate(state)
 
     async def shutdown(self):
+        if self._shutdown_task is None:
+            self._closing = True
+            self._epoch += 1
+            self._shutdown_task = asyncio.create_task(self._shutdown())
+        try:
+            await asyncio.shield(self._shutdown_task)
+        except asyncio.CancelledError:
+            await _finish(self._shutdown_task)
+            raise
+
+    async def _shutdown(self):
+        prepares = tuple(self._prepares)
+        for task in prepares:
+            task.cancel()
+        if prepares:
+            await asyncio.gather(*prepares, return_exceptions=True)
         for state in tuple(self._states.values()):
             await self._close(state)
 
@@ -839,6 +949,10 @@ _CANONICAL_SESSION_METHODS = {
     name: getattr(QualificationToolSessions, name)
     for name in (
         "prepare",
+        "_prepare",
+        "_assert_open",
+        "_assert_current",
+        "_assert_preparing",
         "execute",
         "_effect",
         "runtime_for_owner",
@@ -851,5 +965,9 @@ _CANONICAL_SESSION_METHODS = {
         "_prepare_runtime",
         "_verify_runtime",
         "_asset_identity",
+        "_close",
+        "_cleanup",
+        "shutdown",
+        "_shutdown",
     )
 }
