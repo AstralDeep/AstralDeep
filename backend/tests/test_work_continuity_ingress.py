@@ -70,7 +70,7 @@ async def test_current_socket_recovers_the_durable_lost_wake_once(lost_wake):
 
 
 @pytest.mark.parametrize("stage", ["before", "after"])
-@pytest.mark.parametrize("change", ["session", "registration", "composition"])
+@pytest.mark.parametrize("change", ["session", "registration", "composition", "read"])
 async def test_recovery_keeps_original_caller_across_awaits(lost_wake, monkeypatch, stage, change):
     from orchestrator.projection_surfaces import work
     from tests.helpers.session_plane_runtime import get_session_record
@@ -80,8 +80,8 @@ async def test_recovery_keeps_original_caller_across_awaits(lost_wake, monkeypat
     if stage == "before":
         original = work._ws_publication_caller
 
-        async def held(*args):
-            caller = await original(*args)
+        async def held(*args, **kwargs):
+            caller = await original(*args, **kwargs)
             entered.set()
             await release.wait()
             return caller
@@ -112,6 +112,9 @@ async def test_recovery_keeps_original_caller_across_awaits(lost_wake, monkeypat
             await asyncio.to_thread(retire)
         elif change == "registration":
             state.orch.ui_sessions[state.socket] = dict(state.orch.ui_sessions[state.socket])
+        elif change == "read":
+            from orchestrator.work_surface_authority import invalidate
+            invalidate(state.orch, state.socket)
         else:
             state.orch.runtime_composition.plane = SimpleNamespace(runtime=object(), repositories=object())
         release.set()
@@ -177,3 +180,56 @@ async def test_recovery_denials_do_not_wake_or_disclose(lost_wake, change):
     assert (await asyncio.to_thread(current, api.runtime, waiter)).state_version == waiter.state_version
     rows, _ = await asyncio.to_thread(api.service.audit.list_for_user, waiter.owner_id)
     assert not any(row.action_type == "assignment_continuity" for row in rows)
+
+
+@pytest.mark.parametrize("change", ["registration", "read_retirement", "read_replacement"])
+async def test_retired_read_before_wake_transaction_cannot_commit(lost_wake, monkeypatch, change):
+    state, api, waiter = lost_wake
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = api.service.store.transaction
+
+    async def held(callback, **kwargs):
+        if callback.__name__ == "current":
+            entered.set()
+            await release.wait()
+        return await original(callback, **kwargs)
+
+    monkeypatch.setattr(api.service.store, "transaction", held)
+    generation = request(state, waiter)
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        from orchestrator.work_surface_authority import invalidate
+
+        if change == "registration":
+            state.orch.ui_sessions[state.socket] = dict(state.orch.ui_sessions[state.socket])
+        elif change == "read_retirement":
+            invalidate(state.orch, state.socket)
+        else:
+            from orchestrator.work_surface_authority import WorkSurfaceRead
+            WorkSurfaceRead(state.orch, state.socket, waiter.owner_id, request_generation=str(uuid4()),
+                context=state.orch._connection_contexts[id(state.socket)])
+        release.set()
+        terminal = await state.arrived(lambda value: value.get("request_generation") == generation and value.get("terminal") is True)
+        assert terminal["state"] == "failed"
+        durable = await asyncio.to_thread(current, api.runtime, waiter)
+        assert durable.state_version == waiter.state_version
+        assert durable.phase == "awaiting_event"
+        rows, _ = await asyncio.to_thread(api.service.audit.list_for_user, waiter.owner_id)
+        assert not any(row.action_type == "assignment_continuity" for row in rows)
+    finally:
+        release.set()
+
+
+async def test_constructed_read_without_original_human_request_cannot_mutate(lost_wake):
+    from orchestrator.projection_surfaces import work
+    from orchestrator.work_surface_authority import WorkSurfaceRead
+
+    state, api, waiter = lost_wake
+    generation = str(uuid4())
+    read = WorkSurfaceRead(state.orch, state.socket, waiter.owner_id,
+        request_generation=generation, context=state.orch._connection_contexts[id(state.socket)])
+    command = {"version": 1, "operation_id": waiter.assignment_id,
+               "expected_revision": waiter.state_version, "submission_id": str(uuid4())}
+    assert not await work.deliver_continuity(state.orch, state.socket, waiter.owner_id, [], command,
+        request_generation=generation, work_read=read)
+    assert (await asyncio.to_thread(current, api.runtime, waiter)).state_version == waiter.state_version

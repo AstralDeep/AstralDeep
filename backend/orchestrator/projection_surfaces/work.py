@@ -203,14 +203,39 @@ def _emergency_components(orch, user_id):
     return [_sdui.card(f"Emergency stop — {label}", content, variant="default")]
 
 
-async def deliver(orch, websocket, user_id, params, request_generation, *, work_read=None):
+async def _deliver_state(read, state, request_generation, notice_html=""):
     from astralprojection.chrome import render_html
     from astralprojection.chrome.work import build_work_view
     from astralprojection.models import LayoutView
-    from orchestrator.chrome_events import _device_type, _note_open_surface
+    from orchestrator.chrome_events import _device_type, _note_open_surface, _notice_components
     from rote.adapter import ComponentAdapter
-    from shared.protocol import _require_uuid4
     from webrender.chrome import render_modal_shell
+
+    orch, websocket, user_id = read.orch, read.websocket, read.owner_id
+    read.assert_current()
+    device = _device_type(orch, websocket)
+    if device != "browser" and "work_save_v1" not in read.captured.get("_client_capabilities", []):
+        state = {**state, "save": None}
+    view = build_work_view(state, layout=LayoutView(mode="watch" if device == "watch" else "standard"))
+    if device == "browser":
+        frame = ChromeRender(html=render_modal_shell(view.title,
+            _emergency_html(orch, user_id) + notice_html + render_html(view), "work"),
+            surface_key="work", request_generation=request_generation).to_json()
+    else:
+        components = ComponentAdapter.adapt_work_surface(
+            _emergency_components(orch, user_id) + _notice_components(notice_html)
+            + [item.to_dict() for item in view.components], orch.rote.get_profile(websocket))
+        frame = ChromeSurface(surface_key="work", title=view.title, components=components,
+                              request_generation=request_generation).to_json()
+    await read.verify()
+    read.assert_current()
+    _note_open_surface(orch, websocket, "work")
+    return bool(await orch._safe_send(websocket, frame))
+
+
+async def deliver(orch, websocket, user_id, params, request_generation, *, work_read=None):
+    from orchestrator.chrome_events import _device_type
+    from shared.protocol import _require_uuid4
 
     read = work_read
     try:
@@ -230,23 +255,7 @@ async def deliver(orch, websocket, user_id, params, request_generation, *, work_
                 state = await _state(read, _params(params))
             except (AssignmentError, ValueError, TypeError, AttributeError):
                 state = {"mode": "list", "status": "unavailable"}
-            read.assert_current()
-            view = build_work_view(state, layout=LayoutView(mode="watch" if device == "watch" else "standard"))
-            if device == "browser":
-                frame = ChromeRender(html=render_modal_shell(view.title,
-                    _emergency_html(orch, user_id) + render_html(view), "work"),
-                    surface_key="work", request_generation=request_generation).to_json()
-            else:
-                components = ComponentAdapter.adapt_work_surface(
-                    _emergency_components(orch, user_id)
-                    + [item.to_dict() for item in view.components], orch.rote.get_profile(websocket))
-                frame = ChromeSurface(surface_key="work", title=view.title, components=components,
-                                      request_generation=request_generation).to_json()
-            await read.verify()
-            # No await before send, so this check can't go stale
-            read.assert_current()
-            _note_open_surface(orch, websocket, "work")
-            return bool(await orch._safe_send(websocket, frame))
+            return await _deliver_state(read, state, request_generation)
     except (AssignmentError, HTTPException, ValueError, TypeError, AttributeError, TimeoutError):
         logger.info("Work view refused or unavailable")
         return False
@@ -256,10 +265,12 @@ async def deliver(orch, websocket, user_id, params, request_generation, *, work_
 
 
 class _WsPublicationBinding:
-    __slots__ = ("orch", "assignments", "store", "runtime", "sessions", "repository", "adapter", "session_adapter", "audit")
+    __slots__ = ("orch", "assignments", "store", "runtime", "sessions", "repository", "adapter", "session_adapter", "audit", "human", "work_read")
 
-    def __init__(self, orch, assignments):
+    def __init__(self, orch, assignments, human=None, work_read=None):
         self.orch = orch
+        self.human = human
+        self.work_read = work_read
         self.assignments = assignments
         self.store = assignments.store
         self.runtime = self.store.plane_runtime
@@ -272,6 +283,10 @@ class _WsPublicationBinding:
     def assert_current(self, assignments):
         from audit.repository import AuditRepository
 
+        if self.human is not None:
+            self.human._assert_local(self.orch)
+        if self.work_read is not None:
+            self.work_read.assert_current()
         plane = getattr(getattr(self.orch, "runtime_composition", None), "plane", None)
         if (assignments is not self.assignments or self.assignments.orch is not self.orch
                 or getattr(self.orch, "persistent_assignments", None) is not self.assignments
@@ -294,7 +309,7 @@ class _WsPublicationBinding:
             raise AssignmentError("work_control_unavailable", 503)
 
 
-async def _ws_publication_caller(orch, websocket, user_id):
+async def _ws_publication_caller(orch, websocket, user_id, *, work_read=None):
     import json
 
     from orchestrator import auth
@@ -305,8 +320,10 @@ async def _ws_publication_caller(orch, websocket, user_id):
         AuthenticatedWorkRequest, _expiry, _signed_selection, capture_human_caller,
     )
     from orchestrator.work_surface_authority import _transport_headers
+    from orchestrator.human_request_authority import current_human_caller
     from persistent_agents.service import AssignmentService
 
+    human = current_human_caller(expected_orchestrator=orch)
     claims = (getattr(orch, "ui_sessions", None) or {}).get(websocket)
     if (websocket is None or getattr(websocket, "closed", False)
             or not isinstance(claims, dict) or claims.get("sub") != user_id
@@ -344,7 +361,7 @@ async def _ws_publication_caller(orch, websocket, user_id):
         session_id, None, assignments.store.plane_runtime)
     context.assert_current(assignments.store.plane_runtime)
     caller = await capture_human_caller(transport, context=context, sessions=sessions, until=until)
-    binding = _WsPublicationBinding(orch, assignments)
+    binding = _WsPublicationBinding(orch, assignments, human, work_read)
     guard = WorkCallerAuthority(context, caller, binding, token, deadline, until)
     await assignments.store.transaction(
         lambda tx, _repository: guard.assert_current(tx, assignments=assignments),
@@ -369,7 +386,7 @@ async def components(orch, user_id, roles, params):
         item.to_dict() for item in build_work_view(state).components]
 
 
-async def _handle_result_save(orch, websocket, user_id, roles, payload):
+async def _handle_result_save(orch, websocket, user_id, roles, payload, *, work_read=None):
     from rote.work import validate_work_save_command
 
     from orchestrator.work_publication import (
@@ -385,8 +402,14 @@ async def _handle_result_save(orch, websocket, user_id, roles, payload):
     operation_id = payload.get("operation_id")
     command = payload.get("command")
     message = "The save outcome could not be confirmed. Reload the result before retrying."
+    caller = None
     try:
-        caller = await _ws_publication_caller(orch, websocket, user_id)
+        from orchestrator.human_request_authority import current_human_caller
+
+        human = current_human_caller(expected_orchestrator=orch)
+        if human is None or human.require_write() != "WS_WRITE":
+            raise AssignmentError("human_authentication_required", 401)
+        caller = await _ws_publication_caller(orch, websocket, user_id, work_read=work_read)
         assignments = orch.persistent_assignments
         service = WorkPublicationService(assignments)
         claims = caller.context.claims
@@ -420,13 +443,45 @@ async def _handle_result_save(orch, websocket, user_id, roles, payload):
     except Exception:
         logger.exception("work: result-save action failed")
     try:
-        fallback_claims = (getattr(orch, "ui_sessions", None) or {}).get(websocket) or {}
+        if caller is None:
+            raise AssignmentError("human_authentication_required", 401)
+        caller._assert_local(orch.persistent_assignments)
         state = await _augmented_result_state(
             WorkService(orch.persistent_assignments), orch, websocket, user_id,
-            fallback_claims, operation_id)
+            caller.context.claims, operation_id)
+        await caller.verify_delivery()
     except Exception:
         state = {"mode": "list", "status": "unavailable"}
     return "work", state, notice_block("error", message)
+
+
+async def deliver_result_save(orch, websocket, user_id, roles, payload, *, request_generation=None, work_read=None):
+    from orchestrator.chrome_events import _device_type
+    from orchestrator.human_request_authority import current_human_caller
+
+    read = work_read
+    try:
+        if type(read) is not WorkSurfaceRead or read.context is None:
+            return False
+        read.assert_request(orch, websocket, user_id, request_generation)
+        human = current_human_caller(expected_orchestrator=orch)
+        if human is None or human.require_write() != "WS_WRITE":
+            return False
+        if _device_type(orch, websocket) != "browser" and "work_save_v1" not in read.captured.get("_client_capabilities", []):
+            return False
+        async with asyncio.timeout_at(read.deadline):
+            await read.authenticate()
+            result = await _handle_result_save(orch, websocket, user_id, roles, payload, work_read=read)
+            if result is None:
+                raise AssignmentError("work_control_invalid", 422)
+            _, state, notice = result
+            return await _deliver_state(read, state, request_generation, notice)
+    except (AssignmentError, HTTPException, ValueError, TypeError, AttributeError, TimeoutError):
+        logger.info("Work save refused or unavailable")
+        return False
+    finally:
+        if type(read) is WorkSurfaceRead:
+            read.close()
 
 
 async def deliver_continuity(orch, websocket, user_id, roles, payload, *,
@@ -442,10 +497,15 @@ async def deliver_continuity(orch, websocket, user_id, roles, payload, *,
         read.assert_request(orch, websocket, user_id, request_generation)
         if "work_continuity_v1" not in read.captured.get("_client_capabilities", []):
             return False
+        from orchestrator.human_request_authority import current_human_caller
+
+        human = current_human_caller(expected_orchestrator=orch)
+        if human is None or human.require_write() != "WS_WRITE":
+            return False
         command = validate_continuity_payload(payload)
         async with asyncio.timeout_at(read.deadline):
             await read.authenticate()
-            caller = await _ws_publication_caller(orch, websocket, user_id)
+            caller = await _ws_publication_caller(orch, websocket, user_id, work_read=read)
             read.assert_current()
             if caller._token != read.delivery.token:
                 raise AssignmentError("work_authentication_required", 401)
