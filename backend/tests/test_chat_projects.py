@@ -102,7 +102,7 @@ def test_pagination_authenticates_owner_and_scope_and_includes_empty_chats(histo
     assert service.list_chats("owner", projects[1])["chats"] == []
 
 
-def test_revision_fences_nonempty_delete_tombstone_and_no_implicit_legacy_attach(
+def test_rename_revision_fences_delete_tombstone_and_no_implicit_legacy_attach(
     history,
 ):
     from orchestrator.projects import ProjectError, ProjectService
@@ -115,7 +115,6 @@ def test_revision_fences_nonempty_delete_tombstone_and_no_implicit_legacy_attach
     assert service.create("owner", project_id, "Original", 0) == updated
     for operation in (
         lambda: service.rename("owner", project_id, "stale", 1),
-        lambda: service.delete("owner", project_id, 1),
         lambda: service.create("owner", project_id, "Changed", 0),
     ):
         with pytest.raises(ProjectError, match="project_conflict"):
@@ -123,7 +122,7 @@ def test_revision_fences_nonempty_delete_tombstone_and_no_implicit_legacy_attach
     legacy_id = history.create_chat(user_id="owner")
     with pytest.raises(ProjectError, match="chat_project_conflict"):
         service.create_chat("owner", project_id, legacy_id)
-    assert service.delete("owner", project_id, 2)
+    assert service.delete("owner", project_id, 1).chats == ()
     with pytest.raises(ProjectError):
         service.create("owner", project_id, "Original", 0)
     with pytest.raises(ProjectError, match="project_not_found"):
@@ -179,7 +178,9 @@ def test_rest_project_and_chat_contract(api_client):
         ).json()["revision"]
         == 2
     )
-    assert client.delete(f"/api/projects/{project_id}?revision=2").status_code == 409
+    assert client.delete(f"/api/projects/{project_id}?revision=1").status_code == 200
+    assert client.get(f"/api/chats/{chat_id}").status_code == 404
+    assert client.get("/api/projects").json()["projects"] == []
     assert (
         client.post("/api/projects", json={**create, "folder": "/private"}).status_code
         == 422

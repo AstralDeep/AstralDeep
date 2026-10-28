@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import logging
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ FILE_VERBS = frozenset({"read_file", "list_dir", "write_file", "delete_path", "r
 PROJECT_CONSENT_VERBS = FILE_VERBS | {"start_session", "end_session", "resume_session"}
 _CURRENT = contextvars.ContextVar("project_dispatch_origin", default=None)
 _ACTIVE = {}
+logger = logging.getLogger(__name__)
 
 
 def _refusal(code="project_grant_required", message="Choose folders for this project on this Mac."):
@@ -362,4 +364,7 @@ async def invalidate_deleted_project(orch, owner, project):
         for session in list(sessions.live_for_owner(owner)):
             origin = getattr(session, "project_origin", None)
             if origin is not None and origin.context.project_id == project:
-                await sessions.end(session, "consent_revoked")
+                try:
+                    await sessions.end(session, "consent_revoked")
+                except Exception:
+                    logger.warning("project_deleted_session_cleanup_unavailable", exc_info=True)

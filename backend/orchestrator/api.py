@@ -595,17 +595,19 @@ async def rename_project(request: Request, project_id: str, body: ProjectRenameR
         user_id, project_id, body.name, body.revision, changed=True)
 
 
-@project_router.delete("/{project_id}", response_model=DeleteResponse, summary="Delete an empty project")
+@project_router.delete("/{project_id}", response_model=DeleteResponse, summary="Delete a project and its chats")
 async def delete_project(request: Request, project_id: str, revision: int,
                          user_id: str = Depends(require_user_id)):
     from orchestrator.projects import ProjectService
 
     orch = _get_orchestrator(request)
-    await _project_operation(orch, user_id, ProjectService(orch.history).delete,
-                             user_id, project_id, revision)
+    deletion = await _project_operation(orch, user_id, ProjectService(orch.history).delete,
+                                       user_id, project_id, revision)
     from orchestrator.project_authority import invalidate_deleted_project
 
     await invalidate_deleted_project(orch, user_id, project_id)
+    for mutation in deletion.chats:
+        await _notify_chat_deleted(orch, user_id, mutation.chat_id, mutation)
     await orch._broadcast_user_history(user_id=user_id, projects_changed=True)
     return DeleteResponse()
 
@@ -713,6 +715,12 @@ async def delete_chat(
         chat_id,
         user_id=user_id,
     )
+    await _notify_chat_deleted(orch, user_id, chat_id, voice_mutation)
+    await orch._broadcast_user_history(user_id=user_id, projects_changed=True)
+    return DeleteResponse(message=f"Chat {chat_id} deleted")
+
+
+async def _notify_chat_deleted(orch, user_id, chat_id, voice_mutation):
     voice_services = getattr(orch, "voice_services", None)
     if voice_services is not None:
         try:
@@ -738,8 +746,6 @@ async def delete_chat(
                 }))
         except Exception:
             logger.debug("delete_chat socket notification failed", exc_info=True)
-    await orch._broadcast_user_history(user_id=user_id, projects_changed=True)
-    return DeleteResponse(message=f"Chat {chat_id} deleted")
 
 
 @chat_router.get(

@@ -9,7 +9,7 @@ import hashlib
 import json
 import time
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 
 from astralplane import ProjectChatCursor, ProjectCursor
 from astralplane.repositories import (
@@ -32,6 +32,11 @@ from orchestrator.web_auth import _secret
 _PROJECT_CURSOR_MAX_BYTES = 4096
 
 
+@dataclass(frozen=True)
+class ProjectDeletion:
+    chats: tuple
+
+
 def _cursor_scope(owner_id, scope):
     return hashlib.sha256(
         json.dumps([owner_id, scope], ensure_ascii=False, separators=(",", ":")).encode(
@@ -47,7 +52,7 @@ class ProjectError(ValueError):
         self.message = {
             "project_selection_required": "Select or create a project before starting this chat.",
             "project_not_found": "Project is unavailable. Select an existing project.",
-            "project_conflict": "Project changed or contains chats. Refresh and try again.",
+            "project_conflict": "Project changed. Refresh and try again.",
             "chat_project_conflict": "This chat already belongs to another project or has no project.",
             "invalid_project_request": "Check the project name, identifiers and revision.",
             "invalid_project_cursor": "Refresh the project list and try again.",
@@ -163,12 +168,36 @@ class ProjectService:
         )
 
     def delete(self, owner_id, project_id, revision):
-        return self._call(
-            self.repository.delete,
-            owner_id=owner_id,
-            project_id=project_id,
-            expected_revision=revision,
-        )
+        if type(revision) is not int or not 1 <= revision < 2**53 - 1:
+            raise ProjectError("invalid_project_request")
+
+        def remove(transaction):
+            project = self.repository.get(
+                transaction, owner_id=owner_id, project_id=project_id, for_update=True
+            )
+            if project is None:
+                raise RepositoryNotFoundError("project not found")
+            mutations = []
+            cursor = None
+            while True:
+                page = self.repository.list_chats(
+                    transaction, owner_id=owner_id, project_id=project_id,
+                    cursor=cursor, limit=200,
+                )
+                for chat in page.records:
+                    mutations.append(self.history.delete_chat(
+                        chat.chat_id, user_id=owner_id, transaction=transaction,
+                    ))
+                cursor = page.next_cursor
+                if cursor is None:
+                    break
+            self.repository.delete(
+                transaction, owner_id=owner_id, project_id=project_id,
+                expected_revision=project.revision,
+            )
+            return ProjectDeletion(tuple(mutations))
+
+        return self._call(remove)
 
     @staticmethod
     def _cursor(cursor, owner_id, scope):

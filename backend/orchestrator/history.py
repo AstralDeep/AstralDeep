@@ -2739,7 +2739,7 @@ class HistoryManager:
 
         return results
     
-    def delete_chat(self, chat_id: str, user_id: str = 'legacy'):
+    def delete_chat(self, chat_id: str, user_id: str = 'legacy', *, transaction: Any | None = None):
         from orchestrator.voice_sessions import VoiceSessionRepository
 
         mutation = VoiceSessionRepository(
@@ -2751,12 +2751,14 @@ class HistoryManager:
             reason="deleted",
             delete_chat=True,
             now=datetime.now(UTC),
+            transaction=transaction,
         )
-        self._artifacts.call(
-            self._artifacts.repository.versions.delete_for_conversation,
-            owner_id=user_id,
-            conversation_id=chat_id,
-        )
+        arguments = {"owner_id": user_id, "conversation_id": chat_id}
+        operation = self._artifacts.repository.versions.delete_for_conversation
+        if transaction is None:
+            self._artifacts.call(operation, **arguments)
+        else:
+            operation(transaction, **arguments)
         return mutation
 
     def mark_chat_authorization_unavailable(
