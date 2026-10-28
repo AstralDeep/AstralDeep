@@ -272,24 +272,30 @@ def evaluate_proposal(note_text: str, note_id: str, response: Any) -> Dict[str, 
     return _finish(note_text, note_id, digest, raw, response)
 
 
+def prepare_note(note_text: str, note_id: str) -> Tuple[str, str, str]:
+    if not isinstance(note_text, str) or not isinstance(note_id, str):
+        raise FhirError("EXTRACT_BAD_REQUEST", "note_text and note_id must be strings")
+    if not note_text.strip() or not MIN_NOTE_CHARS <= len(note_text) <= MAX_NOTE_CHARS:
+        raise FhirError(
+            "EXTRACT_BAD_REQUEST",
+            f"A clinical note between {MIN_NOTE_CHARS} and {MAX_NOTE_CHARS} characters is required")
+    if len(note_id) > MAX_NOTE_ID_CHARS or (note_id and not NOTE_ID_PATTERN.fullmatch(note_id)):
+        raise FhirError(
+            "EXTRACT_BAD_REQUEST",
+            "note_id must be a short label of letters, digits, dots, dashes, slashes, colons or spaces")
+    try:
+        digest = sha256_hex(note_text)
+    except UnicodeError:
+        raise FhirError("EXTRACT_BAD_REQUEST", "A valid UTF-8 clinical note is required") from None
+    return note_text, note_id, digest
+
+
 def _extract(note_text: str, note_id: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
     if not flags.is_enabled("clinical_note_extract"):
         raise FhirError(
             "EXTRACT_DISABLED",
             "Note extraction pilot is disabled; enable the clinical_note_extract flag first")
-    if not isinstance(note_text, str) or not isinstance(note_id, str):
-        raise FhirError("EXTRACT_BAD_REQUEST", "note_text and note_id must be strings")
-    note_text = note_text.strip()
-    note_id = note_id.strip()
-    if not MIN_NOTE_CHARS <= len(note_text) <= MAX_NOTE_CHARS:
-        raise FhirError(
-            "EXTRACT_BAD_REQUEST",
-            f"A clinical note between {MIN_NOTE_CHARS} and {MAX_NOTE_CHARS} characters is required")
-    if len(note_id) > MAX_NOTE_ID_CHARS or (note_id and not NOTE_ID_PATTERN.match(note_id)):
-        raise FhirError(
-            "EXTRACT_BAD_REQUEST",
-            "note_id must be a short label of letters, digits, dots, dashes, slashes, colons or spaces")
-    digest = sha256_hex(note_text)
+    note_text, note_id, digest = prepare_note(note_text, note_id)
     client, model = _resolve_llm_client(kwargs)
     if client is None:
         raise FhirError(
