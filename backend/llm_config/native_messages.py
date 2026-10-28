@@ -1,21 +1,13 @@
-"""Builds, sends, and translates native Anthropic Messages API requests for the
-opt-in prefix-cache path: OpenAI-shaped chat input is translated strictly, any
-unsupported shape fails closed to the existing OpenAI-compatible dispatch, and
-responses are translated back with native cache usage preserved.
-"""
+"""Offline native Messages payload and response fixtures for the cache policy. This module exposes no provider transport or qualified native profile."""
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Mapping, Optional
 
-import httpx
 
 from .prompt_prefix_cache import (
-    ANTHROPIC_VERSION_HEADER,
-    NativeUsage,
     apply_cache_markers,
     parse_native_usage,
 )
@@ -310,8 +302,8 @@ def translate_native_response(payload: Mapping[str, Any]) -> SimpleNamespace:
     total = usage.total_tokens
     prompt = None
     completion = usage.output_tokens
-    if usage.input_tokens is not None and usage.output_tokens is not None:
-        prompt = usage.input_tokens + (usage.cache_creation_input_tokens or 0) + (usage.cache_read_input_tokens or 0)
+    if total is not None:
+        prompt = total - completion
     chat_usage = SimpleNamespace(
         total_tokens=total,
         prompt_tokens=prompt,
@@ -329,193 +321,3 @@ def translate_native_response(payload: Mapping[str, Any]) -> SimpleNamespace:
         usage=chat_usage,
         model=payload.get("model"),
     )
-
-
-def default_transport(url: str, headers: Mapping[str, str], payload: Mapping[str, Any], timeout: Any) -> Mapping[str, Any]:
-    with httpx.Client(timeout=timeout) as client:
-        response = client.post(url, headers=dict(headers), json=dict(payload))
-    if response.status_code >= 400:
-        raise NativeMessagesError(
-            f"native_messages_status_{response.status_code}", status_code=response.status_code,
-        )
-    try:
-        return response.json()
-    except ValueError:
-        raise NativeMessagesError("native_response_unparseable") from None
-
-
-def _default_prefix_estimator(static_prefix: str, tools: Any) -> int:
-    from orchestrator.context_token_accounting import account_request_tokens
-
-    estimate = account_request_tokens(
-        messages=[{"role": "system", "content": static_prefix}],
-        tools=tools or None,
-    )
-    return estimate.message_tokens + estimate.tool_tokens
-
-
-def _measurement(
-    decision: Any,
-    *,
-    owner_id: str,
-    base_url: Any,
-    model: Any,
-    outcome: str,
-    usage: NativeUsage,
-) -> Any:
-    from .prompt_prefix_cache import (
-        NATIVE_MESSAGES_PROFILE,
-        CacheMeasurement,
-        config_revision,
-    )
-
-    return CacheMeasurement(
-        owner_id=owner_id,
-        provider="anthropic",
-        model=model if type(model) is str else "",
-        profile=NATIVE_MESSAGES_PROFILE,
-        policy_revision=decision.policy_revision,
-        config_revision=config_revision(base_url, model),
-        reason=decision.reason,
-        outcome=outcome,
-        cache_read_tokens=usage.cache_read_input_tokens,
-        cache_write_tokens=usage.cache_creation_input_tokens,
-        uncached_input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class NativeCacheCall:
-    request: dict[str, Any]
-    decision: Any
-    _send: Callable[[], Any] = field(repr=False)
-
-    def send(self) -> Any:
-        return self._send()
-
-
-def plan_native_cached_call(
-    *,
-    enabled: bool,
-    policy: Any,
-    base_url: Any,
-    model: Any,
-    api_key: Any,
-    messages: Any,
-    tools: Any,
-    temperature: Any,
-    static_prefix: Any,
-    static_tool_names: Any = frozenset(),
-    timeout: Any = None,
-    owner_id: str = "",
-    prefix_token_estimator: Optional[Callable[[str, Any], int]] = None,
-) -> Optional[NativeCacheCall]:
-    from .prompt_prefix_cache import (
-        apply_cache_markers,
-        parse_native_usage,
-        record_measurement,
-    )
-
-    leading_system = _leading_system_content(messages)
-    decision = policy.evaluate(
-        enabled=enabled,
-        base_url=base_url,
-        model=model,
-        static_prefix=static_prefix,
-        system_content=leading_system,
-        tool_defs=tools,
-        static_tool_names=static_tool_names,
-        prefix_token_estimator=(
-            prefix_token_estimator
-            if prefix_token_estimator is not None
-            else _default_prefix_estimator
-        ),
-    )
-    if not decision.enabled:
-        return None
-    if type(api_key) is not str or not api_key:
-        return None
-    try:
-        payload = build_native_payload(
-            model=model,
-            messages=messages,
-            tools=tools,
-            temperature=temperature,
-            static_core=decision.static_core,
-            instructions=decision.instructions,
-        )
-    except NativeShapeError:
-        return None
-    payload = apply_cache_markers(payload, decision)
-    key = api_key
-
-    def _send() -> Any:
-        try:
-            raw = send_native_message(
-                base_url=base_url, api_key=key, payload=payload, timeout=timeout,
-            )
-            response = translate_native_response(raw)
-        except Exception:
-            record_measurement(_measurement(
-                decision, owner_id=owner_id, base_url=base_url, model=model,
-                outcome="failed", usage=NativeUsage(),
-            ))
-            raise
-        usage = parse_native_usage(getattr(response, "usage", None))
-        if (usage.cache_read_input_tokens or 0) > 0:
-            outcome = "hit"
-        elif (usage.cache_creation_input_tokens or 0) > 0:
-            outcome = "write"
-        else:
-            outcome = "miss"
-        record_measurement(_measurement(
-            decision, owner_id=owner_id, base_url=base_url, model=model,
-            outcome=outcome, usage=usage,
-        ))
-        return response
-
-    return NativeCacheCall(request=payload, decision=decision, _send=_send)
-
-
-def _leading_system_content(messages: Any) -> Optional[str]:
-    if not isinstance(messages, (list, tuple)) or not messages:
-        return None
-    first = messages[0]
-    if not isinstance(first, dict) or first.get("role") != "system":
-        return None
-    content = first.get("content")
-    return content if type(content) is str else None
-
-
-def send_native_message(
-    *,
-    base_url: str,
-    api_key: str,
-    payload: Mapping[str, Any],
-    timeout: Any = None,
-    transport: Any = None,
-) -> Mapping[str, Any]:
-    if not base_url or not api_key:
-        raise NativeMessagesError("native_messages_unconfigured")
-    url = base_url.rstrip("/") + "/messages"
-    headers = {
-        "x-api-key": api_key,
-        "anthropic-version": ANTHROPIC_VERSION_HEADER,
-        "content-type": "application/json",
-    }
-    sender = transport if transport is not None else default_transport
-    return sender(url, headers, payload, timeout)
-
-
-__all__ = [
-    "DEFAULT_NATIVE_MAX_TOKENS",
-    "NativeCacheCall",
-    "NativeMessagesError",
-    "NativeShapeError",
-    "build_native_payload",
-    "default_transport",
-    "plan_native_cached_call",
-    "send_native_message",
-    "translate_native_response",
-]

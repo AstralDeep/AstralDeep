@@ -22,7 +22,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import Enum
-from functools import lru_cache, wraps
+from functools import wraps
 from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional
 
 import websockets
@@ -726,8 +726,6 @@ _NARRATIVE_STREAM_CHAT: contextvars.ContextVar = contextvars.ContextVar(
     "narrative_stream_chat", default=None)
 _NARRATIVE_STREAMED: contextvars.ContextVar = contextvars.ContextVar(
     "narrative_streamed", default=False)
-_STATIC_TOOL_ATTESTATION: contextvars.ContextVar = contextvars.ContextVar(
-    "llm_static_tool_attestation", default=frozenset())
 
 
 def _static_asset_version(static_dir: str) -> str:
@@ -14909,18 +14907,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 tool_to_agent[_sg_name] = _skill_guidance_read.META_AGENT_ID
                 tool_to_unqualified[_sg_name] = _sg_name
 
-        _static_meta_agent_ids = {
-            agentic_creation.META_AGENT_ID, scheduling_chat.META_AGENT_ID,
-            persistent_chat.META_AGENT_ID, memory_chat.META_AGENT_ID,
-            desktop_codegen.META_AGENT_ID, _subtasks.META_AGENT_ID,
-            _skill_guidance_read.META_AGENT_ID,
-        }
-        _first_party_agent_ids = set(FIRST_PARTY_PUBLIC_AGENT_IDS) | set(getattr(self, "local_agents", {}))
-        static_tool_names = frozenset(
-            name for name, agent_id in tool_to_agent.items()
-            if agent_id in _static_meta_agent_ids or agent_id in _first_party_agent_ids
-        )
-
         if not tools_desc and draft_agent_id:
             _perm_memo.__exit__(None, None, None)
             await self.send_ui_render(websocket, [
@@ -15306,16 +15292,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     _round_kwargs["tool_choice"] = round_one_choice
                 try:
                     with perf_span("turn.route", chat=chat_id):
-                        _attest_token = _STATIC_TOOL_ATTESTATION.set(static_tool_names)
-                        try:
-                            llm_msg, usage = await self._call_llm(
-                                websocket,
-                                messages,
-                                round_one_tools if turn_count == 1 else tools_desc,
-                                **_round_kwargs,
-                            )
-                        finally:
-                            _STATIC_TOOL_ATTESTATION.reset(_attest_token)
+                        llm_msg, usage = await self._call_llm(
+                            websocket,
+                            messages,
+                            round_one_tools if turn_count == 1 else tools_desc,
+                            **_round_kwargs,
+                        )
                 except Exception:
                     if _phase_recorder is not None and _phase_step_id:
                         try:
@@ -16120,22 +16102,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return (actor_user_id, auth_principal)
 
     @staticmethod
-    @lru_cache(maxsize=1)
-    def _approved_chat_core() -> str:
-        from orchestrator.context_engineering import static_core
-
-        return static_core(CHAT_SYSTEM_TEMPLATE)
-
-    @classmethod
-    @lru_cache(maxsize=1)
-    def _prefix_cache_policy(cls):
-        from llm_config.prompt_prefix_cache import ApprovedPrefix, PromptCachePolicy, canonical_digest
-
-        return PromptCachePolicy((ApprovedPrefix(
-            "chat_react_core_v1", canonical_digest(cls._approved_chat_core()),
-        ),))
-
-    @staticmethod
     def _safe_llm_error_metadata(exc: BaseException) -> _SafeLLMErrorMetadata:
         raw_status = getattr(exc, "status_code", None)
         if raw_status is None:
@@ -16316,34 +16282,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         _forced_choice_retried = False
         previous_context_attempt = None
 
-        native_cache = None
-        if (flags.is_enabled("prompt_prefix_cache")
-                and not stream_allowed and not extra_kwargs and _forced_choice is None
-                and not evidence_bound and not evidence_context.enabled()
-                and not (model_router.router_enabled()
-                         and source != self._CredentialSource.USER)):
-            from llm_config.client_factory import KEYLESS_API_KEY_SENTINEL
-            from llm_config.native_messages import plan_native_cached_call
-            _candidate_key = getattr(client, "api_key", None)
-            native_cache = plan_native_cached_call(
-                enabled=flags.is_enabled("prompt_prefix_cache"),
-                policy=self._prefix_cache_policy(),
-                base_url=getattr(resolved, "base_url", None),
-                model=call_model,
-                api_key=(
-                    _candidate_key
-                    if _candidate_key and _candidate_key != KEYLESS_API_KEY_SENTINEL
-                    else None
-                ),
-                messages=messages,
-                tools=tools_desc,
-                temperature=temperature,
-                static_prefix=self._approved_chat_core(),
-                static_tool_names=_STATIC_TOOL_ATTESTATION.get(),
-                timeout=getattr(client, "timeout", None),
-                owner_id=actor_user_id or "",
-            )
-
         async def tracked_provider(invoke, request):
             nonlocal previous_context_attempt
             retry_of = previous_context_attempt
@@ -16407,10 +16345,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             lambda request_kwargs=kwargs: tracked_provider(
                                 lambda: asyncio.to_thread(client.chat.completions.create, **request_kwargs), request_kwargs),
                             kwargs,
-                        )
-                    elif native_cache is not None:
-                        response = await tracked_provider(
-                            lambda: asyncio.to_thread(native_cache.send), native_cache.request,
                         )
                     else:
                         response = await tracked_provider(

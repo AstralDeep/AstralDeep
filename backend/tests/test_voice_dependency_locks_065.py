@@ -67,7 +67,7 @@ CURRENT_DEPENDENCY_AUTHORITIES = {
     "backend/requirements-document-worker.txt": "28383cb135800b5415ca4c9504ea83e1514fa3e6f1d89257ab06fd5e8116508a",
     "Dockerfile": "bd80b9180b1ec2fea5c2e0e4faba06739a1222727bca033c66f1a17d423ce506",
     "Dockerfile.voice": "82ffc56ab274790ea60e280852eb49608e9e8f7dbc3432fc16b4a1f3bcd21b84",
-    "backend/requirements.txt": "7b2494bba2bd2dd478837a1b9e1ce3d95a6ecbf9d853e0907915716883e5daa9",
+    "backend/requirements.txt": "972e495db9602454b29d55880ca7096269d71c913e44f27389aff913b9dbd459",
     "backend/requirements-gaiakeep.txt": "87ea5ed066e8aa376f355df70a4efac295d331c7c77601d277a05c8acb37feea",
     "backend/tests/fixtures/runtime_reliability_060/runtime-lock-contract.json": (
         "ff84f895f5b8253dff59c9581cc033452ad576a09e40d00da31b5ba7b0f4875e"

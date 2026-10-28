@@ -31,6 +31,9 @@ class SyntheticRequest:
     dynamic_tokens: int
     output_tokens: int
     cached: bool
+    provider: str = "synthetic-provider"
+    model: str = "synthetic-model"
+    config_revision: str = "synthetic-config-v1"
 
 
 @dataclass(slots=True)
@@ -124,7 +127,7 @@ def simulate(
     policy_revision: str = "synthetic",
     profile: str = "native_messages",
 ) -> SyntheticReport:
-    store: dict[str, _StoreEntry] = {}
+    store: dict[tuple[str, ...], _StoreEntry] = {}
     hits = misses = writes = expired = eligible = 0
     cached_cost = uncached_cost = 0.0
     cached_latency = uncached_latency = 0.0
@@ -149,12 +152,14 @@ def simulate(
             )
             continue
         eligible += 1
-        digest = _prefix_digest(request.prefix_id)
+        digest = (request.owner_id, request.provider, request.model, request.config_revision,
+                  profile, policy_revision, _prefix_digest(request.prefix_id))
         entry = store.get(digest)
         if entry is not None and entry.expires_at <= request.at_seconds:
             expired += 1
             entry = None
         if entry is not None:
+            entry.expires_at = request.at_seconds + SIMULATED_CACHE_TTL_SECONDS
             hits += 1
             read = request.prefix_tokens
             written = 0
@@ -215,6 +220,8 @@ def simulate(
             "uncached_input_latency_ms_per_token": UNCACHED_INPUT_LATENCY_MS_PER_TOKEN,
             "cached_read_latency_ms_per_token": CACHED_READ_LATENCY_MS_PER_TOKEN,
             "effectiveness_threshold_percent": EFFECTIVENESS_THRESHOLD_PERCENT,
+            "ttl_refresh": "simulated read refreshes the entry lifetime",
+            "owner_isolation": "modeled local partitioning; provider owner isolation is unqualified",
         },
     )
 

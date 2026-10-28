@@ -21,7 +21,6 @@ from personalization.explicit_note_service import ExplicitNoteCommand, ExplicitN
 from personalization import phi_gate
 from persistent_agents.models import AssignmentError
 from tests.helpers.database_clock import explicit_note_clock
-from tests.helpers.database_waits import unbounded_request_execution_waits
 from tests.test_request_session_authority_088 import request
 from tests.test_work_admission_api_postgres_088 import (
     api as api, fixture as fixture, plane as plane, research_service as research_service,
@@ -561,10 +560,7 @@ async def test_expiry_during_required_audit_rolls_back_acceptance(notes, note_cl
     assert not rows(notes) and not events(notes)
 
 
-async def test_concurrent_bare_human_forget_replay_has_one_erasure_audit(notes, monkeypatch):
-    # The replay loser must wait for the winner's commit, not trip the 100 ms
-    # request-path lock bound inside the shared-runner capture transaction.
-    unbounded_request_execution_waits(monkeypatch)
+async def test_concurrent_bare_human_forget_replay_has_one_erasure_audit(notes):
     intent = body()
     await apply(notes, intent)
     command = ExplicitNoteCommand(command="forget", note_id=intent.note_id, expected_revision=1)

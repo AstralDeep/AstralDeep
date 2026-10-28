@@ -1,63 +1,84 @@
-"""Opt-in, fail-closed eligibility policy for caching approved public static prompt
-prefixes on the native Anthropic Messages API: it decides marker placement before the
-request is sent, strips imported or model-supplied cache markers, parses native cache
-usage, and emits revision-bound measurements. Dynamic owner, session, and clinical
-content always stays outside the cached prefix.
-"""
+"""Offline eligibility and marker validation for explicitly approved public prompt prefixes. Native provider support remains unqualified, so the orchestrator sends ordinary uncached requests."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional
 
-logger = logging.getLogger("LLMConfig.PrefixCache")
-
 NATIVE_MESSAGES_PROFILE = "native_messages"
 NATIVE_MESSAGES_BASE_URL = "https://api.anthropic.com/v1"
-ANTHROPIC_VERSION_HEADER = "2023-06-01"
-
-POLICY_SEMANTICS_VERSION = "prompt-prefix-cache-policy-v1"
-
+POLICY_SEMANTICS_VERSION = "prompt-prefix-cache-policy-v2"
 MINIMUM_CACHEABLE_PREFIX_TOKENS = 1024
-_OPUS_MODEL_MARKER = "claude-opus-4"
-_OPUS_MINIMUM_CACHEABLE_PREFIX_TOKENS = 2048
-
 CACHE_CONTROL_KEY = "cache_control"
 EPHEMERAL_MARKER = {"type": "ephemeral"}
+MAXIMUM_TOOL_PREFIX_BYTES = 65_536
 
-_MEASUREMENT_ENABLED_FIELDS = (
-    "owner_id", "provider", "model", "profile", "policy_revision",
-    "config_revision", "reason", "outcome",
-)
-
-
-def is_native_messages_profile(base_url: Any) -> bool:
-    if type(base_url) is not str:
-        return False
-    return base_url.strip().rstrip("/") == NATIVE_MESSAGES_BASE_URL
 
 
 def canonical_digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).hexdigest()
 
 
+def _json_value(value: Any, depth: int = 0) -> bool:
+    if depth > 32:
+        return False
+    if type(value) in (str, int, float, bool) or value is None:
+        return True
+    if type(value) is list:
+        return all(_json_value(item, depth + 1) for item in value)
+    if type(value) is dict:
+        return all(
+            type(key) is str and key != CACHE_CONTROL_KEY and _json_value(item, depth + 1)
+            for key, item in value.items()
+        )
+    return False
+
+
+def canonical_tools_digest(tools: Any) -> Optional[str]:
+    if tools is None:
+        tools = []
+    if type(tools) not in (list, tuple):
+        return None
+    names = set()
+    for tool in tools:
+        if type(tool) is not dict or not _json_value(tool):
+            return None
+        definition = tool.get("function", tool)
+        if type(definition) is not dict:
+            return None
+        name = definition.get("name")
+        schema = definition.get("parameters", definition.get("input_schema"))
+        if (type(name) is not str or not name or name in names
+                or type(schema) is not dict or schema.get("type") != "object"
+                or ("properties" in schema and type(schema["properties"]) is not dict)):
+            return None
+        names.add(name)
+    try:
+        encoded = json.dumps(list(tools), ensure_ascii=False, sort_keys=True,
+                             separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        return None
+    if len(encoded.encode("utf-8", errors="surrogatepass")) > MAXIMUM_TOOL_PREFIX_BYTES:
+        return None
+    return canonical_digest(encoded)
+
+
+_EMPTY_TOOLS_DIGEST = canonical_digest("[]")
+
+
 @dataclass(frozen=True, slots=True)
 class ApprovedPrefix:
     name: str
     digest: str
+    tools_digest: str = _EMPTY_TOOLS_DIGEST
 
 
 def _strip_markers(value: Any) -> Any:
     if isinstance(value, dict):
-        return {
-            key: _strip_markers(item)
-            for key, item in value.items()
-            if key != CACHE_CONTROL_KEY
-        }
-    if isinstance(value, list):
+        return {key: _strip_markers(item) for key, item in value.items() if key != CACHE_CONTROL_KEY}
+    if isinstance(value, (list, tuple)):
         return [_strip_markers(item) for item in value]
     return value
 
@@ -71,25 +92,14 @@ class PrefixCacheDecision:
     static_core: Optional[str] = field(default=None, repr=False)
     policy_revision: str = ""
     prefix_digest: Optional[str] = None
+    tools_digest: Optional[str] = None
+    model: str = ""
     estimated_prefix_tokens: Optional[int] = None
     minimum_prefix_tokens: int = 0
 
 
-def _model_minimum(model: Any) -> int:
-    if type(model) is str and model.strip().lower().startswith(_OPUS_MODEL_MARKER):
-        return _OPUS_MINIMUM_CACHEABLE_PREFIX_TOKENS
-    return MINIMUM_CACHEABLE_PREFIX_TOKENS
-
-
-def _tool_name(tool: Any) -> Optional[str]:
-    if not isinstance(tool, dict):
-        return None
-    function = tool.get("function")
-    if isinstance(function, dict) and type(function.get("name")) is str:
-        return function["name"]
-    if type(tool.get("name")) is str:
-        return tool["name"]
-    return None
+def _valid_digest(value: Any) -> bool:
+    return type(value) is str and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
 class PromptCachePolicy:
@@ -99,28 +109,25 @@ class PromptCachePolicy:
         *,
         minimum_prefix_tokens: Optional[int] = None,
     ) -> None:
+        names = set()
         for entry in approved_prefixes:
-            if (
-                type(entry.name) is not str or not entry.name
-                or type(entry.digest) is not str or len(entry.digest) != 64
-            ):
+            if (not isinstance(entry, ApprovedPrefix) or type(entry.name) is not str
+                    or not entry.name or entry.name in names or not _valid_digest(entry.digest)
+                    or not _valid_digest(entry.tools_digest)):
                 raise ValueError("malformed approved prefix")
-        self._approved = frozenset(entry.digest for entry in approved_prefixes)
-        self._names = tuple(entry.name for entry in approved_prefixes)
+            names.add(entry.name)
+        if minimum_prefix_tokens is not None and (
+                type(minimum_prefix_tokens) is not int or minimum_prefix_tokens < 0):
+            raise ValueError("malformed minimum prefix tokens")
+        self._entries = tuple(sorted((entry.name, entry.digest, entry.tools_digest) for entry in approved_prefixes))
+        self._approved = frozenset((entry.digest, entry.tools_digest) for entry in approved_prefixes)
         self._minimum_override = minimum_prefix_tokens
 
     @property
     def policy_revision(self) -> str:
-        entries = ",".join(
-            f"{name}:{digest}"
-            for name, digest in sorted(zip(self._names, self._approved))
-        )
-        return canonical_digest(f"{POLICY_SEMANTICS_VERSION}|{entries}")
-
-    def _minimum(self, model: Any) -> int:
-        if self._minimum_override is not None:
-            return self._minimum_override
-        return _model_minimum(model)
+        return canonical_digest(json.dumps(
+            [POLICY_SEMANTICS_VERSION, self._entries, self._minimum_override], separators=(",", ":"),
+        ))
 
     def evaluate(
         self,
@@ -131,100 +138,67 @@ class PromptCachePolicy:
         static_prefix: Any,
         system_content: Any,
         tool_defs: Any = None,
-        static_tool_names: Any = frozenset(),
         prefix_token_estimator: Optional[Callable[[str, Any], int]] = None,
     ) -> PrefixCacheDecision:
         revision = self.policy_revision
-        if not enabled:
-            return PrefixCacheDecision(False, "policy_disabled", policy_revision=revision)
-        if not is_native_messages_profile(base_url):
-            return PrefixCacheDecision(False, "profile_not_native", policy_revision=revision)
+        decision = {"policy_revision": revision}
+        if enabled is not True:
+            return PrefixCacheDecision(False, "policy_disabled", **decision)
+        if base_url != NATIVE_MESSAGES_BASE_URL or type(model) is not str or not model:
+            return PrefixCacheDecision(False, "profile_not_native", **decision)
         if type(static_prefix) is not str or not static_prefix:
-            return PrefixCacheDecision(False, "no_approved_prefix", policy_revision=revision)
+            return PrefixCacheDecision(False, "no_approved_prefix", **decision)
         digest = canonical_digest(static_prefix)
-        if digest not in self._approved:
-            return PrefixCacheDecision(
-                False, "prefix_not_approved", policy_revision=revision, prefix_digest=digest,
-            )
-        if type(system_content) is not str or not system_content:
-            return PrefixCacheDecision(
-                False, "prefix_mismatch", policy_revision=revision, prefix_digest=digest,
-            )
-        if not system_content.startswith(static_prefix):
-            return PrefixCacheDecision(
-                False, "prefix_mismatch", policy_revision=revision, prefix_digest=digest,
-            )
-
-        tools_eligible = True
-        if tool_defs:
-            if not isinstance(tool_defs, (list, tuple)):
-                return PrefixCacheDecision(
-                    False, "prefix_mismatch", policy_revision=revision, prefix_digest=digest,
-                )
-            allowed = static_tool_names if isinstance(static_tool_names, (set, frozenset)) else frozenset()
-            names = [_tool_name(tool) for tool in tool_defs]
-            if any(name is None or name not in allowed for name in names):
-                tools_eligible = False
-
-        if not tools_eligible:
-            return PrefixCacheDecision(
-                False, "prefix_not_fully_approved", policy_revision=revision, prefix_digest=digest,
-            )
-
+        decision["prefix_digest"] = digest
+        if type(system_content) is not str or not system_content.startswith(static_prefix):
+            return PrefixCacheDecision(False, "prefix_mismatch", **decision)
+        tools_digest = canonical_tools_digest(tool_defs)
+        if tools_digest is None or (digest, tools_digest) not in self._approved:
+            return PrefixCacheDecision(False, "prefix_not_fully_approved", **decision)
         if prefix_token_estimator is None:
-            estimated: Optional[int] = None
-        else:
-            try:
-                estimated = int(prefix_token_estimator(static_prefix, tool_defs if tools_eligible else None))
-            except (TypeError, ValueError, OverflowError):
-                estimated = None
-            if estimated is None or estimated < 0:
-                return PrefixCacheDecision(
-                    False, "admission_uncertain", policy_revision=revision, prefix_digest=digest,
-                )
-            minimum = self._minimum(model)
-            if estimated < minimum:
-                return PrefixCacheDecision(
-                    False,
-                    "below_minimum",
-                    policy_revision=revision,
-                    prefix_digest=digest,
-                    estimated_prefix_tokens=estimated,
-                    minimum_prefix_tokens=minimum,
-                )
-
+            return PrefixCacheDecision(False, "admission_uncertain", **decision)
+        try:
+            estimated = prefix_token_estimator(static_prefix, tool_defs)
+        except Exception:
+            return PrefixCacheDecision(False, "admission_uncertain", **decision)
+        if type(estimated) is not int or estimated < 0:
+            return PrefixCacheDecision(False, "admission_uncertain", **decision)
+        minimum = self._minimum_override
+        if minimum is None:
+            minimum = 2048 if model.startswith("claude-opus-4") else MINIMUM_CACHEABLE_PREFIX_TOKENS
+        if estimated < minimum:
+            return PrefixCacheDecision(False, "below_minimum", estimated_prefix_tokens=estimated,
+                                       minimum_prefix_tokens=minimum, **decision)
         return PrefixCacheDecision(
-            True,
-            "approved",
-            instructions=True,
-            tools=tools_eligible,
-            static_core=static_prefix,
-            policy_revision=revision,
-            prefix_digest=digest,
-            estimated_prefix_tokens=estimated,
-            minimum_prefix_tokens=self._minimum(model),
+            True, "approved", instructions=True, tools=bool(tool_defs), static_core=static_prefix,
+            tools_digest=tools_digest, model=model, estimated_prefix_tokens=estimated,
+            minimum_prefix_tokens=minimum, **decision,
         )
 
+    def validates(self, decision: PrefixCacheDecision) -> bool:
+        return (decision.enabled and decision.policy_revision == self.policy_revision
+                and (decision.prefix_digest, decision.tools_digest) in self._approved)
 
-def apply_cache_markers(payload: Mapping[str, Any], decision: PrefixCacheDecision) -> dict[str, Any]:
+
+def apply_cache_markers(
+    payload: Mapping[str, Any], decision: PrefixCacheDecision, *, policy: Optional[PromptCachePolicy] = None,
+) -> dict[str, Any]:
     sanitized = _strip_markers(dict(payload))
-    if not decision.enabled:
+    if (policy is None or not policy.validates(decision)
+            or type(decision.static_core) is not str):
         return sanitized
-    tools = sanitized.get("tools")
-    if decision.tools and isinstance(tools, list) and tools:
-        last = tools[-1]
-        if isinstance(last, dict):
-            last[CACHE_CONTROL_KEY] = dict(EPHEMERAL_MARKER)
     system = sanitized.get("system")
-    if (
-        decision.instructions
-        and decision.static_core is not None
-        and isinstance(system, list)
-        and system
-    ):
-        first = system[0]
-        if isinstance(first, dict) and first.get("text") == decision.static_core:
-            first[CACHE_CONTROL_KEY] = dict(EPHEMERAL_MARKER)
+    tools = sanitized.get("tools")
+    if (not isinstance(system, list) or not system
+            or system[0] != {"type": "text", "text": decision.static_core}
+            or payload.get("model") != decision.model
+            or canonical_digest(decision.static_core) != decision.prefix_digest
+            or canonical_tools_digest(tools) != decision.tools_digest):
+        return sanitized
+    if decision.tools and tools:
+        tools[-1][CACHE_CONTROL_KEY] = dict(EPHEMERAL_MARKER)
+    if decision.instructions:
+        system[0][CACHE_CONTROL_KEY] = dict(EPHEMERAL_MARKER)
     return sanitized
 
 
@@ -266,39 +240,3 @@ def parse_native_usage(usage: Any) -> NativeUsage:
         cache_creation_input_tokens=_usage_value(usage, "cache_creation_input_tokens"),
         cache_read_input_tokens=_usage_value(usage, "cache_read_input_tokens"),
     )
-
-
-@dataclass(frozen=True, slots=True)
-class CacheMeasurement:
-    owner_id: str
-    provider: str
-    model: str
-    profile: str
-    policy_revision: str
-    config_revision: str
-    reason: str
-    outcome: str
-    cache_read_tokens: Optional[int] = None
-    cache_write_tokens: Optional[int] = None
-    uncached_input_tokens: Optional[int] = None
-    output_tokens: Optional[int] = None
-
-
-def config_revision(base_url: Any, model: Any) -> str:
-    base = base_url if type(base_url) is str else ""
-    name = model if type(model) is str else ""
-    return canonical_digest(f"{base}|{name}")
-
-
-def record_measurement(
-    measurement: CacheMeasurement,
-    *,
-    emit: Callable[[str], None] = logger.info,
-) -> CacheMeasurement:
-    fields = {name: getattr(measurement, name) for name in _MEASUREMENT_ENABLED_FIELDS}
-    for name in ("cache_read_tokens", "cache_write_tokens", "uncached_input_tokens", "output_tokens"):
-        value = getattr(measurement, name)
-        if value is not None:
-            fields[name] = value
-    emit("prefix_cache_measurement " + json.dumps(fields, sort_keys=True, default=str))
-    return measurement

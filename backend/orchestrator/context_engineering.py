@@ -36,10 +36,6 @@ def compose_system_prompt(
     return core
 
 
-def static_core(template: str) -> str:
-    return template.replace(FILE_CONTEXT_MARK, "").replace(CANVAS_CONTEXT_MARK, "").rstrip()
-
-
 def _role_of(msg: Any) -> str:
     if isinstance(msg, dict):
         return msg.get("role", "") or ""
