@@ -916,6 +916,25 @@ def _tail(value: Any, limit: int) -> Tuple[str, Optional[str]]:
     return _private(text)
 
 
+def _current_root_stdout(result, cwd, lease) -> bool:
+    if (lease is None or lease.session is None or lease.origin.entry is None
+            or cwd not in {root.path for root in lease.origin.entry.roots}):
+        return False
+    raw = result.get("stdout")
+    if (not isinstance(raw, str) or raw not in (cwd, cwd + "\n", cwd + "\r\n")
+            or result.get("truncated") is not False or type(result.get("stdout_bytes")) is not int
+            or result["stdout_bytes"] != len(raw.encode("utf-8")) or result["stdout_bytes"] > _TAIL_BYTES
+            or type(result.get("exit_code")) is not int or result["exit_code"] != 0
+            or result.get("timed_out") is not False or result.get("signal") not in (None, "")):
+        return False
+    try:
+        lease.verify(_ORCH)
+    except ComputerHostError:
+        return False
+    from orchestrator.hitl_confirmation import computer_effect_current
+    return computer_effect_current(_ORCH, lease.session.session, "run_command")
+
+
 def _privacy(data: Dict[str, Any], states) -> Dict[str, Any]:
     states = {state for state in states if state}
     if states:
@@ -1031,6 +1050,13 @@ def run_command(**kwargs) -> Dict[str, Any]:
         args = _command_args(kwargs, host)
     except _Refusal as exc:
         return _fail(exc.code, str(exc))
+    output_lease = None
+    if getattr(host, "project_mode", False) and not args["background"]:
+        from orchestrator.project_authority import capture_project_bridge
+        try:
+            output_lease = capture_project_bridge(_ORCH, _u, _c, host, ctx)
+        except ComputerHostError as exc:
+            return _host_error(exc)
     result, err = _run(host, ctx, "run_command", args, _loop(kwargs), timeout=host_deadline("run_command", args),
                        serialize=False)
     if err:
@@ -1044,8 +1070,11 @@ def run_command(**kwargs) -> Dict[str, Any]:
         _track(ctx, job, started_at)
         return _data({"computer": host.name, "job_id": job, "started_at": started_at, "background": True,
                       "note": "read its output with read_output; stop it with interrupt_command"})
-    stdout, out_state = _tail(result.get("stdout"), _TAIL_BYTES)
+    known_stdout = _current_root_stdout(result, args["cwd"], output_lease)
+    stdout, out_state = (result["stdout"], None) if known_stdout else _tail(result.get("stdout"), _TAIL_BYTES)
     stderr, err_state = _tail(result.get("stderr"), _TAIL_BYTES)
+    if known_stdout and not _current_root_stdout(result, args["cwd"], output_lease):
+        stdout, out_state = _tail(result.get("stdout"), _TAIL_BYTES)
     data = _privacy({
         "computer": host.name, "exit_code": _exit_code(result.get("exit_code")),
         "signal": _sanitize(result.get("signal"), 16) or None, "timed_out": result.get("timed_out") is True,
