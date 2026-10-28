@@ -286,6 +286,20 @@ def test_components_use_only_manifested_vocabulary(store):
                     assert child["type"] in declared
 
 
+@pytest.mark.parametrize("params", [{}, {"view": "invitations"}])
+def test_components_carry_no_introduction_steps_empty_copy_or_field_help(store, params):
+    components = run(mesh_surface.components(_orch(), "owner-1", ["user"], params))
+    blob = json.dumps(components)
+    for copy in ("Your personal mesh", "No devices are enrolled", "No enrollment requests",
+                 "On the joining device"):
+        assert copy not in blob
+    assert not [c for c in components if c.get("type") == "text"]
+    assert not any(c.get("type") == "card" and c.get("title") == "Enroll a device"
+                   for c in components)
+    forms = [c for c in components if c.get("type") == "param_picker"]
+    assert forms and all("help" not in f for form in forms for f in form["fields"])
+
+
 def test_view_tabs_navigate_within_surface(store):
     html = run(mesh_surface.render(_orch(), "owner-1", ["user"], {}))
     assert '{"surface": "mesh", "params": {"view": "members"}}' in _payloads(html)

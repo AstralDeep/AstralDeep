@@ -24,7 +24,7 @@ def reconcile_fields():
 @pytest.mark.parametrize("field,value", [
     ("owner_revision", True), ("owner_revision", "1"), ("owner_revision", 1.0),
     ("owner_revision", -1), ("owner_revision", 2**53),
-    ("owner_event_id", "provider:event"), ("owner_event_id", str(uuid4()).upper()),
+    ("owner_event_id", "provider:event"), ("owner_event_id", "9F1C2B7E-3D4A-4C5B-8E6F-7A8B9C0D1E2F"),
     ("owner_event_id", "00000000-0000-1000-8000-000000000000"),
     ("owner_event_id", None), ("owner_event_id", {}),
     ("event_key", "source:changed"), ("source_revision", 4),

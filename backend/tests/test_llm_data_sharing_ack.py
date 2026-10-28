@@ -212,7 +212,7 @@ def test_the_checkbox_sits_below_the_credentials_and_above_the_actions(
 
     dialog = render_modal_shell(
         llm_surface.TITLE, body, "llm",
-        subtitle=llm_surface.SUBTITLE, icon=llm_surface.ICON, sections=llm_surface.SECTIONS,
+        icon=llm_surface.ICON, sections=llm_surface.SECTIONS,
         footer_html=llm_surface.footer_html(),
     )
     assert dialog.index(f'name="{ds.FIELD_NAME}"') < dialog.index("chrome_llm_save")

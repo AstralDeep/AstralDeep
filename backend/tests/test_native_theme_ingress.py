@@ -61,7 +61,7 @@ async def test_actual_native_custom_color_returns_accepted_full_palette(native_t
     frame, = responses(native_theme, generation)
     applied = frame["components"][0]
     assert applied["type"] == "theme_apply" and applied["colors"]["accent"] == "#ABCDEF"
-    assert set(applied["colors"]) == {key for key, _ in theme._COLOR_KEYS}
+    assert set(applied["colors"]) == set(theme.PRESETS["graphite"])
     assert await stored(native_theme, fixture[1]) == {"colors": applied["colors"]}
 
 
