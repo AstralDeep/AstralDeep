@@ -167,8 +167,8 @@ class ProjectService:
             )
         )
 
-    def delete(self, owner_id, project_id, revision):
-        if type(revision) is not int or not 1 <= revision < 2**53 - 1:
+    def delete(self, owner_id, project_id, revision, *, delete_chats=False):
+        if type(revision) is not int or not 1 <= revision < 2**53 - 1 or type(delete_chats) is not bool:
             raise ProjectError("invalid_project_request")
 
         def remove(transaction):
@@ -177,6 +177,12 @@ class ProjectService:
             )
             if project is None:
                 raise RepositoryNotFoundError("project not found")
+            if not delete_chats:
+                self.repository.delete(
+                    transaction, owner_id=owner_id, project_id=project_id,
+                    expected_revision=revision,
+                )
+                return ProjectDeletion(())
             mutations = []
             cursor = None
             while True:

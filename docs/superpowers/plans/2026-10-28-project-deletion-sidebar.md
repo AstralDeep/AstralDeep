@@ -16,6 +16,7 @@
 - Deletion is owner scoped, atomic, serialized with project chat creation, and keeps project identity tombstones.
 - Audit rows/chains, other projects/owners, settings and local folders remain untouched.
 - Stale sidebar revisions and non-empty projects must not prevent confirmed deletion; real auth/storage failures remain truthful.
+- Older clients keep empty-only deletion and revision CAS unless they explicitly request delete_chats=true; install the confirmed Mac client after the compatible server.
 - Confirmation names the project and states that its chats will also be deleted; Cancel sends no deletion request.
 - Preserve canonical voice unavailability, project-grant retirement, chat-deleted notifications and history broadcasts.
 - Never restore consent, weaken CI, or treat a failed check as passing. Push/merge attempts are authorized; releases are not.
@@ -38,9 +39,9 @@
 
 ### Task 2: Mac sidebar and confirmation
 
-- [ ] Add failing behavior checks for empty-project presentation, Cancel/confirmed deletion, and active/other-chat preservation.
-- [ ] Remove the global sidebar button in project presentation, add a compact empty-project placeholder, and replace Delete empty project with a destructive confirmation.
-- [ ] Reconcile successful or already-absent deletion without masking authentication or storage failures; retain account/connection/navigation fences.
+- [x] Add failing behavior checks for empty-project presentation, Cancel/confirmed deletion, and active/other-chat preservation.
+- [x] Remove the global sidebar button in project presentation, add a compact empty-project placeholder, and replace Delete empty project with a destructive confirmation.
+- [x] Reconcile successful or already-absent deletion without masking authentication or storage failures; retain account/connection/navigation fences.
 - [ ] Run affected Core/native tests, formatting and provenance checks, then build the signed monotonic Mac update.
 
 ### Task 3: Integrate, deploy and publish source
@@ -54,3 +55,5 @@
 ## Additional owner request before source publication
 
 The owner requests frequent-use User guide controls that cannot be pushed below long article text. Use a Mac-only presentation adapter over the server-provided guide components: a pinned topic picker with Previous/Next actions and an independently scrolling article. Preserve server-owned section labels, role gating, selection and exact action payloads; unknown structures retain the ordinary surface renderer. Other clients and the server guide catalog stay unchanged. Cover long content, allowed navigation and stale/disabled actions; include the guide in native live validation before pushing.
+
+Local final opt-in qualification: 114 backend, 444 Core, 32 native owning tests pass; changed Python coverage 217/219 (production 100%). Full Mac run retains one baseline self-accessibility failure and seven existing skips. Signed candidate and deployment still pending.

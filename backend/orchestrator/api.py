@@ -595,14 +595,15 @@ async def rename_project(request: Request, project_id: str, body: ProjectRenameR
         user_id, project_id, body.name, body.revision, changed=True)
 
 
-@project_router.delete("/{project_id}", response_model=DeleteResponse, summary="Delete a project and its chats")
+@project_router.delete("/{project_id}", response_model=DeleteResponse, summary="Delete a project, optionally including its chats")
 async def delete_project(request: Request, project_id: str, revision: int,
+                         delete_chats: bool = False,
                          user_id: str = Depends(require_user_id)):
     from orchestrator.projects import ProjectService
 
     orch = _get_orchestrator(request)
     deletion = await _project_operation(orch, user_id, ProjectService(orch.history).delete,
-                                       user_id, project_id, revision)
+                                       user_id, project_id, revision, delete_chats=delete_chats)
     from orchestrator.project_authority import invalidate_deleted_project
 
     await invalidate_deleted_project(orch, user_id, project_id)

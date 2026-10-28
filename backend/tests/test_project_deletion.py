@@ -58,7 +58,7 @@ def test_nonempty_stale_project_delete_preserves_other_owners_projects_and_audit
     before = audit.list_for_user("owner")
     service.rename("owner", selected, "Renamed", 1)
 
-    deleted = service.delete("owner", selected, 1)
+    deleted = service.delete("owner", selected, 1, delete_chats=True)
 
     assert {mutation.chat_id for mutation in deleted.chats} == set(target)
     assert all(mutation.chat_deleted for mutation in deleted.chats)
@@ -86,7 +86,7 @@ def test_delete_covers_every_chat_page_including_empty_chats(history):
                 transaction, owner_id="owner", project_id=selected, chat_id=identity,
             )
 
-    deleted = service.delete("owner", selected, 1)
+    deleted = service.delete("owner", selected, 1, delete_chats=True)
 
     assert {mutation.chat_id for mutation in deleted.chats} == set(ids)
     assert service.list("owner")["projects"] == []
@@ -109,7 +109,7 @@ def test_later_chat_failure_rolls_back_every_chat_and_project(history, monkeypat
 
     monkeypatch.setattr(history, "delete_chat", fail_later)
     with pytest.raises(RuntimeError, match="later chat failure"):
-        service.delete("owner", selected, 1)
+        service.delete("owner", selected, 1, delete_chats=True)
     assert service.get("owner", selected)["revision"] == 1
     assert {row["id"] for row in service.list_chats("owner", selected)["chats"]} == set(ids)
     assert all(history.get_chat(identity, "owner") is not None for identity in ids)
@@ -125,7 +125,7 @@ def test_artifact_cleanup_failure_rolls_back_chat_and_project(history, monkeypat
 
     monkeypatch.setattr(type(history._artifacts.repository.versions), "delete_for_conversation", fail)
     with pytest.raises(RuntimeError, match="version failure"):
-        service.delete("owner", selected, 1)
+        service.delete("owner", selected, 1, delete_chats=True)
     assert history.get_chat(identity, "owner") is not None
     assert service.get("owner", selected)["revision"] == 1
 
@@ -135,10 +135,13 @@ def test_other_owner_and_invalid_revision_cannot_delete(history):
     selected = project(service, "other")
     identity = chat(service, selected, "other")
     with pytest.raises(ProjectError, match="project_not_found"):
-        service.delete("owner", selected, 1)
+        service.delete("owner", selected, 1, delete_chats=True)
     for revision in (0, True, "1", None, 2**53):
         with pytest.raises(ProjectError, match="invalid_project_request"):
-            service.delete("other", selected, revision)
+            service.delete("other", selected, revision, delete_chats=True)
+    for value in (1, "true", None):
+        with pytest.raises(ProjectError, match="invalid_project_request"):
+            service.delete("other", selected, 1, delete_chats=value)
     assert history.get_chat(identity, "other") is not None
 
 
@@ -157,7 +160,7 @@ def test_concurrent_create_and_delete_have_one_serial_outcome(history):
 
     def delete():
         start.wait(timeout=10)
-        return service.delete("owner", selected, 1)
+        return service.delete("owner", selected, 1, delete_chats=True)
 
     with ThreadPoolExecutor(max_workers=2) as workers:
         created = workers.submit(create)
@@ -189,7 +192,7 @@ def test_rest_delete_notifies_only_affected_owner_chats_and_voice(api_client):
     orch._safe_send = AsyncMock()
     orch.voice_services = SimpleNamespace(handle_chat_unavailable=AsyncMock())
 
-    response = client.delete(f"/api/projects/{selected}?revision=1")
+    response = client.delete(f"/api/projects/{selected}?revision=1&delete_chats=true")
 
     assert response.status_code == 200, response.text
     assert response.json()["success"] is True
@@ -200,6 +203,21 @@ def test_rest_delete_notifies_only_affected_owner_chats_and_voice(api_client):
     assert [frame for _, frame in frames if frame["type"] == "workspace_timeline_mode"] == [{"type": "workspace_timeline_mode", "active": False}]
     assert {call.args[0].chat_id for call in orch.voice_services.handle_chat_unavailable.await_args_list} == set(ids)
     orch._broadcast_user_history.assert_awaited_with(user_id="owner", projects_changed=True)
+
+
+def test_legacy_clients_cannot_delete_project_chats_without_explicit_confirmation(api_client):
+    client, orch = api_client
+    service = ProjectService(orch.history)
+    selected = project(service)
+    identity = chat(service, selected)
+    for suffix, status in (("", 409), ("&delete_chats=false", 409), ("&delete_chats=invalid", 422)):
+        response = client.delete(f"/api/projects/{selected}?revision=1{suffix}")
+        assert response.status_code == status, response.text
+        assert orch.history.get_chat(identity, "owner") is not None
+        assert service.get("owner", selected)["revision"] == 1
+    response = client.delete(f"/api/projects/{selected}?revision=1&delete_chats=true")
+    assert response.status_code == 200, response.text
+    assert orch.history.get_chat(identity, "owner") is None
 
 
 @pytest.mark.asyncio
