@@ -30,11 +30,11 @@
 
 ### Task 1: Atomic owner-scoped deletion
 
-- [ ] Add failing real-Plane tests for non-empty/stale-revision deletion, pagination, owner/audit preservation, rollback and create/delete serialization.
-- [ ] Forward an optional existing transaction through HistoryManager.delete_chat and VoiceSessionRepository.mark_chat_unavailable, including artifact-version cleanup.
-- [ ] Compose the current-project lock, canonical paginated chat deletion and current-revision project tombstone in ProjectService.delete.
-- [ ] Reuse postcommit voice/chat/timeline notifications and project-authority revocation in the REST endpoint.
-- [ ] Run owning project/voice/REST tests, lint and changed-line coverage; independently review the resulting diff.
+- [x] Add failing real-Plane tests for non-empty/stale-revision deletion, pagination, owner/audit preservation, rollback and create/delete serialization.
+- [x] Forward an optional existing transaction through HistoryManager.delete_chat and VoiceSessionRepository.mark_chat_unavailable, including artifact-version cleanup.
+- [x] Compose the current-project lock, canonical paginated chat deletion and current-revision project tombstone in ProjectService.delete.
+- [x] Reuse postcommit voice/chat/timeline notifications and project-authority revocation in the REST endpoint.
+- [x] Run owning project/voice/REST tests, lint and changed-line coverage; independently review the resulting diff.
 
 ### Task 2: Mac sidebar and confirmation
 
@@ -50,3 +50,7 @@
 - [ ] Install the matching signed Mac update and deploy the server; verify health/auth/pins/config preservation and live behavior with a disposable project.
 - [ ] Push required component/product branches, create and attach PRs, inspect exact-head checks and attempt merges in dependency order without bypassing protections.
 - [ ] Update the curated wiki and precise handoff with actual live, test, deployment and GitHub outcomes, including any remaining blockers.
+
+## Additional owner request before source publication
+
+The owner requests frequent-use User guide controls that cannot be pushed below long article text. Use a Mac-only presentation adapter over the server-provided guide components: a pinned topic picker with Previous/Next actions and an independently scrolling article. Preserve server-owned section labels, role gating, selection and exact action payloads; unknown structures retain the ordinary surface renderer. Other clients and the server guide catalog stay unchanged. Cover long content, allowed navigation and stale/disabled actions; include the guide in native live validation before pushing.
