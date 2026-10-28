@@ -20,6 +20,7 @@ from devtools import codex_security_review as csr
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).parent / "fixtures/codex_security"
 REAL_POLICY = REPO_ROOT / "tooling/codex-security/review-policy.json"
+EMPTY_SOURCE_DIGEST = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
 
 
 def git(repo, *arguments):
@@ -131,7 +132,9 @@ scan.mkdir(mode=0o700)
 for source_name, destination in [("upstream-manifest.json", "scan-manifest.json"),
                                   ("upstream-findings.json", "findings.json"),
                                   ("upstream-coverage.json", "coverage.json"),
-                                  ("upstream-results.sarif", "exports/results.sarif")]:
+                                  ("upstream-results.sarif", "exports/results.sarif"),
+        ("upstream-adapter-validation.json", "adapter-validation.json"),
+                                  ("upstream-adapter-validation.json", "adapter-validation.json")]:
     path = scan / destination
     path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(pathlib.Path(@FIXTURES@) / source_name, path)
@@ -154,6 +157,14 @@ if case in ("partial", "interrupted"):
     if case == "interrupted":
         doc["scan"]["status"] = "interrupted"
     manifest.write_text(json.dumps(doc))
+import hashlib
+receipt_path = scan / "adapter-validation.json"
+receipt = json.loads(receipt_path.read_text())
+receipt["source_digest"] = command[command.index("--source-digest") + 1]
+for name in receipt["artifacts"]:
+    if (scan / name).is_file():
+        receipt["artifacts"][name] = hashlib.sha256((scan / name).read_bytes()).hexdigest()
+receipt_path.write_text(json.dumps(receipt))
 """
 
 
@@ -280,12 +291,12 @@ def test_child_receives_only_materialized_tracked_source_and_allowlisted_environ
     assert ["--ro-bind", "/", "/"] not in [argv[i : i + 3] for i in range(len(argv))]
     command = argv[argv.index("--") + 1 :]
     assert command[:4] == [
-        "/usr/local/bin/node",
-        "/scanner/sdk/typescript/bin/codex-security.mjs",
-        "scan",
-        "/source",
+        "/usr/bin/python3",
+        "-I",
+        "/adapter/codex_security_adapter.py",
+        "--source-digest",
     ]
-    assert "--mock" in command and "/output/scan" in command
+    assert len(command) == 5 and len(command[4]) == 64
     assert "SYNTHETIC_PARENT_SECRET" not in (run / "report.json").read_text()
     snapshot = Path(argv[argv.index("--ro-bind", argv.index("--ro-bind") + 1) + 1])
     assert not snapshot.exists()
@@ -594,7 +605,9 @@ def test_adapter_rejects_unpinned_nonmock_or_malformed_upstream_artifacts(
         data["extension"] = "unsealed data"
     path.write_text(json.dumps(data))
     with pytest.raises(csr.ResultError):
-        csr.read_result(tmp_path, json.loads(REAL_POLICY.read_text()))
+        csr.read_result(
+            tmp_path, json.loads(REAL_POLICY.read_text()), EMPTY_SOURCE_DIGEST
+        )
 
 
 def copy_upstream(destination):
@@ -603,10 +616,153 @@ def copy_upstream(destination):
         ("upstream-findings.json", "findings.json"),
         ("upstream-coverage.json", "coverage.json"),
         ("upstream-results.sarif", "exports/results.sarif"),
+        ("upstream-adapter-validation.json", "adapter-validation.json"),
     ]:
         path = destination / name
         path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(FIXTURES / original, path)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "version",
+        "producer",
+        "scan",
+        "runs",
+        "result",
+        "run_properties",
+        "top_properties",
+        "location",
+    ],
+)
+def test_sarif_export_rejects_unrelated_or_malformed_nested_artifacts(tmp_path, change):
+    copy_upstream(tmp_path)
+    path = tmp_path / "exports/results.sarif"
+    document = read_json(path)
+    if change == "version":
+        document["version"] = "0.0-invalid"
+    elif change == "producer":
+        document["runs"][0]["tool"]["driver"]["name"] = "unreviewed-scanner"
+    elif change == "scan":
+        document["runs"][0]["automationDetails"]["id"] = "unrelated-scan"
+    elif change == "runs":
+        document["runs"] = [None]
+    elif change == "result":
+        document["runs"][0]["results"] = [None]
+    elif change == "run_properties":
+        document["runs"][0]["properties"] = []
+    elif change == "top_properties":
+        document["properties"] = []
+    else:
+        document["runs"][0]["results"][0]["locations"] = [None]
+    path.write_text(json.dumps(document))
+    with pytest.raises(csr.ResultError):
+        csr.read_result(
+            tmp_path, json.loads(REAL_POLICY.read_text()), EMPTY_SOURCE_DIGEST
+        )
+
+
+def test_malformed_sarif_run_produces_failed_report_and_receipt(tmp_path, capsys):
+    repo = build_checkout(tmp_path)
+    policy = write_policy(repo)
+    program = write_fakes(tmp_path)
+    program.write_text(
+        program.read_text()
+        + '\np = scan / "exports/results.sarif"\ndoc = json.loads(p.read_text())\ndoc["runs"] = [None]\np.write_text(json.dumps(doc))\n'
+    )
+    assert csr.main(run_args(tmp_path, repo, policy, program)) == csr.EXIT_ERROR
+    run = Path(stdout_json(capsys)["run_dir"])
+    report = read_json(run / "report.json")
+    assert report["status"] == "error" and report["sanitized"] is False
+    assert report["artifacts"]["sarif"] is None
+    assert not (run / "findings.sarif").exists()
+    assert csr.read_ledger(report_root(repo))[-1]["status"] == "error"
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["schema", "status", "source", "scan", "snapshot", "commit", "artifacts", "digest"],
+)
+def test_canonical_validation_receipt_is_bound_to_all_artifacts_and_approved_source(
+    tmp_path, change
+):
+    copy_upstream(tmp_path)
+    path = tmp_path / "adapter-validation.json"
+    document = read_json(path)
+    if change == "schema":
+        document["schema_version"] = 2
+    elif change == "status":
+        document["status"] = "unknown"
+    elif change == "source":
+        document["source_digest"] = "0" * 64
+    elif change == "scan":
+        document["scan_id"] = "unrelated-scan"
+    elif change == "snapshot":
+        document["snapshot_digest"] = "codex-security-snapshot/v1:sha256:" + "0" * 64
+    elif change == "commit":
+        document["upstream_commit"] = "0" * 40
+    elif change == "artifacts":
+        document["artifacts"].pop("exports/results.sarif")
+    else:
+        document["artifacts"]["exports/results.sarif"] = "0" * 64
+    path.write_text(json.dumps(document))
+    with pytest.raises(csr.ResultError, match="validation"):
+        csr.read_result(
+            tmp_path, json.loads(REAL_POLICY.read_text()), EMPTY_SOURCE_DIGEST
+        )
+
+
+@pytest.mark.parametrize(
+    "entry", [None, {"path": []}, {"path": "findings.json", "sha256": []}]
+)
+def test_manifest_artifact_records_fail_without_type_errors(tmp_path, entry):
+    copy_upstream(tmp_path)
+    path = tmp_path / "scan-manifest.json"
+    document = read_json(path)
+    document["scan"]["artifacts"] = [entry]
+    path.write_text(json.dumps(document))
+    with pytest.raises(csr.ResultError):
+        csr.read_result(
+            tmp_path, json.loads(REAL_POLICY.read_text()), EMPTY_SOURCE_DIGEST
+        )
+
+
+def test_verify_detects_canonical_validation_receipt_tampering(tmp_path, capsys):
+    repo, policy, run, _code, _output = run_fixture(tmp_path, capsys)
+    (run / "raw/scan/adapter-validation.json").write_text("{}")
+    assert (
+        csr.main(
+            [
+                "verify",
+                "--source-root",
+                str(repo),
+                "--policy",
+                str(policy),
+                "--run-dir",
+                str(run),
+            ]
+        )
+        == csr.EXIT_VERIFY_FAILED
+    )
+    assert "canonical validation" in " ".join(stdout_json(capsys)["reasons"])
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"value": NaN}',
+        '{"value": Infinity}',
+        '{"nested":' * 2000 + "null" + "}" * 2000,
+    ],
+    ids=["nan", "infinity", "nesting"],
+)
+def test_artifact_parser_rejects_nonstandard_or_excessive_json_as_result_error(
+    tmp_path, payload
+):
+    (tmp_path / "artifact.json").write_text(payload)
+    with pytest.raises(csr.ResultError):
+        csr._load_artifact(tmp_path, "artifact.json", 100000, "malformed JSON")
 
 
 @pytest.mark.parametrize(
@@ -628,7 +784,7 @@ def test_adapter_preserves_missing_and_unreadable_evidence_failures(tmp_path, ch
     if change == "oversized":
         policy["budgets"]["max_artifact_bytes"] = 1024
     with pytest.raises(csr.ResultError):
-        csr.read_result(tmp_path, policy)
+        csr.read_result(tmp_path, policy, EMPTY_SOURCE_DIGEST)
 
 
 @pytest.mark.parametrize("field", ["extensions", "scope", "artifacts"])
@@ -639,12 +795,18 @@ def test_adapter_rejects_wrong_nested_manifest_types(tmp_path, field):
     document["scan"][field] = None
     path.write_text(json.dumps(document))
     with pytest.raises(csr.ResultError):
-        csr.read_result(tmp_path, json.loads(REAL_POLICY.read_text()))
+        csr.read_result(
+            tmp_path, json.loads(REAL_POLICY.read_text()), EMPTY_SOURCE_DIGEST
+        )
 
 
 def test_adapter_classifies_absent_output_directory_as_result_failure(tmp_path):
     with pytest.raises(csr.ResultError):
-        csr.read_result(tmp_path / "absent", json.loads(REAL_POLICY.read_text()))
+        csr.read_result(
+            tmp_path / "absent",
+            json.loads(REAL_POLICY.read_text()),
+            EMPTY_SOURCE_DIGEST,
+        )
 
 
 @pytest.mark.parametrize("report", ["[]", "not-json", "null"])

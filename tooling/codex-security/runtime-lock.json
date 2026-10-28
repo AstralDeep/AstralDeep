@@ -14,7 +14,8 @@
     "scanner/sdk/typescript/pnpm-lock.yaml": "8139eb7ffa7e1bca07f9b5a5895409d6c8d201e1427cf1443d6b57bf534800f6",
     "scanner/sdk/typescript/pnpm-workspace.yaml": "1814f929f6f8e1924b4e07c40ef0ea0693dd76d56e32033278cf679855ee1747",
     "scanner/sdk/typescript/bin/codex-security.mjs": "8464effc0af5c05c2d58703de9f43c315b0c9e4e66299937c5cf8a304294e326",
-    "scanner/sdk/typescript/dist/cli.js": "17118c25249cd24602cefdcda998f0f64d9ebacd82ee0ad6e82242d07a920f2a"
+    "scanner/sdk/typescript/dist/cli.js": "17118c25249cd24602cefdcda998f0f64d9ebacd82ee0ad6e82242d07a920f2a",
+    "adapter/codex_security_adapter.py": "d8e53e128b4f5dc50aa9bfb7358344b8a364aa34269d4d56d7e179540e900972"
   },
   "source_archive_sha256": "4b31e070605bec72aa82b661f21bea245ad0bee84fee7544c884960516a324bf",
   "host_prerequisites": {

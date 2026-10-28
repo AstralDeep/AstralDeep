@@ -6,6 +6,7 @@ ADD --checksum=sha256:33dd0748f27e7916c4f1c8b6943461983e3453b06bbda6312a6280130b
 RUN npm install --global --ignore-scripts --no-audit --no-fund /tmp/pnpm.tgz
 
 COPY runtime-lock.json /runtime-lock.json
+COPY codex_security_adapter.py /adapter/codex_security_adapter.py
 COPY upstream.tar /tmp/upstream.tar
 RUN echo '4b31e070605bec72aa82b661f21bea245ad0bee84fee7544c884960516a324bf  /tmp/upstream.tar' | sha256sum --check --strict \
     && mkdir /scanner \

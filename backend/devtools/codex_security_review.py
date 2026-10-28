@@ -551,20 +551,26 @@ def wait_for_provider(
             return None, True
 
 
+def reject_nonfinite_json(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is invalid: {value}")
+
+
 def _load_artifact(raw_dir: Path, name: str, limit: int, label: str) -> dict:
     try:
         data = read_source_file(raw_dir, name, limit)
-        result = json.loads(data)
+        result = json.loads(data, parse_constant=reject_nonfinite_json)
         if not isinstance(result, dict):
             raise ResultError(f"provider {label} must be a JSON object")
         return result
-    except (Denial, OSError, ValueError) as error:
+    except (Denial, OSError, ValueError, RecursionError) as error:
         raise ResultError(
             f"provider {label} missing, unreadable or exceeds artifact limit: {error}"
         ) from error
 
 
-def read_result(raw_dir: Path, policy: dict) -> tuple[dict, dict, dict]:
+def read_result(
+    raw_dir: Path, policy: dict, expected_source_digest: str | None = None
+) -> tuple[dict, dict, dict]:
     limit = policy["budgets"]["max_artifact_bytes"]
     manifest = _load_artifact(raw_dir, "scan-manifest.json", limit, "scan manifest")
     findings = _load_artifact(raw_dir, "findings.json", limit, "findings")
@@ -609,23 +615,224 @@ def read_result(raw_dir: Path, policy: dict) -> tuple[dict, dict, dict]:
         for item in findings["findings"]
     ):
         raise ResultError("upstream findings must be explicitly synthetic")
-    records = {
-        item.get("path"): item.get("sha256")
-        for item in scan.get("artifacts", [])
-        if isinstance(item, dict)
-    }
+    records = {}
+    for record in scan["artifacts"]:
+        record = require_object(record, "upstream manifest artifact")
+        name = record.get("path")
+        digest = record.get("sha256")
+        if (
+            not isinstance(name, str)
+            or name not in {"findings.json", "coverage.json"}
+            or name in records
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            or record.get("mediaType") != "application/json"
+        ):
+            raise ResultError("upstream manifest artifact identity is invalid")
+        records[name] = digest
     for name in ("findings.json", "coverage.json"):
         if records.get(name) != sha256_file(raw_dir / name):
             raise ResultError(f"upstream manifest artifact digest mismatch: {name}")
+    validate_sarif(sarif, manifest, findings)
+    validation = _load_artifact(
+        raw_dir, "adapter-validation.json", limit, "canonical validation receipt"
+    )
+    validate_receipt(validation, manifest, raw_dir, expected_source_digest)
     status = {"failed": STATUS_ERROR, "interrupted": STATUS_INTERRUPTED}.get(
         scan["status"],
         STATUS_COMPLETE if receipt["completeness"] == "complete" else STATUS_PARTIAL,
     )
     return (
-        {"status": status, "calls_used": 0, "cost_usd": 0.0, "synthetic": True},
+        {
+            "status": status,
+            "calls_used": 0,
+            "cost_usd": 0.0,
+            "synthetic": True,
+            "validation_sha256": sha256_file(raw_dir / "adapter-validation.json"),
+        },
         sarif,
         receipt,
     )
+
+
+def require_object(value: Any, label: str) -> dict:
+    if not isinstance(value, dict):
+        raise ResultError(f"{label} must be an object")
+    return value
+
+
+def require_list(value: Any, label: str) -> list:
+    if not isinstance(value, list):
+        raise ResultError(f"{label} must be a list")
+    return value
+
+
+def validate_sarif(sarif: dict, manifest: dict, findings: dict) -> None:
+    if (
+        sarif.get("version") != "2.1.0"
+        or sarif.get("$schema")
+        != "https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/schemas/sarif-schema-2.1.0.json"
+        or set(sarif) != {"version", "$schema", "runs"}
+    ):
+        raise ResultError("SARIF export does not match the pinned projection schema")
+    runs = require_list(sarif.get("runs"), "SARIF runs")
+    if len(runs) != 1:
+        raise ResultError("SARIF export must identify exactly one scan")
+    run = require_object(runs[0], "SARIF run")
+    driver = require_object(
+        require_object(run.get("tool"), "SARIF tool").get("driver"), "SARIF driver"
+    )
+    scan = manifest["scan"]
+    if (
+        driver.get("name") != "Codex Security"
+        or driver.get("version") != "0.1.95"
+        or require_object(
+            run.get("automationDetails"), "SARIF automation identity"
+        ).get("id")
+        != scan["id"]
+    ):
+        raise ResultError(
+            "SARIF producer or scan identity differs from the canonical manifest"
+        )
+    properties = require_object(run.get("properties"), "SARIF run properties")
+    target = require_object(scan.get("target"), "upstream target")
+    if (
+        properties.get("codexSecuritySchemaVersion") != "1.0"
+        or properties.get("codexSecurityTargetKind") != "directory_snapshot"
+        or target.get("kind") != "directory_snapshot"
+    ):
+        raise ResultError(
+            "SARIF source target identity differs from the canonical manifest"
+        )
+    rules = require_list(driver.get("rules"), "SARIF rules")
+    for rule in rules:
+        if not isinstance(require_object(rule, "SARIF rule").get("id"), str):
+            raise ResultError("SARIF rule identity is invalid")
+    results = require_list(run.get("results"), "SARIF results")
+    canonical = {}
+    for finding in findings["findings"]:
+        occurrence = finding.get("occurrenceId")
+        if not isinstance(occurrence, str) or not occurrence or occurrence in canonical:
+            raise ResultError("upstream occurrence identity is invalid or duplicated")
+        canonical[occurrence] = finding
+    seen = set()
+    for item in results:
+        result = require_object(item, "SARIF result")
+        props = require_object(result.get("properties"), "SARIF result properties")
+        occurrence = props.get("occurrenceId")
+        if (
+            not isinstance(occurrence, str)
+            or occurrence not in canonical
+            or occurrence in seen
+        ):
+            raise ResultError(
+                "SARIF result does not identify a unique canonical finding"
+            )
+        seen.add(occurrence)
+        finding = canonical[occurrence]
+        expected = {
+            "findingId": finding.get("findingId"),
+            "occurrenceId": occurrence,
+            "severity": require_object(finding.get("severity"), "finding severity").get(
+                "level"
+            ),
+            "category": require_object(finding.get("taxonomy"), "finding taxonomy").get(
+                "category"
+            ),
+            "confidence": require_object(
+                finding.get("confidence"), "finding confidence"
+            ).get("level"),
+        }
+        index = result.get("ruleIndex")
+        if (
+            props != expected
+            or result.get("ruleId") != finding.get("ruleId")
+            or isinstance(index, bool)
+            or not isinstance(index, int)
+            or index < 0
+            or index >= len(rules)
+            or rules[index]["id"] != result.get("ruleId")
+            or require_object(
+                result.get("partialFingerprints"), "SARIF fingerprints"
+            ).get("codexSecurity/v1")
+            != require_object(finding.get("fingerprints"), "finding fingerprints").get(
+                "primary"
+            )
+        ):
+            raise ResultError(
+                "SARIF result identity differs from its canonical finding"
+            )
+        if not isinstance(
+            require_object(result.get("message"), "SARIF message").get("text"), str
+        ):
+            raise ResultError("SARIF result message is invalid")
+        locations = require_list(result.get("locations"), "SARIF locations")
+        if not locations:
+            raise ResultError("SARIF result has no source locations")
+        for location in locations:
+            physical = require_object(
+                require_object(location, "SARIF location").get("physicalLocation"),
+                "SARIF physical location",
+            )
+            if not isinstance(
+                require_object(
+                    physical.get("artifactLocation"), "SARIF artifact location"
+                ).get("uri"),
+                str,
+            ):
+                raise ResultError("SARIF source path is invalid")
+            region = require_object(physical.get("region"), "SARIF source region")
+            if (
+                any(
+                    isinstance(region.get(key), bool)
+                    or not isinstance(region.get(key), int)
+                    or region[key] < 1
+                    for key in ("startLine", "endLine")
+                )
+                or region["endLine"] < region["startLine"]
+            ):
+                raise ResultError("SARIF source region is invalid")
+    if seen != set(canonical):
+        raise ResultError("SARIF export omitted canonical findings")
+
+
+def validate_receipt(
+    receipt: dict, manifest: dict, raw_dir: Path, expected_source_digest: str | None
+) -> None:
+    scan = manifest["scan"]
+    snapshot = require_object(scan.get("target"), "upstream target").get(
+        "snapshotDigest"
+    )
+    if (
+        not isinstance(expected_source_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_source_digest) is None
+        or receipt.get("schema_version") != 1
+        or receipt.get("status") != "validated"
+        or receipt.get("upstream_commit") != REVIEWED_PROVIDER_COMMIT
+        or receipt.get("source_digest") != expected_source_digest
+        or receipt.get("scan_id") != scan["id"]
+        or not isinstance(snapshot, str)
+        or re.fullmatch(r"codex-security-snapshot/v1:sha256:[0-9a-f]{64}", snapshot)
+        is None
+        or receipt.get("snapshot_digest") != snapshot
+    ):
+        raise ResultError(
+            "canonical validation receipt does not bind this scan and approved source"
+        )
+    records = require_object(
+        receipt.get("artifacts"), "canonical validation artifact digests"
+    )
+    names = {
+        "scan-manifest.json",
+        "findings.json",
+        "coverage.json",
+        "exports/results.sarif",
+    }
+    if set(records) != names:
+        raise ResultError("canonical validation receipt has unexpected artifacts")
+    for name in sorted(names):
+        if records[name] != sha256_file(raw_dir / name):
+            raise ResultError(f"canonical validation artifact digest mismatch: {name}")
 
 
 def relative_uri(value: str, repo: Path) -> str:
@@ -693,6 +900,8 @@ def sanitize_document(document: Any, repo: Path, policy: dict) -> tuple[Any, int
     for run in (
         document.get("runs", []) if isinstance(document.get("runs"), list) else []
     ):
+        if not isinstance(run, dict):
+            raise SanitizationError("SARIF run must be an object")
         results = run.get("results")
         if isinstance(results, list):
             findings += len(results)
@@ -804,22 +1013,13 @@ def provider_environment() -> list[tuple[str, str]]:
     ]
 
 
-def provider_argv() -> list[str]:
+def provider_argv(source_digest: str) -> list[str]:
     return [
-        "/usr/local/bin/node",
-        "/scanner/sdk/typescript/bin/codex-security.mjs",
-        "scan",
-        "/source",
-        "--mock",
-        "--headless",
-        "--format",
-        "json",
-        "--model",
-        "gpt-5.6-sol",
-        "--plugin-path",
-        "/scanner/plugins/codex-security",
-        "--output-dir",
-        "/output/scan",
+        "/usr/bin/python3",
+        "-I",
+        "/adapter/codex_security_adapter.py",
+        "--source-digest",
+        source_digest,
     ]
 
 
@@ -953,7 +1153,7 @@ def execute_run(args: argparse.Namespace) -> int:
                 runtime,
                 snapshot,
                 raw_dir,
-                provider_argv(),
+                provider_argv(source_digest),
                 provider_environment(),
             )
             return run_provider(
@@ -1003,6 +1203,7 @@ def run_provider(
     status = STATUS_ERROR
     detail = ""
     artifacts = {"sarif": None, "coverage_receipt": None}
+    canonical_validation = None
     findings = 0
     try:
         with (
@@ -1025,7 +1226,13 @@ def run_provider(
         elif returncode != 0:
             detail = f"provider exited {returncode}"
         else:
-            result, sarif, receipt = read_result(raw_dir / "scan", policy)
+            result, sarif, receipt = read_result(
+                raw_dir / "scan", policy, source_digest
+            )
+            canonical_validation = {
+                "path": "raw/scan/adapter-validation.json",
+                "sha256": result["validation_sha256"],
+            }
             status = result["status"]
             if status in (STATUS_COMPLETE, STATUS_PARTIAL):
                 sarif.setdefault("properties", {})["synthetic"] = True
@@ -1093,7 +1300,11 @@ def run_provider(
         },
         "interrupt_reason": controller.reason or None,
         "error_detail": detail or None,
-        "artifacts": {**artifacts, "raw_dir": "raw"},
+        "artifacts": {
+            **artifacts,
+            "raw_dir": "raw",
+            "canonical_validation": canonical_validation,
+        },
         "findings_count": findings,
         "sanitized": status in (STATUS_COMPLETE, STATUS_PARTIAL),
         "started": started,
@@ -1208,14 +1419,18 @@ def verify_run(args: argparse.Namespace) -> int:
             reasons.append("report does not bind the reviewed provider commit")
         if report.get("source", {}).get("commit") != commit:
             reasons.append("checkout is no longer at the reviewed source commit")
-        for label, key in (
-            ("sarif", "sarif"),
-            ("coverage receipt", "coverage_receipt"),
+        for label, key, name in (
+            ("sarif", "sarif", "findings.sarif"),
+            ("coverage receipt", "coverage_receipt", "coverage-receipt.json"),
+            (
+                "canonical validation",
+                "canonical_validation",
+                "raw/scan/adapter-validation.json",
+            ),
         ):
             record = report.get("artifacts", {}).get(key)
             if record is None:
                 continue
-            name = "findings.sarif" if key == "sarif" else "coverage-receipt.json"
             if not isinstance(record, dict) or record.get("path") != name:
                 reasons.append(f"sanitized {label} record is invalid")
                 continue

@@ -43,6 +43,7 @@ git -C /tmp/codex-security-source archive --format=tar \
   f894f1ff64b1a332001f48593c1622b85701f9f3
 cp tooling/codex-security/Runtime.Dockerfile /tmp/codex-security-runtime-build/Dockerfile
 cp tooling/codex-security/runtime-lock.json /tmp/codex-security-runtime-build/runtime-lock.json
+cp backend/devtools/codex_security_adapter.py /tmp/codex-security-runtime-build/codex_security_adapter.py
 docker build -t codex-security-mock:reviewed /tmp/codex-security-runtime-build
 ```
 
@@ -117,8 +118,21 @@ has a byte limit. Status distinguishes complete, partial, interrupted, stopped
 The adapter reads upstream's actual `scan-manifest.json`, `findings.json`,
 `coverage.json` and `exports/results.sarif`. It validates producer/schema/mock and
 scan identities, checks the manifest's findings/coverage digests, and maps coverage
-completeness to complete/partial status. There is no invented `result.json`
-contract. Sanitized SARIF and coverage files strip code/snippets and reject
+completeness to complete/partial status. The pinned runtime's first-party
+`codex_security_adapter.py` runs the actual CLI, then calls the exact upstream
+strict canonical validator and SARIF projector. It compares the entire export
+with that projection and checks both the wrapper's approved source digest and
+upstream's directory snapshot identity. Only then does it create an
+`adapter-validation.json` receipt binding all four raw artifact digests, scan ID
+and source identities. This receipt is produced by this adapter, not by an
+invented upstream API. Its helper bytes are pinned in the runtime lock.
+
+The host adapter requires this receipt, checks SARIF version/producer/scan and
+target identities, validates nested run/result/property/location types and
+finding identities, and binds the validation receipt in the final report and
+verification. Unknown or malformed output produces an error report without
+sanitized findings. There is no invented upstream `result.json` contract.
+Sanitized SARIF and coverage files strip code/snippets and reject
 outside, traversal or excluded paths. Fictional `mock/` paths are upstream test
 examples, not paths or vulnerabilities found in AstralDeep. The report binds the
 source commit plus actual snapshot content, policy, approved runtime, and sanitized

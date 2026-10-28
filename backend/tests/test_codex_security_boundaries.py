@@ -83,7 +83,15 @@ def test_read_result_adapts_actual_upstream_mock_artifacts(tmp_path):
         fixtures / "upstream-results.sarif", tmp_path / "exports/results.sarif"
     )
     policy = json.loads(Path("tooling/codex-security/review-policy.json").read_text())
-    result, sarif, coverage = csr.read_result(tmp_path, policy)
+    shutil.copyfile(
+        fixtures / "upstream-adapter-validation.json",
+        tmp_path / "adapter-validation.json",
+    )
+    result, sarif, coverage = csr.read_result(
+        tmp_path,
+        policy,
+        "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    )
     assert result["status"] == "complete"
     assert result["calls_used"] == 0 and result["cost_usd"] == 0
     assert len(sarif["runs"][0]["results"]) == 12
