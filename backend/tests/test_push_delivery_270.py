@@ -21,6 +21,7 @@ from orchestrator.push_delivery import (
 from orchestrator.push_destinations import PushDestinationStore
 from orchestrator.push_providers import PushProviderError
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
+from tests.helpers.push_sessions import SessionBoundPushStore
 
 KEY = "uR3Wb5rK8pHq2nTxE1sYd0cV7mLwZa4Gf9OiUjBhNkQ="
 BASE_NOW = 1_800_000_000.0
@@ -71,6 +72,57 @@ def _notification(**overrides):
     return payload
 
 
+async def test_same_token_claim_invalidates_queued_delivery_and_ack(store, coordinator, owner):
+    first = store.enroll(owner, device_id="device-claim-0001", platform="android", token="token")
+    adapter = FakeAdapter()
+    push = coordinator({"fcm": adapter})
+    await push.enqueue_notification(owner, _notification(notification_id="old-claim"))
+    second = store.enroll(owner, device_id=first["device_id"], platform="android", token="token",
+                          expected_destination_revision=first["updated_at"])
+    assert first["token_generation"] == second["token_generation"]
+    await push.dispatch_once()
+    assert adapter.calls == []
+    with pytest.raises(AckRejected):
+        await push.acknowledge(owner, first["device_id"], "old-claim")
+
+
+@pytest.mark.parametrize("field,value", [("token_generation", True), ("destination_revision", None)])
+async def test_queued_binding_proof_requires_strict_generation_and_revision(
+    store, coordinator, owner, plane_runtime, field, value,
+):
+    import hashlib
+    import json
+    store.enroll(owner, device_id="device-strict-proof", platform="android", token="token")
+    adapter = FakeAdapter()
+    push = coordinator({"fcm": adapter})
+    await push.enqueue_notification(owner, _notification(notification_id="strict-proof"))
+    row = _outbox_row(plane_runtime, owner)
+    payload = plane_runtime.fetch_one("SELECT canonical_payload FROM astralplane_outbox WHERE entry_id=%s", (row["entry_id"],))
+    canonical = json.loads(bytes(payload["canonical_payload"]))
+    canonical[field] = value
+    raw = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
+    plane_runtime.execute("UPDATE astralplane_outbox SET canonical_payload=%s,payload_sha256=%s WHERE entry_id=%s",
+                          (raw, hashlib.sha256(raw).hexdigest(), row["entry_id"]))
+    await push.dispatch_once()
+    assert adapter.calls == []
+
+
+async def test_provider_invalid_callback_cannot_revoke_new_same_token_claim(store, coordinator, owner):
+    first = store.enroll(owner, device_id="device-claim-0002", platform="android", token="token")
+
+    class RefreshDuringSend(FakeAdapter):
+        def send(self, **kwargs):
+            store.enroll(owner, device_id=first["device_id"], platform="android", token="token",
+                         expected_destination_revision=first["updated_at"])
+            raise PushProviderError(transient=False, code="token_unregistered")
+
+    push = coordinator({"fcm": RefreshDuringSend()})
+    await push.enqueue_notification(owner, _notification(notification_id="old-invalid-claim"))
+    await push.dispatch_once()
+    current = store.get_destination(owner, first["device_id"])
+    assert current["status"] == "active" and current["updated_at"] > first["updated_at"]
+
+
 @pytest.fixture(scope="module")
 def plane_runtime():
     with isolated_plane_runtime("push_delivery") as runtime:
@@ -80,6 +132,7 @@ def plane_runtime():
 @pytest.fixture(autouse=True)
 def encryption_key(monkeypatch):
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", KEY)
+    monkeypatch.setenv("WEB_SESSION_ENC_KEY", KEY)
 
 
 @pytest.fixture()
@@ -124,7 +177,7 @@ def audit_events(monkeypatch, audit_repository) -> list:
 
 @pytest.fixture()
 def store(plane_runtime, audit_repository) -> PushDestinationStore:
-    return PushDestinationStore(
+    return SessionBoundPushStore(
         plane_runtime=plane_runtime,
         plane_repositories=plane_runtime.repositories,
         audit_repository=audit_repository,

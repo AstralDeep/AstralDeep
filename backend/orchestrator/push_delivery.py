@@ -21,7 +21,7 @@ from astralplane.errors import PlaneError
 from audit.schemas import AuditEventCreate, AuditEventDTO
 
 from orchestrator.plane_repository_context import repository_from
-from orchestrator.push_destinations import DestinationNotFound, PushDestinationStore
+from orchestrator.push_destinations import MAX_DESTINATION_REVISION, DestinationNotFound, PushDestinationStore
 from orchestrator.push_providers import GENERIC_PUSH_BODY, GENERIC_PUSH_TITLE, MAX_PUSH_LIFETIME_SECONDS, PushProviderError
 
 logger = logging.getLogger("Orchestrator.PushDelivery")
@@ -145,6 +145,11 @@ def _queued_event_id(owner_id: str, notification_id: str, device_id: str) -> str
 def _attempt_event_id(canonical: dict[str, Any], attempt: int, state: str) -> str:
     key = _delivery_key(canonical["owner_id"], canonical["notification_id"], canonical["device_id"])
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{key}:{attempt}:{state}"))
+
+
+def _valid_destination_binding(proof):
+    return all(type(proof.get(key)) is int and 1 <= proof[key] <= MAX_DESTINATION_REVISION
+               for key in ("token_generation", "destination_revision"))
 
 
 class PushDeliveryCoordinator:
@@ -306,6 +311,7 @@ class PushDeliveryCoordinator:
                 "provider": target["provider"],
                 "token_fingerprint": target["token_fingerprint"],
                 "token_generation": target["token_generation"],
+                "destination_revision": target["destination_revision"],
                 "event_kind": kind,
                 "urgency": resolve_urgency(payload),
                 "expires_at": expires_at,
@@ -347,6 +353,7 @@ class PushDeliveryCoordinator:
                             "provider": target["provider"],
                             "token_fingerprint": target["token_fingerprint"],
                             "token_generation": target["token_generation"],
+                            "destination_revision": target["destination_revision"],
                             "delivery_outcome": OUTCOME_QUEUED,
                         },
                     )
@@ -468,14 +475,21 @@ class PushDeliveryCoordinator:
         except Exception:
             self._fence(self._outbox.dead_letter, claimed, error_code="payload_malformed")
             return
-        target = await asyncio.to_thread(
-            self._destinations.delivery_target, owner_id, device_id
-        )
+        if not _valid_destination_binding(canonical):
+            self._suppress_stale(claimed, canonical, "unsupported_delivery")
+            return
+        try:
+            target = await asyncio.to_thread(self._destinations.delivery_target, owner_id, device_id)
+        except Exception:
+            await self._record_provider_error(claimed, canonical,
+                PushProviderError(transient=True, code="destination_unavailable"))
+            return
         if target is None:
             self._suppress_stale(claimed, canonical, "destination_unavailable")
             return
         if (target["token_fingerprint"] != canonical.get("token_fingerprint")
-                or target["token_generation"] != canonical.get("token_generation")):
+                or target["token_generation"] != canonical.get("token_generation")
+                or target["destination_revision"] != canonical.get("destination_revision")):
             self._suppress_stale(claimed, canonical, "token_rotated")
             return
         if not await self._start_attempt(claimed, canonical):
@@ -505,6 +519,13 @@ class PushDeliveryCoordinator:
                     code="provider_unconfigured",
                     detail="no adapter for provider",
                 )
+            try:
+                current = await asyncio.to_thread(self._destinations.delivery_target, owner_id, device_id)
+            except Exception:
+                raise PushProviderError(transient=True, code="destination_unavailable") from None
+            if current != target:
+                self._suppress_stale(claimed, canonical, "destination_changed")
+                return
             await asyncio.to_thread(
                 adapter.send,
                 device_token=target["push_token"],
@@ -608,6 +629,7 @@ class PushDeliveryCoordinator:
                 reason="token_unregistered",
                 expected_token_fingerprint=canonical["token_fingerprint"],
                 expected_token_generation=canonical["token_generation"],
+                expected_destination_revision=canonical["destination_revision"],
             )
 
     def _fence(
@@ -715,9 +737,11 @@ class PushDeliveryCoordinator:
             or queued.outcome != "success"
             or queued.inputs_meta.get("notification_id") != notification_id
             or queued.inputs_meta.get("device_id") != device_id
+            or not _valid_destination_binding(queued.inputs_meta)
             or target is None
             or queued.inputs_meta.get("token_fingerprint") != target["token_fingerprint"]
             or queued.inputs_meta.get("token_generation") != target["token_generation"]
+            or queued.inputs_meta.get("destination_revision") != target["destination_revision"]
         ):
             self._audit_outcome(
                 owner_id=owner_id,
@@ -733,6 +757,8 @@ class PushDeliveryCoordinator:
             meta={
                 "device_id": device_id,
                 "notification_id": notification_id,
+                "token_generation": target["token_generation"],
+                "destination_revision": target["destination_revision"],
                 "delivery_outcome": OUTCOME_ACKED,
             },
         )

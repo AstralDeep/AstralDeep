@@ -15,6 +15,7 @@ from cryptography.fernet import Fernet
 from audit.repository import AuditRepository
 from orchestrator import push_destinations as pd
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
+from tests.helpers.push_sessions import SessionBoundPushStore
 
 KEY = "uR3Wb5rK8pHq2nTxE1sYd0cV7mLwZa4Gf9OiUjBhNkQ="
 
@@ -38,6 +39,7 @@ def plane_runtime():
 @pytest.fixture(autouse=True)
 def encryption_key(monkeypatch):
     monkeypatch.setenv(pd._CREDENTIAL_KEY_SOURCE, KEY)
+    monkeypatch.setenv("WEB_SESSION_ENC_KEY", KEY)
 
 
 @pytest.fixture()
@@ -67,7 +69,7 @@ def audit_events(monkeypatch, audit_repository) -> list:
 
 @pytest.fixture()
 def store(plane_runtime, audit_repository) -> pd.PushDestinationStore:
-    return pd.PushDestinationStore(
+    return SessionBoundPushStore(
         plane_runtime=plane_runtime,
         plane_repositories=runtime_repositories(plane_runtime),
         audit_repository=audit_repository,
@@ -82,6 +84,69 @@ def _enroll(store, owner, device="device-aaaaaaaa", platform="android", token="f
         token=token,
         label=label,
     )
+
+
+def test_conditional_same_token_claim_advances_revision_not_generation(store, owner, audit_events, monkeypatch):
+    first = store.enroll(owner, device_id="device-revision1", platform="android", token="token",
+                         expected_destination_revision=0)
+    monkeypatch.setattr(pd, "_now_ms", lambda: first["updated_at"] - 1000)
+    second = store.enroll(owner, device_id="device-revision1", platform="android", token="token",
+                          expected_destination_revision=first["updated_at"])
+    assert second["updated_at"] > first["updated_at"]
+    assert second["token_generation"] == first["token_generation"]
+    assert audit_events[-1].action_type == "push.destination.claim"
+    for stale in (0, first["updated_at"]):
+        with pytest.raises(pd.DestinationConflict):
+            store.enroll(owner, device_id="device-revision1", platform="android", token="token",
+                         expected_destination_revision=stale)
+    assert store.get_destination(owner, "device-revision1") == second
+
+
+@pytest.mark.parametrize("revision", [True, False, -1, 2**53, 1.0, "1"])
+def test_conditional_revision_requires_safe_strict_integer(store, owner, revision):
+    with pytest.raises(pd.DestinationInvalid):
+        store.enroll(owner, device_id="device-revision1", platform="android", token="token",
+                     expected_destination_revision=revision)
+
+
+def test_revision_fence_applies_to_revoked_rows_and_lifecycle_delete(store, owner):
+    first = _enroll(store, owner)
+    revoked = store.revoke(owner, first["device_id"])
+    with pytest.raises(pd.DestinationConflict):
+        store.enroll(owner, device_id=first["device_id"], platform="android", token="token",
+                     expected_destination_revision=0)
+    current = store.enroll(owner, device_id=first["device_id"], platform="android", token="token",
+                           expected_destination_revision=revoked["updated_at"])
+    with pytest.raises(pd.DestinationConflict):
+        store.revoke(owner, first["device_id"], expected_token_generation=current["token_generation"],
+                     expected_destination_revision=revoked["updated_at"])
+    result = store.revoke(owner, first["device_id"], expected_token_generation=current["token_generation"],
+                          expected_destination_revision=current["updated_at"])
+    assert result["status"] == "revoked" and result["updated_at"] > current["updated_at"]
+
+
+def test_concurrent_conditional_claims_have_one_winner(store, owner, monkeypatch):
+    first = _enroll(store, owner)
+    original_get = store._get_record
+    barrier = threading.Barrier(2)
+    observed = threading.local()
+    def captured(transaction, owner_id, device_id):
+        record = original_get(transaction, owner_id, device_id)
+        if threading.current_thread().name.startswith("push-claim") and not getattr(observed, "ready", False):
+            observed.ready = True
+            barrier.wait(timeout=10)
+        return record
+    monkeypatch.setattr(store, "_get_record", captured)
+    def claim(_):
+        try:
+            store.enroll(owner, device_id=first["device_id"], platform="android", token="fcm-token-1",
+                         expected_destination_revision=first["updated_at"])
+        except pd.DestinationConflict:
+            return False
+        return True
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="push-claim") as executor:
+        assert list(executor.map(claim, range(2))).count(True) == 1
+    assert store.get_destination(owner, first["device_id"])["updated_at"] > first["updated_at"]
 
 
 def test_enroll_creates_active_destination(store, owner, audit_events):
@@ -215,16 +280,16 @@ def test_reactivation_cannot_exceed_active_destination_capacity(store, owner):
 def test_concurrent_enrollment_cannot_exceed_active_destination_capacity(store, owner, monkeypatch):
     for index in range(pd.MAX_DESTINATIONS_PER_OWNER - 1):
         _enroll(store, owner, device=f"device-inventory-{index:04d}")
-    original_list = store._list_records
+    original_get = store._get_record
     barrier = threading.Barrier(2)
     observed = threading.local()
 
-    def same_inventory(transaction, owner_id):
-        records = original_list(transaction, owner_id)
+    def same_inventory(transaction, owner_id, device_id):
+        record = original_get(transaction, owner_id, device_id)
         if threading.current_thread().name.startswith("push-enroll") and not getattr(observed, "ready", False):
             observed.ready = True
             barrier.wait(timeout=10)
-        return records
+        return record
 
     def enroll_one(index):
         try:
@@ -233,7 +298,7 @@ def test_concurrent_enrollment_cannot_exceed_active_destination_capacity(store, 
             return False
         return True
 
-    monkeypatch.setattr(store, "_list_records", same_inventory)
+    monkeypatch.setattr(store, "_get_record", same_inventory)
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="push-enroll") as executor:
         results = list(executor.map(enroll_one, range(2)))
     assert results.count(True) == 1
@@ -277,6 +342,7 @@ def test_delivery_targets_expose_raw_token_only_internally(store, owner):
         "push_token": "target-token-1",
         "token_fingerprint": pd.token_fingerprint("target-token-1"),
         "token_generation": 1,
+        "destination_revision": store.get_destination(owner, "device-target-01")["updated_at"],
     }
 
 

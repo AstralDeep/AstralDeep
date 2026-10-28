@@ -23,6 +23,37 @@ def test_notification_surface_is_registered():
     assert get_surface("notifications") is not None
 
 
+@pytest.mark.parametrize("payload", [
+    {"fields": {}, "unexpected": 1},
+    {"fields": {"expected_revision": 1}, "expected_revision": 1},
+    {"fields": []}, {"fields": None},
+])
+def test_form_envelope_rejects_ambiguous_or_unknown_fields(payload):
+    from orchestrator.notification_routing import NotificationPolicyInvalid
+    with pytest.raises(NotificationPolicyInvalid):
+        get_surface("notifications")._fields(payload)
+
+
+def test_form_envelope_preserves_captured_revision_and_legacy_shapes():
+    normalize = get_surface("notifications")._fields
+    assert normalize({"fields": {"enabled": True}, "expected_revision": 4}) == {
+        "enabled": True, "expected_revision": 4}
+    assert normalize({"fields": {"expected_revision": 4}}) == {"expected_revision": 4}
+    assert normalize({"expected_revision": 4}) == {"expected_revision": 4}
+
+
+async def test_actual_param_picker_submission_retains_policy_cas(surface_env, coordinator, owner):
+    from orchestrator.notification_routing import default_preferences, NotificationPolicyConflict
+    surface, orch, socket = surface_env
+    fields = {k: v for k, v in default_preferences().items() if k not in {"revision", "updated_at"}}
+    await surface._preferences(orch, socket, owner, [], {"fields": fields, "expected_revision": 0})
+    with pytest.raises(NotificationPolicyConflict):
+        await surface._preferences(orch, socket, owner, [], {"fields": fields, "expected_revision": 0})
+    await surface._quiet_hours(orch, socket, owner, [], {"fields": {"enabled": True,
+        "start_minute": 60, "end_minute": 120, "tz_offset_minutes": 0}, "expected_revision": 0})
+    assert coordinator.quiet_hours(owner)["quiet_enabled"] is True
+
+
 @pytest.fixture
 def surface_env(monkeypatch, coordinator, owner):
     monkeypatch.setitem(flags._flags, "notification_routing", True)

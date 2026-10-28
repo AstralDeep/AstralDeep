@@ -31,7 +31,16 @@ def _owner(orch, websocket, user_id):
 def _fields(payload):
     if not isinstance(payload, dict):
         raise NotificationPolicyInvalid("notification action must be an object")
-    return payload.get("fields") if isinstance(payload.get("fields"), dict) else payload
+    if "fields" not in payload:
+        return payload
+    fields = payload["fields"]
+    if not isinstance(fields, dict) or set(payload) - {"fields", "expected_revision"}:
+        raise NotificationPolicyInvalid("notification form envelope is invalid")
+    if "expected_revision" in payload:
+        if "expected_revision" in fields:
+            raise NotificationPolicyInvalid("notification form revision is ambiguous")
+        return {**fields, "expected_revision": payload["expected_revision"]}
+    return fields
 
 
 def _state(orch, user_id, params):

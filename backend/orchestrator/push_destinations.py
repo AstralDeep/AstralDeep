@@ -14,18 +14,20 @@ import re
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 from astralplane.contracts import IsolationLevel
 from astralplane.repositories import RepositoryConflictError
+from astralplane.repositories.history import SessionConsentObservation
 
 from audit.schemas import AuditEventCreate, AuditEventDTO
 from orchestrator.plane_repository_context import (
     PlaneRepositoryContext,
     repository_from,
 )
+from orchestrator.session_consent import ConsentSession
 
 DESTINATION_NAMESPACE = "astral-push-destination"
 RECORD_VERSION = 1
@@ -40,6 +42,7 @@ _LIST_LIMIT = MAX_DESTINATIONS_PER_OWNER + 8
 _DEVICE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$")
 _FINGERPRINT_PREFIX = "sha256-"
 _CREDENTIAL_KEY_SOURCE = "CREDENTIAL_ENCRYPTION_KEY"
+MAX_DESTINATION_REVISION = 2**53 - 1
 
 
 class PushDestinationError(Exception):
@@ -147,6 +150,12 @@ def normalize_label(raw: Any) -> str | None:
     return label
 
 
+def validate_revision(raw: Any, *, minimum: int = 0) -> int:
+    if type(raw) is not int or not minimum <= raw <= MAX_DESTINATION_REVISION:
+        raise DestinationInvalid("destination revision must be a safe integer")
+    return raw
+
+
 def public_destination(record: dict[str, Any]) -> dict[str, Any]:
     return {
         "device_id": record["device_id"],
@@ -245,7 +254,62 @@ class PushDestinationStore:
         )
         if len(rows) >= _LIST_LIMIT:
             raise DestinationStoreUnavailable("destination inventory is incomplete")
-        return [_decode_record(row.encrypted_value) for row in rows]
+        records = [_decode_record(row.encrypted_value) for row in rows]
+        if any(type(record.get("updated_at")) is not int or record["updated_at"] != row.updated_at
+               for record, row in zip(records, rows)):
+            raise DestinationStoreUnavailable("destination revision is invalid")
+        return records
+
+    def _capture_session(self, transaction, owner_id, selected):
+        try:
+            if not isinstance(selected, ConsentSession):
+                raise ValueError
+            reference = selected.reference(owner_id)
+            sessions = self._credentials.plane_runtime.repositories.history.sessions
+            sessions.bound_request_execution_waits(transaction)
+            sessions.assert_current_consent(transaction, observation=selected.observation)
+            return reference
+        except Exception:
+            raise DestinationStoreUnavailable("current destination session is unavailable") from None
+
+    def _session_current(self, transaction, owner_id, reference):
+        if (not isinstance(reference, dict)
+                or set(reference) != {"session_id", "incarnation_id", "created_at", "interactive_anchor"}
+                or not all(isinstance(reference[key], str) and reference[key] for key in ("session_id", "incarnation_id"))
+                or any(type(reference[key]) is not int or reference[key] < 0 for key in ("created_at", "interactive_anchor"))):
+            return False
+        try:
+            sessions = self._credentials.plane_runtime.repositories.history.sessions
+            sessions.bound_request_execution_waits(transaction)
+            for _ in range(2):
+                state = sessions.get_execution_state(transaction, owner_id=owner_id, session_id=reference["session_id"])
+                if state is None or any(getattr(state.credential, key) != value for key, value in reference.items()):
+                    return False
+                cutoff = min(state.observed_at + timedelta(seconds=15),
+                             datetime.fromtimestamp(state.credential.hard_expires_at, timezone.utc))
+                if cutoff <= state.observed_at:
+                    return False
+                try:
+                    sessions.assert_current_consent(transaction, observation=SessionConsentObservation(
+                        state.credential, state.observed_at, cutoff))
+                    return True
+                except RepositoryConflictError as exc:
+                    if exc.code != "session_authority_unavailable":
+                        raise
+            return False
+        except Exception:
+            raise DestinationStoreUnavailable("destination session authority is unavailable") from None
+
+    def _target(self, transaction, owner_id, record):
+        if (record is None or record.get("status") != STATUS_ACTIVE
+                or not self._session_current(transaction, owner_id, record.get("session_reference"))):
+            return None
+        for value in (record.get("token_generation"), record.get("updated_at")):
+            if type(value) is not int or not 1 <= value <= MAX_DESTINATION_REVISION:
+                raise DestinationStoreUnavailable("destination generation is invalid")
+        return {"device_id": record["device_id"], "provider": record["provider"],
+                "push_token": record["push_token"], "token_fingerprint": record["token_fingerprint"],
+                "token_generation": record["token_generation"], "destination_revision": record["updated_at"]}
 
     def _audit_transition(
         self,
@@ -295,15 +359,24 @@ class PushDestinationStore:
         platform: str,
         token: str,
         label: str | None = None,
+        expected_destination_revision: int | None = None,
+        consent_session: ConsentSession | None = None,
     ) -> dict[str, Any]:
         validate_device_id(device_id)
         normalize_platform(platform)
         token = normalize_token(token)
         normalize_label(label)
+        if expected_destination_revision is not None:
+            validate_revision(expected_destination_revision)
         fingerprint = token_fingerprint(token)
         now = _now_ms()
         with self._enrollment_transaction() as transaction:
             existing = self._get_record(transaction, owner_id, device_id)
+            if (expected_destination_revision is not None
+                    and expected_destination_revision != (existing["updated_at"] if existing else 0)):
+                raise DestinationConflict("destination revision changed")
+            reference = (self._capture_session(transaction, owner_id, consent_session)
+                         if expected_destination_revision is not None or consent_session is not None else None)
             if existing is not None:
                 now = max(now, existing["updated_at"] + 1)
             if existing is not None and (
@@ -333,8 +406,11 @@ class PushDestinationStore:
                 )
             if existing is not None and existing.get("status") == STATUS_ACTIVE:
                 if existing.get("token_fingerprint") == fingerprint:
-                    return public_destination(existing)
-                action = "push.destination.rotate"
+                    if expected_destination_revision is None:
+                        return public_destination(existing)
+                    action = "push.destination.claim"
+                else:
+                    action = "push.destination.rotate"
             elif existing is not None:
                 action = "push.destination.reactivate"
             else:
@@ -352,7 +428,8 @@ class PushDestinationStore:
                 "updated_at": now,
                 "rotated_at": now if action == "push.destination.rotate" else existing.get("rotated_at") if existing else None,
                 "revoked_at": None,
-                "token_generation": (existing or {}).get("token_generation", 0) + 1,
+                "token_generation": (existing or {}).get("token_generation", 0) + (action != "push.destination.claim"),
+                "session_reference": reference,
             }
             self._write_record(
                 transaction,
@@ -369,6 +446,7 @@ class PushDestinationStore:
                     "platform": platform,
                     "provider": record["provider"],
                     "token_generation": record["token_generation"],
+                    "destination_revision": record["updated_at"],
                     "token_fingerprint": fingerprint,
                 },
             )
@@ -398,8 +476,12 @@ class PushDestinationStore:
         reason: str = "logout",
         expected_token_fingerprint: str | None = None,
         expected_token_generation: int | None = None,
+        expected_destination_revision: int | None = None,
     ) -> dict[str, Any]:
         validate_device_id(device_id)
+        for value in (expected_token_generation, expected_destination_revision):
+            if value is not None:
+                validate_revision(value, minimum=1)
         now = _now_ms()
         with self._credentials.transaction() as transaction:
             record = self._get_record(transaction, owner_id, device_id)
@@ -410,8 +492,12 @@ class PushDestinationStore:
                 and record.get("token_fingerprint") != expected_token_fingerprint
                 or expected_token_generation is not None
                 and record.get("token_generation") != expected_token_generation
+                or expected_destination_revision is not None
+                and record.get("updated_at") != expected_destination_revision
             ):
-                return public_destination(record)
+                if expected_token_fingerprint is not None:
+                    return public_destination(record)
+                raise DestinationConflict("destination revision changed")
             if record.get("status") == STATUS_REVOKED:
                 return public_destination(record)
             expected_updated_at = record["updated_at"]
@@ -437,17 +523,7 @@ class PushDestinationStore:
     def delivery_targets(self, owner_id: str) -> list[dict[str, Any]]:
         with self._credentials.transaction() as transaction:
             records = self._list_records(transaction, owner_id)
-        return [
-            {
-                "device_id": record["device_id"],
-                "provider": record["provider"],
-                "push_token": record["push_token"],
-                "token_fingerprint": record["token_fingerprint"],
-                "token_generation": record["token_generation"],
-            }
-            for record in records
-            if record.get("status") == STATUS_ACTIVE
-        ]
+            return [target for record in records if (target := self._target(transaction, owner_id, record)) is not None]
 
     def presence_identity(self, owner_id: str, device_id: str) -> tuple | None:
         validate_device_id(device_id)
@@ -455,18 +531,10 @@ class PushDestinationStore:
             record = self._get_record(transaction, owner_id, device_id)
         if record is None:
             return None
-        return record["status"], record["token_fingerprint"], record["token_generation"]
+        return record["status"], record["token_fingerprint"], record["token_generation"], record["updated_at"]
 
     def delivery_target(self, owner_id: str, device_id: str) -> dict[str, Any] | None:
         validate_device_id(device_id)
         with self._credentials.transaction() as transaction:
             record = self._get_record(transaction, owner_id, device_id)
-        if record is None or record.get("status") != STATUS_ACTIVE:
-            return None
-        return {
-            "device_id": record["device_id"],
-            "provider": record["provider"],
-            "push_token": record["push_token"],
-            "token_fingerprint": record["token_fingerprint"],
-            "token_generation": record["token_generation"],
-        }
+            return self._target(transaction, owner_id, record)
