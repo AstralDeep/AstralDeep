@@ -194,13 +194,18 @@ def _record_identity(record) -> str:
     else:
         fixed_reader_source(record)
     operation = thaw(record.operation)
+    selected = operation.get("authority", {})
+    interactive = (selected.get("origin") == "interactive"
+                   and selected.get("reference_kind") == "session_incarnation")
+    framework = (kind == "chat" and selected.get("origin") == "framework"
+                 and selected.get("reference_kind") == "credential"
+                 and operation.get("selection") is None)
     if (
         record.execution_profile != "one_shot"
         or operation.get("version") != 2
         or operation.get("kind") not in {"research", "chat"}
         or operation.get("source_retention") not in {"operation", "none"}
-        or operation.get("authority", {}).get("origin") != "interactive"
-        or operation.get("authority", {}).get("reference_kind") != "session_incarnation"
+        or not (interactive or framework)
     ):
         _deny()
     return canonical(
@@ -677,6 +682,9 @@ async def invoke_fixed_user_model(
     body["messages"] = messages
     selected.assert_body(context.owner_id, body)
     actor, principal = orch._llm_audit_principals(websocket)
+    authority = json.loads(selected._record_json)["operation"]["authority"]
+    if authority["origin"] == "framework":
+        principal = "framework:" + authority["reference_id"]
     response = None
     unsent = None
     provider_attempt = None

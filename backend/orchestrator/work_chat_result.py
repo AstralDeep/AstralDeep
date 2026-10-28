@@ -92,11 +92,13 @@ def project_chat_result(transaction, repository, *, owner_id, read):
             assignment_id=record.assignment_id)
         _require(type(current) is AssignmentOperationRead and _same(current, read))
         operation = thaw(record.operation)
+        selected = operation.get("authority", {})
+        reference = (selected.get("origin"), selected.get("reference_kind"))
         if (record.execution_profile != "one_shot" or read.continuation_supported is not True
                 or type(operation) is not dict or type(operation.get("version")) is not int
                 or operation["version"] != 2 or operation.get("kind") != "chat"
-                or operation.get("authority", {}).get("origin") != "interactive"
-                or operation.get("authority", {}).get("reference_kind") != "session_incarnation"):
+                or reference not in {("interactive", "session_incarnation"),
+                                     ("framework", "credential")}):
             return _envelope("unsupported")
         if (record.lifecycle != "completed" or read.disposition != "completed"
                 or read.terminal_outcome != "completed"

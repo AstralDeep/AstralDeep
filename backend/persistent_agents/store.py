@@ -139,15 +139,18 @@ class AssignmentStore:
         self, *, authority, callback: Callable[[Any, Any, Any], _T], fence=None, binding=None,
         final_check: Callable[[], None] | None = None,
     ) -> _T:
+        from orchestrator.framework_operation_authority import (
+            FrameworkOperationExecutionAuthority, authority_repository,
+        )
         from orchestrator.session_authority import OperationExecutionAuthority
 
-        if (not isinstance(authority, OperationExecutionAuthority)
+        if (not isinstance(authority, (OperationExecutionAuthority, FrameworkOperationExecutionAuthority))
                 or authority.plane_runtime is not self.plane_runtime
                 or (binding is not None and fence is None)):
             raise AssignmentError("assignment_authorization_unavailable", 403)
         if final_check is not None and not callable(final_check):
             raise AssignmentError("assignment_transaction_callback_invalid", 500)
-        sessions = self.plane_runtime.repositories.history.sessions
+        credentials = authority_repository(self.plane_runtime, authority)
 
         def synchronous(value):
             if inspect.isawaitable(value):
@@ -161,8 +164,8 @@ class AssignmentStore:
                 current = synchronous(repository.assert_current_assignment_execution(
                     tx, fence=fence, binding=binding, authority=authority.observation))
             else:
-                # Owner is locked before session, then assignment rows
-                synchronous(sessions.assert_current_execution(tx, observation=authority.observation))
+                # Owner-first locks serialize revocation with assignment effects.
+                synchronous(credentials.assert_current_execution(tx, observation=authority.observation))
                 if fence is not None:
                     current = synchronous(repository.assert_current_claim(tx, fence=fence))
                 else:
@@ -180,7 +183,7 @@ class AssignmentStore:
                     or (fence is None and current.state_version != original.state_version)):
                 raise AssignmentError("assignment_state_changed", 409)
             result = synchronous(callback(tx, repository, current))
-            synchronous(sessions.assert_current_execution(tx, observation=authority.observation))
+            synchronous(credentials.assert_current_execution(tx, observation=authority.observation))
             after = synchronous(repository.get_operation(
                 tx, owner_id=current.owner_id,
                 assignment_id=current.assignment_id)).assignment
