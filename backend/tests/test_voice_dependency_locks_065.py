@@ -73,6 +73,12 @@ CURRENT_DEPENDENCY_AUTHORITIES = {
         "ff84f895f5b8253dff59c9581cc033452ad576a09e40d00da31b5ba7b0f4875e"
     ),
     "pyproject.toml": "63c6d30783bbed0c1372d56012e67d84a0be831c720e5dac182810c158f00943",
+    "scripts/openai_agents_example/requirements.in": (
+        "470be1f7956648dbc4f439803e8a2c07baf0cd2472279384cf60c60838e66d82"
+    ),
+    "scripts/openai_agents_example/requirements.lock.txt": (
+        "2cd8135af1e15481dea807ebff817591b00b6bc4a020adaad1f3a63f20daf9c0"
+    ),
     "tooling/backend-ci/requirements.in": "12afc5391a3bac2493ab92d5897db76ea0b81b987259fef8dd81c5ecc8f9c3f3",
     "tooling/backend-ci/requirements.lock.txt": "a1365367ac4308e59714635b3583aa2f5bb40dc7a9b6591912059cc3a963d5b2",
     "tooling/requirements-gaiakeep-tests.txt": "86c94aaf151b3920dbcdb1b682fbb9401d1b3ddb64adcd508444bc86acd5d21c",
