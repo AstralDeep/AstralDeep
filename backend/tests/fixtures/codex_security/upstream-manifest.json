@@ -1,0 +1,54 @@
+{
+  "documentType": "codex-security.scan-manifest",
+  "scan": {
+    "artifacts": [
+      {
+        "mediaType": "application/json",
+        "path": "findings.json",
+        "sha256": "ba8c48fd293558c223f80a05a763453e19a49f29da574b43df75f3714dbf6857"
+      },
+      {
+        "mediaType": "application/json",
+        "path": "coverage.json",
+        "sha256": "53a09f468acf4d0ab177269e9ba09432dc1757e974c9efaacd42b8df1f9eb67e"
+      }
+    ],
+    "completedAt": "2026-10-28T14:34:10.939996Z",
+    "coverageRef": "coverage.json",
+    "extensions": {
+      "mock": true
+    },
+    "findingsRef": "findings.json",
+    "id": "2bf35f0a-ac7a-4863-8d28-512ee71827bf",
+    "preservedSources": {
+      "checkpoint-heads/0b30cf0a58d1f1b3e2f486fa56c005224aae48062898d160450bbed348aa8e57.json": "0b30cf0a58d1f1b3e2f486fa56c005224aae48062898d160450bbed348aa8e57",
+      "checkpoints/8c2f9bade627864ec6b8c4a30bbae5134d23b213d3cf3e9d427a4cfa5c0bd7a8.json": "8c2f9bade627864ec6b8c4a30bbae5134d23b213d3cf3e9d427a4cfa5c0bd7a8",
+      "source-order/75a89ba0d51859f6b33279b126e985f28e9e968fbb981c0789d0987e996076b3.json": "75a89ba0d51859f6b33279b126e985f28e9e968fbb981c0789d0987e996076b3"
+    },
+    "producer": {
+      "name": "codex-security-plugin",
+      "version": "0.1.95"
+    },
+    "scope": {
+      "excludePaths": [],
+      "includePaths": [
+        "."
+      ],
+      "limitations": [
+        "Synthetic mock scan for testing. No LLM calls or security analysis were performed. Locations and code snippets describe fictional examples."
+      ],
+      "runtimeStatus": "mock",
+      "summary": "Synthetic mock scan for testing. No LLM calls or security analysis were performed. Locations and code snippets describe fictional examples."
+    },
+    "sealedAt": "2026-10-28T14:34:10.939996Z",
+    "startedAt": "2026-10-28T14:34:10.816816Z",
+    "status": "completed",
+    "target": {
+      "displayName": "mock-source",
+      "kind": "directory_snapshot",
+      "snapshotDigest": "codex-security-snapshot/v1:sha256:75886c9285f7b38118ac1acf8d567d6ae3308d694babd55d09436d65620f2b1e",
+      "targetId": "target_sha256_9510dac3401bedb07560a6979a7a851850c039214b9d56bad433d77ff9d76c02"
+    }
+  },
+  "schemaVersion": "1.0"
+}

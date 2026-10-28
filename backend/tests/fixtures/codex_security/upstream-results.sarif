@@ -1,0 +1,652 @@
+{
+  "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/schemas/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "automationDetails": {
+        "id": "2bf35f0a-ac7a-4863-8d28-512ee71827bf"
+      },
+      "properties": {
+        "codexSecuritySchemaVersion": "1.0",
+        "codexSecurityTargetKind": "directory_snapshot"
+      },
+      "results": [
+        {
+          "level": "error",
+          "locations": [
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "mock/path-traversal.ts"
+                },
+                "region": {
+                  "endLine": 10,
+                  "startLine": 10
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "[Mock] Archive entry escapes the extraction directory\n\nSynthetic test finding. The example archive extractor writes a supplied entry name without checking containment, allowing a parent-directory entry to overwrite a file outside the extraction directory.\n\nSeverity: high\n\nCategory: Path traversal\n\nWeaknesses: CWE-22\n\nRemediation:\nResolve each entry destination and reject paths outside the extraction directory before writing.\n\nRemediation tests:\n- In the example application, verify the fix: Resolve each entry destination and reject paths outside the extraction directory before writing.\n\nPreventive controls:\n- Resolve each entry destination and reject paths outside the extraction directory before writing."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:a3dc3a2d9135f6bf1c15867252d0d28f2b1341a569f5e84a1dc8a8fd808cd081"
+          },
+          "properties": {
+            "category": "path-traversal",
+            "confidence": "high",
+            "findingId": "csf_b6c2eb78bb806974a2435a6a",
+            "occurrenceId": "occ_07cce956dd67708ffb411c99",
+            "severity": "high"
+          },
+          "ruleId": "mock.path-traversal",
+          "ruleIndex": 4
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "mock/open-redirect-2bf35f0a-ac7a-4863-8d28-512ee71827bf.ts"
+                },
+                "region": {
+                  "endLine": 10,
+                  "startLine": 10
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "[Mock] Sign-in callback accepts an external redirect\n\nSynthetic test finding. The example sign-in callback redirects to a supplied URL without checking its origin, allowing an attacker to send users from the sign-in flow to an unrelated site.\n\nSeverity: medium\n\nCategory: Open redirect\n\nWeaknesses: CWE-601\n\nRemediation:\nAccept only application-relative return paths or explicitly permitted origins.\n\nRemediation tests:\n- In the example application, verify the fix: Accept only application-relative return paths or explicitly permitted origins.\n\nPreventive controls:\n- Accept only application-relative return paths or explicitly permitted origins."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:6f25704dd5b4da5eb4d796a3698b6b9f83d51e351138712127cdcaddccf4a54a"
+          },
+          "properties": {
+            "category": "open-redirect",
+            "confidence": "high",
+            "findingId": "csf_8933fdc2a17e7b65d50e59ba",
+            "occurrenceId": "occ_0c130bb83ff416bbdcc4ea00",
+            "severity": "medium"
+          },
+          "ruleId": "mock.open-redirect",
+          "ruleIndex": 3
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "mock/command-injection.ts"
+                },
+                "region": {
+                  "endLine": 10,
+                  "startLine": 10
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "[Mock] Shell metacharacters in the export name execute commands\n\nSynthetic test finding. The example export route interpolates an untrusted filename into a shell command, allowing shell metacharacters to execute another command.\n\nSeverity: critical\n\nCategory: Command injection\n\nWeaknesses: CWE-78\n\nRemediation:\nPass the filename as a separate argument to a process API that does not invoke a shell.\n\nRemediation tests:\n- In the example application, verify the fix: Pass the filename as a separate argument to a process API that does not invoke a shell.\n\nPreventive controls:\n- Pass the filename as a separate argument to a process API that does not invoke a shell."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:62fe3caecd4e65c4d5d1f032ca0dc52db1397399e2643e9322a72ab462c5bf75"
+          },
+          "properties": {
+            "category": "command-injection",
+            "confidence": "high",
+            "findingId": "csf_6e48fc49e5d2a8ca43cf95e8",
+            "occurrenceId": "occ_1491e417950104765b1668d3",
+            "severity": "critical"
+          },
+          "ruleId": "mock.command-injection",
+          "ruleIndex": 0
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "mock/sql-injection-2bf35f0a-ac7a-4863-8d28-512ee71827bf.ts"
+                },
+                "region": {
+                  "endLine": 10,
+                  "startLine": 10
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "[Mock] Search term is concatenated into a SQL query\n\nSynthetic test finding. The example search handler concatenates request text into SQL, allowing a caller to change the query and read records beyond the intended search.\n\nSeverity: high\n\nCategory: SQL injection\n\nWeaknesses: CWE-89\n\nRemediation:\nUse a parameterized query for the search term.\n\nRemediation tests:\n- In the example application, verify the fix: Use a parameterized query for the search term.\n\nPreventive controls:\n- Use a parameterized query for the search term."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:f6bcf0019fa752190c7faf0c5f7b993ed983e935ab467008cb01599d33ff7ceb"
+          },
+          "properties": {
+            "category": "sql-injection",
+            "confidence": "high",
+            "findingId": "csf_db0585335bade9d7c439fa05",
+            "occurrenceId": "occ_2dfa108061329f65c0a8b4f7",
+            "severity": "high"
+          },
+          "ruleId": "mock.sql-injection",
+          "ruleIndex": 5
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "mock/command-injection.ts"
+                },
+                "region": {
+                  "endLine": 10,
+                  "startLine": 10
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "[Mock] Export filename reaches a shell command\n\nSynthetic test finding. The example export route interpolates an untrusted filename into a shell command, allowing shell metacharacters to execute another command.\n\nSeverity: critical\n\nCategory: Command injection\n\nWeaknesses: CWE-78\n\nRemediation:\nPass the filename as a separate argument to a process API that does not invoke a shell.\n\nRemediation tests:\n- In the example application, verify the fix: Pass the filename as a separate argument to a process API that does not invoke a shell.\n\nPreventive controls:\n- Pass the filename as a separate argument to a process API that does not invoke a shell."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:c6eeb55acbe345c6c949d73a06b87ed93a6fe5a174f7b6f5ede6d0c769b88716"
+          },
+          "properties": {
+            "category": "command-injection",
+            "confidence": "high",
+            "findingId": "csf_1cbd6fea53e3e0c9175d7997",
+            "occurrenceId": "occ_4e593b27675e098649d2a03e",
+            "severity": "critical"
+          },
+          "ruleId": "mock.command-injection",
+          "ruleIndex": 0
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "mock/version-disclosure.ts"
+                },
+                "region": {
+                  "endLine": 10,
+                  "startLine": 10
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "[Mock] Response header advertises the framework version\n\nSynthetic test finding. The example response header exposes the precise framework version. This helps fingerprint the service but does not establish an exploitable vulnerability.\n\nSeverity: informational\n\nCategory: Version disclosure\n\nWeaknesses: CWE-200\n\nRemediation:\nOmit the framework version from public response headers.\n\nRemediation tests:\n- In the example application, verify the fix: Omit the framework version from public response headers.\n\nPreventive controls:\n- Omit the framework version from public response headers."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:969b64e36a4c05e37d94f6b183d5f6b715705e814a20cc3177614a0d69953a39"
+          },
+          "properties": {
+            "category": "version-disclosure",
+            "confidence": "high",
+            "findingId": "csf_8d423409cf8c053ee87082ee",
+            "occurrenceId": "occ_643e1b10a373f78126b37465",
+            "severity": "informational"
+          },
+          "ruleId": "mock.version-disclosure",
+          "ruleIndex": 9
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "mock/cookie-flags-2bf35f0a-ac7a-4863-8d28-512ee71827bf.ts"
+                },
+                "region": {
+                  "endLine": 10,
+                  "startLine": 10
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "[Mock] Session cookie omits HttpOnly\n\nSynthetic test finding. The example session cookie is accessible to browser scripts because HttpOnly is absent, increasing the impact of a separate script-injection vulnerability.\n\nSeverity: low\n\nCategory: Cookie flags\n\nWeaknesses: CWE-1004\n\nRemediation:\nSet HttpOnly on the session cookie.\n\nRemediation tests:\n- In the example application, verify the fix: Set HttpOnly on the session cookie.\n\nPreventive controls:\n- Set HttpOnly on the session cookie."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:3ea8f486f0c87f88034f4c56e1ef4baaf4bf48ee77b5dc411f22d24f4c024734"
+          },
+          "properties": {
+            "category": "cookie-flags",
+            "confidence": "high",
+            "findingId": "csf_17e9069df3462e483b574278",
+            "occurrenceId": "occ_65f98bdd5eab7a00cba1df28",
+            "severity": "low"
+          },
+          "ruleId": "mock.cookie-flags",
+          "ruleIndex": 1
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "mock/verbose-errors.ts"
+                },
+                "region": {
+                  "endLine": 10,
+                  "startLine": 10
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "[Mock] Error response exposes an internal stack trace\n\nSynthetic test finding. The example error handler returns a stack trace to a remote caller, revealing internal module names and filesystem layout.\n\nSeverity: low\n\nCategory: Verbose errors\n\nWeaknesses: CWE-209\n\nRemediation:\nReturn a generic error identifier and retain diagnostic details in internal logs.\n\nRemediation tests:\n- In the example application, verify the fix: Return a generic error identifier and retain diagnostic details in internal logs.\n\nPreventive controls:\n- Return a generic error identifier and retain diagnostic details in internal logs."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:f8abb5d570882652a3bb73ebea6c1a9b047c435133d91215c6cd827e8c25590f"
+          },
+          "properties": {
+            "category": "verbose-errors",
+            "confidence": "high",
+            "findingId": "csf_7fc89b3d3728895b5657da66",
+            "occurrenceId": "occ_6c38ea9cc2446296de01e681",
+            "severity": "low"
+          },
+          "ruleId": "mock.verbose-errors",
+          "ruleIndex": 8
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "mock/path-traversal.ts"
+                },
+                "region": {
+                  "endLine": 10,
+                  "startLine": 10
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "[Mock] Parent-directory archive names overwrite files outside extraction\n\nSynthetic test finding. The example archive extractor writes a supplied entry name without checking containment, allowing a parent-directory entry to overwrite a file outside the extraction directory.\n\nSeverity: high\n\nCategory: Path traversal\n\nWeaknesses: CWE-22\n\nRemediation:\nResolve each entry destination and reject paths outside the extraction directory before writing.\n\nRemediation tests:\n- In the example application, verify the fix: Resolve each entry destination and reject paths outside the extraction directory before writing.\n\nPreventive controls:\n- Resolve each entry destination and reject paths outside the extraction directory before writing."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:d23c92e139b5d38637000bff28f320c7435efde1df7259052b1909373d93fc96"
+          },
+          "properties": {
+            "category": "path-traversal",
+            "confidence": "high",
+            "findingId": "csf_157cf21af134613dc4f101d8",
+            "occurrenceId": "occ_c3ae21ba421627e5674fa604",
+            "severity": "high"
+          },
+          "ruleId": "mock.path-traversal",
+          "ruleIndex": 4
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "mock/stored-xss.ts"
+                },
+                "region": {
+                  "endLine": 10,
+                  "startLine": 10
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "[Mock] Comment preview renders stored HTML\n\nSynthetic test finding. The example preview inserts a stored comment directly into HTML, allowing a comment author to execute script in another viewer's browser.\n\nSeverity: medium\n\nCategory: Stored XSS\n\nWeaknesses: CWE-79\n\nRemediation:\nRender comments as text or sanitize intentionally supported HTML before insertion.\n\nRemediation tests:\n- In the example application, verify the fix: Render comments as text or sanitize intentionally supported HTML before insertion.\n\nPreventive controls:\n- Render comments as text or sanitize intentionally supported HTML before insertion."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:ca019fd45b356aa727c6ba6b8767bae900ca552b4b4dbdcf7d47d0a041623377"
+          },
+          "properties": {
+            "category": "stored-xss",
+            "confidence": "high",
+            "findingId": "csf_ab2502e138be57685ea6fe84",
+            "occurrenceId": "occ_d67c07ed0a93aed5b87eed62",
+            "severity": "medium"
+          },
+          "ruleId": "mock.stored-xss",
+          "ruleIndex": 7
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "mock/ssrf-2bf35f0a-ac7a-4863-8d28-512ee71827bf.ts"
+                },
+                "region": {
+                  "endLine": 10,
+                  "startLine": 10
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "[Mock] Image proxy fetches arbitrary destinations\n\nSynthetic test finding. The example image proxy fetches a caller-supplied URL without restricting its destination, allowing requests to internal services reachable by the proxy.\n\nSeverity: medium\n\nCategory: SSRF\n\nWeaknesses: CWE-918\n\nRemediation:\nRestrict fetch destinations to the intended image hosts and enforce that policy across redirects.\n\nRemediation tests:\n- In the example application, verify the fix: Restrict fetch destinations to the intended image hosts and enforce that policy across redirects.\n\nPreventive controls:\n- Restrict fetch destinations to the intended image hosts and enforce that policy across redirects."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:f5e74d59d5a41166d9575cd28d3e764e82d7e149221f3309c3dfee871f62fc13"
+          },
+          "properties": {
+            "category": "ssrf",
+            "confidence": "high",
+            "findingId": "csf_2b292909a453931ca890ba93",
+            "occurrenceId": "occ_f213020c4934988e5552c404",
+            "severity": "medium"
+          },
+          "ruleId": "mock.ssrf",
+          "ruleIndex": 6
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "mock/missing-authorization.ts"
+                },
+                "region": {
+                  "endLine": 10,
+                  "startLine": 10
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "[Mock] Document download omits the ownership check\n\nSynthetic test finding. The example download handler accepts a document ID from any signed-in account and returns the document without checking that the account owns it.\n\nSeverity: high\n\nCategory: Missing authorization\n\nWeaknesses: CWE-862\n\nRemediation:\nRestrict document lookup to records the authenticated account is authorized to read.\n\nRemediation tests:\n- In the example application, verify the fix: Restrict document lookup to records the authenticated account is authorized to read.\n\nPreventive controls:\n- Restrict document lookup to records the authenticated account is authorized to read."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:a33a630da8dd0d0d303feee6bf3471283f836759abe9691c8fd7c82fd254507f"
+          },
+          "properties": {
+            "category": "missing-authorization",
+            "confidence": "high",
+            "findingId": "csf_3a5872e338273017aaa8f1c6",
+            "occurrenceId": "occ_fefe36b9c8c6e1c11cc0a985",
+            "severity": "high"
+          },
+          "ruleId": "mock.missing-authorization",
+          "ruleIndex": 2
+        }
+      ],
+      "tool": {
+        "driver": {
+          "name": "Codex Security",
+          "rules": [
+            {
+              "fullDescription": {
+                "text": "Mock: Command injection. Categories: Command injection. Weaknesses: CWE-78."
+              },
+              "help": {
+                "markdown": "Mock: Command injection. Categories: Command injection. Weaknesses: CWE-78.\n\n## Remediation\n\nPass the filename as a separate argument to a process API that does not invoke a shell.",
+                "text": "Mock: Command injection. Categories: Command injection. Weaknesses: CWE-78.\n\nRemediation:\n\nPass the filename as a separate argument to a process API that does not invoke a shell."
+              },
+              "id": "mock.command-injection",
+              "name": "Mock: Command injection",
+              "properties": {
+                "security-severity": "9.5",
+                "tags": [
+                  "command-injection",
+                  "external/cwe/cwe-078",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Mock: Command injection"
+              }
+            },
+            {
+              "fullDescription": {
+                "text": "Mock: Cookie flags. Categories: Cookie flags. Weaknesses: CWE-1004."
+              },
+              "help": {
+                "markdown": "Mock: Cookie flags. Categories: Cookie flags. Weaknesses: CWE-1004.\n\n## Remediation\n\nSet HttpOnly on the session cookie.",
+                "text": "Mock: Cookie flags. Categories: Cookie flags. Weaknesses: CWE-1004.\n\nRemediation:\n\nSet HttpOnly on the session cookie."
+              },
+              "id": "mock.cookie-flags",
+              "name": "Mock: Cookie flags",
+              "properties": {
+                "security-severity": "2.0",
+                "tags": [
+                  "cookie-flags",
+                  "external/cwe/cwe-1004",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Mock: Cookie flags"
+              }
+            },
+            {
+              "fullDescription": {
+                "text": "Mock: Missing authorization. Categories: Missing authorization. Weaknesses: CWE-862."
+              },
+              "help": {
+                "markdown": "Mock: Missing authorization. Categories: Missing authorization. Weaknesses: CWE-862.\n\n## Remediation\n\nRestrict document lookup to records the authenticated account is authorized to read.",
+                "text": "Mock: Missing authorization. Categories: Missing authorization. Weaknesses: CWE-862.\n\nRemediation:\n\nRestrict document lookup to records the authenticated account is authorized to read."
+              },
+              "id": "mock.missing-authorization",
+              "name": "Mock: Missing authorization",
+              "properties": {
+                "security-severity": "8.0",
+                "tags": [
+                  "external/cwe/cwe-862",
+                  "missing-authorization",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Mock: Missing authorization"
+              }
+            },
+            {
+              "fullDescription": {
+                "text": "Mock: Open redirect. Categories: Open redirect. Weaknesses: CWE-601."
+              },
+              "help": {
+                "markdown": "Mock: Open redirect. Categories: Open redirect. Weaknesses: CWE-601.\n\n## Remediation\n\nAccept only application-relative return paths or explicitly permitted origins.",
+                "text": "Mock: Open redirect. Categories: Open redirect. Weaknesses: CWE-601.\n\nRemediation:\n\nAccept only application-relative return paths or explicitly permitted origins."
+              },
+              "id": "mock.open-redirect",
+              "name": "Mock: Open redirect",
+              "properties": {
+                "security-severity": "5.0",
+                "tags": [
+                  "external/cwe/cwe-601",
+                  "open-redirect",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Mock: Open redirect"
+              }
+            },
+            {
+              "fullDescription": {
+                "text": "Mock: Path traversal. Categories: Path traversal. Weaknesses: CWE-22."
+              },
+              "help": {
+                "markdown": "Mock: Path traversal. Categories: Path traversal. Weaknesses: CWE-22.\n\n## Remediation\n\nResolve each entry destination and reject paths outside the extraction directory before writing.",
+                "text": "Mock: Path traversal. Categories: Path traversal. Weaknesses: CWE-22.\n\nRemediation:\n\nResolve each entry destination and reject paths outside the extraction directory before writing."
+              },
+              "id": "mock.path-traversal",
+              "name": "Mock: Path traversal",
+              "properties": {
+                "security-severity": "8.0",
+                "tags": [
+                  "external/cwe/cwe-022",
+                  "path-traversal",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Mock: Path traversal"
+              }
+            },
+            {
+              "fullDescription": {
+                "text": "Mock: SQL injection. Categories: SQL injection. Weaknesses: CWE-89."
+              },
+              "help": {
+                "markdown": "Mock: SQL injection. Categories: SQL injection. Weaknesses: CWE-89.\n\n## Remediation\n\nUse a parameterized query for the search term.",
+                "text": "Mock: SQL injection. Categories: SQL injection. Weaknesses: CWE-89.\n\nRemediation:\n\nUse a parameterized query for the search term."
+              },
+              "id": "mock.sql-injection",
+              "name": "Mock: SQL injection",
+              "properties": {
+                "security-severity": "8.0",
+                "tags": [
+                  "external/cwe/cwe-089",
+                  "security",
+                  "sql-injection"
+                ]
+              },
+              "shortDescription": {
+                "text": "Mock: SQL injection"
+              }
+            },
+            {
+              "fullDescription": {
+                "text": "Mock: SSRF. Categories: SSRF. Weaknesses: CWE-918."
+              },
+              "help": {
+                "markdown": "Mock: SSRF. Categories: SSRF. Weaknesses: CWE-918.\n\n## Remediation\n\nRestrict fetch destinations to the intended image hosts and enforce that policy across redirects.",
+                "text": "Mock: SSRF. Categories: SSRF. Weaknesses: CWE-918.\n\nRemediation:\n\nRestrict fetch destinations to the intended image hosts and enforce that policy across redirects."
+              },
+              "id": "mock.ssrf",
+              "name": "Mock: SSRF",
+              "properties": {
+                "security-severity": "5.0",
+                "tags": [
+                  "external/cwe/cwe-918",
+                  "security",
+                  "ssrf"
+                ]
+              },
+              "shortDescription": {
+                "text": "Mock: SSRF"
+              }
+            },
+            {
+              "fullDescription": {
+                "text": "Mock: Stored XSS. Categories: Stored XSS. Weaknesses: CWE-79."
+              },
+              "help": {
+                "markdown": "Mock: Stored XSS. Categories: Stored XSS. Weaknesses: CWE-79.\n\n## Remediation\n\nRender comments as text or sanitize intentionally supported HTML before insertion.",
+                "text": "Mock: Stored XSS. Categories: Stored XSS. Weaknesses: CWE-79.\n\nRemediation:\n\nRender comments as text or sanitize intentionally supported HTML before insertion."
+              },
+              "id": "mock.stored-xss",
+              "name": "Mock: Stored XSS",
+              "properties": {
+                "security-severity": "5.0",
+                "tags": [
+                  "external/cwe/cwe-079",
+                  "security",
+                  "stored-xss"
+                ]
+              },
+              "shortDescription": {
+                "text": "Mock: Stored XSS"
+              }
+            },
+            {
+              "fullDescription": {
+                "text": "Mock: Verbose errors. Categories: Verbose errors. Weaknesses: CWE-209."
+              },
+              "help": {
+                "markdown": "Mock: Verbose errors. Categories: Verbose errors. Weaknesses: CWE-209.\n\n## Remediation\n\nReturn a generic error identifier and retain diagnostic details in internal logs.",
+                "text": "Mock: Verbose errors. Categories: Verbose errors. Weaknesses: CWE-209.\n\nRemediation:\n\nReturn a generic error identifier and retain diagnostic details in internal logs."
+              },
+              "id": "mock.verbose-errors",
+              "name": "Mock: Verbose errors",
+              "properties": {
+                "security-severity": "2.0",
+                "tags": [
+                  "external/cwe/cwe-209",
+                  "security",
+                  "verbose-errors"
+                ]
+              },
+              "shortDescription": {
+                "text": "Mock: Verbose errors"
+              }
+            },
+            {
+              "fullDescription": {
+                "text": "Mock: Version disclosure. Categories: Version disclosure. Weaknesses: CWE-200."
+              },
+              "help": {
+                "markdown": "Mock: Version disclosure. Categories: Version disclosure. Weaknesses: CWE-200.\n\n## Remediation\n\nOmit the framework version from public response headers.",
+                "text": "Mock: Version disclosure. Categories: Version disclosure. Weaknesses: CWE-200.\n\nRemediation:\n\nOmit the framework version from public response headers."
+              },
+              "id": "mock.version-disclosure",
+              "name": "Mock: Version disclosure",
+              "properties": {
+                "tags": [
+                  "external/cwe/cwe-200",
+                  "security",
+                  "version-disclosure"
+                ]
+              },
+              "shortDescription": {
+                "text": "Mock: Version disclosure"
+              }
+            }
+          ],
+          "version": "0.1.95"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}
