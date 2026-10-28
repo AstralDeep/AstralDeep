@@ -1,4 +1,4 @@
-"""Scores frozen clinician-reviewed extraction cases offline: semantic field meaning
+"""Scores developer-authored synthetic extraction cases offline: semantic field meaning
 is compared against rationale-bearing labels separately from span and check pass
 rates, and every disagreement or model-asserted absence is disclosed. Pure
 functions over the frozen fixture; live-model qualification happens separately
@@ -140,7 +140,7 @@ def _disagreements(
     for record in finding_semantics["unexpected_items"]:
         disclosures.append({
             "kind": f"finding:{normalize_term(record.get('term') or '')}:unexpected",
-            "rationale": "No clinician label covers this extracted finding",
+            "rationale": "No developer label covers this extracted finding",
         })
     return disclosures
 

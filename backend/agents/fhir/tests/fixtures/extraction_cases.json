@@ -1,8 +1,10 @@
 {
   "schema_version": "note-extract-v1",
   "review": {
-    "basis": "Synthetic clinician-reviewed qualification fixture. All notes, identifiers, and labels are synthetic; each label element carries a rationale string. The token __NOTE_DIGEST__ inside a proposal is replaced by the scoring harness with the sha256 of the case note before validation; wrong-note cases never use the token.",
-    "reviewed": "2026-10-06",
+    "basis": "Developer-authored synthetic regression fixture; clinical review has not been attested. All notes, identifiers, and labels are synthetic; each label element carries a developer rationale string. The token __NOTE_DIGEST__ inside a proposal is replaced by the scoring harness with the sha256 of the case note before validation; wrong-note cases never use the token.",
+    "status": "requires_clinician_review",
+    "reviewer": null,
+    "attestation": null,
     "categories": [
       "absence_integrity",
       "chronology",

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -79,14 +80,45 @@ def _resolve_llm_client(kwargs: Dict[str, Any]) -> Tuple[Optional[OpenAI], str]:
 
 
 def _parse_response(raw: str) -> Any:
+    if type(raw) is not str or len(raw) > MAX_RESPONSE_CHARS:
+        return None
     cleaned = (raw or "").strip()
     fence = FENCE.match(cleaned)
     if fence:
         cleaned = fence.group(1).strip()
     cleaned = strip_reasoning_markup(cleaned).strip()
+
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError
+            result[key] = value
+        return result
+
+    def nonfinite(_value):
+        raise ValueError
+
+    def finite_float(value):
+        result = float(value)
+        if not math.isfinite(result):
+            raise ValueError
+        return result
+
     try:
-        return json.loads(cleaned)
-    except ValueError:
+        result = json.loads(cleaned, object_pairs_hook=pairs, parse_constant=nonfinite,
+                            parse_float=finite_float)
+        pending = [(result, 0)]
+        while pending:
+            value, depth = pending.pop()
+            if depth > 16:
+                return None
+            if type(value) is dict:
+                pending.extend((item, depth + 1) for item in value.values())
+            elif type(value) is list:
+                pending.extend((item, depth + 1) for item in value)
+        return result
+    except (ValueError, RecursionError, OverflowError):
         return None
 
 

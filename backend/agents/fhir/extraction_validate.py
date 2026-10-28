@@ -136,8 +136,8 @@ def check_evidence(note_text: str, evidence: Any) -> Dict[str, Any]:
         result["failures"].append(CHECK_SPAN_MISMATCH)
         return result
     result["verbatim"] = True
-    occurrences = note_text.count(quote)
-    if occurrences != 1:
+    first = note_text.find(quote)
+    if first != start or note_text.find(quote, first + 1) != -1:
         result["failures"].append(CHECK_SPAN_AMBIGUOUS)
         return result
     result["unique"] = True

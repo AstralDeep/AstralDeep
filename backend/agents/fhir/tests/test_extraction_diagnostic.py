@@ -1,4 +1,4 @@
-"""Covers the clinician-review diagnostic over the frozen fixture: fixture integrity
+"""Covers the developer-label diagnostic over the frozen synthetic fixture: fixture integrity
 (case count, categories, rationale-bearing labels), every pinned proposal expectation,
 separation of semantic agreement from span/check pass rates, disagreement disclosure,
 and the digest-token invariant that wrong-note cases never auto-bind.
@@ -62,7 +62,7 @@ def case_reports():
 ALL_REPORTS = list(case_reports())
 
 
-def test_fixture_is_frozen_with_enough_reviewed_cases():
+def test_fixture_is_frozen_with_enough_developer_cases():
     assert len(CASES) >= 30
     assert len({case["id"] for case in CASES}) == len(CASES)
 
@@ -88,6 +88,14 @@ def test_fixture_documents_the_digest_token_and_schema():
         (Path(diagnostic.CASES_PATH)).read_text(encoding="utf-8"))
     assert document["schema_version"] == SCHEMA_VERSION
     assert "__NOTE_DIGEST__" in document["review"]["basis"]
+
+
+def test_fixture_does_not_claim_unattested_clinical_review():
+    document = json.loads(Path(diagnostic.CASES_PATH).read_text(encoding="utf-8"))
+    assert document["review"]["status"] == "requires_clinician_review"
+    assert document["review"]["reviewer"] is None
+    assert document["review"]["attestation"] is None
+    assert "reviewed" not in document["review"]
 
 
 @pytest.mark.parametrize("case, proposal, report", ALL_REPORTS)
