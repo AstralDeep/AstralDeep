@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
-import posixpath
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,10 +17,12 @@ from astralprims import Alert, Card, CodeBlock, Image, Table, Text
 from orchestrator.computer_hosts import WITHDRAWN, WITHDRAWN_NOTE, ComputerHostError
 from orchestrator.computer_use_policy import (
     BROWSER_VERBS,
+    CwdRefusal,
     DEFAULT_COMMAND_TIMEOUT_S,
     DEFAULT_READ_BYTES,
     DEFAULT_SCREENSHOT_WIDTH,
     DESTRUCTIVE_CLASSIFICATION,
+    host_deadline,
     MAX_ARG_CHARS,
     MAX_ARGV_ITEMS,
     MAX_BACKGROUND_TIMEOUT_S,
@@ -41,6 +42,7 @@ from orchestrator.computer_use_policy import (
     MIN_SCREENSHOT_WIDTH,
     mac_application,
     mac_terminal_application,
+    resolve_cwd,
     SCOPES,
     TIERS,
     TIMEOUTS,
@@ -72,8 +74,7 @@ _TAIL_BYTES = 32 * 1024
 _CHUNK_BYTES = 64 * 1024
 _MAX_CHUNKS = 64
 _MAX_JOBS = 64
-_COMMAND_DEADLINE_MARGIN_S = 10
-_BACKGROUND_START_S = 30.0
+_BRIDGE_MARGIN_S = 2.0
 _LOCAL_PAUSES = frozenset({"local_input", "local_pause"})
 _LOCAL_RESUME_HINT = ("ask the user to press Resume on {host}; do not call resume_session, wait or any other computer "
                       "tool until they say it is resumed")
@@ -221,7 +222,7 @@ def _run(host, session, verb: str, args: Dict[str, Any], loop=None, *, timeout: 
         return result
 
     try:
-        return _bridge(_go(), timeout, loop), None
+        return _bridge(_go(), timeout + _BRIDGE_MARGIN_S, loop), None
     except ComputerHostError as exc:
         return None, _host_error(exc)
     except TimeoutError:
@@ -840,18 +841,10 @@ def _command_args(kwargs: Dict[str, Any], host) -> Dict[str, Any]:
                 isinstance(a, str) and len(a) <= MAX_ARG_CHARS and "\x00" not in a for a in argv) or not argv[0]):
             raise _Refusal("out_of_range", f"argv must list 1-{MAX_ARGV_ITEMS} strings, the program first")
         args["argv"] = list(argv)
-    cwd = kwargs.get("cwd")
-    if (not isinstance(cwd, str) or not cwd.startswith("/") or len(cwd) > 1024 or "\x00" in cwd
-            or ".." in cwd.split("/")):
-        raise _Refusal("out_of_range", "cwd must be an absolute folder inside one of workspace_roots")
-    roots = [root["path"] for root in host.workspace_roots]
-    if not roots:
-        raise _Refusal("cwd_outside_workspace", f"{host.name} shares no workspace folder; ask the user to select "
-                                                "one in Computer controls")
-    folder = posixpath.normpath(cwd)
-    if not any(folder == root or folder.startswith(root.rstrip("/") + "/") for root in roots):
-        raise _Refusal("cwd_outside_workspace", "cwd is outside every workspace folder the user selected")
-    args["cwd"] = cwd
+    try:
+        args["cwd"] = resolve_cwd(kwargs.get("cwd"), host.workspace_roots, host.name)
+    except CwdRefusal as exc:
+        raise _Refusal(exc.code, str(exc)) from None
     env = kwargs.get("env")
     if env is not None:
         if not isinstance(env, dict) or len(env) > MAX_ENV_VARS or not all(
@@ -924,8 +917,8 @@ def run_command(**kwargs) -> Dict[str, Any]:
         args = _command_args(kwargs, host)
     except _Refusal as exc:
         return _fail(exc.code, str(exc))
-    deadline = _BACKGROUND_START_S if args["background"] else args["timeout_s"] + _COMMAND_DEADLINE_MARGIN_S
-    result, err = _run(host, ctx, "run_command", args, _loop(kwargs), timeout=deadline, serialize=False)
+    result, err = _run(host, ctx, "run_command", args, _loop(kwargs), timeout=host_deadline("run_command", args),
+                       serialize=False)
     if err:
         return err
     if args["background"]:
@@ -1137,7 +1130,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         {"command": {"type": "string", "description": "One zsh command line, shown to the user exactly as written."},
          "argv": {"type": "array", "items": {"type": "string"},
                   "description": "Program and arguments, started directly without a shell."},
-         "cwd": {"type": "string", "description": "Absolute folder inside one of workspace_roots."},
+         "cwd": {"type": "string", "description": "Folder inside one of workspace_roots: an absolute path, "
+                                                  "<root name>/sub/path, or ~/sub/path."},
          "env": {"type": "object", "additionalProperties": {"type": "string"},
                  "description": "Up to 32 extra variables: LANG, LC_ALL, LC_CTYPE, LC_MESSAGES, TZ, TERM, NO_COLOR, "
                                 "FORCE_COLOR, CI, DEBUG, COLUMNS, LINES or APP_* names only."},

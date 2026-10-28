@@ -48,18 +48,20 @@ Every CI job has at most a 30-minute budget; the backend group, Plane and
 voice-worker test jobs are capped at 20 minutes so a slower suite fails fast,
 and the suite runner gives each suite a 30-minute (1800 s) timeout. Protected
 qualification runs every suite under the same 1800 s per-suite cap. The backend
-suites run as a three-job matrix of whole-suite groups: `tests` is the
-`backend/tests` suite, which runs on four `pytest-xdist` workers
+suites run as a four-job matrix of suite groups: `tests_1` and `tests_2` are
+the two suites `backend/tests` splits into, whole test files assigned by the
+SHA-256 of their path (`BQ_SUITE_SHARD`, applied by the reporter plugin before
+the inventory is written). Each runs on four `pytest-xdist` workers
 (`--dist loadfile`), each moved by `backend/tests/conftest.py` onto its own
 `<suite database>_<worker>` database created from `template0`, and measured
 by `pytest-cov` with the same source, branch and omit settings as the other
-suites' `coverage run`,
+suites' `coverage run`;
 `persistent_agents` is the `backend/persistent_agents/tests` suite, and
 `modules` is every other backend suite, the voice concurrency probe and the
 tooling suite. No suite was pruned to fit: once the Plane-backed test
 fixtures cloned a sealed, once-migrated template database per test instead
 of replaying every migration for each, every group fit its budget. The
-changed-coverage job merges the three groups' raw coverage data with
+changed-coverage job merges the four groups' raw coverage data with
 `scripts/merge_backend_web_coverage.py` into the same `backend-python.xml` and
 `tooling-python.xml` one complete run writes. The merge refuses group evidence
 that failed, comes from another checkout, runner or reporter, or does not give
@@ -86,8 +88,8 @@ The shell gate creates its own Docker namespace, PostgreSQL server, test and
 smoke databases and synthetic keys, and removes its containers on exit. It
 does not read `.env`, publish ports, or mount live database/blob directories.
 Use a clean checkout: tests may create fixture files under their source tree.
-Set `ASTRAL_GATE_GROUP` to `tests`, `persistent_agents` or `modules` to run one
-whole-suite group; the default, `all`, runs every suite. Protected
+Set `ASTRAL_GATE_GROUP` to `tests_1`, `tests_2`, `persistent_agents` or
+`modules` to run one suite group; the default, `all`, runs every suite. Protected
 qualification clears any inherited gate settings, so it always runs every suite
 in one pass.
 

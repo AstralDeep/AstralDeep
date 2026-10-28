@@ -4,12 +4,9 @@ locked reads, and rollback on a failed decision.
 """
 
 import asyncio
-from dataclasses import replace
-from datetime import datetime, timedelta, timezone
 import importlib
 import json
 import threading
-import time
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -17,10 +14,12 @@ import pytest
 
 from audit.repository import AuditRepository
 from astralplane.repositories.assignment_models import AssignmentActionOutcome
+from orchestrator import work_control_authority
 from orchestrator.work_control_authority import authenticate_work_control_request
 from orchestrator.work_controls import WorkControlRequest, WorkControlService
 from persistent_agents.models import AssignmentError
 from persistent_agents.runtime_values import digest, thaw
+from tests.helpers.database_clock import expire_host_clock
 from tests.helpers.work_control_caller import current_control_caller
 from tests.helpers.session_plane_runtime import get_session_record, replace_session_record
 from tests.test_request_session_authority_088 import request, signing_key as signing_key
@@ -265,8 +264,6 @@ async def test_failed_decision_rolls_back_audit_state_and_receipt(value, monkeyp
     before = await current(value)
     original = value.audit.insert_in_transaction
     audit_calls = []
-    if failure == "expired":
-        value.caller = replace(value.caller, _until=datetime.now(timezone.utc) + timedelta(seconds=.08))
 
     def audit(*args, **kwargs):
         audit_calls.append(True)
@@ -278,7 +275,7 @@ async def test_failed_decision_rolls_back_audit_state_and_receipt(value, monkeyp
         if failure == "replacement":
             value.reads.assignments.orch.audit_repo = object()
         if failure == "expired":
-            time.sleep(.10)
+            expire_host_clock(monkeypatch, work_control_authority, after=value.caller._until)
         return result
 
     monkeypatch.setattr(value.audit, "insert_in_transaction", audit)

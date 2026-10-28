@@ -235,6 +235,15 @@ async def register_built_ins(orch) -> List[str]:
                     orch._source_bound_read_tools = host_reads
                 else:
                     logger.error("General file tool effects changed; read exemption disabled")
+            if dir_name == "computer_use":
+                from orchestrator.computer_use_policy import DE_ESCALATION_VERBS
+
+                scopes = {skill.id: skill.scope for skill in agent.card.skills}
+                if all(scopes.get(verb) == "tools:write" for verb in DE_ESCALATION_VERBS):
+                    orch._source_bound_de_escalations = set(getattr(orch, "_source_bound_de_escalations", ())) | {
+                        (agent.card.agent_id, verb) for verb in DE_ESCALATION_VERBS}
+                else:
+                    logger.error("Computer-use session effects changed; de-escalation exemption disabled")
             if dir_name == "terminal_shell":
                 from orchestrator.terminal_host_review import review_registered_terminal
 

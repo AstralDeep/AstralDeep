@@ -1,6 +1,7 @@
 """Manages consent-gated remote-control sessions between an owner's client and a
-computer host, with idle/duration caps, heartbeat watchdog, task grants from computer_grants.py
-and audit logging; built on computer_hosts.py and used by orchestrator.py and the agent tools.
+computer host, with idle/duration caps, heartbeat watchdog, task grants from computer_grants.py,
+the in-memory per-host bypass permissions switch, and audit logging; built on computer_hosts.py
+and used by orchestrator.py and the agent tools.
 """
 
 from __future__ import annotations
@@ -167,8 +168,9 @@ class ComputerSession:
             "verbs_run": self.verbs_run,
         }
 
-    def frame(self, grants: Sequence[Dict[str, Any]] = ()) -> str:
-        return json.dumps({"type": "computer_session", **self.public(), "grants": list(grants)})
+    def frame(self, grants: Sequence[Dict[str, Any]] = (), bypass: bool = False) -> str:
+        return json.dumps({"type": "computer_session", **self.public(), "grants": list(grants),
+                           "bypass": bool(bypass)})
 
 
 class ComputerSessionManager:
@@ -179,7 +181,48 @@ class ComputerSessionManager:
         self._sweeper: Optional[asyncio.Task] = None
         self._audit_tasks: set = set()
         self._push_pending: set = set()
+        self._bypass: Dict[Tuple[str, str], ComputerHost] = {}
         self.grants = GrantStore(events=self._grant_event)
+
+    def bypass_on(self, owner_sub: str, host_id: str) -> bool:
+        host = self._bypass.get((owner_sub, host_id))
+        return host is not None and self._registry.get(owner_sub, host_id) is host
+
+    async def set_bypass(self, host: ComputerHost, enabled: bool, reason: str = "owner") -> None:
+        key = (host.owner_sub, host.host_id)
+        was = self.bypass_on(*key)
+        if enabled:
+            self._bypass[key] = host
+        else:
+            self._bypass.pop(key, None)
+        if was != bool(enabled):
+            await self._bypass_changed(host.owner_sub, host.host_id, host.name, bool(enabled), reason)
+
+    async def clear_bypass(self, owner_sub: str, host_id: str, reason: str) -> bool:
+        host = self._bypass.pop((owner_sub, host_id), None)
+        if host is None:
+            return False
+        await self._bypass_changed(owner_sub, host_id, host.name, False, reason)
+        return True
+
+    async def _bypass_changed(self, owner_sub: str, host_id: str, name: str, enabled: bool, reason: str) -> None:
+        try:
+            from datetime import datetime, timezone
+
+            from audit.recorder import get_recorder
+            from audit.schemas import AuditEventCreate
+            recorder = get_recorder()
+            if recorder is not None:
+                await recorder.record(AuditEventCreate(
+                    actor_user_id=owner_sub, auth_principal=owner_sub, event_class="agent_lifecycle",
+                    action_type="computer_bypass.enabled" if enabled else "computer_bypass.disabled",
+                    description=f"bypass permissions {'on' if enabled else 'off'} for {name} ({reason})"[:1024],
+                    correlation_id=host_id, outcome="success",
+                    inputs_meta={"host_id": host_id, "reason": reason}, started_at=datetime.now(timezone.utc)))
+        except Exception:  # noqa: BLE001
+            logger.warning("102: bypass audit failed for host %s", host_id[:8], exc_info=True)
+        for session in [s for s in self._sessions.values() if (s.owner_sub, s.host_id) == (owner_sub, host_id)]:
+            await self._push(session)
 
     def get(self, session_id: str) -> Optional[ComputerSession]:
         return self._sessions.get(session_id)
@@ -327,6 +370,7 @@ class ComputerSessionManager:
         session.last_activity_at = time.time()
         self._sessions.pop(session.session_id, None)
         self.grants.revoke(session.session_id, _GRANT_REVOCATIONS.get(reason, "session_ended"))
+        self._registry.cancel_session_requests(session.owner_sub, session.host_id, session.session_id)
         jobs = [job for job, record in session.command_jobs.items() if record.get("state", "running") == "running"]
         session.command_jobs.clear()
         host = self._registry.get(session.owner_sub, session.host_id)
@@ -343,6 +387,9 @@ class ComputerSessionManager:
             outcome = cancel(session)
             if inspect.isawaitable(outcome):
                 await outcome
+
+    def cancel_requests(self, session: ComputerSession) -> int:
+        return self._registry.cancel_session_requests(session.owner_sub, session.host_id, session.session_id)
 
     async def interrupt_jobs(self, session: ComputerSession, signal: str = "INT") -> None:
         jobs = [job for job, record in session.command_jobs.items() if record.get("state", "running") == "running"]
@@ -460,7 +507,8 @@ class ComputerSessionManager:
             await self._push(session)
 
     async def _push(self, session: ComputerSession) -> None:
-        frame = session.frame(self.grant_rows(session) if session.state != ENDED else ())
+        frame = session.frame(self.grant_rows(session) if session.state != ENDED else (),
+                              self.bypass_on(session.owner_sub, session.host_id))
         for ws in list(self._orch.ui_clients):
             try:
                 if self._orch._get_user_id(ws) != session.owner_sub:

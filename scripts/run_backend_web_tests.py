@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Runs every backend/module test suite, or one whole-suite group of them, in isolated
-processes against a caller-provisioned disposable PostgreSQL server and writes JUnit results
-and coverage reports, splitting backend/tests across pytest-xdist workers that each get their own
-database; a CI test producer only, not a production-readiness decision.
-merge_backend_web_coverage.py reuses its plan and report writer for the groups.
+processes against a caller-provisioned disposable PostgreSQL server and writes JUnit results and
+coverage reports; backend/tests runs as two file shards, each on pytest-xdist workers with their
+own databases. A CI test producer only, not a production-readiness decision, whose plan and report
+writer merge_backend_web_coverage.py reuses for the groups.
 """
 
 from __future__ import annotations
@@ -21,21 +21,14 @@ from uuid import uuid4
 
 
 POLICY_ROOT = Path(__file__).resolve().parents[1]
-TEST_SHARD_COUNT = 2
-TEST_SHARD_SUITES = {
-    f"backend-tests-{index}": index for index in range(1, TEST_SHARD_COUNT + 1)
-}
-SHARD_GROUP_SUITES = {
-    f"tests_{index}": f"backend-tests-{index}" for index in range(1, TEST_SHARD_COUNT + 1)
-}
-DEDICATED_GROUP_SUITES = {
-    "tests": [suite for suite in TEST_SHARD_SUITES],
-    "persistent_agents": "backend-persistent_agents-tests",
-}
+SHARDED_SUITES = {Path("tests"): ("backend-tests-1", "backend-tests-2")}
+SUITE_SHARDS = {name: f"{index}/{len(names)}" for names in SHARDED_SUITES.values()
+                for index, name in enumerate(names, 1)}
+DEDICATED_GROUP_SUITES = {"tests_1": "backend-tests-1", "tests_2": "backend-tests-2",
+                          "persistent_agents": "backend-persistent_agents-tests"}
 GROUPS = ("all", *DEDICATED_GROUP_SUITES, "modules")
-MERGE_GROUPS = tuple(sorted((*SHARD_GROUP_SUITES, "modules", "persistent_agents")))
 SUITE_TIMEOUT_SECONDS = 1800
-XDIST_WORKERS = {"backend-tests-1": 4, "backend-tests-2": 4}
+XDIST_WORKERS = dict.fromkeys(SUITE_SHARDS, 4)
 COVERAGE_OMIT = ("*/tests/*", "*/test_*", "*/voice_agent/*")
 
 
@@ -57,44 +50,20 @@ def source_identity(root: Path) -> str:
 
 
 def suite_commands(root: Path) -> list[tuple[Path, str, str]]:
-    commands = []
-    for suite in suite_paths(root):
-        if suite == Path("tests"):
-            commands.extend(
-                (root / "backend", suite.as_posix(), f"backend-tests-{index}")
-                for index in range(1, TEST_SHARD_COUNT + 1)
-            )
-        else:
-            commands.append((root / "backend", str(suite), f"backend-{suite.as_posix().replace('/', '-')}"))
+    commands = [(root / "backend", str(suite), name) for suite in suite_paths(root)
+                for name in SHARDED_SUITES.get(suite, (f"backend-{suite.as_posix().replace('/', '-')}",))]
     commands.append((root / "backend", "tests/perf/voice_concurrent_turns.py", "perf-voice_concurrent_turns.py"))
     commands.append((root, "scripts/tests", "tooling"))
     return commands
 
 
-def backend_test_shard_files(root: Path, index: int) -> list[str]:
-    files = sorted(
-        path.relative_to(root / "backend").as_posix()
-        for path in (root / "backend" / "tests").rglob("test_*.py")
-    )
-    if len(files) < TEST_SHARD_COUNT:
-        raise ValueError("the backend tests suite is too small to shard")
-    return [
-        name for order, name in enumerate(files) if order % TEST_SHARD_COUNT == index - 1
-    ]
-
-
 def group_commands(commands: list[tuple[Path, str, str]], group: str) -> list[tuple[Path, str, str]]:
     if group == "all":
         return commands
-    if group in SHARD_GROUP_SUITES:
-        return [command for command in commands if command[2] == SHARD_GROUP_SUITES[group]]
     if group in DEDICATED_GROUP_SUITES:
-        selected = DEDICATED_GROUP_SUITES[group]
-        if isinstance(selected, str):
-            return [command for command in commands if command[2] == selected]
-        return [command for command in commands if command[2] in selected]
+        return [command for command in commands if command[2] == DEDICATED_GROUP_SUITES[group]]
     if group == "modules":
-        dedicated = set(TEST_SHARD_SUITES) | {"backend-persistent_agents-tests"}
+        dedicated = set(DEDICATED_GROUP_SUITES.values())
         return [command for command in commands if command[2] not in dedicated]
     raise ValueError(f"unknown suite group {group!r}")
 
@@ -220,11 +189,7 @@ def isolated_suite_database(environ: dict[str, str]):
 
 
 def suite_command(root: Path, output: Path, suite: str, name: str, junit: Path) -> list[str]:
-    if name in TEST_SHARD_SUITES:
-        positional = backend_test_shard_files(root, TEST_SHARD_SUITES[name])
-    else:
-        positional = [suite]
-    options = [*positional, "-q", "-ra", "--tb=short", "-p", "no:cacheprovider",
+    options = [suite, "-q", "-ra", "--tb=short", "-p", "no:cacheprovider",
                "-p", "backend_web_test_reporter", "-o", "faulthandler_timeout=120", f"--junitxml={junit}"]
     workers = XDIST_WORKERS.get(name)
     if workers is None:
@@ -291,6 +256,9 @@ def run(root: Path, output: Path, *, timeout: int = SUITE_TIMEOUT_SECONDS, group
         ).open("w", encoding="utf-8") as log:
             suite_environment.update({"BQ_SUITE_INVENTORY_PATH": str(inventory),
                                       "BQ_SUITE_NAME": name, "BQ_SOURCE_COMMIT": source_commit})
+            suite_environment.pop("BQ_SUITE_SHARD", None)
+            if name in SUITE_SHARDS:
+                suite_environment["BQ_SUITE_SHARD"] = SUITE_SHARDS[name]
             try:
                 process = subprocess.run(command, cwd=cwd, env=suite_environment, stdout=log,
                                          stderr=subprocess.STDOUT, timeout=timeout, check=False)
@@ -338,7 +306,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--group", choices=(*GROUPS, *SHARD_GROUP_SUITES), default="all")
+    parser.add_argument("--group", choices=GROUPS, default="all")
     args = parser.parse_args()
     return run(args.root.resolve(), args.output.resolve(), group=args.group)
 

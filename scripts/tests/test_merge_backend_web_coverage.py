@@ -36,10 +36,7 @@ WORKSPACE = {
         "from service.decide import decide\n\n\ndef test_positive():\n"
         "    assert decide(1) == 'positive'\n"
     ),
-    "backend/tests/test_idle.py": (
-        "from service.idle import idle\n\n\ndef test_idle():\n"
-        "    assert idle() == 0\n"
-    ),
+    "backend/tests/test_idle.py": "from service.idle import idle\n\n\ndef test_idle():\n    assert idle() == 0\n",
     "backend/tests/perf/voice_concurrent_turns.py": "def test_turns():\n    assert True\n",
     "backend/persistent_agents/tests/test_agents.py": (
         "from service.decide import decide\n\n\ndef test_other():\n"
@@ -130,7 +127,7 @@ def test_merged_group_reports_equal_one_complete_run(tmp_path, monkeypatch):
     for key in ("COVERAGE_FILE", "COVERAGE_PROCESS_START", "COVERAGE_RCFILE"):
         monkeypatch.delenv(key, raising=False)
     evidence = workspace / "build"
-    for group in ("all", *gate.MERGE_GROUPS):
+    for group in gate.GROUPS:
         assert gate.run(workspace, evidence / group, group=group) == 0
     assert merge.GROUPS == ("modules", "persistent_agents", "tests_1", "tests_2")
     repository = (tmp_path / "repository").resolve()

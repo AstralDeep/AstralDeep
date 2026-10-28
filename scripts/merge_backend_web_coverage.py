@@ -37,7 +37,7 @@ def _load_runner() -> Any:
 
 
 runner = _load_runner()
-GROUPS = tuple(sorted(runner.MERGE_GROUPS))
+GROUPS = tuple(sorted(group for group in runner.GROUPS if group != "all"))
 
 
 def _document(path: Path) -> Any:
