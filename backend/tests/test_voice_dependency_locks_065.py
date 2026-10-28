@@ -73,8 +73,8 @@ CURRENT_DEPENDENCY_AUTHORITIES = {
         "ff84f895f5b8253dff59c9581cc033452ad576a09e40d00da31b5ba7b0f4875e"
     ),
     "pyproject.toml": "63c6d30783bbed0c1372d56012e67d84a0be831c720e5dac182810c158f00943",
-    "tooling/backend-ci/requirements.in": "6fc8c8dd178365a4c3102506b6f7b8a64ec7088c9b4484746ace40b9f3883fdf",
-    "tooling/backend-ci/requirements.lock.txt": "57378601b70a65fd6db1bca2ebcd452c3dfa85b1edffac3137f609a9b796b860",
+    "tooling/backend-ci/requirements.in": "12afc5391a3bac2493ab92d5897db76ea0b81b987259fef8dd81c5ecc8f9c3f3",
+    "tooling/backend-ci/requirements.lock.txt": "a1365367ac4308e59714635b3583aa2f5bb40dc7a9b6591912059cc3a963d5b2",
     "tooling/requirements-gaiakeep-tests.txt": "86c94aaf151b3920dbcdb1b682fbb9401d1b3ddb64adcd508444bc86acd5d21c",
     "tooling/requirements-gaiakeep-sdk-tests.txt": "a346c3a5ad503cf1b04e61655fb6e3ec667027f8d097c92ab960b4d013fb4c78",
     "tooling/ui-ci/requirements.in": "0d95a3ca6a56ad256aefcf74f10323ebeef6f58e6f5ec2ec77c06c023d9ca052",

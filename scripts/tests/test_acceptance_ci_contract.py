@@ -23,9 +23,8 @@ def job(text, name):
 
 def test_acceptance_cases_run_in_the_complete_owner_suite_groups():
     commands = suite_commands(ROOT)
-    assert (ROOT / "backend", "tests", "backend-tests") in group_commands(
-        commands, "tests"
-    )
+    for group, suite in (("tests_1", "backend-tests-1"), ("tests_2", "backend-tests-2")):
+        assert group_commands(commands, group) == [(ROOT / "backend", "tests", suite)]
     assert (ROOT, "scripts/tests", "tooling") in group_commands(commands, "modules")
     for name in (
         "test_phi_clinical_acceptance.py",
@@ -109,7 +108,7 @@ def test_embedded_plane_qualification_measures_owner_upgrade_and_integrity_tools
         assert f"--cov={module}" in plane
     assert "--fail-under=90" in plane
     assert "--cov-fail-under=88.75" in plane
-    assert "timeout-minutes: 30" in plane
+    assert "timeout-minutes: 20" in plane
 
 
 @pytest.mark.parametrize(

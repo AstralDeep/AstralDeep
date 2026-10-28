@@ -12,13 +12,13 @@ import sys
 import textwrap
 
 FENCE_ACTION = "openai/fence"
-REVIEWED_BUNDLE_SHA = "abc5790eac3445fe3854eea6b506aa7d31bed67c"
-REVIEWED_VERSION = "v0.10.5"
+REVIEWED_BUNDLE_SHA = "f9751ca5d767dc0199e88733c2b286bd4800a008"
+REVIEWED_VERSION = "v0.12.5"
 ACTION_PIN = f"{FENCE_ACTION}@{REVIEWED_BUNDLE_SHA} # {REVIEWED_VERSION}"
 INVOCATION = "astral-lint-${{ github.run_id }}-${{ github.run_attempt }}"
 FIXTURE_ID = "${{ steps.fence_peer.outputs.fixture_id }}"
 PEER_FILE = "ci_network_fixture.py"
-VERIFIER_FILE = "ci_fence_fixture_verifier.py"
+VERIFIER_FILE = "ci_fence_fixture_verifier_v2.py"
 MAX_HELPER_BYTES = 262144
 ALLOWED_ENDPOINTS = (
     "github.com:443",
@@ -54,9 +54,9 @@ class ReviewedHelpers:
 
 
 REVIEWED_HELPERS: ReviewedHelpers | None = ReviewedHelpers(
-    "85e50f5392e7916ccfd4da84c1ae90e097ef01e5",
+    "a1bfc19ccd9d1cc58c8298ce26718e92b76b3fb2",
     "23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240",
-    "68bb90701e0302714686a685752a2e93da541146877a5cfac069c319d9921ca3",
+    "6c16e452bb0be0f877c40067663c6cc3759eab9ebe11fffd0d41952539b90b57",
 )
 
 
@@ -166,9 +166,10 @@ def loader_source(helpers: ReviewedHelpers, mode: str) -> str:
         peer = modules["ci_network_fixture.py"]
     ''')
     if mode == "verify":
-        return source + textwrap.dedent('''\
-            verifier = modules["ci_fence_fixture_verifier.py"]
-            result = verifier.verify(fixture, sys.argv[2], verifier.runner_node24(), peer=peer)
+        return source + textwrap.dedent(f'''\
+            verifier = modules[{VERIFIER_FILE!r}]
+            result = verifier.verify(fixture, sys.argv[2], verifier.runner_node24(), peer=peer,
+                                     action_pin={REVIEWED_BUNDLE_SHA!r})
             print(json.dumps(result, sort_keys=True))
         ''')
     return source + textwrap.dedent('''\

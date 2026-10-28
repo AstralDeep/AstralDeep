@@ -19,7 +19,6 @@ from webrender.chrome.surfaces import _sdui
 logger = logging.getLogger("Orchestrator.Chrome.Search")
 TITLE = "Search"
 SURFACE_KEY = "search"
-_INTRO = "Search your conversations, private notes, durable memory, and Atlas from one place. Results link to their source."
 _OPEN_LABELS = {"notes": "Open note", "memory": "Open memory", "conversations": "View conversation result", "atlas": "Open Atlas page"}
 
 
@@ -29,14 +28,13 @@ def _navigation(label, params):
 
 def _filters(params):
     return _sdui.form([
-        _sdui.field("q", "Search", default=params.get("q", ""), help="Search your authorized sources"),
+        _sdui.field("q", "Search", default=params.get("q", "")),
         _sdui.field("source", "Source", "select", default=params.get("source", ""),
                     options=[{"value": "", "label": "All sources"}, *[
                         {"value": key, "label": SOURCE_LABELS[key]} for key in SOURCES]]),
         _sdui.field("type", "Type", "select", default=params.get("type", ""),
                     options=[{"value": "", "label": "All types"}, *sorted(known_types())]),
-        _sdui.field("project_id", "Project", default=params.get("project_id", ""),
-                    help="Leave blank for all projects; use - for global memory and Atlas."),
+        _sdui.field("project_id", "Project", default=params.get("project_id", "")),
     ], submit_action="chrome_open", submit_label="Search",
         submit_payload={"surface": SURFACE_KEY, "params": {}}, title="Search")
 
@@ -54,7 +52,7 @@ def _honest_notices(outcome):
     if any(report.stale for report in outcome.reports):
         notices.append(_sdui.alert("Some results changed or are no longer available. Search again for current sources.", "warning"))
     if not outcome.hits and outcome.any_available and not outcome.partial:
-        notices.append(_sdui.alert(f"No matches found for “{outcome.query}”. Try different words or clear the filters.", "info"))
+        notices.append(_sdui.alert(f"No matches found for “{outcome.query}”.", "info"))
     return notices
 
 
@@ -107,7 +105,7 @@ async def components(orch, user_id, roles, params):
     if params.get("error"):
         return [*output, _sdui.alert(params["error"], "error")]
     if not params.get("q") and "open" not in params:
-        return [*output, _sdui.alert(_INTRO)]
+        return output
     caller = await _caller(orch, user_id)
     if caller is None:
         return [*output, _sdui.alert("Search requires a current authenticated session.", "error")]

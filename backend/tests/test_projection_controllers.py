@@ -62,7 +62,7 @@ def _model(
             }
         ],
         "theme": {
-            "name": "midnight",
+            "name": "graphite",
             "colors": {},
             "color_scheme": "dark",
             "contrast": "normal",
@@ -404,6 +404,7 @@ def test_query_failure_is_redacted_and_status_builder_failure_degrades(
     )
     fallback = queries.query(_query())
     assert fallback.model["degradation"]["active"] is True
+    assert fallback.model["theme"]["name"] == "graphite"
     assert fallback.model["components"][0]["code"] == "forbidden"
     assert "status-secret" not in repr(fallback.model)
     assert "status-secret" not in caplog.text

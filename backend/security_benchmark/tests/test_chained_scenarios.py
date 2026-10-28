@@ -99,8 +99,8 @@ def test_missing_registered_effect_declaration_still_blocks_benign_hop(monkeypat
 
     original = source_bound.registered_action
 
-    def unavailable(_scopes, agent, tool, host_reads=()):
-        return original({}, agent, tool, host_reads)
+    def unavailable(_scopes, agent, tool, host_reads=(), de_escalations=()):
+        return original({}, agent, tool, host_reads, de_escalations)
 
     monkeypatch.setattr(source_bound, "registered_action", unavailable)
     case = next(c for c in get_adapter("chained").load_cases()

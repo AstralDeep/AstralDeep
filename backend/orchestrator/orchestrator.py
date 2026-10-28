@@ -282,6 +282,8 @@ class _ConnectionIngressFrame:
     deadline_at_utc: datetime | None
     authenticated_user_id: str | None = field(default=None, repr=False)
     local_final_verified: bool = False
+    foreground: bool = False
+    remote_effect_call: object = field(default=None, repr=False)
     work_read: "WorkSurfaceRead | None" = field(default=None, repr=False)
     human_request: object = field(default=None, repr=False)
     guidance_origin: object = field(default=None, repr=False)
@@ -1723,6 +1725,89 @@ class Orchestrator:
                 return ws
         return candidates[0] if candidates else None
 
+    async def _cancel_turn(self, websocket, user_id, chat_id) -> None:
+        self.cancelled_sessions[id(websocket)] = True
+        if user_id and user_id != "legacy" and chat_id:
+            from orchestrator import hitl_confirmation
+
+            hitl_confirmation.cancel_pending(self, websocket, user_id, chat_id)
+            origins = getattr(self, "_hitl_task_origins", {})
+            origin = origins.get((user_id, chat_id))
+            if origin is not None and origin[0] is websocket:
+                origins.pop((user_id, chat_id), None)
+        recorder = self._chat_recorders.get(id(websocket))
+        if recorder is not None:
+            try:
+                await recorder.cancel_all_in_flight()
+            except Exception:  # pragma: no cover
+                logger.debug("cancel_all_in_flight failed", exc_info=True)
+        dispatching = getattr(self, "_turn_tool_tasks", {}).get((id(websocket), chat_id))
+        if dispatching is not None and not dispatching.done():
+            self._tool_cancel_requests = getattr(self, "_tool_cancel_requests", set())
+            self._tool_cancel_requests.add(dispatching)
+            dispatching.cancel()
+        await self._safe_send(websocket, json.dumps({
+            "type": "chat_status",
+            "status": "done",
+            "message": "Cancelled"
+        }))
+        sessions = getattr(self, "computer_sessions", None)
+        if sessions is not None and user_id and chat_id:
+            for session in sessions.live_for_owner(user_id):
+                if session.chat_id == chat_id and session.controller_ws_id == id(websocket):
+                    sessions.cancel_requests(session)
+                    await sessions.interrupt_jobs(session)
+
+    def _take_tool_cancel(self) -> bool:
+        task = asyncio.current_task()
+        requests = getattr(self, "_tool_cancel_requests", set())
+        if task not in requests:
+            return False
+        requests.discard(task)
+        return task.uncancel() == 0
+
+    def _release_tool_dispatch(self, key) -> None:
+        task = asyncio.current_task()
+        tasks = getattr(self, "_turn_tool_tasks", {})
+        if tasks.get(key) is task:
+            tasks.pop(key, None)
+        requests = getattr(self, "_tool_cancel_requests", set())
+        if task in requests:
+            requests.discard(task)
+            task.uncancel()
+
+    def _note_cancelled_request(self, request_id, agent_id, tool_name, ui_websocket) -> None:
+        now = time.monotonic()
+        late = {key: value for key, value in getattr(self, "_late_tool_requests", {}).items() if value[4] > now}
+        if len(late) < 256:
+            owner = self._get_user_id(ui_websocket) if ui_websocket is not None else None
+            chat = self._ws_active_chat.get(id(ui_websocket)) if ui_websocket is not None else None
+            late[request_id] = (agent_id, tool_name, owner, chat, now + 600)
+        self._late_tool_requests = late
+
+    async def _audit_late_tool_result(self, user_id, chat_id, agent_id, tool_name) -> None:
+        from audit.recorder import now_utc
+        from audit.schemas import AuditEventCreate
+
+        logger.info("tool result discarded after cancel tool=%s agent=%s", tool_name, agent_id)
+        recorder = getattr(self, "audit_recorder", None)
+        if recorder is None or not user_id:
+            return
+        try:
+            await recorder.record(AuditEventCreate(
+                actor_user_id=user_id, auth_principal=user_id, agent_id=agent_id,
+                event_class="agent_tool_call", action_type=f"tool.{tool_name}.late_after_cancel"[:128],
+                description="A tool result arrived after the turn was cancelled and was discarded.",
+                conversation_id=chat_id, correlation_id=str(_uuid.uuid4()), outcome="interrupted",
+                inputs_meta={"tool": tool_name, "agent_id": agent_id}, started_at=now_utc(), completed_at=now_utc()))
+        except Exception:
+            logger.warning("late tool result audit failed tool=%s", tool_name, exc_info=True)
+
+    async def cancel_computer_turn(self, session) -> None:
+        websocket = next((ws for ws in list(self.ui_clients) if id(ws) == session.controller_ws_id), None)
+        if websocket is not None and self._get_user_id(websocket) == session.owner_sub:
+            await self._cancel_turn(websocket, session.owner_sub, session.chat_id)
+
     async def _register_computer_host(self, websocket, owner_sub: str, descriptor) -> None:
         host_id = descriptor.host_id if hasattr(descriptor, "host_id") else descriptor["host_id"]
         displaced = (self.computer_hosts.get(owner_sub, host_id), self.computer_hosts.host_for_socket(websocket))
@@ -1732,6 +1817,7 @@ class Orchestrator:
             if previous is None or (previous.owner_sub, previous.host_id) in ended:
                 continue
             ended.add((previous.owner_sub, previous.host_id))
+            await self.computer_sessions.clear_bypass(previous.owner_sub, previous.host_id, "host_replaced")
             await self.computer_sessions.end_all_for_host(
                 previous.owner_sub, previous.host_id, "host_superseded")
         await self.computer_hosts.push_presence(host, "online")
@@ -1740,6 +1826,7 @@ class Orchestrator:
         host = self.computer_hosts.on_socket_closed(websocket)
         if host is None:
             return
+        await self.computer_sessions.clear_bypass(host.owner_sub, host.host_id, "host_offline")
         await self.computer_sessions.end_all_for_host(host.owner_sub, host.host_id, "host_offline")
         await self.computer_hosts.push_presence(host, "offline")
 
@@ -1790,11 +1877,12 @@ class Orchestrator:
         if host is None:
             return
         if event == "withdraw":
+            await self.computer_sessions.clear_bypass(owner_sub, host.host_id, "access_disabled")
             await self.computer_sessions.end_all_for_host(owner_sub, host.host_id, "consent_revoked")
             self.computer_hosts.withdraw(owner_sub, host.host_id)
             await self.computer_hosts.push_presence(host, "offline")
             return
-        if event in ("heartbeat", "paused", "resumed", "stopped"):
+        if event in ("heartbeat", "paused", "resumed", "stopped", "approval_activity"):
             await self.computer_sessions.on_host_event(
                 owner_sub, host.host_id, event,
                 str(payload.get("session_id") or ""), payload.get("reason"))
@@ -5249,6 +5337,8 @@ class Orchestrator:
         host_reads = getattr(self, "_source_bound_read_tools", set())
         self._source_bound_read_tools = {
             item for item in host_reads if item[0] != card.agent_id}
+        self._source_bound_de_escalations = {
+            item for item in getattr(self, "_source_bound_de_escalations", set()) if item[0] != card.agent_id}
 
         from shared.schema_validation import validate_tool_schema
 
@@ -5731,6 +5821,9 @@ class Orchestrator:
                             (getattr(self, "_pending_request_agent", None) or {}).get(req_id))
                         return
                     self.pending_requests[req_id].set_result(msg)
+                elif req_id in getattr(self, "_late_tool_requests", {}):
+                    agent_id, tool_name, owner, chat, _expiry = self._late_tool_requests.pop(req_id)
+                    await self._audit_late_tool_result(owner, chat, agent_id, tool_name)
                 else:
                     logger.warning(f"Received response for unknown request: {req_id}")
 
@@ -6836,6 +6929,9 @@ class Orchestrator:
         work = context.operations.get(getattr(operation, "operation_id", None))
         if work is None:
             return None, None
+        call = work.frame.remote_effect_call
+        if call is not None and getattr(self, "_hitl_pending_calls", {}).get(call.request_id) is not call:
+            return None, None
         connection = context.connection_generation
         fence = work.fence
         claims = self.ui_sessions.get(websocket)
@@ -6845,6 +6941,11 @@ class Orchestrator:
                     "connection_generation": connection}
 
         def current():
+            if work.frame.foreground:
+                try:
+                    work.frame.human_request.assert_socket()
+                except Exception:
+                    return False
             return (self._connection_contexts.get(id(websocket)) is context
                     and context.websocket is websocket and context.registered and not context.closing
                     and _CONNECTION_OPERATION_CONTEXT.get() is active
@@ -7129,6 +7230,8 @@ class Orchestrator:
                 retryable=False,
             )
             return
+        from orchestrator.remote_effect_ingress import bind_frame
+        bind_frame(self, context, frame)
         is_local_final = frame.parsed.get("type") == "voice_local_final"
         if is_local_final:
             if not await self._verify_connection_local_final(context, frame):
@@ -7189,15 +7292,18 @@ class Orchestrator:
         )
         from persistent_agents.models import AssignmentError
 
+        decision_guidance = False
         try:
             if frame.action != "chat_message" or human_lookup_eligible:
                 from orchestrator import user_skills
                 voice_guidance = frame.operation_kind == "voice_chat_message" and (user_skills.enabled() or evidence_context.needs_authority(self))
+                decision_guidance = (not frame.foreground and frame.action in {"authorize_action", "remote_op_decision"}
+                                     and (user_skills.enabled() or evidence_context.needs_authority(self)))
                 frame.human_request = capture_human_socket_request(
                     getattr(self, "human_request_boundary", None), websocket=context.websocket,
                     context=context, message=frame.parsed,
-                    purpose=("voice_guidance" if voice_guidance else
-                             "skill_lookup" if frame.action == "chat_message" else "metadata"),
+                    purpose=("remote_effect" if frame.foreground else "voice_guidance" if voice_guidance else
+                             "skill_lookup" if frame.action == "chat_message" or decision_guidance else "metadata"),
                 )
             if frame.human_request is not None:
                 if frame.action == "chrome_open" and frame.surface == "evidence":
@@ -7212,6 +7318,8 @@ class Orchestrator:
 
                     frame.guidance_navigation = capture_navigation(self, pending=frame.human_request)
                 await frame.human_request.capture_session()
+                if frame.foreground:
+                    await frame.human_request.authenticate()
                 if frame.human_request.purpose == "metadata":
                     frame.read_only = frame.human_request.method == "WS_READ"
                 elif frame.human_request.purpose == "voice_guidance":
@@ -7226,7 +7334,7 @@ class Orchestrator:
             try:
                 logger.warning("human request capture failed action=%s cause=%s",
                                frame.action, getattr(exc, "code", type(exc).__name__))
-                if frame.action != "chat_message":
+                if frame.action != "chat_message" and not decision_guidance:
                     await self._send_connection_admission_refusal(
                         context, frame, code="operation_failed", retryable=False,
                     )
@@ -7323,12 +7431,14 @@ class Orchestrator:
             if frame.operation_kind in {
                 "llm_credential_save",
                 "voice_chat_message",
+                "remote_effect_approval",
             }:
                 claims = (
                     getattr(self, "ui_sessions", {}).get(context.websocket)
                     or {}
                 )
-                owner_user_id = claims.get("sub") or "legacy"
+                owner_user_id = (frame.remote_effect_call.owner if frame.foreground
+                                 else claims.get("sub") or "legacy")
                 owner = OperationOwner(
                     owner_scope=OwnerScope.USER,
                     owner_user_id=owner_user_id,
@@ -7351,19 +7461,19 @@ class Orchestrator:
                 idempotency_namespace=(
                     frame.operation_kind
                     if frame.operation_kind
-                    in {"llm_credential_save", "voice_chat_message"}
+                    in {"llm_credential_save", "voice_chat_message", "remote_effect_approval"}
                     else None
                 ),
                 idempotency_key=(
                     str(frame.submission_id)
                     if frame.operation_kind
-                    in {"llm_credential_save", "voice_chat_message"}
+                    in {"llm_credential_save", "voice_chat_message", "remote_effect_approval"}
                     else None
                 ),
                 normalized_input_digest=(
                     frame.normalized_digest
                     if frame.operation_kind
-                    in {"llm_credential_save", "voice_chat_message"}
+                    in {"llm_credential_save", "voice_chat_message", "remote_effect_approval"}
                     else None
                 ),
                 chat_id=frame.chat_id,
@@ -7372,6 +7482,11 @@ class Orchestrator:
                 request_generation=frame.request_generation,
             )
             try:
+                if frame.foreground:
+                    frame.human_request.assert_socket()
+                    call = frame.remote_effect_call
+                    if getattr(self, "_hitl_pending_calls", {}).get(call.request_id) is not call:
+                        raise RuntimeError("remote approval intent changed before admission")
                 result = coordinator.submit(request)
             except Exception as exc:
                 result = exc
@@ -7509,7 +7624,7 @@ class Orchestrator:
                     self._reconnectable_operations = registry
                 existing = (
                     registry.get(result.operation_id)
-                    if owner.owner_scope is OwnerScope.USER
+                    if owner.owner_scope is OwnerScope.USER and not frame.foreground
                     else None
                 )
                 if existing is not None:
@@ -7550,7 +7665,7 @@ class Orchestrator:
                 )
                 work.subscribers[id(context)] = (context, frame)
                 context.operations[result.operation_id] = work
-                if owner.owner_scope is OwnerScope.USER:
+                if owner.owner_scope is OwnerScope.USER and not frame.foreground:
                     # Registered before the first await: blocks a duplicate worker
                     registry[result.operation_id] = work
                 if (
@@ -7623,7 +7738,7 @@ class Orchestrator:
                     continue
                 if (
                     context.closing
-                    and owner.owner_scope is OwnerScope.CONNECTION
+                    and (owner.owner_scope is OwnerScope.CONNECTION or frame.foreground)
                 ):
                     frame.close_work_read()
                     terminal = await self._call_work_admission(
@@ -7668,7 +7783,7 @@ class Orchestrator:
                     operation=True,
                 )
                 work.task = task
-                if work.owner.owner_scope is OwnerScope.USER:
+                if work.owner.owner_scope is OwnerScope.USER and not work.frame.foreground:
                     reconnectable_tasks = getattr(
                         self, "_reconnectable_operation_tasks", None
                     )
@@ -7717,7 +7832,7 @@ class Orchestrator:
         while True:
             if (
                 context.closing
-                and work.owner.owner_scope is OwnerScope.CONNECTION
+                and (work.owner.owner_scope is OwnerScope.CONNECTION or work.frame.foreground)
             ):
                 terminal = await self._call_work_admission(
                     self.work_admission.cancel,
@@ -7749,7 +7864,7 @@ class Orchestrator:
             revision = await self._wait_for_interactive_capacity(
                 context,
                 revision,
-                allow_closing=(work.owner.owner_scope is OwnerScope.USER),
+                allow_closing=(work.owner.owner_scope is OwnerScope.USER and not work.frame.foreground),
             )
 
     async def _renew_connection_lease(
@@ -8348,15 +8463,17 @@ class Orchestrator:
             # Wait before claiming: claiming first can deadlock the pool
             if work.predecessors:
                 predecessors = (tuple(asyncio.shield(item) for item in work.predecessors)
-                                if (work.frame.work_read is not None or (work.frame.human_request is not None
-                                    and work.frame.human_request.purpose == "metadata"))
+                                if (work.frame.foreground or work.frame.work_read is not None or (work.frame.human_request is not None
+                                    and work.frame.human_request.purpose in {"metadata", "remote_effect"}))
                                 else work.predecessors)
                 await asyncio.gather(*predecessors)
             if (
                 context.closing
-                and work.owner.owner_scope is OwnerScope.CONNECTION
+                and (work.owner.owner_scope is OwnerScope.CONNECTION or work.frame.foreground)
             ):
                 raise asyncio.CancelledError
+            if work.frame.foreground:
+                await work.frame.human_request.authenticate()
             claim, terminal = await self._claim_connection_operation(
                 context, work
             )
@@ -8381,7 +8498,7 @@ class Orchestrator:
             )
             if (
                 context.closing
-                and work.owner.owner_scope is OwnerScope.CONNECTION
+                and (work.owner.owner_scope is OwnerScope.CONNECTION or work.frame.foreground)
             ):
                 raise asyncio.CancelledError
             connection_operation_context = {
@@ -8546,7 +8663,7 @@ class Orchestrator:
             if work.frame.work_read is not None:
                 async with asyncio.timeout_at(work.frame.work_read.deadline):
                     await _execute()
-            elif work.frame.human_request is not None and work.frame.human_request.purpose == "metadata":
+            elif work.frame.human_request is not None and work.frame.human_request.purpose in {"metadata", "remote_effect"}:
                 async with asyncio.timeout_at(work.frame.human_request.deadline):
                     await _execute()
             elif work.frame.operation_kind == "llm_credential_save":
@@ -8995,12 +9112,12 @@ class Orchestrator:
         connection_work = tuple(
             work
             for work in context.operations.values()
-            if work.owner.owner_scope is OwnerScope.CONNECTION
+            if work.owner.owner_scope is OwnerScope.CONNECTION or work.frame.foreground
         )
         reconnectable_work = tuple(
             work
             for work in context.operations.values()
-            if work.owner.owner_scope is not OwnerScope.CONNECTION
+            if work.owner.owner_scope is not OwnerScope.CONNECTION and not work.frame.foreground
         )
         for work in reconnectable_work:
             work.subscribers.pop(id(context), None)
@@ -10092,6 +10209,10 @@ class Orchestrator:
                             )
                             self.ui_sessions[websocket] = user_data
                             public_prefs = public_user_preferences(prefs)
+                            if not public_prefs.get("theme"):
+                                from orchestrator.projection_surfaces.theme import default_theme_preferences
+
+                                public_prefs.update(default_theme_preferences())
                             if public_prefs:
                                 await self._safe_send(websocket, json.dumps({
                                     "type": "user_preferences",
@@ -10533,32 +10654,7 @@ class Orchestrator:
                         )
 
                 elif msg.action == "cancel_task":
-                    self.cancelled_sessions[id(websocket)] = True
-                    computer_sessions = getattr(self, "computer_sessions", None)
-                    active_chat = self._ws_active_chat.get(id(websocket))
-                    if user_id and user_id != "legacy" and active_chat:
-                        from orchestrator import hitl_confirmation
-
-                        hitl_confirmation.cancel_pending(self, websocket, user_id, active_chat)
-                        origins = getattr(self, "_hitl_task_origins", {})
-                        origin = origins.get((user_id, active_chat))
-                        if origin is not None and origin[0] is websocket:
-                            origins.pop((user_id, active_chat), None)
-                        if computer_sessions is not None:
-                            for session in computer_sessions.live_for_owner(user_id):
-                                if session.chat_id == active_chat and session.controller_ws_id == id(websocket):
-                                    await computer_sessions.end(session, "user_stop")
-                    recorder = self._chat_recorders.get(id(websocket))
-                    if recorder is not None:
-                        try:
-                            await recorder.cancel_all_in_flight()
-                        except Exception:  # pragma: no cover
-                            logger.debug("cancel_all_in_flight failed", exc_info=True)
-                    await self._safe_send(websocket, json.dumps({
-                        "type": "chat_status",
-                        "status": "done",
-                        "message": "Cancelled"
-                    }))
+                    await self._cancel_turn(websocket, user_id, self._ws_active_chat.get(id(websocket)))
 
                 elif msg.action == "watch_task":
                     task_id = msg.payload.get("task_id")
@@ -10681,12 +10777,18 @@ class Orchestrator:
                 elif msg.action == "get_history":
                     await self._push_history_surface(websocket, loading=True)
                     chats = await asyncio.to_thread(
-                        self.history.get_recent_chats, user_id=user_id)
+                        self.history.get_recent_chats, user_id=user_id,
+                        include_archived=(msg.payload or {}).get("include_archived") is True)
                     await self._safe_send(websocket, json.dumps({
                         "type": "history_list",
                         "chats": chats
                     }))
                     await self._push_history_surface(websocket, chats=chats)
+
+                elif (msg.action == "chat_rename" or msg.action == "chat_pin" or msg.action == "chat_unpin"
+                      or msg.action == "chat_archive" or msg.action == "chat_unarchive"):
+                    from orchestrator import chat_organization
+                    await chat_organization.handle(self, websocket, user_id, msg.action, msg.payload)
 
                 elif msg.action == "load_chat":
                     chat_id = msg.payload.get("chat_id")
@@ -11394,8 +11496,10 @@ class Orchestrator:
                         _targs["_txn_token"] = _tok
                         _tc = _SNS(id="authz", function=_SNS(
                             name=_tool, arguments=json.dumps(_targs)))
-                        await self.execute_single_tool(
+                        response = await self.execute_single_tool(
                             websocket, _tc, {_tool: _aid}, _p.get("chat_id"), user_id=user_id)
+                        from orchestrator.remote_effect_ingress import publish_review
+                        await publish_review(self, websocket, _aid, _tool, _p.get("chat_id"), user_id, response)
                     else:
                         await self.send_ui_render(websocket, [Alert(
                             message="Couldn't authorize that action.", variant="warning").to_dict()])
@@ -15273,24 +15377,42 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     if turn_count == 1:
                         with perf_span("turn.first_tool_dispatch", chat=chat_id):
                             pass
-                    with perf_span("turn.tools", chat=chat_id):
-                        if len(llm_msg.tool_calls) == 1:
-                            tc = llm_msg.tool_calls[0]
-                            res = await self.execute_single_tool(websocket, tc, tool_to_agent, chat_id, user_id=user_id, tool_to_unqualified=tool_to_unqualified)
-                            if res:
-                                tool_results.append(res)
-                        else:
-                            _batches = turn_hooks.fanout_batches(list(llm_msg.tool_calls))
-                            if _batches:
-                                logger.info("fanout chat=%s calls=%d batches=%d",
-                                            chat_id, len(llm_msg.tool_calls), len(_batches))
-                                for _batch in _batches:
-                                    tool_results.extend(await self.execute_parallel_tools(
-                                        websocket, _batch, tool_to_agent, chat_id,
-                                        user_id=user_id, tool_to_unqualified=tool_to_unqualified))
+                    _dispatch_key = (id(websocket), chat_id)
+                    self._turn_tool_tasks = getattr(self, "_turn_tool_tasks", {})
+                    self._turn_tool_tasks[_dispatch_key] = asyncio.current_task()
+                    _tools_cancelled = False
+                    try:
+                        with perf_span("turn.tools", chat=chat_id):
+                            if len(llm_msg.tool_calls) == 1:
+                                tc = llm_msg.tool_calls[0]
+                                res = await self.execute_single_tool(websocket, tc, tool_to_agent, chat_id, user_id=user_id, tool_to_unqualified=tool_to_unqualified)
+                                if res:
+                                    tool_results.append(res)
                             else:
-                                res_list = await self.execute_parallel_tools(websocket, llm_msg.tool_calls, tool_to_agent, chat_id, user_id=user_id, tool_to_unqualified=tool_to_unqualified)
-                                tool_results.extend(res_list)
+                                _batches = turn_hooks.fanout_batches(list(llm_msg.tool_calls))
+                                if _batches:
+                                    logger.info("fanout chat=%s calls=%d batches=%d",
+                                                chat_id, len(llm_msg.tool_calls), len(_batches))
+                                    for _batch in _batches:
+                                        tool_results.extend(await self.execute_parallel_tools(
+                                            websocket, _batch, tool_to_agent, chat_id,
+                                            user_id=user_id, tool_to_unqualified=tool_to_unqualified))
+                                else:
+                                    res_list = await self.execute_parallel_tools(websocket, llm_msg.tool_calls, tool_to_agent, chat_id, user_id=user_id, tool_to_unqualified=tool_to_unqualified)
+                                    tool_results.extend(res_list)
+                    except asyncio.CancelledError:
+                        if not self._take_tool_cancel():
+                            raise
+                        _tools_cancelled = True
+                    finally:
+                        self._release_tool_dispatch(_dispatch_key)
+                    if _tools_cancelled or self.cancelled_sessions.get(id(websocket)):
+                        for _tc, _late in zip(llm_msg.tool_calls, tool_results):
+                            if _late is not None:
+                                await self._audit_late_tool_result(user_id, chat_id,
+                                    tool_to_agent.get(_tc.function.name), _tc.function.name)
+                        self.cancelled_sessions[id(websocket)] = True
+                        continue
 
                     _turn_tools = [tc.function.name for tc in llm_msg.tool_calls]
                     _tools_used += len(_turn_tools)
@@ -17428,7 +17550,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         try:
             action = source_bound.registered_action(
                 self.tool_permissions.get_tool_scope_map(agent_id), agent_id, tool_name,
-                getattr(self, "_source_bound_read_tools", ()))
+                getattr(self, "_source_bound_read_tools", ()), getattr(self, "_source_bound_de_escalations", ()))
         except (AttributeError, TypeError, ValueError) as exc:
             logger.warning("Source-bound declaration unavailable: %s", exc)
             await self._audit_gate_denial(
@@ -17603,8 +17725,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
             if _conf is not None:
                 _msg, _comps = _conf
+                if agent_id == "computer-use-1" and tool_name == "write_file":
+                    from orchestrator.write_review import attach_write_diff
+                    _comps = await attach_write_diff(self, websocket, user_id, chat_id, args, _comps)
                 _policy = remote_confirmation.policy_for(agent_id)
                 if (_policy is not None and _policy.card_as_result
+                        and not isinstance(_conf, remote_confirmation.Refusal)
                         and (agent_id != "gaiakeep-1" or remote_confirmation.is_approval_card_result(_comps))):
                     return GateRefusal(
                         response=MCPResponse(
@@ -17690,6 +17816,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 args, tuple(set(review_risks)))
             if pending is not None:
                 return GateRefusal(response=pending)
+        elif user_id and agent_id and action.effect is source_bound.Effect.DE_ESCALATION:
+            from orchestrator import hitl_confirmation
+
+            await hitl_confirmation.audit_de_escalation(self, user_id, chat_id, agent_id, tool_name, args)
 
         if user_id:
             from orchestrator import taint as _taint
@@ -17767,10 +17897,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             render_target="chat" if pending.error else None)
 
         if chat_id:
-            args = await asyncio.to_thread(
-                self._map_file_paths, chat_id, args, user_id=user_id)
-            if self._tool_accepts_context_arg(agent_id, tool_name, "session_id"):
-                args["session_id"] = chat_id
+            if agent_id != "terminal-shell-1":
+                args = await asyncio.to_thread(
+                    self._map_file_paths, chat_id, args, user_id=user_id)
+                if self._tool_accepts_context_arg(agent_id, tool_name, "session_id"):
+                    args["session_id"] = chat_id
             if user_id and self._tool_accepts_context_arg(
                 agent_id, tool_name, "user_id"
             ):
@@ -19107,7 +19238,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             try:
                 action = source_bound.registered_action(
                     self.tool_permissions.get_tool_scope_map(agent_id), agent_id, tool_name,
-                    getattr(self, "_source_bound_read_tools", ()))
+                    getattr(self, "_source_bound_read_tools", ()), getattr(self, "_source_bound_de_escalations", ()))
             except (AttributeError, TypeError, ValueError):
                 return MCPResponse(error={"code": "effect_declaration_unavailable",
                     "message": "Tool effect declaration is unavailable.", "retryable": False})
@@ -19246,6 +19377,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             max_retries = 1
 
         default_timeout = TOOL_TIMEOUT_OVERRIDES.get(tool_name, 30.0)
+        if agent_id == "computer-use-1":
+            from orchestrator.computer_use_policy import dispatch_timeout
+
+            default_timeout = dispatch_timeout(tool_name, args if isinstance(args, dict) else {})
         if agent_id == "gaiakeep-1":
             from orchestrator.gaiakeep_dispatch import DEFAULT_TIMEOUT
 
@@ -19702,6 +19837,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             result = await asyncio.wait_for(future, timeout=timeout)
             return result
 
+        except asyncio.CancelledError:
+            self._note_cancelled_request(request_id, agent_id, tool_name, ui_websocket)
+            raise
         except asyncio.TimeoutError:
             logger.error(f"Tool call timed out: {tool_name}")
             return MCPResponse(request_id=request_id,
@@ -19997,6 +20135,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             task.add_done_callback(_on_handler_done)
             logger.info(f"Dispatched tool call (in-process): {tool_name} → {agent_id}")
             return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.CancelledError:
+            self._note_cancelled_request(request_id, agent_id, tool_name, ui_websocket)
+            raise
         except asyncio.TimeoutError:
             logger.error(f"In-process tool call timed out: {tool_name}")
             return MCPResponse(request_id=request_id,
@@ -23466,7 +23607,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         try:
             if flags.is_enabled("inprocess_agents"):
                 from orchestrator import local_agents
+                from orchestrator.terminal_host_review import review_registered_computer_use
+
                 await local_agents.register_built_ins(self)
+                review_registered_computer_use(self)
         except Exception:
             logger.exception("Feature 040: in-process agent registration failed")
 
