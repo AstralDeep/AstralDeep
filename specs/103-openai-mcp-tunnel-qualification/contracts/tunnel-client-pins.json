@@ -1,5 +1,5 @@
 {
-  "manifest_version": 1,
+  "manifest_version": 2,
   "review_baseline": {
     "repository": "AstralDeep",
     "commit": "f89ba2ae9c0e8decd271544e05a93f6c8a202a66",
@@ -10,13 +10,33 @@
     "pin": "fda241e2343ddd49dd63a7da3e1afab2a6e91722",
     "pin_type": "git-commit",
     "evidence_class": "source-review",
-    "execution_status": "not executed in the qualification environment; the pinned commit was reviewed from the issue's immutable source-review evidence only"
+    "execution_status": "not executed; source and dependency metadata retrieved independently on 2026-10-28, with no binary build or live tunnel qualification"
   },
   "go_mcp_sdk": {
     "module": "github.com/modelcontextprotocol/go-sdk",
     "pin_type": "transitive-go-mod-pin",
+    "version": "v1.7.0",
+    "source_commit": "bc72835f62eb94d0fb484439f886b6885b075f36",
+    "sum": "h1:yqjY2dsbKAC0LSuWZVBMrHgiG8ukXv6NRo0JiALay44=",
+    "go_mod_sum": "h1:dL7u98E/zjJTGzEq+j30jQ8K2k1mb6LeAH4inEcSGts=",
     "binding": "the exact dependency version is pinned by the tunnel_client go.mod at the pinned commit fda241e2343ddd49dd63a7da3e1afab2a6e91722",
-    "resolution_status": "not independently resolvable in this environment (GitHub and proxy.golang.org egress are blocked); the operator resolves it from the pinned go.mod during live qualification"
+    "resolution_status": "version and both h1 checksums read from the pinned upstream go.mod/go.sum; module archive not downloaded or verified with Go",
+    "source_files": {
+      "go.mod": {
+        "url": "https://github.com/openai/tunnel-client/blob/fda241e2343ddd49dd63a7da3e1afab2a6e91722/go.mod",
+        "sha256": "4e4824c574831a0a0b5b083a99a240e03bdcee6907212d6be18562a678cf3bfa"
+      },
+      "go.sum": {
+        "url": "https://github.com/openai/tunnel-client/blob/fda241e2343ddd49dd63a7da3e1afab2a6e91722/go.sum",
+        "sha256": "8c6fe6af4c67b4c7f7b4cfb9c7c55f59a28f8c61201a2fc83e596416f0c03af3"
+      }
+    }
+  },
+  "source_retrieval": {
+    "retrieval_date": "2026-10-28",
+    "method": "GitHub contents API raw bytes at the exact tunnel-client commit; SHA-256 computed locally",
+    "required_go_toolchain": "1.27.0",
+    "scope": "source provenance only; no module-archive, executable, TLS, OAuth-browser, ChatGPT, or deployment qualification"
   },
   "reference_guide": "https://developers.openai.com/api/docs/guides/secure-mcp-tunnels",
   "astral_flag_posture": {
@@ -24,7 +44,8 @@
     "default": false,
     "rule": "stays off unless the operator explicitly enables the pilot; this qualification ships no default, security-gate, release, or schema change"
   },
-  "environment_retrieval_check": {
+  "original_environment_retrieval_check": {
+    "context": "historical report from the original qualification environment, superseded for source retrieval by the 2026-10-28 check above",
     "pypi": "reachable",
     "github.com": "blocked by egress proxy",
     "proxy.golang.org": "blocked by egress proxy",

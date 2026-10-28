@@ -40,9 +40,6 @@ def isolate_worker_database(environ: MutableMapping[str, str]) -> tuple[str, str
     selected = worker_database(environ)
     if selected is None:
         return None
-    from psycopg2 import sql
-    from psycopg2.extensions import parse_dsn
-
     suite, target = selected
     from psycopg2 import sql
     from psycopg2.extensions import parse_dsn

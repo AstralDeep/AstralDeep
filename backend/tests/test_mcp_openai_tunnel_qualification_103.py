@@ -320,11 +320,18 @@ def test_tunnel_client_pins_manifest_matches_reviewed_sources():
     assert manifest["go_mcp_sdk"]["module"] == GO_MCP_SDK_MODULE
     assert manifest["go_mcp_sdk"]["pin_type"] == "transitive-go-mod-pin"
     assert manifest["go_mcp_sdk"]["binding"].endswith(TUNNEL_CLIENT_PIN)
-    assert manifest["go_mcp_sdk"]["resolution_status"].startswith("not independently resolvable")
+    assert manifest["go_mcp_sdk"]["version"] == "v1.7.0"
+    assert manifest["go_mcp_sdk"]["sum"] == "h1:yqjY2dsbKAC0LSuWZVBMrHgiG8ukXv6NRo0JiALay44="
+    assert manifest["go_mcp_sdk"]["go_mod_sum"] == "h1:dL7u98E/zjJTGzEq+j30jQ8K2k1mb6LeAH4inEcSGts="
+    sources = manifest["go_mcp_sdk"]["source_files"]
+    assert sources["go.mod"]["url"].endswith(f"/{TUNNEL_CLIENT_PIN}/go.mod")
+    assert sources["go.mod"]["sha256"] == "4e4824c574831a0a0b5b083a99a240e03bdcee6907212d6be18562a678cf3bfa"
+    assert sources["go.sum"]["url"].endswith(f"/{TUNNEL_CLIENT_PIN}/go.sum")
+    assert sources["go.sum"]["sha256"] == "8c6fe6af4c67b4c7f7b4cfb9c7c55f59a28f8c61201a2fc83e596416f0c03af3"
+    assert manifest["source_retrieval"]["retrieval_date"] == "2026-10-28"
     assert manifest["astral_flag_posture"]["flag"] == "FF_MCP_SERVER"
     assert manifest["astral_flag_posture"]["default"] is False
     assert manifest["live_qualification"]["gating"] is False
-    assert manifest["environment_retrieval_check"]["github.com"].startswith("blocked")
 
 
 def test_mcp_flag_stays_off_by_default(monkeypatch):
