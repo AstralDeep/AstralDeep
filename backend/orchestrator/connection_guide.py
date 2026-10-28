@@ -388,14 +388,13 @@ async def push_connection_guide(orch, websocket, user_id: str, *,
         payload = await guide_payload(orch)
     if not current(ready=True):
         return False
-    try:
-        profile = orch.rote.get_profile(websocket)
-        device_type = getattr(profile.device_type, "value", str(profile.device_type))
-    except Exception:
+    from orchestrator.chrome_events import _surface_delivery
+    delivery = _surface_delivery(orch, websocket, SURFACE_KEY)
+    if delivery is None:
         logger.warning("connection guide: device profile unavailable")
         return False
     title = "Connection status"
-    if device_type in ("windows", "android", "ios", "macos", "watch", "watchos"):
+    if delivery in {"native", "watch"}:
         from orchestrator.projection_surfaces import connection as connection_surface
         from shared.protocol import ChromeSurface
 

@@ -18,6 +18,7 @@ Server-owned additions only, inside AstralDeep's existing seams:
   one approved component view serialized for native/watch and rendered by pinned Projection `render_html` for the web; the re-check
   control re-opens the surface through the standard `chrome_open` action, so no new
   dispatch action or UI-protocol manifest entry is introduced.
+- `backend/orchestrator/chrome_events.py` — one bounded server-owned per-surface capability decision extends only the connection surface to watch native rendering, normal correlated open/error/close and existing registered-owner claims; other watch surfaces keep their prior path.
 - `backend/orchestrator/projection_surfaces/__init__.py` — registers the `connection`
   surface key in the server-owned registry (ownership guard updated accordingly).
 - `backend/orchestrator/orchestrator.py` — includes the connection router and calls

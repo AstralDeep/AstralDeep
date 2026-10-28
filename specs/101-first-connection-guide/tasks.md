@@ -28,6 +28,8 @@
 - [x] Web and native/watch use the same approved component composition through pinned Projection rendering/ROTE; no HTML presentation fork, renderer or manifest addition.
 - [x] Configured registration integration failures fail tests; only explicit missing PostgreSQL configuration may skip before construction. Owned chat restore precedes automatic guide evaluation.
 
+- [x] Connection-only watch re-check/error/close disposition uses existing captured ordinary request/current owner/incarnation and close fences; stale/unknown authority and profile failure deny, while other watch surfaces retain their existing behavior.
+
 ## Required before merge/publication (not performed in this snapshot)
 
 - [ ] T010 Full local qualification suite (controller-run): backend groups, changed-code
