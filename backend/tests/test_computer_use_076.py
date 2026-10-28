@@ -16,7 +16,7 @@ import pytest
 
 from orchestrator import computer_use_policy as policy
 from orchestrator import remote_confirmation as rc
-from orchestrator.computer_hosts import ComputerHostError, ComputerHostRegistry
+from orchestrator.computer_hosts import WITHDRAWN, ComputerHostError, ComputerHostRegistry
 from orchestrator.computer_sessions import ComputerSessionManager
 from shared.protocol import (
     COMPUTER_HOST_VERBS,
@@ -145,8 +145,74 @@ def test_opening_a_terminal_is_a_command_by_another_route():
     assert policy.is_destructive("open_app", {"app": r"C:\Program Files\Foo\foo.exe"}) is False
     assert policy.is_destructive("write_file", {"path": "C:/x"}) is True
     assert policy.is_destructive("click", {"x": 1, "y": 1}) is False
-    assert "run_command" not in policy.ALL_VERBS
+    assert policy.is_destructive("run_command", {"argv": ["wc", "-l", "notes.md"]}) is True
+    assert "run_shell" not in policy.ALL_VERBS and "run_shell" not in COMPUTER_HOST_VERBS
     assert rc.is_destructive_unattended("open_app", {"app": "notepad"}, "computer-use-1") is True
+
+
+_COMMAND_VERBS = {"run_command", "read_output", "interrupt_command"}
+_BROWSER_OBSERVE = {"browser_snapshot", "browser_get_text", "browser_screenshot", "browser_wait"}
+_BROWSER_INPUT = {"browser_navigate", "browser_click", "browser_fill", "browser_press",
+                  "browser_scroll", "browser_dialog"}
+
+
+def test_command_and_browser_verbs_join_the_closed_protocol_and_policy_sets():
+    new = _COMMAND_VERBS | _BROWSER_OBSERVE | _BROWSER_INPUT
+    assert len(new) == 13
+    assert new <= COMPUTER_HOST_VERBS
+    assert new <= policy.HOST_VERBS
+    assert policy.COMMAND_VERBS == _COMMAND_VERBS
+    assert policy.BROWSER_VERBS == _BROWSER_OBSERVE | _BROWSER_INPUT
+    assert not policy.COMMAND_VERBS & policy.BROWSER_VERBS
+    assert _BROWSER_OBSERVE | {"read_output"} <= policy.OBSERVE_VERBS
+    assert _BROWSER_INPUT | {"interrupt_command"} <= policy.INPUT_VERBS
+    assert "run_command" in policy.CONSEQUENTIAL_VERBS
+    assert not new & policy.SESSION_VERBS
+    d = ComputerHostDescriptor.from_dict(_descriptor(platform="macos", verbs=sorted(new)))
+    assert set(d.verbs) == new
+    with pytest.raises(ProtocolValidationError):
+        ComputerHostDescriptor.from_dict(_descriptor(verbs=["run_shell"]))
+
+
+def test_command_and_browser_verbs_have_tiers_scopes_timeouts_and_sessions():
+    for verb in _BROWSER_OBSERVE | {"read_output"}:
+        assert policy.TIERS[verb] == "observe"
+    for verb in _BROWSER_INPUT | {"interrupt_command"}:
+        assert policy.TIERS[verb] == "input"
+    assert policy.TIERS["run_command"] == "consequential"
+    for verb in _BROWSER_OBSERVE:
+        assert policy.SCOPES[verb] == "tools:read"
+    for verb in _BROWSER_INPUT:
+        assert policy.SCOPES[verb] == "tools:write"
+    assert policy.SCOPES["run_command"] == "tools:execute"
+    assert policy.SCOPES["read_output"] == "tools:read"
+    assert policy.SCOPES["interrupt_command"] == "tools:write"
+    for verb in {"browser_snapshot", "browser_get_text", "browser_screenshot"}:
+        assert policy.TIMEOUTS[verb] == 5.0
+    assert policy.TIMEOUTS["browser_navigate"] == policy.TIMEOUTS["browser_wait"] == 15.0
+    assert policy.TIMEOUTS["run_command"] == 630.0
+    assert policy.TIMEOUTS["read_output"] == 30.0
+    assert policy.TIMEOUTS["interrupt_command"] == 5.0
+    for verb in _BROWSER_INPUT - {"browser_navigate"}:
+        assert policy.TIMEOUTS[verb] == 5.0
+    for verb in policy.HOST_VERBS - _COMMAND_VERBS - _BROWSER_OBSERVE - _BROWSER_INPUT:
+        assert 0 < policy.TIMEOUTS[verb] <= 30.0
+    for verb in _COMMAND_VERBS | _BROWSER_OBSERVE | _BROWSER_INPUT:
+        assert verb in policy.SESSION_REQUIRED
+        assert policy.is_unattended_allowed(verb) is False
+        assert rc.is_destructive_unattended(verb, {}, "computer-use-1") is True
+    assert policy.UNATTENDED_ALLOWED == frozenset({"list_computers"})
+
+
+def test_every_command_and_first_navigation_need_review_and_reads_do_not():
+    assert policy.DESTRUCTIVE_CLASSIFICATION["run_command"] == "always"
+    assert policy.DESTRUCTIVE_CLASSIFICATION["browser_navigate"] == "always"
+    assert rc.classification_for("run_command", "computer-use-1") == "always"
+    assert policy.is_destructive("run_command", {"command": "ls"}) is True
+    assert policy.is_destructive("browser_navigate", {"url": "https://example.org"}) is True
+    for verb in (_COMMAND_VERBS - {"run_command"}) | _BROWSER_OBSERVE | (_BROWSER_INPUT - {"browser_navigate"}):
+        assert verb not in policy.DESTRUCTIVE_CLASSIFICATION
+        assert policy.is_destructive(verb, {}) is False
 
 
 def test_consequential_verbs_are_always_gated_and_unattended_set_is_minimal():
@@ -244,6 +310,70 @@ async def test_registry_supersedes_and_caches_offline_hosts():
     assert exc.value.code == "computer_unavailable" and "offline" in exc.value.message
     assert orch.computer_hosts.forget(OWNER, host2.host_id) is True
     assert orch.computer_hosts.list_for_owner(OWNER) == []
+
+
+def _host_named(orch, name, platform="macos", user=OWNER, online=True, age_s=0.0):
+    ws = orch.add(_WS(user=user))
+    host, _ = orch.computer_hosts.register(user, ws, ComputerHostDescriptor.from_dict(
+        _descriptor(name=name, platform=platform)))
+    if not online:
+        orch.computer_hosts.on_socket_closed(ws)
+        host.last_seen = time.time() - age_s
+    return host
+
+
+async def test_a_reregistered_computer_hides_its_stale_offline_rows():
+    orch = _FakeOrch()
+    old = _host_named(orch, "RyzenRoll Mobile", online=False, age_s=60)
+    older = _host_named(orch, "ryzenroll mobile", online=False, age_s=120)
+    other_platform = _host_named(orch, "RyzenRoll Mobile", platform="windows", online=False, age_s=60)
+    studio = _host_named(orch, "Studio", online=False, age_s=60)
+    foreign = _host_named(orch, "RyzenRoll Mobile", user=OTHER, online=False, age_s=60)
+    offline_only = orch.computer_hosts.list_for_owner(OWNER)
+    assert {row["host_id"] for row in offline_only} == {old.host_id, other_platform.host_id, studio.host_id}
+    fresh = _host_named(orch, "RyzenRoll Mobile")
+    rows = orch.computer_hosts.list_for_owner(OWNER)
+    assert [(row["host_id"], row["online"]) for row in rows] == [
+        (fresh.host_id, True), (other_platform.host_id, False), (studio.host_id, False)]
+    assert older.host_id not in {row["host_id"] for row in offline_only + rows}
+    assert [row["host_id"] for row in orch.computer_hosts.list_for_owner(OTHER)] == [foreign.host_id]
+    assert orch.computer_hosts.resolve(OWNER, "RyzenRoll Mobile") is fresh
+    assert orch.computer_hosts.forget(OWNER, old.host_id) is True
+
+
+async def test_offline_duplicates_of_one_computer_resolve_to_its_newest_registration():
+    orch = _FakeOrch()
+    _host_named(orch, "RyzenRoll Mobile", online=False, age_s=120)
+    newest = _host_named(orch, "RyzenRoll Mobile", online=False, age_s=60)
+    newest.offline_reason = WITHDRAWN
+    with pytest.raises(ComputerHostError) as refused:
+        orch.computer_hosts.resolve(OWNER, None)
+    assert "withdrew computer access" in refused.value.message
+    _host_named(orch, "Studio", online=False, age_s=60)
+    with pytest.raises(ComputerHostError) as generic:
+        orch.computer_hosts.resolve(OWNER, None)
+    assert "none of your computers is online" in generic.value.message
+
+
+async def test_two_online_computers_with_one_name_both_stay_listed():
+    orch = _FakeOrch()
+    first, second = _host_named(orch, "Mac"), _host_named(orch, "Mac")
+    stale = _host_named(orch, "Mac", online=False, age_s=30)
+    rows = orch.computer_hosts.list_for_owner(OWNER)
+    assert {row["host_id"] for row in rows} == {first.host_id, second.host_id}
+    assert stale.host_id not in {row["host_id"] for row in rows}
+
+
+async def test_list_computers_shows_only_the_newest_registration():
+    from agents.computer_use import mcp_tools
+
+    orch = _AgentOrch()
+    mcp_tools.register_deps(orch)
+    stale = _host_named(orch, "RyzenRoll Mobile", online=False, age_s=60)
+    fresh = _host_named(orch, "RyzenRoll Mobile")
+    listed = await asyncio.to_thread(mcp_tools.list_computers, user_id=OWNER)
+    assert [row["host_id"] for row in listed["_data"]["computers"]] == [fresh.host_id]
+    assert stale.host_id not in json.dumps(listed)
 
 
 async def test_request_response_correlation_and_socket_binding():
@@ -402,6 +532,7 @@ def _gate_orch(db):
     )
     fake = _FakeOrch()
     orch.computer_hosts = fake.computer_hosts
+    orch.computer_sessions = fake.computer_sessions
     return orch
 
 
@@ -421,13 +552,16 @@ def test_attended_input_verbs_pass_and_consequential_verbs_get_a_card():
     orch.ui_sessions[ws] = {"sub": OWNER}
     assert rc.evaluate(orch, ws, "computer-use-1", "click", {"x": 1, "y": 2}, "chat", OWNER) is None
     assert rc.evaluate(orch, ws, "computer-use-1", "screenshot", {}, "chat", OWNER) is None
-    out = rc.evaluate(orch, ws, "computer-use-1", "delete_path", {"path": "C:/tmp/x", "computer": "RYZENROLL"}, "chat", OWNER)
+    unknown = rc.evaluate(orch, ws, "computer-use-1", "delete_path", {"path": "C:/tmp/x", "computer": "RYZENROLL"},
+                          "chat", OWNER)
+    assert unknown[0].startswith("computer_unavailable") and not db.rows
+    orch.computer_hosts.register(OWNER, _WS(), ComputerHostDescriptor.from_dict(_descriptor(name="RYZENROLL")))
+    out = rc.evaluate(orch, ws, "computer-use-1", "delete_path", {"path": "C:/tmp/x", "computer": "ryzenroll"}, "chat", OWNER)
     assert out is not None and out[0].startswith("confirmation_required")
-    orch.computer_hosts.register(OWNER, _WS(), ComputerHostDescriptor.from_dict(_descriptor(name="RYZEN")))
     out_nohost = rc.evaluate(orch, ws, "computer-use-1", "write_file", {"path": "C:/x.txt", "content": "y"}, "chat", OWNER)
     assert out_nohost is not None
-    assert all(r["machine_id"] for r in db.rows.values())
-    assert any(len(r["machine_id"]) == 36 for r in db.rows.values())
+    assert all(len(r["machine_id"]) == 36 for r in db.rows.values())
+    assert "ryzenroll" not in json.dumps(out[1]) and "Delete on RYZENROLL" in json.dumps(out[1])
     card = out[1][0]
     assert card["type"] == "card" and "Confirm an action on" in card["title"]
     assert card["id"].startswith("au_approval_") and rc.policy_for("computer-use-1").card_as_result is True
@@ -775,21 +909,32 @@ async def test_agent_verbs_against_a_fake_host(monkeypatch):
 
     await orch.computer_sessions.on_host_event(OWNER, host.host_id, "paused", session.session_id, "local_input")
     paused = await asyncio.to_thread(mcp_tools.screenshot, **ctx)
-    assert paused["_data"]["code"] == "paused"
+    assert paused["_data"]["code"] == "local_resume_required"
     before = len(host_ws.frames("computer_request"))
     waited = await asyncio.to_thread(mcp_tools.wait, seconds=0.1, **ctx)
-    assert waited["_data"]["state"] == "paused" and waited["_data"]["pause_reason"] == "local_input"
+    assert waited["_data"]["code"] == "local_resume_required" and "press Resume" in waited["_data"]["next_action"]
     assert len(host_ws.frames("computer_request")) == before
+    refused = await asyncio.to_thread(mcp_tools.resume_session, **ctx)
+    assert refused["_data"]["code"] == "local_resume_required" and session.state == "paused"
+    await orch.computer_sessions.on_host_event(OWNER, host.host_id, "resumed", session.session_id, None)
+    await orch.computer_sessions.pause(session, "user_pause")
     monkeypatch.setattr(mcp_tools, "RESUME_SETTLE_SECONDS", 0.05)
     orig_resume = orch.computer_sessions.resume
 
-    async def _resume_then_repause(sess):
+    async def _resume_then_repause(sess, reason):
         await orig_resume(sess)
-        await orch.computer_sessions.on_host_event(OWNER, host.host_id, "paused", sess.session_id, "local_input")
-    monkeypatch.setattr(orch.computer_sessions, "resume", _resume_then_repause)
-    again = await asyncio.to_thread(mcp_tools.resume_session, **ctx)
-    assert again["_data"]["code"] == "paused" and "wait" in again["_data"]["next_action"]
-    monkeypatch.setattr(orch.computer_sessions, "resume", orig_resume)
+        if reason == "local_input":
+            await orch.computer_sessions.on_host_event(OWNER, host.host_id, "paused", sess.session_id, reason)
+        else:
+            await orch.computer_sessions.pause(sess, reason)
+    for reason, code, hint in (("approval_not_completed", "paused", "wait"),
+                               ("local_input", "local_resume_required", "press Resume")):
+        monkeypatch.setattr(orch.computer_sessions, "resume", lambda sess, r=reason: _resume_then_repause(sess, r))
+        again = await asyncio.to_thread(mcp_tools.resume_session, **ctx)
+        assert again["_data"]["code"] == code and hint in again["_data"]["next_action"]
+        monkeypatch.setattr(orch.computer_sessions, "resume", orig_resume)
+        await orch.computer_sessions.resume(session, local=True)
+        await orch.computer_sessions.pause(session, "user_pause")
     resumed = await asyncio.to_thread(mcp_tools.resume_session, **ctx)
     assert resumed["_data"]["state"] == "active"
     ended = await asyncio.to_thread(mcp_tools.end_session, **ctx)
@@ -806,6 +951,7 @@ async def test_mcp_server_carries_images_and_turns_refusals_into_errors():
     mcp_tools.register_deps(orch)
     server = MCPServer()
     names = {t["name"] for t in server.get_tool_list()}
+    assert names == set(mcp_tools.TOOL_REGISTRY)
     assert names == policy.ALL_VERBS
     res = await asyncio.to_thread(server.process_request, MCPRequest(
         request_id="r1", method="tools/call", params={"name": "screenshot", "arguments": {"user_id": OWNER}}))

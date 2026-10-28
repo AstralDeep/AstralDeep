@@ -179,7 +179,7 @@ def _damage(frame, change):
     elif change == 'unknown_event':
         frame['payload']['event'] = 'unknown'
     elif change == 'malformed_descriptor':
-        frame['payload']['host']['verbs'] = ['run_command']
+        frame['payload']['host']['verbs'] = ['run_shell']
     elif change == 'wrong_request':
         frame['payload']['request_id'] = 'creq_cccccccccccccccccccccccccccccccc'
 

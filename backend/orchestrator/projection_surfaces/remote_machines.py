@@ -1,11 +1,14 @@
 """Renders the remote-machines surface for registering SSH machines/clusters and probing
 them for an honest connection verdict. Owner-scoped throughout; credential handling
-delegates to orchestrator/credential_manager.py and remote_transport.py.
+delegates to orchestrator/credential_manager.py and remote_transport.py, and Delete and
+Remove credential run only after the single-use confirmation from hitl_confirmation.py.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict
+import json
+import re
+from typing import Any, Dict, List, Optional
 
 from webrender.chrome import esc, notice_block
 from orchestrator import remote_machines
@@ -30,6 +33,13 @@ _LABEL_TEXT_CLS = "text-astral-text font-medium"
 _BTN = "px-3 py-2 rounded-lg text-sm font-medium bg-white/5 text-astral-text border border-white/10 hover:bg-white/10"
 _BTN_PRIMARY = ("px-3 py-2 rounded-lg text-sm font-medium bg-astral-primary/20 "
                 "text-astral-primary border border-astral-primary/30 hover:bg-astral-primary/30")
+_BTN_DANGER = ("px-3 py-2 rounded-lg text-sm font-medium bg-red-500/10 text-red-400 "
+               "border border-red-500/30 hover:bg-red-500/20")
+_CONFIRMED = {
+    "chrome_machine_delete": ("Delete {label} and its credential?", "Delete"),
+    "chrome_machine_credential_delete": ("Remove the credential for {label}?", "Remove credential"),
+}
+_CONFIRMATION_ID = re.compile(r"[0-9a-f]{32}")
 _OS = ("linux", "windows", "macos")
 _ROLE = ("cluster", "plain")
 _CRED = ("ssh_key", "password")
@@ -76,8 +86,36 @@ def _cred_inputs_html() -> str:
         f'</div>')
 
 
-def _machines_html(orch, user_id: str) -> str:
+def _pending_confirmation(params: Any, rows: List[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+    confirm = params.get("confirm") if isinstance(params, dict) else None
+    if not isinstance(confirm, dict) or confirm.get("action") not in _CONFIRMED:
+        return None
+    confirmation_id = confirm.get("confirmation_id")
+    row = next((r for r in rows if r["machine_id"] == confirm.get("machine_id")), None)
+    if row is None or not isinstance(confirmation_id, str) or not _CONFIRMATION_ID.fullmatch(confirmation_id):
+        return None
+    title, label = _CONFIRMED[confirm["action"]]
+    return {"action": confirm["action"], "machine_id": row["machine_id"], "confirmation_id": confirmation_id,
+            "title": title.format(label=row["label"]), "label": label}
+
+
+def _confirmation_html(pending: Optional[Dict[str, str]]) -> str:
+    if pending is None:
+        return ""
+    payload = json.dumps({"machine_id": pending["machine_id"], "confirmation_id": pending["confirmation_id"]})
+    return ('<div class="bg-red-500/5 border border-red-500/30 rounded-lg p-4 space-y-3">'
+            f'<div class="text-astral-text font-medium">{esc(pending["title"])}</div>'
+            '<div class="flex justify-end gap-2">'
+            f'<button type="button" class="{_BTN}" data-ui-action="chrome_open" '
+            'data-ui-payload=\'{"surface":"remote_machines"}\'>Cancel</button>'
+            f'<button type="button" class="{_BTN_DANGER}" data-ui-action="{esc(pending["action"])}" '
+            f'data-ui-payload="{esc(payload)}">{esc(pending["label"])}</button>'
+            '</div></div>')
+
+
+def _machines_html(orch, user_id: str, params: Any = None) -> str:
     rows = remote_machines.list_machines(plane_source_from_orchestrator(orch), user_id)
+    confirmation = _confirmation_html(_pending_confirmation(params, rows))
     if not rows:
         return ('<p class="text-sm text-astral-muted">No machines yet. Add one below — the '
                 'inventory starts empty and nothing is pre-filled.</p>')
@@ -95,7 +133,7 @@ def _machines_html(orch, user_id: str) -> str:
             'Credential…</summary>'
             f'<div data-ui-form class="space-y-3 pt-2">{_cred_inputs_html()}'
             f'<div class="flex justify-end gap-2">'
-            f'<button type="button" class="{_BTN}" data-ui-action="chrome_machine_credential_delete" '
+            f'<button type="button" class="{_BTN_DANGER}" data-ui-action="chrome_machine_credential_delete" '
             f"data-ui-payload='{{\"machine_id\":\"{mid}\"}}'>Remove credential</button>"
             f'<button type="button" class="{_BTN_PRIMARY}" data-ui-action="chrome_machine_credential_set" '
             f"data-ui-payload='{{\"machine_id\":\"{mid}\"}}' data-ui-collect=\"true\">"
@@ -111,19 +149,19 @@ def _machines_html(orch, user_id: str) -> str:
             f'{retrust}'
             f'<button type="button" class="{_BTN}" data-ui-action="chrome_machine_probe" '
             f"data-ui-payload='{{\"machine_id\":\"{mid}\"}}'>Probe</button>"
-            f'<button type="button" class="{_BTN}" data-ui-action="chrome_machine_delete" '
+            f'<button type="button" class="{_BTN_DANGER}" data-ui-action="chrome_machine_delete" '
             f"data-ui-payload='{{\"machine_id\":\"{mid}\"}}'>Delete</button>"
             '</div></div>'
             f'{cred_form}'
             '</div>')
-    return '<div class="space-y-2">' + "".join(cards) + '</div>'
+    return confirmation + '<div class="space-y-2">' + "".join(cards) + '</div>'
 
 
 async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
     if not _enabled():
         return f'<p class="text-sm text-astral-muted">{esc(_DISABLED_MSG)}</p>'
     params = params if isinstance(params, dict) else {}
-    machines = _machines_html(orch, user_id)
+    machines = _machines_html(orch, user_id, params)
     form = (
         '<div data-ui-form class="space-y-3 bg-white/5 border border-white/10 rounded-lg p-4">'
         f'<div class="text-astral-text font-medium">Add a machine</div>'
@@ -154,17 +192,15 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
     def _cred_fields_sdui():
         return [
             _sdui.field("cred_type", "Credential type", "select", default="ssh_key",
-                        options=list(_CRED),
-                        help="Pick ssh_key to paste a private key below, or password."),
+                        options=list(_CRED)),
             _sdui.field("private_key", "Private key (paste the full PEM)",
-                        "textarea", help="Used only when the credential type is ssh_key.",
+                        "textarea",
                         visible_when={"field": "cred_type", "equals": "ssh_key",
                                       "default": "ssh_key"}),
             _sdui.field("passphrase", "Key passphrase (optional)", "password",
                         visible_when={"field": "cred_type", "equals": "ssh_key",
                                       "default": "ssh_key"}),
             _sdui.field("password", "Password", "password",
-                        help="Used only when the credential type is password.",
                         visible_when={"field": "cred_type", "equals": "password",
                                       "default": "ssh_key"}),
         ]
@@ -176,12 +212,16 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
         plane_source_from_orchestrator(orch),
         user_id,
     )
-    out = [_sdui.text("Register your own machines and clusters. On save the product makes a "
-                      "real connection and reports what happened. Your machines are private "
-                      "to you.", "caption")]
-    if not rows:
-        out.append(_sdui.text("No machines yet — add one below.", "caption"))
-    else:
+    out = []
+    pending = _pending_confirmation(params, rows)
+    if pending is not None:
+        out.append(_sdui.card(pending["title"], [_sdui.container([
+            _sdui.button("Cancel", "chrome_open", payload={"surface": SURFACE_KEY}),
+            _sdui.button(pending["label"], pending["action"], variant="danger",
+                         payload={"machine_id": pending["machine_id"],
+                                  "confirmation_id": pending["confirmation_id"]}),
+        ], direction="row")]))
+    if rows:
         for r in rows:
             mid = r["machine_id"]
             facts = _sdui.key_value([
@@ -195,9 +235,9 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
                 buttons.append(_sdui.button("Re-trust", "chrome_machine_retrust",
                                             payload={"machine_id": mid}))
             buttons.append(_sdui.button("Remove credential", "chrome_machine_credential_delete",
-                                        payload={"machine_id": mid}, variant="secondary"))
+                                        payload={"machine_id": mid}, variant="danger"))
             buttons.append(_sdui.button("Delete", "chrome_machine_delete",
-                                        payload={"machine_id": mid}, variant="secondary"))
+                                        payload={"machine_id": mid}, variant="danger"))
             cred_form = _sdui.form(_cred_fields_sdui(),
                                    submit_action="chrome_machine_credential_set",
                                    submit_label="Replace & probe",
@@ -208,8 +248,8 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
                                                cred_form]))
 
     fields = [
-        _sdui.field("label", "Label", "text", help="A short name, e.g. my-dgx."),
-        _sdui.field("address", "Address", "text", help="Hostname or IP, e.g. dgx.ai.uky.edu."),
+        _sdui.field("label", "Label", "text"),
+        _sdui.field("address", "Address", "text"),
         _sdui.field("port", "Port", "number", default="22"),
         _sdui.field("username", "Username", "text"),
         _sdui.field("os_family", "Operating system", "select", default="linux", options=list(_OS)),
@@ -233,6 +273,22 @@ def _credential_from_fields(f: Dict[str, str]):
     if not secret:
         return "Enter a password for a password credential."
     return (cred_type, secret, None)
+
+
+async def _confirmation_refusal(orch, websocket, user_id: str, action: str, machine_id: str, payload: Any):
+    from orchestrator.hitl_confirmation import consume_surface_confirmation, request_surface_confirmation
+
+    target = {"machine_id": machine_id}
+    supplied = payload.get("confirmation_id") if isinstance(payload, dict) else None
+    if supplied is None:
+        issued = await request_surface_confirmation(orch, websocket, user_id, action, target)
+        if issued is None:
+            return (SURFACE_KEY, {}, notice_block("error", "Confirmation is unavailable on this connection."))
+        return (SURFACE_KEY, {"confirm": {"action": action, "machine_id": machine_id, "confirmation_id": issued}},
+                notice_block("info", "confirmation_required: confirm below to continue."))
+    if not await consume_surface_confirmation(orch, websocket, user_id, action, target, supplied):
+        return (SURFACE_KEY, {}, notice_block("error", "This confirmation expired or was already used."))
+    return None
 
 
 def _probe_notice(orch, user_id: str, machine_id: str, label: str) -> str:
@@ -327,7 +383,12 @@ async def _h_machine_delete(orch, websocket, user_id, roles, payload):
         return (SURFACE_KEY, {}, notice_block("error", "No machine specified."))
     source = plane_source_from_orchestrator(orch)
     row = remote_machines.get_machine(source, user_id, machine_id)
-    label = row["label"] if row else machine_id
+    if row is None:
+        return (SURFACE_KEY, {}, notice_block("error", "That machine is not in your inventory."))
+    refusal = await _confirmation_refusal(orch, websocket, user_id, "chrome_machine_delete", machine_id, payload)
+    if refusal is not None:
+        return refusal
+    label = row["label"]
     ok = remote_machines.delete_machine(source, user_id, machine_id)
     if ok:
         try:
@@ -376,6 +437,10 @@ async def _h_credential_delete(orch, websocket, user_id, roles, payload):
     )
     if row is None:
         return (SURFACE_KEY, {}, notice_block("error", "That machine is not in your inventory."))
+    refusal = await _confirmation_refusal(orch, websocket, user_id, "chrome_machine_credential_delete",
+                                          machine_id, payload)
+    if refusal is not None:
+        return refusal
     try:
         orch.credential_manager.delete_machine_credential(machine_id, user_id)
     except Exception:

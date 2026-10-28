@@ -12,6 +12,7 @@ from astralplane import retire_restored_sessions
 from astralplane.database.migrations import CURRENT_DATA_PLANE_REVISION
 
 from orchestrator import offline_grant as grants_module
+from tests.helpers.database_waits import unbounded_request_execution_waits
 from tests.helpers.session_consent_088 import consent_from_store
 from tests.helpers.session_plane_runtime import (
     get_session_record,
@@ -44,8 +45,9 @@ def retire(runtime):
 
 @pytest.mark.parametrize("recreate", [False, True])
 def test_retired_restore_cannot_reuse_original_consent_or_encrypted_grant(
-    fixture, runtime, recreate
+    fixture, runtime, recreate, monkeypatch
 ):
+    unbounded_request_execution_waits(monkeypatch)
     sessions, grants, owner, sid = fixture
     selected = consent_from_store(sessions, owner, sid)
     grant_id = grants.capture(owner, selected)
@@ -79,7 +81,8 @@ def test_retired_restore_cannot_reuse_original_consent_or_encrypted_grant(
         )
 
 
-def test_each_restored_snapshot_requires_a_new_retirement(fixture, runtime):
+def test_each_restored_snapshot_requires_a_new_retirement(fixture, runtime, monkeypatch):
+    unbounded_request_execution_waits(monkeypatch)
     sessions, grants, owner, sid = fixture
     selected = consent_from_store(sessions, owner, sid)
     grant_id = grants.capture(owner, selected)

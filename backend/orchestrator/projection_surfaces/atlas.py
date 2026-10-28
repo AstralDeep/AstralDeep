@@ -271,7 +271,7 @@ def _body_html(text: str) -> str:
 def _body_components(text: str) -> list:
     paragraphs = _paragraphs(text)
     if not paragraphs:
-        return [_sdui.text("This page has no content yet.", "caption")]
+        return []
     return [_sdui.text(part, "body") for part in paragraphs]
 
 
@@ -669,8 +669,7 @@ async def _list_components(orch, user_id: str, nav: _Nav,
             )
         )
     if batch is None:
-        return [_sdui.alert(read_failure.message, "error"),
-                _sdui.text(f"Browsing Atlas pages in {_scope_label(nav.project)}.", "caption")]
+        return [_sdui.alert(read_failure.message, "error")]
     await _audit_view(
         orch, user_id, "atlas_pages_view", "Viewed Atlas page list",
         {"project": nav.project or GLOBAL_PROJECT, "count": len(batch.pages)},
@@ -678,12 +677,7 @@ async def _list_components(orch, user_id: str, nav: _Nav,
     out: list = []
     if failure:
         out.append(_sdui.alert(failure.message, "error"))
-    out.append(_sdui.text(
-        f"Browsing Atlas pages in {_scope_label(nav.project)}. Pages are created and "
-        "edited through the Atlas API and agent promotions.", "caption"))
-    if not batch.pages:
-        out.append(_sdui.alert("No Atlas pages here yet.", "info"))
-        return out
+    out.append(_sdui.text(f"Scope: {_scope_label(nav.project)}", "caption"))
     for page in batch.pages:
         out.append(_sdui.card(page.title, [
             _sdui.key_value([
@@ -728,9 +722,7 @@ async def _page_components(orch, user_id: str, nav: _Nav) -> list:
     links = links or ()
     out: list = []
     if nav.revision is not None:
-        out.append(_sdui.alert(
-            f"You are reading historical revision {nav.revision}. Open the current "
-            "version for the live content.", "info"))
+        out.append(_sdui.alert(f"You are reading historical revision {nav.revision}.", "info"))
         out.append(_sdui_open("Open current version",
                               {"view": "page", "project": _project_param(nav.project),
                                "page_ref": page.page_id}, variant="primary"))
@@ -756,8 +748,6 @@ async def _page_components(orch, user_id: str, nav: _Nav) -> list:
                                            "project": _project_param(nav.project),
                                            "page_ref": page.page_id, "source": source}),
             ]))
-    else:
-        out.append(_sdui.text("This page records no sources.", "caption"))
     out.append(_sdui.text("Linked pages (links and backlinks)", "h3"))
     if links:
         for link in links:
@@ -765,8 +755,6 @@ async def _page_components(orch, user_id: str, nav: _Nav) -> list:
                 _sdui_open("Open", {"view": "page", "project": _project_param(nav.project),
                                     "page_ref": link.page_id}),
             ]))
-    else:
-        out.append(_sdui.text("No linked pages yet.", "caption"))
     out.append(_sdui.container([
         _sdui_open("All pages", {"view": "list", "project": _project_param(nav.project)}),
         _sdui_open("Revision history", {"view": "history",

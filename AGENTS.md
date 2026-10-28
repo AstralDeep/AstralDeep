@@ -68,6 +68,7 @@ The pinned `components/AstralPrimitives` repository owns primitive definitions a
 
 ## UI and astralprims contract
 
+- Evaluate UX, developer experience, and agent experience together. Prefer clear layout and direct actions over taglines, helper prose, and secondary labels; preserve essential state, errors, permission and approval details, accessible names, and stable automation identifiers.
 - Construct primitive payloads with `.to_dict()` or `create_ui_response()`. Primitive `.to_json()` returns a JSON string and is not the component-dict contract. Any validator/help text recommending `.to_json()` is stale behavior, not authority.
 - Use `css`, not `style`. Escape and sanitize web output through the existing renderer helpers; never pass model/user text as raw HTML.
 - `Primitive.attributes` flattens last and can overwrite declared fields, including `type`; use it only with trusted, deliberate keys.
@@ -162,7 +163,7 @@ docker exec astraldeep bash -c "cd /app/backend && python -m pytest -q"
 
 Important: `backend/pytest.ini` discovers `tests` and `persistent_agents/tests`. The command above is not every nested module suite. For merge-level confidence, mirror the explicit invocations in `.github/workflows/ci.yml`, including the module suites and relevant feature-flag posture, and run any touched package's local tests explicitly.
 
-CI runs the backend suites as three whole-suite groups — `tests`, `persistent_agents`, and `modules` — each within the Constitution XI 30-minute budget. `scripts/run_backend_web_tests.py --group all` (the default) still runs every suite in one pass for local use. Protected qualification runs `scripts/produce_backend_web_qualification.py --phase gate --group <group>` as one 30-minute job per group, then `--phase services` and `--phase assemble`; `--phase all` keeps the one-pass local run.
+CI runs the backend suites as four groups — `tests_1` and `tests_2` (the two file shards of `backend/tests`, each on four pytest-xdist workers with their own databases), `persistent_agents`, and `modules` — each test job capped at 20 minutes. `scripts/run_backend_web_tests.py --group all` (the default) still runs every suite in one pass for local use. Protected qualification runs `scripts/produce_backend_web_qualification.py --phase gate --group <group>` as one 30-minute job per group, then `--phase services` and `--phase assemble`; `--phase all` keeps the one-pass local run.
 
 Client gates:
 

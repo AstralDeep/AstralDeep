@@ -203,7 +203,7 @@ async def test_proposal_replay_is_stable_and_a_different_request_conflicts(saved
 
 @pytest.mark.parametrize("field,value,status,error", [
     ("publication_id", "not-a-uuid-but-thirty-six-chars-long", 422, "work_control_invalid"),
-    ("expected_workspace_publication_id", str(uuid4()), 422, "work_control_invalid"),
+    ("expected_workspace_publication_id", "3b241101-e2bb-4255-8caf-4136c566a962", 422, "work_control_invalid"),
     ("conversation_id", " padded ", 422, "work_control_invalid"),
     ("expected_workspace_revision", 1, 422, "work_control_invalid"),
     ("expected_revision", 999, 409, "assignment_revision_conflict"),

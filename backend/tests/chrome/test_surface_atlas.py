@@ -457,6 +457,20 @@ def test_sdui_components_mirror_the_html_views(fake_service):
     assert any(payload["surface"] == "guidance" for payload in note_opens)
 
 
+def test_sdui_drops_explanatory_captions_and_keeps_state(fake_service):
+    page = _page(slug="kickoff", sources=[])
+    fake_service.pages = [page]
+    listing = json.dumps(components(make_orch(), {"view": "list"}))
+    assert "Scope: the global project" in listing
+    assert "Browsing Atlas pages" not in listing and "Pages are created and" not in listing
+    detail = json.dumps(components(make_orch(), {"view": "page", "page_ref": "kickoff"}))
+    assert "records no sources" not in detail and "No linked pages yet" not in detail
+    old = json.dumps(components(make_orch(), {"view": "page", "page_ref": "kickoff",
+                                              "revision": page.revision}))
+    assert "historical revision" in old
+    assert "Open the current version for the live content" not in old
+
+
 def test_sdui_components_escape_hostile_page_content(fake_service):
     from webrender.renderer import render_one
 
@@ -503,7 +517,7 @@ def test_empty_body_renders_placeholder(fake_service):
     html = render(make_orch(), {"view": "page", "page_ref": fake_service.pages[0].slug})
     assert "no content yet" in html
     comps = components(make_orch(), {"view": "page", "page_ref": fake_service.pages[0].slug})
-    assert any("no content yet" in json.dumps(node) for node in comps)
+    assert not any("no content yet" in json.dumps(node) for node in comps)
 
 
 def test_validation_and_conflict_failures_map_to_notices(fake_service):
@@ -540,8 +554,7 @@ def test_sdui_covers_error_paths_and_pagination(fake_service):
     fake_service.pages = []
     fake_service.batch_cursor = None
     empty = components(make_orch(), {"view": "list"})
-    assert any(node.get("type") == "alert" and "No Atlas pages" in node.get("message", "")
-               for node in empty)
+    assert not any("No Atlas pages" in json.dumps(node) for node in empty)
 
     fake_service.page_error = AtlasNotFound()
     missing = components(make_orch(), {"view": "page", "page_ref": "ghost"})

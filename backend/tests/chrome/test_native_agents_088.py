@@ -123,6 +123,7 @@ async def test_permission_masters_and_tool_defaults_match_web_effective_resoluti
     fields = _fields(components)
     assert fields["__scope::tools:read"]["default"] is True
     assert fields["get_data::tools:read"]["default"] is True
+    assert fields["get_data::tools:read"]["help"] == "Fetch records"
     assert fields["__scope::tools:write"]["default"] is False
     assert fields["write_data::tools:write"]["visible_when"] == {
         "field": "__scope::tools:write", "equals": True, "default": False,
@@ -160,7 +161,7 @@ async def test_destructive_and_nonconfigurable_tools_remain_readable_before_gran
     assert all(field["default"] is False for field in _fields(components).values())
     orch.tool_permissions.scope_map = {"special": "custom:scope"}
     components = await surface.components(orch, "u1", [], {"agent_id": "alpha"})
-    assert "special" in json.dumps(components) and "An input-dependent operation" in json.dumps(components)
+    assert "special" in json.dumps(components)
 
 
 async def test_credentials_project_declared_and_stored_metadata_without_reading_values(monkeypatch):

@@ -48,9 +48,10 @@ async def test_empty_owner_sees_no_receipts_before_any_save(saved, monkeypatch):
     monkeypatch.setitem(flags._flags, "persistent_agents", True)
     orch = saved.op.executor.orch
     listing = await saved_results.render(orch, saved.op.owner, [], {"mode": "list"})
-    assert "No saved results yet" in listing
+    assert "Reviewed result destination" not in listing and "denied" not in listing.lower()
     native = await saved_results.components(orch, saved.op.owner, [], {"mode": "list"})
-    assert "No saved results yet" in json.dumps(native)
+    assert "Reviewed result destination" not in json.dumps(native)
+    assert not [node for node in native if node.get("type") == "card"]
 
 
 async def test_disabled_feature_denies_the_surface_before_any_save(saved, monkeypatch):
@@ -90,8 +91,7 @@ async def test_foreign_owner_sees_no_receipts(saved, monkeypatch):
     await _committed(saved, monkeypatch)
     orch = saved.op.executor.orch
     listing = await saved_results.render(orch, "someone-else", [], {"mode": "list"})
-    assert "No saved results yet" in listing
-    assert "Reviewed result destination" not in listing
+    assert "Reviewed result destination" not in listing and "denied" not in listing.lower()
 
 
 async def test_unknown_publication_id_is_a_safe_empty_detail(saved, monkeypatch):

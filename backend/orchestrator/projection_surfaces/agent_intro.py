@@ -12,7 +12,6 @@ from webrender.chrome import esc
 logger = logging.getLogger("Orchestrator.Surfaces.AgentIntro")
 
 TITLE = "Agent"
-SUBTITLE = "What it does, and what to ask it"
 
 
 async def title(orch, user_id, params) -> str:
@@ -171,8 +170,6 @@ async def components(orch, user_id, roles, params, *, console_contract=""):
                     "success" if enabled else "default"),
         _sdui.text(card.description, "body"),
     ]
-    if console_contract == "console/v2":
-        out.insert(0, {**_sdui.text(SUBTITLE, "caption"), "console_role": "surface_subtitle"})
     examples = _examples(card)
     if examples:
         out.append(_sdui.text("Try one of these", "h3"))

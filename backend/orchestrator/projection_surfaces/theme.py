@@ -19,24 +19,99 @@ logger = logging.getLogger("Orchestrator.Chrome")
 TITLE = "Theme"
 
 PRESETS = {
-    "midnight": {"bg": "#0F1221", "surface": "#1A1E2E", "primary": "#6366F1",
-                 "secondary": "#8B5CF6", "text": "#F3F4F6", "muted": "#9CA3AF",
-                 "accent": "#06B6D4"},
-    "daylight": {"bg": "#F8FAFC", "surface": "#FFFFFF", "primary": "#4F46E5",
-                 "secondary": "#7C3AED", "text": "#1E293B", "muted": "#64748B",
-                 "accent": "#0891B2"},
-    "ocean": {"bg": "#0C1222", "surface": "#132038", "primary": "#0EA5E9",
-              "secondary": "#06B6D4", "text": "#E2E8F0", "muted": "#94A3B8",
-              "accent": "#2DD4BF"},
-    "sunset": {"bg": "#1C1017", "surface": "#2D1B24", "primary": "#F97316",
-               "secondary": "#EF4444", "text": "#FEF2F2", "muted": "#A8A29E",
-               "accent": "#FBBF24"},
-    "forest": {"bg": "#0F1A14", "surface": "#1A2E22", "primary": "#22C55E",
-               "secondary": "#10B981", "text": "#ECFDF5", "muted": "#86EFAC",
-               "accent": "#A3E635"},
+    "graphite": {
+        "bg": "#121214",
+        "surface": "#1B1B1F",
+        "primary": "#7C3AED",
+        "secondary": "#6E6E78",
+        "text": "#ECECEF",
+        "muted": "#93939B",
+        "accent": "#A78BFA",
+        "success": "#5EC28F",
+        "warning": "#D4A94A",
+        "error": "#E17272",
+        "info": "#9A8CF2",
+        "on_error": "#121214",
+        "field_border": "#6E6E75",
+    },
+    "midnight": {
+        "bg": "#0F1221",
+        "surface": "#1A1E2E",
+        "primary": "#6366F1",
+        "secondary": "#8B5CF6",
+        "text": "#F3F4F6",
+        "muted": "#9CA3AF",
+        "accent": "#06B6D4",
+        "success": "#5EC28F",
+        "warning": "#D4A94A",
+        "error": "#E27777",
+        "info": "#9A8CF2",
+        "on_error": "#0F1221",
+        "field_border": "#686F7E",
+    },
+    "daylight": {
+        "bg": "#F8FAFC",
+        "surface": "#FFFFFF",
+        "primary": "#4F46E5",
+        "secondary": "#7C3AED",
+        "text": "#1E293B",
+        "muted": "#58667B",
+        "accent": "#067590",
+        "success": "#147739",
+        "warning": "#955B06",
+        "error": "#B91C1C",
+        "info": "#4338CA",
+        "on_error": "#FFFFFF",
+        "field_border": "#7F8A9B",
+    },
+    "ocean": {
+        "bg": "#0C1222",
+        "surface": "#132038",
+        "primary": "#0EA5E9",
+        "secondary": "#06B6D4",
+        "text": "#E2E8F0",
+        "muted": "#94A3B8",
+        "accent": "#2DD4BF",
+        "success": "#5EC28F",
+        "warning": "#D4A94A",
+        "error": "#E27777",
+        "info": "#9A8CF2",
+        "on_error": "#0C1222",
+        "field_border": "#66758A",
+    },
+    "sunset": {
+        "bg": "#1C1017",
+        "surface": "#2D1B24",
+        "primary": "#F97316",
+        "secondary": "#EF4444",
+        "text": "#FEF2F2",
+        "muted": "#A8A29E",
+        "accent": "#FBBF24",
+        "success": "#5EC28F",
+        "warning": "#D4A94A",
+        "error": "#E37B7B",
+        "info": "#9A8CF2",
+        "on_error": "#1C1017",
+        "field_border": "#7B7172",
+    },
+    "forest": {
+        "bg": "#0F1A14",
+        "surface": "#1A2E22",
+        "primary": "#22C55E",
+        "secondary": "#10B981",
+        "text": "#ECFDF5",
+        "muted": "#86EFAC",
+        "accent": "#A3E635",
+        "success": "#5EC28F",
+        "warning": "#D4A94A",
+        "error": "#E78C8C",
+        "info": "#A69AF4",
+        "on_error": "#0F1A14",
+        "field_border": "#508965",
+    },
 }
 
-_DEFAULT_PRESET = "midnight"
+_DEFAULT_PRESET = "graphite"
 
 _COLOR_KEYS = [
     ("bg", "Background"),
@@ -65,6 +140,10 @@ def _theme_context(orch):
         repository=source.plane_repositories.preferences.theme,
         plane_runtime=source.plane_runtime,
     )
+
+
+def default_theme_preferences() -> dict:
+    return {"theme": {"preset": _DEFAULT_PRESET, "colors": dict(PRESETS[_DEFAULT_PRESET])}}
 
 
 def _normalize_hex(value) -> str:
@@ -143,7 +222,7 @@ def _effective_colors(theme: dict) -> dict:
         return colors
     stored = theme.get("colors")
     if isinstance(stored, Mapping):
-        for key, _label in _COLOR_KEYS:
+        for key in tuple(colors):
             hexval = _normalize_hex(stored.get(key))
             if hexval:
                 colors[key] = hexval
@@ -202,11 +281,9 @@ async def render(orch, user_id, roles, params) -> str:
         f'<p class="text-xs text-astral-muted">{esc(_summary_text(theme))}</p>'
         f'<div class="space-y-2">'
         f'<h3 class="text-sm font-semibold text-astral-text">Presets</h3>'
-        f'<p class="text-xs text-astral-muted">Pick a preset to apply and save it.</p>'
         f'<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">{cards}</div></div>'
         f'<div class="space-y-2 border-t border-white/5 pt-4">'
         f'<h3 class="text-sm font-semibold text-astral-text">Fine-tune colors</h3>'
-        f'<p class="text-xs text-astral-muted">Color changes apply and save instantly.</p>'
         f'<div class="bg-white/5 border border-white/10 rounded-lg p-3">{pickers}</div></div>'
     )
 
@@ -226,7 +303,6 @@ async def components(orch, user_id, roles, params):
     out += [
         _sdui.text(_summary_text(theme), "caption"),
         _sdui.text("Presets", "h3"),
-        _sdui.text("Pick a preset to apply and save it.", "caption"),
     ]
     for name in PRESETS:
         is_active = name == active
@@ -244,7 +320,6 @@ async def components(orch, user_id, roles, params):
                 variant="secondary" if is_active else "primary")],
         ))
     out.append(_sdui.text("Fine-tune colors", "h3"))
-    out.append(_sdui.text("Color changes apply and save instantly.", "caption"))
     for key, label in _COLOR_KEYS:
         out.append({"type": "color_picker", "color_key": key,
                     "value": colors[key], "label": label})

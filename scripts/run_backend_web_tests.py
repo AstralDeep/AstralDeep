@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Runs every backend/module test suite, or one whole-suite group of them, in isolated
-processes against a caller-provisioned disposable PostgreSQL server and writes JUnit results
-and coverage reports; a CI test producer only, not a production-readiness decision.
-merge_backend_web_coverage.py reuses its plan and report writer for the groups.
+processes against a caller-provisioned disposable PostgreSQL server and writes JUnit results and
+coverage reports; backend/tests runs as two file shards, each on pytest-xdist workers with their
+own databases. A CI test producer only, not a production-readiness decision, whose plan and report
+writer merge_backend_web_coverage.py reuses for the groups.
 """
 
 from __future__ import annotations
@@ -20,9 +21,15 @@ from uuid import uuid4
 
 
 POLICY_ROOT = Path(__file__).resolve().parents[1]
-DEDICATED_GROUP_SUITES = {"tests": "backend-tests", "persistent_agents": "backend-persistent_agents-tests"}
+SHARDED_SUITES = {Path("tests"): ("backend-tests-1", "backend-tests-2")}
+SUITE_SHARDS = {name: f"{index}/{len(names)}" for names in SHARDED_SUITES.values()
+                for index, name in enumerate(names, 1)}
+DEDICATED_GROUP_SUITES = {"tests_1": "backend-tests-1", "tests_2": "backend-tests-2",
+                          "persistent_agents": "backend-persistent_agents-tests"}
 GROUPS = ("all", *DEDICATED_GROUP_SUITES, "modules")
 SUITE_TIMEOUT_SECONDS = 1800
+XDIST_WORKERS = dict.fromkeys(SUITE_SHARDS, 4)
+COVERAGE_OMIT = ("*/tests/*", "*/test_*", "*/voice_agent/*")
 
 
 def source_identity(root: Path) -> str:
@@ -43,8 +50,8 @@ def source_identity(root: Path) -> str:
 
 
 def suite_commands(root: Path) -> list[tuple[Path, str, str]]:
-    commands = [(root / "backend", str(suite), f"backend-{suite.as_posix().replace('/', '-')}")
-                for suite in suite_paths(root)]
+    commands = [(root / "backend", str(suite), name) for suite in suite_paths(root)
+                for name in SHARDED_SUITES.get(suite, (f"backend-{suite.as_posix().replace('/', '-')}",))]
     commands.append((root / "backend", "tests/perf/voice_concurrent_turns.py", "perf-voice_concurrent_turns.py"))
     commands.append((root, "scripts/tests", "tooling"))
     return commands
@@ -181,6 +188,22 @@ def isolated_suite_database(environ: dict[str, str]):
             connection.close()
 
 
+def suite_command(root: Path, output: Path, suite: str, name: str, junit: Path) -> list[str]:
+    options = [suite, "-q", "-ra", "--tb=short", "-p", "no:cacheprovider",
+               "-p", "backend_web_test_reporter", "-o", "faulthandler_timeout=120", f"--junitxml={junit}"]
+    workers = XDIST_WORKERS.get(name)
+    if workers is None:
+        return [sys.executable, "-m", "coverage", "run", "--append", "--branch",
+                f"--source={root / 'backend'},{root / 'scripts'}", f"--omit={','.join(COVERAGE_OMIT)}",
+                "-m", "pytest", *options]
+    config = output / "xdist-coverage.rc"
+    config.write_text("[run]\nomit =\n" + "".join(f"    {pattern}\n" for pattern in COVERAGE_OMIT),
+                      encoding="utf-8")
+    return [sys.executable, "-m", "pytest", *options, "-n", str(workers), "--dist", "loadfile",
+            f"--cov={root / 'backend'}", f"--cov={root / 'scripts'}", "--cov-branch", "--cov-append",
+            f"--cov-config={config}", "--cov-report="]
+
+
 def write_coverage_reports(root: Path, output: Path, environ: dict[str, str]) -> bool:
     written = True
     for domain, source in (("backend", "backend"), ("tooling", "scripts")):
@@ -226,21 +249,16 @@ def run(root: Path, output: Path, *, timeout: int = SUITE_TIMEOUT_SECONDS, group
         junit.unlink(missing_ok=True)
         inventory = output / f"{name}.inventory.json"
         inventory.unlink(missing_ok=True)
-        command = [
-            sys.executable, "-m", "coverage", "run", "--append", "--branch",
-            f"--source={root / 'backend'},{root / 'scripts'}",
-            "--omit=*/tests/*,*/test_*,*/voice_agent/*",
-            "-m", "pytest", suite, "-q", "-ra", "--tb=short", "-p", "no:cacheprovider",
-            "-p", "backend_web_test_reporter",
-            "-o", "faulthandler_timeout=120",
-            f"--junitxml={junit}",
-        ]
+        command = suite_command(root, output, suite, name, junit)
         print(f"Running {name}", flush=True)
         with isolated_suite_database(environ) as suite_environment, (
             output / f"{name}.log"
         ).open("w", encoding="utf-8") as log:
             suite_environment.update({"BQ_SUITE_INVENTORY_PATH": str(inventory),
                                       "BQ_SUITE_NAME": name, "BQ_SOURCE_COMMIT": source_commit})
+            suite_environment.pop("BQ_SUITE_SHARD", None)
+            if name in SUITE_SHARDS:
+                suite_environment["BQ_SUITE_SHARD"] = SUITE_SHARDS[name]
             try:
                 process = subprocess.run(command, cwd=cwd, env=suite_environment, stdout=log,
                                          stderr=subprocess.STDOUT, timeout=timeout, check=False)

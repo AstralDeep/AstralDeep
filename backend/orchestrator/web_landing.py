@@ -30,12 +30,12 @@ def scenarios() -> List[Dict[str, str]]:
     from orchestrator.welcome import WELCOME_EXAMPLES, _slug
 
     out: List[Dict[str, str]] = []
-    for title, caption, query in WELCOME_EXAMPLES:
+    for title, query in WELCOME_EXAMPLES:
         slug = _slug(title)
         out.append({
             "id": slug,
             "title": title,
-            "description": caption,
+            "description": "",
             "prompt": query,
             "category": SCENARIO_CATEGORIES.get(slug, "Utilities"),
         })

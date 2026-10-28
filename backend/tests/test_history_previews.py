@@ -155,5 +155,5 @@ def test_chat_listed_as_soon_as_first_message_lands(hm, user_id):
     assert entry is not None
     assert entry["preview"] == "hello"
     assert set(entry.keys()) == {
-        "id", "title", "agent_id", "updated_at", "preview", "has_saved_components",
+        "id", "title", "agent_id", "updated_at", "preview", "has_saved_components", "pinned", "archived",
     }

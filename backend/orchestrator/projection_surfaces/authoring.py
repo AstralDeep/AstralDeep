@@ -1334,8 +1334,7 @@ def _sdui_phase_fields(row: Dict[str, Any], phase: str, _sdui) -> List[Dict[str,
         plan = aa.plan_artifact(row)
         return [
             _sdui.field("tools", "Tools", "textarea",
-                        default=aa.format_tool_lines(plan.get("tools") or []),
-                        help="One per line: name | scope | what it does"),
+                        default=aa.format_tool_lines(plan.get("tools") or [])),
             _sdui.field("scopes", "Permissions requested", "text",
                         default=", ".join(plan.get("declared_scopes") or [])),
             _sdui.field("egress", "External addresses (optional)", "textarea",
@@ -1371,7 +1370,6 @@ async def components(orch, user_id: str, roles: Any, params: Any) -> List[Dict[s
         state_revision = int(row.get("state_revision") or 0)
         out: List[Dict[str, Any]] = [
             _sdui.text(f"{aa.PHASE_LABELS[phase]} — {row.get('agent_name') or ''}", "h3"),
-            _sdui.text(_PHASE_HELP[phase], "caption"),
         ]
         if phase == "analyze":
             record = aa.analyze_record(row)
@@ -1416,16 +1414,13 @@ async def components(orch, user_id: str, roles: Any, params: Any) -> List[Dict[s
                     {"label": "Save & continue", "action": advance, "variant": "primary",
                      "payload": _mutation_payload(draft_id, state_revision)},
                 ]))
-            else:
+            elif phase == "clarify" and row.get("clarify_answers") is not None:
                 out.append(_sdui.text(
-                    "The assistant found no open questions — continue." if
-                    (phase == "clarify" and row.get("clarify_answers") is not None)
-                    else "Nothing drafted yet — ask the assistant.", "caption"))
+                    "The assistant found no open questions — continue.", "caption"))
             out.append(_sdui.button(
                 "Find open questions" if phase == "clarify" else "Ask the assistant",
                 "chrome_author_draft", {"draft_id": draft_id}))
         out.append(_sdui.button("← My agents & skills", "chrome_author_list"))
-        out.append(_sdui.text(HOST_NOTE, "caption"))
         return out
 
     return await _home_components(orch, user_id, params, _sdui)
@@ -1495,15 +1490,11 @@ def _skill_form_components(skill: us.Skill | None, _sdui,
         _sdui.field("skill_command", "/command (optional)", "text",
                     default=skill.command if editing else None),
         _sdui.field("skill_applies", "Applies to", "text",
-                    default=("" if (shown is None or shown.always) else ", ".join(shown.applies_to)) or None,
-                    help="Leave empty for every chat, or list agent ids."),
+                    default=("" if (shown is None or shown.always) else ", ".join(shown.applies_to)) or None),
         _sdui.field("skill_instructions", "Instructions", "textarea",
                     default=shown.instructions if shown else None),
     ])
     out = [_sdui.text("Edit skill" if editing else "Add a skill", "h3"),
-           _sdui.text("Standing guidance in your own words — how you like things done, a "
-                      "checklist, a format. Followed in every chat (or only for the agents you "
-                      "name); a /command makes it a shortcut you can type.", "caption"),
            _sdui.form(fields, submit_action="chrome_user_skill_save",
                       submit_label="Save" if editing else "Add skill",
                       submit_payload=_skill_form_metadata(skill, prefill))]
@@ -1515,10 +1506,6 @@ def _skill_form_components(skill: us.Skill | None, _sdui,
 def _skill_import_components(_sdui) -> List[Dict[str, Any]]:
     return [
         _sdui.text("Import a SKILL.md file", "h3"),
-        _sdui.text("Paste the contents of one Agent Skills SKILL.md file and press Preview "
-                   "import. Only plain instructions are imported: scripts, references, tool "
-                   "grants and other metadata are refused and shown to you before anything "
-                   "is saved. Files are never fetched from the network.", "caption"),
         _sdui.form([
             _sdui.field("skill_instructions", "SKILL.md contents", "textarea"),
         ], submit_action="chrome_user_skill_save", submit_label="Preview import",
@@ -1537,9 +1524,6 @@ async def _home_components(orch, user_id: str, params: Dict[str, Any], _sdui) ->
         else:
             out.append(_sdui.alert(f"No desktop client connected. {HOST_HOWTO}", "warning"))
         out.append(_sdui.text("Create an agent", "h3"))
-        out.append(_sdui.text("Describe what you want it to do, in your own words. The assistant "
-                              "designs it, checks it against the agent rules, and builds it — "
-                              "you only get asked when something is unclear.", "caption"))
         out.append(_sdui.form(
             [_sdui.field("description", "What should it do for you?", "textarea"),
              _sdui.field("agent_name", "Name (optional)", "text")],
@@ -1547,8 +1531,6 @@ async def _home_components(orch, user_id: str, params: Dict[str, Any], _sdui) ->
         for run in ctx["runs"]:
             out.append(_run_components(run, ctx["host_label"], _sdui))
         out.append(_sdui.text("Your agents", "h3"))
-        if not ctx["agents"]:
-            out.append(_sdui.text("No agents yet — describe one above and press Create.", "caption"))
         for view in ctx["agents"]:
             content = [
                 _sdui.badge(view["live"], "success" if view["live"] == "running" else "default"),
@@ -1571,8 +1553,7 @@ async def _home_components(orch, user_id: str, params: Dict[str, Any], _sdui) ->
         out.append(_sdui.text("Advanced: build it step by step", "h3"))
         out.append(_sdui.form(
             [_sdui.field("agent_name", "Agent name", "text"),
-             _sdui.field("description", "What should it do for you?", "textarea",
-                         help="At least 10 characters.")],
+             _sdui.field("description", "What should it do for you?", "textarea")],
             submit_action="chrome_author_start", submit_label="Start step by step"))
         out.append(_sdui.button("Declarative agents (preview)", "chrome_open",
                                 {"surface": SURFACE_KEY, "params": {"declarative": {"mode": "list"}}}))
@@ -1580,9 +1561,6 @@ async def _home_components(orch, user_id: str, params: Dict[str, Any], _sdui) ->
         out.append(_sdui.alert(_DISABLED, "info"))
     if us.enabled():
         out.append(_sdui.text("Your skills", "h3"))
-        if not ctx["skills"]:
-            out.append(_sdui.text("No skills yet — add one below. They work in every client and "
-                                  "need no desktop.", "caption"))
         for skill in ctx["skills"]:
             out.append(_skill_components(skill, _sdui))
         edit_slug = str(params.get("skill_slug") or "")

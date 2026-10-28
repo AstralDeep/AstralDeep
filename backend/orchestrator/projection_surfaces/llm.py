@@ -26,7 +26,6 @@ from webrender.renderer import render_children
 logger = logging.getLogger("Orchestrator.Chrome.LLM")
 
 TITLE = "LLM settings"
-SUBTITLE = "Your provider, your keys, and what leaves this machine"
 ICON = "\u2699"
 SECTIONS = (("provider", "Provider"),)
 
@@ -505,17 +504,9 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
     form_fields = [
         provider_field,
         _sdui.field("base_url", "Endpoint (Base URL)", "text",
-                    default=endpoint_default,
-                    help="Auto-set for hosted providers; required for Custom "
-                         "(e.g. https://api.openai.com/v1)."),
+                    default=endpoint_default),
     ]
-    key_optional = preset is not None and not preset.key_required
-    if saved is not None and saved.has_key:
-        key_help = "A key is saved; leave blank at this endpoint. Enter it again if the endpoint changes."
-    elif key_optional:
-        key_help = "Optional for local runtimes."
-    else:
-        key_help = "Stored encrypted for your account."
+    key_help = "A key is saved." if saved is not None and saved.has_key else None
     form_fields.append(_sdui.field("api_key", "API key", "password", help=key_help))
     if models:
         listed = list(dict.fromkeys(str(m) for m in models if str(m).strip()))
@@ -524,8 +515,7 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
         form_fields.append(_sdui.field("model", "Model", "select",
                                        default=model, options=listed))
     else:
-        form_fields.append(_sdui.field("model", "Model", "text", default=model,
-                                       help="e.g. gpt-4o-mini"))
+        form_fields.append(_sdui.field("model", "Model", "text", default=model))
 
     typesafe_status = await _typesafe_status(orch, user_id)
     if not first_run:
@@ -535,7 +525,7 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
                 "typesafe_api_key",
                 "TypeSafe API key (optional)",
                 "password",
-                help=f"{_TYPESAFE_HELP} Status: {status_line}.",
+                help=f"Status: {status_line}",
             )
         )
 
@@ -552,26 +542,17 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
         )
     )
 
-    intro = ("AstralDeep runs on the AI provider YOU connect — nothing is "
-             "built in. Pick a provider, add your API key, choose a model, "
-             "and save to get started." if first_run else
-             "Your provider configuration is stored for your account (API key "
-             "encrypted at rest) and applies to all of your devices.")
     who = str(params.get("principal") or "").strip()
-    if first_run and who:
-        intro += (f" Signed in as {who}. This is saved to your account and "
-                  "applies to all your devices.")
     out = [
-        _sdui.text(intro, "caption"),
         _sdui.badge("configured" if saved is not None else "not configured",
                     "success" if saved is not None else "default"),
     ]
     if first_run:
-        out.insert(1, _safety_navigation())
+        out.insert(0, _safety_navigation())
+        if who:
+            out.append(_sdui.text(f"Signed in as {who}", "caption"))
     if saved is not None:
         out.append(_sdui.text(f"Saved endpoint: {saved.base_url}", "caption"))
-    if provider in ("ollama", "lmstudio") or first_run:
-        out.append(_sdui.text(_LOCAL_RUNTIME_NOTE, "caption"))
     out.append(_sdui.alert(_ds.NOTICE_BODY, "warning", _ds.NOTICE_TITLE))
     acknowledged_at = getattr(acknowledgment, "acknowledged_at", None)
     if getattr(acknowledgment, "acknowledged", False) and acknowledged_at is not None:
