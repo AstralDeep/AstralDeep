@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, FrozenSet, List, Tuple
 
 SCHEMA_VERSION = 1
@@ -191,8 +192,15 @@ class Fixture:
     def cases(self, partition: str) -> Tuple[PlannerCase, ...]:
         return self.partitions[partition]
 
+    @property
+    def holdout_input_digest(self) -> str:
+        return hashlib.sha256(_canonical(sorted(
+            render_case_block(case) for case in self.cases("holdout")
+        )).encode("utf-8")).hexdigest()
+
     def to_dict(self) -> dict:
         return {
+            "holdout_input_digest": self.holdout_input_digest,
             "schema_version": self.schema_version,
             "fixture_id": self.fixture_id,
             "partition_digests": dict(self.partition_digests),
@@ -219,6 +227,7 @@ def _validate(
         if name not in partitions or not partitions[name]:
             raise FixtureError(f"partition {name!r} is missing or empty")
     seen: Dict[str, str] = {}
+    seen_inputs: set = set()
     for name in partition_names:
         for case in partitions[name]:
             if not case.case_id or not case.request.strip():
@@ -231,6 +240,10 @@ def _validate(
                     f"and {name!r}; partitions must be disjoint"
                 )
             seen[case.case_id] = name
+            input_text = render_case_block(case)
+            if input_text in seen_inputs:
+                raise FixtureError("case inputs must be disjoint even when labels or identities differ")
+            seen_inputs.add(input_text)
             unknown = case.expected_tools - set(case.available_tools)
             if unknown:
                 raise FixtureError(
@@ -284,3 +297,40 @@ def render_case_block(case: PlannerCase) -> str:
 
 def case_ids(cases: List[PlannerCase]) -> List[str]:
     return [case.case_id for case in cases]
+
+
+def load_holdout(path: str | Path) -> Fixture:
+    with Path(path).open("rb") as stream:
+        raw = stream.read(65537)
+    if len(raw) > 65536:
+        raise FixtureError("holdout file exceeds 65536 bytes")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+        if (type(payload) is not dict or set(payload) != {"schema_version", "holdout"}
+                or type(payload["schema_version"]) is not int or payload["schema_version"] != SCHEMA_VERSION
+                or type(payload["holdout"]) is not list or not 2 <= len(payload["holdout"]) <= 32):
+            raise ValueError
+        cases = []
+        fields = set(PlannerCase.__dataclass_fields__)
+        for item in payload["holdout"]:
+            if type(item) is not dict or set(item) != fields:
+                raise ValueError
+            for name, maximum in (("case_id", 128), ("request", 4000)):
+                if type(item[name]) is not str or not 1 <= len(item[name]) <= maximum:
+                    raise ValueError
+            for name in ("min_subtasks", "max_subtasks"):
+                if type(item[name]) is not int or not 1 <= item[name] <= 32:
+                    raise ValueError
+            if any(type(item[name]) is not bool for name in ("simple", "expect_dependency")):
+                raise ValueError
+            values = dict(item)
+            for name in ("available_tools", "expected_tools", "forbidden_tools"):
+                tools = item[name]
+                if (type(tools) is not list or len(tools) > 32 or any(
+                        type(tool) is not str or not 1 <= len(tool) <= 128 for tool in tools)):
+                    raise ValueError
+                values[name] = tuple(tools) if name == "available_tools" else frozenset(tools)
+            cases.append(PlannerCase(**values))
+        return build_fixture(holdout=tuple(cases))
+    except (ValueError, TypeError, KeyError):
+        raise FixtureError("invalid explicit synthetic holdout fixture") from None

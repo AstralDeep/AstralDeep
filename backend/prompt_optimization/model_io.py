@@ -1,7 +1,5 @@
-"""Bounded model I/O for the workbench: a deterministic scripted provider double for
-offline CI, an optional live adapter that reaches real models only through an explicit
-runtime config file via the product client factory, and a reserve-then-reconcile call
-wrapper that records denials, failures, cancellation, and incomplete usage accounting.
+"""Runs deterministic scripted model doubles for the offline workbench.
+The bounded wrapper reserves each attempt and retains incomplete accounting; no live provider or credential adapter is exposed.
 """
 
 from __future__ import annotations
@@ -9,7 +7,6 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from prompt_optimization import budget as budget_module
@@ -98,6 +95,7 @@ class ProviderDouble:
         self.faults = dict(faults or {})
         self.usage_mode = usage_mode
         self._emitted = 0
+        self._transients: set = set()
 
     def complete(
         self,
@@ -109,8 +107,9 @@ class ProviderDouble:
     ) -> ModelCallResult:
         fault = self.faults.get(f"{kind}:{subject}") or self.faults.get(kind)
         if fault == "deny":
-            return ModelCallResult("denied", None, 1, None, True, "policy_denied")
-        if fault == "transient":
+            return ModelCallResult("denied", None, 1, 0, True, "policy_denied")
+        if fault == "transient" and (kind, subject) not in self._transients:
+            self._transients.add((kind, subject))
             if max_attempts < 2:
                 return ModelCallResult(
                     "failed", None, 1, None, False, "transient_timeout"
@@ -225,66 +224,6 @@ class ProviderDouble:
         return tail[:next_marker] if next_marker >= 0 else tail
 
 
-class LiveCompletion:
-    def __init__(self, config_path: str) -> None:
-        payload = json.loads(Path(config_path).read_text(encoding="utf-8"))
-        if not isinstance(payload, dict) or not payload.get("base_url") or not payload.get("model"):
-            raise ValueError("live config file must declare base_url and model")
-        self.base_url = str(payload["base_url"])
-        self.model = str(payload["model"])
-        self.api_key = str(payload.get("api_key") or "")
-        self._client: Any = None
-
-    def _build(self) -> Any:
-        if self._client is None:
-            from llm_config.client_factory import build_llm_client
-            from llm_config.types import CredentialSource
-
-            class _Config:
-                pass
-
-            config = _Config()
-            config.base_url = self.base_url
-            config.model = self.model
-            config.api_key = self.api_key
-            self._client, _source, _resolved = build_llm_client(
-                config, CredentialSource.USER
-            )
-        return self._client
-
-    def complete(
-        self,
-        kind: str,
-        subject: str,
-        messages: List[dict],
-        max_output_chars: int,
-        max_attempts: int,
-    ) -> ModelCallResult:
-        del kind, subject
-        client = self._build()
-        attempts = 0
-        last_error: Optional[str] = None
-        while attempts < max(1, max_attempts):
-            attempts += 1
-            try:
-                response = client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    temperature=0,
-                )
-            except Exception as error:
-                last_error = type(error).__name__[:128]
-                continue
-            text = (response.choices[0].message.content or "")[:max_output_chars]
-            total = getattr(getattr(response, "usage", None), "total_tokens", None)
-            usage_complete = type(total) is int and total >= 0
-            return ModelCallResult(
-                "succeeded", text, attempts, total if usage_complete else None,
-                usage_complete,
-            )
-        return ModelCallResult("failed", None, attempts, None, False, last_error)
-
-
 def bounded_complete(
     budget: budget_module.Budget,
     adapter: Any,
@@ -297,51 +236,44 @@ def bounded_complete(
     max_output_chars: int,
     max_attempts: int,
 ) -> Tuple[str, budget_module.CallRecord]:
-    if controls.cancelled():
-        reservation = budget.reserve(
-            kind, phase, subject, budget_module.estimate_tokens("cancelled")
-        )
+    if (type(max_output_chars) is not int or not 1 <= max_output_chars <= budget.limits.max_output_chars
+            or type(max_attempts) is not int or not 1 <= max_attempts <= budget.limits.max_retries_per_call + 1):
+        raise ValueError("call bounds exceed configured budget")
+    prompt = json.dumps(messages, ensure_ascii=False, separators=(",", ":"))
+    allowance = budget_module.estimate_tokens(prompt) + max_output_chars * 4
+    for attempt in range(max_attempts):
+        if controls.cancelled():
+            reservation = budget.reserve(kind, phase, subject, 1)
+            budget.reconcile(reservation, outcome="cancelled", attempts=0,
+                             actual_tokens=0, usage_complete=True)
+            raise RunCancelled(f"cancelled before {kind} call {subject!r}")
+        reservation = budget.reserve(kind, phase, subject, allowance)
+        try:
+            result = adapter.complete(kind, subject, messages, max_output_chars, 1)
+            if (result.outcome not in budget_module.OUTCOMES or type(result.attempts) is not int or result.attempts not in (0, 1)
+                    or result.outcome == "succeeded" and result.attempts != 1
+                    or result.text is not None and type(result.text) is not str):
+                raise ValueError("adapter violated single-attempt contract")
+        except BaseException as error:
+            budget.reconcile(reservation, outcome="failed", attempts=1,
+                             actual_tokens=None, usage_complete=False,
+                             error_class=type(error).__name__[:128])
+            if not isinstance(error, Exception):
+                raise
+            if attempt + 1 < max_attempts:
+                continue
+            raise ProviderFailed(f"provider failed {kind} call {subject!r}", budget.records[-1]) from None
         record = budget.reconcile(
-            reservation,
-            outcome="cancelled",
-            attempts=0,
-            actual_tokens=None,
-            usage_complete=True,
-            error_class=None,
-        )
-        raise RunCancelled(f"cancelled before {kind} call {subject!r}")
-    prompt_chars = sum(len(message.get("content") or "") for message in messages)
-    reservation = budget.reserve(
-        kind, phase, subject, prompt_chars // 2 + 64
-    )
-    result = adapter.complete(
-        kind, subject, messages, max_output_chars, max_attempts
-    )
-    if result.outcome == "succeeded":
-        record = budget.reconcile(
-            reservation,
-            outcome="succeeded",
-            attempts=result.attempts,
-            actual_tokens=result.total_tokens,
-            usage_complete=result.usage_complete,
-        )
-        return result.text or "", record
-    if result.outcome == "denied":
-        record = budget.reconcile(
-            reservation,
-            outcome="denied",
-            attempts=result.attempts,
-            actual_tokens=None,
-            usage_complete=True,
+            reservation, outcome=result.outcome, attempts=result.attempts,
+            actual_tokens=result.total_tokens, usage_complete=result.usage_complete,
             error_class=result.error_class,
         )
-        raise ProviderDenied(f"provider denied {kind} call {subject!r}", record)
-    record = budget.reconcile(
-        reservation,
-        outcome="failed",
-        attempts=result.attempts,
-        actual_tokens=result.total_tokens,
-        usage_complete=result.usage_complete and result.total_tokens is not None,
-        error_class=result.error_class,
-    )
-    raise ProviderFailed(f"provider failed {kind} call {subject!r}", record)
+        if result.outcome == "succeeded":
+            return (result.text or "")[:max_output_chars], record
+        if result.outcome == "denied":
+            raise ProviderDenied(f"provider denied {kind} call {subject!r}", record)
+        if result.outcome == "cancelled":
+            raise RunCancelled(f"cancelled during {kind} call {subject!r}")
+        if attempt + 1 == max_attempts:
+            raise ProviderFailed(f"provider failed {kind} call {subject!r}", record)
+    raise AssertionError("unreachable call bounds")

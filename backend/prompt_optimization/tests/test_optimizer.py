@@ -13,6 +13,7 @@ import pytest
 from prompt_optimization import budget as budget_module
 from prompt_optimization import model_io
 from prompt_optimization import optimizer as optimizer_module
+from prompt_optimization.tests.support import holdout_seals, reset_holdouts
 from prompt_optimization import proposals as proposals_module
 from prompt_optimization import task as task_module
 from prompt_optimization.fixture import PlannerCase, build_fixture
@@ -36,9 +37,9 @@ HEAD = "You are a task planner.\nReturn a JSON object.\n\nRules:\n"
 
 @pytest.fixture(autouse=True)
 def _fresh_holdout_ledger():
-    optimizer_module.reset_consumed_holdouts()
+    reset_holdouts()
     yield
-    optimizer_module.reset_consumed_holdouts()
+    reset_holdouts()
 
 
 def _limits(**overrides) -> budget_module.BudgetLimits:
@@ -74,6 +75,7 @@ def _scripted_run(**overrides):
         usage_mode=overrides.pop("usage_mode", "complete"),
     )
     run = optimizer_module.OptimizationRun(
+        holdout_seals=holdout_seals,
         fixture=fixture,
         task_prompt=_task_prompt(),
         adapter=adapter,
@@ -97,7 +99,7 @@ def test_deterministic_scripted_run_adopts_improved_candidate():
     result = first.execute()
 
     second, _, _ = _scripted_run()
-    optimizer_module.reset_consumed_holdouts()
+    reset_holdouts()
     again = second.execute()
 
     assert result.status == optimizer_module.STATUS_COMPLETED
@@ -214,6 +216,7 @@ def test_negative_result_retains_baseline_and_stays_qualified():
     controls = model_io.Controls(lambda: False)
     adapter = model_io.ProviderDouble(variants=())
     run = optimizer_module.OptimizationRun(
+        holdout_seals=holdout_seals,
         fixture=fixture,
         task_prompt=_task_prompt(),
         adapter=adapter,
@@ -363,16 +366,18 @@ def test_transient_failure_recovers_within_retry_bound():
     recovered = next(
         record for record in run.budget.records
         if record.subject == "t-simple-projects"
-        and record.phase == "search"
+        and record.phase == "search" and record.outcome == "succeeded"
     )
-    assert recovered.attempts == 2
+    assert recovered.attempts == 1
+    assert any(record.outcome == "failed" and not record.usage_complete
+               for record in run.budget.records)
     assert recovered.outcome == "succeeded"
 
 
 def test_unknown_usage_accounting_blocks_qualified_claim():
     run, _, _ = _scripted_run(usage_mode="incomplete")
     result = run.execute()
-    assert result.status == optimizer_module.STATUS_COMPLETED
+    assert result.status == optimizer_module.STATUS_BUDGET_EXHAUSTED
     assert result.qualified is False
     assert result.recommendation == optimizer_module.RECOMMEND_INCONCLUSIVE
     assert result.budget["usage_complete"] is False
@@ -421,3 +426,44 @@ def test_rendered_case_block_used_for_evaluation():
     prompt_text = run.task_prompt.render(run.task_prompt.rules)
     messages = model_io.evaluation_messages(prompt_text, build_fixture().cases("train")[0])
     assert render_case_block(build_fixture().cases("train")[0]) == messages[1]["content"]
+
+
+def test_partial_final_cancellation_keeps_seal_before_first_exposure():
+    run, adapter, state = _scripted_run()
+    complete = adapter.complete
+    holdout_ids = {case.case_id for case in run.fixture.cases("holdout")}
+
+    def interrupted(kind, subject, messages, max_output_chars, max_attempts):
+        result = complete(kind, subject, messages, max_output_chars, max_attempts)
+        if subject in holdout_ids:
+            state["cancelled"] = True
+        return result
+
+    adapter.complete = interrupted
+    result = run.execute()
+    assert result.status == optimizer_module.STATUS_CANCELLED
+    exposed = [record for record in run.budget.records if record.phase == "holdout"]
+    assert len(exposed) == 1
+    later, _, _ = _scripted_run()
+    with pytest.raises(optimizer_module.HoldoutReuseError):
+        later.execute()
+    assert later.budget.records == []
+
+
+def test_unexpected_final_failure_retains_failed_exposure_metadata():
+    run, adapter, _state = _scripted_run()
+    complete = adapter.complete
+    holdout_ids = {case.case_id for case in run.fixture.cases("holdout")}
+
+    def interrupted(kind, subject, messages, max_output_chars, max_attempts):
+        if subject in holdout_ids:
+            raise KeyboardInterrupt()
+        return complete(kind, subject, messages, max_output_chars, max_attempts)
+
+    adapter.complete = interrupted
+    with pytest.raises(KeyboardInterrupt):
+        run.execute()
+    with pytest.raises(optimizer_module.HoldoutReuseError):
+        run.holdout_seals.assert_available(run.fixture)
+    assert run.budget.records[-1].error_class == "KeyboardInterrupt"
+    assert run.budget.usage_complete is False

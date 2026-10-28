@@ -44,7 +44,7 @@ def test_limits_validation():
 
 def test_estimate_tokens_is_conservative_and_deterministic():
     assert estimate_tokens("") == 64
-    assert estimate_tokens("x" * 100) == 64 + 50
+    assert estimate_tokens("x" * 100) == 64 + 100
     assert estimate_tokens("x" * 100) == estimate_tokens("x" * 100)
 
 
@@ -101,7 +101,7 @@ def test_evaluation_call_cap_exhausts():
         budget.reserve("evaluation", "search", "c1", 10)
 
 
-def test_denied_calls_do_not_consume_call_cap_but_stay_visible():
+def test_denied_calls_consume_call_cap_and_stay_visible():
     budget = Budget(_limits(max_evaluation_calls=1))
     reservation = budget.reserve("evaluation", "search", "c0", 10)
     budget.reconcile(
@@ -112,8 +112,9 @@ def test_denied_calls_do_not_consume_call_cap_but_stay_visible():
         usage_complete=True,
         error_class="policy_denied",
     )
-    assert budget.evaluation_calls == 0
-    assert budget.reserve("evaluation", "search", "c1", 10) is not None
+    assert budget.evaluation_calls == 1
+    with pytest.raises(BudgetExhausted):
+        budget.reserve("evaluation", "search", "c1", 10)
     assert len(budget.failures()) == 1
 
 
@@ -175,7 +176,7 @@ def test_invalid_estimate_rejected():
 def test_call_inventory_complete():
     budget = Budget(_limits())
     reservation = budget.reserve("evaluation", "search", "c0", 20)
-    budget.reconcile(reservation, outcome="succeeded", attempts=2, actual_tokens=18,
+    budget.reconcile(reservation, outcome="succeeded", attempts=1, actual_tokens=18,
                      usage_complete=True)
     payload = budget.to_dict()
     assert len(payload["calls"]) == 1
@@ -184,7 +185,7 @@ def test_call_inventory_complete():
     assert record["phase"] == "search"
     assert record["subject"] == "c0"
     assert record["outcome"] == "succeeded"
-    assert record["attempts"] == 2
+    assert record["attempts"] == 1
     assert record["reserved_tokens"] == 20
     assert record["actual_tokens"] == 18
     assert record["usage_complete"] is True
@@ -199,3 +200,51 @@ def test_usage_incomplete_marks_budget():
     budget.reconcile(reservation, outcome="succeeded", attempts=1, actual_tokens=None,
                      usage_complete=False)
     assert budget.usage_complete is False
+
+
+def test_spent_tokens_stay_in_admission_after_reconciliation():
+    budget = Budget(_limits(max_total_tokens=100))
+    first = budget.reserve("evaluation", "search", "first", 90)
+    budget.reconcile(first, outcome="succeeded", attempts=1, actual_tokens=90,
+                     usage_complete=True)
+    assert budget.remaining() == 10
+    with pytest.raises(BudgetExhausted):
+        budget.reserve("evaluation", "search", "second", 90)
+
+
+@pytest.mark.parametrize("outcome", ["failed", "denied", "cancelled"])
+def test_every_admitted_attempt_consumes_call_cap(outcome):
+    budget = Budget(_limits(max_evaluation_calls=1))
+    first = budget.reserve("evaluation", "search", "first", 10)
+    budget.reconcile(first, outcome=outcome, attempts=1, actual_tokens=0,
+                     usage_complete=True)
+    with pytest.raises(BudgetExhausted):
+        budget.reserve("evaluation", "search", "second", 10)
+
+
+def test_outstanding_attempts_consume_call_cap_before_reconciliation():
+    budget = Budget(_limits(max_evaluation_calls=1))
+    budget.reserve("evaluation", "search", "first", 10)
+    with pytest.raises(BudgetExhausted):
+        budget.reserve("evaluation", "search", "second", 10)
+
+
+def test_incomplete_usage_cannot_release_conservative_charge():
+    budget = Budget(_limits(max_total_tokens=100))
+    first = budget.reserve("evaluation", "search", "first", 90)
+    budget.reconcile(first, outcome="succeeded", attempts=1, actual_tokens=1,
+                     usage_complete=False)
+    assert budget.spent_tokens == 90
+    assert budget.usage_complete is False
+    with pytest.raises(BudgetExhausted):
+        budget.reserve("evaluation", "search", "second", 20)
+
+
+def test_a_single_reservation_cannot_hide_multiple_attempts():
+    budget = Budget(_limits())
+    reservation = budget.reserve("evaluation", "search", "first", 100)
+    with pytest.raises(ValueError, match="single attempt"):
+        budget.reconcile(reservation, outcome="succeeded", attempts=2,
+                         actual_tokens=10, usage_complete=True)
+    assert budget.reserved_tokens == 100
+    assert budget.evaluation_calls == 1

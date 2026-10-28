@@ -9,6 +9,7 @@ import pytest
 from prompt_optimization import budget as budget_module
 from prompt_optimization import model_io
 from prompt_optimization import optimizer as optimizer_module
+from prompt_optimization.tests.support import holdout_seals, reset_holdouts
 from prompt_optimization import proposals as proposals_module
 from prompt_optimization import task as task_module
 from prompt_optimization.fixture import build_fixture
@@ -30,9 +31,9 @@ BASELINE_RULES = (
 
 @pytest.fixture(autouse=True)
 def _fresh_ledger():
-    optimizer_module.reset_consumed_holdouts()
+    reset_holdouts()
     yield
-    optimizer_module.reset_consumed_holdouts()
+    reset_holdouts()
 
 
 def _limits(**overrides) -> budget_module.BudgetLimits:
@@ -77,6 +78,7 @@ def _build_run(controls, *, fixture=None, adapter=None, source=None, limits=None
         variants=proposals_module.scripted_variants(BASELINE_RULES)
     )
     run = optimizer_module.OptimizationRun(
+        holdout_seals=holdout_seals,
         fixture=fixture or build_fixture(),
         task_prompt=_task_prompt(),
         adapter=adapter,
@@ -175,6 +177,7 @@ def test_unclassified_provider_failure_falls_back_to_exception_name():
         controls,
         adapter=_OpaqueFailAdapter(),
         source=proposals_module.ScriptedProposalSource(()),
+        limits=_limits(max_total_tokens=2000000),
     )
     result = run.execute()
     assert result.status == optimizer_module.STATUS_COMPLETED

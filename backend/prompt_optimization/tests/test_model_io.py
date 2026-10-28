@@ -360,25 +360,135 @@ def test_bounded_complete_cancellation_before_call():
     assert budget.records[-1].outcome == "cancelled"
 
 
-def test_live_completion_rejects_invalid_config(tmp_path):
-    bad = tmp_path / "bad.json"
-    bad.write_text('{"model": "m"}', encoding="utf-8")
-    with pytest.raises(ValueError):
-        model_io.LiveCompletion(str(bad))
+def test_output_allowance_is_reserved_before_adapter_invocation():
+    budget = budget_module.Budget(_limits(max_total_tokens=100))
+    with pytest.raises(budget_module.BudgetExhausted):
+        model_io.bounded_complete(
+            budget, model_io.ProviderDouble(), kind="reflection", phase="search",
+            subject="first", messages=[{"role": "user", "content": "hi"}],
+            controls=model_io.Controls(lambda: False), max_output_chars=4000,
+            max_attempts=1,
+        )
+    assert budget.records == []
 
-    not_json = tmp_path / "not.json"
-    not_json.write_text("[1, 2]", encoding="utf-8")
-    with pytest.raises(ValueError):
-        model_io.LiveCompletion(str(not_json))
+
+def test_adapter_exception_retains_attempt_and_unknown_charge():
+    class Interrupted:
+        def complete(self, *_args):
+            raise TimeoutError("unknown paid consumption")
+
+    budget = budget_module.Budget(_limits())
+    with pytest.raises(model_io.ProviderFailed):
+        model_io.bounded_complete(
+            budget, Interrupted(), kind="evaluation", phase="search", subject="first",
+            messages=[{"role": "user", "content": "hi"}],
+            controls=model_io.Controls(lambda: False), max_output_chars=10,
+            max_attempts=1,
+        )
+    assert budget.evaluation_calls == 1
+    assert budget.reserved_tokens == 0
+    assert budget.spent_tokens > 0
+    assert budget.usage_complete is False
+    assert budget.records[0].outcome == "failed"
 
 
-def test_live_completion_config_fields(tmp_path):
-    config = tmp_path / "live.json"
-    config.write_text(
-        json.dumps({"base_url": "http://127.0.0.1:9999/v1", "model": "synthetic"}),
-        encoding="utf-8",
+def test_retry_cannot_exceed_physical_attempt_call_budget():
+    budget = budget_module.Budget(_limits(max_evaluation_calls=1))
+    with pytest.raises(budget_module.BudgetExhausted):
+        model_io.bounded_complete(
+            budget, model_io.ProviderDouble(faults={"evaluation": "transient"}),
+            kind="evaluation", phase="search", subject="first",
+            messages=model_io.evaluation_messages(HEAD + BASELINE_RULES, _case()),
+            controls=model_io.Controls(lambda: False), max_output_chars=10,
+            max_attempts=2,
+        )
+    assert budget.evaluation_calls == 1
+    assert len(budget.records) == 1
+    assert budget.records[0].attempts == 1
+    assert budget.usage_complete is False
+
+
+@pytest.mark.parametrize("output,attempts", [(0, 1), (4001, 1), (10, 0), (10, 3)])
+def test_call_cannot_raise_or_disable_configured_bounds(output, attempts):
+    budget = budget_module.Budget(_limits())
+    with pytest.raises(ValueError, match="bounds"):
+        model_io.bounded_complete(
+            budget, model_io.ProviderDouble(), kind="reflection", phase="search",
+            subject="first", messages=[], controls=model_io.Controls(lambda: False),
+            max_output_chars=output, max_attempts=attempts,
+        )
+    assert budget.reserved_tokens == 0
+    assert budget.records == []
+
+
+def test_unaccounted_nested_retry_is_failed_and_charged():
+    class Nested:
+        def complete(self, *_args):
+            return model_io.ModelCallResult("succeeded", "answer", 2, 1, True)
+
+    budget = budget_module.Budget(_limits())
+    with pytest.raises(model_io.ProviderFailed):
+        model_io.bounded_complete(
+            budget, Nested(), kind="reflection", phase="search", subject="first",
+            messages=[], controls=model_io.Controls(lambda: False),
+            max_output_chars=10, max_attempts=1,
+        )
+    assert budget.records[0].outcome == "failed"
+    assert budget.records[0].error_class == "ValueError"
+    assert budget.records[0].usage_complete is False
+    assert budget.spent_tokens == budget.records[0].reserved_tokens
+
+
+def test_raised_unknown_attempt_remains_incomplete_after_successful_retry():
+    class InterruptedOnce:
+        calls = 0
+
+        def complete(self, *_args):
+            self.calls += 1
+            if self.calls == 1:
+                raise TimeoutError()
+            return model_io.ModelCallResult("succeeded", "answer", 1, 1, True)
+
+    budget = budget_module.Budget(_limits())
+    text, _record = model_io.bounded_complete(
+        budget, InterruptedOnce(), kind="reflection", phase="search", subject="first",
+        messages=[], controls=model_io.Controls(lambda: False),
+        max_output_chars=10, max_attempts=2,
     )
-    live = model_io.LiveCompletion(str(config))
-    assert live.base_url == "http://127.0.0.1:9999/v1"
-    assert live.model == "synthetic"
-    assert live.api_key == ""
+    assert text == "answer"
+    assert [record.outcome for record in budget.records] == ["failed", "succeeded"]
+    assert budget.reflection_calls == 2
+    assert budget.usage_complete is False
+
+
+def test_interrupt_keeps_conservative_attempt_inventory():
+    class Interrupted:
+        def complete(self, *_args):
+            raise KeyboardInterrupt()
+
+    budget = budget_module.Budget(_limits())
+    with pytest.raises(KeyboardInterrupt):
+        model_io.bounded_complete(
+            budget, Interrupted(), kind="reflection", phase="search", subject="first",
+            messages=[], controls=model_io.Controls(lambda: False),
+            max_output_chars=10, max_attempts=1,
+        )
+    assert budget.records[0].outcome == "failed"
+    assert budget.spent_tokens == budget.records[0].reserved_tokens
+    assert budget.usage_complete is False
+
+
+def test_adapter_cancellation_is_visible_and_not_retried():
+    class Cancelled:
+        def complete(self, *_args):
+            return model_io.ModelCallResult("cancelled", None, 1, None, False)
+
+    budget = budget_module.Budget(_limits())
+    with pytest.raises(model_io.RunCancelled):
+        model_io.bounded_complete(
+            budget, Cancelled(), kind="reflection", phase="search", subject="first",
+            messages=[], controls=model_io.Controls(lambda: False),
+            max_output_chars=10, max_attempts=2,
+        )
+    assert len(budget.records) == 1
+    assert budget.records[0].outcome == "cancelled"

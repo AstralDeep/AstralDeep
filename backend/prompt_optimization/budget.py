@@ -88,7 +88,7 @@ class CallRecord:
 
 
 def estimate_tokens(text: str) -> int:
-    return len(text or "") // 2 + 64
+    return len((text or "").encode("utf-8")) + 64
 
 
 @dataclass
@@ -113,7 +113,7 @@ class Budget:
     _sequence: int = 0
 
     def remaining(self) -> int:
-        return self.limits.max_total_tokens - self.reserved_tokens
+        return self.limits.max_total_tokens - self.spent_tokens - self.reserved_tokens
 
     def reserve(self, kind: str, phase: str, subject: str, estimated_tokens: int) -> _Reservation:
         if kind not in CALL_KINDS:
@@ -133,13 +133,17 @@ class Budget:
                 raise BudgetExhausted(
                     f"{kind} call budget exhausted ({calls}/{cap})"
                 )
-            if self.reserved_tokens + estimated_tokens > self.limits.max_total_tokens:
+            if self.spent_tokens + self.reserved_tokens + estimated_tokens > self.limits.max_total_tokens:
                 raise BudgetExhausted(
                     "token budget exhausted: "
-                    f"reserved {self.reserved_tokens}+{estimated_tokens} "
+                    f"spent {self.spent_tokens}+reserved {self.reserved_tokens}+{estimated_tokens} "
                     f"exceeds {self.limits.max_total_tokens}"
                 )
             self.reserved_tokens += estimated_tokens
+            if kind == "reflection":
+                self.reflection_calls += 1
+            else:
+                self.evaluation_calls += 1
             self._sequence += 1
             return _Reservation(
                 kind=kind,
@@ -160,6 +164,8 @@ class Budget:
     ) -> CallRecord:
         if outcome not in OUTCOMES:
             raise ValueError(f"unknown call outcome {outcome!r}")
+        if type(attempts) is not int or attempts not in (0, 1):
+            raise ValueError("a reservation covers a single attempt")
         with self._lock:
             if reservation.released:
                 raise ValueError("reservation already reconciled")
@@ -167,16 +173,12 @@ class Budget:
             self.reserved_tokens -= reservation.reserved_tokens
             charge = (
                 actual_tokens
-                if type(actual_tokens) is int and actual_tokens >= 0
+                if usage_complete and type(actual_tokens) is int and actual_tokens >= 0
                 else reservation.reserved_tokens
             )
             self.spent_tokens += charge
-            if outcome == "succeeded":
-                if reservation.kind == "reflection":
-                    self.reflection_calls += 1
-                else:
-                    self.evaluation_calls += 1
-            if not usage_complete:
+            complete = usage_complete and type(actual_tokens) is int and actual_tokens >= 0
+            if not complete:
                 self.usage_complete = False
             self._sequence += 1
             record = CallRecord(
@@ -188,7 +190,7 @@ class Budget:
                 attempts=attempts,
                 reserved_tokens=reservation.reserved_tokens,
                 actual_tokens=actual_tokens,
-                usage_complete=usage_complete,
+                usage_complete=complete,
                 error_class=error_class,
             )
             self.records.append(record)

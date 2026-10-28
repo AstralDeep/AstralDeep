@@ -21,10 +21,11 @@ def result():
     from prompt_optimization import budget as budget_module
     from prompt_optimization import model_io
     from prompt_optimization import optimizer as optimizer_module
+    from prompt_optimization.tests.support import holdout_seals, reset_holdouts
     from prompt_optimization import proposals as proposals_module
     from prompt_optimization.fixture import build_fixture
 
-    optimizer_module.reset_consumed_holdouts()
+    reset_holdouts()
     variants = proposals_module.scripted_variants(
         "- tool_hints should reference actual tool names from the available tools "
         "list.\n"
@@ -32,6 +33,7 @@ def result():
     adapter = model_io.ProviderDouble(variants=variants)
     prompt = task_module.load_task_prompt(REPO_ROOT)
     run = optimizer_module.OptimizationRun(
+        holdout_seals=holdout_seals,
         fixture=build_fixture(),
         task_prompt=prompt,
         adapter=adapter,
@@ -53,7 +55,7 @@ def result():
         max_attempts=1,
     )
     outcome = run.execute()
-    optimizer_module.reset_consumed_holdouts()
+    reset_holdouts()
     return outcome
 
 

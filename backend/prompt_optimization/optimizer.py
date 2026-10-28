@@ -6,11 +6,10 @@ budget, cancellation, a hold-out reuse seal, and honest qualified/unqualified ou
 
 from __future__ import annotations
 
-import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from prompt_optimization import budget as budget_module
 from prompt_optimization import metrics as metrics_module
@@ -18,6 +17,7 @@ from prompt_optimization import model_io as model_io_module
 from prompt_optimization import proposals as proposals_module
 from prompt_optimization import task as task_module
 from prompt_optimization.fixture import Fixture
+from prompt_optimization.holdout import HoldoutReuseError as HoldoutReuseError, PlaneHoldoutSeals
 
 STATUS_COMPLETED = "completed"
 STATUS_CANCELLED = "cancelled"
@@ -31,25 +31,8 @@ RECOMMEND_INCONCLUSIVE = "inconclusive"
 FEEDBACK_MAX_CHARS = 4000
 OUTPUT_PREVIEW_CHARS = 400
 
-_CONSUMED_HOLDOUTS: set = set()
-_HOLDOUT_LOCK = threading.Lock()
-
-
-class HoldoutReuseError(RuntimeError):
-    pass
-
-
 class RunStateError(RuntimeError):
     pass
-
-
-def reset_consumed_holdouts() -> None:
-    with _HOLDOUT_LOCK:
-        _CONSUMED_HOLDOUTS.clear()
-
-
-def holdout_seal_key(fixture: Fixture) -> Tuple[str, str]:
-    return (fixture.fixture_id, fixture.partition_digests["holdout"])
 
 
 @dataclass
@@ -199,6 +182,7 @@ class OptimizationRun:
         fixture: Fixture,
         task_prompt: task_module.TaskPrompt,
         adapter: Any,
+        holdout_seals: PlaneHoldoutSeals,
         proposal_source: Any = None,
         limits: budget_module.BudgetLimits = budget_module.BudgetLimits(
             max_reflection_calls=1,
@@ -209,6 +193,8 @@ class OptimizationRun:
         model_identity: str,
         run_id: Optional[str] = None,
     ) -> None:
+        self.holdout_seals = holdout_seals
+        self._holdout_sealed = False
         self.fixture = fixture
         self.task_prompt = task_prompt
         self.adapter = adapter
@@ -230,18 +216,20 @@ class OptimizationRun:
         if self._executed:
             raise RunStateError("run already executed")
         self._executed = True
-        with _HOLDOUT_LOCK:
-            if holdout_seal_key(self.fixture) in _CONSUMED_HOLDOUTS:
-                raise HoldoutReuseError(
-                    "final hold-out already consumed; designate a new final "
-                    "hold-out for any further tuning run"
-                )
+        self.holdout_seals.assert_available(self.fixture)
         try:
-            return self._run()
+            result = self._run()
         except model_io_module.RunCancelled:
-            return self._result(STATUS_CANCELLED)
+            result = self._result(STATUS_CANCELLED)
         except budget_module.BudgetExhausted:
-            return self._result(STATUS_BUDGET_EXHAUSTED)
+            result = self._result(STATUS_BUDGET_EXHAUSTED)
+        except BaseException:
+            if self._holdout_sealed:
+                self.holdout_seals.finish(self.fixture, succeeded=False)
+            raise
+        if self._holdout_sealed:
+            self.holdout_seals.finish(self.fixture, succeeded=result.status == STATUS_COMPLETED)
+        return result
 
     def _run(self) -> OptimizationResult:
         baseline = Candidate(
@@ -288,6 +276,11 @@ class OptimizationRun:
                 break
 
         self._selected = self._select()
+        self.holdout_seals.seal(self.fixture, self.run_id, context_digest=task_module.digest_text(
+            self.task_prompt.prompt_digest + self.model_identity
+            + (self._selected.digest if self._selected is not None else "")
+        ))
+        self._holdout_sealed = True
         self._baseline_holdout = self._evaluate(
             baseline.instruction, "holdout", "holdout"
         )
@@ -295,8 +288,6 @@ class OptimizationRun:
             self._selected_holdout = self._evaluate(
                 self._selected.instruction, "holdout", "holdout"
             )
-        with _HOLDOUT_LOCK:
-            _CONSUMED_HOLDOUTS.add(holdout_seal_key(self.fixture))
         result = self._result(STATUS_COMPLETED)
         self._decide(result)
         return result
@@ -444,8 +435,8 @@ class OptimizationRun:
         ):
             result.recommendation = RECOMMEND_ADOPT
             result.recommendation_basis = (
-                "candidate improved on the untouched final hold-out and did not "
-                "regress on selection-validation"
+                "scripted double improved on the final hold-out and selection-validation; "
+                "this verifies plumbing only, not actual model benefit or production adoption"
             )
         else:
             result.recommendation = RECOMMEND_REJECT
@@ -484,16 +475,17 @@ class OptimizationRun:
             fixture=self.fixture.to_dict(),
             optimizer={
                 "name": "bounded-reflection-v1",
+                "holdout_exposure_run_ids": (
+                    list(self.holdout_seals.receipt_ids(self.fixture)) if self._holdout_sealed else None
+                ),
                 "limits": self.limits.to_dict(),
             },
             model={
                 "mode": self.model_identity,
                 "data_scope": "synthetic-fixture-only",
-                "egress": (
-                    "none"
-                    if "scripted" in self.model_identity
-                    else "explicit-config-endpoint-only"
-                ),
+                "egress": "none",
+                "qualification_scope": "scripted-control-plumbing-only",
+                "actual_model_qualified": False,
             },
             budget=self.budget.to_dict(),
             baseline_train=self._baseline.train if self._baseline else None,
