@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "dormant_not_activated",
+  "status": "compatibility_inventory_explicit_v0125_caller",
   "verifier": "scripts/ci_fence_fixture_verifier_v2.py",
   "selection": "explicit_reviewed_caller_complete_action_pin_only",
   "python": "3.11-compatible stdlib only",
@@ -39,5 +39,5 @@
       }
     }
   ],
-  "qualification_scope": "parser_checksum_and_invariant_tests_only_not_fence_enforcement"
+  "qualification_scope": "parser_checksum_invariant_inventory_only_actual_enforcement_requires_current_head_CI"
 }
