@@ -97,24 +97,37 @@ The image ID identifies the observed immutable image, not an attestation that it
 running filesystem is unmodified or that the image equals the client source.
 The local receipt is a diagnostic and does not replace protected release evidence.
 
-Provide the main, readonly, other-owner, and revoked framework credentials through
+Provide distinct main, readonly, other-owner, revoked, expired, and exhausted-admission
+framework credentials through
 the approved product flow, using `ASTRAL_WORK_BEARER`,
 `ASTRAL_WORK_BEARER_READONLY`, `ASTRAL_WORK_BEARER_OTHER_OWNER`, and
-`ASTRAL_WORK_BEARER_REVOKED`. The human completes sign-in and issuance. Run from the
+`ASTRAL_WORK_BEARER_REVOKED`, `ASTRAL_WORK_BEARER_EXPIRED`, and
+`ASTRAL_WORK_BEARER_ADMISSION_DENIED`. The human completes sign-in and issuance.
+The exhausted credential must remain authenticated and submit-scoped while its
+normal framework admission allowance is exhausted. An outage or missing scope
+does not satisfy that probe. Expiry and revocation use distinct credentials.
+Set `ASTRAL_WORK_ARTIFACT_OPERATION_ID` to a legitimate completed, retained
+operation belonging to the main owner; the example never fabricates or inserts
+an artifact into the server. The earlier cancelled probe cannot supply it. Run from the
 clean repository root in the isolated SDK environment, writing outside the checkout:
 
 ```bash
 python -m scripts.openai_agents_example.qualify --output /private/path/new-receipt.json
 ```
 
-Any failed or skipped required check exits nonzero. The artifact probe requires
-successful authorized access to the actual versioned result envelope. A server
-`unsupported`, `not_completed`, or `not_retained` envelope records its explicit
-unavailability; it does not prove generated artifact content. Unexpected tool errors,
-malformed data and generic `unavailable` results fail. Cancellation must apply to the
+Any failed or skipped required check exits nonzero. The artifact probe requires a completed retained operation and successful
+authorized access to its actual versioned, available result envelope, with matching
+operation and result revisions. Missing configuration is incomplete; `unsupported`,
+`not_completed`, `not_retained`, generic unavailability and malformed/error results
+fail. The historical unavailable envelope is not current retained-artifact proof. Cancellation must apply to the
 submitted operation, return `cancelled`, and replay without applying again. Refusal
 checks accept specific policy outcomes; an outage is not a policy-denial success.
 Logs/receipts retain bounded codes and identities, without server error payloads.
+The client correlates every JSON-RPC reply and polled operation/revision, refuses
+credential-bearing URLs, rejects non-finite timing inputs, caps each HTTP request
+by elapsed time and each response at4MiB, and bounds the entire polling await
+including sleep and transport. Unsupported response compression is refused;
+requests explicitly select identity encoding.
 
 ### Remaining qualification under #321
 

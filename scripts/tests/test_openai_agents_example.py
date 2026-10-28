@@ -35,6 +35,7 @@ from scripts.openai_agents_example.redaction import (
 )
 
 from scripts.openai_agents_example.tests.mcp_fakes import (
+    ADMISSION_BEARER, ARTIFACT_OPERATION_ID, EXPIRED_BEARER,
     BEARER, FULL_TOOLS, OPERATION_ID, OTHER_BEARER, READONLY_BEARER, READONLY_TOOLS,
     REVOKED_BEARER, FakeAstral, operation as _operation,
 )
@@ -98,6 +99,8 @@ def _qualifying_config(fake, **overrides):
     defaults = dict(
         bearer=BEARER, readonly_bearer=READONLY_BEARER, other_owner_bearer=OTHER_BEARER,
         revoked_bearer=REVOKED_BEARER, transport=fake.transport,
+        expired_bearer=EXPIRED_BEARER, admission_bearer=ADMISSION_BEARER,
+        artifact_operation_id=ARTIFACT_OPERATION_ID,
         max_polls=3, interval_seconds=0.0, timeout_seconds=30.0,
     )
     defaults.update(overrides)
@@ -258,7 +261,7 @@ def test_malformed_responses_fail_closed():
     for handler, code in (
         (plain_handler, "invalid_response_body"),
         (wrong_envelope_handler, "invalid_response_envelope"),
-        (no_result_handler, "invalid_response_result"),
+        (no_result_handler, "invalid_response_envelope"),
     ):
         async def flow(handler=handler):
             client = AstralWorkClient(
@@ -310,10 +313,11 @@ def test_wait_terminal_truthful_success_paths():
 
 
 def test_wait_terminal_bounded_polls_never_fabricate_state():
-    fake = FakeAstral(behaviors={"astral_get_operation_events": {
-        "revision": 2, "changed": True, "resync_required": False,
-        "operation": _operation("active", 2),
-    }})
+    fake = FakeAstral(behaviors={"astral_get_operation_events": [
+        {"revision": 2, "changed": True, "resync_required": False,
+         "operation": _operation("active", 2)},
+        {"revision": 2, "changed": False, "resync_required": False, "operation": None},
+    ]})
 
     async def flow():
         async with _client(fake) as client:
@@ -350,7 +354,7 @@ def test_wait_terminal_wall_clock_bound():
 
 def test_wait_terminal_resync_drops_cursor():
     fake = FakeAstral(behaviors={"astral_get_operation_events": [
-        {"revision": 2, "changed": False, "resync_required": True, "operation": None},
+        {"revision": 2, "changed": True, "resync_required": True, "operation": _operation("active", 2)},
         {"revision": 3, "changed": True, "resync_required": False,
          "operation": _operation("completed", 3)},
     ]})
@@ -579,6 +583,9 @@ def test_main_writes_receipt(monkeypatch, tmp_path):
         config.readonly_bearer = READONLY_BEARER
         config.other_owner_bearer = OTHER_BEARER
         config.revoked_bearer = REVOKED_BEARER
+        config.expired_bearer = EXPIRED_BEARER
+        config.admission_bearer = ADMISSION_BEARER
+        config.artifact_operation_id = ARTIFACT_OPERATION_ID
         return config
 
     monkeypatch.setattr(QualificationConfig, "from_environment", staticmethod(with_transport))
@@ -675,7 +682,7 @@ def test_tools_listing_and_submit_branches(monkeypatch):
         "astral_submit_operation": ("tool_error", "work_repository_unavailable"),
     })))
     assert outcomes["work_poll_events_bounded"] == "skipped"
-    assert outcomes["work_artifact_access"] == "skipped"
+    assert outcomes["work_artifact_access"] == "passed"
 
 
 def test_denial_branches(monkeypatch):
@@ -802,7 +809,7 @@ def test_qualification_artifact_errors_fail_closed(monkeypatch, code):
 def test_qualification_artifact_requires_truthful_result_envelope(monkeypatch, result):
     _install_agents_stub(monkeypatch)
     fake = FakeAstral(behaviors={"astral_get_artifact": {
-        "id": OPERATION_ID, "revision": 3, "result": result,
+        "id": ARTIFACT_OPERATION_ID, "revision": 3, "result": result,
     }})
     receipt = _run(run_qualification(_qualifying_config(fake)))
     assert _outcome(receipt, "work_artifact_access") == "failed"
@@ -1005,3 +1012,241 @@ def test_source_revision_is_from_clean_module_checkout(monkeypatch):
         monkeypatch.setattr(qualify.subprocess, "run", run)
         assert qualify._source_revision() == (None if dirty else "a" * 40)
         assert all(options["cwd"] == Path(qualify.__file__).resolve().parents[2] for _, options in calls)
+
+
+@pytest.mark.parametrize("response_id", [None, "unrelated-request", True, 2])
+def test_rpc_response_must_match_captured_request_id(response_id):
+    def handler(_request):
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": response_id, "result": {}})
+
+    async def flow():
+        async with AstralWorkClient(base_url="http://testserver", bearer=BEARER,
+                                    transport=httpx.MockTransport(handler)) as client:
+            await client.discover()
+
+    with pytest.raises(MCPProtocolError, match="invalid_response_envelope"):
+        _run(flow())
+
+
+def test_rpc_error_code_cannot_log_private_response_text(caplog):
+    caplog.set_level(logging.INFO)
+    payload = "SYNTHETIC_PRIVATE_PAYLOAD_321"
+
+    def handler(request):
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": json.loads(request.content)["id"],
+                                        "error": {"code": payload, "message": "failure"}})
+
+    async def flow():
+        async with AstralWorkClient(base_url="http://testserver", bearer=BEARER,
+                                    transport=httpx.MockTransport(handler)) as client:
+            await client.discover()
+
+    with pytest.raises(MCPProtocolError):
+        _run(flow())
+    assert payload not in caplog.text
+
+
+@pytest.mark.parametrize("patch", [
+    {"operation": {**_operation("cancelled", 3), "id": "another-operation"}},
+    {"operation": _operation("cancelled", 4)}, {"revision": True},
+    {"operation": ["cancelled"]}, {"changed": False}, {"operation": None},
+])
+def test_polling_rejects_uncorrelated_or_inconsistent_terminal_bodies(patch):
+    event = {"revision": 3, "changed": True, "resync_required": False,
+             "operation": _operation("cancelled", 3), **patch}
+    fake = FakeAstral(behaviors={"astral_get_operation_events": event})
+
+    async def flow():
+        async with _client(fake) as client:
+            await client.wait_terminal(OPERATION_ID, after_revision=1, interval_seconds=0, max_polls=2)
+
+    with pytest.raises(MCPProtocolError, match="invalid_poll_event"):
+        _run(flow())
+
+
+@pytest.mark.parametrize("bounds", [{"interval_seconds": float("inf")},
+    {"interval_seconds": float("nan")}, {"timeout_seconds": float("inf")},
+    {"timeout_seconds": float("nan")}, {"max_polls": True}])
+def test_polling_refuses_nonfinite_or_boolean_bounds_before_request(bounds):
+    fake = FakeAstral()
+
+    async def flow():
+        async with _client(fake) as client:
+            await client.wait_terminal(OPERATION_ID, sleep=lambda *_: asyncio.sleep(0), **bounds)
+
+    with pytest.raises(ValueError):
+        _run(flow())
+    assert fake.requests == []
+
+
+def test_polling_caps_sleep_to_remaining_deadline():
+    now = [0.0]
+    sleeps = []
+    fake = FakeAstral(behaviors={"astral_get_operation_events": {
+        "revision": 2, "changed": True, "resync_required": False, "operation": _operation("active", 2),
+    }})
+
+    async def bounded_sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    async def flow():
+        async with _client(fake, clock=lambda: now[0]) as client:
+            await client.wait_terminal(OPERATION_ID, after_revision=1, timeout_seconds=1.0,
+                                       interval_seconds=3600.0, max_polls=2, sleep=bounded_sleep)
+
+    with pytest.raises(OperationPendingTimeout):
+        _run(flow())
+    assert sleeps == [1.0]
+    assert len(fake.requests) == 1
+
+
+@pytest.mark.parametrize("url", ["http://user:secret@localhost:8001", "http://localhost:8001?token=secret",
+                                 "http://localhost:8001#secret", "file:///private/path"])
+def test_credentials_or_nonhttp_base_urls_are_refused_before_use(monkeypatch, url):
+    _install_agents_stub(monkeypatch)
+    fake = FakeAstral()
+    with pytest.raises(ValueError, match="invalid_base_url"):
+        _client(fake, base_url=url)
+    with pytest.raises(ValueError, match="invalid_base_url"):
+        config = _qualifying_config(fake, base_url=url)
+        _run(run_qualification(config))
+    assert fake.requests == []
+
+
+def test_qualification_matrix_includes_distinct_expiry_and_admission(monkeypatch):
+    _install_agents_stub(monkeypatch)
+    receipt = _run(run_qualification(_qualifying_config(FakeAstral())))
+    assert _outcome(receipt, "expired_credential_refused") == "passed"
+    assert _outcome(receipt, "admission_allowance_denied") == "passed"
+
+
+def test_unavailable_result_does_not_qualify_retained_artifact_access(monkeypatch):
+    _install_agents_stub(monkeypatch)
+
+    class UnavailableArtifact(FakeAstral):
+        def _tool_call(self, request_id, params, bearer):
+            if params["name"] == "astral_get_artifact":
+                return self._tool_result(request_id, {
+                    "id": params["arguments"]["operation_id"], "revision": 3,
+                    "result": {"version": 1, "available": False, "reason": "unsupported", "content": None},
+                })
+            return super()._tool_call(request_id, params, bearer)
+
+    fake = UnavailableArtifact()
+    receipt = _run(run_qualification(_qualifying_config(fake)))
+    assert _outcome(receipt, "work_artifact_access") == "failed"
+
+
+def test_http_response_bytes_are_bounded_before_json_use():
+    def handler(request):
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": json.loads(request.content)["id"],
+                                        "result": {"padding": "x" * (4 * 1024 * 1024)}})
+
+    async def flow():
+        async with AstralWorkClient(base_url="http://testserver", bearer=BEARER,
+                                    transport=httpx.MockTransport(handler)) as client:
+            await client.discover()
+
+    with pytest.raises(MCPProtocolError, match="response_too_large"):
+        _run(flow())
+
+
+def test_poll_timeout_cancels_a_pending_transport_without_wall_clock_assertion(monkeypatch):
+    cancelled = []
+
+    async def flow():
+        loop = asyncio.get_running_loop()
+        original_time = loop.time
+        now = [original_time()]
+        monkeypatch.setattr(loop, "time", lambda: now[0])
+
+        async def handler(_request):
+            loop.call_soon(lambda: now.__setitem__(0, now[0] + 2))
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(True)
+
+        try:
+            async with AstralWorkClient(base_url="http://testserver", bearer=BEARER,
+                transport=httpx.MockTransport(handler), clock=lambda: now[0]) as client:
+                with pytest.raises(OperationPendingTimeout):
+                    await client.wait_terminal(OPERATION_ID, timeout_seconds=1)
+        finally:
+            monkeypatch.setattr(loop, "time", original_time)
+
+    _run(flow())
+    assert cancelled == [True]
+
+
+@pytest.mark.parametrize("changes,expected", [
+    ({"expired_bearer": None}, ("expired_credential_refused", "skipped")),
+    ({"admission_bearer": None}, ("admission_allowance_denied", "skipped")),
+    ({"artifact_operation_id": None}, ("work_artifact_access", "skipped")),
+])
+def test_qualification_records_missing_required_inputs_as_incomplete(monkeypatch, changes, expected):
+    _install_agents_stub(monkeypatch)
+    receipt = _run(run_qualification(_qualifying_config(FakeAstral(), **changes)))
+    assert _outcome(receipt, expected[0]) == expected[1]
+
+
+@pytest.mark.parametrize("fake", [FakeAstral(revoked_bearers={REVOKED_BEARER}),
+                                  FakeAstral(revoked_status=403), FakeAstral(revoked_challenge=False)])
+def test_expiry_probe_requires_an_actual_authentication_refusal(monkeypatch, fake):
+    _install_agents_stub(monkeypatch)
+    receipt = _run(run_qualification(_qualifying_config(fake)))
+    assert _outcome(receipt, "expired_credential_refused") == "failed"
+
+
+@pytest.mark.parametrize("failure", ["work_repository_unavailable", "framework_scope_required"])
+def test_admission_probe_does_not_misclassify_outage_or_scope_refusal(monkeypatch, failure):
+    _install_agents_stub(monkeypatch)
+    fake = FakeAstral(behaviors={"astral_submit_operation": ("tool_error", failure)})
+    receipt = _run(run_qualification(_qualifying_config(fake)))
+    assert _outcome(receipt, "admission_allowance_denied") == "failed"
+
+
+@pytest.mark.parametrize("changes", [{"expired_bearer": REVOKED_BEARER},
+    {"artifact_operation_id": "not-an-operation"}, {"readonly_bearer": "x" * 8193}])
+def test_qualification_configuration_rejects_ambiguous_or_unbounded_inputs(changes):
+    with pytest.raises(ValueError):
+        _qualifying_config(FakeAstral(), **changes)
+
+
+def test_concurrent_rpc_responses_use_each_calls_original_id():
+    async def flow():
+        second_started = asyncio.Event()
+
+        async def handler(request):
+            request_id = json.loads(request.content)["id"]
+            if request_id == 1:
+                await second_started.wait()
+            else:
+                second_started.set()
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": request_id,
+                                            "result": {"call": request_id}})
+
+        async with AstralWorkClient(base_url="http://testserver", bearer=BEARER,
+                                    transport=httpx.MockTransport(handler)) as client:
+            return await asyncio.gather(client.discover(), client.discover())
+
+    assert _run(flow()) == [{"call": 1}, {"call": 2}]
+
+
+def test_streaming_http_response_cannot_grow_past_byte_admission():
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for _ in range(65):
+                yield b"x" * 65536
+
+    def handler(_request):
+        return httpx.Response(200, stream=Body())
+
+    async def flow():
+        async with AstralWorkClient(base_url="http://testserver", bearer=BEARER,
+                                    transport=httpx.MockTransport(handler)) as client:
+            await client.discover()
+
+    with pytest.raises(MCPProtocolError, match="response_too_large"):
+        _run(flow())

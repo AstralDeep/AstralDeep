@@ -17,8 +17,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import httpx
-
 from scripts.openai_agents_example.agent import AGENT_TOOL_NAMES, AstralAgentSession
 from scripts.openai_agents_example.client import (
     AstralWorkClient,
@@ -26,6 +24,8 @@ from scripts.openai_agents_example.client import (
     MCPProtocolError,
     OperationPendingTimeout,
     ToolCallError,
+    canonical_base_url,
+    validate_poll_bounds,
 )
 from scripts.openai_agents_example.redaction import scrub_text
 from scripts.openai_agents_example.server_identity import observe_server
@@ -59,6 +59,9 @@ class QualificationConfig:
     readonly_bearer: str | None = None
     other_owner_bearer: str | None = None
     revoked_bearer: str | None = None
+    expired_bearer: str | None = None
+    admission_bearer: str | None = None
+    artifact_operation_id: str | None = None
     max_polls: int = DEFAULT_MAX_POLLS
     interval_seconds: float = DEFAULT_INTERVAL_SECONDS
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
@@ -66,6 +69,22 @@ class QualificationConfig:
     phi_instructions: str = SYNTHETIC_PHI_INSTRUCTIONS
     transport: Any = None
     server_container: str | None = None
+
+    def __post_init__(self):
+        self.base_url = canonical_base_url(self.base_url)
+        validate_poll_bounds(self.max_polls, self.interval_seconds, self.timeout_seconds)
+        credentials = [value for value in (self.bearer, self.readonly_bearer, self.other_owner_bearer,
+            self.revoked_bearer, self.expired_bearer, self.admission_bearer) if value]
+        if any(type(value) is not str or len(value) > 8192 for value in credentials):
+            raise ValueError("invalid_qualification_credential")
+        if len(credentials) != len(set(credentials)):
+            raise ValueError("distinct_qualification_credentials_required")
+        if self.artifact_operation_id is not None:
+            try:
+                if str(uuid.UUID(self.artifact_operation_id)) != self.artifact_operation_id:
+                    raise ValueError
+            except (ValueError, TypeError, AttributeError):
+                raise ValueError("invalid_retained_artifact_operation") from None
 
     def _client(self, bearer: str) -> AstralWorkClient:
         return AstralWorkClient(
@@ -81,6 +100,9 @@ class QualificationConfig:
             readonly_bearer=env.get("ASTRAL_WORK_BEARER_READONLY") or None,
             other_owner_bearer=env.get("ASTRAL_WORK_BEARER_OTHER_OWNER") or None,
             revoked_bearer=env.get("ASTRAL_WORK_BEARER_REVOKED") or None,
+            expired_bearer=env.get("ASTRAL_WORK_BEARER_EXPIRED") or None,
+            admission_bearer=env.get("ASTRAL_WORK_BEARER_ADMISSION_DENIED") or None,
+            artifact_operation_id=env.get("ASTRAL_WORK_ARTIFACT_OPERATION_ID") or None,
             server_container=env.get("ASTRAL_QUALIFICATION_SERVER_CONTAINER") or None,
             max_polls=int(env.get("ASTRAL_QUALIFICATION_MAX_POLLS", DEFAULT_MAX_POLLS)),
             interval_seconds=float(
@@ -135,12 +157,7 @@ async def _refusal_detail(call: Any) -> str:
 
 
 async def check_metadata_contract(context: _Context) -> dict[str, Any]:
-    metadata_url = f"{context.config.base_url}/.well-known/oauth-protected-resource/mcp"
-    async with httpx.AsyncClient(trust_env=False, timeout=15.0, transport=context.config.transport) as probe:
-        response = await probe.get(metadata_url)
-    if response.status_code != 200:
-        return _check("mcp_protected_resource_metadata", "failed", f"status={response.status_code}")
-    document = response.json()
+    document = await context.client.protected_resource_metadata()
     if not _METADATA_FIELDS.issubset(document):
         return _check("mcp_protected_resource_metadata", "failed", "metadata_fields_missing")
     if document.get("bearer_methods_supported") != ["header"]:
@@ -228,14 +245,18 @@ async def check_poll_events_bounded(context: _Context) -> dict[str, Any]:
 
 
 async def check_artifact_access(context: _Context) -> dict[str, Any]:
-    operation = context.submitted.get("operation")
-    if operation is None:
-        return _check("work_artifact_access", "skipped", "no_submitted_operation")
+    identity = context.config.artifact_operation_id
+    if identity is None:
+        return _check("work_artifact_access", "skipped", "retained_artifact_operation_unconfigured")
+    operation = await context.client.get(identity)
+    if (operation.get("id") != identity or operation.get("disposition") != "completed"
+            or type(operation.get("revision")) is not int):
+        return _check("work_artifact_access", "failed", "retained_operation_unavailable")
     try:
         artifact = await context.client.artifact(operation["id"])
     except ToolCallError:
         return _check("work_artifact_access", "failed", "artifact_request_refused")
-    if artifact.get("id") != operation["id"]:
+    if artifact.get("id") != identity or artifact.get("revision") != operation["revision"]:
         return _check("work_artifact_access", "failed", "artifact_id_mismatch")
     result = artifact.get("result")
     if (type(artifact.get("revision")) is not int or artifact["revision"] < 1
@@ -247,9 +268,7 @@ async def check_artifact_access(context: _Context) -> dict[str, Any]:
         if result["reason"] is not None or type(result["content"]) is not dict or not result["content"]:
             return _check("work_artifact_access", "failed", "artifact_content_invalid")
         return _check("work_artifact_access", "passed", "artifact_available=true")
-    if result["reason"] not in ("unsupported", "not_completed", "not_retained") or result["content"] is not None:
-        return _check("work_artifact_access", "failed", "artifact_unavailable")
-    return _check("work_artifact_access", "passed", f"artifact_available=false reason={result['reason']}")
+    return _check("work_artifact_access", "failed", "retained_artifact_unavailable")
 
 
 async def check_cancel(context: _Context) -> dict[str, Any]:
@@ -341,6 +360,36 @@ async def check_revoked_credential_refused(context: _Context) -> dict[str, Any]:
     return _check("revoked_credential_refused", "failed", "revoked_bearer_accepted")
 
 
+async def check_expired_credential_refused(context: _Context) -> dict[str, Any]:
+    if not context.config.expired_bearer:
+        return _check("expired_credential_refused", "skipped", "expired_bearer_unconfigured")
+    async with context.config._client(context.config.expired_bearer) as expired:
+        try:
+            await expired.discover()
+        except CredentialRefused as exc:
+            if (exc.status == 401 and exc.challenge and exc.challenge.lower().startswith("bearer ")
+                    and "resource_metadata=" in exc.challenge.lower()):
+                return _check("expired_credential_refused", "passed", "expired_credential_denied")
+            return _check("expired_credential_refused", "failed", "expired_challenge_missing")
+    return _check("expired_credential_refused", "failed", "expired_bearer_accepted")
+
+
+async def check_admission_denial(context: _Context) -> dict[str, Any]:
+    if not context.config.admission_bearer:
+        return _check("admission_allowance_denied", "skipped", "admission_bearer_unconfigured")
+    async with context.config._client(context.config.admission_bearer) as exhausted:
+        tools = await exhausted.list_tools()
+        if "astral_submit_operation" not in {tool.get("name") for tool in tools}:
+            return _check("admission_allowance_denied", "failed", "submission_scope_missing")
+        detail = await _refusal_detail(lambda: exhausted.submit(
+            idempotency_key=str(uuid.uuid4()), name=SYNTHETIC_OPERATION_NAME,
+            instructions=context.config.operation_instructions,
+        ))
+    return _check("admission_allowance_denied",
+                  "passed" if detail == "credential_allowance_exhausted" else "failed",
+                  "admission_exhausted" if detail == "credential_allowance_exhausted" else "expected_admission_refusal_missing")
+
+
 async def check_human_only_denials(context: _Context) -> dict[str, Any]:
     denied = []
     for tool in _HUMAN_ONLY_TOOLS:
@@ -369,11 +418,14 @@ CHECKS = (
     _named(check_readonly_permission_denial, "permission_denied_out_of_scope"),
     _named(check_cross_owner_isolation, "cross_owner_isolated"),
     _named(check_revoked_credential_refused, "revoked_credential_refused"),
+    _named(check_expired_credential_refused, "expired_credential_refused"),
+    _named(check_admission_denial, "admission_allowance_denied"),
     _named(check_human_only_denials, "human_only_actions_denied"),
 )
 
 
 async def run_qualification(config: QualificationConfig) -> dict[str, Any]:
+    config.__post_init__()
     if not config.bearer:
         raise SystemExit("ASTRAL_WORK_BEARER is required; issue it in the Connections surface")
     client_before = _source_revision()

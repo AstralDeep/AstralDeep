@@ -15,7 +15,10 @@ BEARER = "afk_fake.owner.credential-value"
 OTHER_BEARER = "afk_fake.other.owner-value"
 READONLY_BEARER = "afk_fake.readonly.value"
 REVOKED_BEARER = "afk_fake.revoked.value"
+EXPIRED_BEARER = "afk_fake.expired.value"
+ADMISSION_BEARER = "afk_fake.admission.value"
 OPERATION_ID = "0b98d4e5-6a11-4a53-9df1-3f5d0c93a001"
+ARTIFACT_OPERATION_ID = "0b98d4e5-6a11-4a53-9df1-3f5d0c93a002"
 METADATA_PATH = "/.well-known/oauth-protected-resource/mcp"
 SENSITIVE_CODE = "assignment_sensitive_content_refused"
 UNAUTHORIZED_CODE = "Tool is unavailable or not authorized"
@@ -42,7 +45,7 @@ def operation(disposition="queued", revision=1):
 
 
 class FakeAstral:
-    def __init__(self, *, behaviors=None, revoked_bearers=frozenset({REVOKED_BEARER}),
+    def __init__(self, *, behaviors=None, revoked_bearers=frozenset({REVOKED_BEARER, EXPIRED_BEARER}),
                  metadata=None, metadata_status=200, discovery=None, tools_by_bearer=None,
                  readonly_submit_error=UNAUTHORIZED_CODE, other_owner_get_succeeds=False,
                  revoked_challenge=True, revoked_status=401):
@@ -150,6 +153,8 @@ class FakeAstral:
         if scripted is not None:
             return self._tool_result(request_id, scripted)
         if name == "astral_submit_operation":
+            if bearer == ADMISSION_BEARER:
+                return self._tool_result(request_id, {}, error="credential_allowance_exhausted")
             if bearer == READONLY_BEARER:
                 return self._tool_result(request_id, {}, error=self.readonly_submit_error)
             if bearer == OTHER_BEARER:
@@ -165,6 +170,8 @@ class FakeAstral:
         if name == "astral_get_operation":
             if bearer == OTHER_BEARER and not self.other_owner_get_succeeds:
                 return self._tool_result(request_id, {}, error="work_not_found")
+            if arguments.get("operation_id") == ARTIFACT_OPERATION_ID:
+                return self._tool_result(request_id, {**operation("completed", 3), "id": ARTIFACT_OPERATION_ID})
             return self._tool_result(request_id, operation("queued", 1))
         if name == "astral_list_operations":
             return self._tool_result(request_id, {
@@ -198,6 +205,12 @@ class FakeAstral:
                 "operation": operation("paused", 3), "applied": True,
             })
         if name == "astral_get_artifact":
+            if arguments.get("operation_id") == ARTIFACT_OPERATION_ID:
+                return self._tool_result(request_id, {
+                    "id": ARTIFACT_OPERATION_ID, "revision": 3,
+                    "result": {"version": 1, "available": True, "reason": None,
+                               "content": {"version": 1, "text": "synthetic retained artifact"}},
+                })
             return self._tool_result(request_id, {
                 "id": OPERATION_ID, "revision": 3,
                 "result": {"version": 1, "available": False, "reason": "unsupported", "content": None},
