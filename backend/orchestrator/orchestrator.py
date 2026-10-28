@@ -17897,7 +17897,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             render_target="chat" if pending.error else None)
 
         if chat_id:
-            if agent_id != "terminal-shell-1":
+            if agent_id != "terminal-shell-1" and (agent_id, tool_name) != ("fhir-1", "extract_note_fields"):
                 args = await asyncio.to_thread(
                     self._map_file_paths, chat_id, args, user_id=user_id)
                 if self._tool_accepts_context_arg(agent_id, tool_name, "session_id"):
@@ -17907,26 +17907,27 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             ):
                 args["user_id"] = user_id
 
-        if user_id and agent_id:
-            creds = await asyncio.to_thread(
-                self.credential_manager.get_agent_credentials_encrypted, user_id, agent_id)
-            if creds:
-                args["_credentials"] = creds
-                args["_credentials_encrypted"] = True
+        if (agent_id, tool_name) != ("fhir-1", "extract_note_fields"):
+            if user_id and agent_id:
+                creds = await asyncio.to_thread(
+                    self.credential_manager.get_agent_credentials_encrypted, user_id, agent_id)
+                if creds:
+                    args["_credentials"] = creds
+                    args["_credentials_encrypted"] = True
 
-        # Plaintext creds: only for in-process, trusted agents
-        if agent_id in self.local_agents:
-            _llm_ctx_user = self._llm_context_user_id(websocket)
-            if _llm_ctx_user is None:
-                _llm_cfg = await self._llm_store.get_system()
-            else:
-                _llm_cfg = await self._llm_store.get(_llm_ctx_user)
-            if _llm_cfg is not None:
-                args["_session_llm_credentials"] = {
-                    "OPENAI_API_KEY": _llm_cfg.api_key,
-                    "OPENAI_BASE_URL": _llm_cfg.base_url,
-                    "LLM_MODEL": _llm_cfg.model,
-                }
+            # Plaintext creds: only for in-process, trusted agents
+            if agent_id in self.local_agents:
+                _llm_ctx_user = self._llm_context_user_id(websocket)
+                if _llm_ctx_user is None:
+                    _llm_cfg = await self._llm_store.get_system()
+                else:
+                    _llm_cfg = await self._llm_store.get(_llm_ctx_user)
+                if _llm_cfg is not None:
+                    args["_session_llm_credentials"] = {
+                        "OPENAI_API_KEY": _llm_cfg.api_key,
+                        "OPENAI_BASE_URL": _llm_cfg.base_url,
+                        "LLM_MODEL": _llm_cfg.model,
+                    }
 
         if not agent_id and tool_name:
             owner = self._find_tool_owner(tool_name)
@@ -17967,13 +17968,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if isinstance(minted, GateRefusal):
                 return minted
             delegation_token, hop_correlation_id = minted
-            if not _untrusted_tunnel_agent:
+            if not _untrusted_tunnel_agent and (agent_id, tool_name) != ("fhir-1", "extract_note_fields"):
                 args["_delegation_token"] = delegation_token
         elif user_id and agent_id and not _untrusted_tunnel_agent:
             delegation_token = await self._get_delegation_token(websocket, agent_id, user_id)
-            if delegation_token:
+            if delegation_token and (agent_id, tool_name) != ("fhir-1", "extract_note_fields"):
                 args["_delegation_token"] = delegation_token
-            elif (self._delegation_required() or machine_scopes is not None
+            elif not delegation_token and (self._delegation_required() or machine_scopes is not None
                   or mesh_admission.MEMBER_CLAIM in _session_claims):
                 permissions_fault = await self._delegation_denied_for_permissions(
                     websocket, agent_id, user_id)
@@ -19376,6 +19377,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             # One approval authorizes exactly one physical attempt
             max_retries = 1
 
+        if (agent_id, tool_name) == ("fhir-1", "extract_note_fields"):
+            max_retries = 1
         default_timeout = TOOL_TIMEOUT_OVERRIDES.get(tool_name, 30.0)
         if agent_id == "computer-use-1":
             from orchestrator.computer_use_policy import dispatch_timeout
@@ -19649,6 +19652,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             "retryable": False, "offline": True})
             except Exception:
                 logger.debug("user-agent offline check failed", exc_info=True)
+        if (agent_id, tool_name) == ("fhir-1", "extract_note_fields"):
+            from orchestrator.clinical_extraction import invoke as invoke_clinical
+
+            return await guarded(args, lambda capabilities: invoke_clinical(
+                self, ui_websocket, args, owner=tool_owner,
+                chat=protected_conversation_id, timeout=timeout))
         if agent_id in self.local_agents:
             return await guarded(
                 args,

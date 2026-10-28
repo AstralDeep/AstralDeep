@@ -551,42 +551,34 @@ def test_tool_denies_invalid_note_id(pilot_on, note_id):
     assert error_of(extract_note_fields(note_text=NOTE, note_id=note_id))["code"] == "EXTRACT_BAD_REQUEST"
 
 
-def test_tool_accepts_empty_note_id(pilot_on, session_creds, monkeypatch):
-    fake, calls = make_fake_openai([response_for(NOTE, "")])
-    monkeypatch.setattr(extraction, "_resolve_llm_client", lambda kwargs: (fake(), "m"))
-    result = extract_note_fields(note_text=NOTE, note_id="", **session_creds)
+def test_proposal_accepts_empty_note_id():
+    result = evaluate_proposal(NOTE, "", response_for(NOTE, ""))
     assert result["_data"]["outcome"] == "extracted"
     assert result["_data"]["note"]["note_id"] == ""
 
 
-def test_tool_denies_without_credentials(pilot_on):
-    result = extract_note_fields(note_text=NOTE, note_id=NOTE_ID)
-    error = error_of(result)
-    assert error["code"] == "EXTRACT_LLM_UNAVAILABLE" and error["retryable"] is True
+def test_standalone_requires_the_governed_host(pilot_on):
+    error = error_of(extract_note_fields(note_text=NOTE, note_id=NOTE_ID))
+    assert error["code"] == "EXTRACT_HOST_UNAVAILABLE" and error["retryable"] is False
 
 
 def test_tool_never_decrypts_encrypted_credentials(pilot_on):
     result = extract_note_fields(
         note_text=NOTE, note_id=NOTE_ID,
         _credentials={"OPENAI_API_KEY": "secret"}, _credentials_encrypted=True)
-    assert error_of(result)["code"] == "EXTRACT_LLM_UNAVAILABLE"
+    assert error_of(result)["code"] == "EXTRACT_HOST_UNAVAILABLE"
 
 
-def test_plaintext_credential_fallback_for_in_process_agents(pilot_on, monkeypatch):
-    fake, calls = make_fake_openai([response_for(NOTE, NOTE_ID)])
-    monkeypatch.setattr(extraction, "_resolve_llm_client", lambda kwargs: (fake(), "m"))
-    result = extract_note_fields(
-        note_text=NOTE, note_id=NOTE_ID, _credentials={"OPENAI_API_KEY": "k"})
-    assert result["_data"]["outcome"] == "extracted"
+def test_standalone_declines_plaintext_credentials(pilot_on):
+    result = extract_note_fields(note_text=NOTE, note_id=NOTE_ID, _credentials={"OPENAI_API_KEY": "k"})
+    assert error_of(result)["code"] == "EXTRACT_HOST_UNAVAILABLE"
 
 
 # ---------------------------------------------------------------- tool golden paths
 
 
-def test_tool_returns_validated_extraction_and_card(pilot_on, session_creds, monkeypatch):
-    fake, calls = make_fake_openai([response_for(NOTE, NOTE_ID)])
-    monkeypatch.setattr(extraction, "_resolve_llm_client", lambda kwargs: (fake(), "m"))
-    result = extract_note_fields(note_text=NOTE, note_id=NOTE_ID, **session_creds)
+def test_proposal_returns_validated_extraction_and_card():
+    result = evaluate_proposal(NOTE, NOTE_ID, response_for(NOTE, NOTE_ID))
     card, components = card_of(result)
     data = result["_data"]
     assert data["outcome"] == "extracted"
@@ -600,40 +592,23 @@ def test_tool_returns_validated_extraction_and_card(pilot_on, session_creds, mon
     assert glucose["unit_code_status"] == "validated"
     assert data["disclaimer"]
     assert "clinical decision" in data["disclaimer"]
-    request = calls[0]
-    assert request["model"] == "m"
-    assert NOTE in request["messages"][1]["content"]
-    assert calls and "timeout" in request
     table = next(component for component in components if component["type"] == "table")
     assert table["id"] == "fhir-extract-scalars"
 
 
-def test_tool_session_credentials_override_defaults(pilot_on, monkeypatch):
-    fake, calls = make_fake_openai([response_for(NOTE, NOTE_ID)])
-    seen = {}
-
-    def resolve(kwargs):
-        seen.update(kwargs)
-        return fake(), "m"
-
-    monkeypatch.setattr(extraction, "_resolve_llm_client", resolve)
-    extract_note_fields(note_text=NOTE, note_id=NOTE_ID, _session_llm_credentials={
-        "OPENAI_API_KEY": "sess", "OPENAI_BASE_URL": "http://s", "LLM_MODEL": "sm"})
-    assert seen["_session_llm_credentials"]["OPENAI_API_KEY"] == "sess"
+def test_standalone_declines_session_credential_authority(pilot_on):
+    result = extract_note_fields(note_text=NOTE, note_id=NOTE_ID,
+        _session_llm_credentials={"OPENAI_API_KEY": "synthetic-session-key"})
+    assert error_of(result)["code"] == "EXTRACT_HOST_UNAVAILABLE"
 
 
-def test_tool_wraps_provider_failure_as_retryable(pilot_on, session_creds, monkeypatch):
-    fake, _ = make_fake_openai([RuntimeError("boom")])
-    monkeypatch.setattr(extraction, "_resolve_llm_client", lambda kwargs: (fake(), "m"))
-    result = extract_note_fields(note_text=NOTE, note_id=NOTE_ID, **session_creds)
-    error = error_of(result)
-    assert error["code"] == "EXTRACT_PROVIDER_FAILED" and error["retryable"] is True
+def test_standalone_unavailability_never_requests_a_provider_retry(pilot_on):
+    error = error_of(extract_note_fields(note_text=NOTE, note_id=NOTE_ID))
+    assert error["retryable"] is False
 
 
-def test_tool_preserves_malformed_output_as_rejected_not_absence(pilot_on, session_creds, monkeypatch):
-    fake, _ = make_fake_openai(["I could not produce JSON, sorry."])
-    monkeypatch.setattr(extraction, "_resolve_llm_client", lambda kwargs: (fake(), "m"))
-    result = extract_note_fields(note_text=NOTE, note_id=NOTE_ID, **session_creds)
+def test_proposal_preserves_malformed_output_as_rejected_not_absence():
+    result = evaluate_proposal(NOTE, NOTE_ID, "I could not produce JSON, sorry.")
     data = result["_data"]
     assert data["outcome"] == "rejected_output"
     assert data["reasons"] == [CHECK_SCHEMA]
@@ -642,29 +617,23 @@ def test_tool_preserves_malformed_output_as_rejected_not_absence(pilot_on, sessi
     assert "_error" not in result
 
 
-def test_tool_rejects_oversized_model_output(pilot_on, session_creds, monkeypatch):
-    fake, _ = make_fake_openai(["x" * 70000])
-    monkeypatch.setattr(extraction, "_resolve_llm_client", lambda kwargs: (fake(), "m"))
-    result = extract_note_fields(note_text=NOTE, note_id=NOTE_ID, **session_creds)
+def test_proposal_rejects_oversized_model_output():
+    result = evaluate_proposal(NOTE, NOTE_ID, "x" * 70000)
     data = result["_data"]
     assert data["outcome"] == "rejected_output"
     assert data["reasons"] == [CHECK_OVERSIZE]
 
 
-def test_tool_accepts_fenced_model_output(pilot_on, session_creds, monkeypatch):
+def test_proposal_accepts_fenced_model_output():
     payload = golden_payload()
-    fake, _ = make_fake_openai(["```json\n" + json.dumps(payload) + "\n```"])
-    monkeypatch.setattr(extraction, "_resolve_llm_client", lambda kwargs: (fake(), "m"))
-    result = extract_note_fields(note_text=NOTE, note_id=NOTE_ID, **session_creds)
+    result = evaluate_proposal(NOTE, NOTE_ID, "```json\n" + json.dumps(payload) + "\n```")
     assert result["_data"]["outcome"] == "extracted"
 
 
-def test_tool_partial_outcome_withholds_failed_fields(pilot_on, session_creds, monkeypatch):
+def test_proposal_partial_outcome_withholds_failed_fields():
     payload = golden_payload()
     payload["findings"]["entries"][2]["unit"] = "mmol/L"
-    fake, _ = make_fake_openai([json.dumps(payload)])
-    monkeypatch.setattr(extraction, "_resolve_llm_client", lambda kwargs: (fake(), "m"))
-    result = extract_note_fields(note_text=NOTE, note_id=NOTE_ID, **session_creds)
+    result = evaluate_proposal(NOTE, NOTE_ID, json.dumps(payload))
     data = result["_data"]
     assert data["outcome"] == "partial"
     glucose = data["fields"]["findings"][2]
@@ -673,13 +642,11 @@ def test_tool_partial_outcome_withholds_failed_fields(pilot_on, session_creds, m
     assert CHECK_UNIT in glucose["failures"]
 
 
-def test_tool_outcome_absent_when_model_abstains_everywhere(pilot_on, session_creds, monkeypatch):
+def test_proposal_outcome_absent_when_model_abstains_everywhere():
     payload = envelope(NOTE_ID, abstain("not_documented"), abstain("not_documented"),
                        {"entries": [], "abstention_reason": "not_documented"})
     payload["note_digest"] = sha256_hex(NOTE)
-    fake, _ = make_fake_openai([json.dumps(payload)])
-    monkeypatch.setattr(extraction, "_resolve_llm_client", lambda kwargs: (fake(), "m"))
-    result = extract_note_fields(note_text=NOTE, note_id=NOTE_ID, **session_creds)
+    result = evaluate_proposal(NOTE, NOTE_ID, json.dumps(payload))
     data = result["_data"]
     assert data["outcome"] == "absent"
     assert data["fields"]["patient_ref"]["status"] == STATUS_ABSENT
@@ -688,19 +655,15 @@ def test_tool_outcome_absent_when_model_abstains_everywhere(pilot_on, session_cr
     assert any("model-asserted" in str(component.get("message", "")) for component in card["content"])
 
 
-def test_tool_does_not_echo_note_text_into_data(pilot_on, session_creds, monkeypatch):
-    fake, _ = make_fake_openai([response_for(NOTE, NOTE_ID)])
-    monkeypatch.setattr(extraction, "_resolve_llm_client", lambda kwargs: (fake(), "m"))
-    result = extract_note_fields(note_text=NOTE, note_id=NOTE_ID, **session_creds)
+def test_proposal_does_not_echo_note_text_into_data():
+    result = evaluate_proposal(NOTE, NOTE_ID, response_for(NOTE, NOTE_ID))
     encoded = json.dumps(result)
     assert "reports chest pain" not in encoded
 
 
-def test_tool_logs_no_note_content(pilot_on, session_creds, monkeypatch, caplog):
-    fake, _ = make_fake_openai([response_for(NOTE, NOTE_ID)])
-    monkeypatch.setattr(extraction, "_resolve_llm_client", lambda kwargs: (fake(), "m"))
+def test_proposal_logs_no_note_content(caplog):
     with caplog.at_level("INFO", logger="FhirExtraction"):
-        extract_note_fields(note_text=NOTE, note_id=NOTE_ID, **session_creds)
+        evaluate_proposal(NOTE, NOTE_ID, response_for(NOTE, NOTE_ID))
     assert "DEMO-1001" not in caplog.text and "chest pain" not in caplog.text
     assert "outcome=" in caplog.text
 

@@ -2,7 +2,13 @@
   "schema_version": "note-extract-v1",
   "review": {
     "basis": "Developer-authored synthetic regression fixture; clinical review has not been attested. All notes, identifiers, and labels are synthetic; each label element carries a developer rationale string. The token __NOTE_DIGEST__ inside a proposal is replaced by the scoring harness with the sha256 of the case note before validation; wrong-note cases never use the token.",
-    "status": "requires_clinician_review",
+    "status": "owner_accepted_synthetic",
+    "owner_acceptance": {
+      "kind": "owner_acceptance",
+      "date": "2026-10-28",
+      "cases_sha256": "07026ac51ad8e044f84f641dd90b2054c33df221be09b6bffbf1c581bf9a2dc1",
+      "basis": "The owner accepted these unchanged developer-authored synthetic regression cases and removed the clinician-approval prerequisite. This acceptance is not independent clinical validation."
+    },
     "reviewer": null,
     "attestation": null,
     "categories": [

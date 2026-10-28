@@ -7,6 +7,7 @@ and the digest-token invariant that wrong-note cases never auto-bind.
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -90,9 +91,16 @@ def test_fixture_documents_the_digest_token_and_schema():
     assert "__NOTE_DIGEST__" in document["review"]["basis"]
 
 
-def test_fixture_does_not_claim_unattested_clinical_review():
+def test_owner_acceptance_keeps_synthetic_provenance_without_clinician_attestation():
     document = json.loads(Path(diagnostic.CASES_PATH).read_text(encoding="utf-8"))
-    assert document["review"]["status"] == "requires_clinician_review"
+    assert document["review"]["status"] == "owner_accepted_synthetic"
+    accepted = document["review"]["owner_acceptance"]
+    assert set(accepted) == {"kind", "date", "cases_sha256", "basis"}
+    assert accepted["kind"] == "owner_acceptance" and accepted["date"] == "2026-10-28"
+    digest = hashlib.sha256(json.dumps(document["cases"], sort_keys=True, separators=(",", ":"),
+                                      ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+    assert accepted["cases_sha256"] == digest == "07026ac51ad8e044f84f641dd90b2054c33df221be09b6bffbf1c581bf9a2dc1"
+    assert "synthetic" in accepted["basis"].lower()
     assert document["review"]["reviewer"] is None
     assert document["review"]["attestation"] is None
     assert "reviewed" not in document["review"]

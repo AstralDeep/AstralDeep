@@ -1,8 +1,5 @@
-"""Implements the read-only extract_note_fields pilot tool: bounded note text in,
-one model proposal over the owner's configured provider, deterministic validation,
-and an authorized card plus structured result out. Disabled unless the
-clinical_note_extract flag is on; never writes FHIR records and never logs note
-text or extracted values.
+"""Validates fixed clinical proposals and builds their reviewed source-bound cards.
+Standalone MCP extraction refuses provider authority; the governed orchestrator host owns model invocation.
 """
 
 from __future__ import annotations
@@ -14,13 +11,11 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from astralprims import Alert, Card, Table, Text
-from openai import OpenAI
 
 from shared.feature_flags import flags
 from shared.llm_text import strip_reasoning_markup
 
 from agents.fhir.client import FhirError
-from agents.fhir.extraction_prompts import build_messages
 from agents.fhir.extraction_schema import (
     CHECK_OVERSIZE,
     MAX_NOTE_CHARS,
@@ -48,9 +43,6 @@ from agents.fhir.extraction_validate import (
 
 logger = logging.getLogger("FhirExtraction")
 
-PROVIDER_TIMEOUT_SECONDS = 60
-LLM_MODEL_DEFAULT = "gpt-4o"
-
 FENCE = re.compile(r"^```[a-zA-Z0-9_-]*\s*\n(.*?)\n?\s*```\s*$", re.DOTALL)
 
 OUTCOME_MESSAGES = {
@@ -60,23 +52,6 @@ OUTCOME_MESSAGES = {
     OUTCOME_NO_VALID_EXTRACTION: "No proposed field passed the deterministic checks.",
     OUTCOME_REJECTED: "The proposal was rejected before field evaluation.",
 }
-
-
-def _resolve_llm_client(kwargs: Dict[str, Any]) -> Tuple[Optional[OpenAI], str]:
-    session = kwargs.get("_session_llm_credentials") or {}
-    creds = kwargs.get("_credentials", {}) or {}
-    api_key = (
-        session.get("OPENAI_API_KEY")
-        or (creds.get("OPENAI_API_KEY") if not kwargs.get("_credentials_encrypted") else None)
-    )
-    base_url = (
-        session.get("OPENAI_BASE_URL")
-        or (creds.get("OPENAI_BASE_URL") if not kwargs.get("_credentials_encrypted") else None)
-    )
-    model = session.get("LLM_MODEL") or LLM_MODEL_DEFAULT
-    if not api_key:
-        return None, model
-    return OpenAI(api_key=api_key, base_url=base_url), model
 
 
 def _parse_response(raw: str) -> Any:
@@ -290,36 +265,12 @@ def prepare_note(note_text: str, note_id: str) -> Tuple[str, str, str]:
     return note_text, note_id, digest
 
 
-def _extract(note_text: str, note_id: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    if not flags.is_enabled("clinical_note_extract"):
-        raise FhirError(
-            "EXTRACT_DISABLED",
-            "Note extraction pilot is disabled; enable the clinical_note_extract flag first")
-    note_text, note_id, digest = prepare_note(note_text, note_id)
-    client, model = _resolve_llm_client(kwargs)
-    if client is None:
-        raise FhirError(
-            "EXTRACT_LLM_UNAVAILABLE",
-            "No LLM credentials are configured for this session, so the note could not be extracted",
-            retryable=True)
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=build_messages(note_text, note_id, digest),
-            timeout=PROVIDER_TIMEOUT_SECONDS,
-        )
-        raw = response.choices[0].message.content or ""
-    except Exception:  # noqa: BLE001
-        logger.info("note extraction provider call failed outcome=%s", "provider_error")
-        raise FhirError(
-            "EXTRACT_PROVIDER_FAILED",
-            "The configured model provider failed or timed out during extraction",
-            retryable=True)
-    return _finish(note_text, note_id, digest, raw, _parse_response(raw) if len(raw) <= MAX_RESPONSE_CHARS else None)
-
-
 def extract_note_fields(note_text: str = "", note_id: str = "", **kwargs: Any) -> Dict[str, Any]:
     try:
-        return _extract(note_text, note_id, kwargs)
+        if not flags.is_enabled("clinical_note_extract"):
+            raise FhirError("EXTRACT_DISABLED", "Note extraction pilot is disabled")
+        prepare_note(note_text, note_id)
+        raise FhirError("EXTRACT_HOST_UNAVAILABLE",
+                        "Extraction requires the current governed host and context accounting services")
     except FhirError as error:
         return error.as_tool_error()

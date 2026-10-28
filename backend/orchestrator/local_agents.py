@@ -244,6 +244,10 @@ async def register_built_ins(orch) -> List[str]:
                         (agent.card.agent_id, verb) for verb in DE_ESCALATION_VERBS}
                 else:
                     logger.error("Computer-use session effects changed; de-escalation exemption disabled")
+            if dir_name == "fhir":
+                from orchestrator.clinical_extraction import register as register_clinical_extraction
+
+                register_clinical_extraction(orch)
             if dir_name == "terminal_shell":
                 from orchestrator.terminal_host_review import review_registered_terminal
 

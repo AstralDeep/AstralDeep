@@ -10,7 +10,7 @@ from agents.fhir import extraction
 from agents.fhir.extraction import _parse_response, extract_note_fields
 from agents.fhir.extraction_schema import CHECK_SPAN_AMBIGUOUS
 from agents.fhir.extraction_validate import check_evidence, sha256_hex
-from agents.fhir.tests.test_extraction import NOTE, NOTE_ID, golden_payload, make_fake_openai
+from agents.fhir.tests.test_extraction import NOTE, NOTE_ID, golden_payload
 
 
 @pytest.mark.parametrize("note,quote", [("aaaa", "aaa"), ("ababa", "aba"), ("ééé", "éé")])
@@ -45,9 +45,8 @@ def test_bounded_finite_json_remains_supported():
 def test_accepted_note_preserves_exact_text_digest_and_offsets(monkeypatch):
     monkeypatch.setitem(extraction.flags._flags, "clinical_note_extract", True)
     note = " \n" + NOTE + "\t"
-    provider, _ = make_fake_openai([json.dumps(golden_payload(note, NOTE_ID))])
-    monkeypatch.setattr(extraction, "_resolve_llm_client", lambda _: (provider(), "m"))
-    data = extract_note_fields(note_text=note, note_id=NOTE_ID)["_data"]
+    accepted, label, _ = extraction.prepare_note(note, NOTE_ID)
+    data = extraction.evaluate_proposal(accepted, label, json.dumps(golden_payload(note, NOTE_ID)))["_data"]
     assert data["outcome"] == "extracted"
     assert data["note"]["digest"] == sha256_hex(note)
     assert data["note"]["length"] == len(note)
@@ -60,7 +59,6 @@ def test_accepted_note_preserves_exact_text_digest_and_offsets(monkeypatch):
 def test_invalid_note_encoding_or_identifier_is_refused_before_provider(note, note_id, monkeypatch):
     monkeypatch.setitem(extraction.flags._flags, "clinical_note_extract", True)
     calls = []
-    monkeypatch.setattr(extraction, "_resolve_llm_client", lambda _: (calls.append(True), "m"))
     result = extract_note_fields(note_text=note, note_id=note_id)
     assert result["_error"]["code"] == "EXTRACT_BAD_REQUEST"
     assert calls == []

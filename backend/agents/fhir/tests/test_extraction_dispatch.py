@@ -1,19 +1,16 @@
-"""Qualifies the synthetic real-dispatch staging path for the extraction pilot: the
-orchestrator's full authorization gate stack (permission, scope, effect declaration,
-context injection, owner LLM credentials) followed by the real in-process transport
-against the live FHIR agent, including the flag-off and permission-denied outcomes.
+"""Checks normal extraction preparation and coded standalone MCP placement denials.
+Canonical host invocation and durable accounting are exercised through normal turn ingress in the host suite.
 """
 
 from __future__ import annotations
 
-import json
 from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agents.fhir import extraction, fhir_agent, mcp_tools
-from agents.fhir.tests.test_extraction import NOTE, golden_payload, make_fake_openai
+from agents.fhir import fhir_agent, mcp_tools
+from agents.fhir.tests.test_extraction import NOTE
 from orchestrator.concurrency_cap import ConcurrencyCap
 from orchestrator.hooks import HookManager
 from orchestrator.orchestrator import GateRefusal, Orchestrator
@@ -95,10 +92,7 @@ async def test_gate_stack_prepares_owner_bound_dispatch(orch):
     prepared = await orch._authorize_and_prepare(
         websocket, "fhir-1", TOOL, {"note_text": NOTE, "note_id": "SYN-001"}, CHAT, OWNER)
     assert not isinstance(prepared, GateRefusal)
-    assert prepared.args["session_id"] == CHAT
-    assert prepared.args["user_id"] == OWNER
-    assert prepared.args["_session_llm_credentials"]["OPENAI_API_KEY"] == "owner-key"
-    assert prepared.args["_session_llm_credentials"]["LLM_MODEL"] == "owner-model"
+    assert set(prepared.args) == {"note_text", "note_id"}
     assert prepared.delegation_token is None
 
 
@@ -119,23 +113,11 @@ async def test_real_dispatch_executes_end_to_end(orch, agent, monkeypatch):
         websocket, "fhir-1", TOOL, {"note_text": NOTE, "note_id": "SYN-001"}, CHAT, OWNER)
     assert not isinstance(prepared, GateRefusal)
 
-    payload = golden_payload()
-    fake, calls = make_fake_openai([json.dumps(payload)])
-    monkeypatch.setattr(extraction, "_resolve_llm_client", lambda kwargs: (fake(), "m"))
     monkeypatch.setitem(mcp_tools.flags._flags, "clinical_note_extract", True)
-
     transport = LoopbackOrchestrator(agent)
-    response = await transport.execute(
-        "fhir-1", TOOL, dict(prepared.args), timeout=15.0, ui_websocket=websocket)
-    assert response.error is None
-    data = response.result
-    assert data["outcome"] == "extracted"
-    assert data["fields"]["patient_ref"]["value"] == "DEMO-1001"
-    assert data["fields"]["patient_ref"]["evidence"]["note_id"] == "SYN-001"
-    assert data["fields"]["patient_ref"]["evidence"]["digest"]
-    assert response.ui_components[0]["id"] == "fhir-note-extract"
-    assert calls[0]["model"] == "m"
-    assert "_session_llm_credentials" not in json.dumps(calls[0]["messages"])
+    response = await transport.execute("fhir-1", TOOL, dict(prepared.args), timeout=15.0, ui_websocket=websocket)
+    assert response.error["code"] == "EXTRACT_HOST_UNAVAILABLE"
+    assert not response.ui_components
 
 
 @pytest.mark.asyncio
@@ -156,27 +138,11 @@ async def test_real_dispatch_carries_flag_off_denial(orch, agent, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_real_dispatch_reports_rejected_model_output_through_transport(
-    orch, agent, monkeypatch,
-):
-    websocket = object()
-    orch.ui_sessions = {websocket: {"sub": OWNER}}
-    prepared = await orch._authorize_and_prepare(
-        websocket, "fhir-1", TOOL, {"note_text": NOTE, "note_id": "SYN-001"}, CHAT, OWNER)
-    fake, _ = make_fake_openai(["definitely not json"])
-    monkeypatch.setattr(extraction, "_resolve_llm_client", lambda kwargs: (fake(), "m"))
+async def test_noncanonical_host_dispatch_refuses_without_provider_authority(orch, monkeypatch):
     monkeypatch.setitem(mcp_tools.flags._flags, "clinical_note_extract", True)
-
-    transport = LoopbackOrchestrator(agent)
-    response = await transport.execute(
-        "fhir-1", TOOL, dict(prepared.args), timeout=15.0, ui_websocket=websocket)
-    assert response.error is None
-    data = response.result
-    assert data["outcome"] == "rejected_output"
-    assert data["reasons"]
-    assert all(
-        record["status"] == "not_evaluated"
-        for record in (data["fields"]["patient_ref"], data["fields"]["note_date"]))
+    response = await orch._dispatch_tool_call("fhir-1", TOOL, {"note_text": NOTE}, 60, object(),
+                                             protected_owner_id=OWNER, protected_conversation_id=CHAT)
+    assert response.error["code"] == "EXTRACT_HOST_UNAVAILABLE"
 
 
 @pytest.mark.asyncio
