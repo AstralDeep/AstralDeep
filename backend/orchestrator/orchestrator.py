@@ -10196,7 +10196,7 @@ class Orchestrator:
                                 _roles.extend((_c or {}).get("roles") or [])
                             _menu = menu_model_dict(
                                 _roles, include_admin=False, include_tour=False,
-                                **projection_native_chrome_availability(user_data),
+                                **projection_native_chrome_availability(user_data, self),
                             )
                             if _dt == "watch":
                                 _menu = project_watch_menu_model(
@@ -23996,7 +23996,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 from webrender.chrome import render_topbar
                 topbar = render_topbar(
                     roles=await asyncio.to_thread(session_roles, request),
-                    **projection_chrome_availability(),
+                    **projection_chrome_availability(self),
                 )
             except Exception:
                 logger.exception("chrome: topbar render failed — serving bare shell")

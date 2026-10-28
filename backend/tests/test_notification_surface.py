@@ -96,3 +96,25 @@ async def test_forged_owner_extra_fields_and_disabled_surface_are_denied(surface
     monkeypatch.setitem(flags._flags, "notification_routing", False)
     with pytest.raises(NotificationStoreUnavailable):
         surface._state(orch, owner, {})
+
+
+def test_notification_menu_requires_host_service_flag_and_projection_support(surface_env, monkeypatch):
+    from orchestrator.chrome_availability import projection_chrome_availability
+    from webrender.chrome import menu_model
+    import webrender.chrome as chrome
+
+    _surface, orch, _socket = surface_env
+    assert not projection_chrome_availability().get("notifications_enabled", False)
+
+    def supported(*, notifications_enabled=False):
+        return None
+
+    monkeypatch.setattr(menu_model, "build_menu_model", supported)
+    monkeypatch.setattr(menu_model, "menu_model_dict", supported)
+    monkeypatch.setattr(chrome, "render_topbar", supported)
+    assert projection_chrome_availability(orch)["notifications_enabled"] is True
+    monkeypatch.setitem(flags._flags, "notification_routing", False)
+    assert not projection_chrome_availability(orch).get("notifications_enabled", False)
+    monkeypatch.setitem(flags._flags, "notification_routing", True)
+    orch.notification_routing = None
+    assert not projection_chrome_availability(orch).get("notifications_enabled", False)

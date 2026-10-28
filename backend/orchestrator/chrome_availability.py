@@ -6,11 +6,12 @@ delivery channels can't drift on available menu items.
 from __future__ import annotations
 
 import logging
+import inspect
 
 logger = logging.getLogger("Orchestrator.ChromeAvailability")
 
 
-def projection_chrome_availability() -> dict[str, bool]:
+def projection_chrome_availability(orch=None) -> dict[str, bool]:
     pulse = False
     byo = False
     remote = False
@@ -55,11 +56,20 @@ def projection_chrome_availability() -> dict[str, bool]:
     }
     if connections:
         values["connections_enabled"] = True
+    if orch is not None and getattr(orch, "notification_routing", None) is not None:
+        from shared.feature_flags import flags
+        from webrender.chrome import render_topbar
+        from webrender.chrome.menu_model import build_menu_model, menu_model_dict
+
+        if flags.is_enabled("notification_routing") and all(
+                "notifications_enabled" in inspect.signature(builder).parameters
+                for builder in (build_menu_model, menu_model_dict, render_topbar)):
+            values["notifications_enabled"] = True
     return values
 
 
-def projection_native_chrome_availability(claims: dict) -> dict[str, bool]:
-    values = projection_chrome_availability()
+def projection_native_chrome_availability(claims: dict, orch=None) -> dict[str, bool]:
+    values = projection_chrome_availability(orch)
     capabilities = claims.get("_client_capabilities", []) if isinstance(claims, dict) else []
     values["work_enabled"] = bool(values.get("work_enabled", False) and isinstance(capabilities, list)
                                   and "work_read_v1" in capabilities)

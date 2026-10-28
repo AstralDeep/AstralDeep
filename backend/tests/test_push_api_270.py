@@ -247,6 +247,13 @@ def test_delivery_outcomes_introspection(
     delivered = [item for item in outcomes if item["action"] == "push.delivery.delivered"]
     assert delivered[0]["delivery_outcome"] == "provider_accepted"
     assert delivered[0]["device_id"] == "device-outcome-01"
+    queued = [item for item in outcomes if item["action"] == "push.delivery.queued"]
+    assert queued[0]["device_id"] == "device-outcome-01" and queued[0]["token_generation"] == 1
+    rotated = store.enroll(owner, device_id="device-outcome-01", platform="android", token="rotated-token")
+    repeated = authed_client.get("/api/push/deliveries/sched-20260101-a").json()
+    proof = next(item for item in repeated if item["action"] == "push.delivery.queued")
+    assert proof["token_generation"] == 1 and proof["token_generation"] != rotated["token_generation"]
+    assert "token_fingerprint" not in proof and "token" not in proof
     foreign = authed_client.get("/api/push/deliveries/never-seen-notification")
     assert foreign.status_code == 200
     assert foreign.json() == []

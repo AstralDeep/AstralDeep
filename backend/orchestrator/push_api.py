@@ -187,6 +187,7 @@ async def delivery_outcomes(
                 "outcome": event.outcome,
                 "delivery_outcome": meta.get("delivery_outcome"),
                 "device_id": meta.get("device_id"),
+                "token_generation": meta.get("token_generation"),
                 "error_code": meta.get("error_code"),
                 "attempt": meta.get("attempt"),
                 "recorded_at": event.recorded_at.isoformat(),

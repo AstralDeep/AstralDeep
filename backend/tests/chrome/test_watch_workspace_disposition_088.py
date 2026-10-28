@@ -42,7 +42,7 @@ async def test_register_chrome_omission_is_watch_specific(
     monkeypatch, register_chrome_branch, device_type, export, share,
 ):
     monkeypatch.delenv("ROTE_HOST_CONFIG", raising=False)
-    monkeypatch.setattr(chrome_availability, "projection_chrome_availability", lambda: {
+    monkeypatch.setattr(chrome_availability, "projection_chrome_availability", lambda _orch=None: {
         "export_enabled": export, "share_enabled": share,
     })
     profile = DeviceProfile.from_dict({"device_type": device_type, "viewport_width": 390})
