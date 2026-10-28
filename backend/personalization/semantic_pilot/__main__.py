@@ -14,6 +14,7 @@ from typing import List, Optional
 from .bounds import Bounds
 from .report import write_report
 from .runner import PilotConfig, PilotError, RunCancelled, run_pilot
+from .runtime import run_pilot_bounded
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -70,7 +71,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--deadline-seconds", type=float, default=None,
-        help="optional wall-clock deadline for manual runs; CI runs stay deadline-free",
+        help="optional host runtime limit using a disposable worker; expiry writes no report",
     )
     return parser.parse_args(argv)
 
@@ -98,7 +99,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             forced_k=args.k,
             attestation=attestation,
         )
-        report = run_pilot(config)
+        report = (run_pilot_bounded(config) if args.deadline_seconds is not None
+                  else run_pilot(config))
     except RunCancelled:
         print("pilot run cancelled; no report written", file=sys.stderr)
         return EXIT_CANCELLED

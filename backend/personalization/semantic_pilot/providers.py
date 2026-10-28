@@ -13,6 +13,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import urlparse
 
 from shared import external_http
 
@@ -313,8 +314,15 @@ class VectorGateway:
                 else:
                     usage.rerank_calls += 1
                 raw = self._transport(route, payload)
-                return _parse_json_response(raw)
+                if cancel_check is not None and cancel_check():
+                    raise RunCancelled("cancelled during provider call")
+                parsed = _parse_json_response(raw)
+                if cancel_check is not None and cancel_check():
+                    raise RunCancelled("cancelled during provider response parsing")
+                return parsed
             except ProviderFault as fault:
+                if cancel_check is not None and cancel_check():
+                    raise RunCancelled("cancelled during failed provider call") from None
                 if fault.kind in _TRANSIENT_HTTP_FAULTS and attempts < max_attempts:
                     continue
                 usage.faults.append(fault.to_dict())
@@ -329,7 +337,7 @@ def tei_http_transport(endpoint: TeiEndpoint,
         if selected is None:
             raise ProviderFault("rerank_unavailable", "no explicit rerank endpoint configured")
         base_url = external_http.normalize_url(selected.base_url)
-        allowed_private = ([base_url.split("://", 1)[1]]
+        allowed_private = ([urlparse(base_url).hostname]
                            if selected.allow_private_endpoint else None)
         url = base_url + route
         try:

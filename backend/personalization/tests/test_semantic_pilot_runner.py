@@ -124,9 +124,11 @@ def test_cancel_check_stops_the_run(defenses_on):
         _full_run(bounds=Bounds(max_batch_rows=1), cancel_check=cancel)
 
 
-def test_expired_deadline_cancels(defenses_on):
+def test_expired_deadline_cancels(defenses_on, monkeypatch):
+    ticks = iter((0., 2.))
+    monkeypatch.setattr("personalization.semantic_pilot.runner.time.monotonic", lambda: next(ticks))
     with pytest.raises(RunCancelled):
-        _full_run(bounds=Bounds(runtime_deadline_seconds=1e-9))
+        _full_run(bounds=Bounds(runtime_deadline_seconds=1.))
 
 
 def test_invalid_grid_raises_config_error(defenses_on):

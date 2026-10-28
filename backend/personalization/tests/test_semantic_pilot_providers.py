@@ -380,7 +380,7 @@ def test_tei_http_transport_success_and_headers(monkeypatch):
     assert captured["method"] == "POST"
     assert captured["url"] == "http://tei.internal:8080/v1/embeddings"
     assert captured["api_key"] == "k"
-    assert captured["allowed"] == ["tei.internal:8080"]
+    assert captured["allowed"] == ["tei.internal"]
 
 
 def test_tei_http_transport_private_not_allowed_by_default(monkeypatch):

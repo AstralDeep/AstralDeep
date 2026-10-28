@@ -72,11 +72,16 @@ def _deadline_check(deadline: Optional[float], base_cancel: CancelCheck) -> Call
     def check() -> bool:
         if base_cancel is not None and base_cancel():
             return True
-        if deadline is not None and time.monotonic() > deadline:
+        if deadline is not None and time.monotonic() >= deadline:
             return True
         return False
 
     return check
+
+
+def _check_cancelled(check: CancelCheck) -> None:
+    if check is not None and check():
+        raise RunCancelled("pilot cancelled or runtime deadline reached")
 
 
 def _case_snapshot(case: MemoryCase) -> Dict[str, Any]:
@@ -140,6 +145,7 @@ def _evaluate_case(case: MemoryCase, gateway: Optional[VectorGateway],
                    *, k: int, bounds: Bounds, usage: ProviderUsage,
                    cache: Optional[EphemeralEmbeddingCache], cancel_check,
                    defenses: Dict[str, bool]) -> Dict[str, Any]:
+    _check_cancelled(cancel_check)
     missing = _missing_defenses(case, defenses)
     tools, store = build_tools(case)
     result: Dict[str, Any] = {
@@ -161,6 +167,7 @@ def _evaluate_case(case: MemoryCase, gateway: Optional[VectorGateway],
     except Exception as exc:
         result["variants"][VARIANT_BASELINE] = {"error": f"{type(exc).__name__}: {exc}"}
         return result
+    _check_cancelled(cancel_check)
     result["variants"][VARIANT_BASELINE] = _variant_payload(
         [row["id"] for row, _ in baseline_ranked],
         [round(score, 6) for _, score in baseline_ranked],
@@ -246,6 +253,13 @@ def _aggregate(case_results: List[Dict[str, Any]], k: int) -> Dict[str, Any]:
 
 
 def run_pilot(config: PilotConfig, *, cancel_check: CancelCheck = None) -> Dict[str, Any]:
+    started = time.monotonic()
+    deadline = (
+        started + config.bounds.runtime_deadline_seconds
+        if config.bounds.runtime_deadline_seconds is not None else None
+    )
+    check = _deadline_check(deadline, cancel_check)
+    _check_cancelled(check)
     if not config.candidate_k_grid:
         raise PilotError("candidate_k_grid must not be empty")
     if any(k <= 0 for k in config.candidate_k_grid):
@@ -257,12 +271,7 @@ def run_pilot(config: PilotConfig, *, cancel_check: CancelCheck = None) -> Dict[
 
     usage = ProviderUsage()
     cache = EphemeralEmbeddingCache()
-    started = time.monotonic()
-    deadline = (
-        started + config.bounds.runtime_deadline_seconds
-        if config.bounds.runtime_deadline_seconds is not None else None
-    )
-    check = _deadline_check(deadline, cancel_check)
+    _check_cancelled(check)
 
     gateway: Optional[VectorGateway] = None
     reranker: Optional[VectorGateway] = None
@@ -322,8 +331,9 @@ def run_pilot(config: PilotConfig, *, cancel_check: CancelCheck = None) -> Dict[
     ]
     final_aggregate = _aggregate(final_results, chosen_k)
 
+    _check_cancelled(check)
     elapsed = time.monotonic() - started
-    return build_report(
+    report = build_report(
         corpus_identity=corpus_identity,
         provider_identity=identity.to_dict() if identity else None,
         provider_status=provider_status,
@@ -347,3 +357,5 @@ def run_pilot(config: PilotConfig, *, cancel_check: CancelCheck = None) -> Dict[
         attestation=config.attestation,
         rerank_enabled=config.rerank_enabled,
     )
+    _check_cancelled(check)
+    return report

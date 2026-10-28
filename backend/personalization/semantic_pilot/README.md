@@ -20,6 +20,7 @@ Missing or malformed runtime/asset digest declarations make the TEI profile unav
 ```sh
 PYTHONPATH=backend python -m personalization.semantic_pilot \
   --profile tei-http --run-config /private/path/tei-profile.json \
+  --deadline-seconds 60 \
   --report /private/path/unattested-run.json
 ```
 
@@ -30,3 +31,5 @@ An actual bounded manual synthetic run must retain the exact candidate SHA, runt
 Snapshot text limits count UTF-8 bytes plus one separator byte per row. Token accounting remains the pilot's declared four-character estimate, rather than a tokenizer-exact measure; preadmission includes every dispatched attempt, and reranking counts the query for every document pair. Retries that cannot fit the remaining estimate or call budget are refused before dispatch. Provider byte/call usage includes dispatched retries.
 
 Rows are authorized before inference and compared against current signed content, revision, scope, validity, and supersession fields before return. Reranking also revalidates before sending candidate text. A changed row is dropped with `row_changed`; fresh content is never returned under the old embedding score. Provider indices remain bound to the exact admitted set.
+
+`run_pilot` uses cooperative cancellation checks before and after each provider attempt, including failed/retried calls, between cases, and before and after report construction. It rejects a late final result but cannot interrupt blocking synchronous transport itself. For native qualification, use the CLI with a finite positive `--deadline-seconds`: the parent runs the pilot in its own spawned worker, stops waiting at the host deadline, terminates that worker, escalates to kill if required, and returns cancellation without writing a report. Cleanup permits at most two one-second join grace periods after expiry. Report file I/O happens only after the bounded worker succeeds. This watchdog owns only the pilot worker; separately provisioned TEI/model processes require their own bounded lifecycle and cleanup. Socket timeouts remain enabled and do not substitute for this host boundary.

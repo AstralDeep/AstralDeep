@@ -1,5 +1,5 @@
-"""Hard input/output bounds for the pilot: snapshot size and bytes, query length,
-batch and call counts, token estimates, and the optional wall-clock deadline; every
+"""Input/output bounds for the pilot: snapshot size and bytes, query length,
+batch and call counts, token estimates, and the optional cooperative deadline; every
 bound refuses work past its limit instead of truncating silently.
 """
 
@@ -55,8 +55,10 @@ class Bounds:
             raise ValueError("max_batch_rows must not exceed max_snapshot_rows")
         if self.max_candidates > self.max_snapshot_rows:
             raise ValueError("max_candidates must not exceed max_snapshot_rows")
-        if self.runtime_deadline_seconds is not None and self.runtime_deadline_seconds <= 0:
-            raise ValueError("runtime_deadline_seconds must be positive when set")
+        if self.runtime_deadline_seconds is not None and (
+            not math.isfinite(self.runtime_deadline_seconds) or self.runtime_deadline_seconds <= 0
+        ):
+            raise ValueError("runtime_deadline_seconds must be finite and positive when set")
 
     def validate_query(self, query: str) -> None:
         if not isinstance(query, str) or not query.strip():
