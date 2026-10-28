@@ -197,7 +197,9 @@ async def test_new_body_policy_refuses_without_partial_acceptance(service, fixtu
 @pytest.mark.parametrize("raw", [b"{}", b"null", b"{", b"\xff", b"x" * 16385,
     command(version=True), command(deadline_at="2030-01-01T00:00:00+00:00"),
     command().replace(b'"version": 1', b'"version": 1, "version": 1'),
-    command().replace(b'"model_calls": 1', b'"model_calls": NaN')])
+    command().replace(b'"model_calls": 1', b'"model_calls": NaN')],
+    ids=["object", "null", "truncated", "undecodable", "oversized", "boolean_version",
+         "offset_deadline", "duplicate_key", "nan"])
 async def test_bounded_shape_precedes_any_refresh(service, fixture, runtime, raw):
     with pytest.raises(AssignmentError, match="work_submit_invalid"):
         await service.submit(await context(fixture, runtime), raw)

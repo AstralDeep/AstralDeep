@@ -103,12 +103,13 @@ jobs:
     name: Python 3.11 backend ${{ matrix.group }} group and isolated PostgreSQL
     needs: [backend-image]
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         group:
-          - tests
+          - tests_1
+          - tests_2
           - persistent_agents
           - modules
     steps:
@@ -310,9 +311,9 @@ jobs:
           retention-days: 14
 
   plane-postgres:
-    name: Exact Plane complete PostgreSQL suite
+    name: Exact Plane PostgreSQL suite
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     env:
       ASTRALPLANE_TEST_POSTGRES_DSN: postgresql://astral:isolated_ci_only@127.0.0.1:5432/ad_gate_plane
       ASTRALDEEP_SOURCE_REPO: ${{ github.workspace }}
@@ -352,19 +353,35 @@ jobs:
             --baseline-root "$RUNNER_TEMP/plane-consumer-baseline.git" \
             --github-env "$GITHUB_ENV" \
             --output components/AstralPlane/build/backend-web/consumer-baseline.json
+      - name: Run the full Plane suite only when the Plane pin moved
+        id: lane
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          base_sha="$(jq -er .base_deep_sha components/AstralPlane/build/backend-web/consumer-baseline.json)"
+          python scripts/ci_plane_lane.py --base "$base_sha" --head "$CANDIDATE_SHA" --github-output "$GITHUB_OUTPUT"
       - working-directory: components/AstralPlane
+        env:
+          PLANE_LANE: ${{ steps.lane.outputs.lane }}
         run: |
           set -euo pipefail
           uv lock --check
           uv sync --frozen --group ci
           uv run --frozen --group ci ruff check .
-          uv run --frozen --group ci pytest -q -ra -p no:cacheprovider \
-            --cov=astralplane --cov=scripts.import_staging_fixture \
-            --cov=scripts.migrate_qualification_database \
-            --cov=scripts.qualify_main_upgrade --cov=scripts.check_acceptance_faults \
-            --cov=scripts.ci_review_diagnostics --cov=scripts.check_changed_coverage --cov-branch \
-            --cov-report=xml:build/backend-web/plane-python.xml \
-            --junitxml=build/backend-web/plane-tests.xml --cov-fail-under=88.75
+          if [[ "$PLANE_LANE" == smoke ]]; then
+            uv run --frozen --group ci pytest -q -ra -p no:cacheprovider \
+              tests/architecture tests/test_api.py tests/test_domain.py tests/test_bootstrap.py \
+              --junitxml=build/backend-web/plane-tests.xml
+          else
+            uv run --frozen --group ci pytest -q -ra -p no:cacheprovider \
+              --cov=astralplane --cov=scripts.import_staging_fixture \
+              --cov=scripts.migrate_qualification_database \
+              --cov=scripts.qualify_main_upgrade --cov=scripts.check_acceptance_faults \
+              --cov=scripts.ci_review_diagnostics --cov=scripts.check_changed_coverage --cov-branch \
+              --cov-report=xml:build/backend-web/plane-python.xml \
+              --junitxml=build/backend-web/plane-tests.xml --cov-fail-under=88.75
+          fi
       - name: Enforce changed Plane Python against the baseline component
         run: |
           set -euo pipefail
@@ -405,8 +422,12 @@ jobs:
           cache-dependency-path: tooling/backend-ci/requirements.lock.txt
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: backend-web-test-evidence-tests
-          path: build/backend-web-groups/tests
+          name: backend-web-test-evidence-tests_1
+          path: build/backend-web-groups/tests_1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: backend-web-test-evidence-tests_2
+          path: build/backend-web-groups/tests_2
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: backend-web-test-evidence-persistent_agents
@@ -424,7 +445,8 @@ jobs:
           set -euo pipefail
           python -m pip install --require-hashes -r tooling/backend-ci/requirements.lock.txt
           python scripts/merge_backend_web_coverage.py --root . --output build/backend-web \
-            --evidence build/backend-web-groups/tests \
+            --evidence build/backend-web-groups/tests_1 \
+            --evidence build/backend-web-groups/tests_2 \
             --evidence build/backend-web-groups/persistent_agents \
             --evidence build/backend-web-groups/modules
       - name: Enforce immutable event or reviewed PR-base comparison
@@ -464,9 +486,9 @@ jobs:
         run: |
           state=$(/usr/bin/sudo --non-interactive /usr/bin/env -i PATH=/usr/bin:/usr/sbin:/bin:/sbin LANG=C LC_ALL=C /usr/bin/python3 -I - <<'ASTRAL_REVIEWED_START'
           import hashlib, json, os, re, stat, sys, types
-          identities = (('ci_network_fixture.py', '23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240'), ('ci_fence_fixture_verifier.py', '68bb90701e0302714686a685752a2e93da541146877a5cfac069c319d9921ca3'))
+          identities = (('ci_network_fixture.py', '23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240'), ('ci_fence_fixture_verifier_v2.py', '6c16e452bb0be0f877c40067663c6cc3759eab9ebe11fffd0d41952539b90b57'))
           limit = 262144
-          commit = '85e50f5392e7916ccfd4da84c1ae90e097ef01e5'
+          commit = 'a1bfc19ccd9d1cc58c8298ce26718e92b76b3fb2'
           import urllib.request
           if os.geteuid() != 0:
               raise RuntimeError("trusted_start_requires_root")
@@ -516,7 +538,7 @@ jobs:
           )
           printf '%s' "$state" | /usr/bin/python3 -I -c 'import json,re,sys; value=json.load(sys.stdin)["fixture_id"]; assert isinstance(value,str) and re.fullmatch("[0-9a-f]{16}",value); print("fixture_id="+value)' >> "$GITHUB_OUTPUT"
       - name: Install the reviewed Fence egress firewall in block mode
-        uses: openai/fence@abc5790eac3445fe3854eea6b506aa7d31bed67c # v0.10.5
+        uses: openai/fence@f9751ca5d767dc0199e88733c2b286bd4800a008 # v0.12.5
         with:
           mode: block
           invocation_id: astral-lint-${{ github.run_id }}-${{ github.run_attempt }}
@@ -535,7 +557,7 @@ jobs:
         run: |
           /usr/bin/python3 -I - '${{ steps.fence_peer.outputs.fixture_id }}' 'astral-lint-${{ github.run_id }}-${{ github.run_attempt }}' <<'ASTRAL_REVIEWED_VERIFY'
           import hashlib, json, os, re, stat, sys, types
-          identities = (('ci_network_fixture.py', '23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240'), ('ci_fence_fixture_verifier.py', '68bb90701e0302714686a685752a2e93da541146877a5cfac069c319d9921ca3'))
+          identities = (('ci_network_fixture.py', '23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240'), ('ci_fence_fixture_verifier_v2.py', '6c16e452bb0be0f877c40067663c6cc3759eab9ebe11fffd0d41952539b90b57'))
           limit = 262144
           fixture = sys.argv[1]
           if re.fullmatch("[0-9a-f]{16}", fixture) is None:
@@ -573,8 +595,9 @@ jobs:
               exec(compile(buffers[name], module.__file__, "exec"), module.__dict__)
               modules[name] = module
           peer = modules["ci_network_fixture.py"]
-          verifier = modules["ci_fence_fixture_verifier.py"]
-          result = verifier.verify(fixture, sys.argv[2], verifier.runner_node24(), peer=peer)
+          verifier = modules['ci_fence_fixture_verifier_v2.py']
+          result = verifier.verify(fixture, sys.argv[2], verifier.runner_node24(), peer=peer,
+                                   action_pin='f9751ca5d767dc0199e88733c2b286bd4800a008')
           print(json.dumps(result, sort_keys=True))
           ASTRAL_REVIEWED_VERIFY
       - name: Close the owned peer and attest supervisor exit
@@ -583,7 +606,7 @@ jobs:
         run: |
           /usr/bin/python3 -I - '${{ steps.fence_peer.outputs.fixture_id }}' <<'ASTRAL_REVIEWED_CLOSE'
           import hashlib, json, os, re, stat, sys, types
-          identities = (('ci_network_fixture.py', '23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240'), ('ci_fence_fixture_verifier.py', '68bb90701e0302714686a685752a2e93da541146877a5cfac069c319d9921ca3'))
+          identities = (('ci_network_fixture.py', '23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240'), ('ci_fence_fixture_verifier_v2.py', '6c16e452bb0be0f877c40067663c6cc3759eab9ebe11fffd0d41952539b90b57'))
           limit = 262144
           fixture = sys.argv[1]
           if re.fullmatch("[0-9a-f]{16}", fixture) is None:
@@ -797,8 +820,13 @@ jobs:
             scripts/tests/test_ci_review_diagnostics.py
             scripts/tests/test_acceptance_mutations.py
             scripts/tests/test_acceptance_ci_contract.py
+            backend/tests/test_ci_plane_lane.py
             scripts/tests/test_prepare_plane_upgrade_baseline.py
             scripts/tests/test_package_macos_candidate.py
+            backend/tests/test_release_macos.py
+            backend/tests/test_next_macos_release.py
+            backend/tests/test_macos_release_notes.py
+            backend/tests/test_release_macos_workflow.py
           )
           test "${#RELEASE_TOOL_TESTS[@]}" -gt 0
           docker run --rm --init --cpus=2 --memory=4g \
@@ -904,7 +932,7 @@ jobs:
 
   voice-worker-test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:

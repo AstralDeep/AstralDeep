@@ -31,7 +31,7 @@ def _component_types(components):
 def test_welcome_default_has_no_enable_card():
     components = welcome_components()
     assert all("Agents are off" not in str(c.get("title", "")) for c in components)
-    assert _component_types(components)[0] == "hero"
+    assert _component_types(components) == ["grid", "collapsible"]
 
 
 def test_welcome_tools_available_true_has_no_enable_card():
@@ -39,10 +39,10 @@ def test_welcome_tools_available_true_has_no_enable_card():
     assert all("Agents are off" not in str(c.get("title", "")) for c in components)
 
 
-def test_welcome_without_tools_prepends_enable_card_after_hero():
+def test_welcome_without_tools_prepends_enable_card():
     components = welcome_components(tools_available=False)
-    assert components[0]["type"] == "hero"
-    card = components[1]
+    assert _component_types(components) == ["card", "grid", "collapsible"]
+    card = components[0]
     assert card["type"] == "card"
     assert "Agents are off" in card["title"]
     actions = [child.get("action") for child in card["content"]
@@ -116,7 +116,7 @@ def test_explicit_optout_user_still_reaches_the_enable_affordance(perms):
     manager.set_agent_scopes(user_id, agent_id, {"tools:search": False})
 
     assert manager.is_tool_allowed(user_id, agent_id, "web_search") is False
-    card = welcome_components(tools_available=False)[1]
+    card = welcome_components(tools_available=False)[0]
     assert "Agents are off" in card["title"]
 
 

@@ -75,7 +75,7 @@ def test_custom_theme_handler_returns_the_accepted_complete_palette(submitted):
     surface, params, notice = asyncio.run(handler(orch, None, "user-1", ["user"], {"theme": submitted}))
     assert surface == "theme" and "astral-theme-apply" in notice
     stored = orch.theme_preference_context.repository.theme
-    assert set(stored["colors"]) == {key for key, _ in theme_surface._COLOR_KEYS}
+    assert set(stored["colors"]) == set(theme_surface.PRESETS["graphite"]) == ALL_ROLES
     assert stored["colors"]["accent"] == ("#2DD4BF" if "preset" in submitted else "#ABCDEF")
     if "preset" not in submitted:
         assert stored["colors"]["primary"] == "#123456"
@@ -100,24 +100,69 @@ def test_server_palette_snapshot_cannot_be_used_for_another_owner():
     assert components[0]["colors"]["accent"] == "#2DD4BF"
 
 
+PICKER_ROLES = ("bg", "surface", "primary", "secondary", "text", "muted", "accent")
+ALL_ROLES = set(PICKER_ROLES) | {"success", "warning", "error", "info", "on_error", "field_border"}
+GRAPHITE = {"bg": "#121214", "surface": "#1B1B1F", "primary": "#7C3AED", "secondary": "#6E6E78",
+            "text": "#ECECEF", "muted": "#93939B", "accent": "#A78BFA", "success": "#5EC28F",
+            "warning": "#D4A94A", "error": "#E17272", "info": "#9A8CF2", "on_error": "#121214",
+            "field_border": "#6E6E75"}
+MIDNIGHT = {"bg": "#0F1221", "surface": "#1A1E2E", "primary": "#6366F1", "secondary": "#8B5CF6",
+            "text": "#F3F4F6", "muted": "#9CA3AF", "accent": "#06B6D4", "success": "#5EC28F",
+            "warning": "#D4A94A", "error": "#E27777", "info": "#9A8CF2", "on_error": "#0F1221",
+            "field_border": "#686F7E"}
+DAYLIGHT = {"bg": "#F8FAFC", "surface": "#FFFFFF", "primary": "#4F46E5", "secondary": "#7C3AED",
+            "text": "#1E293B", "muted": "#58667B", "accent": "#067590", "success": "#147739",
+            "warning": "#955B06", "error": "#B91C1C", "info": "#4338CA", "on_error": "#FFFFFF",
+            "field_border": "#7F8A9B"}
+
+
+def test_graphite_is_the_first_preset_and_the_default_and_midnight_stays():
+    assert list(theme_surface.PRESETS) == ["graphite", "midnight", "daylight", "ocean", "sunset", "forest"]
+    assert theme_surface.PRESETS["graphite"] == GRAPHITE
+    assert theme_surface._DEFAULT_PRESET == "graphite"
+    assert theme_surface.PRESETS["midnight"] == MIDNIGHT
+    assert theme_surface.PRESETS["daylight"] == DAYLIGHT
+
+
+def test_every_preset_defines_all_thirteen_roles_while_pickers_stay_at_seven():
+    for name, colors in theme_surface.PRESETS.items():
+        assert set(colors) == ALL_ROLES, name
+    assert [key for key, _ in theme_surface._COLOR_KEYS] == list(PICKER_ROLES)
+
+
+def test_presets_match_the_pinned_projection_canonical_table():
+    from astralprojection.chrome.personalization import THEME_PRESETS
+
+    assert {name: dict(colors) for name, colors in THEME_PRESETS.items()} == theme_surface.PRESETS
+
+
+def test_default_theme_preferences_carry_the_graphite_name_and_colors():
+    prefs = theme_surface.default_theme_preferences()
+    assert prefs == {"theme": {"preset": "graphite", "colors": GRAPHITE}}
+    prefs["theme"]["colors"]["bg"] = "#000000"
+    assert theme_surface.PRESETS["graphite"]["bg"] == "#121214"
+    assert theme_surface.default_theme_preferences()["theme"]["colors"]["bg"] == "#121214"
+
+
 def test_render_has_all_preset_cards_with_action_and_swatches():
     html = render(FakeOrch())
-    assert html.count('data-ui-action="chrome_theme_preset"') == 5
-    for name in ("midnight", "daylight", "ocean", "sunset", "forest"):
+    assert html.count('data-ui-action="chrome_theme_preset"') == 6
+    for name in ("graphite", "midnight", "daylight", "ocean", "sunset", "forest"):
         assert f"&quot;preset&quot;: &quot;{name}&quot;" in html, f"missing payload for {name}"
         assert name.capitalize() in html
-    for hexval in ("#0F1221", "#F8FAFC", "#0EA5E9", "#F97316", "#22C55E"):
+    assert html.index("&quot;graphite&quot;") < html.index("&quot;midnight&quot;")
+    for hexval in ("#121214", "#0F1221", "#F8FAFC", "#0EA5E9", "#F97316", "#22C55E"):
         assert f"background:{hexval}" in html
 
 
-def test_render_embeds_seven_color_pickers_with_midnight_defaults():
+def test_render_embeds_seven_color_pickers_with_graphite_defaults():
     html = render(FakeOrch())
     assert html.count("astral-color-picker") == 7
     for key in ("bg", "surface", "primary", "secondary", "text", "muted", "accent"):
         assert f'data-color-key="{key}"' in html
-    assert 'value="#0F1221"' in html
-    assert 'value="#06B6D4"' in html
-    assert "Current theme: default (Midnight)." in html
+    assert 'value="#121214"' in html
+    assert 'value="#A78BFA"' in html
+    assert "Current theme: default (Graphite)." in html
 
 
 def test_render_reflects_persisted_preset():
@@ -132,9 +177,52 @@ def test_render_reflects_persisted_preset():
 def test_render_overlays_single_custom_color_on_defaults():
     html = render(FakeOrch(prefs={"theme": {"color_key": "primary", "color_value": "#ABCDEF"}}))
     assert 'value="#ABCDEF"' in html
-    assert 'value="#0F1221"' in html
+    assert 'value="#121214"' in html
     assert "custom colors" in html
     assert 'aria-pressed="true"' not in html
+
+
+def test_stored_colors_carry_status_on_error_and_field_border_roles():
+    stored = {"bg": "112233", "success": "#00ff00", "warning": "abcdef", "error": "#010203",
+              "info": "#0A0B0C", "on_error": "#FFFFFF", "field_border": "#123456"}
+    colors = theme_surface._effective_colors({"colors": stored})
+    assert colors["bg"] == "#112233"
+    assert colors["success"] == "#00ff00" and colors["warning"] == "#abcdef"
+    assert colors["error"] == "#010203" and colors["info"] == "#0A0B0C"
+    assert colors["on_error"] == "#FFFFFF" and colors["field_border"] == "#123456"
+    assert colors["accent"] == GRAPHITE["accent"]
+    assert set(colors) == ALL_ROLES
+
+
+def test_stored_colors_drop_invalid_and_unknown_roles():
+    colors = theme_surface._effective_colors({"colors": {
+        "success": "not-a-color", "field_border": "<b>", "sparkle": "#123456", "error": 7}})
+    assert colors == GRAPHITE
+
+
+def test_stored_status_colors_reach_the_theme_apply_frame_and_survive_a_picker_edit():
+    palette = dict(DAYLIGHT, success="#101010")
+    orch = FakeOrch(prefs={"theme": {"colors": palette}})
+    components = asyncio.run(theme_surface.components(orch, "user-1", ["user"], {}))
+    assert components[0]["type"] == "theme_apply" and components[0]["colors"] == palette
+
+    handler = theme_surface.HANDLERS["save_theme"]
+    asyncio.run(handler(orch, None, "user-1", ["user"],
+                        {"theme": {"color_key": "accent", "color_value": "#ABCDEF"}}))
+    stored = orch.theme_preference_context.repository.theme["colors"]
+    assert stored == dict(palette, accent="#ABCDEF")
+
+
+def test_status_roles_can_be_saved_and_unknown_roles_are_rejected():
+    orch = FakeOrch(prefs={"theme": {"preset": "daylight"}})
+    handler = theme_surface.HANDLERS["save_theme"]
+    asyncio.run(handler(orch, None, "user-1", ["user"],
+                        {"theme": {"colors": {"field_border": "#112233"}}}))
+    stored = orch.theme_preference_context.repository.theme["colors"]
+    assert stored == dict(DAYLIGHT, field_border="#112233")
+    with pytest.raises(ValueError):
+        asyncio.run(handler(orch, None, "user-1", ["user"],
+                            {"theme": {"color_key": "sparkle", "color_value": "#112233"}}))
 
 
 def test_render_overlays_colors_map_and_ignores_invalid_hex():
@@ -142,15 +230,15 @@ def test_render_overlays_colors_map_and_ignores_invalid_hex():
     html = render(FakeOrch(prefs=prefs))
     assert 'value="#112233"' in html
     assert "<script>" not in html
-    assert 'value="#06B6D4"' in html
+    assert 'value="#A78BFA"' in html
 
 
 def test_render_tolerates_db_failure_and_bad_theme_shape():
     html = render(FakeOrch(fail_on_get=True))
-    assert "Current theme: default (Midnight)." in html
+    assert "Current theme: default (Graphite)." in html
 
     html2 = render(FakeOrch(prefs={"theme": "not-a-dict"}))
-    assert "Current theme: default (Midnight)." in html2
+    assert "Current theme: default (Graphite)." in html2
 
 
 def test_preset_save_persists_like_save_theme_and_applies_instantly():
@@ -190,3 +278,20 @@ def test_db_failure_returns_error_notice_not_exception():
     assert surface == "theme"
     assert "Failed to save theme" in notice and "bg-red-500/10" in notice
     assert "astral-theme-apply" not in notice
+
+
+def test_theme_surface_drops_instructional_captions_in_both_paths_and_keeps_the_state_summary():
+    orch = FakeOrch()
+    html = render(orch)
+    components = asyncio.run(theme_surface.components(orch, "user-1", ["user"], {}))
+    captions = [c["content"] for c in components if c.get("type") == "text" and c.get("variant") == "caption"]
+    headings = [c["content"] for c in components if c.get("type") == "text" and c.get("variant") == "h3"]
+
+    for sentence in ("Pick a preset", "apply and save", "save instantly"):
+        assert sentence not in html
+        assert not [c for c in captions if sentence in c]
+    assert captions == ["Current theme: default (Graphite)."]
+    assert headings == ["Presets", "Fine-tune colors"]
+    assert "Presets" in html and "Fine-tune colors" in html
+    assert html.count("astral-color-picker") == 7
+    assert [c["type"] for c in components].count("color_picker") == 7

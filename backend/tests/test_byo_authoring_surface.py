@@ -590,8 +590,9 @@ async def test_components_list_empty_state_and_session_button(db):
     orch = make_orch(db)
     await _session(orch, name="Open Session")
     comps = await authoring.components(orch, OWNER, ["user"], {})
-    texts = [c.get("content") for c in comps if c["type"] == "text"]
-    assert any("No agents yet" in (t or "") for t in texts)
+    texts = [c.get("content") or "" for c in comps if c["type"] == "text"]
+    assert not any("No agents yet" in t for t in texts)
+    assert not any("in your own words" in t for t in texts)
     buttons = [c for c in comps if c["type"] == "button"
                and c.get("action") == "chrome_open"]
     assert any("Open Session" in (b.get("label") or "") for b in buttons)
@@ -626,8 +627,10 @@ async def test_components_phase_with_no_drafted_fields_prompts_the_assistant(db)
     row = await _session(orch)
     await _t(db.update_draft_agent, row["id"], phase="clarify")
     comps = await authoring.components(orch, OWNER, ["user"], {"draft_id": row["id"]})
-    texts = [c.get("content") for c in comps if c["type"] == "text"]
-    assert any("Nothing drafted yet" in (t or "") for t in texts)
+    texts = [c.get("content") or "" for c in comps if c["type"] == "text"]
+    assert not any("Nothing drafted yet" in t for t in texts)
+    assert authoring.HOST_NOTE not in texts
+    assert not any(c.get("variant") == "caption" for c in comps if c["type"] == "text")
     assert any(c.get("action") == "chrome_author_draft" for c in comps)
 
 

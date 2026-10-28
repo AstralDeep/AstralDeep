@@ -124,7 +124,7 @@ async def test_invalid_navigation_renders_redacted_unavailable_without_task_data
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("generation", ["", "wrong", str(uuid4()).upper()])
+@pytest.mark.parametrize("generation", ["", "wrong", "9F1C2B7E-3D4A-4C5B-8E6F-7A8B9C0D1E2F"])
 async def test_invalid_request_generation_never_reads_or_delivers(surface, generation, monkeypatch):
     async def forbidden(*_):
         raise AssertionError("invalid correlation read data")

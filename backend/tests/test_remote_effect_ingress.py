@@ -451,11 +451,12 @@ async def test_dual_review_proof_cannot_be_substituted_or_expired(remote_ingress
                 "remote-compute-1", "remove_path", args)
             def consume():
                 with proposals.transaction() as tx:
+                    created = proposals.repository.get(tx, owner_id=owner, proposal_id=proof).created_at
                     proposals.repository.decide_if_pending(tx, owner_id=owner, proposal_id=proof,
-                        decision="approved", decided_at=row.created_at)
+                        decision="approved", decided_at=created)
                     proposals.repository.consume_if_valid(tx, owner_id=owner, proposal_id=proof,
                         expected_tool_name="remove_path", expected_args_fingerprint=remote_confirmation._fingerprint(args),
-                        consumed_at=row.created_at)
+                        consumed_at=created)
             await asyncio.to_thread(consume)
         env.orch._hitl_pending_calls[identity] = replace(call, remote_proposal=proof)
     await delivered(env.state, approve)

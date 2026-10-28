@@ -38,9 +38,9 @@ def test_top_level_components_carry_matching_wel_ids(monkeypatch):
     for comp in comps:
         assert comp["id"] == comp["component_id"], _top_ids(comps)
         assert comp["id"].startswith("wel_"), _top_ids(comps)
-    assert comps[0]["id"] == "wel_hero"
-    assert comps[1]["id"] == "wel_examples"
+    assert comps[0]["id"] == "wel_examples"
     assert comps[-1]["id"] == "wel_more"
+    assert all(comp["type"] != "hero" for comp in comps)
 
 
 def test_enable_agents_card_gets_wel_enable(monkeypatch):
@@ -56,7 +56,7 @@ def test_examples_keep_unique_slug_ids_inside_both_groups(monkeypatch):
     ids = [c["id"] for c in buttons]
     assert len(ids) == len(WELCOME_EXAMPLES)
     assert len(set(ids)) == len(ids), "example ids must be unique"
-    assert set(ids) == {f"wel_ex_{_slug(title)}" for title, _, _ in WELCOME_EXAMPLES}
+    assert set(ids) == {f"wel_ex_{_slug(title)}" for title, _ in WELCOME_EXAMPLES}
     assert all(c["id"] == c["component_id"] for c in buttons)
 
 

@@ -410,6 +410,7 @@ async def test_native_created_components_preserve_one_time_presentation(
     assert "opaque-one-time" in serialized
     assert "data:image/png;base64," in serialized
     assert "chrome_mesh_create" in serialized
+    assert "shown once" in serialized and "Scan this QR" not in serialized
 
 
 @pytest.mark.asyncio

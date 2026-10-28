@@ -34,7 +34,8 @@ jobs:
       fail-fast: false
       matrix:
         group:
-          - tests
+          - tests_1
+          - tests_2
           - persistent_agents
           - modules
     permissions:

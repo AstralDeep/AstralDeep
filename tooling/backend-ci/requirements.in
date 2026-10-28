@@ -4,3 +4,4 @@
 jsonschema==4.25.1
 PyYAML==6.0.3
 openapi-spec-validator==0.7.2
+pytest-xdist==3.8.0

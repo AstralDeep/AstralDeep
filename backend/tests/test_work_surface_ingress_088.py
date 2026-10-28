@@ -492,7 +492,7 @@ async def test_legacy_headers_preserve_duplicate_cookies_and_plain_bearer_absenc
         _transport_headers(SimpleNamespace(request_headers=object()))
 
 
-@pytest.mark.parametrize("generation", ["", "invalid", str(uuid4()).upper(), None])
+@pytest.mark.parametrize("generation", ["", "invalid", "9F1C2B7E-3D4A-4C5B-8E6F-7A8B9C0D1E2F", None])
 async def test_ingress_guard_requires_exact_uuid4(generation):
     with pytest.raises(AssignmentError, match="work_query_invalid"):
         WorkSurfaceRead(None, None, "owner", context=object(), request_generation=generation)

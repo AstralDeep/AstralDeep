@@ -14,7 +14,7 @@ from agents.web_research.mcp_tools import TOOL_REGISTRY as RESEARCH_TOOLS
 from orchestrator.welcome import WELCOME_EXAMPLES
 
 
-def _example(title_fragment: str) -> tuple[str, str, str]:
+def _example(title_fragment: str) -> tuple[str, str]:
     matches = [item for item in WELCOME_EXAMPLES if title_fragment in item[0]]
     assert len(matches) == 1
     return matches[0]
@@ -30,29 +30,28 @@ def test_every_curated_example_is_nonempty_and_has_one_capability_disposition() 
         "Choose a journal for a paper",
         "Roll some dice",
     }
-    actual_titles = {title for title, _caption, _query in WELCOME_EXAMPLES}
+    actual_titles = {title for title, _query in WELCOME_EXAMPLES}
     assert actual_titles == expected_titles
-    assert not any(ord(ch) > 0x2100 for title, _, _ in WELCOME_EXAMPLES for ch in title), (
+    assert not any(ord(ch) > 0x2100 for title, _ in WELCOME_EXAMPLES for ch in title), (
         "welcome titles are plain text: no emoji"
     )
-    assert all(caption.strip() and query.strip() for _, caption, query in WELCOME_EXAMPLES)
+    assert all(title.strip() and query.strip() for title, query in WELCOME_EXAMPLES)
 
 
 def test_dice_example_matches_the_selected_tool_bounds_and_fixed_side_count() -> None:
-    _title, caption, query = _example("Roll some dice")
+    _title, query = _example("Roll some dice")
     schema = DICE_TOOLS["roll_dice"]["input_schema"]["properties"]
 
     assert query == (
         "Roll exactly six six-sided dice and show the normalized results."
     )
-    assert "six-sided" in caption.lower()
     assert schema["n"]["minimum"] <= 6 <= schema["n"]["maximum"]
     assert schema["sides"]["const"] == 6
-    assert "d20" not in (caption + query).lower()
+    assert "d20" not in query.lower()
 
 
 def test_weather_example_has_a_real_weekly_forecast_tool_contract() -> None:
-    _title, _caption, query = _example("Weather for the week ahead")
+    _title, query = _example("Weather for the week ahead")
     schema = WEATHER_TOOLS["get_weekly_forecast"]["input_schema"]
 
     assert "Lexington, KY" in query
@@ -61,7 +60,7 @@ def test_weather_example_has_a_real_weekly_forecast_tool_contract() -> None:
 
 
 def test_research_example_requests_only_the_registered_brief_inputs() -> None:
-    _title, _caption, query = _example("Brief me, with citations")
+    _title, query = _example("Brief me, with citations")
     schema = RESEARCH_TOOLS["research_brief"]["input_schema"]
 
     assert schema["required"] == ["topic"]
@@ -70,7 +69,7 @@ def test_research_example_requests_only_the_registered_brief_inputs() -> None:
 
 
 def test_summary_example_uses_a_supported_absolute_http_url() -> None:
-    _title, _caption, query = _example("Read a page for me")
+    _title, query = _example("Read a page for me")
     schema = SUMMARY_TOOLS["summarize_url"]["input_schema"]
     url = next(part for part in query.split() if part.startswith("https://"))
     parsed = urlparse(url)
@@ -82,6 +81,6 @@ def test_summary_example_uses_a_supported_absolute_http_url() -> None:
 
 def test_composition_examples_do_not_claim_an_unsupported_bounded_tool() -> None:
     for title_fragment in ("Build a business dashboard", "Check on this machine"):
-        _title, _caption, query = _example(title_fragment)
+        _title, query = _example(title_fragment)
         assert "dice" not in query.lower()
         assert "d20" not in query.lower()

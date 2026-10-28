@@ -82,8 +82,8 @@ def test_no_emoji_in_anything_the_product_renders():
 def test_the_curated_welcome_examples_are_plain_text():
     from orchestrator.welcome import WELCOME_EXAMPLES
 
-    for title, caption, query in WELCOME_EXAMPLES:
-        for field, value in (("title", title), ("caption", caption), ("query", query)):
+    for title, query in WELCOME_EXAMPLES:
+        for field, value in (("title", title), ("query", query)):
             hits = [ch for ch in EMOJI.findall(value) if ch not in ALLOWED_MARKS]
             assert not hits, f"welcome example {title!r} has emoji in its {field}: {hits}"
 

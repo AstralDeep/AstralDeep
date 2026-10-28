@@ -275,15 +275,16 @@ def reconstruct(provider):
 
 def test_provider_identity_reconstructs_without_uploaded_claims(provider):
     source = reconstruct(provider)
-    assert source["job_id"] == 45
+    assert source["job_id"] == 46
     assert validator.PRODUCER_PHASE_JOBS[-1] == validator.PRODUCER_JOB == "qualify-backend-web"
     assert source["phase_job_ids"] == {
-        "qualify-backend-web-gates-tests": 41, "qualify-backend-web-gates-persistent_agents": 42,
-        "qualify-backend-web-gates-modules": 43, "qualify-backend-web-services": 44, "qualify-backend-web": 45,
+        "qualify-backend-web-gates-tests_1": 41, "qualify-backend-web-gates-tests_2": 42,
+        "qualify-backend-web-gates-persistent_agents": 43, "qualify-backend-web-gates-modules": 44,
+        "qualify-backend-web-services": 45, "qualify-backend-web": 46,
     }
 
 
-@pytest.mark.parametrize("phase_job", range(5))
+@pytest.mark.parametrize("phase_job", range(6))
 @pytest.mark.parametrize("mutation", ["missing", "failed", "skipped", "attempt", "runner", "duplicate", "untyped-id"])
 def test_every_producer_phase_job_must_be_one_exact_successful_protected_job(provider, phase_job, mutation):
     run, jobs, artifact = provider
@@ -431,7 +432,7 @@ def test_protected_fetch_verify_and_decision_bind_exact_provider_and_candidate(b
     decision = validator.protected_validate(args)
     assert decision["decision"] == "qualified"
     assert decision["release_authorized"] is False
-    assert decision["source"]["job_id"] == 45
+    assert decision["source"]["job_id"] == 46
     assert decision["candidate_sha"] == CANDIDATE
     monkeypatch.setenv("GITHUB_REF", "refs/heads/candidate")
     with pytest.raises(validator.EvidenceError, match="candidate refs"):

@@ -1,7 +1,7 @@
 """Shared pytest fixtures for backend/tests: strips ambient feature-flag env vars for
-hermeticity, builds/tears down real Orchestrator and credential/typesafe/data-sharing
-store fixtures, and exposes the session-migrated Plane template that the engine `plane`
-fixture clones.
+hermeticity, moves each pytest-xdist worker onto its own database (helpers/xdist_database.py),
+builds/tears down real Orchestrator and credential/typesafe/data-sharing store fixtures, and
+exposes the session-migrated Plane template that the engine `plane` fixture clones.
 """
 
 from __future__ import annotations
@@ -32,6 +32,17 @@ def _strip_ambient_flags() -> None:
 
 
 _strip_ambient_flags()
+
+from tests.helpers.xdist_database import drop_worker_database, isolate_worker_database  # noqa: E402
+
+WORKER_DATABASE = isolate_worker_database(os.environ)
+
+
+def pytest_unconfigure(config):
+    if WORKER_DATABASE is not None:
+        drop_worker_database(*WORKER_DATABASE)
+
+
 os.environ.setdefault("DB_POOL_MIN", "1")
 os.environ.setdefault("DB_POOL_MAX", "1")
 os.environ.setdefault("ASTRAL_TEST_PLANE_MAX_CONNECTIONS", "4")
