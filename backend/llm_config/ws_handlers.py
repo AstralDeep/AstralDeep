@@ -214,12 +214,16 @@ async def _send_invalid(safe_send: SafeSend, websocket: Any,
 
 async def _check_saved_configuration(
     *, safe_send: SafeSend, websocket: Any, fields: Dict[str, str],
-    actor_user_id: str, auth_principal: str, recorder: Recorder,
+    actor_user_id: str, auth_principal: str, recorder: Recorder, store,
 ) -> None:
     try:
         async with asyncio.timeout(PROBE_TIMEOUT_SECONDS):
-            ok, error_class, _ = await probe_chat_completion(
-                api_key=fields["api_key"], base_url=fields["base_url"], model=fields["model"])
+            if fields["provider"] == "anthropic-native":
+                from .probe import probe_native_saved
+                ok, error_class, _ = await probe_native_saved(await store.get(actor_user_id))
+            else:
+                ok, error_class, _ = await probe_chat_completion(
+                    api_key=fields["api_key"], base_url=fields["base_url"], model=fields["model"])
     except TimeoutError:
         ok, error_class = False, "transport_error"
     except Exception as exc:
@@ -327,7 +331,7 @@ async def handle_llm_config_set(
             logger.warning("Saved provider change audit unavailable")
         await _check_saved_configuration(safe_send=safe_send, websocket=websocket,
             fields=fields, actor_user_id=actor_user_id, auth_principal=auth_principal,
-            recorder=recorder)
+            recorder=recorder, store=store)
 
     if operation is not None:
         operation.connection_check = connection_check

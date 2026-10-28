@@ -9,6 +9,7 @@ import os
 class FeatureFlags:
     def __init__(self):
         self._flags = {
+            "anthropic_native": self._read("FF_ANTHROPIC_NATIVE", False),
             "denial_loop_detection": self._read("FF_DENIAL_LOOP_DETECTION", True),
             "tool_concurrency_safety": self._read("FF_TOOL_CONCURRENCY_SAFETY", True),
             "message_compaction": self._read("FF_MESSAGE_COMPACTION", False),

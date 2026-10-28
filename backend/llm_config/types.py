@@ -19,6 +19,10 @@ class CredentialSource(str, Enum):
 class ResolvedConfig:
     base_url: str
     model: str
+    provider: str | None = None
+    profile: str | None = None
+    owner_id: str | None = None
+    config_revision: str | None = None
 
 
 class LLMUnavailable(Exception):
