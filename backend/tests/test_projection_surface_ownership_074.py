@@ -26,6 +26,7 @@ HOST_SURFACES = frozenset(
         "atlas",
         "authoring",
         "connections",
+        "connection",
         "drafts",
         "evidence",
         "guidance",
