@@ -38,8 +38,8 @@ def test_closed_proposal_and_confirm_request_contracts():
 @pytest.mark.parametrize("field,value", [
     ("expected_revision", True), ("expected_revision", 0),
     ("submission_id", "caller-key"), ("source_operation_id", "provider-operation"),
-    ("source_operation_id", str(uuid4()).upper()), ("event_key", "completion:remote"),
-    ("authority", {}), ("proposal_id", uuid4().hex + "ff"), ("proposal_id", str(uuid4())),
+    ("source_operation_id", "9F1C2B7E-3D4A-4C5B-8E6F-7A8B9C0D1E2F"), ("event_key", "completion:remote"),
+    ("authority", {}), ("proposal_id", "3b241101e2bb42558caf4136c566a962ff"), ("proposal_id", "3b241101-e2bb-4255-8caf-4136c566a962"),
     ("proposal_id", "z" * 32), ("proposal_digest", "z" * 64),
 ])
 def test_requests_refuse_untrusted_event_or_authority_fields(field, value):

@@ -163,9 +163,7 @@ def _detail_components(draft, show_refine):
         body.append(_sdui.alert(str(error), "error"))
     if revision := draft.get("revises_agent_id"):
         body.append(_sdui.text(f"revises: {revision}", "caption"))
-    if status == "live":
-        body.append(_sdui.text("This draft was approved and is live — manage it under Agents & permissions."))
-    else:
+    if status != "live":
         payload = {"draft_id": draft["id"]}
         body.extend([
             _sdui.button("Apply to live agent" if revision else "Approve",
@@ -182,9 +180,6 @@ def _detail_components(draft, show_refine):
             _sdui.field("message", "Describe what to change or fix", "textarea", default=""),
         ], submit_action="draft_refine", submit_label="Refine",
             submit_payload={"draft_id": draft["id"]}, title="Refine this draft"))
-    out.append(_sdui.text("Test the draft from chat — its tools are available there while it runs. "
-                          "Approving runs the security gate; revisions re-pass the gate before the live agent changes.",
-                          "caption"))
     return out
 
 
@@ -201,8 +196,6 @@ async def components(orch, user_id, roles, params):
         return _detail_components(draft, bool(params.get("refine")))
     rows = await asyncio.to_thread(_user_drafts, orch, user_id)
     out = []
-    if not rows:
-        out.append(_sdui.text("No drafts yet — create one below or ask for a missing capability in chat."))
     for draft in rows:
         origin = _ORIGIN_BADGES.get(draft.get("origin") or "manual", _ORIGIN_BADGES["manual"])[0]
         out.append(_sdui.card(str(draft.get("agent_name") or ""), [
@@ -215,15 +208,10 @@ async def components(orch, user_id, roles, params):
         ]))
     out.append(_sdui.form([
         _sdui.field("agent_name", "Agent name", default=""),
-        _sdui.field("description", "What should it do?", "textarea", default="",
-                    help="At least 10 characters."),
-        _sdui.field("tools", "Tools (optional)", "textarea", default="",
-                    help="One per line: name: what it does."),
+        _sdui.field("description", "What should it do?", "textarea", default=""),
+        _sdui.field("tools", "Tools (optional)", "textarea", default=""),
     ], submit_action="chrome_draft_create", submit_label="Generate & self-test",
-        title="Create a server-side agent (admin approval)",
-        description="Runs in the orchestrator for everyone an admin approves it for. "
-                    "For an agent that runs on your own PC, use Settings → My agents & skills. "
-                    "Generation + self-test usually takes a couple of minutes; the draft appears below when staged."))
+        title="Create a server-side agent (admin approval)"))
     return out
 
 

@@ -253,10 +253,10 @@ def test_diagnostics_tab_reports_an_unwired_or_failing_collector_honestly():
     assert "No runtime samples" not in absent and "No runtime samples" not in broken
 
 
-def test_diagnostics_empty_snapshot_is_an_explicit_empty_state():
+def test_diagnostics_empty_snapshot_renders_without_samples_or_errors():
     orch = diagnostics_orch(runtime_observability=FakeObservability(()))
     html = run(admin_tools.render(orch, "admin1", ["admin"], {"tab": "diagnostics"}))
-    assert "No runtime samples have been recorded yet" in html
+    assert "astral-chrome-error" not in html and "work_admission" not in html
 
 
 def test_render_denies_non_admin():

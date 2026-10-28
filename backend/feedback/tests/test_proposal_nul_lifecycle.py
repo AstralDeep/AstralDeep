@@ -175,6 +175,37 @@ async def test_generation_insert_failure_does_not_change_source_or_publish_a_pro
     assert lifecycle.audit.list_for_user('system') == ([], None)
 
 
+@pytest.mark.asyncio
+async def test_nul_feedback_excerpt_survives_real_embedding_and_review(lifecycle, monkeypatch):
+    original = 'Original guidance.\n'
+    lifecycle.artifact.parent.mkdir(parents=True, exist_ok=True)
+    lifecycle.artifact.write_text(original)
+    long_comment = 'The page \x00 body truncated ' + 'detail ' * 60
+    samples = [
+        {'id': 'synthetic-feedback-1', 'category': 'wrong output',
+         'comment': long_comment, 'created_at': '2026-01-05T00:00:00+00:00'},
+        {'id': 'synthetic-feedback-2', 'category': 'crash\x00loop',
+         'comment': 'short', 'created_at': '2026-01-06T00:00:00+00:00'},
+    ]
+    monkeypatch.setattr(lifecycle.repo, 'collect_clean_comment_samples',
+                        lambda *args, **kwargs: samples)
+    generated = await proposals.generate_for_underperforming(lifecycle.repo)
+    assert len(generated) == 1 and lifecycle.artifact.read_text() == original
+    stored = lifecycle.repo.get_proposal(generated[0].id)
+    assert stored.status == 'pending'
+    assert stored.diff_payload and '\x00' not in stored.diff_payload
+    assert len(long_comment) > 280
+    assert '- *(category: wrong output)* The page \ufffd body truncated' in stored.diff_payload
+    assert '- *(category: crash\ufffdloop)* short' in stored.diff_payload
+    events, _ = lifecycle.audit.list_for_user('system')
+    assert any(event.action_type == 'proposal.generated' for event in events)
+    applied = await _apply(lifecycle, stored)
+    assert applied.status == lifecycle.repo.get_proposal(stored.id).status == 'applied'
+    assert '\x00' not in lifecycle.artifact.read_text()
+    assert lifecycle.audit.verify_chain('system') is None
+    assert lifecycle.audit.verify_chain('synthetic-reviewer') is None
+
+
 def test_diff_return_contract_and_normalized_equal_inputs():
     assert proposals._make_unified_diff('same\x00line\n', 'same\ufffdline\n', 'synthetic.md') == ''
     diff = proposals._make_unified_diff('old\x00line\n', 'new\x00line\n', 'synthetic.md')

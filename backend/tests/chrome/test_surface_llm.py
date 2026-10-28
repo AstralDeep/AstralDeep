@@ -259,12 +259,11 @@ def test_components_preserve_saved_nonfirst_provider_and_model_without_exposing_
     assert SECRET not in json.dumps(picker)
 
 
-def test_components_first_run_carries_local_runtime_note():
-    comps = components(make_orch(), params={"first_run": True})
+def test_components_first_run_drops_introduction_and_runtime_note_but_keeps_identity():
+    comps = components(make_orch(), params={"first_run": True, "principal": "ada"})
     texts = [c.get("content", "") for c in comps
              if isinstance(c, dict) and c.get("type") == "text"]
-    assert any("reachable FROM THE SERVER" in t for t in texts)
-    assert any("nothing is built in" in t for t in texts)
+    assert texts == ["Signed in as ada"]
 
 
 def test_components_always_include_base_url_field():
@@ -284,7 +283,7 @@ def test_components_never_echo_saved_key():
     picker = _param_picker(comps)
     key_field = _field(picker, "api_key")
     assert key_field["kind"] == "password"
-    assert "leave blank" in key_field["help"]
+    assert key_field["help"] == "A key is saved."
     badges = [c for c in comps if isinstance(c, dict) and c.get("type") == "badge"]
     assert badges and badges[0]["label"] == "configured"
 

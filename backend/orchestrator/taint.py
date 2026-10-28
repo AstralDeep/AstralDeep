@@ -28,6 +28,7 @@ _SINK_TOOLS = {
     "delete_*", "write_*", "execute_*", "upload_*", "webhook*",
     "http_*", "wire_*", "transfer_*",
 }
+_COMPUTER_SINKS = frozenset({"run_command", "browser_click", "browser_fill", "browser_press"})
 
 
 def taint_enabled() -> bool:
@@ -57,6 +58,8 @@ def is_sink(agent: Optional[str], tool: Optional[str]) -> bool:
         return tool in {"cresco_dispatch_work", "cresco_run_command"}
     if agent == "terminal-shell-1":
         return tool in {"start_terminal", "terminal_write"}
+    if agent == "computer-use-1" and tool in _COMPUTER_SINKS:
+        return True
     name = tool or ""
     return any(fnmatch.fnmatchcase(name, pat) for pat in _SINK_TOOLS)
 

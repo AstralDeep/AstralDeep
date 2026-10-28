@@ -139,6 +139,12 @@ def alerts(components):
     return [node["message"] for node in flat(components) if node.get("type") == "alert"]
 
 
+async def test_filters_carry_labels_without_introduction_or_field_help(surface):
+    result = await component_state(surface, {})
+    assert [node["type"] for node in result] == ["param_picker"]
+    assert all("help" not in field for field in result[0]["fields"])
+
+
 async def test_search_open_remains_an_authenticated_socket_read():
     assert human_module._socket_method({"type": "ui_event", "action": "chrome_open",
         "payload": {"surface": "search", "params": {"open": {"kind": "memory"}}}}) == "WS_READ"
@@ -147,7 +153,7 @@ async def test_search_open_remains_an_authenticated_socket_read():
 async def test_intro_and_authenticated_dispatch_use_projection_renderer(surface):
     delivered, _, caller = await dispatch(surface, {})
     assert delivered and caller.owner_id == fixture_owners(surface)[0]
-    assert "Search your conversations" in last_frame(surface)["html"]
+    assert "Search your conversations" not in last_frame(surface)["html"]
     assert 'data-ui-form="true"' in last_frame(surface)["html"]
 
 
@@ -234,11 +240,13 @@ async def test_zero_hit_and_partial_failure_states_remain_honest_on_both_channel
     result = await component_state(surface, {"q": "needle"})
     messages = str(alerts(result))
     assert ("No matches found" in messages) is (state_name == "empty")
+    assert "Try different words" not in messages
     if state_name == "incomplete":
         assert "incomplete" in messages
     delivered, _, _ = await dispatch(surface, {"q": "needle"})
     assert delivered
     assert ("No matches found" in last_frame(surface)["html"]) is (state_name == "empty")
+    assert "Try different words" not in last_frame(surface)["html"]
 
 
 async def test_source_failure_keeps_other_sources_and_never_marks_message_failure_complete(surface, runtime, monkeypatch):

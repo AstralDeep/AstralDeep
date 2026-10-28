@@ -1,5 +1,6 @@
 """Classifies registered tool effects and binds model-proposed actions to owner review.
-The host treats unknown or transformed source lineage as untrusted at effect time.
+The host treats unknown or transformed source lineage as untrusted at effect time, and only
+host-registered first-party de-escalations such as ending a computer session skip review.
 """
 
 from __future__ import annotations
@@ -7,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Mapping
 
@@ -23,6 +24,7 @@ class Effect(str, Enum):
     READ = "read"
     MUTATION = "mutation_or_disclosure"
     PRIVILEGED = "privileged"
+    DE_ESCALATION = "de_escalation"
 
 
 _EFFECT_BY_SCOPE = {
@@ -51,7 +53,7 @@ class ActionDeclaration:
 
     @property
     def needs_review(self) -> bool:
-        return self.effect is not Effect.READ
+        return self.effect not in (Effect.READ, Effect.DE_ESCALATION)
 
 
 def declaration(scopes: Mapping[str, str], agent: str, tool: str, *,
@@ -66,10 +68,13 @@ def declaration(scopes: Mapping[str, str], agent: str, tool: str, *,
 
 
 def registered_action(scopes: Mapping[str, str], agent: str, tool: str,
-                      host_reads=()) -> ActionDeclaration:
+                      host_reads=(), de_escalations=()) -> ActionDeclaration:
     if (agent, tool) in host_reads:
         return declaration(scopes, agent, tool, host_file_read=True)
-    return declaration(scopes, agent, tool)
+    action = declaration(scopes, agent, tool)
+    if (agent, tool) in de_escalations and action.scope == "tools:write":
+        return replace(action, effect=Effect.DE_ESCALATION)
+    return action
 
 
 def combine_origins(*origins: Origin) -> Origin:

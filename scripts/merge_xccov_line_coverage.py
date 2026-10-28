@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Merges bounded, normalized xccov reports from export_xccov_line_coverage.py into one
-platform coverage mapping for apple-ci.yml's apple-required job; its merge and refusal
-rules are pinned by tests/test_merge_xccov_line_coverage.py.
+platform coverage mapping for apple-ci.yml's apple-required job, summing line hits across a
+declared set of UI shards; its merge and refusal rules are pinned by
+tests/test_merge_xccov_line_coverage.py.
 """
 
 from __future__ import annotations
@@ -66,6 +67,8 @@ except ModuleNotFoundError:
 MAX_INPUT_BYTES = 32 * 1024 * 1024
 MAX_TOTAL_INPUT_BYTES = 128 * 1024 * 1024
 MAX_FILES = 10_000
+MAX_UI_SHARDS = 8
+SHARD_BINARY_FIELDS = frozenset({"sha256", "artifact_sha256"})
 REQUIRED_PRODUCERS = ("unit", "ui")
 PROFILES = {
     ("macos", "ci"): REQUIRED_PRODUCERS,
@@ -229,13 +232,41 @@ def _normalized_observations(
     return observations
 
 
+def _lane_inputs(producer: str, value: Any, ui_shards: int) -> list[Path]:
+    paths = list(value) if producer == "ui" and isinstance(value, (list, tuple)) else [value]
+    if not all(isinstance(path, Path) for path in paths):
+        raise MergeError(
+            "invalid_producer_input",
+            f"{producer} coverage input must be a filesystem path",
+        )
+    if len(paths) != (ui_shards if producer == "ui" else 1):
+        raise MergeError(
+            "shard_count_mismatch",
+            "coverage inputs do not match the declared UI shard count",
+        )
+    return paths
+
+
+def _same_shard_domain(first: Mapping[str, Any], other: Mapping[str, Any]) -> bool:
+    def comparable(domain: Mapping[str, Any]) -> dict[str, Any]:
+        binary = {
+            key: value
+            for key, value in domain["binary"].items()
+            if key not in SHARD_BINARY_FIELDS
+        }
+        return {**domain, "binary": binary, "observed_sources": None}
+
+    return comparable(first) == comparable(other)
+
+
 def merge_xccov_reports(
     *,
     repo: Path,
-    inputs: Mapping[str, Path],
+    inputs: Mapping[str, Path | Sequence[Path]],
     output: Path,
     platform: str,
     profile: str = "ci",
+    ui_shards: int = 1,
 ) -> dict[str, Any]:
     try:
         repo = repo.resolve(strict=True)
@@ -253,6 +284,13 @@ def merge_xccov_reports(
             "invalid_producer_set",
             "coverage inputs do not match the mandatory platform/profile producer lanes",
         )
+    if isinstance(ui_shards, bool) or not isinstance(ui_shards, int) or not (
+        1 <= ui_shards <= MAX_UI_SHARDS
+    ):
+        raise MergeError("invalid_shard_count", "UI shard count is out of bounds")
+    lane_inputs = {
+        producer: _lane_inputs(producer, inputs[producer], ui_shards) for producer in required
+    }
     try:
         tracked = _tracked_swift_sources(repo, platform)
         destination = _validate_output(output, repo=repo)
@@ -264,54 +302,72 @@ def merge_xccov_reports(
     native_policy = None
     seen_inputs: set[Path] = set()
     total_input_bytes = 0
+    lane_kinds: dict[str, set[bool]] = {}
+    shard_coverage: set[str] = set()
     for producer in required:
-        input_path = inputs[producer]
-        if not isinstance(input_path, Path):
-            raise MergeError(
-                "invalid_producer_input",
-                f"{producer} coverage input must be a filesystem path",
-            )
-        absolute, content = _read_stable_input(input_path, repo=repo)
-        if absolute in seen_inputs:
-            raise MergeError("duplicate_input", "coverage input path is duplicated")
-        seen_inputs.add(absolute)
-        total_input_bytes += len(content)
-        if total_input_bytes > MAX_TOTAL_INPUT_BYTES:
-            raise MergeError(
-                "input_budget_exceeded", "coverage inputs exceed their byte bound"
-            )
-        document = _strict_document(content)
-        if document.get("format") is not None:
-            try:
-                native_policy = _native_domain_policy()
-            except ExportError as exc:
-                _raise_export_error(exc)
-            try:
-                envelope = native_policy.parse_native_report(document)
-                native_policy.require(platform == envelope["platform"])
-                native_policy.require(set(envelope["domains"]) == {producer})
-                domain = envelope["domains"][producer]
-                for path, facts in domain["sources"].items():
-                    actual = native_policy.source_facts(_read_source_bytes(repo, path))
-                    native_policy.require(all(facts[key] == value for key, value in actual.items()))
-                native_domains[producer] = domain
-                document = envelope["coverage"]
-            except native_policy.DomainError as exc:
-                raise MergeError("native_domain_mismatch", "native domain does not match lane/source") from exc
-            except ExportError as exc:
-                _raise_export_error(exc)
-        if platform == "ios":
-            expected_root = PLATFORM_ROOTS[platform][1 if producer == "core" else 0]
-            if (
-                not any(path.startswith(expected_root + "/") for path in document)
-                or producer == "core"
-                and any(not path.startswith(expected_root + "/") for path in document)
-            ):
+        for input_path in lane_inputs[producer]:
+            absolute, content = _read_stable_input(input_path, repo=repo)
+            if absolute in seen_inputs:
+                raise MergeError("duplicate_input", "coverage input path is duplicated")
+            seen_inputs.add(absolute)
+            total_input_bytes += len(content)
+            if total_input_bytes > MAX_TOTAL_INPUT_BYTES:
                 raise MergeError(
-                    "producer_scope_mismatch",
-                    "coverage lane lacks its required source domain",
+                    "input_budget_exceeded", "coverage inputs exceed their byte bound"
                 )
-        documents.append(document)
+            document = _strict_document(content)
+            native = document.get("format") is not None
+            lane_kinds.setdefault(producer, set()).add(native)
+            if len(lane_kinds[producer]) > 1:
+                raise MergeError(
+                    "native_domain_mismatch", "native and legacy coverage shards cannot be mixed"
+                )
+            if native:
+                try:
+                    native_policy = _native_domain_policy()
+                except ExportError as exc:
+                    _raise_export_error(exc)
+                try:
+                    envelope = native_policy.parse_native_report(document)
+                    native_policy.require(platform == envelope["platform"])
+                    native_policy.require(set(envelope["domains"]) == {producer})
+                    domain = envelope["domains"][producer]
+                    for path, facts in domain["sources"].items():
+                        actual = native_policy.source_facts(_read_source_bytes(repo, path))
+                        native_policy.require(all(facts[key] == value for key, value in actual.items()))
+                    native_policy.require(
+                        producer not in native_domains
+                        or _same_shard_domain(native_domains[producer], domain)
+                    )
+                    observed = set(domain["observed_sources"])
+                    if producer in native_domains:
+                        observed |= set(native_domains[producer]["observed_sources"])
+                    native_domains[producer] = {
+                        **native_domains.get(producer, domain),
+                        "observed_sources": sorted(observed),
+                    }
+                    document = envelope["coverage"]
+                except native_policy.DomainError as exc:
+                    raise MergeError("native_domain_mismatch", "native domain does not match lane/source") from exc
+                except ExportError as exc:
+                    _raise_export_error(exc)
+            if producer == "ui" and ui_shards > 1:
+                digest = json.dumps(document, sort_keys=True, separators=(",", ":"))
+                if digest in shard_coverage:
+                    raise MergeError("duplicate_shard", "two UI shards carry identical coverage")
+                shard_coverage.add(digest)
+            if platform == "ios":
+                expected_root = PLATFORM_ROOTS[platform][1 if producer == "core" else 0]
+                if (
+                    not any(path.startswith(expected_root + "/") for path in document)
+                    or producer == "core"
+                    and any(not path.startswith(expected_root + "/") for path in document)
+                ):
+                    raise MergeError(
+                        "producer_scope_mismatch",
+                        "coverage lane lacks its required source domain",
+                    )
+            documents.append(document)
 
     if native_domains and set(native_domains) != set(required):
         raise MergeError("native_domain_mismatch", "native and legacy coverage lanes cannot be mixed")
@@ -398,6 +454,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--unit-input", type=Path, action="append", required=True)
     parser.add_argument("--ui-input", type=Path, action="append", required=True)
+    parser.add_argument("--ui-shards", type=int, default=1)
     parser.add_argument("--core-input", type=Path, action="append", default=[])
     parser.add_argument("--staging-input", type=Path, action="append", default=[])
     parser.add_argument("--profile", choices=("ci", "release"), default="ci")
@@ -413,20 +470,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     lanes = {
         key: getattr(args, key + "_input") for key in ("core", "unit", "ui", "staging")
     }
-    if any(len(paths) > 1 for paths in lanes.values()):
+    if any(len(paths) > 1 for key, paths in lanes.items() if key != "ui"):
         print(
             "xccov merge failed [invalid_producer_set]: "
-            "exactly one unit, ui, and each other required lane input is permitted",
+            "exactly one unit and each other required lane input is permitted",
             file=sys.stderr,
         )
         return 2
     try:
         merge_xccov_reports(
             repo=args.repo,
-            inputs={key: paths[0] for key, paths in lanes.items() if paths},
+            inputs={
+                key: (paths if key == "ui" else paths[0]) for key, paths in lanes.items() if paths
+            },
             output=args.output,
             platform=args.platform,
             profile=args.profile,
+            ui_shards=args.ui_shards,
         )
     except (MergeError, OSError) as exc:
         code = exc.code if isinstance(exc, MergeError) else "filesystem_error"

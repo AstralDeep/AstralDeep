@@ -94,8 +94,7 @@ async def test_console_agent_intro_offers_visible_example_load_and_normal_run(vi
     output = await agent_intro.components(orch, "owner", [], {"agent_id": "dice"},
                                          console_contract="console/v2")
     assert seen == [(orch, "owner", "dice")]
-    assert output[0]["console_role"] == "surface_subtitle"
-    assert output[0]["content"] == agent_intro.SUBTITLE
+    assert not any(node.get("console_role") == "surface_subtitle" for node in nodes(output))
     buttons = [node for node in nodes(output) if node.get("type") == "button"]
     load = next(button for button in buttons if button["label"] == "Load")
     run = next(button for button in buttons if button["label"] == "Run")
@@ -103,6 +102,16 @@ async def test_console_agent_intro_offers_visible_example_load_and_normal_run(vi
     assert run["action"] == "chat_message"
     assert load["payload"] == run["payload"] == {"message": card.metadata["examples"][0]["prompt"]}
     assert any(node.get("content") == card.metadata["examples"][0]["prompt"] for node in nodes(output))
+    assert not hasattr(agent_intro, "SUBTITLE")
+
+
+@pytest.mark.asyncio
+async def test_console_agent_intro_keeps_the_tool_count_heading(visible):
+    card, _ = visible
+    card.skills = [SimpleNamespace(id="roll_dice", name="Roll dice")]
+    output = await agent_intro.components(object(), "owner", [], {"agent_id": "dice"},
+                                         console_contract="console/v2")
+    assert any(node.get("content") == "Tools it can reach (1)" for node in nodes(output))
 
 
 @pytest.mark.asyncio

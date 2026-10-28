@@ -103,7 +103,7 @@ def test_recreated_identical_sid_cannot_continue_original_operation(fixture, run
 
 
 @pytest.mark.parametrize("field,value", [
-    ("owner_id", "other-owner"), ("assignment_id", str(uuid4())),
+    ("owner_id", "other-owner"), ("assignment_id", "3b241101-e2bb-4255-8caf-4136c566a962"),
     ("assignment_id", "not-an-id"), ("plane_runtime", object()),
     ("sessions", object()),
 ])
