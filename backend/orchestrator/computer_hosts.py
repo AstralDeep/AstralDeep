@@ -1,6 +1,7 @@
 """Owner-scoped registry of a user's remote-controllable desktop clients, correlating
 computer_request/computer_response frames and pushing presence; backs the My
-Computers surface and computer_sessions.py.
+Computers surface and computer_sessions.py. Listings show one row per platform and
+name, so an offline registration replaced by a newer one of the same computer is hidden.
 """
 
 from __future__ import annotations
@@ -85,13 +86,17 @@ class ComputerHost:
         }
 
 
+def _identity(row: Dict[str, Any]) -> Tuple[str, str]:
+    return row["platform"], " ".join(row["name"].split()).casefold()
+
+
 class ComputerHostRegistry:
     def __init__(self, orch):
         self._orch = orch
         self._hosts: Dict[Tuple[str, str], ComputerHost] = {}
         self._by_ws: Dict[int, Tuple[str, str]] = {}
         self._offline: Dict[Tuple[str, str], ComputerHost] = {}
-        self._pending: Dict[str, Tuple[asyncio.Future, str, str, bool]] = {}
+        self._pending: Dict[str, Tuple[asyncio.Future, str, str, str, str]] = {}
         self._dropped_frames = 0
 
     def register(self, owner_sub: str, websocket, descriptor: ComputerHostDescriptor | Dict[str, Any]
@@ -117,11 +122,21 @@ class ComputerHostRegistry:
         return host, superseded
 
     def _fail_pending(self, key) -> None:
-        for fut, owner, host_id, effectful in list(self._pending.values()):
+        for fut, owner, host_id, verb, _session in list(self._pending.values()):
             if (owner, host_id) == key and not fut.done():
                 fut.set_exception(ComputerHostError(
-                    "outcome_uncertain" if effectful else "host_offline",
+                    "host_offline" if verb in OBSERVE_VERBS else "outcome_uncertain",
                     "Host authority changed after delivery; inspect current state before retrying"))
+
+    def cancel_session_requests(self, owner_sub: str, host_id: str, session_id: str) -> int:
+        cancelled = 0
+        for fut, owner, host, verb, session in list(self._pending.values()):
+            if (owner, host, session) == (owner_sub, host_id, session_id) and not fut.done():
+                fut.set_exception(ComputerHostError(
+                    "cancelled" if verb in OBSERVE_VERBS else "outcome_uncertain",
+                    f"The turn was cancelled while waiting for {verb}; inspect current state before retrying"))
+                cancelled += 1
+        return cancelled
 
     def withdraw(self, owner_sub: str, host_id: str) -> Optional[ComputerHost]:
         key = (owner_sub, host_id)
@@ -163,13 +178,19 @@ class ComputerHostRegistry:
     def list_for_owner(self, owner_sub: str) -> List[Dict[str, Any]]:
         now = time.time()
         out = [h.public(True) for h in self.online_for_owner(owner_sub)]
+        offline: Dict[Tuple[str, str], Dict[str, Any]] = {}
         for (o, _), h in list(self._offline.items()):
             if o != owner_sub:
                 continue
             if now - h.last_seen > LAST_SEEN_TTL_S:
                 self._offline.pop((o, h.host_id), None)
                 continue
-            out.append(h.public(False))
+            row = h.public(False)
+            identity = _identity(row)
+            if identity not in offline or row["last_seen"] > offline[identity]["last_seen"]:
+                offline[identity] = row
+        online = {_identity(row) for row in out}
+        out.extend(row for identity, row in offline.items() if identity not in online)
         out.sort(key=lambda d: (not d["online"], d["name"].lower()))
         return out
 
@@ -180,8 +201,8 @@ class ComputerHostRegistry:
                 return online[0]
             if not online:
                 known = [h for (o, _), h in self._offline.items() if o == owner_sub]
-                if len(known) == 1:
-                    raise known[0].unavailable()
+                if len({_identity(h.public(False)) for h in known}) == 1:
+                    raise max(known, key=lambda h: h.last_seen).unavailable()
                 raise ComputerHostError(
                     "computer_unavailable",
                     "none of your computers is online — open the AstralDeep desktop client "
@@ -222,7 +243,7 @@ class ComputerHostRegistry:
         loop = asyncio.get_running_loop()
         request_id = f"creq_{uuid.uuid4().hex}"
         fut: asyncio.Future = loop.create_future()
-        self._pending[request_id] = (fut, host.owner_sub, host.host_id, verb not in OBSERVE_VERBS)
+        self._pending[request_id] = (fut, host.owner_sub, host.host_id, verb, session_id)
         frame = json.dumps({
             "type": "computer_request",
             "request_id": request_id,
@@ -232,18 +253,19 @@ class ComputerHostRegistry:
             "deadline_ms": int(timeout * 1000),
         })
         try:
-            try:
-                sent = await self._orch._safe_send(host.websocket, frame)
-            except Exception:
-                sent = False
-            if sent is False:
-                raise ComputerHostError("host_offline" if verb in OBSERVE_VERBS else "outcome_uncertain",
-                    f"Delivery to {host.name} could not be confirmed; inspect current state before retrying")
-            try:
-                payload = await asyncio.wait_for(fut, timeout=timeout)
-            except asyncio.TimeoutError:
-                code = "timeout" if verb in OBSERVE_VERBS else "outcome_uncertain"
-                raise ComputerHostError(code, f"{host.name} did not answer {verb}; inspect current state before retrying") from None
+            async with asyncio.timeout(timeout):
+                try:
+                    sent = await self._orch._safe_send(host.websocket, frame)
+                except Exception:
+                    sent = False
+                if sent is False:
+                    raise ComputerHostError("host_offline" if verb in OBSERVE_VERBS else "outcome_uncertain",
+                        f"Delivery to {host.name} could not be confirmed; inspect current state before retrying")
+                payload = await fut
+        except TimeoutError:
+            code = "timeout" if verb in OBSERVE_VERBS else "outcome_uncertain"
+            raise ComputerHostError(code, f"{host.name} did not answer {verb} within {timeout:g} s; inspect "
+                                          "current state before retrying") from None
         finally:
             self._pending.pop(request_id, None)
         host.last_seen = time.time()
@@ -260,7 +282,7 @@ class ComputerHostRegistry:
         entry = self._pending.get(request_id)
         if entry is None:
             return False
-        fut, owner, host_id, _ = entry
+        fut, owner, host_id, _verb, _session = entry
         if owner != owner_sub:
             logger.warning("076: computer_response owner mismatch (dropped)")
             return False

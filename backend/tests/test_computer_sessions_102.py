@@ -590,6 +590,34 @@ async def test_turn_cancel_interrupts_running_command_jobs_and_keeps_the_session
     assert len([f for f in host_ws.frames("computer_request") if f["args"].get("signal") == "INT"]) == 1
 
 
+async def test_turn_cancel_and_stop_fail_the_sessions_in_flight_host_requests():
+    from orchestrator.orchestrator import Orchestrator
+
+    orch, host, controller, session = await _started()
+    other_orch, other_host, other_controller, other = await _started(chat="chat-2")
+    orch.cancelled_sessions = {}
+    orch._chat_recorders = {}
+    registry = orch.computer_hosts
+    command = asyncio.create_task(registry.request(host, session.session_id, "run_command", {}, 30))
+    look = asyncio.create_task(registry.request(host, session.session_id, "screenshot", {}, 30))
+    unrelated = asyncio.create_task(other_orch.computer_hosts.request(other_host, other.session_id, "click", {}, 30))
+    await _settle()
+    assert len(registry._pending) == 2
+    await Orchestrator._cancel_turn(orch, controller, OWNER, "chat-1")
+    for task, code in ((command, "outcome_uncertain"), (look, "cancelled")):
+        with pytest.raises(ComputerHostError) as refused:
+            await task
+        assert refused.value.code == code and "cancelled" in refused.value.message
+    assert not registry._pending and session.state == "active" and not unrelated.done()
+    again = asyncio.create_task(registry.request(host, session.session_id, "click", {}, 30))
+    await _settle()
+    await orch.computer_sessions.end(session, "user_stop", cancel_turn=False)
+    with pytest.raises(ComputerHostError):
+        await again
+    unrelated.cancel()
+    await other_orch.computer_sessions.end(other, "user_stop", cancel_turn=False)
+
+
 def _session_frames(ws):
     return [json.loads(frame) for frame in ws.sent if json.loads(frame).get("type") == "computer_session"]
 

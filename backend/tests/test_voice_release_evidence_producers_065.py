@@ -320,10 +320,17 @@ def test_apple_ci_gates_voice_suites_and_every_xccov_input() -> None:
     assert "backend/tests/fixtures/voice_065/client_conformance.json" not in workflow
     assert "swift test --package-path apple-clients/AstralCore" in workflow
     assert "-only-testing:AstralAppTests" in workflow
-    assert "-only-testing:AstralAppUITests/VoiceConversationUITests" in workflow
     first_login_job = workflow.split("  first-login-ui:", 1)[1].split(
         "  watch-continuity:", 1
     )[0]
+    assert 'selectors+=("-only-testing:AstralAppUITests/$selected")' in first_login_job
+    matrix = first_login_job.split("include:", 1)[1].split("    steps:", 1)[0]
+    entries = re.split(r"(?m)^          - name: ", matrix)[1:]
+    assert {
+        re.search(r"platform: (\w+)", entry).group(1)
+        for entry in entries
+        if "VoiceConversationUITests" in entry
+    } == {"ios", "macos"}
     assert "-configuration Debug" in first_login_job
     assert "CODE_SIGNING_ALLOWED=NO" in first_login_job
     assert "-only-testing:AstralWatchTests" in workflow

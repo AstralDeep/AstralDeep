@@ -162,6 +162,9 @@ def test_grant_labels_name_the_application_window_or_program_and_folder():
     assert policy.input_grant_label("TextEdit", "Notes\x07 draft") == 'Allow for this task in window "Notes draft"'
     assert len(policy.input_grant_label("TextEdit", "x" * 300)) < 120
     assert policy.command_grant_label("wc", "x") == "Allow wc in x for this task"
+    assert policy.window_grant_label("TextEdit", "Untitled") == 'Allow for this task in window "Untitled"'
+    assert policy.window_grant_label("TextEdit", "\x07") == "Allow for this task in this TextEdit window"
+    assert policy.window_grant_label("TextEdit", None) == "Allow for this task in this TextEdit window"
     assert policy.application_name("com.apple.TextEdit") == "TextEdit"
     assert policy.application_name("TextEdit") == "TextEdit"
 

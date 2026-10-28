@@ -15,6 +15,7 @@ import pytest
 
 from orchestrator import auth
 from persistent_agents.models import AssignmentError
+from tests.helpers.database_clock import expire_host_clock
 from tests.helpers.session_plane_runtime import get_session_record, replace_session_record
 
 from tests.test_work_control_authority_088 import (
@@ -234,9 +235,8 @@ async def test_session_deleted_during_iam_is_an_authentication_failure(human, bo
 
 
 @pytest.mark.parametrize("cookie", [True, False])
-async def test_audit_lock_wait_cannot_commit_after_original_expiry(human, bound, fixture, runtime, cookie):
+async def test_audit_lock_wait_cannot_commit_after_original_expiry(human, bound, fixture, runtime, cookie, monkeypatch):
     caller = await selected(human, bound, fixture, cookie=cookie)
-    caller = replace(caller, _until=datetime.now(timezone.utc) + timedelta(seconds=.08))
     entered = threading.Event()
 
     def mutation(tx, _):
@@ -247,35 +247,34 @@ async def test_audit_lock_wait_cannot_commit_after_original_expiry(human, bound,
     with runtime.transaction() as blocker:
         blocker.execute("LOCK TABLE audit_events IN ACCESS EXCLUSIVE MODE")
         pending = asyncio.create_task(caller.transaction(mutation, expected_orchestrator=human[2]))
-        assert await asyncio.to_thread(entered.wait, 2)
-        await asyncio.sleep(max(0, caller._until.timestamp() - time.time()) + .01)
+        assert await asyncio.to_thread(entered.wait, 30)
+        expire_host_clock(monkeypatch, human[0], after=caller._until)
         assert not pending.done()
     with pytest.raises(AssignmentError, match="human_authentication_required"):
         await pending
     assert get_session_record(runtime, fixture[2]).resumed is False
 
 
-async def test_cancelled_waiter_keeps_capacity_until_worker_rolls_back(human, bound, fixture, runtime):
+async def test_cancelled_waiter_keeps_capacity_until_worker_rolls_back(human, bound, fixture, runtime, monkeypatch):
     caller = await selected(human, bound, fixture)
-    caller = replace(caller, _until=datetime.now(timezone.utc) + timedelta(seconds=.08))
     entered, release = threading.Event(), threading.Event()
 
     def mutation(tx, _):
         tx.execute("UPDATE web_session SET resumed=true WHERE sid=%s", (fixture[2],))
         entered.set()
-        assert release.wait(2)
+        assert release.wait(30)
 
     pending = asyncio.create_task(caller.transaction(mutation, expected_orchestrator=human[2]))
     try:
-        assert await asyncio.to_thread(entered.wait, 2)
+        assert await asyncio.to_thread(entered.wait, 30)
         pending.cancel()
         with pytest.raises(asyncio.CancelledError):
             await pending
         assert human[1].adapter.snapshot().active == 1
-        await asyncio.sleep(max(0, caller._until.timestamp() - time.time()) + .01)
+        expire_host_clock(monkeypatch, human[0], after=caller._until)
     finally:
         release.set()
-    async with asyncio.timeout(3):
+    async with asyncio.timeout(30):
         while human[1].adapter.snapshot().active:
             await asyncio.sleep(.01)
     assert get_session_record(runtime, fixture[2]).resumed is False

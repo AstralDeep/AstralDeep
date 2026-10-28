@@ -1,8 +1,9 @@
 """Migrates a throwaway AstralPlane PostgreSQL database once, seals it against connections,
-and hands each test its own CREATE DATABASE … TEMPLATE clone instead of a full migration
-replay; engine_clone boots each fresh clone under the template's verified boot identity, so
-its initialize() does not re-verify the byte-identical schema. The session `plane_template`
-fixture backs test_engine_postgres.py's `plane`, and voice_plane_runtime.py seals its own.
+and hands each test its own FILE_COPY clone, which leaves no dirty buffers for the checkpoint
+every later clone and drop forces; engine_clone boots each clone under the template's verified
+boot identity, so initialize() does not re-verify the byte-identical schema. The session
+`plane_template` fixture backs test_engine_postgres.py's `plane`, and voice_plane_runtime.py
+seals its own.
 """
 
 from __future__ import annotations
@@ -92,7 +93,7 @@ def _create_database(server_dsn: str, database: str, template: str) -> None:
 
     try:
         with _autocommit_cursor(server_dsn) as cursor:
-            cursor.execute(sql.SQL("CREATE DATABASE {} TEMPLATE {}").format(
+            cursor.execute(sql.SQL("CREATE DATABASE {} TEMPLATE {} STRATEGY = FILE_COPY").format(
                 sql.Identifier(database), sql.Identifier(template)))
     except psycopg2.Error as exc:
         raise DatabaseCreationError(type(exc).__name__) from exc

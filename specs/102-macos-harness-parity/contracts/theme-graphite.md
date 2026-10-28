@@ -9,7 +9,7 @@
 | primary | `#7C3AED` | purple controls, selection, links; white text on it measures about 5.7:1 |
 | secondary | `#6E6E78` | gray accent, secondary gradient stop |
 | text | `#ECECEF` | body text |
-| muted | `#8C8C95` | secondary text, icons |
+| muted | `#93939B` | secondary text, icons |
 | accent | `#A78BFA` | lighter purple highlights |
 
 Background luminance is below the 0.5 threshold, so the Mac keeps the dark color scheme.

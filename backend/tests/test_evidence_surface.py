@@ -806,7 +806,7 @@ async def test_surface_payload_has_no_unscoped_or_write_arity(payload):
         evidence.validate_payload(payload)
 
 
-@pytest.mark.parametrize("value", [None, 1, "chat", str(uuid4()).upper()])
+@pytest.mark.parametrize("value", [None, 1, "chat", "9F1C2B7E-3D4A-4C5B-8E6F-7A8B9C0D1E2F"])
 async def test_active_chat_must_be_a_canonical_uuid(value):
     with pytest.raises(AssignmentError):
         evidence._chat(value)
