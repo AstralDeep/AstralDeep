@@ -499,6 +499,23 @@ def test_redacted_or_truncated_preview_cannot_authorize(runtime, args):
     assert "Private Person" not in preview and "keep-secret" not in preview
 
 
+@pytest.mark.parametrize("bound", [True, False])
+async def test_server_bound_owner_identity_never_blocks_review(runtime, bound):
+    orch, ws = runtime
+    owner = "12345678-0000-4000-8000-00000000abcd"
+    orch.ui_sessions[ws] = {"sub": owner}
+    user_id = owner if bound else "87654321-0000-4000-8000-00000000abcd"
+    response = await hc.evaluate(orch, ws, owner, "chat-a", "agent-a", "send_email",
+                                 {"body": "Status update", "user_id": user_id}, [hitl.EGRESS])
+    if bound:
+        payload = _decision(response)
+        assert owner not in json.dumps(response.ui_components)
+        assert json.loads(orch._hitl_pending_calls[payload["hitl_request_id"]].arguments)["user_id"] == owner
+    else:
+        assert "Review unavailable" in response.error["message"]
+        assert not getattr(orch, "_hitl_pending_calls", {})
+
+
 @pytest.mark.parametrize("failure", [False, True])
 async def test_named_phi_and_unavailable_analyzer_refuse_blind_approval(runtime, monkeypatch, failure):
     orch, _ = runtime

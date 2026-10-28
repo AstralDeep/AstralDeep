@@ -4,7 +4,7 @@ through the real handle_chat_message, closed afterwards, and never outlives a st
 """
 
 import asyncio
-import time
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -53,18 +53,123 @@ def guided(task_runtime, monkeypatch):
                            follow_ups=follow_ups)
 
 
-async def _settle(predicate=None, timeout: float = 10.0):
-    # The continuation turn is a detached task with thread-pool handoffs; loop
-    # ticks alone cannot observe its completion deterministically under load.
-    deadline = time.monotonic() + timeout
-    while True:
-        for _ in range(20):
-            await asyncio.sleep(0)
-        if predicate is None or predicate():
-            return
-        if time.monotonic() >= deadline:
-            return
-        await asyncio.sleep(0.005)
+async def _settle():
+    for _ in range(20):
+        await asyncio.sleep(0)
+    resumes = [task for task in asyncio.all_tasks()
+               if task.get_name().startswith(("hitl-continue-", "remote-op-continue-"))]
+    if resumes:
+        await asyncio.wait_for(asyncio.gather(*resumes), timeout=120)
+
+
+def _statuses(orch, ws):
+    sent = []
+
+    async def send(target, data):
+        frame = json.loads(data)
+        if target is ws and frame.get("type") == "chat_status":
+            sent.append(frame["status"])
+        return True
+
+    orch._safe_send = send
+    return sent
+
+
+@pytest.mark.parametrize("decision", ["approve", "grant_task"])
+async def test_an_approved_effect_and_its_continuation_announce_the_turn(task_runtime, guided, decision):
+    statuses = _statuses(guided.orch, guided.ws)
+    await _mac(task_runtime)
+    card = await _call(task_runtime, "type_text", text="hello", hwnd=42)
+    await hc.handle_decision(guided.orch, guided.ws, OWNER, _payload(card, decision))
+    await _settle()
+    assert statuses == ["executing", "thinking", "done"] and len(guided.turns) == 1
+
+
+async def test_a_command_approval_announces_the_effect_and_its_continuation(task_runtime, guided):
+    statuses = _statuses(guided.orch, guided.ws)
+    await _mac(task_runtime, remote=True)
+    card = await _call(task_runtime, "run_command", argv=["wc", "notes.md"], cwd=ROOT)
+    await rc.handle_decision(guided.orch, guided.ws, OWNER, _payload(card, "approve"))
+    await _settle()
+    assert statuses == ["executing", "thinking", "done"] and len(guided.turns) == 1
+
+
+@pytest.mark.parametrize("change", ["stale", "no_guidance", "decline"])
+async def test_an_approval_without_a_continuation_still_ends_the_turn(task_runtime, guided, monkeypatch, change):
+    async def unavailable(_orch, _websocket):
+        return None, False
+
+    statuses = _statuses(guided.orch, guided.ws)
+    if change == "no_guidance":
+        monkeypatch.setattr(hc, "continuation_guidance", unavailable)
+    await _mac(task_runtime)
+    card = await _call(task_runtime, "type_text", text="hello", hwnd=42)
+    await hc.handle_decision(guided.orch, guided.ws, OWNER, _payload(card, "decline" if change == "decline" else
+                                                                           "approve"))
+    if change == "stale":
+        guided.orch._ws_active_chat[id(guided.ws)] = "chat-b"
+    await _settle()
+    assert not guided.turns
+    assert statuses == ([] if change == "decline" else ["executing", "done"])
+
+
+async def test_a_newer_turn_keeps_its_own_state_when_a_stale_continuation_is_refused(task_runtime, guided):
+    statuses = _statuses(guided.orch, guided.ws)
+    await _mac(task_runtime)
+    card = await _call(task_runtime, "type_text", text="hello", hwnd=42)
+    await hc.handle_decision(guided.orch, guided.ws, OWNER, _payload(card, "approve"))
+    hc.begin_task(guided.orch, guided.ws, OWNER, "chat-a")
+    await _settle()
+    assert not guided.turns and statuses == ["executing"]
+
+
+@pytest.mark.parametrize("path", ["hitl", "command"])
+async def test_cancel_during_the_approved_effect_interrupts_it_without_a_continuation(task_runtime, guided, path):
+    orch, ws = guided.orch, guided.ws
+    statuses = _statuses(orch, ws)
+    started, interrupted = asyncio.Event(), []
+
+    async def blocked(*_args, **_kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            interrupted.append(True)
+            raise
+
+    session, _host = await _mac(task_runtime, remote=path == "command")
+    card = (await _call(task_runtime, "run_command", argv=["wc", "notes.md"], cwd=ROOT) if path == "command"
+            else await _call(task_runtime, "type_text", text="hello", hwnd=42))
+    orch._execute_with_retry = blocked
+    decide = rc.handle_decision if path == "command" else hc.handle_decision
+    decision = asyncio.create_task(decide(orch, ws, OWNER, _payload(card, "approve")))
+    await asyncio.wait_for(started.wait(), 5)
+    await orch._cancel_turn(ws, OWNER, "chat-a")
+    await asyncio.wait_for(decision, 5)
+    await _settle()
+    assert interrupted and not decision.cancelled() and not guided.turns
+    assert statuses[0] == "executing" and statuses[-1] == "done" and "thinking" not in statuses
+    finished = json.dumps([call.args for call in orch.workspace.aupsert.await_args_list])
+    assert "Cancelled" in finished and session.state == "active"
+    assert not getattr(orch, "_turn_tool_tasks", {}).get((id(ws), "chat-a"))
+
+
+async def test_cancel_before_the_continuation_starts_prevents_it(task_runtime, guided, monkeypatch):
+    statuses = _statuses(guided.orch, guided.ws)
+    await _mac(task_runtime)
+    card = await _call(task_runtime, "type_text", text="hello", hwnd=42)
+    original = hc.continue_after_approval
+
+    def deferred(*args, **kwargs):
+        task = original(*args, **kwargs)
+        guided.orch.cancelled_sessions[id(guided.ws)] = True
+        guided.orch._hitl_task_origins.pop((OWNER, "chat-a"), None)
+        return task
+
+    monkeypatch.setattr(hc, "continue_after_approval", deferred)
+    await hc.handle_decision(guided.orch, guided.ws, OWNER, _payload(card, "approve"))
+    await _settle()
+    assert len(guided.effects) == 1 and not guided.turns and statuses == ["executing", "done"]
 
 
 @pytest.mark.parametrize("decision", ["approve", "grant_task"])
@@ -73,7 +178,7 @@ async def test_approval_resumes_under_the_deciders_guidance_and_dispatches_the_n
     await _mac(task_runtime)
     card = await _call(task_runtime, "type_text", text="hello", hwnd=42)
     await hc.handle_decision(guided.orch, guided.ws, OWNER, _payload(card, decision))
-    await _settle(lambda: len(guided.follow_ups) == 1 and guided.origins and guided.origins[0].closed)
+    await _settle()
     assert len(guided.effects) == (2 if decision == "grant_task" else 1)
     (message, origin), = guided.turns
     assert message == hc.CONTINUATION_TEXT and origin is guided.origins[0] and origin.owner_id == OWNER
@@ -143,7 +248,7 @@ async def test_single_card_command_approval_resumes_under_guidance(task_runtime,
     await _mac(task_runtime, remote=True)
     card = await _call(task_runtime, "run_command", argv=["wc", "notes.md"], cwd=ROOT)
     await rc.handle_decision(guided.orch, guided.ws, OWNER, _payload(card, decision))
-    await _settle(lambda: len(guided.turns) == 1 and guided.origins and guided.origins[0].closed)
+    await _settle()
     assert len(guided.effects) == 1
     (message, origin), = guided.turns
     assert message == hc.CONTINUATION_TEXT and origin.closed
@@ -165,7 +270,7 @@ async def test_command_resume_stops_when_the_computer_session_changes(task_runti
     card = await _call(task_runtime, "run_command", argv=["wc", "notes.md"], cwd=ROOT)
     await rc.handle_decision(guided.orch, guided.ws, OWNER, _payload(card, "approve"))
     await guided.orch.computer_sessions.pause(session, "local_input")
-    await _settle(lambda: guided.origins and guided.origins[0].closed)
+    await _settle()
     assert len(guided.effects) == 1 and not guided.turns and guided.origins[0].closed
 
 

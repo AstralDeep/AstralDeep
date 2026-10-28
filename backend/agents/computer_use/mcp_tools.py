@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
-import posixpath
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,10 +17,12 @@ from astralprims import Alert, Card, CodeBlock, Image, Table, Text
 from orchestrator.computer_hosts import WITHDRAWN, WITHDRAWN_NOTE, ComputerHostError
 from orchestrator.computer_use_policy import (
     BROWSER_VERBS,
+    CwdRefusal,
     DEFAULT_COMMAND_TIMEOUT_S,
     DEFAULT_READ_BYTES,
     DEFAULT_SCREENSHOT_WIDTH,
     DESTRUCTIVE_CLASSIFICATION,
+    host_deadline,
     MAX_ARG_CHARS,
     MAX_ARGV_ITEMS,
     MAX_BACKGROUND_TIMEOUT_S,
@@ -41,6 +42,7 @@ from orchestrator.computer_use_policy import (
     MIN_SCREENSHOT_WIDTH,
     mac_application,
     mac_terminal_application,
+    resolve_cwd,
     SCOPES,
     TIERS,
     TIMEOUTS,
@@ -72,8 +74,10 @@ _TAIL_BYTES = 32 * 1024
 _CHUNK_BYTES = 64 * 1024
 _MAX_CHUNKS = 64
 _MAX_JOBS = 64
-_COMMAND_DEADLINE_MARGIN_S = 10
-_BACKGROUND_START_S = 30.0
+_BRIDGE_MARGIN_S = 2.0
+_LOCAL_PAUSES = frozenset({"local_input", "local_pause"})
+_LOCAL_RESUME_HINT = ("ask the user to press Resume on {host}; do not call resume_session, wait or any other computer "
+                      "tool until they say it is resumed")
 
 
 def register_deps(orchestrator) -> None:
@@ -124,9 +128,17 @@ def _host_error(exc: ComputerHostError) -> Dict[str, Any]:
         hint = "call start_session first"
     elif exc.code == "paused":
         hint = "someone is using the computer; call resume_session when it is free"
-    elif exc.code == "local_pause_requires_local_resume":
-        hint = "ask the user to press Resume on that computer; do not call resume_session again"
+    elif exc.code in {"local_pause_requires_local_resume", "local_resume_required"}:
+        return _fail(exc.code, f"Stop now and end your turn. {exc.message}",
+                     next_action=_LOCAL_RESUME_HINT.format(host="that computer"), **extra)
     return _fail(exc.code, exc.message, next_action=hint, **extra)
+
+
+def _local_pause_refusal(host) -> Dict[str, Any]:
+    return _fail("local_resume_required",
+                 f"Stop now and end your turn. {host.name} was paused by the person at it; only its own Resume "
+                 "control can continue the session",
+                 next_action=_LOCAL_RESUME_HINT.format(host=host.name))
 
 
 def _bridge(coro, timeout: float, loop=None):
@@ -154,6 +166,8 @@ def _require_session(user_id: str, host) -> Tuple[Any, Optional[Dict[str, Any]]]
     if session is None:
         return None, _fail("no_session", f"no remote-control session on {host.name}",
                            next_action="call start_session first")
+    if session.state == "paused" and session.pause_reason in _LOCAL_PAUSES:
+        return None, _local_pause_refusal(host)
     if session.state == "paused":
         return None, _fail("paused", f"{host.name} is paused ({session.pause_reason or 'someone is using it'})",
                            next_action="wait, then call resume_session")
@@ -208,7 +222,7 @@ def _run(host, session, verb: str, args: Dict[str, Any], loop=None, *, timeout: 
         return result
 
     try:
-        return _bridge(_go(), timeout, loop), None
+        return _bridge(_go(), timeout + _BRIDGE_MARGIN_S, loop), None
     except ComputerHostError as exc:
         return None, _host_error(exc)
     except TimeoutError:
@@ -347,6 +361,8 @@ def start_session(**kwargs) -> Dict[str, Any]:
         return _host_error(exc)
     except Exception as exc:  # noqa: BLE001
         return _fail("failed", f"could not start the session: {exc}")
+    if session.state == "paused" and session.pause_reason in _LOCAL_PAUSES:
+        return _local_pause_refusal(host)
     vision = "yes" if session.images_supported else "no — non-visual mode"
     data = {"session_id": session.session_id, "host_id": host.host_id, "computer": host.name,
             "platform": host.platform, "screens": host.screens, "state": session.state,
@@ -401,6 +417,8 @@ def resume_session(**kwargs) -> Dict[str, Any]:
         state = _bridge(_resume_and_verify(), TIMEOUTS["resume_session"], _loop(kwargs))
     except ComputerHostError as exc:
         return _host_error(exc)
+    if state == "paused" and session.pause_reason in _LOCAL_PAUSES:
+        return _local_pause_refusal(host)
     if state == "paused":
         return _fail("paused", f"someone is still using {host.name}; the session paused again "
                                f"({session.pause_reason or 'local input'})",
@@ -559,6 +577,8 @@ def wait(**kwargs) -> Dict[str, Any]:
         return _fail("out_of_range", "seconds must be a number")
     if not (0.1 <= seconds <= MAX_WAIT_SECONDS):
         return _fail("out_of_range", f"seconds must be between 0.1 and {MAX_WAIT_SECONDS}")
+    if session.state == "paused" and session.pause_reason in _LOCAL_PAUSES:
+        return _local_pause_refusal(host)
     if session.state == "active":
         _result, err = _run(host, session, "wait", {"seconds": seconds}, _loop(kwargs))
         if err:
@@ -821,18 +841,10 @@ def _command_args(kwargs: Dict[str, Any], host) -> Dict[str, Any]:
                 isinstance(a, str) and len(a) <= MAX_ARG_CHARS and "\x00" not in a for a in argv) or not argv[0]):
             raise _Refusal("out_of_range", f"argv must list 1-{MAX_ARGV_ITEMS} strings, the program first")
         args["argv"] = list(argv)
-    cwd = kwargs.get("cwd")
-    if (not isinstance(cwd, str) or not cwd.startswith("/") or len(cwd) > 1024 or "\x00" in cwd
-            or ".." in cwd.split("/")):
-        raise _Refusal("out_of_range", "cwd must be an absolute folder inside one of workspace_roots")
-    roots = [root["path"] for root in host.workspace_roots]
-    if not roots:
-        raise _Refusal("cwd_outside_workspace", f"{host.name} shares no workspace folder; ask the user to select "
-                                                "one in Computer controls")
-    folder = posixpath.normpath(cwd)
-    if not any(folder == root or folder.startswith(root.rstrip("/") + "/") for root in roots):
-        raise _Refusal("cwd_outside_workspace", "cwd is outside every workspace folder the user selected")
-    args["cwd"] = cwd
+    try:
+        args["cwd"] = resolve_cwd(kwargs.get("cwd"), host.workspace_roots, host.name)
+    except CwdRefusal as exc:
+        raise _Refusal(exc.code, str(exc)) from None
     env = kwargs.get("env")
     if env is not None:
         if not isinstance(env, dict) or len(env) > MAX_ENV_VARS or not all(
@@ -905,8 +917,8 @@ def run_command(**kwargs) -> Dict[str, Any]:
         args = _command_args(kwargs, host)
     except _Refusal as exc:
         return _fail(exc.code, str(exc))
-    deadline = _BACKGROUND_START_S if args["background"] else args["timeout_s"] + _COMMAND_DEADLINE_MARGIN_S
-    result, err = _run(host, ctx, "run_command", args, _loop(kwargs), timeout=deadline, serialize=False)
+    result, err = _run(host, ctx, "run_command", args, _loop(kwargs), timeout=host_deadline("run_command", args),
+                       serialize=False)
     if err:
         return err
     if args["background"]:
@@ -1118,7 +1130,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         {"command": {"type": "string", "description": "One zsh command line, shown to the user exactly as written."},
          "argv": {"type": "array", "items": {"type": "string"},
                   "description": "Program and arguments, started directly without a shell."},
-         "cwd": {"type": "string", "description": "Absolute folder inside one of workspace_roots."},
+         "cwd": {"type": "string", "description": "Folder inside one of workspace_roots: an absolute path, "
+                                                  "<root name>/sub/path, or ~/sub/path."},
          "env": {"type": "object", "additionalProperties": {"type": "string"},
                  "description": "Up to 32 extra variables: LANG, LC_ALL, LC_CTYPE, LC_MESSAGES, TZ, TERM, NO_COLOR, "
                                 "FORCE_COLOR, CI, DEBUG, COLUMNS, LINES or APP_* names only."},

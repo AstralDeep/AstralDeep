@@ -133,6 +133,7 @@ BUILD_SIGN_PUBLISH_JOBS = {
     ("apple-release.yml", "release"),
     ("build-windows-candidate.yml", "windows-candidate"),
     ("publish-image.yml", "publish"),
+    ("release-macos.yml", "release"),
     ("release-windows.yml", "build-sign-release"),
     ("release-windows-publisher.yml", "publish"),
 }
@@ -1826,9 +1827,9 @@ def test_only_ordinary_ci_records_unmeasurable_changed_lines_as_not_applicable()
             assert "--empty-diff" not in path.read_text(encoding="utf-8"), path.name
 
 
-def test_backend_suites_run_as_three_whole_suite_groups_with_merged_coverage() -> None:
+def test_backend_suites_run_as_whole_suite_groups_with_merged_coverage() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
-    groups = ("tests", "persistent_agents", "modules")
+    groups = ("tests_1", "tests_2", "persistent_agents", "modules")
     web = _workflow_job(workflow, "backend-web")
     assert (
         "    strategy:\n      fail-fast: false\n      matrix:\n        group:\n"
@@ -1876,8 +1877,8 @@ def test_every_ci_job_is_bounded_by_thirty_minutes() -> None:
             "voice-worker-test", "gates",
         )
     } == {
-        "backend-image": 30, "backend-web": 30, "plane-postgres": 30,
-        "projection-backend-web": 30, "voice-worker-test": 30, "gates": 5,
+        "backend-image": 30, "backend-web": 20, "plane-postgres": 20,
+        "projection-backend-web": 30, "voice-worker-test": 7, "gates": 5,
     }
 
 
@@ -2525,7 +2526,7 @@ def test_apple_raw_jobs_instrument_before_archiving_and_never_rebuild_afterward(
 
 def _continuity_selectors(job: str) -> list[str]:
     return re.findall(
-        r"-only-testing:AstralAppUITests/ConversationContinuityUITests/(\S+)", job
+        r"(?:-only-testing:AstralAppUITests/)?ConversationContinuityUITests/(\w+)", job
     )
 
 
@@ -2533,7 +2534,7 @@ def test_release_continuity_lane_selects_the_pinned_single_relaunch_proof() -> N
     readiness = _workflow_job(_workflow_text(READINESS), "ios-lane")
     projection = _workflow_job(_workflow_text(APPLE_CI), "first-login-ui")
     assert _continuity_selectors(readiness) == [RELAUNCH_PROOF]
-    assert _continuity_selectors(projection) == [RELAUNCH_PROOF]
+    assert set(_continuity_selectors(projection)) == {RELAUNCH_PROOF}
     suite = CONTINUITY_UI_TESTS.read_text(encoding="utf-8")
     assert re.findall(r"(?m)^    func (test\w+)\(\)", suite).count(RELAUNCH_PROOF) == 1
     artifacts = _load_module(

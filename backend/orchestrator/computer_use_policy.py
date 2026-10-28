@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import math
 from pathlib import PurePosixPath
 import posixpath
 import re
@@ -41,6 +42,7 @@ CONSEQUENTIAL_VERBS: FrozenSet[str] = frozenset({
 SESSION_VERBS: FrozenSet[str] = frozenset({
     "list_computers", "start_session", "end_session", "resume_session", "confirm_action",
 })
+DE_ESCALATION_VERBS: FrozenSet[str] = frozenset({"end_session"})
 
 HOST_VERBS: FrozenSet[str] = OBSERVE_VERBS | INPUT_VERBS | CONSEQUENTIAL_VERBS
 
@@ -239,6 +241,25 @@ MAX_ARGV_ITEMS = 256
 MAX_ARG_CHARS = 4096
 MAX_ENV_VARS = 32
 MAX_STDIN_BYTES = 16 * 1024
+COMMAND_DEADLINE_MARGIN_S = 10
+BACKGROUND_START_S = 30.0
+HOST_DEADLINE_GRACE_S = 15.0
+DEFAULT_HOST_DEADLINE_S = 30.0
+
+
+def host_deadline(verb: str, args: Mapping[str, Any]) -> float:
+    if verb != "run_command":
+        return float(TIMEOUTS.get(verb, DEFAULT_HOST_DEADLINE_S))
+    if args.get("background") is True:
+        return BACKGROUND_START_S
+    timeout = args.get("timeout_s", DEFAULT_COMMAND_TIMEOUT_S)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+        timeout = DEFAULT_COMMAND_TIMEOUT_S
+    return float(min(timeout, MAX_FOREGROUND_TIMEOUT_S) + COMMAND_DEADLINE_MARGIN_S)
+
+
+def dispatch_timeout(verb: str, args: Mapping[str, Any]) -> float:
+    return host_deadline(verb, args) + HOST_DEADLINE_GRACE_S
 
 _MAX_NESTING = 4
 _SEPARATORS = frozenset({"|", "||", "&&", ";", "&", "(", ")", "|&", ";;", ";&", ";;&"})
@@ -321,6 +342,8 @@ def _destructive_program(words: Sequence[str]) -> bool:
 
 
 class _CommandScan:
+    check = staticmethod(_destructive_program)
+
     def __init__(self, cwd: Optional[str], roots: Sequence[str]):
         self.cwd = cwd
         self.roots = list(roots) or ([cwd] if cwd else [])
@@ -356,7 +379,7 @@ class _CommandScan:
                     script = next((w for w in words[index + 1:] if not w.startswith("-")), None)
                     return script is not None and self.text(script, depth + 1)
             return False
-        return _destructive_program(words)
+        return self.check(words)
 
     def text(self, command: str, depth: int) -> bool:
         if depth > _MAX_NESTING:
@@ -420,6 +443,136 @@ def _root_paths(roots: Any) -> List[Dict[str, str]]:
             if path is not None and path != "/":
                 out.append({"name": str(root.get("name") or posixpath.basename(path)), "path": path})
     return out
+
+
+class CwdRefusal(ValueError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+_HOME = re.compile(r"(/(?:Users|home)/[^/]+)(?:/|$)")
+_CWD_FORMS = "Pass an absolute folder inside one, <folder name>/sub/path, or ~/sub/path."
+
+
+def _folders_hint(folders: Sequence[Mapping[str, str]]) -> str:
+    listed = "; ".join(f"{root['name']} = {root['path']}" for root in folders)
+    return f"Shared folders: {listed[:1800]}. {_CWD_FORMS}"
+
+
+def resolve_cwd(value: Any, roots: Any, host_name: str) -> str:
+    folders = _root_paths(roots)
+    if not folders:
+        raise CwdRefusal("cwd_outside_workspace", f"{host_name} shares no workspace folder; ask the user to "
+                                                  "select one in Computer controls")
+    hint = _folders_hint(folders)
+    if (not isinstance(value, str) or not value.strip() or len(value) > 1024 or "\x00" in value
+            or ".." in value.split("/")):
+        raise CwdRefusal("out_of_range", f"cwd must name a shared folder. {hint}")
+    if value.startswith("/"):
+        path = value
+    elif value == "~" or value.startswith("~/"):
+        homes = {match.group(1) for root in folders if (match := _HOME.match(root["path"]))}
+        if len(homes) != 1:
+            raise CwdRefusal("out_of_range", f"~ cannot be resolved from the shared folders. {hint}")
+        path = homes.pop() + value[1:]
+    else:
+        named = [root for root in folders if value == root["name"] or value.startswith(root["name"] + "/")]
+        longest = max((len(root["name"]) for root in named), default=0)
+        named = [root for root in named if len(root["name"]) == longest]
+        if len(named) != 1:
+            raise CwdRefusal("out_of_range", f"cwd must start with /, ~/ or the name of one shared folder. {hint}")
+        path = named[0]["path"] + value[longest:]
+    folder = "/" + posixpath.normpath(path).lstrip("/")
+    if not any(folder == root["path"] or folder.startswith(root["path"] + "/") for root in folders):
+        raise CwdRefusal("cwd_outside_workspace", f"cwd {folder[:200]} is outside every folder the user shared. {hint}")
+    return folder
+
+
+_ESCALATING = frozenset({"sudo", "sudoedit", "su", "doas", "pkexec", "visudo", "dseditgroup", "sysadminctl"})
+_TRUST_EDITS = frozenset({"authorizationdb", "add-trusted-cert", "remove-trusted-cert", "trust-settings-import"})
+_SETID_MODE = re.compile(r"[ugoa]*[+=][rwxXt]*s[rwxXst]*|0?[2467][0-7]{3}")
+
+
+def _escalating_program(words: Sequence[str]) -> bool:
+    program, rest = _program(words[0]), list(words[1:])
+    if program in _ESCALATING:
+        return True
+    if program == "launchctl":
+        return any(word.startswith("system") or "/Library/LaunchDaemons" in word for word in rest)
+    if program == "osascript":
+        return any("administrator privileges" in word.lower() for word in rest)
+    if program == "security":
+        return _first_operand(words) in _TRUST_EDITS
+    if program == "dscl":
+        return any("admin" in word.lower() for word in rest)
+    if program == "chmod":
+        return any(_SETID_MODE.fullmatch(word) for word in rest if not word.startswith("-"))
+    return False
+
+
+class _EscalationScan(_CommandScan):
+    check = staticmethod(_escalating_program)
+
+    def _inside(self, target: str) -> bool:
+        return True
+
+
+def is_privilege_escalation(args: Mapping[str, Any]) -> bool:
+    shape = _command_shape(args)
+    if shape is None:
+        return True
+    scan = _EscalationScan(None, [])
+    kind, value = shape
+    return scan.invocation(value, 0) if kind == "argv" else scan.text(value, 0)
+
+
+ASTRAL_BUNDLE_PREFIX = "com.personalailabs.astraldeep"
+_ASTRAL_NAMES = frozenset({"astral", "astraldeep", "astral deep"})
+_ASTRAL_TEXT = re.compile(r"com\.personalailabs\.astraldeep|astral ?(?:deep)?\.app", re.IGNORECASE)
+SECURE_INPUT_BUNDLES: FrozenSet[str] = frozenset({
+    "com.apple.securityagent", "com.apple.loginwindow", "com.apple.keychainaccess", "com.apple.passwords",
+    "com.apple.systempreferences", "com.apple.systemsettings", "com.bitwarden.desktop", "org.keepassxc.keepassxc",
+    "com.lastpass.lastpass", "in.sinew.enpass-desktop", "com.dashlane.dashlanephonefinal", "me.proton.pass.electron",
+})
+_SECURE_INPUT_PREFIXES = ("com.1password.", "com.agilebits.onepassword")
+KEYBOARD_VERBS: FrozenSet[str] = frozenset({"type_text", "press_keys"})
+WINDOW_INPUT_VERBS: FrozenSet[str] = frozenset({
+    "click", "double_click", "right_click", "move", "drag", "scroll", "type_text", "press_keys", "focus_window",
+})
+BYPASS_VERBS: FrozenSet[str] = (OBSERVE_VERBS | INPUT_VERBS | CONSEQUENTIAL_VERBS
+                                | frozenset({"start_session", "end_session"}))
+
+
+def is_astral_app(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    stem = text.replace("\\", "/").rsplit("/", 1)[-1]
+    for suffix in (".exe", ".app"):
+        stem = stem.removesuffix(suffix)
+    return bool(text) and (text.startswith(ASTRAL_BUNDLE_PREFIX) or stem in _ASTRAL_NAMES)
+
+
+def is_secure_input_app(bundle: Any) -> bool:
+    folded = str(bundle or "").casefold()
+    return folded in SECURE_INPUT_BUNDLES or folded.startswith(_SECURE_INPUT_PREFIXES)
+
+
+def bypass_floor(tool: str, args: Mapping[str, Any], window_bundle: Optional[str]) -> bool:
+    if "terminal_app" in args:
+        return True
+    if tool == "run_command":
+        argv = args.get("argv")
+        text = " ".join(str(word) for word in argv) if isinstance(argv, list) else str(args.get("command") or "")
+        return is_privilege_escalation(args) or bool(_ASTRAL_TEXT.search(text))
+    if tool in {"write_file", "delete_path"}:
+        return bool(_ASTRAL_TEXT.search(str(args.get("path") or "")))
+    if tool == "open_app":
+        return is_shell_app(args.get("app")) or is_astral_app(args.get("app"))
+    if tool in WINDOW_INPUT_VERBS:
+        if not window_bundle or is_astral_app(window_bundle):
+            return True
+        return tool in KEYBOARD_VERBS and (is_secure_input_app(window_bundle) or is_shell_app(window_bundle))
+    return False
 
 
 def is_destructive_command(args: Mapping[str, Any], roots: Any = ()) -> bool:
@@ -506,6 +659,12 @@ def application_name(bundle_id: Any) -> str:
 def input_grant_label(app_name: str, window_title: Optional[str] = None) -> str:
     title = _label_text(window_title) if window_title else ""
     return f'Allow for this task in window "{title}"' if title else f"Allow for this task in {_label_text(app_name)}"
+
+
+def window_grant_label(app_name: str, window_title: Optional[str]) -> str:
+    if _label_text(window_title):
+        return input_grant_label(app_name, window_title)
+    return f"Allow for this task in this {_label_text(app_name)} window"
 
 
 def command_grant_label(argv0: str, folder: str) -> str:

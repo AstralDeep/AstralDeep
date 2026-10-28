@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+import textwrap
 from pathlib import Path, PurePosixPath
 from types import ModuleType
 
@@ -836,38 +837,164 @@ def test_python_exclusion_line_mapping_large_input_smoke() -> None:
     assert len(lines) == 60_000
 
 
-def test_python_candidate_witness_has_no_coverage_parser_underapproximation() -> None:
-    missing_by_path: dict[str, list[int]] = {}
-    extra_by_path: dict[str, list[int]] = {}
-    statement_count = 0
-    source_paths = (
-        REPO_ROOT / relative
-        for relative in _git(
-            REPO_ROOT, "ls-files", "--", "backend", "scripts"
-        ).splitlines()
-        if relative.endswith(".py")
-    )
-    for source_path in source_paths:
-        relative = source_path.relative_to(REPO_ROOT).as_posix()
-        target = collector.classify_path(relative)
-        if target is None or target.language != "python":
-            continue
-        source = source_path.read_text(encoding="utf-8")
-        native = _native_python_statements(source, relative)
-        statement_count += len(native)
-        witness = collector._python_candidate_executable_lines(
-            source.encode("utf-8"), relative
-        )
-        missing = sorted(native - witness)
-        if missing:
-            missing_by_path[relative] = missing
-        extra = sorted(witness - native)
-        if extra:
-            extra_by_path[relative] = extra
+_WITNESS_CORPUS = '''"""Leading docstring."""
+"stray string statement"
+import os
+import os.path as osp
+from json import (
+    dumps,
+    loads,
+)
+if TYPE_CHECKING:
+    from missing import thing
+else:
+    thing = None
+if unavailable:  # pragma: no cover - platform declaration
+    hidden = 1
+else:
+    visible = 1
+value = (
+    1
+    + 2
+)
+total = 1 + \\
+    2
+text = (
+    "implicit "
+    "concatenation"
+)
+formatted = f"""{value}
+{total}"""
+squares = [
+    item * item
+    for item in range(3)
+    if item
+]
+mapping = {key: key for key in "ab"}
+chained = 0 < value < 10 and not False
+first = 1; second = 2
+if first: third = 3
+assert value, (
+    "message"
+)
+del second
+try:
+    risky = 1 / 1
+except (ZeroDivisionError, ValueError) as error:
+    raise RuntimeError("failed") from error
+try:
+    pass
+except* OSError:
+    pass
+try:
+    pass
+except Exception:
+    pass
+else:
+    pass
+finally:
+    cleanup = True
+while False:
+    break
+else:
+    looped = False
+for index in range(2):
+    if index:
+        continue
+else:
+    done = True
+with open(os.devnull) as one, open(os.devnull) as two:
+    pass
+with (
+    open(os.devnull) as three,
+):
+    pass
+match value:
+    case 1 | 2 if chained:
+        matched = "small"
+    case {"key": inner}:
+        matched = inner
+    case [first_item, *rest]:
+        matched = first_item
+    case Point(x=0):
+        matched = "origin"
+    case _:
+        matched = None
+handler = lambda event: (
+    event
+)
+if (walrus := value) > 0:
+    positive = walrus
+global shared
+shared = ...
+@decorate
+@decorate(
+    "argument",
+)
+class Declared(Base, metaclass=Meta):
+    """class doc"""
+    attribute: int = 1
+    def method(self):  # pragma: no cover
+        return self
+    @property
+    def prop(self) -> int:
+        """property doc"""
+        return self.attribute
+def outer():
+    counter = 0
+    def inner():
+        nonlocal counter
+        counter += 1
+        return counter
+    return inner
+def generator():
+    while False:
+        yield None
+    yield from range(2)
+    return 1
+def stub(): ...
+@decorate(
+    "excluded",
+)  # pragma: no cover
+def excluded_decorated():
+    return None
+def protocol() -> None:
+    raise NotImplementedError
+if __name__ == "__main__":
+    print(dumps({}))
+'''
 
-    assert statement_count > 400
-    assert missing_by_path == {}
-    assert extra_by_path == {}
+_WITNESS_ASYNC_TAIL = '''async with manager() as resource:
+    await resource
+async for item in stream():
+    await item
+gathered = [entry async for entry in stream()]
+return await gather(
+    one(),
+    two(),
+)
+'''
+
+
+def _generated_witness_module() -> str:
+    corpus = _WITNESS_CORPUS.split("\n", 1)[1]
+    return "".join((
+        _WITNESS_CORPUS,
+        "class Wrapped:\n", textwrap.indent(_WITNESS_CORPUS, "    "),
+        "def wrapped(\n    argument,\n):\n", textwrap.indent(_WITNESS_CORPUS + "return (\n    argument,\n)\n", "    "),
+        "async def awaited():  # pragma: no cover\n", textwrap.indent(corpus, "    "),
+        "async def streamed():\n", textwrap.indent(corpus + _WITNESS_ASYNC_TAIL, "    "),
+    ))
+
+
+def test_python_candidate_witness_has_no_coverage_parser_underapproximation() -> None:
+    source = _generated_witness_module()
+    path = "backend/generated_witness_fixture.py"
+    native = _native_python_statements(source, path)
+
+    assert len(source.splitlines()) > 500 and len(native) > 300
+    assert collector.classify_path(path).language == "python"
+    assert collector._python_candidate_executable_lines(source.encode("utf-8"), path) == native
 
 
 def test_python_314_candidate_witness_matches_locked_coverage_parser() -> None:

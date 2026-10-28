@@ -968,7 +968,7 @@ def search_arxiv(query: str, max_results: int = 10, session_id: str = "default",
 THEME_PRESETS = {
     "graphite": {
         "bg": "#121214", "surface": "#1B1B1F", "primary": "#7C3AED",
-        "secondary": "#6E6E78", "text": "#ECECEF", "muted": "#8C8C95", "accent": "#A78BFA",
+        "secondary": "#6E6E78", "text": "#ECECEF", "muted": "#93939B", "accent": "#A78BFA",
     },
     "midnight": {
         "bg": "#0F1221", "surface": "#1A1E2E", "primary": "#6366F1",
@@ -976,7 +976,7 @@ THEME_PRESETS = {
     },
     "daylight": {
         "bg": "#F8FAFC", "surface": "#FFFFFF", "primary": "#4F46E5",
-        "secondary": "#7C3AED", "text": "#1E293B", "muted": "#64748B", "accent": "#0891B2",
+        "secondary": "#7C3AED", "text": "#1E293B", "muted": "#58667B", "accent": "#067590",
     },
     "ocean": {
         "bg": "#0C1222", "surface": "#132038", "primary": "#0EA5E9",

@@ -1,6 +1,7 @@
 """Owns chat/conversation persistence, canonical snapshot construction, and the
 text-only chat-rail reduction of canvas components, built on AstralPlane's typed
-repositories; used throughout orchestrator.py and api.py.
+repositories; chat pin and archive flags live in the owner's Plane preferences document.
+Used throughout orchestrator.py, chat_organization.py and api.py.
 """
 
 import copy
@@ -19,6 +20,7 @@ from astralplane.repositories import (
     RepositoryConflictError,
     RepositoryNotFoundError,
 )
+from astralplane.repositories.preferences import CHAT_ORGANIZATION_FLAGS
 from astralplane.contracts import IsolationLevel
 from astralplane.repositories.workspaces import (
     CanvasComponentRecord,
@@ -46,6 +48,7 @@ from orchestrator.scheduled_publication import current_scheduled_history_stage
 logger = logging.getLogger('HistoryManager')
 
 PREVIEW_MAX_CHARS = 140
+RECENT_CHATS_MAXIMUM = 200
 
 
 class ConversationCommitConflict(RuntimeError):
@@ -2354,6 +2357,16 @@ class HistoryManager:
             repository=steps_repository,
             plane_runtime=runtime,
         )
+        preferences_repository, _ = repository_from(
+            "preferences",
+            plane_runtime=runtime,
+            repositories=plane_repositories,
+            legacy_database=None,
+        )
+        self._preferences = PlaneRepositoryContext(
+            repository=preferences_repository,
+            plane_runtime=runtime,
+        )
 
     def create_chat(
         self,
@@ -2505,6 +2518,43 @@ class HistoryManager:
                 updated_at=max(timestamp, chat.updated_at + 1),
             )
 
+    def rename_chat(self, chat_id: str, title: str, user_id: str) -> bool:
+        with self._history.transaction() as transaction:
+            conversations = self._history.repository.conversations
+            chat = conversations.get(
+                transaction,
+                owner_id=user_id,
+                conversation_id=chat_id,
+                for_update=True,
+            )
+            if chat is None:
+                return False
+            conversations.rename(
+                transaction,
+                owner_id=user_id,
+                conversation_id=chat_id,
+                title=title,
+                expected_updated_at=chat.updated_at,
+                updated_at=max(int(time.time() * 1000), chat.updated_at + 1),
+            )
+        return True
+
+    def set_chat_flag(self, chat_id: str, flag: str, value: bool, user_id: str) -> bool:
+        if flag not in CHAT_ORGANIZATION_FLAGS:
+            raise ValueError("unsupported chat flag")
+        try:
+            with self._preferences.transaction() as transaction:
+                self._preferences.repository.set_chat_flag(
+                    transaction,
+                    owner_id=user_id,
+                    conversation_id=chat_id,
+                    flag=flag,
+                    value=value,
+                )
+        except RepositoryNotFoundError:
+            return False
+        return True
+
     def get_chat(self, chat_id: str, user_id: str = 'legacy') -> Optional[Dict]:
         stage = current_scheduled_history_stage()
         publication_stage = current_conversation_publication()
@@ -2596,15 +2646,38 @@ class HistoryManager:
             "messages": messages
         }
 
-    def get_recent_chats(self, limit: int = 20, user_id: str = 'legacy') -> List[Dict]:
+    def get_recent_chats(self, limit: int = 20, user_id: str = 'legacy',
+                         include_archived: bool = False) -> List[Dict]:
+        organization = self._preferences.call(
+            self._preferences.repository.get_chat_organization,
+            owner_id=user_id,
+        )
+        pinned, archived = set(organization.pinned), set(organization.archived)
+        hidden = 0 if include_archived else len(archived)
+        window = min(RECENT_CHATS_MAXIMUM, limit + len(pinned) + hidden)
         rows = self._history.call(
             self._history.repository.conversations.list_recent_nonempty,
             owner_id=user_id,
-            limit=limit,
+            limit=window,
         )
+        if window < RECENT_CHATS_MAXIMUM and not pinned <= {row.conversation_id for row in rows}:
+            rows = self._history.call(
+                self._history.repository.conversations.list_recent_nonempty,
+                owner_id=user_id,
+                limit=RECENT_CHATS_MAXIMUM,
+            )
 
         results = []
+        regular = 0
         for row in rows:
+            is_archived = row.conversation_id in archived
+            is_pinned = row.conversation_id in pinned
+            if is_archived and not include_archived:
+                continue
+            if not is_pinned:
+                if regular >= limit:
+                    continue
+                regular += 1
             content = row.latest_message_content
             preview = ""
             if content is not None:
@@ -2630,6 +2703,8 @@ class HistoryManager:
                 "updated_at": row.updated_at,
                 "preview": preview,
                 "has_saved_components": row.has_saved_components,
+                "pinned": is_pinned,
+                "archived": is_archived,
             })
 
         return results

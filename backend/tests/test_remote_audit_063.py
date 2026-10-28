@@ -240,12 +240,19 @@ async def test_credential_set_emits_row_and_reprobes(env):
     assert conn.inputs_meta.get("verdict") == "ok"
 
 
+async def _confirmed(env, handler, mid):
+    ws = object()
+    env.orch.ui_sessions, env.orch._ws_active_chat = {ws: {"sub": USER}}, {}
+    prompt = await handler(env.orch, ws, USER, ["user"], {"machine_id": mid})
+    return await handler(env.orch, ws, USER, ["user"], {
+        "machine_id": mid, "confirmation_id": prompt[1]["confirm"]["confirmation_id"]})
+
+
 async def test_credential_delete_emits_row(env):
     set_transport(FakeTransport())
     mid = await _register(env)
     env.audit.events.clear()
-    ret = await surface._h_credential_delete(env.orch, None, USER, ["user"],
-                                             {"machine_id": mid})
+    ret = await _confirmed(env, surface._h_credential_delete, mid)
     assert "Removed the credential" in ret[2]
     (ev,) = _rows(env, "remote_machine.credential_deleted")
     _assert_actor_label_outcome(ev)
@@ -256,7 +263,7 @@ async def test_machine_delete_emits_removed_row(env):
     set_transport(FakeTransport())
     mid = await _register(env)
     env.audit.events.clear()
-    await surface._h_machine_delete(env.orch, None, USER, ["user"], {"machine_id": mid})
+    await _confirmed(env, surface._h_machine_delete, mid)
     (ev,) = _rows(env, "remote_machine.removed")
     _assert_actor_label_outcome(ev)
     assert mid not in env.db.machines

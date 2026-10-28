@@ -1,21 +1,25 @@
 """Renders the 'My computers' surface listing the owner's remote-control-enabled
-desktops and their session controls (start/pause/resume/stop/forget). Shares handler
-keys between web render() and native components(), gated by FF_COMPUTER_USE.
+desktops, their session controls and bypass state, revokes one task grant named on a
+computer_session frame, and switches bypass permissions only from the host's own client socket.
+Shares handler keys between web render() and native components(), gated by FF_COMPUTER_USE.
 """
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any, Dict, List, Optional
 
 from webrender.chrome import esc, notice_block
 
 from orchestrator.computer_hosts import ComputerHostError
+from orchestrator.computer_sessions import LOCAL_RESUME_REFUSALS
 
 TITLE = "My computers"
 SURFACE_KEY = "my_computers"
 
 _DISABLED_MSG = "Remote control is not enabled on this server."
+_GRANT_BINDING = ("session_id", "host_id", "chat_id", "grant_id")
 
 _BTN = "px-3 py-2 rounded-lg text-sm font-medium bg-white/5 text-astral-text border border-white/10 hover:bg-white/10"
 _BTN_PRIMARY = ("px-3 py-2 rounded-lg text-sm font-medium bg-astral-primary/20 "
@@ -48,7 +52,8 @@ def _this_computer(orch, user_id: str, params: Any) -> Optional[Dict[str, Any]]:
         return None
     host = orch.computer_hosts.host_for_socket(ws)
     return {"enabled": host is not None, "name": host.name if host else None,
-            "host_id": host.host_id if host else None}
+            "host_id": host.host_id if host else None,
+            "bypass": host is not None and orch.computer_sessions.bypass_on(user_id, host.host_id)}
 
 
 def _rows(orch, user_id: str) -> List[Dict[str, Any]]:
@@ -57,7 +62,12 @@ def _rows(orch, user_id: str) -> List[Dict[str, Any]]:
     for h in hosts:
         s = live.get(h["host_id"])
         h["session"] = s.public() if s else None
+        h["bypass"] = bool(h["online"]) and orch.computer_sessions.bypass_on(user_id, h["host_id"])
     return hosts
+
+
+def _remotely_resumable(s: Dict[str, Any]) -> bool:
+    return s["state"] == "paused" and s.get("pause_reason") not in LOCAL_RESUME_REFUSALS
 
 
 def _session_line(h: Dict[str, Any]) -> str:
@@ -84,11 +94,11 @@ def _host_html(h: Dict[str, Any]) -> str:
                            f"data-ui-payload='{{\"host_id\":\"{hid}\"}}'>Control this computer</button>")
         else:
             sid = esc(s["session_id"])
-            if s["state"] == "paused":
+            if _remotely_resumable(s):
                 buttons.append(f'<button type="button" class="{_BTN_PRIMARY}" '
                                f'data-ui-action="chrome_computer_session_resume" '
                                f"data-ui-payload='{{\"session_id\":\"{sid}\"}}'>Resume</button>")
-            else:
+            elif s["state"] != "paused":
                 buttons.append(f'<button type="button" class="{_BTN}" '
                                f'data-ui-action="chrome_computer_session_pause" '
                                f"data-ui-payload='{{\"session_id\":\"{sid}\"}}'>Pause</button>")
@@ -105,10 +115,24 @@ def _host_html(h: Dict[str, Any]) -> str:
         f'<div class="text-xs text-astral-muted">{esc(h["platform"])} · {esc(screens)}</div></div></td>'
         '<td data-label="Status"><div>'
         f'<span class="astral-badge astral-badge-{status_class}">{status}</span>'
-        f'<div class="text-xs text-astral-muted">{esc(last_seen)}</div></div></td>'
+        + ('<span class="astral-badge astral-badge-warning">bypass on</span>' if h.get("bypass") else "")
+        + f'<div class="text-xs text-astral-muted">{esc(last_seen)}</div></div></td>'
         f'<td data-label="Session" class="text-sm text-astral-muted">{esc(_session_line(h))}</td>'
         '<td data-label="Actions">'
         f'<div class="astral-computers-actions flex flex-wrap gap-2">{"".join(buttons)}</div></td></tr>')
+
+
+def _bypass_toggle(tc: Dict[str, Any]) -> Dict[str, Any]:
+    on = bool(tc.get("bypass"))
+    return {"label": "Ask for permission" if on else "Bypass permissions",
+            "payload": {"host_id": tc["host_id"], "enabled": not on}}
+
+
+def _bypass_button_html(tc: Dict[str, Any]) -> str:
+    toggle = _bypass_toggle(tc)
+    payload = esc(json.dumps(toggle["payload"], separators=(",", ":")))
+    return (f'<button type="button" class="{_BTN}" data-ui-action="chrome_computer_bypass_set" '
+            f"data-ui-payload='{payload}'>{esc(toggle['label'])}</button>")
 
 
 def _this_computer_html(tc: Optional[Dict[str, Any]]) -> str:
@@ -117,7 +141,8 @@ def _this_computer_html(tc: Optional[Dict[str, Any]]) -> str:
     if tc["enabled"]:
         state = f'Remote control is <b>on</b> — this computer ({esc(tc["name"] or "")}) can be driven from your other devices.'
         btn = (f'<button type="button" class="{_BTN}" data-ui-action="computer_host_consent" '
-               f"data-ui-payload='{{\"enabled\":false}}'>Stop allowing</button>")
+               f"data-ui-payload='{{\"enabled\":false}}'>Stop allowing</button>"
+               + _bypass_button_html(tc))
     else:
         state = 'Remote control is <b>off</b> for this computer.'
         btn = (f'<button type="button" class="{_BTN_PRIMARY}" data-ui-action="computer_host_consent" '
@@ -184,9 +209,13 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
     tc = _this_computer(orch, user_id, params)
     if tc is not None:
         if tc["enabled"]:
+            toggle = _bypass_toggle(tc)
             out.append(_sdui.card("This computer", [
                 _sdui.badge("remote control on", "success"),
+                *([_sdui.badge("bypass on", "warning")] if tc.get("bypass") else []),
                 _sdui.button("Stop allowing", "computer_host_consent", payload={"enabled": False},
+                             variant="secondary"),
+                _sdui.button(toggle["label"], "chrome_computer_bypass_set", payload=toggle["payload"],
                              variant="secondary"),
             ]))
         else:
@@ -212,10 +241,10 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
                 buttons.append(_sdui.button("Control this computer", "chrome_computer_session_start",
                                             payload={"host_id": h["host_id"]}))
             else:
-                if s["state"] == "paused":
+                if _remotely_resumable(s):
                     buttons.append(_sdui.button("Resume", "chrome_computer_session_resume",
                                                 payload={"session_id": s["session_id"]}))
-                else:
+                elif s["state"] != "paused":
                     buttons.append(_sdui.button("Pause", "chrome_computer_session_pause",
                                                 payload={"session_id": s["session_id"]}, variant="secondary"))
                 buttons.append(_sdui.button("Stop", "chrome_computer_session_stop",
@@ -225,7 +254,8 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
                                         payload={"host_id": h["host_id"]}, variant="secondary"))
         badge = _sdui.badge("online" if h["online"] else "offline",
                             "success" if h["online"] else "default")
-        out.append(_sdui.card(h["name"], [badge, facts, _sdui.container(buttons, direction="row")]))
+        bypass = [_sdui.badge("bypass on", "warning")] if h.get("bypass") else []
+        out.append(_sdui.card(h["name"], [badge, *bypass, facts, _sdui.container(buttons, direction="row")]))
     return out
 
 
@@ -283,11 +313,40 @@ async def _h_session_resume(orch, websocket, user_id, roles, payload):
     try:
         await orch.computer_sessions.resume(session)
     except ComputerHostError as exc:
+        if exc.code == "local_resume_required":
+            return (SURFACE_KEY, {}, notice_block(
+                "error", f"{esc(session.host_name)} was paused at that computer. Resume it there."))
         if exc.code != "local_pause_requires_local_resume":
             raise
         return (SURFACE_KEY, {}, notice_block(
             "error", f"{esc(session.host_name)} was paused on that Mac. Resume it there."))
     return (SURFACE_KEY, {}, notice_block("success", f"Resumed {esc(session.host_name)}."))
+
+
+async def _h_grant_revoke(orch, websocket, user_id, roles, payload):
+    if not _enabled():
+        return (SURFACE_KEY, {}, notice_block("error", _DISABLED_MSG))
+    values = [payload.get(name) for name in _GRANT_BINDING] if isinstance(payload, dict) else []
+    if (not values or set(payload) - set(_GRANT_BINDING) - {"surface"}
+            or not all(isinstance(value, str) and 0 < len(value) <= 256 for value in values)
+            or not await orch.computer_sessions.revoke_grant(user_id, *values)):
+        return (SURFACE_KEY, {}, notice_block("error", "That grant is not active."))
+    return (SURFACE_KEY, {}, notice_block("success", "Grant revoked."))
+
+
+async def _h_bypass_set(orch, websocket, user_id, roles, payload):
+    from orchestrator.hitl_confirmation import attended
+
+    if not _enabled():
+        return (SURFACE_KEY, {}, notice_block("error", _DISABLED_MSG))
+    host = orch.computer_hosts.host_for_socket(websocket) if websocket is not None else None
+    if (not isinstance(payload, dict) or set(payload) - {"host_id", "enabled", "surface"}
+            or not isinstance(payload.get("enabled"), bool) or host is None
+            or payload.get("host_id") != host.host_id or host.owner_sub != user_id
+            or not attended(orch, websocket, user_id)):
+        return (SURFACE_KEY, {}, notice_block("error", "Bypass is not available here."))
+    await orch.computer_sessions.set_bypass(host, payload["enabled"])
+    return (SURFACE_KEY, {}, notice_block("success", "Bypass on." if payload["enabled"] else "Bypass off."))
 
 
 async def _h_forget(orch, websocket, user_id, roles, payload):
@@ -305,4 +364,6 @@ HANDLERS = {
     "chrome_computer_session_pause": _h_session_pause,
     "chrome_computer_session_resume": _h_session_resume,
     "chrome_computer_forget": _h_forget,
+    "chrome_computer_grant_revoke": _h_grant_revoke,
+    "chrome_computer_bypass_set": _h_bypass_set,
 }

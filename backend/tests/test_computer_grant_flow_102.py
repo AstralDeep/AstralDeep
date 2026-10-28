@@ -15,6 +15,7 @@ import pytest
 from orchestrator import computer_grants as cg
 from orchestrator import hitl_confirmation as hc
 from orchestrator import remote_confirmation as rc
+from shared.protocol import MCPResponse
 from tests.helpers.remote_plane_runtime import make_remote_confirmation_plane_source
 from tests.test_computer_use_076 import _descriptor, _FakeDB, _FakeOrch
 from tests.test_hitl_public_research import _dispatch, runtime as runtime  # noqa: F401
@@ -25,11 +26,15 @@ OWNER, CHAT = "owner-a", "chat-a"
 ROOT = "/Users/sam/Projects/x"
 TEXTEDIT = {"hwnd": 42, "title": "Untitled", "process": "com.apple.TextEdit", "bundle_id": "com.apple.TextEdit",
             "rect": [0, 0, 800, 600], "focused": True}
+OPEN_PANEL = {"hwnd": 45, "title": "Open", "process": "com.apple.TextEdit", "bundle_id": "com.apple.TextEdit",
+              "rect": [0, 0, 600, 400], "focused": False}
+FINDER = {"hwnd": 46, "title": "", "process": "com.apple.finder", "bundle_id": "com.apple.finder",
+          "rect": [0, 0, 800, 600], "focused": False}
 NOTES = {"hwnd": 43, "title": "Groceries", "process": "com.apple.Notes", "bundle_id": "com.apple.Notes",
          "rect": [0, 0, 800, 600], "focused": False}
 SAFARI = {"hwnd": 44, "title": "Bank", "process": "com.apple.Safari", "bundle_id": "com.apple.Safari",
           "rect": [0, 0, 800, 600], "focused": False}
-SCOPES = {"start_session": "tools:write", "interrupt_command": "tools:write", "type_text": "tools:write", "press_keys": "tools:write", "click": "tools:write", "drag": "tools:write",
+SCOPES = {"start_session": "tools:write", "end_session": "tools:write", "resume_session": "tools:write", "interrupt_command": "tools:write", "type_text": "tools:write", "press_keys": "tools:write", "click": "tools:write", "drag": "tools:write",
           "scroll": "tools:write", "open_app": "tools:write", "run_command": "tools:execute",
           "browser_navigate": "tools:write", "browser_click": "tools:write", "browser_scroll": "tools:write",
           "set_clipboard": "tools:write"}
@@ -95,7 +100,9 @@ async def test_input_card_offers_a_window_grant_that_covers_later_input(task_run
     session, host = await _mac(task_runtime)
     first = await _call(task_runtime, "type_text", text="hello", hwnd=42)
     labels = [b["label"] for b in _buttons(first)]
-    assert labels == ["Approve", 'Allow for this task in window "Untitled"', "Decline"]
+    assert labels == ["Approve", 'Allow for this task in window "Untitled"', "Allow for this task in TextEdit",
+                      "Decline"]
+    assert [b["payload"].get("grant_scope") for b in _buttons(first)] == [None, "window", "app", None]
     assert "TextEdit" in _texts(first) and "Untitled" in _texts(first)
     await hc.handle_decision(orch, ws, OWNER, _payload(first, "grant_task"))
     await asyncio.sleep(0)
@@ -112,6 +119,110 @@ async def test_input_card_offers_a_window_grant_that_covers_later_input(task_run
     assert other.result["_data"]["status"] == "confirmation_required" and len(effects) == 2
 
 
+def _grant_payload(response, scope):
+    return next(b["payload"] for b in _buttons(response) if b["payload"].get("grant_scope") == scope)
+
+
+async def test_application_grant_covers_every_window_of_that_application_only(task_runtime):
+    orch, ws, effects, *_ = task_runtime
+    session, host = await _mac(task_runtime, windows=(TEXTEDIT, OPEN_PANEL, NOTES, SAFARI))
+    first = await _call(task_runtime, "click", x=10, y=10, hwnd=45)
+    assert [b["label"] for b in _buttons(first)] == [
+        "Approve", 'Allow for this task in window "Open"', "Allow for this task in TextEdit", "Decline"]
+    await hc.handle_decision(orch, ws, OWNER, _grant_payload(first, "app"))
+    assert len(effects) == 1
+    grant, = orch.computer_sessions.grants.list(session.session_id)
+    assert dict(grant.scope) == {"kind": "app", "bundle_id": "com.apple.TextEdit"}
+    assert (grant.owner_id, grant.host_id, grant.chat_id) == (OWNER, host.host_id, CHAT)
+    assert grant.expires_at == min(grant.created_at + cg.SLIDING_TTL_S, grant.created_at + cg.HARD_CAP_S)
+    assert (await _call(task_runtime, "click", x=20, y=20, hwnd=42)).result["_data"]["ok"]
+    session.remember_windows([dict(TEXTEDIT, hwnd=47, title="Untitled 2"), NOTES])
+    assert (await _call(task_runtime, "type_text", text="hello", hwnd=47)).result["_data"]["ok"]
+    assert (await _call(task_runtime, "press_keys", keys="cmd+s", hwnd=47)).result["_data"]["ok"]
+    assert len(effects) == 4 and not orch._hitl_pending_calls
+    other = await _call(task_runtime, "type_text", text="x", hwnd=43)
+    assert other.result["_data"]["status"] == "confirmation_required" and len(effects) == 4
+    rows = orch.computer_sessions.grant_rows(session)
+    assert [(row["kind"], row["target"], row["scope"]) for row in rows] == [
+        ("application", "com.apple.TextEdit", {"kind": "app"})]
+
+
+@pytest.mark.parametrize("change", ["pause", "stop", "revoke", "other_chat"])
+async def test_application_grant_is_cleared_by_pause_stop_and_revocation(task_runtime, change):
+    orch, ws, effects, *_ = task_runtime
+    session, host = await _mac(task_runtime, windows=(TEXTEDIT, OPEN_PANEL))
+    first = await _call(task_runtime, "type_text", text="a", hwnd=42)
+    await hc.handle_decision(orch, ws, OWNER, _grant_payload(first, "app"))
+    hc.begin_task(orch, ws, OWNER, CHAT)
+    grant, = orch.computer_sessions.grants.list(session.session_id)
+    granted_session = session.session_id
+    if change == "pause":
+        await orch.computer_sessions.pause(session, "local_input")
+        await orch.computer_sessions.resume(session, local=True)
+    elif change == "stop":
+        await orch.computer_sessions.end(session, "user_stop", cancel_turn=False)
+        session = await orch.computer_sessions.start(OWNER, host, ws, CHAT, wait_for_ack=False)
+        session.remember_windows([TEXTEDIT, OPEN_PANEL])
+    elif change == "revoke":
+        assert await orch.computer_sessions.revoke_grant(OWNER, session.session_id, host.host_id, CHAT,
+                                                         grant.grant_id)
+    else:
+        await orch.computer_sessions.start(OWNER, host, ws, "chat-b", wait_for_ack=False)
+        await orch.computer_sessions.start(OWNER, host, ws, CHAT, wait_for_ack=False)
+        session.remember_windows([TEXTEDIT, OPEN_PANEL])
+    assert orch.computer_sessions.grants.list(granted_session) == ()
+    again = await _call(task_runtime, "click", x=1, y=1, hwnd=45)
+    assert again.result["_data"]["status"] == "confirmation_required" and len(effects) == 1
+
+
+async def test_window_grant_without_a_title_and_finder_offer_only_the_window(task_runtime):
+    orch, ws, effects, *_ = task_runtime
+    session, _host = await _mac(task_runtime, windows=(dict(TEXTEDIT, title=""), FINDER))
+    untitled = await _call(task_runtime, "type_text", text="a", hwnd=42)
+    assert [b["label"] for b in _buttons(untitled)] == [
+        "Approve", "Allow for this task in this TextEdit window", "Allow for this task in TextEdit", "Decline"]
+    finder = await _call(task_runtime, "click", x=1, y=1, hwnd=46)
+    assert [b["payload"].get("grant_scope") for b in _buttons(finder)] == [None, "window", None]
+    await hc.handle_decision(orch, ws, OWNER, _grant_payload(finder, "window"))
+    grant, = orch.computer_sessions.grants.list(session.session_id)
+    assert dict(grant.scope) == {"kind": "window", "bundle_id": "com.apple.finder", "hwnd": 46}
+
+
+@pytest.mark.parametrize("payload", [
+    {"decision": "grant_task", "grant_scope": "origin"}, {"decision": "approve", "grant_scope": "app"},
+    {"decision": "grant_task", "grant_scope": ["app"]},
+])
+async def test_grant_scope_must_name_an_offer_on_a_grant_decision(task_runtime, payload):
+    orch, ws, effects, *_ = task_runtime
+    session, _host = await _mac(task_runtime)
+    card = await _call(task_runtime, "type_text", text="a", hwnd=42)
+    await hc.handle_decision(orch, ws, OWNER, {"hitl_request_id": _payload(card, "approve")["hitl_request_id"],
+                                               **payload})
+    assert not effects and orch.computer_sessions.grants.list(session.session_id) == ()
+    assert "unavailable" in str(orch.send_ui_render.await_args_list)
+
+
+async def test_grant_without_a_scope_takes_the_narrowest_offer_and_component_checks_the_scope(task_runtime):
+    orch, ws, effects, *_ = task_runtime
+    session, _host = await _mac(task_runtime)
+    card = await _call(task_runtime, "type_text", text="a", hwnd=42)
+    request = _payload(card, "approve")["hitl_request_id"]
+    stored = dict(card.ui_components[0])
+    orch.workspace.aget_by_component_id = AsyncMock(return_value={"component_data": stored})
+    component = orch.workspace.resolve_identity({"id": f"hitl_{request}"})
+    await hc.handle_decision(orch, ws, OWNER, {"hitl_request_id": request, "decision": "grant_task",
+                                               "component_id": component})
+    assert not effects
+    await hc.handle_decision(orch, ws, OWNER, {**_grant_payload(card, "app"), "component_id": component})
+    grant, = orch.computer_sessions.grants.list(session.session_id)
+    assert dict(grant.scope)["kind"] == "app" and len(effects) == 1
+    second = await _call(task_runtime, "type_text", text="b", hwnd=43)
+    await hc.handle_decision(orch, ws, OWNER, {"hitl_request_id": _payload(second, "approve")["hitl_request_id"],
+                                               "decision": "grant_task"})
+    window = next(g for g in orch.computer_sessions.grants.list(session.session_id) if g.scope["kind"] == "window")
+    assert dict(window.scope) == {"kind": "window", "bundle_id": "com.apple.Notes", "hwnd": 43}
+
+
 async def test_grant_survives_turns_and_is_revoked_with_the_session_pause(task_runtime):
     orch, ws, effects, *_ = task_runtime
     session, _host = await _mac(task_runtime)
@@ -120,7 +231,7 @@ async def test_grant_survives_turns_and_is_revoked_with_the_session_pause(task_r
     hc.begin_task(orch, ws, OWNER, CHAT)
     assert (await _call(task_runtime, "type_text", text="b", hwnd=42)).result["_data"]["ok"]
     await orch.computer_sessions.pause(session, "local_input")
-    await orch.computer_sessions.resume(session)
+    await orch.computer_sessions.resume(session, local=True)
     again = await _call(task_runtime, "type_text", text="c", hwnd=42)
     assert again.result["_data"]["status"] == "confirmation_required" and len(effects) == 2
 
@@ -281,13 +392,58 @@ async def test_run_command_card_grants_the_program_in_its_folder(task_runtime):
     shell = await _call(task_runtime, "run_command", command="wc -l other.md", cwd=ROOT)
     assert shell.result["_data"]["status"] == "confirmation_required" and len(effects) == 2
     for args in ({"command": "wc -l a | sh", "cwd": ROOT}, {"argv": ["cat", "a"], "cwd": ROOT},
-                 {"argv": ["wc", "a"], "cwd": "/tmp"}, {"argv": ["wc", "a"], "cwd": ROOT, "env": {"PATH": "/x"}},
+                 {"argv": ["wc", "a"], "cwd": ROOT, "env": {"PATH": "/x"}},
                  {"argv": ["wc", "a"], "cwd": ROOT, "env": {"LANG": "C"}}):
         refused = await _call(task_runtime, "run_command", **args)
         assert refused.result["_data"]["status"] == "confirmation_required"
     assert len(effects) == 2
     with_env = await _call(task_runtime, "run_command", argv=["wc", "b"], cwd=ROOT, env={"LANG": "C"})
     assert "Environment: LANG=C" in _texts(with_env) and len(_buttons(with_env)) == 2
+
+
+@pytest.mark.parametrize("cwd", ["/tmp", "/Users/riley/AstralTest", "~/Documents", "notes"])
+async def test_a_command_folder_outside_every_shared_root_is_refused_before_a_card(task_runtime, cwd):
+    orch, ws, effects, *_ = task_runtime
+    await _mac(task_runtime, remote=True)
+    response = await _call(task_runtime, "run_command", argv=["wc", "a"], cwd=cwd)
+    assert response.result is None and not response.ui_components
+    assert response.error["retryable"] is False and "x = " + ROOT in response.error["message"]
+    assert response.error["message"].startswith(("cwd_outside_workspace:", "out_of_range:"))
+    assert not effects and not rc._PENDING_CARDS and not getattr(orch, "_hitl_pending_calls", {})
+    alerts = [c.args[1] for c in orch.send_ui_render.await_args_list]
+    assert any(item.get("variant") == "error" for batch in alerts for item in batch)
+
+
+@pytest.mark.parametrize("cwd,resolved", [("x/notes", ROOT + "/notes"), ("~/Projects/x", ROOT)])
+async def test_a_root_relative_command_folder_is_resolved_before_review(task_runtime, cwd, resolved):
+    orch, ws, effects, *_ = task_runtime
+    await _mac(task_runtime, remote=True)
+    card = await _call(task_runtime, "run_command", argv=["wc", "-l", "notes.md"], cwd=cwd)
+    assert f"Folder: {resolved}" in _texts(card)
+    assert [b["label"] for b in _buttons(card)] == ["Approve", "Allow wc in x for this task", "Decline"]
+    await rc.handle_decision(orch, ws, OWNER, _payload(card, "approve"))
+    assert [args["cwd"] for _tool, args in effects] == [resolved]
+
+
+@pytest.mark.parametrize("failure,shown", [
+    (MCPResponse(error={"message": "outcome_uncertain: Mac did not answer run_command within 70 s", "retryable": False}),
+     "Mac did not answer run_command within 70 s"),
+    (MCPResponse(result={"_data": {"code": "failed", "message": "spawn refused"}}), "spawn refused"),
+    (MCPResponse(result={"_data": {"status": "failed"}}), "returned no result"),
+    (None, "outcome_uncertain: inspect current state"),
+])
+async def test_an_approved_command_that_fails_reports_it_instead_of_staying_running(task_runtime, failure, shown):
+    orch, ws, effects, turns, _proposals, outcome = task_runtime
+    await _mac(task_runtime, remote=True)
+    outcome[0] = failure
+    card = await _call(task_runtime, "run_command", argv=["wc", "notes.md"], cwd=ROOT)
+    orch.workspace.aupsert.reset_mock()
+    await rc.handle_decision(orch, ws, OWNER, _payload(card, "approve"))
+    assert len(effects) == 1 and not turns
+    titles = [call.args[2][0]["title"] for call in orch.workspace.aupsert.await_args_list]
+    assert titles[-1] == "Not completed" and shown in json.dumps(orch.workspace.aupsert.await_args_list[-1].args[2])
+    alerts = [item for call in orch.send_ui_render.await_args_list for item in call.args[1]]
+    assert any(item.get("variant") == "error" and shown in item.get("message", "") for item in alerts)
 
 
 async def test_plain_approval_of_a_command_is_one_card_one_execution_and_no_grant(task_runtime):
@@ -409,6 +565,46 @@ async def test_interrupt_of_a_tracked_job_is_a_control_action_without_a_card(tas
     assert unknown.result["_data"]["status"] == "confirmation_required" and len(effects) == 1
 
 
+async def test_end_session_is_a_de_escalation_that_runs_without_a_card_and_is_audited(task_runtime):
+    orch, ws, effects, *_ = task_runtime
+    await _mac(task_runtime)
+    orch._source_bound_de_escalations = {("computer-use-1", "end_session")}
+    response = await _call(task_runtime, "end_session")
+    assert response.error is None and response.result["_data"]["ok"]
+    assert [tool for tool, _args in effects] == ["end_session"] and not getattr(orch, "_hitl_pending_calls", {})
+    events = [call.args[0] for call in orch.audit_recorder.record.await_args_list]
+    assert [event.action_type for event in events] == ["hitl.de_escalation"]
+    assert events[0].inputs_meta["risks"] == ["de_escalation"] and events[0].conversation_id == CHAT
+    resume = await _call(task_runtime, "resume_session")
+    assert resume.result["_data"]["status"] == "confirmation_required" and len(effects) == 1
+
+
+async def test_end_session_without_the_host_declaration_keeps_its_review(task_runtime):
+    orch, ws, effects, *_ = task_runtime
+    await _mac(task_runtime)
+    response = await _call(task_runtime, "end_session")
+    assert response.result["_data"]["status"] == "confirmation_required" and not effects
+
+
+async def test_de_escalation_audit_failure_does_not_block_ending(task_runtime):
+    orch, ws, effects, *_ = task_runtime
+    await _mac(task_runtime)
+    orch._source_bound_de_escalations = {("computer-use-1", "end_session")}
+    orch.audit_recorder.record.side_effect = RuntimeError("audit down")
+    response = await _call(task_runtime, "end_session")
+    assert response.result["_data"]["ok"] and [tool for tool, _args in effects] == ["end_session"]
+
+
+async def test_de_escalation_audit_records_unencodable_arguments_by_an_empty_digest(task_runtime):
+    import hashlib
+
+    orch, *_ = task_runtime
+    await hc.audit_de_escalation(orch, OWNER, CHAT, "computer-use-1", "end_session", {"x": "y" * 70000})
+    event = orch.audit_recorder.record.await_args.args[0]
+    assert event.action_type == "hitl.de_escalation"
+    assert event.inputs_meta["arguments_sha256"] == hashlib.sha256(b"{}").hexdigest()
+
+
 def _all_text(response):
     return json.dumps(response.ui_components)
 
@@ -462,3 +658,28 @@ async def test_only_plain_argv_command_cards_offer_a_grant(task_runtime, args, g
     card = await _call(task_runtime, "run_command", cwd=ROOT, **args)
     labels = [b["label"] for b in _buttons(card)]
     assert labels == (["Approve", "Allow wc in x for this task", "Decline"] if grantable else ["Approve", "Decline"])
+
+
+async def test_owner_revoke_from_the_session_frame_ends_later_effects_and_refuses_others(task_runtime, monkeypatch):
+    from orchestrator.projection_surfaces import my_computers
+
+    orch, ws, effects, *_ = task_runtime
+    session, host = await _mac(task_runtime)
+    monkeypatch.setattr(my_computers, "_enabled", lambda: True)
+    first = await _call(task_runtime, "type_text", text="a", hwnd=42)
+    await hc.handle_decision(orch, ws, OWNER, _payload(first, "grant_task"))
+    hc.begin_task(orch, ws, OWNER, CHAT)
+    grant, = orch.computer_sessions.grants.list(session.session_id)
+    payload = {"grant_id": grant.grant_id, "session_id": session.session_id, "host_id": host.host_id, "chat_id": CHAT}
+    _key, _params, denied = await my_computers.HANDLERS["chrome_computer_grant_revoke"](
+        orch, ws, "someone-else", ["user"], payload)
+    assert "not active" in denied and orch.computer_sessions.grants.list(session.session_id) == (grant,)
+    assert (await _call(task_runtime, "type_text", text="b", hwnd=42)).result["_data"]["ok"] and len(effects) == 2
+    _key, _params, notice = await my_computers.HANDLERS["chrome_computer_grant_revoke"](
+        orch, ws, OWNER, ["user"], payload)
+    assert "Grant revoked." in notice and orch.computer_sessions.grants.list(session.session_id) == ()
+    again = await _call(task_runtime, "type_text", text="c", hwnd=42)
+    assert again.result["_data"]["status"] == "confirmation_required" and len(effects) == 2
+    _key, _params, unknown = await my_computers.HANDLERS["chrome_computer_grant_revoke"](
+        orch, ws, OWNER, ["user"], payload)
+    assert "not active" in unknown

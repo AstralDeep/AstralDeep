@@ -16,7 +16,7 @@ import pytest
 
 from orchestrator import computer_use_policy as policy
 from orchestrator import remote_confirmation as rc
-from orchestrator.computer_hosts import ComputerHostError, ComputerHostRegistry
+from orchestrator.computer_hosts import WITHDRAWN, ComputerHostError, ComputerHostRegistry
 from orchestrator.computer_sessions import ComputerSessionManager
 from shared.protocol import (
     COMPUTER_HOST_VERBS,
@@ -310,6 +310,70 @@ async def test_registry_supersedes_and_caches_offline_hosts():
     assert exc.value.code == "computer_unavailable" and "offline" in exc.value.message
     assert orch.computer_hosts.forget(OWNER, host2.host_id) is True
     assert orch.computer_hosts.list_for_owner(OWNER) == []
+
+
+def _host_named(orch, name, platform="macos", user=OWNER, online=True, age_s=0.0):
+    ws = orch.add(_WS(user=user))
+    host, _ = orch.computer_hosts.register(user, ws, ComputerHostDescriptor.from_dict(
+        _descriptor(name=name, platform=platform)))
+    if not online:
+        orch.computer_hosts.on_socket_closed(ws)
+        host.last_seen = time.time() - age_s
+    return host
+
+
+async def test_a_reregistered_computer_hides_its_stale_offline_rows():
+    orch = _FakeOrch()
+    old = _host_named(orch, "RyzenRoll Mobile", online=False, age_s=60)
+    older = _host_named(orch, "ryzenroll mobile", online=False, age_s=120)
+    other_platform = _host_named(orch, "RyzenRoll Mobile", platform="windows", online=False, age_s=60)
+    studio = _host_named(orch, "Studio", online=False, age_s=60)
+    foreign = _host_named(orch, "RyzenRoll Mobile", user=OTHER, online=False, age_s=60)
+    offline_only = orch.computer_hosts.list_for_owner(OWNER)
+    assert {row["host_id"] for row in offline_only} == {old.host_id, other_platform.host_id, studio.host_id}
+    fresh = _host_named(orch, "RyzenRoll Mobile")
+    rows = orch.computer_hosts.list_for_owner(OWNER)
+    assert [(row["host_id"], row["online"]) for row in rows] == [
+        (fresh.host_id, True), (other_platform.host_id, False), (studio.host_id, False)]
+    assert older.host_id not in {row["host_id"] for row in offline_only + rows}
+    assert [row["host_id"] for row in orch.computer_hosts.list_for_owner(OTHER)] == [foreign.host_id]
+    assert orch.computer_hosts.resolve(OWNER, "RyzenRoll Mobile") is fresh
+    assert orch.computer_hosts.forget(OWNER, old.host_id) is True
+
+
+async def test_offline_duplicates_of_one_computer_resolve_to_its_newest_registration():
+    orch = _FakeOrch()
+    _host_named(orch, "RyzenRoll Mobile", online=False, age_s=120)
+    newest = _host_named(orch, "RyzenRoll Mobile", online=False, age_s=60)
+    newest.offline_reason = WITHDRAWN
+    with pytest.raises(ComputerHostError) as refused:
+        orch.computer_hosts.resolve(OWNER, None)
+    assert "withdrew computer access" in refused.value.message
+    _host_named(orch, "Studio", online=False, age_s=60)
+    with pytest.raises(ComputerHostError) as generic:
+        orch.computer_hosts.resolve(OWNER, None)
+    assert "none of your computers is online" in generic.value.message
+
+
+async def test_two_online_computers_with_one_name_both_stay_listed():
+    orch = _FakeOrch()
+    first, second = _host_named(orch, "Mac"), _host_named(orch, "Mac")
+    stale = _host_named(orch, "Mac", online=False, age_s=30)
+    rows = orch.computer_hosts.list_for_owner(OWNER)
+    assert {row["host_id"] for row in rows} == {first.host_id, second.host_id}
+    assert stale.host_id not in {row["host_id"] for row in rows}
+
+
+async def test_list_computers_shows_only_the_newest_registration():
+    from agents.computer_use import mcp_tools
+
+    orch = _AgentOrch()
+    mcp_tools.register_deps(orch)
+    stale = _host_named(orch, "RyzenRoll Mobile", online=False, age_s=60)
+    fresh = _host_named(orch, "RyzenRoll Mobile")
+    listed = await asyncio.to_thread(mcp_tools.list_computers, user_id=OWNER)
+    assert [row["host_id"] for row in listed["_data"]["computers"]] == [fresh.host_id]
+    assert stale.host_id not in json.dumps(listed)
 
 
 async def test_request_response_correlation_and_socket_binding():
@@ -845,21 +909,32 @@ async def test_agent_verbs_against_a_fake_host(monkeypatch):
 
     await orch.computer_sessions.on_host_event(OWNER, host.host_id, "paused", session.session_id, "local_input")
     paused = await asyncio.to_thread(mcp_tools.screenshot, **ctx)
-    assert paused["_data"]["code"] == "paused"
+    assert paused["_data"]["code"] == "local_resume_required"
     before = len(host_ws.frames("computer_request"))
     waited = await asyncio.to_thread(mcp_tools.wait, seconds=0.1, **ctx)
-    assert waited["_data"]["state"] == "paused" and waited["_data"]["pause_reason"] == "local_input"
+    assert waited["_data"]["code"] == "local_resume_required" and "press Resume" in waited["_data"]["next_action"]
     assert len(host_ws.frames("computer_request")) == before
+    refused = await asyncio.to_thread(mcp_tools.resume_session, **ctx)
+    assert refused["_data"]["code"] == "local_resume_required" and session.state == "paused"
+    await orch.computer_sessions.on_host_event(OWNER, host.host_id, "resumed", session.session_id, None)
+    await orch.computer_sessions.pause(session, "user_pause")
     monkeypatch.setattr(mcp_tools, "RESUME_SETTLE_SECONDS", 0.05)
     orig_resume = orch.computer_sessions.resume
 
-    async def _resume_then_repause(sess):
+    async def _resume_then_repause(sess, reason):
         await orig_resume(sess)
-        await orch.computer_sessions.on_host_event(OWNER, host.host_id, "paused", sess.session_id, "local_input")
-    monkeypatch.setattr(orch.computer_sessions, "resume", _resume_then_repause)
-    again = await asyncio.to_thread(mcp_tools.resume_session, **ctx)
-    assert again["_data"]["code"] == "paused" and "wait" in again["_data"]["next_action"]
-    monkeypatch.setattr(orch.computer_sessions, "resume", orig_resume)
+        if reason == "local_input":
+            await orch.computer_sessions.on_host_event(OWNER, host.host_id, "paused", sess.session_id, reason)
+        else:
+            await orch.computer_sessions.pause(sess, reason)
+    for reason, code, hint in (("approval_not_completed", "paused", "wait"),
+                               ("local_input", "local_resume_required", "press Resume")):
+        monkeypatch.setattr(orch.computer_sessions, "resume", lambda sess, r=reason: _resume_then_repause(sess, r))
+        again = await asyncio.to_thread(mcp_tools.resume_session, **ctx)
+        assert again["_data"]["code"] == code and hint in again["_data"]["next_action"]
+        monkeypatch.setattr(orch.computer_sessions, "resume", orig_resume)
+        await orch.computer_sessions.resume(session, local=True)
+        await orch.computer_sessions.pause(session, "user_pause")
     resumed = await asyncio.to_thread(mcp_tools.resume_session, **ctx)
     assert resumed["_data"]["state"] == "active"
     ended = await asyncio.to_thread(mcp_tools.end_session, **ctx)

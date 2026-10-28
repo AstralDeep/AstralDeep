@@ -396,6 +396,23 @@ def test_add_defaults_unknown_os_role_and_port(monkeypatch):
     assert notice == "<probed>"
 
 
+def _attended(cm=None):
+    ws = object()
+    orch = SimpleNamespace(plane_repository_source=object(), credential_manager=cm or FakeCM(),
+                           ui_sessions={ws: {"sub": "u1"}}, _ws_active_chat={})
+    return orch, ws
+
+
+def _confirmed(action, cm, payload, *, attended=None):
+    orch, ws = attended or _attended(cm)
+    _key, params, notice = run(rm.HANDLERS[action](orch, ws, "u1", ["user"], payload))
+    assert "confirmation_required" in notice
+    confirm = params["confirm"]
+    assert confirm["action"] == action and confirm["machine_id"] == payload["machine_id"]
+    return run(rm.HANDLERS[action](orch, ws, "u1", ["user"],
+                                   {**payload, "confirmation_id": confirm["confirmation_id"]}))
+
+
 def _owned(monkeypatch, label="dgx"):
     monkeypatch.setattr(rm.remote_machines, "get_machine",
                         lambda db, uid, mid: {"machine_id": mid, "label": label})
@@ -440,8 +457,7 @@ def test_credential_delete_removes_and_audits(monkeypatch):
     _owned(monkeypatch)
     events = _audit_sink(monkeypatch)
     cm = TrackingCM()
-    _key, _params, notice = run(rm.HANDLERS["chrome_machine_credential_delete"](
-        _orch(cm), None, "u1", ["user"], {"machine_id": "m1"}))
+    _key, _params, notice = _confirmed("chrome_machine_credential_delete", cm, {"machine_id": "m1"})
     assert cm.deleted == ["m1"]
     assert events == [("remote_machine.credential_deleted", None)]
     assert "add a new one to reconnect" in notice
@@ -451,8 +467,7 @@ def test_credential_delete_failure_is_honest_and_not_audited(monkeypatch):
     _owned(monkeypatch)
     _tripwires(monkeypatch, "audit_machine_event")
     cm = TrackingCM(delete_raises=True)
-    _key, _params, notice = run(rm.HANDLERS["chrome_machine_credential_delete"](
-        _orch(cm), None, "u1", ["user"], {"machine_id": "m1"}))
+    _key, _params, notice = _confirmed("chrome_machine_credential_delete", cm, {"machine_id": "m1"})
     assert "Could not remove the credential." in notice
     assert cm.deleted == ["m1"]
 
@@ -462,8 +477,7 @@ def test_delete_destroys_the_credential_and_audits_the_removal(monkeypatch):
     monkeypatch.setattr(rm.remote_machines, "delete_machine", lambda db, uid, mid: True)
     events = _audit_sink(monkeypatch)
     cm = TrackingCM()
-    _key, _params, notice = run(rm.HANDLERS["chrome_machine_delete"](
-        _orch(cm), None, "u1", ["user"], {"machine_id": "m1"}))
+    _key, _params, notice = _confirmed("chrome_machine_delete", cm, {"machine_id": "m1"})
     assert cm.deleted == ["m1"]
     assert events == [("remote_machine.removed", None)]
     assert "Removed dgx" in notice
@@ -474,8 +488,7 @@ def test_delete_completes_when_the_credential_destroy_fails(monkeypatch):
     monkeypatch.setattr(rm.remote_machines, "delete_machine", lambda db, uid, mid: True)
     events = _audit_sink(monkeypatch)
     cm = TrackingCM(delete_raises=True)
-    _key, _params, notice = run(rm.HANDLERS["chrome_machine_delete"](
-        _orch(cm), None, "u1", ["user"], {"machine_id": "m1"}))
+    _key, _params, notice = _confirmed("chrome_machine_delete", cm, {"machine_id": "m1"})
     assert events == [("remote_machine.removed", None)]
     assert "Removed dgx" in notice
 
@@ -500,3 +513,111 @@ def test_probe_handler_probes_an_owned_machine(monkeypatch):
     _key, _params, notice = run(rm.HANDLERS["chrome_machine_probe"](
         _orch(), None, "u1", ["user"], {"machine_id": "m1"}))
     assert notice == "<probed dgx>"
+
+
+_DESTRUCTIVE = ["chrome_machine_delete", "chrome_machine_credential_delete"]
+
+
+def _row(machine_id="m1", label="dgx"):
+    return {"machine_id": machine_id, "label": label, "address": "10.0.0.5", "port": 22,
+            "os_family": "linux", "role": "cluster", "last_verdict": "ok"}
+
+
+def _buttons(components):
+    found = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("type") == "button":
+                found.append(node)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+    walk(components)
+    return found
+
+
+@pytest.mark.parametrize("action", _DESTRUCTIVE)
+def test_a_plain_destructive_submit_is_refused_with_confirmation_required(monkeypatch, action):
+    _owned(monkeypatch)
+    _tripwires(monkeypatch, "delete_machine", "audit_machine_event")
+    monkeypatch.setattr(rm.remote_machines, "list_machines", lambda db, uid: [_row()])
+    cm = TrackingCM()
+    orch, ws = _attended(cm)
+    key, params, notice = run(rm.HANDLERS[action](orch, ws, "u1", ["user"], {"machine_id": "m1"}))
+    assert key == "remote_machines" and "confirmation_required" in notice and cm.deleted == []
+    confirmation_id = params["confirm"]["confirmation_id"]
+    prompt = [b for b in _buttons(run(rm.components(orch, "u1", ["user"], params)))
+              if b["payload"].get("confirmation_id") == confirmation_id]
+    assert len(prompt) == 1 and prompt[0]["action"] == action and prompt[0]["variant"] == "danger"
+    assert prompt[0]["payload"] == {"machine_id": "m1", "confirmation_id": confirmation_id}
+    html = run(rm.render(orch, "u1", ["user"], params))
+    start = html.index(confirmation_id)
+    button = html[html.rindex("<button", 0, start):html.index("</button>", start)]
+    assert f'data-ui-action="{action}"' in button and "text-red-400" in button
+
+
+@pytest.mark.parametrize("action", _DESTRUCTIVE)
+def test_the_confirmed_destructive_path_runs_once(monkeypatch, action):
+    _owned(monkeypatch)
+    monkeypatch.setattr(rm.remote_machines, "delete_machine", lambda db, uid, mid: True)
+    events = _audit_sink(monkeypatch)
+    cm = TrackingCM()
+    attended = _attended(cm)
+    orch, ws = attended
+    _key, params, _notice = run(rm.HANDLERS[action](orch, ws, "u1", ["user"], {"machine_id": "m1"}))
+    payload = {"machine_id": "m1", "confirmation_id": params["confirm"]["confirmation_id"]}
+    run(rm.HANDLERS[action](orch, ws, "u1", ["user"], payload))
+    _key, _params, again = run(rm.HANDLERS[action](orch, ws, "u1", ["user"], payload))
+    assert "expired or was already used" in again
+    assert cm.deleted == ["m1"] and len(events) == 1
+
+
+@pytest.mark.parametrize("action", _DESTRUCTIVE)
+def test_a_confirmation_from_another_socket_is_refused(monkeypatch, action):
+    _owned(monkeypatch)
+    _tripwires(monkeypatch, "delete_machine", "audit_machine_event")
+    cm = TrackingCM()
+    orch, ws = _attended(cm)
+    other = object()
+    orch.ui_sessions[other] = {"sub": "u1"}
+    _key, params, _notice = run(rm.HANDLERS[action](orch, ws, "u1", ["user"], {"machine_id": "m1"}))
+    _key, _params, notice = run(rm.HANDLERS[action](
+        orch, other, "u1", ["user"], {"machine_id": "m1", "confirmation_id": params["confirm"]["confirmation_id"]}))
+    assert "expired or was already used" in notice and cm.deleted == []
+
+
+@pytest.mark.parametrize("action", _DESTRUCTIVE)
+def test_an_unattended_socket_cannot_start_a_destructive_control(monkeypatch, action):
+    _owned(monkeypatch)
+    _tripwires(monkeypatch, "delete_machine", "audit_machine_event")
+    cm = TrackingCM()
+    _key, params, notice = run(rm.HANDLERS[action](_orch(cm), None, "u1", ["user"], {"machine_id": "m1"}))
+    assert "Confirmation is unavailable" in notice and params == {} and cm.deleted == []
+
+
+def test_destructive_list_controls_carry_the_danger_variant(monkeypatch):
+    monkeypatch.setattr(rm.remote_machines, "list_machines", lambda db, uid: [_row()])
+    variants = {b["label"]: b["variant"] for b in _buttons(run(rm.components(_orch(), "u1", ["user"], {})))}
+    assert variants["Delete"] == "danger" and variants["Remove credential"] == "danger"
+    assert variants["Probe"] != "danger"
+    html = run(rm.render(_orch(), "u1", ["user"], {}))
+    for action in _DESTRUCTIVE:
+        start = html.index(f'data-ui-action="{action}"')
+        assert "text-red-400" in html[html.rindex("<button", 0, start):start]
+
+
+@pytest.mark.parametrize("confirm", [
+    {"action": "chrome_machine_delete", "machine_id": "someone-elses", "confirmation_id": "a" * 32},
+    {"action": "chrome_machine_probe", "machine_id": "m1", "confirmation_id": "a" * 32},
+    {"action": "chrome_machine_delete", "machine_id": "m1", "confirmation_id": "<b>"},
+    "not-a-dict",
+])
+def test_confirmation_params_that_do_not_name_an_owned_machine_draw_no_prompt(monkeypatch, confirm):
+    monkeypatch.setattr(rm.remote_machines, "list_machines", lambda db, uid: [_row()])
+    params = {"confirm": confirm}
+    assert not [b for b in _buttons(run(rm.components(_orch(), "u1", ["user"], params)))
+                if "confirmation_id" in b["payload"]]
+    assert "confirmation_id" not in run(rm.render(_orch(), "u1", ["user"], params))

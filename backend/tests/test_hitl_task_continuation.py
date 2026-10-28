@@ -257,7 +257,7 @@ async def test_combined_decision_cannot_resume_unbound_or_unsafe_pause(task_runt
     elif change == "controller":
         session.controller_ws_id = id(object())
     elif change == "multiple":
-        await orch.computer_sessions.resume(session)
+        await orch.computer_sessions.resume(session, local=True)
         await orch.computer_sessions.pause(session, "local_input")
     elif change == "decline":
         decision["decision"] = "decline"
@@ -707,7 +707,7 @@ async def test_self_host_approval_reply_completes_through_actual_socket_admissio
             assert turns == ["original"] and session.state == "active" and not session.terminal_ok
             assert any(call.args[0].action_type == "hitl.effect_uncertain"
                        for call in orch.audit_recorder.record.await_args_list)
-            assert "Inspect current state" in str(orch.send_ui_render.await_args_list)
+            assert "inspect current state" in str(orch.send_ui_render.await_args_list).lower()
         else:
             assert turns[-1] != "original" and len(turns) == 2
         assert not orch.computer_hosts._pending
@@ -736,7 +736,7 @@ async def test_host_reply_control_path_retains_current_socket_owner_and_request_
     orch._tunnel_ingress_over_cap = lambda _owner: False
     monkeypatch.setitem(flags._flags, "computer_use", True)
     pending = asyncio.get_running_loop().create_future()
-    orch.computer_hosts._pending["known"] = (pending, "owner-a", session.host_id, True)
+    orch.computer_hosts._pending["known"] = (pending, "owner-a", session.host_id, "type_text", session.session_id)
     value = {"type": "ui_event", "action": "computer_response", "payload": {
         "request_id": "known", "ok": True, "result": {"typed": True}},
         "submission_id": str(uuid4()), "request_generation": str(uuid4()),

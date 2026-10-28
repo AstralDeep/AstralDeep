@@ -122,9 +122,11 @@ def test_safety_surface_shows_actionable_owner_controls_and_current_resume_revis
     card = next(item for item in components if item["type"] == "card"
                 and item["title"].startswith("Emergency stop"))
     buttons = [child for child in card["content"] if child["type"] == "button"]
-    assert len(buttons) == 2 and all(button["variant"] == "primary" for button in buttons)
+    assert [(button["action"], button["variant"]) for button in buttons] == [
+        ("chrome_safety_stop", "danger"), ("chrome_safety_verify", "primary")]
     assert all(button["disabled"] is False and button["local"] is False for button in buttons)
-    assert buttons[0]["action"] == "chrome_safety_stop"
+    stop_html = html[html.rindex("<button", 0, html.index("chrome_safety_stop")):]
+    assert "astral-btn-danger" in stop_html[:stop_html.index("</button>")]
 
     asyncio.run(orch.emergency_stop.engage(OWNER, reason="drill", sweep=False))
     stopped = asyncio.run(safety_surface.render(orch, OWNER, [], {}))
@@ -132,6 +134,9 @@ def test_safety_surface_shows_actionable_owner_controls_and_current_resume_revis
     assert "Current revision for resume: 1" in stopped
     assert "drill" in stopped
     assert "chrome_safety_resume" in stopped and "chrome_safety_stop" not in stopped
+    engaged = asyncio.run(safety_surface.components(orch, OWNER, [], {}))
+    engaged_buttons = [child for item in engaged for child in item.get("content", []) if child["type"] == "button"]
+    assert all(button["variant"] == "primary" for button in engaged_buttons)
 
 
 def test_safety_surface_reports_unavailability_without_a_coordinator():
@@ -153,3 +158,36 @@ def test_nonportable_resume_revision_suppresses_control_and_explains_unavailabil
     value = {"state": "stopped", "engaged": True, "revision": 9007199254740992}
     assert [row["action"] for row in safety_surface._controls(value)] == ["chrome_safety_verify"]
     assert "Resume is unavailable" in " ".join(safety_surface._rows(value))
+
+
+@pytest.mark.parametrize("device,variant", [("watch", "primary"), ("browser", "danger"), ("macos", "danger")])
+def test_stop_keeps_its_watch_control_and_is_danger_elsewhere(device, variant):
+    from rote.adapter import ComponentAdapter
+    from rote.capabilities import DeviceProfile
+    from orchestrator.chrome_events import current_surface_socket
+
+    orch = _orch(EmergencyStopCoordinator())
+    profile = DeviceProfile.from_dict({"device_type": device})
+    orch.rote = SimpleNamespace(get_profile=lambda ws: profile)
+    token = current_surface_socket.set(object())
+    try:
+        components = asyncio.run(safety_surface.components(orch, OWNER, [], {}))
+    finally:
+        current_surface_socket.reset(token)
+    adapted = ComponentAdapter.adapt(components, profile)
+    buttons = [child for item in adapted for child in item.get("content", []) if child.get("type") == "button"]
+    assert [(b["action"], b["variant"]) for b in buttons] == [
+        ("chrome_safety_stop", variant), ("chrome_safety_verify", "primary")]
+
+
+def test_stop_is_danger_when_the_device_profile_is_unavailable():
+    from orchestrator.chrome_events import current_surface_socket
+
+    orch = _orch(EmergencyStopCoordinator())
+    orch.rote = SimpleNamespace(get_profile=lambda ws: (_ for _ in ()).throw(RuntimeError("gone")))
+    token = current_surface_socket.set(object())
+    try:
+        components = asyncio.run(safety_surface.components(orch, OWNER, [], {}))
+    finally:
+        current_surface_socket.reset(token)
+    assert components[0]["content"][-2]["variant"] == "danger"

@@ -41,6 +41,8 @@ class ChatSummary(BaseModel):
     updated_at: int = Field(..., description="Unix timestamp in milliseconds")
     preview: str = Field("", description="Preview of the last message")
     has_saved_components: Optional[bool] = None
+    pinned: bool = False
+    archived: bool = False
 
 
 class ChatMessage(BaseModel):

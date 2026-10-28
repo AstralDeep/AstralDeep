@@ -132,7 +132,7 @@ def test_error_page_sanitizes_malicious_next():
 
 
 MIDNIGHT_LITERALS = ("#0F1221", "#1A1E2E", "#F3F4F6", "#9CA3AF", "#6366F1")
-GRAPHITE_LITERALS = ("background:#121214", "color:#ECECEF", "background:#1B1B1F", "color:#8C8C95", "background:#7C3AED")
+GRAPHITE_LITERALS = ("background:#121214", "color:#ECECEF", "background:#1B1B1F", "color:#93939B", "background:#7C3AED")
 
 
 def test_sign_in_pages_use_the_graphite_palette_and_no_midnight_literals():

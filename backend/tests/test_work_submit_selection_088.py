@@ -88,7 +88,7 @@ def test_selected_json_duplicate_keys_are_never_normalized_away():
         _parse(malformed)
 
 
-@pytest.mark.parametrize("identity", [True, None, str(uuid4()).upper(), "00000000-0000-1000-8000-000000000001"])
+@pytest.mark.parametrize("identity", [True, None, "9F1C2B7E-3D4A-4C5B-8E6F-7A8B9C0D1E2F", "00000000-0000-1000-8000-000000000001"])
 def test_revision_identity_requires_exact_canonical_uuid4(identity):
     with pytest.raises(AssignmentError):
         _parse(command(selection=selection(agent={"agent_id": "selected-agent", "revision_id": identity})))

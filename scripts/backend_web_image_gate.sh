@@ -10,7 +10,7 @@ group="${ASTRAL_GATE_GROUP:-all}"
 [[ "$phase" == tests || "$phase" == boot ]]
 [[ "$image" =~ ^sha256:[a-f0-9]{64}$ ]]
 case "$group" in
-  all | tests | persistent_agents | modules) ;;
+  all | tests_1 | tests_2 | persistent_agents | modules) ;;
   *) echo "unknown backend suite group: $group" >&2; exit 2 ;;
 esac
 root="$(pwd)"
@@ -32,7 +32,7 @@ cleanup() {
 }
 trap cleanup EXIT
 docker network create --label "org.astraldeep.qualification.namespace=$namespace" "$namespace" >/dev/null
-docker run -d --name "$namespace-pg" --network "$namespace" --cpus=2 --memory=2g \
+docker run -d --name "$namespace-pg" --network "$namespace" --cpus=2 --memory=3g \
   --tmpfs /var/lib/postgresql/data:rw,nosuid,nodev,size=1g \
   --tmpfs /var/lib/postgresql/wal:rw,nosuid,nodev,size=512m \
   --label "org.astraldeep.qualification.namespace=$namespace" \
@@ -40,7 +40,7 @@ docker run -d --name "$namespace-pg" --network "$namespace" --cpus=2 --memory=2g
   --env POSTGRES_USER=astral --env POSTGRES_PASSWORD=isolated_ci_only \
   --env POSTGRES_DB=ad_gate_tests \
   postgres:17-alpine@sha256:dc17045ccfd343b49600570ea734b9c4991cf1c3f3302e67df51e3b402dd55c4 \
-  postgres -c max_wal_size=256MB -c min_wal_size=80MB >/dev/null
+  postgres -c max_wal_size=256MB -c min_wal_size=80MB -c max_connections=400 >/dev/null
 for attempt in $(seq 1 60); do
   if docker exec "$namespace-pg" pg_isready -h 127.0.0.1 -U astral -d ad_gate_tests >/dev/null 2>&1; then break; fi
   sleep 1
@@ -143,7 +143,7 @@ while True:
 PY
 if [[ "$phase" == boot ]]; then exit 0; fi
 url="postgresql://astral:isolated_ci_only@$namespace-pg:5432/ad_gate_tests"
-docker run --init --name "$namespace-test" --network "container:$namespace-dev" --cpus=2 --memory=4g \
+docker run --init --name "$namespace-test" --network "container:$namespace-dev" --cpus=4 --memory=10g \
   --label "org.astraldeep.qualification.namespace=$namespace" \
   --user "$(id -u):$(id -g)" --env HOME=/tmp \
   --env GIT_CONFIG_COUNT=5 \

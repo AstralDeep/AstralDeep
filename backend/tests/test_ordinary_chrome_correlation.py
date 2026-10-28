@@ -5,7 +5,7 @@ Private owner surfaces retain mandatory correlation while legacy ordinary reques
 import asyncio
 import json
 from types import SimpleNamespace
-from uuid import uuid1, uuid4
+from uuid import uuid4
 
 import pytest
 
@@ -87,7 +87,7 @@ def test_correlated_empty_close_rejects_content_or_other_presentation_modes(chan
         ChromeSurface(request_generation=str(uuid4()), **changes).to_json()
 
 
-@pytest.mark.parametrize("generation", ["", "bad", 1, True, str(uuid1()), str(uuid4()).upper()])
+@pytest.mark.parametrize("generation", ["", "bad", 1, True, "6fa459ea-ee8a-11ec-8e2f-0242ac120002", "9F1C2B7E-3D4A-4C5B-8E6F-7A8B9C0D1E2F"])
 def test_ordinary_wire_generation_must_be_canonical_uuid4(generation):
     with pytest.raises(ProtocolValidationError):
         ChromeSurface(surface_key="theme", request_generation=generation).to_json()
@@ -135,7 +135,7 @@ async def test_client_surface_cannot_change_the_handler_owner_or_run_the_action(
     assert wire(ordinary)["components"][0]["variant"] == "error"
 
 
-@pytest.mark.parametrize("generation", ["", "bad", 1, True, str(uuid1()), str(uuid4()).upper()])
+@pytest.mark.parametrize("generation", ["", "bad", 1, True, "6fa459ea-ee8a-11ec-8e2f-0242ac120002", "9F1C2B7E-3D4A-4C5B-8E6F-7A8B9C0D1E2F"])
 async def test_bad_envelope_generation_cannot_dispatch_an_ordinary_action(ordinary, generation):
     with pytest.raises(ProtocolValidationError):
         await chrome_events.handle_chrome_event(ordinary.orch, ordinary.socket, "chrome_theme_apply",

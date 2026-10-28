@@ -103,12 +103,13 @@ jobs:
     name: Python 3.11 backend ${{ matrix.group }} group and isolated PostgreSQL
     needs: [backend-image]
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         group:
-          - tests
+          - tests_1
+          - tests_2
           - persistent_agents
           - modules
     steps:
@@ -310,9 +311,9 @@ jobs:
           retention-days: 14
 
   plane-postgres:
-    name: Exact Plane complete PostgreSQL suite
+    name: Exact Plane PostgreSQL suite
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     env:
       ASTRALPLANE_TEST_POSTGRES_DSN: postgresql://astral:isolated_ci_only@127.0.0.1:5432/ad_gate_plane
       ASTRALDEEP_SOURCE_REPO: ${{ github.workspace }}
@@ -352,19 +353,35 @@ jobs:
             --baseline-root "$RUNNER_TEMP/plane-consumer-baseline.git" \
             --github-env "$GITHUB_ENV" \
             --output components/AstralPlane/build/backend-web/consumer-baseline.json
+      - name: Run the full Plane suite only when the Plane pin moved
+        id: lane
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          base_sha="$(jq -er .base_deep_sha components/AstralPlane/build/backend-web/consumer-baseline.json)"
+          python scripts/ci_plane_lane.py --base "$base_sha" --head "$CANDIDATE_SHA" --github-output "$GITHUB_OUTPUT"
       - working-directory: components/AstralPlane
+        env:
+          PLANE_LANE: ${{ steps.lane.outputs.lane }}
         run: |
           set -euo pipefail
           uv lock --check
           uv sync --frozen --group ci
           uv run --frozen --group ci ruff check .
-          uv run --frozen --group ci pytest -q -ra -p no:cacheprovider \
-            --cov=astralplane --cov=scripts.import_staging_fixture \
-            --cov=scripts.migrate_qualification_database \
-            --cov=scripts.qualify_main_upgrade --cov=scripts.check_acceptance_faults \
-            --cov=scripts.ci_review_diagnostics --cov=scripts.check_changed_coverage --cov-branch \
-            --cov-report=xml:build/backend-web/plane-python.xml \
-            --junitxml=build/backend-web/plane-tests.xml --cov-fail-under=88.75
+          if [[ "$PLANE_LANE" == smoke ]]; then
+            uv run --frozen --group ci pytest -q -ra -p no:cacheprovider \
+              tests/architecture tests/test_api.py tests/test_domain.py tests/test_bootstrap.py \
+              --junitxml=build/backend-web/plane-tests.xml
+          else
+            uv run --frozen --group ci pytest -q -ra -p no:cacheprovider \
+              --cov=astralplane --cov=scripts.import_staging_fixture \
+              --cov=scripts.migrate_qualification_database \
+              --cov=scripts.qualify_main_upgrade --cov=scripts.check_acceptance_faults \
+              --cov=scripts.ci_review_diagnostics --cov=scripts.check_changed_coverage --cov-branch \
+              --cov-report=xml:build/backend-web/plane-python.xml \
+              --junitxml=build/backend-web/plane-tests.xml --cov-fail-under=88.75
+          fi
       - name: Enforce changed Plane Python against the baseline component
         run: |
           set -euo pipefail
@@ -405,8 +422,12 @@ jobs:
           cache-dependency-path: tooling/backend-ci/requirements.lock.txt
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: backend-web-test-evidence-tests
-          path: build/backend-web-groups/tests
+          name: backend-web-test-evidence-tests_1
+          path: build/backend-web-groups/tests_1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: backend-web-test-evidence-tests_2
+          path: build/backend-web-groups/tests_2
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: backend-web-test-evidence-persistent_agents
@@ -424,7 +445,8 @@ jobs:
           set -euo pipefail
           python -m pip install --require-hashes -r tooling/backend-ci/requirements.lock.txt
           python scripts/merge_backend_web_coverage.py --root . --output build/backend-web \
-            --evidence build/backend-web-groups/tests \
+            --evidence build/backend-web-groups/tests_1 \
+            --evidence build/backend-web-groups/tests_2 \
             --evidence build/backend-web-groups/persistent_agents \
             --evidence build/backend-web-groups/modules
       - name: Enforce immutable event or reviewed PR-base comparison
@@ -797,9 +819,13 @@ jobs:
             scripts/tests/test_ci_review_diagnostics.py
             scripts/tests/test_acceptance_mutations.py
             scripts/tests/test_acceptance_ci_contract.py
+            backend/tests/test_ci_plane_lane.py
             scripts/tests/test_prepare_plane_upgrade_baseline.py
             scripts/tests/test_package_macos_candidate.py
             backend/tests/test_release_macos.py
+            backend/tests/test_next_macos_release.py
+            backend/tests/test_macos_release_notes.py
+            backend/tests/test_release_macos_workflow.py
           )
           test "${#RELEASE_TOOL_TESTS[@]}" -gt 0
           docker run --rm --init --cpus=2 --memory=4g \
@@ -905,7 +931,7 @@ jobs:
 
   voice-worker-test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
