@@ -2653,6 +2653,51 @@ def test_run_rejects_unknown_mode(
         )
 
 
+@pytest.mark.parametrize("name", ["bwrap-seal.py", "bwrap-seal.json", "profile.json"])
+@pytest.mark.parametrize("mutation", ["changed", "removed", "symlink"])
+def test_bundle_change_after_receipt_mint_returns_a_failed_record(
+    tmp_path, lets_runtime, receipt_factory, available_support, stub_runtime, name, mutation
+):
+    class RefuseSpawn(sq.ProcessSupervisor):
+        def spawn(self, **_kwargs):
+            pytest.fail("changed immutable bundle reached process spawn")
+
+    directory = tmp_path / "session"
+
+    def factory(arguments):
+        permit = receipt_factory(arguments)
+        target = directory / (sq.PROFILE_NAME if name == "profile.json" else name)
+        if mutation == "changed":
+            target.chmod(0o600)
+            target.write_bytes(b"changed")
+        else:
+            target.unlink()
+            if mutation == "symlink":
+                target.symlink_to(stub_runtime.cli_js)
+        return permit
+
+    record = sq.run_sandbox_qualification(
+        executor_runtime=lets_runtime,
+        receipt_factory=factory,
+        support=available_support,
+        runtime=stub_runtime,
+        supervisor=RefuseSpawn(),
+        session_dir=directory,
+        scratch_root=tmp_path / "scratch",
+        modes=(sq.AUTHORIZED_MODE,),
+    )
+    assert record.status == sq.STATUS_FAILED
+    assert record.failure_codes == (
+        "launch_completed:launch_failed:SandboxQualificationError",
+    )
+    assert record.modes_run == ()
+    assert len(record.receipt_sha256s) == 1
+    assert record.audit_correlation_id
+    assert _check_by_name(record, "receipt_enforcement").held is True
+    assert _check_by_name(record, "launch_completed").held is False
+    _assert_no_authorized_output(record)
+
+
 def test_run_handles_spawn_os_error(
     tmp_path: Path, lets_runtime, receipt_factory, available_support, stub_runtime
 ):

@@ -1871,7 +1871,7 @@ def run_sandbox_qualification(
                 process = launch_sandboxed_effect(
                     resolved_supervisor, session, resolved_runtime, session.profile_path
                 )
-            except OSError as error:
+            except (OSError, SandboxQualificationError) as error:
                 checks.append(
                     _check(
                         "launch_completed",
