@@ -1,8 +1,6 @@
-"""Builds the first-connection guide payload: server-attested endpoint identity plus
-honest database, authentication, worker, and optional-service checks with actionable
-remediation, and pushes the connection surface at registration when a required service
-is unready. Consumed by projection_surfaces/connection.py, orchestrator.py, and the
-/api/connection/status route defined here.
+"""Builds truthful first-connection status over the existing service readiness seams.
+The authenticated REST resource and registration delivery share the payload consumed
+by projection_surfaces/connection.py.
 """
 
 from __future__ import annotations
@@ -10,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from copy import deepcopy
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
@@ -29,6 +28,7 @@ STATUS_UNAVAILABLE = "unavailable"
 STATUS_OFF = "off"
 
 REQUIRED_KEYS = ("database", "auth", "publication")
+PROBE_TIMEOUT_SECONDS = 4
 
 SIGN_IN_TITLE = "Sign in and connect your model"
 SIGN_IN_STEPS = (
@@ -58,13 +58,13 @@ def _check(key: str, label: str, status: str, detail: str, remediation: str = ""
 
 def _origin_of(value: str) -> str:
     raw = (value or "").strip()
-    if not raw:
+    if not raw or len(value) > 2048 or any(ch.isspace() or ord(ch) < 32 for ch in value):
         return ""
     try:
         parts = urlsplit(raw if "://" in raw else f"//{raw}", scheme="http")
         scheme = (parts.scheme or "http").lower()
         host = (parts.hostname or "").lower()
-        if not host:
+        if scheme not in {"http", "https"} or not host or parts.username is not None or parts.password is not None:
             return ""
         port = parts.port
     except ValueError:
@@ -72,6 +72,8 @@ def _origin_of(value: str) -> str:
     if port is None:
         port = 443 if scheme == "https" else 80
     default_port = (scheme == "https" and port == 443) or (scheme == "http" and port == 80)
+    if ":" in host:
+        host = f"[{host}]"
     return f"{scheme}://{host}" if default_port else f"{scheme}://{host}:{port}"
 
 
@@ -167,14 +169,14 @@ async def _auth_check(orch) -> dict[str, str | bool]:
     if not await _keycloak_reachable(authority):
         return _check(
             "auth", "Authentication", STATUS_UNAVAILABLE,
-            f"The identity provider at {authority} is unreachable.",
+            "The configured identity provider is unreachable.",
             "Verify the Keycloak URL and network path; first sign-in cannot complete "
             "until it is reachable.",
             required=True,
         )
     return _check(
         "auth", "Authentication", STATUS_READY,
-        f"Sign-in is served by the configured identity provider at {authority}.", "",
+        "Sign-in is served by the configured identity provider.", "",
         required=True,
     )
 
@@ -283,11 +285,16 @@ def _lets_check(orch) -> dict[str, str | bool]:
     except Exception:
         logger.warning("connection guide: LETS posture read failed", exc_info=True)
         return _check(
-            "lets", "LETS warden", STATUS_DEGRADED,
+            "lets", "LETS warden", STATUS_UNAVAILABLE,
             "The LETS posture could not be read.",
             "Check LETS configuration; governed effects fail closed while the "
             "posture is unreadable.",
+            required=True,
         )
+    if snapshot.application_ready is not True:
+        return _check("lets", "LETS warden", STATUS_UNAVAILABLE,
+            f"LETS application readiness is blocked ({snapshot.operator_code}).",
+            "Check LETS configuration and warden health before depending on governed dispatch.", required=True)
     if snapshot.mode == "off" or snapshot.component_status == "disabled":
         return _check(
             "lets", "LETS warden", STATUS_OFF,
@@ -308,19 +315,29 @@ def _lets_check(orch) -> dict[str, str | bool]:
 
 
 async def service_checks(orch) -> list[dict[str, Any]]:
-    return [
-        await asyncio.to_thread(_database_check, orch),
-        await _auth_check(orch),
-        await asyncio.to_thread(_worker_check, orch),
-        await _publication_check(orch),
-        await asyncio.to_thread(_lets_check, orch),
-    ]
+    probes = (("database", "Database", True, lambda: asyncio.to_thread(_database_check, orch)),
+        ("auth", "Authentication", True, lambda: _auth_check(orch)),
+        ("worker", "Voice workers", False, lambda: asyncio.to_thread(_worker_check, orch)),
+        ("publication", "Agent publication", True, lambda: _publication_check(orch)),
+        ("lets", "LETS warden", True, lambda: asyncio.to_thread(_lets_check, orch)))
+    checks = []
+    for key, label, required, probe in probes:
+        try:
+            async with asyncio.timeout(PROBE_TIMEOUT_SECONDS):
+                check = await probe()
+        except Exception:
+            logger.warning("connection guide: readiness check unavailable: %s", key)
+            check = _check(key, label, STATUS_UNAVAILABLE,
+                f"{label} readiness could not be verified.",
+                "Check the configured service and retry connection checks.", required=required)
+        checks.append(check)
+    return checks
 
 
 def _overall(checks: list[dict[str, Any]]) -> str:
     worst = STATUS_READY
     for check in checks:
-        if check["key"] not in REQUIRED_KEYS or check["status"] == STATUS_READY:
+        if not (check.get("required", False) or check["key"] in REQUIRED_KEYS) or check["status"] == STATUS_READY:
             continue
         if check["status"] == STATUS_UNAVAILABLE or worst == STATUS_UNAVAILABLE:
             worst = STATUS_UNAVAILABLE
@@ -364,15 +381,21 @@ async def get_connection_status(
 
 async def push_connection_guide(orch, websocket, user_id: str, *,
                                 payload: Optional[dict[str, Any]] = None) -> bool:
+    current = _delivery_guard(orch, websocket, user_id)
+    if not current():
+        return False
     if payload is None:
         payload = await guide_payload(orch)
+    if not current(ready=True):
+        return False
     try:
         profile = orch.rote.get_profile(websocket)
         device_type = getattr(profile.device_type, "value", str(profile.device_type))
     except Exception:
-        device_type = "browser"
+        logger.warning("connection guide: device profile unavailable")
+        return False
     title = "Connection status"
-    if device_type in ("windows", "android", "ios", "macos"):
+    if device_type in ("windows", "android", "ios", "macos", "watch", "watchos"):
         from orchestrator.projection_surfaces import connection as connection_surface
         from shared.protocol import ChromeSurface
 
@@ -388,46 +411,80 @@ async def push_connection_guide(orch, websocket, user_id: str, *,
             components = [_sdui.alert(
                 "Connection checks could not be adapted for this device. "
                 "Reconnect to retry.", "error")]
-        delivered = await orch._safe_send(websocket, ChromeSurface(
+        frame = ChromeSurface(
             region="modal",
             surface_key=SURFACE_KEY,
             title=title,
             admin_only=False,
             components=components,
             mode="mandatory",
-        ).to_json())
+        ).to_json()
     else:
         from orchestrator.projection_surfaces import connection as connection_surface
         from shared.protocol import ChromeRender
         from webrender.chrome import render_modal_shell
 
         body = await connection_surface.render_from_payload(payload)
-        delivered = await orch._safe_send(websocket, ChromeRender(
+        frame = ChromeRender(
             region="modal",
             html=render_modal_shell(title, body, SURFACE_KEY, mandatory=True,
                                     subtitle="First-connection checks for this "
                                              "AstralDeep server"),
-        ).to_json())
-    if delivered:
+        ).to_json()
+    if not current(ready=True):
+        return False
+    delivered = await orch._safe_send(websocket, frame)
+    if delivered and current(ready=True):
         from orchestrator.chrome_events import _note_open_surface
 
         _note_open_surface(orch, websocket, SURFACE_KEY)
-    return bool(delivered)
+        return True
+    return False
+
+
+def _delivery_guard(orch, websocket, user_id):
+    from orchestrator import llm_gate
+
+    context = (getattr(orch, "_connection_contexts", None) or {}).get(id(websocket))
+    registration = (getattr(orch, "ui_sessions", None) or {}).get(websocket)
+    if context is None or type(registration) is not dict or registration.get("sub") != user_id or not user_id:
+        return lambda **kwargs: False
+    captured = deepcopy(registration)
+    scope = getattr(context, "connection_scope_id", None)
+    generation = getattr(context, "connection_generation", None)
+    pending = getattr(context, "work_registrations_pending", None)
+    initial = generation is None and not getattr(context, "registered", False) and pending == 1
+
+    def current(*, ready=False):
+        nonlocal generation, initial
+        count = getattr(context, "work_registrations_pending", None)
+        active_generation = getattr(context, "connection_generation", None)
+        valid = bool(scope is not None and type(pending) is int and type(count) is int and 0 <= count <= pending <= 1
+            and (getattr(orch, "_connection_contexts", None) or {}).get(id(websocket)) is context
+            and getattr(context, "websocket", None) is websocket and not getattr(context, "closing", True)
+            and not getattr(websocket, "closed", False) and getattr(context, "connection_scope_id", None) == scope
+            and ((initial and (not ready or active_generation is not None))
+                 or generation is not None and active_generation == generation)
+            and (getattr(context, "registered", False) or initial and not ready)
+            and (getattr(orch, "ui_sessions", None) or {}).get(websocket) is registration and registration == captured
+            and not llm_gate.is_gated(orch, websocket)
+            and not (getattr(orch, "_ws_active_chat", None) or {}).get(id(websocket)))
+        if valid and ready and initial:
+            generation, initial = active_generation, False
+        return valid
+    return current
 
 
 async def maybe_push_on_register(orch, websocket, user_id: str) -> bool:
-    from orchestrator import llm_gate
-
-    if llm_gate.is_gated(orch, websocket):
-        return False
-    if (getattr(orch, "_ws_active_chat", None) or {}).get(id(websocket)):
+    current = _delivery_guard(orch, websocket, user_id)
+    if not current():
         return False
     try:
         payload = await guide_payload(orch)
     except Exception:
         logger.exception("connection guide: readiness evaluation failed")
         return False
-    if payload.get("overall") == STATUS_READY:
+    if not current(ready=True) or payload.get("overall") == STATUS_READY:
         return False
     try:
         return await push_connection_guide(orch, websocket, user_id, payload=payload)

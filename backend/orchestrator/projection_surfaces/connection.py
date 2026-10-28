@@ -1,15 +1,11 @@
-"""Renders the first-connection guide surface from connection_guide.py: endpoint
-attestation, per-service readiness with remediation, and sign-in/key guidance, shared
-by the web modal and native SDUI delivery; the re-check control re-opens this surface
-through the standard chrome_open action.
+"""Composes host-authorized connection status through approved shared chrome components.
+Web rendering and native serialization consume the same component view using pinned Projection.
 """
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Dict, List
 
-from webrender.chrome import esc
 from webrender.chrome.surfaces import _sdui
 
 from orchestrator.connection_guide import (
@@ -20,8 +16,6 @@ from orchestrator.connection_guide import (
     SURFACE_KEY,
     guide_payload,
 )
-
-logger = logging.getLogger("Orchestrator.Chrome.Connection")
 
 TITLE = "Connection status"
 SUBTITLE = "First-connection checks for this AstralDeep server"
@@ -40,12 +34,6 @@ _STATUS_VARIANT = {
     STATUS_UNAVAILABLE: "error",
     STATUS_OFF: "default",
 }
-
-_ROW_CLS = (
-    "flex items-start justify-between gap-3 rounded-lg bg-white/5 "
-    "border border-white/10 px-4 py-3"
-)
-
 
 def _unknown_status(status: Any) -> str:
     return status if status in _STATUS_LABEL else STATUS_UNAVAILABLE
@@ -67,74 +55,14 @@ def _endpoint_rows(endpoint: Dict[str, Any]) -> List[Dict[str, Any]]:
     return rows
 
 
-def _endpoint_html(endpoint: Dict[str, Any]) -> str:
-    rows = "".join(
-        f'<div class="flex justify-between gap-3 text-sm">'
-        f'<span class="text-astral-muted">{esc(row["label"])}</span>'
-        f'<span class="text-astral-text">{esc(row["value"])}</span></div>'
-        for row in _endpoint_rows(endpoint)
-    )
-    guidance = f'<p class="text-xs text-astral-muted">{esc(endpoint.get("guidance", ""))}</p>'
-    return (
-        f'<div class="rounded-lg bg-white/5 border border-white/10 p-4 space-y-2">'
-        f'<div class="text-sm font-medium text-astral-text">Endpoint</div>'
-        f'{rows}{guidance}</div>'
-    )
-
-
-def _checks_html(checks: List[Dict[str, Any]]) -> str:
-    rows = []
-    for check in checks:
-        status = _unknown_status(check.get("status"))
-        remediation = check.get("remediation") or ""
-        extra = (
-            f'<p class="text-xs text-astral-muted mt-1">{esc(remediation)}</p>'
-            if remediation else ""
-        )
-        rows.append(
-            f'<div class="{_ROW_CLS}">'
-            f'<div class="min-w-0"><div class="text-sm font-medium text-astral-text">'
-            f'{esc(str(check.get("label") or check.get("key") or ""))}</div>'
-            f'<div class="text-xs text-astral-muted">{esc(str(check.get("detail") or ""))}'
-            f'</div>{extra}</div>'
-            f'<span class="text-xs rounded-full px-2 py-1 border border-white/10 '
-            f'text-astral-text whitespace-nowrap">{esc(_STATUS_LABEL[status])}</span></div>'
-        )
-    return f'<div class="space-y-2">{"".join(rows)}</div>'
-
-
-def _sign_in_html(sign_in: Dict[str, Any]) -> str:
-    items = "".join(
-        f'<li class="text-xs text-astral-muted">{esc(str(step))}</li>'
-        for step in (sign_in.get("steps") or [])
-    )
-    return (
-        f'<div class="rounded-lg bg-white/5 border border-white/10 p-4 space-y-2">'
-        f'<div class="text-sm font-medium text-astral-text">'
-        f'{esc(str(sign_in.get("title") or ""))}</div>'
-        f'<ul class="list-disc pl-4 space-y-1">{items}</ul></div>'
-    )
-
-
 async def render_from_payload(payload: Dict[str, Any]) -> str:
-    overall = _unknown_status(payload.get("overall"))
-    if overall == STATUS_UNAVAILABLE:
-        banner = ("A required service is not ready: fix the failing checks below "
-                  "before depending on this server.")
-    elif overall == STATUS_DEGRADED:
-        banner = "This server is usable, but one or more checks need attention."
-    else:
-        banner = ""
-    notice = (
-        f'<div class="rounded-lg border border-white/10 p-4 text-sm text-astral-text '
-        f'bg-white/5 mb-4">{esc(banner)}</div>' if banner else ""
-    )
-    return (
-        f'<div class="space-y-4">{notice}'
-        f'{_endpoint_html(payload.get("endpoint") or {})}'
-        f'{_checks_html(payload.get("checks") or [])}'
-        f'{_sign_in_html(payload.get("sign_in") or {})}</div>'
-    )
+    from astralprojection.chrome import render_html
+    from astralprojection.models import ChromeViewModel, ComponentView
+
+    components = await components_from_payload(payload)
+    view = ChromeViewModel(SURFACE_KEY, TITLE, tuple(ComponentView(item["type"],
+        {key: value for key, value in item.items() if key != "type"}) for item in components))
+    return render_html(view)
 
 
 def _check_components(checks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -144,7 +72,7 @@ def _check_components(checks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         label = str(check.get("label") or check.get("key") or "")
         detail = str(check.get("detail") or "")
         remediation = str(check.get("remediation") or "")
-        message = f"{label}: {detail}"
+        message = f"{label}: {_STATUS_LABEL[status]}. {detail}"
         if remediation:
             message = f"{message} {remediation}"
         out.append(_sdui.alert(message, _STATUS_VARIANT[status], title=label))

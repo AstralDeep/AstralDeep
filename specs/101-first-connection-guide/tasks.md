@@ -21,6 +21,13 @@
   integration with the live database.
 - [x] T006 Feature spec/plan/tasks (this directory).
 
+## Source repair verification
+
+- [x] Probe exceptions/timeouts preserve each truthful check and cancellation; LETS application readiness matches current `/readyz`, including unknown/failure denial.
+- [x] Delivery captures and rechecks the normal current owner registration/context/scope/incarnation across awaits; initial publication, gate/chat/owner/reconnect races and failed send state are covered.
+- [x] Web and native/watch use the same approved component composition through pinned Projection rendering/ROTE; no HTML presentation fork, renderer or manifest addition.
+- [x] Configured registration integration failures fail tests; only explicit missing PostgreSQL configuration may skip before construction. Owned chat restore precedes automatic guide evaluation.
+
 ## Required before merge/publication (not performed in this snapshot)
 
 - [ ] T010 Full local qualification suite (controller-run): backend groups, changed-code

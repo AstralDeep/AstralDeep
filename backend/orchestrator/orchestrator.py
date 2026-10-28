@@ -10321,15 +10321,6 @@ class Orchestrator:
                                 "first-run LLM dialog push failed (refusals "
                                 "still enforce the gate)", exc_info=True)
 
-                    try:
-                        from orchestrator import connection_guide
-                        await connection_guide.maybe_push_on_register(
-                            self, websocket, user_id)
-                    except Exception:
-                        logger.debug(
-                            "connection guide push failed (non-fatal)",
-                            exc_info=True)
-
                     if (
                         not _resume_requested
                         and msg.session_id
@@ -10349,6 +10340,15 @@ class Orchestrator:
                         except Exception:
                             logger.debug("register_ui chat resume failed (non-fatal)",
                                          exc_info=True)
+
+                    try:
+                        from orchestrator import connection_guide
+                        await connection_guide.maybe_push_on_register(
+                            self, websocket, user_id)
+                    except Exception:
+                        logger.debug(
+                            "connection guide push failed (non-fatal)",
+                            exc_info=True)
 
                     try:
                         if (

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,13 @@ from fastapi.testclient import TestClient
 
 from orchestrator import connection_guide as cg
 from orchestrator.projection_surfaces import connection as connection_surface
+
+
+
+@pytest.fixture()
+def configured_guide_database():
+    if not any(os.getenv(name) for name in ("DATABASE_URL", "ASTRALPLANE_TEST_DATABASE_URL", "DB_HOST")):
+        pytest.skip("PostgreSQL connection is not configured for registration integration")
 
 
 def _b64(payload: dict) -> str:
@@ -256,7 +264,7 @@ async def test_lets_off_reports_optional_off(mock_auth, monkeypatch):
     monkeypatch.setattr(
         "orchestrator.lets_health_api.lets_snapshot",
         lambda orch: _NS(mode="off", component_status="disabled",
-                         application_ready=False, operator_code="off",
+                         application_ready=True, operator_code="off",
                          existing_behavior_permitted=True,
                          governed_dispatch_ready=False, retryable=False,
                          observed_at_ns=None, diagnostic_only=False),
@@ -296,13 +304,14 @@ async def test_lets_blocked_reports_unavailable(mock_auth, monkeypatch):
     assert "warden_unreachable" in check["detail"]
 
 
-async def test_lets_snapshot_failure_reports_degraded(mock_auth, monkeypatch):
+async def test_lets_snapshot_failure_reports_required_unavailable(mock_auth, monkeypatch):
     def _boom(orch):
         raise RuntimeError("posture unavailable")
 
     monkeypatch.setattr("orchestrator.lets_health_api.lets_snapshot", _boom)
     check = cg._lets_check(FakeOrch())
-    assert check["status"] == cg.STATUS_DEGRADED
+    assert check["status"] == cg.STATUS_UNAVAILABLE
+    assert check["required"] is True
 
 
 class _FakeEndpoint:
@@ -496,6 +505,11 @@ class _PushOrch:
         self.device_type = device_type
         self.sent, self._send = _fake_send_recorder(delivered)
         self.open_surfaces = {}
+        self.websocket = object()
+        self.ui_sessions = {self.websocket: {"sub": "user"}}
+        self._connection_contexts = {id(self.websocket): SimpleNamespace(
+            websocket=self.websocket, connection_scope_id="scope-1", connection_generation="generation-1",
+            registered=True, closing=False, work_registrations_pending=0)}
         self._probe_plane_readiness = lambda: None
         self.generated_agent_publication_service = _publication_service(True
         )
@@ -513,7 +527,7 @@ class _PushOrch:
 async def test_push_connection_guide_delivers_web_modal(mock_auth):
     orch = _PushOrch()
     payload = await cg.guide_payload(orch)
-    delivered = await cg.push_connection_guide(orch, object(), "user", payload=payload)
+    delivered = await cg.push_connection_guide(orch, orch.websocket, "user", payload=payload)
     assert delivered is True
     assert len(orch.sent) == 1
     frame = json.loads(orch.sent[0])
@@ -526,7 +540,7 @@ async def test_push_connection_guide_delivers_web_modal(mock_auth):
 async def test_push_connection_guide_delivers_native_surface(mock_auth):
     orch = _PushOrch(device_type="windows")
     payload = await cg.guide_payload(orch)
-    delivered = await cg.push_connection_guide(orch, object(), "user", payload=payload)
+    delivered = await cg.push_connection_guide(orch, orch.websocket, "user", payload=payload)
     assert delivered is True
     frame = json.loads(orch.sent[0])
     assert frame["type"] == "chrome_surface"
@@ -537,7 +551,7 @@ async def test_push_connection_guide_delivers_native_surface(mock_auth):
 
 async def test_push_connection_guide_notes_open_surface(mock_auth):
     orch = _PushOrch()
-    websocket = object()
+    websocket = orch.websocket
     await cg.push_connection_guide(orch, websocket, "user")
     assert (getattr(orch, "_open_chrome_surface", None) or {}).get(
         id(websocket)) == cg.SURFACE_KEY
@@ -545,7 +559,7 @@ async def test_push_connection_guide_notes_open_surface(mock_auth):
 
 async def test_push_connection_guide_without_delivery_notes_nothing(mock_auth):
     orch = _PushOrch(delivered=False)
-    websocket = object()
+    websocket = orch.websocket
     delivered = await cg.push_connection_guide(orch, websocket, "user")
     assert delivered is False
     assert id(websocket) not in orch.open_surfaces
@@ -554,7 +568,7 @@ async def test_push_connection_guide_without_delivery_notes_nothing(mock_auth):
 async def test_maybe_push_on_register_skips_when_llm_gate_owns_the_modal(mock_auth):
 
     orch = _PushOrch()
-    websocket = object()
+    websocket = orch.websocket
     orch._ws_llm_gated = {id(websocket): True}
     pushed = await cg.maybe_push_on_register(orch, websocket, "user")
     assert pushed is False
@@ -563,7 +577,7 @@ async def test_maybe_push_on_register_skips_when_llm_gate_owns_the_modal(mock_au
 
 async def test_maybe_push_on_register_skips_with_active_chat(mock_auth):
     orch = _PushOrch()
-    websocket = object()
+    websocket = orch.websocket
     orch._ws_active_chat = {id(websocket): "chat-1"}
     assert await cg.maybe_push_on_register(orch, websocket, "user") is False
     assert orch.sent == []
@@ -571,7 +585,7 @@ async def test_maybe_push_on_register_skips_with_active_chat(mock_auth):
 
 async def test_maybe_push_on_register_skips_when_services_ready(mock_auth):
     orch = _PushOrch()
-    assert await cg.maybe_push_on_register(orch, object(), "user") is False
+    assert await cg.maybe_push_on_register(orch, orch.websocket, "user") is False
     assert orch.sent == []
 
 
@@ -579,7 +593,7 @@ async def test_maybe_push_on_register_pushes_when_required_service_fails(mock_au
     orch = _PushOrch()
     orch._probe_plane_readiness = lambda: (_ for _ in ()).throw(
         RuntimeError("AstralPlane runtime is not ready"))
-    pushed = await cg.maybe_push_on_register(orch, object(), "user")
+    pushed = await cg.maybe_push_on_register(orch, orch.websocket, "user")
     assert pushed is True
     assert len(orch.sent) == 1
 
@@ -593,20 +607,18 @@ async def test_maybe_push_on_register_swallows_push_failures(mock_auth):
         raise RuntimeError("send failed")
 
     orch._safe_send = _boom
-    assert await cg.maybe_push_on_register(orch, object(), "user") is False
+    assert await cg.maybe_push_on_register(orch, orch.websocket, "user") is False
 
 
+@pytest.mark.parametrize("resume_chat", [None, "owned-guide-chat"])
 async def test_register_ui_pushes_connection_guide_when_required_service_fails(
-    monkeypatch,
+    monkeypatch, configured_guide_database, resume_chat,
 ):
     user_id = f"pytest-connection-guide-{__import__('uuid').uuid4().hex}"
     monkeypatch.setenv("USE_MOCK_AUTH", "true")
     from orchestrator.orchestrator import Orchestrator
 
-    try:
-        orch = await asyncio.to_thread(Orchestrator)
-    except Exception as exc:
-        pytest.skip(f"orchestrator/database unavailable: {exc}")
+    orch = await asyncio.to_thread(Orchestrator)
     try:
         await orch._llm_store.set(
             user_id, provider="custom", base_url="http://test.invalid/v1",
@@ -617,6 +629,15 @@ async def test_register_ui_pushes_connection_guide_when_required_service_fails(
             raise RuntimeError("AstralPlane runtime is not ready")
 
         monkeypatch.setattr(orch, "_probe_plane_readiness", _plane_down)
+        if resume_chat:
+            from shared.feature_flags import flags
+            monkeypatch.setitem(flags._flags, "bg_continuity", True)
+            monkeypatch.setattr(orch.history, "get_conversation_record",
+                lambda chat, owner: {"id": chat} if chat == resume_chat and owner == user_id else None)
+            async def restored(*args):
+                return None
+            monkeypatch.setattr(orch, "_resume_chat_streams", restored)
+            monkeypatch.setattr(orch, "_replay_chat_task", restored)
         from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
 
         task = BackgroundTask(task_id=user_id, chat_id="", user_id=user_id)
@@ -626,10 +647,13 @@ async def test_register_ui_pushes_connection_guide_when_required_service_fails(
             "sub": user_id, "preferred_username": user_id,
             "realm_access": {"roles": ["admin", "user"]},
         }).encode()).decode().rstrip("=")
-        await orch.handle_ui_message(ws, json.dumps({
+        context = orch._new_connection_context(ws)
+        await orch._route_ui_frame(context, json.dumps({
             "type": "register_ui", "token": f"mock.{payload}.signature",
             "device": {},
+            "session_id": resume_chat,
         }))
+        await asyncio.wait_for(asyncio.gather(*tuple(context.tracked_tasks)), timeout=30)
         modal = next(
             (f for f in ws.task.outputs
              if f.get("type") == "chrome_render"
@@ -637,8 +661,11 @@ async def test_register_ui_pushes_connection_guide_when_required_service_fails(
              and "Connection status" in f.get("html", "")),
             None,
         )
-        assert modal is not None, "connection guide modal must be pushed"
-        assert "required service is not ready" in modal["html"]
+        if resume_chat:
+            assert modal is None and orch._ws_active_chat[id(ws)] == resume_chat
+        else:
+            assert modal is not None, "connection guide modal must be pushed"
+            assert "required service is not ready" in modal["html"]
     finally:
         try:
             await orch._llm_store.clear(user_id)
@@ -646,7 +673,7 @@ async def test_register_ui_pushes_connection_guide_when_required_service_fails(
             await asyncio.wait_for(orch._close_started_services(), timeout=30.0)
 
 
-async def test_register_ui_connection_guide_push_failure_is_non_fatal(monkeypatch):
+async def test_register_ui_connection_guide_push_failure_is_non_fatal(monkeypatch, configured_guide_database):
     import uuid
 
     user_id = f"pytest-connection-guide-{uuid.uuid4().hex}"
@@ -654,10 +681,7 @@ async def test_register_ui_connection_guide_push_failure_is_non_fatal(monkeypatc
     from orchestrator import connection_guide
     from orchestrator.orchestrator import Orchestrator
 
-    try:
-        orch = await asyncio.to_thread(Orchestrator)
-    except Exception as exc:
-        pytest.skip(f"orchestrator/database unavailable: {exc}")
+    orch = await asyncio.to_thread(Orchestrator)
     try:
         await orch._llm_store.set(
             user_id, provider="custom", base_url="http://test.invalid/v1",
@@ -677,10 +701,12 @@ async def test_register_ui_connection_guide_push_failure_is_non_fatal(monkeypatc
             "sub": user_id, "preferred_username": user_id,
             "realm_access": {"roles": ["admin", "user"]},
         }).encode()).decode().rstrip("=")
-        await orch.handle_ui_message(ws, json.dumps({
+        context = orch._new_connection_context(ws)
+        await orch._route_ui_frame(context, json.dumps({
             "type": "register_ui", "token": f"mock.{payload}.signature",
             "device": {},
         }))
+        await asyncio.wait_for(asyncio.gather(*tuple(context.tracked_tasks)), timeout=30)
         assert any(f.get("type") == "rote_config" for f in ws.task.outputs), (
             "registration must complete despite a failed guide push"
         )
@@ -707,16 +733,15 @@ def test_endpoint_origin_without_host_is_empty():
     assert cg._origin_of("///") == ""
 
 
-async def test_push_connection_guide_falls_back_to_browser_device_on_profile_error(
+async def test_push_connection_guide_withholds_delivery_on_profile_error(
     mock_auth,
 ):
     orch = _PushOrch()
     orch.rote = SimpleNamespace(
         get_profile=lambda websocket: (_ for _ in ()).throw(RuntimeError("no profile")))
-    delivered = await cg.push_connection_guide(orch, object(), "user")
-    assert delivered is True
-    frame = json.loads(orch.sent[0])
-    assert frame["type"] == "chrome_render"
+    delivered = await cg.push_connection_guide(orch, orch.websocket, "user")
+    assert delivered is False
+    assert orch.sent == []
 
 
 async def test_push_connection_guide_native_adaptation_failure_delivers_alert(mock_auth):
@@ -730,7 +755,7 @@ async def test_push_connection_guide_native_adaptation_failure_delivers_alert(mo
 
     try:
         ComponentAdapter.adapt = staticmethod(_boom)
-        delivered = await cg.push_connection_guide(orch, object(), "user")
+        delivered = await cg.push_connection_guide(orch, orch.websocket, "user")
     finally:
         ComponentAdapter.adapt = original
     assert delivered is True
@@ -750,7 +775,7 @@ async def test_maybe_push_on_register_swallows_readiness_failures(mock_auth):
     original = cg.guide_payload
     try:
         cg.guide_payload = _boom
-        assert await cg.maybe_push_on_register(orch, object(), "user") is False
+        assert await cg.maybe_push_on_register(orch, orch.websocket, "user") is False
     finally:
         cg.guide_payload = original
     assert orch.sent == []

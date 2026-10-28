@@ -8,14 +8,14 @@
 Server-owned additions only, inside AstralDeep's existing seams:
 
 - `backend/orchestrator/connection_guide.py` — the guide model: endpoint attestation
-  (`PUBLIC_BASE_URL`/`BACKEND_PUBLIC_URL` vs the connecting origin), per-service checks
+  (`PUBLIC_BASE_URL`/`BACKEND_PUBLIC_URL` vs the connecting origin), bounded, individually fail-closed per-service checks
   built on the orchestrator's own real probes (`_probe_plane_readiness`, web_auth
   identity-provider discovery, the voice worker pool readiness, the generated-agent
-  publication readiness service, the LETS health snapshot), overall-state computation,
+  publication readiness service, the LETS health snapshot), overall-state computation matching LETS `application_ready` in `/readyz`,
   the authenticated `GET /api/connection/status` route, and the registration-time push
-  helper following `llm_gate.py`'s delivery pattern.
+  helper fenced to the existing owner registration and normal connection context/scope/incarnation across awaits, preserving LLM and active-chat priority.
 - `backend/orchestrator/projection_surfaces/connection.py` — the surface adapter:
-  web modal HTML and native primitive components from one payload; the re-check
+  one approved component view serialized for native/watch and rendered by pinned Projection `render_html` for the web; the re-check
   control re-opens the surface through the standard `chrome_open` action, so no new
   dispatch action or UI-protocol manifest entry is introduced.
 - `backend/orchestrator/projection_surfaces/__init__.py` — registers the `connection`
