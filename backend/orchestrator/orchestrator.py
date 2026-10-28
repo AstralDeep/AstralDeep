@@ -7056,6 +7056,19 @@ class Orchestrator:
             except AssignmentError:
                 return None
         is_work_read = is_ui_event and action == "chrome_open" and surface == "work"
+        is_work_continuity = is_ui_event and action == "chrome_work_continuity"
+        if is_work_continuity:
+            if (set(frame) != {"type", "action", "session_id", "submission_id", "request_generation",
+                               "connection_generation", "payload"}
+                    or frame.get("session_id") is not None or supplied_connection is None):
+                return None
+            try:
+                from astralprojection.work_continuity import validate_continuity_payload
+
+                validate_continuity_payload(payload)
+            except (ImportError, ValueError):
+                return None
+            surface = "work"
         if is_work_read:
             if payload.get("surface") != "work":
                 return None
@@ -7113,7 +7126,7 @@ class Orchestrator:
             "chrome_note_search", "chrome_note_save", "chrome_note_toggle", "chrome_note_forget",
             "chrome_turn_selection_set",
         }
-        chat_id = str(chat_value) if chat_value is not None and not (is_work_read or is_guidance) else None
+        chat_id = str(chat_value) if chat_value is not None and not (is_work_read or is_work_continuity or is_guidance) else None
         safe_payload_identity = {
             key: value
             for key in _CONNECTION_IDENTITY_FIELDS
@@ -7121,6 +7134,8 @@ class Orchestrator:
             or isinstance(value, (bool, int))
             or (isinstance(value, str) and len(value) <= 512)
         }
+        if is_work_continuity:
+            safe_payload_identity = dict(payload)
         is_credential_save = action in _LLM_CREDENTIAL_SAVE_ACTIONS
         is_voice_chat = (
             action == "chat_message"
@@ -7267,7 +7282,7 @@ class Orchestrator:
                 retry_after_ms=1000,
             )
             return
-        if frame.action == "chrome_open" and frame.surface == "work":
+        if frame.surface == "work" and frame.action in {"chrome_open", "chrome_work_continuity"}:
             from orchestrator.work_surface_authority import WorkSurfaceRead
             from persistent_agents.models import AssignmentError
 
@@ -10500,7 +10515,8 @@ class Orchestrator:
                 human_caller = (await human_request.authenticate()
                                 if human_request is not None and human_request.purpose == "metadata" else None)
                 work_read = (_CONNECTION_OPERATION_CONTEXT.get() or {}).get("work_read")
-                if msg.action == "chrome_open" and (msg.payload or {}).get("surface") == "work":
+                if (msg.action == "chrome_open" and (msg.payload or {}).get("surface") == "work"
+                        or msg.action == "chrome_work_continuity"):
                     if _CONNECTION_OPERATION_CONTEXT.get() is not None:
                         from orchestrator.work_surface_authority import WorkSurfaceRead
                         from persistent_agents.models import AssignmentError
@@ -11642,7 +11658,8 @@ class Orchestrator:
                 else:
                     from orchestrator.chrome_events import handle_chrome_event
                     work_arguments = {"request_generation": msg.request_generation}
-                    if msg.action == "chrome_open" and (msg.payload or {}).get("surface") == "work":
+                    if (msg.action == "chrome_open" and (msg.payload or {}).get("surface") == "work"
+                            or msg.action == "chrome_work_continuity"):
                         work_arguments = {"request_generation": msg.request_generation,
                                           "work_read": work_read}
                     elif ((msg.action == "chrome_open" and (msg.payload or {}).get("surface") == "guidance")

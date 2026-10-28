@@ -1,8 +1,5 @@
-"""Owner continuity recheck for one waiting Work operation after an orchestrator or
-executor node loss: re-reads the durable wait, and releases it only when its source is
-durably terminal, through the same guarded wake fence the completion transaction uses.
-Composes work_controls.py, work_subscriptions.py, and work_completion_wake.py for
-work_api.py.
+"""Rechecks an owner's waiting Work operation through the existing durable completion wake fence.
+Composes work_controls.py and work_subscriptions.py for HTTP and shared chrome recovery without granting execution authority.
 """
 
 from __future__ import annotations

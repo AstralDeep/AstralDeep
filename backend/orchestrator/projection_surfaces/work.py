@@ -1,6 +1,5 @@
-"""Delivers authorized Work-surface reads through the shared Projection builder and
-handles the WS-driven Save-result mutation, both bound by the same
-WorkCallerAuthority/WorkPublicationService boundary the HTTP work routes enforce.
+"""Delivers authorized Work snapshots and explicit result-save or continuity controls through shared Projection views.
+Socket commands retain original caller, issued-session, composed-runtime and current-connection fences used by the HTTP Work routes.
 """
 
 from __future__ import annotations
@@ -121,9 +120,13 @@ async def _state(read, params):
                 "page": await read.service.list(read.owner_id, read.captured,
                                                 after_id=params.get("after_id"))}
     if mode == "detail":
-        return {"mode": mode, "status": "ready",
-                "operation": await read.service.get(read.owner_id, read.captured,
-                                                   params["operation_id"])}
+        row = await read.service.get(read.owner_id, read.captured, params["operation_id"])
+        state = {"mode": mode, "status": "ready", "operation": row}
+        if ("work_continuity_v1" in read.captured.get("_client_capabilities", [])
+                and row.get("schema_supported") is True and row.get("disposition") == "awaiting_event"):
+            state["continuity"] = {"version": 1, "operation_id": row["id"],
+                                   "expected_revision": row["revision"], "submission_id": str(uuid4())}
+        return state
     return await _augmented_result_state(read.service, read.orch, read.websocket,
                                          read.owner_id, read.captured, params["operation_id"])
 
@@ -253,7 +256,7 @@ async def deliver(orch, websocket, user_id, params, request_generation, *, work_
 
 
 class _WsPublicationBinding:
-    __slots__ = ("orch", "assignments", "store", "runtime", "sessions")
+    __slots__ = ("orch", "assignments", "store", "runtime", "sessions", "repository", "adapter", "session_adapter", "audit")
 
     def __init__(self, orch, assignments):
         self.orch = orch
@@ -261,13 +264,33 @@ class _WsPublicationBinding:
         self.store = assignments.store
         self.runtime = self.store.plane_runtime
         self.sessions = getattr(orch, "web_sessions", None)
+        self.repository = self.store.repository
+        self.adapter = self.store.async_runtime
+        self.session_adapter = self.sessions._sessions
+        self.audit = getattr(orch, "audit_repo", None)
 
     def assert_current(self, assignments):
+        from audit.repository import AuditRepository
+
+        plane = getattr(getattr(self.orch, "runtime_composition", None), "plane", None)
         if (assignments is not self.assignments or self.assignments.orch is not self.orch
                 or getattr(self.orch, "persistent_assignments", None) is not self.assignments
                 or self.assignments.store is not self.store
                 or self.store.plane_runtime is not self.runtime
-                or getattr(self.orch, "web_sessions", None) is not self.sessions):
+                or getattr(self.orch, "web_sessions", None) is not self.sessions
+                or getattr(plane, "runtime", None) is not self.runtime
+                or getattr(plane, "repositories", None) is not self.runtime.repositories
+                or self.store.repository is not self.repository
+                or self.repository is not self.runtime.repositories.assignments
+                or self.store.async_runtime is not self.adapter
+                or self.adapter.repositories is not self.runtime.repositories
+                or self.sessions._sessions is not self.session_adapter
+                or self.session_adapter.plane_runtime is not self.runtime
+                or self.session_adapter.repository is not self.runtime.repositories.history.sessions
+                or type(self.audit) is not AuditRepository
+                or getattr(self.orch, "audit_repo", None) is not self.audit
+                or self.audit._audit.plane_runtime is not self.runtime
+                or self.audit._audit.repository is not self.runtime.repositories.audit):
             raise AssignmentError("work_control_unavailable", 503)
 
 
@@ -406,6 +429,43 @@ async def _handle_result_save(orch, websocket, user_id, roles, payload):
     return "work", state, notice_block("error", message)
 
 
+async def deliver_continuity(orch, websocket, user_id, roles, payload, *,
+                             request_generation=None, work_read=None):
+    read = work_read
+    try:
+        from astralprojection.work_continuity import validate_continuity_payload
+        from orchestrator.work_continuity import WorkContinuityService
+        from orchestrator.work_controls import WorkControlRequest
+
+        if type(read) is not WorkSurfaceRead or read.context is None:
+            return False
+        read.assert_request(orch, websocket, user_id, request_generation)
+        if "work_continuity_v1" not in read.captured.get("_client_capabilities", []):
+            return False
+        command = validate_continuity_payload(payload)
+        async with asyncio.timeout_at(read.deadline):
+            await read.authenticate()
+            caller = await _ws_publication_caller(orch, websocket, user_id)
+            read.assert_current()
+            if caller._token != read.delivery.token:
+                raise AssignmentError("work_authentication_required", 401)
+            await WorkContinuityService(read.assignments).recheck(command["operation_id"],
+                WorkControlRequest(expected_revision=command["expected_revision"],
+                                   submission_id=command["submission_id"]), caller=caller)
+            await read.verify()
+            read.assert_current()
+            return await deliver(orch, websocket, user_id,
+                {"mode": "detail", "operation_id": command["operation_id"]}, request_generation,
+                work_read=read)
+    except (AssignmentError, HTTPException, ImportError, ValueError, TypeError, AttributeError, TimeoutError):
+        logger.info("Work continuity refused or unavailable")
+        return False
+    finally:
+        if type(read) is WorkSurfaceRead:
+            read.close()
+
+
 HANDLERS = {
     "chrome_work_result_save": _handle_result_save,
+    "chrome_work_continuity": deliver_continuity,
 }

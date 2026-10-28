@@ -683,6 +683,15 @@ async def _dispatch_chrome_event(orch, websocket, action: str, payload: dict,
     if not _is_chrome_action(action):
         return False
     payload = payload or {}
+    if action == "chrome_work_continuity":
+        from orchestrator.projection_surfaces import get_surface
+        from persistent_agents.models import AssignmentError
+
+        delivered = await get_surface("work").deliver_continuity(orch, websocket, user_id, [], payload,
+            request_generation=request_generation, work_read=work_read)
+        if not delivered:
+            raise AssignmentError("work_control_unavailable", 503)
+        return True
     if action == "chrome_open" and isinstance(payload, dict) and payload.get("surface") == "evidence":
         from orchestrator.projection_surfaces import get_surface
         return await get_surface("evidence").deliver(orch, websocket, user_id, payload, request_generation)
