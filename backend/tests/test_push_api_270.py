@@ -18,6 +18,7 @@ from orchestrator.auth import verify_user
 from orchestrator.push_delivery import PushDeliveryCoordinator
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 from tests.helpers.push_sessions import SessionBoundPushStore
+from tests.helpers.push_sessions import push_iam_policy as push_iam_policy
 
 from tests.test_push_delivery_270 import FakeAdapter
 
@@ -140,7 +141,9 @@ def _custody(app, store, owner):
     from tests.helpers.push_sessions import consent_session
     sid, selected = consent_session(store.sessions, owner)
     app.state.orchestrator.web_sessions = store.sessions
-    app.dependency_overrides[verify_user] = lambda: {"sub": owner, "exp": time.time() + 300}
+    app.dependency_overrides[verify_user] = lambda: {"sub": owner, "exp": time.time() + 300,
+        "iss": selected.observation.credential.issuing_issuer,
+        "azp": selected.observation.credential.issuing_client_id}
     return sid, selected, {"Cookie": f"{web_auth.COOKIE_NAME}={web_auth._sign(sid)}"}
 
 

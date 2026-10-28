@@ -109,6 +109,7 @@ async def enroll_destination(
             label=body.label,
             expected_destination_revision=body.expected_destination_revision,
             consent_session=selected,
+            principal=principal,
         )
     except PushDestinationError as exc:
         raise _destination_error(exc) from None

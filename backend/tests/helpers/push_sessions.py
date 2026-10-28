@@ -7,9 +7,18 @@ from datetime import timedelta
 import uuid
 
 from astralplane.repositories.history import SessionConsentObservation
+import pytest
 from orchestrator.push_destinations import PushDestinationStore
 from orchestrator.session_consent import ConsentSession
 from orchestrator.session_store import WebSessionStore
+
+
+@pytest.fixture(autouse=True)
+def push_iam_policy(monkeypatch):
+    monkeypatch.setenv("USE_MOCK_AUTH", "false")
+    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://issuer.example/realms/test")
+    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-web")
+    monkeypatch.setenv("KEYCLOAK_ALLOWED_AZP", "native-client")
 
 
 def create_consent(sessions, owner, sid=None):

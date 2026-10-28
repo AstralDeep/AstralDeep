@@ -22,6 +22,7 @@ from orchestrator.push_destinations import PushDestinationStore
 from orchestrator.push_providers import PushProviderError
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 from tests.helpers.push_sessions import SessionBoundPushStore
+from tests.helpers.push_sessions import push_iam_policy as push_iam_policy
 
 KEY = "uR3Wb5rK8pHq2nTxE1sYd0cV7mLwZa4Gf9OiUjBhNkQ="
 BASE_NOW = 1_800_000_000.0

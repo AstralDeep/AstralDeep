@@ -28,6 +28,7 @@ from orchestrator.plane_repository_context import (
     repository_from,
 )
 from orchestrator.session_consent import ConsentSession
+from orchestrator.session_store import SessionIssuingIdentity
 
 DESTINATION_NAMESPACE = "astral-push-destination"
 RECORD_VERSION = 1
@@ -156,6 +157,28 @@ def validate_revision(raw: Any, *, minimum: int = 0) -> int:
     return raw
 
 
+def _trusted_session_pair(owner_id, issuer, client, principal=None):
+    try:
+        from orchestrator.auth import _get_keycloak_config
+        from orchestrator.web_auth import _bound_session_destination
+
+        identity = SessionIssuingIdentity(owner_id, issuer, client)
+        authority, primary_client, _ = _get_keycloak_config()
+        if not authority or not primary_client:
+            raise ValueError
+        _bound_session_destination(identity.issuer, identity.client_id)
+        if principal is not None and (
+            not isinstance(principal, dict)
+            or principal.get("sub") != identity.owner_id
+            or principal.get("iss") != identity.issuer
+            or principal.get("azp") != identity.client_id
+        ):
+            raise ValueError
+        return {"issuing_issuer": identity.issuer, "issuing_client_id": identity.client_id}
+    except Exception:
+        raise DestinationStoreUnavailable("destination session identity is unavailable") from None
+
+
 def public_destination(record: dict[str, Any]) -> dict[str, Any]:
     return {
         "device_id": record["device_id"],
@@ -260,25 +283,31 @@ class PushDestinationStore:
             raise DestinationStoreUnavailable("destination revision is invalid")
         return records
 
-    def _capture_session(self, transaction, owner_id, selected):
+    def _capture_session(self, transaction, owner_id, selected, principal):
         try:
             if not isinstance(selected, ConsentSession):
                 raise ValueError
             reference = selected.reference(owner_id)
+            fence = selected.observation.credential
+            pair = _trusted_session_pair(owner_id, fence.issuing_issuer, fence.issuing_client_id, principal)
             sessions = self._credentials.plane_runtime.repositories.history.sessions
             sessions.bound_request_execution_waits(transaction)
             sessions.assert_current_consent(transaction, observation=selected.observation)
-            return reference
+            _trusted_session_pair(owner_id, fence.issuing_issuer, fence.issuing_client_id, principal)
+            return {**reference, **pair}
         except Exception:
             raise DestinationStoreUnavailable("current destination session is unavailable") from None
 
     def _session_current(self, transaction, owner_id, reference):
         if (not isinstance(reference, dict)
-                or set(reference) != {"session_id", "incarnation_id", "created_at", "interactive_anchor"}
-                or not all(isinstance(reference[key], str) and reference[key] for key in ("session_id", "incarnation_id"))
+                or set(reference) != {"session_id", "incarnation_id", "created_at", "interactive_anchor",
+                                      "issuing_issuer", "issuing_client_id"}
+                or not all(isinstance(reference[key], str) and reference[key]
+                           for key in ("session_id", "incarnation_id", "issuing_issuer", "issuing_client_id"))
                 or any(type(reference[key]) is not int or reference[key] < 0 for key in ("created_at", "interactive_anchor"))):
             return False
         try:
+            _trusted_session_pair(owner_id, reference["issuing_issuer"], reference["issuing_client_id"])
             sessions = self._credentials.plane_runtime.repositories.history.sessions
             sessions.bound_request_execution_waits(transaction)
             for _ in range(2):
@@ -292,6 +321,8 @@ class PushDestinationStore:
                 try:
                     sessions.assert_current_consent(transaction, observation=SessionConsentObservation(
                         state.credential, state.observed_at, cutoff))
+                    _trusted_session_pair(owner_id, state.credential.issuing_issuer,
+                                          state.credential.issuing_client_id)
                     return True
                 except RepositoryConflictError as exc:
                     if exc.code != "session_authority_unavailable":
@@ -361,6 +392,7 @@ class PushDestinationStore:
         label: str | None = None,
         expected_destination_revision: int | None = None,
         consent_session: ConsentSession | None = None,
+        principal: dict | None = None,
     ) -> dict[str, Any]:
         validate_device_id(device_id)
         normalize_platform(platform)
@@ -375,7 +407,7 @@ class PushDestinationStore:
             if (expected_destination_revision is not None
                     and expected_destination_revision != (existing["updated_at"] if existing else 0)):
                 raise DestinationConflict("destination revision changed")
-            reference = (self._capture_session(transaction, owner_id, consent_session)
+            reference = (self._capture_session(transaction, owner_id, consent_session, principal)
                          if expected_destination_revision is not None or consent_session is not None else None)
             if existing is not None:
                 now = max(now, existing["updated_at"] + 1)

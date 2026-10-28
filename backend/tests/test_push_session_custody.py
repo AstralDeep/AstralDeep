@@ -18,6 +18,7 @@ audit_repository = delivery_fixtures.audit_repository
 clean_outbox = delivery_fixtures.clean_outbox
 coordinator = delivery_fixtures.coordinator
 store = delivery_fixtures.store
+push_iam_policy = delivery_fixtures.push_iam_policy
 FakeAdapter = delivery_fixtures.FakeAdapter
 _notification = delivery_fixtures._notification
 
@@ -154,7 +155,7 @@ def test_hard_expired_session_with_matching_private_anchors_cannot_authorize_tar
             hard_expires_at=past + 30, last_refresh_at=past))
         record = store._get_record(transaction, owner, first["device_id"])
         record["session_reference"] = {key: getattr(expired, key) for key in
-            ("session_id", "incarnation_id", "created_at", "interactive_anchor")}
+            ("session_id", "incarnation_id", "created_at", "interactive_anchor", "issuing_issuer", "issuing_client_id")}
         record["updated_at"] += 1
         store._write_record(transaction, owner, record, expected_updated_at=first["updated_at"])
     assert store.delivery_target(owner, first["device_id"]) is None
