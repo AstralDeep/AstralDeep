@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import time
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from . import living_memory as lm
 from . import memory_guard
@@ -410,13 +410,20 @@ class MemoryTools:
 
     def memory_search(self, user_id: str, query: str, *, limit: int = 10,
                       project_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        ranked = self.memory_search_ranked(user_id, query, limit=limit,
+                                           project_id=project_id)
+        results = [it for it, _ in ranked]
+        self._reinforce(user_id, results)
+        return results
+
+    def memory_search_ranked(self, user_id: str, query: str, *, limit: int = 10,
+                             project_id: Optional[str] = None) -> List[Tuple[Dict[str, Any], float]]:
+        # Read-only seam: memory_search's exact ordering without recording recall
         scope = self._read_scope(project_id)
         q = _tokens(query)
         items = self._live_memory(user_id, project_id=scope)
         if not q:
-            out = items[:limit]
-            self._reinforce(user_id, out)
-            return out
+            return [(it, 0.0) for it in items[:limit]]
         use_ms = multisignal_enabled()
         total = len(items)
         scored = []
@@ -445,24 +452,29 @@ class MemoryTools:
             try:
                 ranked = self._pagerank_rank(user_id, items, seed_scores, order, limit)
                 if ranked is not None:
-                    self._reinforce(user_id, ranked)
                     return ranked
             except Exception:
                 logger.debug("memory_search: pagerank failed — falling back", exc_info=True)
         scored.sort(key=lambda t: (-t[0], t[1]))
-        results = [it for _, _, it in scored[:limit]]
+        results = [(it, s) for s, _, it in scored[:limit]]
         if linking_enabled() and results and len(results) < limit:
             try:
-                results = self._expand_with_links(user_id, results, items, limit)
+                expanded = self._expand_with_links(
+                    user_id, [it for it, _ in results], items, limit)
+                known = {it.get("id"): s for it, s in results}
+                results = [(it, known.get(it.get("id"), 0.0)) for it in expanded]
             except Exception:
                 logger.debug("memory_search: link expansion failed — direct hits only",
                              exc_info=True)
-        self._reinforce(user_id, results)
         return results
+
+    def live_memory_snapshot(self, user_id: str, *,
+                             project_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        return self._live_memory(user_id, project_id=self._read_scope(project_id))
 
     def _pagerank_rank(self, user_id: str, items: List[Dict[str, Any]],
                        seed_scores: Dict[str, float], order: Dict[str, int],
-                       limit: int) -> Optional[List[Dict[str, Any]]]:
+                       limit: int) -> Optional[List[Tuple[Dict[str, Any], float]]]:
         list_links = getattr(self.repo, "list_links", None)
         if list_links is None:
             return None
@@ -483,7 +495,8 @@ class MemoryTools:
             -ppr.get(nid, 0.0),
             order.get(nid, 1 << 30),
         ))
-        return [by_id[nid] for nid in ranked_ids[:limit]]
+        return [(by_id[nid], seed_scores.get(nid, 0.0) or ppr.get(nid, 0.0))
+                for nid in ranked_ids[:limit]]
 
     def _expand_with_links(self, user_id: str, results: List[Dict[str, Any]],
                            all_items: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
