@@ -48,8 +48,11 @@ CI does not download this graph or contact a third-party service.
 
 ## Immutable filesystem and network policy
 
-Each invocation writes a `0700` session directory containing the `0400` SRT profile and
-immutable effect source. Scratch is a separate `0700` directory, never beneath the denied
+Each invocation creates a fresh `0700` session directory containing the `0400` SRT profile and
+immutable effect source. A supplied existing session directory, including a symlink, is
+refused before writes or permission changes. Source, secret, and profile creation is
+exclusive with `O_NOFOLLOW`; per-mode specs use exclusive private temporary files and
+atomic replacement, so artifact links cannot redirect writes or chmod an unrelated file. Scratch is a separate `0700` directory, never beneath the denied
 session tree. Explicit scratch/session overlap and any write deny covering scratch are
 rejected. The session tree and SRT's `/tmp/claude` convenience remain write-denied;
 SRT's deny-over-allow precedence is preserved.
@@ -61,9 +64,14 @@ and local binding remain disabled. The child receives a fixed minimal environmen
 only its standard pipes. Missing primitives and upstream degradation warnings are hard
 failures, with no unsandboxed fallback.
 
-## Operator permits and the full profile
+## Permit plan/bundle and outstanding dispatch integration
 
-First prepare the exact wire arguments for ordinary owner-bound authorization:
+Normal dispatch registration and owner/tool-policy permit issuance for this qualification
+tool remain unimplemented and unqualified. The plan/bundle path preserves standard
+executor verification of supplied permits; it does not establish an ordinary dispatch
+route. That route and its real authorization evidence remain a separate merge hold.
+
+Prepare the exact wire arguments for an eventual qualified owner-bound authorization adapter:
 
 ```bash
 python -m orchestrator.sandbox_qualification \
@@ -71,8 +79,9 @@ python -m orchestrator.sandbox_qualification \
 ```
 
 This creates a new `0600` file containing the tool ID, scope, random qualification ID,
-and arguments for every mode; it starts no effect and mints no receipt. Use the existing
-normal authorization path to obtain one standard LETS protected permit per listed mode.
+and arguments for every mode; it starts no effect and mints no receipt. A registered,
+qualified normal authorization adapter must obtain one standard LETS protected permit per
+listed mode before this operator flow is usable.
 Do not reuse a permit, sign inside the runner, or put private keys in the bundle. Store
 the returned permits privately as:
 
@@ -93,7 +102,8 @@ the returned permits privately as:
 }
 ```
 
-With the normal LETS executor environment configured, run:
+After qualifying that ordinary authorization route, configure the normal LETS executor
+environment and run:
 
 ```bash
 python -m orchestrator.sandbox_qualification \
@@ -124,7 +134,8 @@ PYTHONPATH=backend python -m orchestrator.sandbox_qualification \
 ASTRAL_SRT_REQUIRE_QUALIFICATION=1 \
 ASTRAL_SRT_QUALIFICATION_RECORD=/private/operator/actual-srt-record.json \
 PYTHONPATH=backend python -m pytest \
-  backend/tests/test_sandbox_runtime_qualification.py::test_full_qualification_passes_on_supported_host -q
+  backend/tests/test_sandbox_runtime_qualification.py::test_full_qualification_passes_on_supported_host \
+  backend/tests/test_sandbox_runtime_qualification.py::test_descendant_cleanup_with_genuine_srt_pid_namespace -q
 ```
 
 The required flag makes missing primitives fail the test instead of skipping it. The
@@ -133,6 +144,15 @@ dependency-lock digest, artifact/profile/receipt digests, and audit correlation.
 to the exact candidate SHA and host/tool identities outside the candidate tree. Retain
 receipt-denial/replay and lifecycle test results separately; no unsupported-host or
 injected-runtime result substitutes for this record.
+
+Descendant readiness is observed while the child lives. The parent maps its namespace
+PID to a unique host process through a revalidated supervisor ancestry, `/proc` start
+ticks, a distinct PID-namespace inode and deeper `NSpid` chain. Cleanup checks the captured
+host PID plus creation identity; a missing or ambiguous mapping fails closed. A
+namespace-local PID is never used directly for host kill/proc checks. The dedicated real
+SRT regression requires a genuinely separate PID namespace. Both `await_effect` and the
+runner finally terminate/join session-owned supervised processes before an interruption
+propagates; unrelated supervisor entries are preserved.
 
 Parent-side checks independently inspect authorized output digests, denied secret reads,
 absence of writes across `/tmp`, `/var/tmp`, `/dev/shm` and the session boundary, zero

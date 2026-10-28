@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ from orchestrator.generated_lets_executor import (
 )
 from shared.process_supervision import (
     DEFAULT_PROCESS_SUPERVISION_LIMITS,
+    OutputStream,
     ProcessOwner,
     ProcessSnapshot,
     ProcessState,
@@ -68,6 +70,7 @@ SECRET_NAME: Final = "session-secret.txt"
 MARKER_PREFIX: Final = "marker-"
 STOLEN_SECRET_NAME: Final = "stolen-secret.txt"
 DESCENDANT_PID_NAME: Final = "descendant.pid"
+DESCENDANT_READY_PREFIX: Final = b"ASTRAL_SRT_DESCENDANT:"
 OUTSIDE_WRITE_ROOTS: Final = ("/tmp", "/var/tmp", "/dev/shm")
 CONNECT_TARGETS: Final = (
     ("127.0.0.1", 0),
@@ -194,6 +197,15 @@ class QualificationSession:
     effect_script_path: Path
     secret_path: Path
     secret_token: str
+
+
+@dataclass(frozen=True)
+class HostProcessIdentity:
+    pid: int
+    parent_pid: int
+    start_time_ticks: int
+    pid_namespace_inode: int
+    namespace_pids: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -887,9 +899,19 @@ def write_immutable_profile(
     session: QualificationSession, settings: Mapping[str, Any]
 ) -> bytes:
     payload = canonical_profile_bytes(settings)
-    session.profile_path.write_bytes(payload)
-    os.chmod(session.profile_path, 0o400)
+    _write_exclusive_artifact(session.profile_path, payload, mode=0o400)
     return payload
+
+
+def _write_exclusive_artifact(path: Path, payload: bytes, *, mode: int) -> None:
+    try:
+        descriptor = os.open(
+            path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode
+        )
+    except FileExistsError:
+        raise SandboxQualificationError("session_artifact_exists") from None
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(payload)
 
 
 def child_spawn_env(extra: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -1017,6 +1039,7 @@ elif mode == "spawn_descendant":
     )
     with open(os.path.join(scratch, spec["descendant_pid_file"]), "w", encoding="utf-8") as sink:
         sink.write(str(child.pid))
+    print("ASTRAL_SRT_DESCENDANT:" + str(child.pid), flush=True)
     time.sleep(spec["hold_seconds"])
 elif mode == "exhaust_output":
     with open(os.path.join(scratch, spec["output_name"]), "w", encoding="utf-8") as sink:
@@ -1043,13 +1066,16 @@ def prepare_session(
         c not in "0123456789abcdef" for c in qualification_id
     ):
         raise SandboxQualificationError("qualification_id_invalid")
-    resolved_dir = (
-        Path(session_dir).resolve()
-        if session_dir is not None
-        else Path(tempfile.mkdtemp(prefix="astral-srt-qualification-"))
-    )
-    resolved_dir.mkdir(parents=True, exist_ok=True)
-    os.chmod(resolved_dir, 0o700)
+    if session_dir is None:
+        resolved_dir = Path(tempfile.mkdtemp(prefix="astral-srt-qualification-"))
+    else:
+        selected = Path(session_dir).absolute()
+        resolved_dir = selected.parent.resolve() / selected.name
+        resolved_dir.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            resolved_dir.mkdir(mode=0o700)
+        except FileExistsError:
+            raise SandboxQualificationError("session_directory_not_fresh") from None
     scratch_dir = (
         Path(scratch_root).resolve() / qualification_id
         if scratch_root is not None
@@ -1072,10 +1098,10 @@ def prepare_session(
         secret_path=resolved_dir / SECRET_NAME,
         secret_token=secret_token,
     )
-    session.effect_script_path.write_text(render_effect_script(), encoding="utf-8")
-    os.chmod(session.effect_script_path, 0o400)
-    session.secret_path.write_text(secret_token, encoding="utf-8")
-    os.chmod(session.secret_path, 0o600)
+    _write_exclusive_artifact(
+        session.effect_script_path, render_effect_script().encode(), mode=0o400
+    )
+    _write_exclusive_artifact(session.secret_path, secret_token.encode(), mode=0o600)
     return session
 
 
@@ -1132,10 +1158,18 @@ def build_effect_spec(
 
 
 def write_effect_spec(session: QualificationSession, spec: Mapping[str, Any]) -> None:
-    session.spec_path.write_text(
-        json.dumps(spec, sort_keys=True, separators=(",", ":")), encoding="utf-8"
-    )
-    os.chmod(session.spec_path, 0o600)
+    if session.spec_path.is_symlink():
+        raise SandboxQualificationError("session_artifact_exists")
+    temporary = session.session_dir / f".effect-spec-{uuid.uuid4().hex}"
+    try:
+        _write_exclusive_artifact(
+            temporary,
+            json.dumps(spec, sort_keys=True, separators=(",", ":")).encode(),
+            mode=0o400,
+        )
+        os.replace(temporary, session.spec_path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _ipc_listener_path(session: QualificationSession) -> Path:
@@ -1254,6 +1288,8 @@ def await_effect(
     except subprocess.TimeoutExpired:
         snapshot = process.terminate(reason=TerminationReason.CANCEL)
         return snapshot, TerminationReason.CANCEL, True
+    finally:
+        process.terminate(reason=TerminationReason.CANCEL)
 
 
 def launch_sandboxed_effect(
@@ -1395,25 +1431,126 @@ def symlink_checks(session: QualificationSession) -> tuple[QualificationCheck, .
     return (_check("symlink_containment", True, str(attempts.get("write_through"))),)
 
 
-def _process_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    try:
-        stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-    except OSError:
-        return True
-    state = stat_text.rpartition(")")[2].strip()[:1]
-    return state not in {"Z", "X", "x"}
+def _host_process_stat(pid: int, proc_root: Path) -> tuple[str, int, int]:
+    text = (proc_root / str(pid) / "stat").read_text(encoding="utf-8")
+    if text.partition(" ")[0] != str(pid):
+        raise ValueError
+    fields = text.rpartition(")")[2].split()
+    return fields[0], int(fields[1]), int(fields[19])
 
 
-def descendant_cleanup_check(descendant_pid: int) -> QualificationCheck:
-    if _process_alive(descendant_pid):
-        return _check("descendant_cleanup", False, "descendant_alive")
-    return _check("descendant_cleanup", True, "descendant_terminated")
+def _host_process_identity(pid: int, proc_root: Path) -> HostProcessIdentity:
+    state, parent, started = _host_process_stat(pid, proc_root)
+    if state in {"Z", "X", "x"}:
+        raise ProcessLookupError
+    directory = proc_root / str(pid)
+    rows = (directory / "status").read_text(encoding="utf-8").splitlines()
+    namespace_pids = next(
+        tuple(map(int, row.partition(":")[2].split()))
+        for row in rows
+        if row.startswith("NSpid:")
+    )
+    if (
+        not namespace_pids
+        or namespace_pids[0] != pid
+        or any(value <= 0 for value in namespace_pids)
+    ):
+        raise ValueError
+    return HostProcessIdentity(
+        pid, parent, started, (directory / "ns" / "pid").stat().st_ino, namespace_pids
+    )
+
+
+def capture_descendant_identity(
+    process: SupervisedProcess,
+    session: QualificationSession,
+    *,
+    timeout: float,
+    proc_root: Path = Path("/proc"),
+) -> HostProcessIdentity:
+    try:
+        line = process.wait_for_line(
+            OutputStream.STDOUT, prefix=DESCENDANT_READY_PREFIX, timeout=timeout
+        )
+        namespace_pid = int(line[len(DESCENDANT_READY_PREFIX) :].strip())
+        marker_pid = int(
+            (session.scratch_dir / DESCENDANT_PID_NAME).read_text().strip()
+        )
+        if marker_pid != namespace_pid or namespace_pid <= 0:
+            raise ValueError
+        root_identity = _host_process_identity(process.pid, proc_root)
+        table = {}
+        for index, directory in enumerate(proc_root.iterdir()):
+            if index >= 65_536:
+                raise ValueError
+            if not directory.name.isdecimal():
+                continue
+            try:
+                identity = _host_process_identity(int(directory.name), proc_root)
+            except (OSError, ValueError, IndexError, StopIteration):
+                continue
+            table[identity.pid] = identity
+        candidates = []
+        for identity in table.values():
+            if (
+                identity.pid_namespace_inode == root_identity.pid_namespace_inode
+                or len(identity.namespace_pids) <= len(root_identity.namespace_pids)
+                or identity.namespace_pids[-1] != namespace_pid
+            ):
+                continue
+            parent = identity.parent_pid
+            lineage = [identity]
+            seen = {identity.pid}
+            while parent in table and parent not in seen and len(seen) <= 256:
+                lineage.append(table[parent])
+                if parent == root_identity.pid:
+                    candidates.append((identity, lineage))
+                    break
+                seen.add(parent)
+                parent = table[parent].parent_pid
+        if (
+            len(candidates) != 1
+            or _host_process_identity(process.pid, proc_root) != root_identity
+        ):
+            raise ValueError
+        candidate, lineage = candidates[0]
+        if any(
+            _host_process_identity(entry.pid, proc_root) != entry for entry in lineage
+        ):
+            raise ValueError
+        return candidate
+    except (OSError, ValueError, IndexError, StopIteration, EOFError, TimeoutError):
+        raise SandboxQualificationError(
+            "descendant_host_identity_unavailable"
+        ) from None
+
+
+def _descendant_identity_label(identity: HostProcessIdentity) -> str:
+    return f"host_pid={identity.pid};start_ticks={identity.start_time_ticks};pidns={identity.pid_namespace_inode};namespace_pid={identity.namespace_pids[-1]}"
+
+
+def descendant_cleanup_check(
+    identity: HostProcessIdentity | None, *, proc_root: Path = Path("/proc")
+) -> QualificationCheck:
+    if not isinstance(identity, HostProcessIdentity):
+        return _check(
+            "descendant_cleanup", False, "descendant_host_identity_unavailable"
+        )
+    try:
+        state, _parent, started = _host_process_stat(identity.pid, proc_root)
+        terminated = started != identity.start_time_ticks or state in {"Z", "X", "x"}
+    except FileNotFoundError:
+        terminated = True
+    except (OSError, ValueError, IndexError):
+        return _check(
+            "descendant_cleanup", False, "descendant_host_identity_unavailable"
+        )
+    return _check(
+        "descendant_cleanup",
+        terminated,
+        ("descendant_terminated;" if terminated else "descendant_alive;")
+        + _descendant_identity_label(identity),
+    )
 
 
 def output_bound_checks(
@@ -1691,8 +1828,25 @@ def run_sandbox_qualification(
                 if mode in {"hang", "spawn_descendant"}
                 else per_launch_deadline_seconds
             )
+            descendant_identity = None
+            started = time.monotonic()
+            if mode == "spawn_descendant":
+                try:
+                    descendant_identity = capture_descendant_identity(
+                        process, session, timeout=deadline
+                    )
+                    checks.append(
+                        _check(
+                            "descendant_pid_namespace",
+                            True,
+                            _descendant_identity_label(descendant_identity),
+                        )
+                    )
+                except SandboxQualificationError as error:
+                    checks.append(_check("descendant_pid_namespace", False, error.code))
             snapshot, reason, timed_out = await_effect(
-                process, deadline_seconds=deadline
+                process,
+                deadline_seconds=max(0, deadline - (time.monotonic() - started)),
             )
             modes_run.append(mode)
             checks.extend(launch_outcome_checks(snapshot))
@@ -1726,17 +1880,7 @@ def run_sandbox_qualification(
                         )
                     )
             elif mode == "spawn_descendant":
-                pid_path = session.scratch_dir / DESCENDANT_PID_NAME
-                if pid_path.exists():
-                    checks.append(
-                        descendant_cleanup_check(
-                            int(pid_path.read_text(encoding="utf-8").strip())
-                        )
-                    )
-                else:
-                    checks.append(
-                        _check("descendant_cleanup", False, "pid_file_absent")
-                    )
+                checks.append(descendant_cleanup_check(descendant_identity))
                 if not timed_out:
                     checks.append(
                         _check("deadline_enforcement", False, "hang_not_cancelled")
@@ -1797,10 +1941,19 @@ def run_sandbox_qualification(
                 qualification_id=session.qualification_id,
             )
     finally:
-        if listener is not None:
-            listener.close()
-        if unix_listener is not None:
-            unix_listener.close()
+        try:
+            for snapshot in resolved_supervisor.snapshots():
+                if snapshot.owner == ProcessOwner(
+                    QUALIFICATION_OWNER_KIND, session.qualification_id
+                ):
+                    resolved_supervisor.terminate(
+                        snapshot.process_id, reason=TerminationReason.CANCEL
+                    )
+        finally:
+            if listener is not None:
+                listener.close()
+            if unix_listener is not None:
+                unix_listener.close()
     if record_log_path is not None:
         append_hash_chained_entry(record_log_path, {"record": record.to_dict()})
     return record

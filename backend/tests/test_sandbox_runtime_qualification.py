@@ -351,6 +351,296 @@ def _check_by_name(record: sq.QualificationRecord, name: str) -> sq.Qualificatio
     return matches[-1]
 
 
+def _assert_authorized_output_identity(output, detail):
+    assert f"sha256:{hashlib.sha256(output.read_bytes()).hexdigest()}" == detail
+
+
+@pytest.mark.parametrize("error", [KeyboardInterrupt, SystemExit, RuntimeError])
+def test_await_effect_terminates_before_propagating(error, monkeypatch):
+    supervisor = sq.ProcessSupervisor()
+    process = supervisor.spawn(
+        process_id=uuid.uuid4(),
+        owner=sq.ProcessOwner("test", "interruption"),
+        argv=[sys.executable, "-c", "import time; time.sleep(60)"],
+    )
+
+    def interrupted(*args, **kwargs):
+        raise error()
+
+    monkeypatch.setattr(process, "wait", interrupted)
+    try:
+        with pytest.raises(error):
+            sq.await_effect(process, deadline_seconds=10)
+        assert not process.process_tree_alive()
+        assert all(check.held for check in sq.tree_cleanup_checks(process.snapshot()))
+    finally:
+        process.terminate(reason=sq.TerminationReason.CANCEL)
+
+
+def test_runner_interrupt_cleans_its_started_process(
+    tmp_path,
+    lets_runtime,
+    receipt_factory,
+    available_support,
+    stub_runtime,
+    monkeypatch,
+):
+    supervisor = UnsandboxedEffectSupervisor()
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(sq, "await_effect", interrupted)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            sq.run_sandbox_qualification(
+                executor_runtime=lets_runtime,
+                receipt_factory=receipt_factory,
+                support=available_support,
+                runtime=stub_runtime,
+                supervisor=supervisor,
+                session_dir=tmp_path / "session",
+                modes=("hang", sq.AUTHORIZED_MODE),
+            )
+        assert all(
+            snapshot.process_tree_terminated
+            and snapshot.readers_joined
+            and snapshot.pipes_closed
+            for snapshot in supervisor.snapshots()
+        )
+    finally:
+        supervisor.terminate_all(reason=sq.TerminationReason.CANCEL)
+
+
+def test_runner_cleanup_preserves_unrelated_supervisor_process(
+    tmp_path,
+    lets_runtime,
+    receipt_factory,
+    available_support,
+    stub_runtime,
+    monkeypatch,
+):
+    supervisor = UnsandboxedEffectSupervisor()
+    unrelated = sq.ProcessSupervisor.spawn(
+        supervisor,
+        process_id=uuid.uuid4(),
+        owner=sq.ProcessOwner("unrelated", "preserve"),
+        argv=[sys.executable, "-c", "import time; time.sleep(60)"],
+    )
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(sq, "await_effect", interrupted)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            sq.run_sandbox_qualification(
+                executor_runtime=lets_runtime,
+                receipt_factory=receipt_factory,
+                support=available_support,
+                runtime=stub_runtime,
+                supervisor=supervisor,
+                session_dir=tmp_path / "session",
+                modes=("hang", sq.AUTHORIZED_MODE),
+            )
+        assert unrelated.poll() is None
+        assert all(
+            snapshot.process_tree_terminated
+            for snapshot in supervisor.snapshots()
+            if snapshot.owner.owner_kind == sq.QUALIFICATION_OWNER_KIND
+        )
+    finally:
+        supervisor.terminate_all(reason=sq.TerminationReason.CANCEL)
+
+
+def test_session_refuses_existing_artifact_symlink_without_touching_target(tmp_path):
+    target = tmp_path / "preserve.txt"
+    target.write_text("preserve me")
+    target.chmod(0o640)
+    directory = tmp_path / "session"
+    directory.mkdir()
+    (directory / sq.EFFECT_SCRIPT_NAME).symlink_to(target)
+    with pytest.raises(
+        sq.SandboxQualificationError, match="session_directory_not_fresh"
+    ):
+        sq.prepare_session(session_dir=directory)
+    assert target.read_text() == "preserve me"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    assert (directory / sq.EFFECT_SCRIPT_NAME).is_symlink()
+
+
+def test_supported_host_output_assertion_matches_real_digest_contract(tmp_path):
+    session = sq.prepare_session(session_dir=tmp_path / "session")
+    output = session.scratch_dir / sq.EFFECT_OUTPUT_NAME
+    output.write_text(sq.effect_content(session))
+    (session.scratch_dir / "marker-authorized.json").write_text(
+        json.dumps({"mode": "authorized", "observed": "ok"})
+    )
+    check = sq.authorized_effect_checks(
+        session, SimpleNamespace(exit_code=0, state=sq.ProcessState.EXITED)
+    )[0]
+    assert check.held
+    _assert_authorized_output_identity(output, check.detail)
+
+
+def _proc_fixture_entry(root, pid, parent, started, namespace_pids, namespace):
+    directory = root / str(pid)
+    (directory / "ns").mkdir(parents=True)
+    fields = ["S", str(parent)] + ["0"] * 17 + [str(started)]
+    (directory / "stat").write_text(f"{pid} (fixture worker) " + " ".join(fields))
+    (directory / "status").write_text(
+        "NSpid:\t" + "\t".join(map(str, namespace_pids)) + "\n"
+    )
+    target = root / f"namespace-{namespace}"
+    target.touch(exist_ok=True)
+    (directory / "ns" / "pid").symlink_to(target)
+
+
+@pytest.fixture
+def proc_namespace_fixture(tmp_path):
+    root = tmp_path / "proc"
+    root.mkdir()
+    _proc_fixture_entry(root, 100, 99, 1000, (100,), "host")
+    _proc_fixture_entry(root, 200, 100, 2000, (200,), "host")
+    _proc_fixture_entry(root, 300, 200, 3000, (300, 1), "sandbox")
+    _proc_fixture_entry(root, 400, 300, 4000, (400, 7), "sandbox")
+    _proc_fixture_entry(root, 7, 1, 700, (7,), "host")
+    session = sq.prepare_session(session_dir=tmp_path / "session")
+    (session.scratch_dir / sq.DESCENDANT_PID_NAME).write_text("7")
+    process = SimpleNamespace(
+        pid=100, wait_for_line=lambda *args, **kwargs: b"ASTRAL_SRT_DESCENDANT:7\n"
+    )
+    return root, session, process
+
+
+def test_descendant_mapping_uses_host_ancestry_and_pid_namespace(
+    proc_namespace_fixture,
+):
+    root, session, process = proc_namespace_fixture
+    identity = sq.capture_descendant_identity(
+        process, session, timeout=1, proc_root=root
+    )
+    assert identity.pid == 400
+    assert identity.namespace_pids == (400, 7)
+    assert identity.start_time_ticks == 4000
+    assert sq.descendant_cleanup_check(identity, proc_root=root).held is False
+    shutil.rmtree(root / "400")
+    assert sq.descendant_cleanup_check(identity, proc_root=root).held is True
+    assert (root / "7" / "stat").is_file()
+
+
+def test_descendant_mapping_refuses_unrelated_namespace_pid(proc_namespace_fixture):
+    root, session, process = proc_namespace_fixture
+    shutil.rmtree(root / "400")
+    with pytest.raises(
+        sq.SandboxQualificationError, match="descendant_host_identity_unavailable"
+    ):
+        sq.capture_descendant_identity(process, session, timeout=1, proc_root=root)
+
+
+def test_descendant_cleanup_distinguishes_reused_host_pid(proc_namespace_fixture):
+    root, session, process = proc_namespace_fixture
+    identity = sq.capture_descendant_identity(
+        process, session, timeout=1, proc_root=root
+    )
+    path = root / "400" / "stat"
+    path.write_text(path.read_text().replace("4000", "5000"))
+    assert sq.descendant_cleanup_check(identity, proc_root=root).held is True
+
+
+def test_descendant_mapping_rejects_shared_pid_namespace(proc_namespace_fixture):
+    root, session, process = proc_namespace_fixture
+    (root / "400" / "ns" / "pid").unlink()
+    (root / "400" / "ns" / "pid").symlink_to(root / "namespace-host")
+    with pytest.raises(
+        sq.SandboxQualificationError, match="descendant_host_identity_unavailable"
+    ):
+        sq.capture_descendant_identity(process, session, timeout=1, proc_root=root)
+
+
+def test_descendant_mapping_rejects_ambiguous_namespaces(proc_namespace_fixture):
+    root, session, process = proc_namespace_fixture
+    _proc_fixture_entry(root, 500, 200, 5000, (500, 7), "other-sandbox")
+    with pytest.raises(
+        sq.SandboxQualificationError, match="descendant_host_identity_unavailable"
+    ):
+        sq.capture_descendant_identity(process, session, timeout=1, proc_root=root)
+
+
+@pytest.mark.parametrize(
+    "damage", ["pid", "empty_namespace", "wrong_namespace_pid", "terminal", "marker"]
+)
+def test_descendant_mapping_rejects_invalid_identity(proc_namespace_fixture, damage):
+    root, session, process = proc_namespace_fixture
+    if damage == "pid":
+        path = root / "400" / "stat"
+        path.write_text(path.read_text().replace("400 (", "999 ("))
+    elif damage == "terminal":
+        path = root / "400" / "stat"
+        path.write_text(path.read_text().replace(") S ", ") Z "))
+    elif damage == "marker":
+        (session.scratch_dir / sq.DESCENDANT_PID_NAME).write_text("8")
+    else:
+        (root / "400" / "status").write_text(
+            "NSpid:\t" + ("999 7" if damage == "wrong_namespace_pid" else "") + "\n"
+        )
+    with pytest.raises(
+        sq.SandboxQualificationError, match="descendant_host_identity_unavailable"
+    ):
+        sq.capture_descendant_identity(process, session, timeout=1, proc_root=root)
+
+
+def test_descendant_mapping_revalidates_intermediate_ancestor(
+    proc_namespace_fixture, monkeypatch
+):
+    root, session, process = proc_namespace_fixture
+    original = sq._host_process_identity
+    calls = {}
+
+    def changed_ancestor(pid, proc_root):
+        calls[pid] = calls.get(pid, 0) + 1
+        identity = original(pid, proc_root)
+        return (
+            replace(identity, parent_pid=1)
+            if pid == 200 and calls[pid] > 1
+            else identity
+        )
+
+    monkeypatch.setattr(sq, "_host_process_identity", changed_ancestor)
+    with pytest.raises(
+        sq.SandboxQualificationError, match="descendant_host_identity_unavailable"
+    ):
+        sq.capture_descendant_identity(process, session, timeout=1, proc_root=root)
+
+
+def test_descendant_cleanup_fails_closed_on_unreadable_host_identity(
+    proc_namespace_fixture, monkeypatch
+):
+    root, session, process = proc_namespace_fixture
+    identity = sq.capture_descendant_identity(
+        process, session, timeout=1, proc_root=root
+    )
+
+    def unavailable(*args, **kwargs):
+        raise PermissionError()
+
+    monkeypatch.setattr(sq, "_host_process_stat", unavailable)
+    assert sq.descendant_cleanup_check(identity, proc_root=root).held is False
+
+
+def test_session_directory_symlink_is_not_resolved_for_writes(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir(mode=0o750)
+    selected = tmp_path / "session"
+    selected.symlink_to(target)
+    with pytest.raises(
+        sq.SandboxQualificationError, match="session_directory_not_fresh"
+    ):
+        sq.prepare_session(session_dir=selected)
+    assert list(target.iterdir()) == []
+    assert stat.S_IMODE(target.stat().st_mode) == 0o750
+
+
 def test_default_pin_matches_declared_manifest():
     pin = sq.default_artifact_pin()
     document = sq.load_declared_manifest()
@@ -1103,7 +1393,9 @@ def test_descendant_cleanup_with_real_tree(
     )
     assert record.status == sq.STATUS_FAILED
     descendant = _check_by_name(record, "descendant_cleanup")
-    assert descendant.held is True
+    assert descendant.held is False
+    assert descendant.detail == "descendant_host_identity_unavailable"
+    assert _check_by_name(record, "tree_cleanup").held is True
     deadline = _check_by_name(record, "deadline_enforcement")
     assert deadline.held is True
 
@@ -1191,19 +1483,19 @@ def test_hash_chained_log_append_and_tamper_detection(tmp_path: Path):
         sq.append_hash_chained_entry(log, {"n": 3})
 
 
-def test_descendant_cleanup_check_zombie_aware(tmp_path: Path):
-    holder = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+def test_descendant_cleanup_rejects_unbound_pid():
+    assert sq.descendant_cleanup_check(os.getpid()).held is False
+    assert sq.descendant_cleanup_check(999999).held is False
+
+
+def test_descendant_cleanup_check_zombie_aware(proc_namespace_fixture):
+    root, session, process = proc_namespace_fixture
+    identity = sq.capture_descendant_identity(
+        process, session, timeout=1, proc_root=root
     )
-    try:
-        assert sq.descendant_cleanup_check(holder.pid).held is False
-    finally:
-        holder.kill()
-        holder.wait()
-    assert sq.descendant_cleanup_check(holder.pid).held is True
-    assert sq.descendant_cleanup_check(999999).held is True
+    path = root / "400" / "stat"
+    path.write_text(path.read_text().replace(") S ", ") Z "))
+    assert sq.descendant_cleanup_check(identity, proc_root=root).held is True
 
 
 def test_permit_file_factory(tmp_path: Path):
@@ -1427,12 +1719,57 @@ def test_full_qualification_passes_on_supported_host(
     session_dir = Path(record.session_dir)
     output = tmp_path / "scratch" / record.qualification_id / sq.EFFECT_OUTPUT_NAME
     assert output.is_file()
-    assert hashlib.sha256(output.read_bytes()).hexdigest() in (
-        _check_by_name(record, "authorized_effect").detail,
+    _assert_authorized_output_identity(
+        output, _check_by_name(record, "authorized_effect").detail
     )
     assert all(check.held for check in record.checks)
     secret_token = (session_dir / sq.SECRET_NAME).read_text(encoding="utf-8")
     assert secret_token not in json.dumps(record.to_dict())
+
+
+def test_descendant_cleanup_with_genuine_srt_pid_namespace(
+    tmp_path, lets_runtime, receipt_factory
+):
+    support = sq.probe_support()
+    if not support.available:
+        detail = "; ".join(support.failure_details())
+        if os.environ.get("ASTRAL_SRT_REQUIRE_QUALIFICATION") == "1":
+            pytest.fail(detail)
+        pytest.skip(detail)
+    record = sq.run_sandbox_qualification(
+        executor_runtime=lets_runtime,
+        receipt_factory=receipt_factory,
+        session_dir=tmp_path / "session",
+        scratch_root=tmp_path / "scratch",
+        modes=("spawn_descendant", sq.AUTHORIZED_MODE),
+        per_launch_deadline_seconds=30,
+        hang_deadline_seconds=2,
+    )
+    assert record.status == sq.STATUS_PROBE, record.to_dict()
+    mapping = _check_by_name(record, "descendant_pid_namespace")
+    assert mapping.held
+    observed = dict(part.split("=", 1) for part in mapping.detail.split(";"))
+    assert int(observed["pidns"]) != Path("/proc/self/ns/pid").stat().st_ino
+    assert _check_by_name(record, "descendant_cleanup").held
+
+
+@pytest.mark.parametrize("artifact", ["profile", "spec"])
+def test_session_artifact_symlinks_are_never_followed(tmp_path, stub_runtime, artifact):
+    session = sq.prepare_session(session_dir=tmp_path / "session")
+    target = tmp_path / "preserve.txt"
+    target.write_text("preserve me")
+    target.chmod(0o640)
+    path = session.profile_path if artifact == "profile" else session.spec_path
+    path.symlink_to(target)
+    with pytest.raises(sq.SandboxQualificationError, match="session_artifact_exists"):
+        if artifact == "profile":
+            sq.write_immutable_profile(
+                session, sq.build_srt_settings(session, stub_runtime)
+            )
+        else:
+            sq.write_effect_spec(session, {"mode": "authorized"})
+    assert target.read_text() == "preserve me"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
 
 
 def test_pin_shape_validation_rejects_bad_pins():
@@ -2333,7 +2670,10 @@ def test_descendant_pid_file_absent(
         per_launch_deadline_seconds=10.0,
     )
     assert record.status == sq.STATUS_FAILED
-    assert _check_by_name(record, "descendant_cleanup").detail == "pid_file_absent"
+    assert (
+        _check_by_name(record, "descendant_cleanup").detail
+        == "descendant_host_identity_unavailable"
+    )
 
 
 class _ImmediateExitSupervisorForFile(sq.ProcessSupervisor):
