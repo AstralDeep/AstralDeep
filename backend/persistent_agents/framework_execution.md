@@ -22,12 +22,15 @@ public operations and audit metadata. Current owner, credential, scope, operatio
 control, instruction, configuration and execution-fence changes fail closed;
 responses received after authority loss remain quarantined.
 
-This source prerequisite depends on Plane's new operation-bound capture API.
-AstralDeep's composition and Plane86 submodule pin are deliberately unchanged
-until the exact component revision completes independent qualification. Local
-integration tests may explicitly place the separate candidate's `src` directory
-on `PYTHONPATH`; that is unadopted dependency evidence, not a production pin or
-release. Both existing framework-credential and persistent-agent flags retain
+This integration consumes Plane's operation-bound capture API at exact qualified
+revision `c311b978697560d7b3c9c42232370695bc91ec64`, package0.1.7 and schema089.013.
+[Plane107](https://github.com/AstralDeep/AstralPlane/pull/107) qualifies that API;
+[Plane106](https://github.com/AstralDeep/AstralPlane/pull/106) supplies the inherited
+repeat-safe populated089.012-to089.013 project migration and recovery evidence.
+The composition pin and package declaration move together. Tests using a separate
+candidate source are historical dependency diagnostics; installed-wheel, full consumer
+and actual configured SDK/provider qualification remain distinct gates.
+Both existing framework-credential and persistent-agent flags retain
 their default-off posture. Context packing/compaction, when enabled, still requires
 the current owner data-sharing acknowledgement, exact USER configuration and matching
 operator budget; missing or changed context fails closed before sending.
