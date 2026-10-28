@@ -10,7 +10,7 @@
     "sha512_sri": "sha512-YAIcybXTp7MZkBjasnkR1E3yxnf7u6kUkyW0vZrtsAZ9tyJGMaugWETmquPZs0YvW0sR0VnZeMfS0gsN/wQiVQ==",
     "size_bytes": 3948109,
     "license": "Apache-2.0",
-    "acquisition": "Downloaded at most once per pinned digest into an explicit cache directory, integrity-verified against this manifest before extraction; no unpinned npx download ever runs, and CI never downloads because unsupported hosts fail closed before the artifact matters."
+    "acquisition": "Every exact lockfile tarball is downloaded only with explicit opt-in through shared.external_http, without redirects or environment proxies, bounded and SHA-512 verified before a private npm cache is seeded. Installation uses npm ci --offline --ignore-scripts with the committed package.json/package-lock.json; the real CLI --help must succeed without ambient modules."
   },
   "runtime": {
     "language": "node",
@@ -24,18 +24,22 @@
       "seccomp-BPF via the vendored apply-seccomp helper (vendor/seccomp/x64 and vendor/seccomp/arm64)"
     ],
     "architecture_profile": {
-      "qualified": [
+      "documented_profile": "ubuntu-24.04 on linux/amd64 or linux/arm64 with the distribution bubblewrap/socat/ripgrep packages, unprivileged user and network namespaces permitted by the host kernel and container runtime, and the vendor apply-seccomp binary; no host AppArmor or user-namespace policy is weakened for the pilot",
+      "everything_else": "reports unavailable and never launches an effect",
+      "documented_candidates": [
         "linux/amd64 (SRT arch x64)",
         "linux/arm64 (SRT arch arm64)"
       ],
-      "documented_profile": "ubuntu-24.04 on linux/amd64 or linux/arm64 with the distribution bubblewrap/socat/ripgrep packages, unprivileged user and network namespaces permitted by the host kernel and container runtime, and the vendor apply-seccomp binary; no host AppArmor or user-namespace policy is weakened for the pilot",
-      "everything_else": "reports unavailable and never launches an effect"
+      "qualification": "Requires retained real full-profile evidence on the exact candidate; declaration alone is not qualification."
     },
     "upstream_warnings_treated_as_hard_failures": [
       "seccomp not available - unix socket access not restricted",
       "apply-seccomp binary not available - unix socket blocking disabled",
       "Sandbox dependencies not available"
-    ]
+    ],
+    "package_lock_sha256": "5b6925032bd3fbda37e7847037a2feb04b485afb7a66a26da57d6c65b7f6664b",
+    "minimum_npm_version": "10.9.0",
+    "installation": "package.json + lockfile v3; npm ci --offline --ignore-scripts --no-audit --no-fund"
   },
   "boundaries": {
     "in_scope": "One short-lived, no-network, harmless local scratch-file effect per verified receipt, launched through the existing ProcessSupervisor and the existing generated-executor LETS receipt verifier.",

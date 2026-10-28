@@ -1,0 +1,12 @@
+{
+  "name": "astraldeep-sandbox-qualification",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.78"
+  },
+  "engines": {
+    "node": ">=22.12.0",
+    "npm": ">=10.9.0"
+  }
+}

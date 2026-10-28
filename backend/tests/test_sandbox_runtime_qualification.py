@@ -8,9 +8,13 @@ unavailable/failed/passed record lifecycle on supported hosts.
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 import os
 import socket
+import shutil
+import select
+import tempfile
 import stat
 import subprocess
 import sys
@@ -36,6 +40,7 @@ from lets.policy import MachineSpec, PolicySpec, ResourceDimension, TransitionSp
 from orchestrator import generated_lets_executor as lets_executor
 from orchestrator import sandbox_qualification as sq
 
+TRUE_COMMAND = shutil.which("true") or sys.executable
 AGENT_ID = sq.QUALIFICATION_AGENT_ID
 EXECUTOR_AUDIENCE = "sandbox-qualification-executor"
 OWNER_ID = "owner-qual"
@@ -296,8 +301,8 @@ def stub_runtime(tmp_path: Path):
         / "seccomp"
         / "x64"
         / "apply-seccomp",
-        bwrap_path=Path("/bin/true"),
-        socat_path=Path("/bin/true"),
+        bwrap_path=Path(TRUE_COMMAND),
+        socat_path=Path(TRUE_COMMAND),
         artifact_root=package_root,
         pin=pin,
     )
@@ -1131,6 +1136,7 @@ def test_listener_pending_detection():
         assert listener.pending_connections() == 0
         client = socket.create_connection(("127.0.0.1", listener.port), timeout=2)
         try:
+            select.select([listener.socket], [], [], 2)
             assert listener.pending_connections() == 1
         finally:
             client.close()
@@ -1208,6 +1214,101 @@ def test_permit_file_factory(tmp_path: Path):
     assert factory({}) == permit
     with pytest.raises(sq.SandboxQualificationError, match="permit_file_unreadable"):
         sq.permit_file_factory(tmp_path / "missing.json")
+
+
+def test_cli_writes_full_permit_plan_without_effect(tmp_path, capsys):
+    path = tmp_path / "plan.json"
+    assert sq.main(["--write-permit-plan", str(path)]) == 0
+    plan = json.loads(path.read_text())
+    assert len(plan["qualification_id"]) == 32
+    assert plan["tool_id"] == sq.TOOL_ID
+    assert plan["scope"] == "tools:write"
+    assert [entry["mode"] for entry in plan["effects"]] == list(sq.ALL_MODES)
+    assert all(
+        entry["qualification_id"] == plan["qualification_id"]
+        for entry in plan["effects"]
+    )
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert json.loads(capsys.readouterr().out)["status"] == "permit_plan"
+
+
+def test_full_permit_bundle_is_argument_bound_and_consumed(tmp_path):
+    qualification_id = "a" * 32
+    permits = {mode: {"receipt": mode} for mode in sq.ALL_MODES}
+    path = tmp_path / "permits.json"
+    path.write_text(
+        json.dumps({"qualification_id": qualification_id, "permits": permits})
+    )
+    identity, factory = sq.permit_bundle_factory(path)
+    assert identity == qualification_id
+    with pytest.raises(sq.SandboxQualificationError, match="permit_bundle_arguments"):
+        factory({"qualification_id": "b" * 32, "mode": "authorized"})
+    assert factory({"qualification_id": identity, "mode": "authorized"}) == {
+        "receipt": "authorized"
+    }
+    with pytest.raises(sq.SandboxQualificationError, match="permit_bundle_exhausted"):
+        factory({"qualification_id": identity, "mode": "authorized"})
+    for mode in sq.DEFAULT_PROBE_MODES:
+        assert factory({"qualification_id": identity, "mode": mode}) == {
+            "receipt": mode
+        }
+
+
+@pytest.mark.parametrize(
+    "document",
+    [{}, {"qualification_id": "x"}, {"qualification_id": "a" * 32, "permits": {}}],
+)
+def test_permit_bundle_rejects_incomplete_plan(tmp_path, document):
+    path = tmp_path / "permits.json"
+    path.write_text(json.dumps(document))
+    with pytest.raises(sq.SandboxQualificationError, match="permit_bundle_invalid"):
+        sq.permit_bundle_factory(path)
+
+
+def test_full_bundle_preserves_real_receipt_verification(
+    tmp_path, lets_runtime, receipt_factory
+):
+    identity = "c" * 32
+    path = tmp_path / "permits.json"
+    permits = {
+        mode: receipt_factory({"qualification_id": identity, "mode": mode})
+        for mode in sq.ALL_MODES
+    }
+    path.write_text(json.dumps({"qualification_id": identity, "permits": permits}))
+    planned_id, factory = sq.permit_bundle_factory(path)
+    for mode in sq.ALL_MODES:
+        arguments = {"qualification_id": planned_id, "mode": mode}
+        permit = factory(arguments)
+        sq.verify_effect_receipt(lets_runtime, permit=permit, arguments=arguments)
+        with pytest.raises(sq.ProtectedExecutorError):
+            sq.verify_effect_receipt(lets_runtime, permit=permit, arguments=arguments)
+
+
+def test_cli_bundle_uses_planned_arguments(
+    tmp_path, capsys, lets_runtime, receipt_factory, available_support, stub_runtime
+):
+    identity = "d" * 32
+    permits = {
+        mode: receipt_factory({"qualification_id": identity, "mode": mode})
+        for mode in sq.ALL_MODES
+    }
+    path = tmp_path / "permits.json"
+    path.write_text(json.dumps({"qualification_id": identity, "permits": permits}))
+    assert (
+        sq.main(
+            ["--permit-bundle", str(path), "--session-dir", str(tmp_path / "session")],
+            support=available_support,
+            executor_runtime=lets_runtime,
+            runtime=stub_runtime,
+        )
+        == sq.EXIT_FAILED
+    )
+    document = json.loads(capsys.readouterr().out)
+    assert document["qualification_id"] == identity
+    assert any(
+        check["name"] == "receipt_enforcement" and check["held"]
+        for check in document["checks"]
+    )
 
 
 def test_record_to_dict_shape(
@@ -1302,14 +1403,15 @@ def test_cli_full_mode_configuration_error(
     )
 
 
-@pytest.mark.skipif(
-    not sq.probe_support().available,
-    reason="sandbox-runtime prerequisites unavailable on this host; "
-    "the pilot reports unavailable instead of simulating containment",
-)
 def test_full_qualification_passes_on_supported_host(
     tmp_path: Path, lets_runtime, receipt_factory
 ):
+    support = sq.probe_support()
+    if not support.available:
+        detail = "; ".join(support.failure_details())
+        if os.environ.get("ASTRAL_SRT_REQUIRE_QUALIFICATION") == "1":
+            pytest.fail(detail)
+        pytest.skip(detail)
     record = sq.run_sandbox_qualification(
         executor_runtime=lets_runtime,
         receipt_factory=receipt_factory,
@@ -1317,9 +1419,13 @@ def test_full_qualification_passes_on_supported_host(
         per_launch_deadline_seconds=30.0,
         hang_deadline_seconds=2.0,
     )
+    if destination := os.environ.get("ASTRAL_SRT_QUALIFICATION_RECORD"):
+        Path(destination).write_text(
+            json.dumps(record.to_dict(), sort_keys=True) + "\n"
+        )
     assert record.status == sq.STATUS_PASSED, record.to_dict()
     session_dir = Path(record.session_dir)
-    output = session_dir / "scratch" / sq.EFFECT_OUTPUT_NAME
+    output = tmp_path / "scratch" / record.qualification_id / sq.EFFECT_OUTPUT_NAME
     assert output.is_file()
     assert hashlib.sha256(output.read_bytes()).hexdigest() in (
         _check_by_name(record, "authorized_effect").detail,
@@ -1430,33 +1536,20 @@ def test_acquire_download_and_cached_paths(tmp_path: Path, monkeypatch):
     payload = _tarball.read_bytes()
     cache = tmp_path / "cache"
 
-    class _FakeResponse:
-        def __init__(self, data):
-            self._data = data
-
-        def read(self, _limit):
-            return self._data
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
     monkeypatch.setattr(
-        sq.urllib.request,
-        "urlopen",
-        lambda url, timeout: _FakeResponse(payload),
+        sq.external_http,
+        "request",
+        lambda *args, **kwargs: SimpleNamespace(status_code=200, content=payload),
     )
     acquired = sq.acquire_srt_artifact(cache, pin, allow_download=True)
     assert acquired.read_bytes() == payload
     cached_again = sq.acquire_srt_artifact(cache, pin, allow_download=False)
     assert cached_again == acquired
 
-    def _boom(url, timeout):
-        raise OSError("registry unreachable")
+    def _boom(*args, **kwargs):
+        raise sq.external_http.ServiceUnreachableError("registry unreachable")
 
-    monkeypatch.setattr(sq.urllib.request, "urlopen", _boom)
+    monkeypatch.setattr(sq.external_http, "request", _boom)
     with pytest.raises(sq.SandboxQualificationError, match="artifact_download_failed"):
         sq.acquire_srt_artifact(tmp_path / "cache2", pin, allow_download=True)
 
@@ -1480,7 +1573,7 @@ def test_extract_rejects_incomplete_package(tmp_path: Path):
         sq.extract_srt_artifact(tarball, tmp_path / "out", pin)
 
 
-def test_prepare_runtime_full_success_path(tmp_path: Path):
+def test_prepare_runtime_requires_matching_dependency_lock(tmp_path: Path):
     node = shutil_which("node")
     if node is None:
         pytest.skip("no node interpreter on this host")
@@ -1488,25 +1581,23 @@ def test_prepare_runtime_full_success_path(tmp_path: Path):
     cache = tmp_path / "cache"
     cache.mkdir()
     (cache / f"sandbox-runtime-{pin.version}.tgz").write_bytes(_tarball.read_bytes())
-    runtime = sq.prepare_srt_runtime(
-        pin=pin,
-        cache_dir=cache,
-        allow_download=False,
-        node_path=node,
-        bwrap_path="/bin/true",
-        socat_path="/bin/true",
-        machine="aarch64",
-    )
-    assert runtime.node_path == Path(node)
-    assert runtime.cli_js.is_file()
-    assert runtime.apply_seccomp_path.is_file()
+    with pytest.raises(sq.SandboxQualificationError, match="installation_lock_invalid"):
+        sq.prepare_srt_runtime(
+            pin=pin,
+            cache_dir=cache,
+            allow_download=False,
+            node_path=node,
+            bwrap_path=TRUE_COMMAND,
+            socat_path=TRUE_COMMAND,
+            machine="aarch64",
+        )
     with pytest.raises(sq.SandboxQualificationError, match="socat_unavailable"):
         sq.prepare_srt_runtime(
             pin=pin,
             cache_dir=tmp_path / "cache3",
             allow_download=False,
             node_path=node,
-            bwrap_path="/bin/true",
+            bwrap_path=TRUE_COMMAND,
             machine="aarch64",
         )
 
@@ -1544,8 +1635,8 @@ def test_prepare_runtime_rejects_non_executable_seccomp_helper(tmp_path: Path):
             cache_dir=cache,
             allow_download=False,
             node_path=node,
-            bwrap_path="/bin/true",
-            socat_path="/bin/true",
+            bwrap_path=TRUE_COMMAND,
+            socat_path=TRUE_COMMAND,
             machine="x86_64",
         )
 
@@ -1557,6 +1648,290 @@ def test_probe_with_injected_runtime_runs_smoke(stub_runtime):
     assert checks["sandbox_namespace_probe"].passed is True
 
 
+def test_default_scratch_is_outside_immutable_session_denial(tmp_path, stub_runtime):
+    session = sq.prepare_session(session_dir=tmp_path / "session")
+    settings = sq.build_srt_settings(session, stub_runtime)
+    assert not session.scratch_dir.is_relative_to(session.session_dir)
+    for denied in settings["filesystem"]["denyWrite"]:
+        assert not session.scratch_dir.is_relative_to(Path(denied))
+    sq.validate_srt_settings(settings, session=session, runtime=stub_runtime)
+
+
+def test_explicit_scratch_cannot_overlap_immutable_session(tmp_path):
+    with pytest.raises(sq.SandboxQualificationError, match="scratch_session_overlap"):
+        sq.prepare_session(
+            session_dir=tmp_path / "session", scratch_root=tmp_path / "session"
+        )
+
+
+def test_profile_rejects_covering_scratch_denial(tmp_path, stub_runtime):
+    session = sq.prepare_session(
+        session_dir=tmp_path / "session", scratch_root=tmp_path / "scratch"
+    )
+    settings = sq.build_srt_settings(session, stub_runtime)
+    settings["filesystem"]["denyWrite"].append(str(tmp_path))
+    with pytest.raises(sq.SandboxQualificationError, match="profile_scratch_denied"):
+        sq.validate_srt_settings(settings, session=session, runtime=stub_runtime)
+
+
+def test_probe_requires_actual_cli_entrypoint(stub_runtime):
+    support = sq.probe_support(runtime=stub_runtime)
+    checks = {check.name: check for check in support.checks}
+    assert checks["srt_cli_ready"].passed is False
+    assert support.available is False
+
+
+@pytest.fixture
+def locked_runtime_fixture(tmp_path, monkeypatch):
+    directory = tmp_path / "locked"
+    directory.mkdir()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    entries = {}
+    for name, files in {
+        sq.SRT_PACKAGE: {
+            "package.json": json.dumps(
+                {
+                    "name": sq.SRT_PACKAGE,
+                    "version": sq.SRT_VERSION,
+                    "type": "module",
+                    "dependencies": {"fixture-dep": "1.0.0"},
+                }
+            ),
+            "dist/cli.js": 'import { greeting } from "fixture-dep"; console.log(greeting);',
+            "vendor/seccomp/arm64/apply-seccomp": "stub",
+            "vendor/seccomp/x64/apply-seccomp": "stub",
+        },
+        "fixture-dep": {
+            "package.json": json.dumps(
+                {
+                    "name": "fixture-dep",
+                    "version": "1.0.0",
+                    "type": "module",
+                    "main": "index.js",
+                }
+            ),
+            "index.js": 'export const greeting = "locked dependency ready";',
+        },
+    }.items():
+        root = tmp_path / name.replace("/", "_") / "package"
+        for relative, contents in files.items():
+            target = root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(contents)
+            if target.name == "apply-seccomp":
+                target.chmod(0o755)
+        tarball = root.parent / "fixture.tgz"
+        with tarfile.open(tarball, "w:gz") as archive:
+            archive.add(root, arcname="package")
+        payload = tarball.read_bytes()
+        digest = hashlib.sha512(payload).digest()
+        target = cache / f"{digest.hex()}.tgz"
+        target.write_bytes(payload)
+        entries[f"node_modules/{name}"] = {
+            "version": sq.SRT_VERSION if name == sq.SRT_PACKAGE else "1.0.0",
+            "resolved": sq.SRT_TARBALL_URL
+            if name == sq.SRT_PACKAGE
+            else "https://registry.npmjs.org/fixture-dep/-/fixture-dep-1.0.0.tgz",
+            "integrity": "sha512-" + base64.b64encode(digest).decode(),
+        }
+        if name == sq.SRT_PACKAGE:
+            entries[f"node_modules/{name}"]["dependencies"] = {"fixture-dep": "1.0.0"}
+            pin = replace(
+                sq.default_artifact_pin(),
+                sha512_hex=digest.hex(),
+                size_bytes=len(payload),
+            )
+            (cache / f"sandbox-runtime-{pin.version}.tgz").write_bytes(payload)
+    package = {
+        "name": "fixture-root",
+        "version": "1.0.0",
+        "private": True,
+        "dependencies": {sq.SRT_PACKAGE: sq.SRT_VERSION},
+    }
+    (directory / "package.json").write_text(json.dumps(package))
+    (directory / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "name": "fixture-root",
+                "version": "1.0.0",
+                "lockfileVersion": 3,
+                "packages": {"": package, **entries},
+            }
+        )
+    )
+    monkeypatch.setattr(sq, "_manifest_path", lambda: directory / "manifest.json")
+    return directory, cache, pin
+
+
+def test_locked_install_starts_cli_without_ambient_modules(
+    locked_runtime_fixture, monkeypatch
+):
+    _directory, cache, pin = locked_runtime_fixture
+    monkeypatch.setenv("NODE_PATH", "/nonexistent-ambient-modules")
+    runtime = sq.prepare_srt_runtime(
+        pin=pin,
+        cache_dir=cache,
+        node_path=shutil_which("node"),
+        bwrap_path=TRUE_COMMAND,
+        socat_path=TRUE_COMMAND,
+        machine="aarch64",
+    )
+    result = subprocess.run(
+        [str(runtime.node_path), str(runtime.cli_js), "--help"],
+        env=sq.child_spawn_env(),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "locked dependency ready"
+    assert (runtime.artifact_root.parent.parent / "fixture-dep" / "index.js").is_file()
+
+
+def test_locked_install_rejects_missing_dependency_offline(locked_runtime_fixture):
+    _directory, cache, pin = locked_runtime_fixture
+    for tarball in cache.glob("*.tgz"):
+        if hashlib.sha512(tarball.read_bytes()).hexdigest() != pin.sha512_hex:
+            tarball.unlink()
+    with pytest.raises(sq.SandboxQualificationError, match="dependency_not_cached"):
+        sq.prepare_srt_runtime(
+            pin=pin,
+            cache_dir=cache,
+            node_path=shutil_which("node"),
+            bwrap_path=TRUE_COMMAND,
+            socat_path=TRUE_COMMAND,
+            machine="aarch64",
+        )
+
+
+@pytest.mark.parametrize("mutation", ["integrity", "url", "root"])
+def test_locked_install_rejects_untrusted_lock(locked_runtime_fixture, mutation):
+    directory, cache, pin = locked_runtime_fixture
+    path = directory / "package-lock.json"
+    lock = json.loads(path.read_text())
+    if mutation == "root":
+        lock["packages"][f"node_modules/{sq.SRT_PACKAGE}"]["version"] = "9.0.0"
+    else:
+        entry = lock["packages"]["node_modules/fixture-dep"]
+        entry["integrity" if mutation == "integrity" else "resolved"] = (
+            "sha1-abc" if mutation == "integrity" else "https://evil.example/pkg.tgz"
+        )
+    path.write_text(json.dumps(lock))
+    with pytest.raises(sq.SandboxQualificationError, match="installation_lock_invalid"):
+        sq.prepare_srt_runtime(
+            pin=pin,
+            cache_dir=cache,
+            node_path=shutil_which("node"),
+            bwrap_path=TRUE_COMMAND,
+            socat_path=TRUE_COMMAND,
+            machine="aarch64",
+        )
+
+
+def test_locked_install_rejects_cached_dependency_tampering(locked_runtime_fixture):
+    _directory, cache, pin = locked_runtime_fixture
+    for target in cache.glob("*.tgz"):
+        if target.name == f"{pin.sha512_hex}.tgz" or target.name.startswith(
+            "sandbox-runtime"
+        ):
+            continue
+        target.write_bytes(b"tampered dependency")
+    with pytest.raises(
+        sq.SandboxQualificationError, match="dependency_digest_mismatch"
+    ):
+        sq.install_locked_srt(
+            cache, pin, node=Path(shutil_which("node")), allow_download=False
+        )
+
+
+@pytest.mark.parametrize("failure", ["npm_missing", "install", "cli"])
+def test_locked_install_cleans_failed_installations(
+    locked_runtime_fixture, monkeypatch, failure
+):
+    _directory, cache, pin = locked_runtime_fixture
+    if failure == "npm_missing":
+        original = sq._which_or_none
+        monkeypatch.setattr(
+            sq,
+            "_which_or_none",
+            lambda name, override: None if name == "npm" else original(name, override),
+        )
+        expected = "npm_unavailable"
+    elif failure == "install":
+
+        def unavailable(*args, **kwargs):
+            raise subprocess.TimeoutExpired("npm", 30)
+
+        monkeypatch.setattr(sq.subprocess, "run", unavailable)
+        expected = "locked_installation_failed"
+    else:
+        monkeypatch.setattr(
+            sq, "_run_probe_command", lambda *args, **kwargs: (False, "missing module")
+        )
+        expected = "srt_cli_unavailable"
+    with pytest.raises(sq.SandboxQualificationError, match=expected):
+        sq.prepare_srt_runtime(
+            pin=pin,
+            cache_dir=cache,
+            node_path=shutil_which("node"),
+            bwrap_path=TRUE_COMMAND,
+            socat_path=TRUE_COMMAND,
+            machine="aarch64",
+        )
+    assert list(cache.glob("installed-*")) == []
+
+
+def test_locked_dependency_download_is_verified_before_install(
+    locked_runtime_fixture, monkeypatch
+):
+    _directory, cache, pin = locked_runtime_fixture
+    payloads = {}
+    for target in cache.glob("*.tgz"):
+        if target.name == f"{pin.sha512_hex}.tgz" or target.name.startswith(
+            "sandbox-runtime"
+        ):
+            continue
+        payloads[target.stem] = target.read_bytes()
+        target.unlink()
+    payload = next(iter(payloads.values()))
+    monkeypatch.setattr(
+        sq.external_http,
+        "request",
+        lambda *args, **kwargs: SimpleNamespace(status_code=200, content=payload),
+    )
+    root = sq.install_locked_srt(
+        cache, pin, node=Path(shutil_which("node")), allow_download=True
+    )
+    assert (root.parent.parent / "fixture-dep" / "index.js").is_file()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://registry.npmjs.org/p.tgz",
+        "https://registry.npmjs.org.evil/p.tgz",
+        "https://registry.npmjs.org/p.tgz?token=x",
+    ],
+)
+def test_registry_downloader_rejects_untrusted_destination(url):
+    with pytest.raises(sq.SandboxQualificationError, match="installation_lock_invalid"):
+        sq._download_registry_tarball(url)
+
+
+def test_registry_downloader_rejects_redirect_without_following(monkeypatch):
+    def redirect(method, url, **options):
+        assert options["allow_redirects"] is False
+        assert options["trust_environment"] is False
+        assert options["require_identity_encoding"] is True
+        return SimpleNamespace(status_code=302, content=b"")
+
+    monkeypatch.setattr(sq.external_http, "request", redirect)
+    with pytest.raises(
+        sq.SandboxQualificationError, match="artifact_download_redirect_or_status"
+    ):
+        sq._download_registry_tarball(sq.SRT_TARBALL_URL)
+
+
 def test_probe_missing_node_override_reports_absent():
     support = sq.probe_support(node_path="/nonexistent/node", machine="x86_64")
     node_check = {check.name: check for check in support.checks}["node_floor"]
@@ -1564,10 +1939,16 @@ def test_probe_missing_node_override_reports_absent():
     assert "not found" in node_check.detail
 
 
-def test_probe_override_paths_reach_dependency_checks(stub_runtime):
+def test_probe_override_paths_reach_dependency_checks(stub_runtime, monkeypatch):
+    original = sq._which_or_none
+    monkeypatch.setattr(
+        sq,
+        "_which_or_none",
+        lambda name, override: None if name == "rg" else original(name, override),
+    )
     support = sq.probe_support(
-        bwrap_path="/bin/true",
-        socat_path="/bin/true",
+        bwrap_path=TRUE_COMMAND,
+        socat_path=TRUE_COMMAND,
         machine="x86_64",
     )
     checks = {check.name: check for check in support.checks}
@@ -1581,7 +1962,7 @@ def test_probe_run_probe_command_handles_failure(monkeypatch):
         raise subprocess.TimeoutExpired(cmd="x", timeout=1)
 
     monkeypatch.setattr(sq.subprocess, "run", _boom)
-    passed, detail = sq._run_probe_command(["/bin/true"], timeout=1)
+    passed, detail = sq._run_probe_command([TRUE_COMMAND], timeout=1)
     assert passed is False
     assert detail == "TimeoutExpired"
 
@@ -1770,7 +2151,7 @@ def test_network_check_variants(stub_runtime):
 
 def test_ipc_check_variants(tmp_path: Path):
     session = sq.prepare_session(session_dir=tmp_path / "session")
-    socket_path = tmp_path / "probe.sock"
+    socket_path = Path(tempfile.gettempdir()) / f"sq-{uuid.uuid4().hex}.sock"
     listener = sq.ProbeUnixListener(socket_path)
     try:
         incomplete = sq.ipc_checks(session, listener, None)
@@ -1913,7 +2294,7 @@ def test_hang_child_exiting_early_is_reported(
             return super().spawn(
                 process_id=process_id,
                 owner=owner,
-                argv=["/bin/true"],
+                argv=[TRUE_COMMAND],
                 cwd=cwd,
                 env=None,
             )
@@ -1970,7 +2351,7 @@ class _ImmediateExitSupervisorForFile(sq.ProcessSupervisor):
         return super().spawn(
             process_id=process_id,
             owner=owner,
-            argv=["/bin/true"],
+            argv=[TRUE_COMMAND],
             cwd=cwd,
             env=None,
         )
@@ -1985,6 +2366,8 @@ def test_cli_permit_file_full_mode(
         [
             "--permit-file",
             str(permit_path),
+            "--qualification-id",
+            "a" * 32,
             "--session-dir",
             str(tmp_path / "s"),
             "--scratch-root",

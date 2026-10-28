@@ -1,13 +1,12 @@
-"""Opt-in Linux qualification runner that drives one harmless scratch-file effect through
-the generated LETS executor receipt seam and a bounded ProcessSupervisor launch under a
-pinned sandbox-runtime profile. Parent-side checks verify containment independently of the
-child's exit text, and unsupported hosts fail closed before any effect starts; no
-production dispatch path imports this module.
+"""Qualify a pinned Linux sandbox through the generated LETS executor and ProcessSupervisor.
+Parent-side containment checks fail closed before effects on unsupported hosts; production dispatch does not import this module.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -18,12 +17,12 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import urllib.request
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
+from urllib.parse import urlsplit
 
 from orchestrator.generated_lets_executor import (
     ProtectedExecutorConfigurationError,
@@ -40,6 +39,7 @@ from shared.process_supervision import (
     SupervisedProcess,
     TerminationReason,
 )
+from shared import external_http
 
 QUALIFICATION_OWNER_KIND: Final = "sandbox-qualification"
 QUALIFICATION_AGENT_ID: Final = "sandbox-qualification-runner"
@@ -149,6 +149,7 @@ class SrtRuntime:
     socat_path: Path
     artifact_root: Path
     pin: SrtArtifactPin
+    dependency_lock_sha256: str | None = None
 
     @property
     def artifact_sha512(self) -> str:
@@ -309,6 +310,13 @@ def load_declared_manifest() -> dict[str, Any]:
     minimum = runtime.get("minimum_node_version")
     if minimum != MINIMUM_NODE_VERSION_LABEL:
         raise SandboxQualificationError("qualification_manifest_pin_mismatch")
+    lock_path = manifest_path.parent / "package-lock.json"
+    try:
+        lock_digest = hashlib.sha256(lock_path.read_bytes()).hexdigest()
+    except OSError:
+        raise SandboxQualificationError("installation_lock_invalid") from None
+    if runtime.get("package_lock_sha256") != lock_digest:
+        raise SandboxQualificationError("qualification_manifest_pin_mismatch")
     return document
 
 
@@ -334,17 +342,170 @@ def acquire_srt_artifact(
         raise SandboxQualificationError("artifact_not_cached_download_not_authorized")
     temporary = cache_dir / f".{target.name}.{os.getpid()}.part"
     try:
-        with urllib.request.urlopen(
-            pin.tarball_url, timeout=_PROBE_TIMEOUT_SECONDS
-        ) as response:
-            data = response.read(SRT_MAX_TARBALL_BYTES + 1)
-    except OSError as error:
+        data = _download_registry_tarball(pin.tarball_url)
+    except external_http.ExternalHttpError as error:
         temporary.unlink(missing_ok=True)
         raise SandboxQualificationError("artifact_download_failed") from error
     verify_artifact_bytes(data, pin)
     temporary.write_bytes(data)
     os.replace(temporary, target)
     return target
+
+
+def _registry_tarball_url(url: str) -> bool:
+    parsed = urlsplit(url)
+    return (
+        parsed.scheme == "https"
+        and parsed.netloc == "registry.npmjs.org"
+        and parsed.path.endswith(".tgz")
+        and not parsed.query
+        and not parsed.fragment
+        and ".." not in parsed.path.split("/")
+    )
+
+
+def _download_registry_tarball(url: str) -> bytes:
+    if not _registry_tarball_url(url):
+        raise SandboxQualificationError("installation_lock_invalid")
+    response = external_http.request(
+        "GET",
+        url,
+        api_key="",
+        timeout=int(_PROBE_TIMEOUT_SECONDS),
+        max_response_bytes=SRT_MAX_TARBALL_BYTES,
+        allow_redirects=False,
+        require_identity_encoding=True,
+        trust_environment=False,
+    )
+    if response.status_code != 200:
+        raise SandboxQualificationError("artifact_download_redirect_or_status")
+    return response.content
+
+
+def _locked_installation(
+    pin: SrtArtifactPin,
+) -> tuple[bytes, bytes, list[tuple[str, str]]]:
+    directory = _manifest_path().parent
+    try:
+        package_bytes = (directory / "package.json").read_bytes()
+        lock_bytes = (directory / "package-lock.json").read_bytes()
+        package = json.loads(package_bytes)
+        lock = json.loads(lock_bytes)
+        packages = lock["packages"]
+        root = packages[f"node_modules/{pin.package}"]
+        expected_sri = (
+            "sha512-" + base64.b64encode(bytes.fromhex(pin.sha512_hex)).decode()
+        )
+        if (
+            len(lock_bytes) > 256 * 1024
+            or lock["lockfileVersion"] != 3
+            or package["dependencies"] != {pin.package: pin.version}
+            or packages[""]["dependencies"] != package["dependencies"]
+            or root["version"] != pin.version
+            or root["resolved"] != pin.tarball_url
+            or root["integrity"] != expected_sri
+            or len(packages) > 64
+        ):
+            raise ValueError
+        dependencies = []
+        for path, entry in packages.items():
+            if path == "":
+                continue
+            if (
+                not path.startswith("node_modules/")
+                or ".." in path.split("/")
+                or entry.get("link")
+                or not _registry_tarball_url(entry["resolved"])
+                or not entry["integrity"].startswith("sha512-")
+            ):
+                raise ValueError
+            digest = base64.b64decode(entry["integrity"][7:], validate=True)
+            if len(digest) != 64:
+                raise ValueError
+            dependencies.append((entry["resolved"], digest.hex()))
+    except (OSError, ValueError, KeyError, TypeError, binascii.Error, AttributeError):
+        raise SandboxQualificationError("installation_lock_invalid") from None
+    return package_bytes, lock_bytes, dependencies
+
+
+def install_locked_srt(
+    cache_dir: Path, pin: SrtArtifactPin, *, node: Path, allow_download: bool
+) -> Path:
+    package_bytes, lock_bytes, dependencies = _locked_installation(pin)
+    npm = _which_or_none("npm", None)
+    if npm is None:
+        raise SandboxQualificationError("npm_unavailable")
+    tarballs = []
+    for url, digest in dependencies:
+        target = cache_dir / f"{digest}.tgz"
+        if digest == pin.sha512_hex:
+            target = acquire_srt_artifact(cache_dir, pin, allow_download=allow_download)
+        elif not target.is_file():
+            if not allow_download:
+                raise SandboxQualificationError("dependency_not_cached")
+            try:
+                payload = _download_registry_tarball(url)
+            except external_http.ExternalHttpError:
+                raise SandboxQualificationError("artifact_download_failed") from None
+            if hashlib.sha512(payload).hexdigest() != digest:
+                raise SandboxQualificationError("dependency_digest_mismatch")
+            target.write_bytes(payload)
+        if hashlib.sha512(target.read_bytes()).hexdigest() != digest:
+            raise SandboxQualificationError("dependency_digest_mismatch")
+        tarballs.append(target.resolve())
+    installation = Path(tempfile.mkdtemp(prefix="installed-", dir=cache_dir)).resolve()
+    try:
+        (installation / "package.json").write_bytes(package_bytes)
+        (installation / "package-lock.json").write_bytes(lock_bytes)
+        user_config = installation / "user.npmrc"
+        global_config = installation / "global.npmrc"
+        user_config.touch()
+        global_config.touch()
+        env = child_spawn_env()
+        env.update(
+            {
+                "PATH": f"{node.parent}:{npm.parent}:/usr/bin:/bin",
+                "HOME": str(installation),
+            }
+        )
+        common = [
+            str(npm),
+            "--offline",
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+            "--cache",
+            str(installation / "npm-cache"),
+            "--userconfig",
+            str(user_config),
+            "--globalconfig",
+            str(global_config),
+        ]
+        for command in (["cache", "add", str(path)] for path in tarballs):
+            subprocess.run(
+                common + command,
+                cwd=installation,
+                env=env,
+                check=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=_PROBE_TIMEOUT_SECONDS,
+            )
+        subprocess.run(
+            common + ["ci"],
+            cwd=installation,
+            env=env,
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=_PROBE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        shutil.rmtree(installation)
+        raise SandboxQualificationError("locked_installation_failed") from None
+    return installation / "node_modules" / pin.package
 
 
 def extract_srt_artifact(
@@ -415,6 +576,17 @@ def prepare_srt_runtime(
         raise SandboxQualificationError("artifact_incomplete")
     if not os.access(apply_seccomp, os.X_OK):
         raise SandboxQualificationError("seccomp_helper_not_executable")
+    package_root = install_locked_srt(
+        resolved_cache, resolved_pin, node=node, allow_download=allow_download
+    )
+    cli_js = package_root / "dist" / "cli.js"
+    apply_seccomp = package_root / "vendor" / "seccomp" / arch / "apply-seccomp"
+    passed, _detail = _run_probe_command(
+        [str(node), str(cli_js), "--help"], timeout=_PROBE_TIMEOUT_SECONDS
+    )
+    if not passed:
+        shutil.rmtree(package_root.parents[2])
+        raise SandboxQualificationError("srt_cli_unavailable")
     return SrtRuntime(
         node_path=node,
         cli_js=cli_js,
@@ -423,6 +595,9 @@ def prepare_srt_runtime(
         socat_path=socat,
         artifact_root=package_root,
         pin=resolved_pin,
+        dependency_lock_sha256=hashlib.sha256(
+            (package_root.parents[2] / "package-lock.json").read_bytes()
+        ).hexdigest(),
     )
 
 
@@ -450,6 +625,8 @@ def _run_probe_command(argv: Sequence[str], *, timeout: float) -> tuple[bool, st
             stderr=subprocess.PIPE,
             timeout=timeout,
             check=False,
+            env=child_spawn_env(),
+            cwd="/",
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         detail = type(error).__name__
@@ -469,12 +646,14 @@ def probe_support(
     bwrap_path: str | Path | None = None,
     socat_path: str | Path | None = None,
     machine: str | None = None,
+    cache_dir: Path | None = None,
 ) -> SandboxSupport:
     checks: list[SupportCheck] = []
     platform_name = sys.platform
     checks.append(
         SupportCheck("platform_linux", platform_name.startswith("linux"), platform_name)
     )
+    checks.append(SupportCheck("nonroot_user", os.geteuid() != 0, "non-root required"))
     resolved_machine = machine if machine is not None else os.uname().machine
     arch = SUPPORTED_ARCHES.get(resolved_machine)
     checks.append(
@@ -528,6 +707,7 @@ def probe_support(
             runtime
             if runtime is not None
             else prepare_srt_runtime(
+                cache_dir=cache_dir,
                 allow_download=allow_download,
                 node_path=node_path,
                 bwrap_path=bwrap_path,
@@ -547,6 +727,18 @@ def probe_support(
         checks.append(SupportCheck("artifact_ready", False, error.code))
 
     if resolved_runtime is not None:
+        checks.append(
+            SupportCheck(
+                "dependency_lock",
+                resolved_runtime.dependency_lock_sha256 is not None,
+                resolved_runtime.dependency_lock_sha256 or "unbound injected runtime",
+            )
+        )
+        passed, detail = _run_probe_command(
+            [str(resolved_runtime.node_path), str(resolved_runtime.cli_js), "--help"],
+            timeout=_PROBE_TIMEOUT_SECONDS,
+        )
+        checks.append(SupportCheck("srt_cli_ready", passed, detail))
         passed, detail = _run_probe_command(
             [
                 str(resolved_runtime.bwrap_path),
@@ -568,6 +760,7 @@ def probe_support(
             )
         )
     else:
+        checks.append(SupportCheck("srt_cli_ready", False, "runtime unavailable"))
         checks.append(
             SupportCheck("sandbox_namespace_probe", False, "runtime unavailable")
         )
@@ -668,8 +861,17 @@ def validate_srt_settings(
     if filesystem.get("allowWrite") != [str(session.scratch_dir)]:
         raise SandboxQualificationError("profile_writes_not_scratch_only")
     deny_write = filesystem.get("denyWrite")
-    if not isinstance(deny_write, list) or "/tmp/claude" not in deny_write:
+    if (
+        not isinstance(deny_write, list)
+        or "/tmp/claude" not in deny_write
+        or str(session.session_dir) not in deny_write
+    ):
         raise SandboxQualificationError("profile_writes_not_scratch_only")
+    for entry in deny_write:
+        if not isinstance(entry, str) or not Path(entry).is_absolute():
+            raise SandboxQualificationError("profile_writes_not_scratch_only")
+        if session.scratch_dir.resolve().is_relative_to(Path(entry).resolve()):
+            raise SandboxQualificationError("profile_scratch_denied")
     seccomp = settings.get("seccomp")
     if not isinstance(seccomp, dict) or seccomp.get("applyPath") != str(
         runtime.apply_seccomp_path
@@ -834,20 +1036,29 @@ def prepare_session(
     *,
     session_dir: Path | None = None,
     scratch_root: Path | None = None,
+    qualification_id: str | None = None,
 ) -> QualificationSession:
-    qualification_id = uuid.uuid4().hex
+    qualification_id = qualification_id or uuid.uuid4().hex
+    if len(qualification_id) != 32 or any(
+        c not in "0123456789abcdef" for c in qualification_id
+    ):
+        raise SandboxQualificationError("qualification_id_invalid")
     resolved_dir = (
-        Path(session_dir)
+        Path(session_dir).resolve()
         if session_dir is not None
         else Path(tempfile.mkdtemp(prefix="astral-srt-qualification-"))
     )
     resolved_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(resolved_dir, 0o700)
     scratch_dir = (
-        Path(scratch_root) / qualification_id
+        Path(scratch_root).resolve() / qualification_id
         if scratch_root is not None
-        else resolved_dir / "scratch"
+        else resolved_dir.with_name(f"{resolved_dir.name}-scratch-{qualification_id}")
     )
+    if scratch_dir.is_relative_to(resolved_dir) or resolved_dir.is_relative_to(
+        scratch_dir
+    ):
+        raise SandboxQualificationError("scratch_session_overlap")
     scratch_dir.mkdir(parents=True, exist_ok=False)
     os.chmod(scratch_dir, 0o700)
     secret_token = os.urandom(32).hex()
@@ -1336,6 +1547,7 @@ def run_sandbox_qualification(
     supervisor: ProcessSupervisor | None = None,
     runtime: SrtRuntime | None = None,
     record_log_path: Path | None = None,
+    qualification_id: str | None = None,
 ) -> QualificationRecord:
     if AUTHORIZED_MODE not in modes:
         raise SandboxQualificationError("authorized_mode_required")
@@ -1346,7 +1558,9 @@ def run_sandbox_qualification(
     resolved_support = (
         support
         if support is not None
-        else probe_support(allow_download=allow_artifact_download)
+        else probe_support(
+            allow_download=allow_artifact_download, cache_dir=artifact_cache_dir
+        )
     )
     if not resolved_support.available:
         return QualificationRecord(
@@ -1362,7 +1576,11 @@ def run_sandbox_qualification(
             session_dir=None,
         )
 
-    session = prepare_session(session_dir=session_dir, scratch_root=scratch_root)
+    session = prepare_session(
+        session_dir=session_dir,
+        scratch_root=scratch_root,
+        qualification_id=qualification_id,
+    )
     try:
         resolved_runtime = (
             runtime
@@ -1566,7 +1784,7 @@ def run_sandbox_qualification(
             )
         else:
             record = QualificationRecord(
-                status=STATUS_PASSED,
+                status=STATUS_PASSED if tuple(modes) == ALL_MODES else STATUS_PROBE,
                 failure_codes=(),
                 checks=tuple(checks),
                 modes_run=tuple(modes_run),
@@ -1602,6 +1820,40 @@ def permit_file_factory(permit_path: Path) -> Callable[[Mapping[str, object]], o
     return factory
 
 
+def permit_bundle_factory(
+    path: Path,
+) -> tuple[str, Callable[[Mapping[str, object]], object]]:
+    try:
+        if path.stat().st_size > 1024 * 1024:
+            raise ValueError
+        document = json.loads(path.read_bytes())
+        identity = document["qualification_id"]
+        permits = document["permits"]
+        if (
+            not isinstance(identity, str)
+            or len(identity) != 32
+            or any(c not in "0123456789abcdef" for c in identity)
+            or not isinstance(permits, dict)
+            or set(permits) != set(ALL_MODES)
+        ):
+            raise ValueError
+    except (OSError, ValueError, KeyError, TypeError):
+        raise SandboxQualificationError("permit_bundle_invalid") from None
+
+    def factory(arguments: Mapping[str, object]) -> object:
+        mode = arguments.get("mode")
+        if (
+            arguments != {"qualification_id": identity, "mode": mode}
+            or mode not in ALL_MODES
+        ):
+            raise SandboxQualificationError("permit_bundle_arguments")
+        if mode not in permits:
+            raise SandboxQualificationError("permit_bundle_exhausted")
+        return permits.pop(mode)
+
+    return identity, factory
+
+
 def build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sandbox-qualification",
@@ -1612,11 +1864,26 @@ def build_cli_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run only the support probe and print the qualification record.",
     )
-    parser.add_argument(
+    sources = parser.add_mutually_exclusive_group()
+    sources.add_argument(
         "--permit-file",
         type=Path,
         default=None,
         help="Path to one operator-minted LETS permit for a single authorized run.",
+    )
+    sources.add_argument(
+        "--permit-bundle",
+        type=Path,
+        help="Full-profile permits from normal authorization, keyed by mode and bound to one planned qualification ID.",
+    )
+    sources.add_argument(
+        "--write-permit-plan",
+        type=Path,
+        help="Write arguments for normal authorization of every profile mode; no effect starts.",
+    )
+    parser.add_argument(
+        "--qualification-id",
+        help="The planned ID bound into a single authorized permit.",
     )
     parser.add_argument(
         "--session-dir",
@@ -1660,10 +1927,32 @@ def main(
 ) -> int:
     parser = build_cli_parser()
     options = parser.parse_args(list(argv) if argv is not None else None)
+    if options.write_permit_plan is not None:
+        identity = uuid.uuid4().hex
+        plan = {
+            "qualification_id": identity,
+            "tool_id": TOOL_ID,
+            "scope": TOOL_SCOPE,
+            "effects": [
+                {"mode": mode, "qualification_id": identity} for mode in ALL_MODES
+            ],
+        }
+        descriptor = os.open(
+            options.write_permit_plan, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(plan, handle, sort_keys=True)
+        print(json.dumps({"status": "permit_plan", "qualification_id": identity}))
+        return EXIT_PASSED
+    if options.permit_file is not None and options.qualification_id is None:
+        parser.error("--permit-file requires its planned --qualification-id")
     resolved_support = (
         support
         if support is not None
-        else probe_support(allow_download=options.allow_artifact_download)
+        else probe_support(
+            allow_download=options.allow_artifact_download,
+            cache_dir=options.artifact_cache_dir,
+        )
     )
     if resolved_support.available and not options.probe_only:
         resolved_executor = executor_runtime
@@ -1687,8 +1976,13 @@ def main(
                 print(json.dumps(record.to_dict(), sort_keys=True))
                 return EXIT_FAILED
         factory = receipt_factory
+        qualification_id = options.qualification_id
         if factory is None:
-            if options.permit_file is None:
+            if options.permit_bundle is not None:
+                qualification_id, factory = permit_bundle_factory(options.permit_bundle)
+            elif options.permit_file is not None:
+                factory = permit_file_factory(options.permit_file)
+            else:
                 print(
                     json.dumps(
                         {
@@ -1699,7 +1993,6 @@ def main(
                     )
                 )
                 return EXIT_FAILED
-            factory = permit_file_factory(options.permit_file)
         record = run_sandbox_qualification(
             executor_runtime=resolved_executor,
             receipt_factory=factory,
@@ -1711,6 +2004,7 @@ def main(
             modes=(AUTHORIZED_MODE,) if options.permit_file is not None else ALL_MODES,
             runtime=runtime,
             record_log_path=options.record_log,
+            qualification_id=qualification_id,
         )
     else:
         record = QualificationRecord(

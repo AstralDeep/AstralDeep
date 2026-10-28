@@ -1,67 +1,145 @@
-# sandbox-runtime qualification pilot (opt-in, Linux only)
+# sandbox-runtime qualification pilot
 
-This directory declares the pinned `@anthropic-ai/sandbox-runtime` (SRT) artifact and the
-Linux primitives required by the opt-in qualification runner in
-`backend/orchestrator/sandbox_qualification.py`. It qualifies exactly one effect: a
-short-lived, harmless local scratch-file write, authorized by a real LETS receipt through
-the existing generated-executor verifier (`orchestrator/generated_lets_executor.py`) and
-launched through the existing `shared.process_supervision.ProcessSupervisor`. No production
-launch path, schema, shared contract, component pin, or release artifact changes.
+This opt-in Linux runner qualifies one harmless local scratch-file write and its denial
+profile through `orchestrator/generated_lets_executor.py` and
+`shared.process_supervision.ProcessSupervisor`. It does not change production launches,
+authority, schema, contracts, component pins, flags, or release artifacts. A declaration,
+unit-test double, CLI smoke, or unavailable result is not containment qualification.
 
-## What is pinned
+## Reproducible installation
 
-See `manifest.json`: SRT `0.0.78`, downloaded at most once per digest from the npm
-registry, verified by SHA-512 before extraction, never executed via unpinned `npx`.
-Required Linux primitives: node >= 22.12, bubblewrap, socat, ripgrep, unprivileged user
-and network namespaces, and the vendored `apply-seccomp` helper (x64/arm64).
+`manifest.json`, `package.json`, and lockfile v3 `package-lock.json` declare the complete
+runtime graph: `@anthropic-ai/sandbox-runtime@0.0.78`,
+`@pondwader/socks5-server@1.0.10`, `commander@12.1.0`, `node-forge@1.4.2`, and
+`zod@3.25.76`. Each tarball has an exact npm registry URL and SHA-512 integrity. The
+manifest also binds the lockfile's SHA-256. Retrieved 2026-10-28 from the npm registry;
+the upstream [pinned installation instructions](https://github.com/anthropic-experimental/sandbox-runtime/blob/12a2be92c110cbc3c19584c4c8387e7e754c8179/README.md#installation)
+use npm, and this runner uses the supported [npm ci](https://docs.npmjs.com/cli/v11/commands/npm-ci/)
+installation path.
 
-Qualified architecture/profile: **ubuntu-24.04 on linux/amd64 or linux/arm64** with the
-distribution bubblewrap/socat/ripgrep, unprivileged user + network namespaces permitted,
-and no weakening of host AppArmor or user-namespace policy. Every other host — other OS,
-other architecture, container or kernel that refuses the namespace probe, missing or
-degraded dependency — reports `unavailable` and fails closed **before any effect starts**.
-An unavailable or failed pilot is a valid diagnostic outcome with an actionable record.
+With explicit download consent, the runner acquires bounded tarballs through
+`shared.external_http` using verified TLS, no redirects, no credentials, and no inherited
+proxy configuration. It verifies every digest before seeding a fresh private npm cache,
+then runs `npm ci --offline --ignore-scripts --no-audit --no-fund` with the committed
+manifests. No registry request, lifecycle script, unpinned `npx`, ambient `NODE_PATH`, user
+npm configuration, or pre-existing module tree supplies the installation. Preparation
+and support probing both run the actual installed `node .../dist/cli.js --help`; a
+missing dependency fails before an effect can start. Failed installations are removed.
 
-## Immutable per-invocation profile
+Candidate supported profile: native **Ubuntu 24.04, linux/amd64 or linux/arm64**, a
+non-root user, Node >=22.12, npm >=10.9, distribution `bubblewrap`, `socat`, and `ripgrep`,
+unprivileged user/network/PID namespaces, and the pinned vendored `apply-seccomp` helper.
+The host must already permit these primitives. Do not weaken AppArmor, Docker seccomp,
+or user-namespace policy, enable privileged containers, or select SRT's weak nested mode.
+Record the exact host/kernel and installed tool versions alongside candidate evidence.
+Unsupported hosts report exit 4 (`unavailable`) before receipt consumption or effects.
 
-Each run writes a fresh session directory (`0700`) holding a `0400` SRT settings file:
-empty network allowlist with deny-all (`deniedDomains: ["*"]`, strict allowlist), all
-filesystem reads denied at `/` and re-allowed only for the runtime trees, the vendored
-seccomp helper, and the session's effect script, spec file, and scratch directory; writes
-allowed only for the scratch directory, with SRT's unconditional `/tmp/claude` write
-convenience explicitly denied; the environment passed to the wrapper is a fixed minimal
-set (no HOME, no inherited secrets, no inherited sockets — the child gets only
-stdin/stdout/stderr pipes). The profile is structurally re-validated in code before every
-run (`validate_srt_settings`), and upstream warnings that would reduce the required
-profile (seccomp degradation) are hard failures — the runner never falls back to an
-unsandboxed process.
-
-## Running
+From the repository root with declared Python/component dependencies installed:
 
 ```bash
-python -m orchestrator.sandbox_qualification --probe-only
-python -m orchestrator.sandbox_qualification --permit-file permit.json \
-    --allow-artifact-download --record-log qualification-log.jsonl
+export PYTHONPATH=backend
+python -m orchestrator.sandbox_qualification --probe-only \
+  --allow-artifact-download --artifact-cache-dir /private/operator/srt-cache
 ```
 
-`--probe-only` prints a support record (exit 4 when unsupported). The full mode needs the
-standard LETS executor environment (or `--permit-file` with one operator-minted permit)
-and performs one authorized scratch-write effect. Exit codes: 0 passed, 2 usage, 3 failed,
-4 unavailable. Records contain digests, check codes, and counters only — never effect
-content, secret material, or receipt signatures — and can be appended to a hash-chained
-log with `--record-log`.
+Acquisition is a separate opt-in preparation step. Repeating the command without
+`--allow-artifact-download` must succeed entirely from verified cached tarballs. Ordinary
+CI does not download this graph or contact a third-party service.
 
-## Check semantics
+## Immutable filesystem and network policy
 
-Every child outcome is verified from the parent side, independently of the child's exit
-text: the authorized output file's digest, absence of secret material in the scratch tree
-and captured output, absence of out-of-scratch files, zero accepted connections on
-parent-held loopback TCP and Unix-socket listeners, unchanged symlink targets, bounded
-output rings, deadline enforcement with descendant cleanup, and a stderr/stdout scan for
-upstream degradation markers. Denial probes attempt a secret read, out-of-scratch writes,
-direct-IP and loopback connects (TEST-NET/RFC1918/link-local plus a parent listener), Unix
-socket connect/bind, and a symlink escape — each with its own verified receipt, each
-expected to be stopped by the sandbox. No live third-party network is required.
+Each invocation writes a `0700` session directory containing the `0400` SRT profile and
+immutable effect source. Scratch is a separate `0700` directory, never beneath the denied
+session tree. Explicit scratch/session overlap and any write deny covering scratch are
+rejected. The session tree and SRT's `/tmp/claude` convenience remain write-denied;
+SRT's deny-over-allow precedence is preserved.
 
-Out of scope for this pilot: SRT control-fd updates, long-lived draft agents, interactive
-terminals, Windows/macOS, nested weak container mode, AppleEvents, and provider egress.
+Reads are denied at `/` and restored only for explicit runtime trees, the vendored
+seccomp helper, effect source/spec, and scratch. Writes are allowed only to scratch.
+The network allowlist is empty with deny-all and strict allowlist enabled; Unix sockets
+and local binding remain disabled. The child receives a fixed minimal environment and
+only its standard pipes. Missing primitives and upstream degradation warnings are hard
+failures, with no unsandboxed fallback.
+
+## Operator permits and the full profile
+
+First prepare the exact wire arguments for ordinary owner-bound authorization:
+
+```bash
+python -m orchestrator.sandbox_qualification \
+  --write-permit-plan /private/operator/permit-plan.json
+```
+
+This creates a new `0600` file containing the tool ID, scope, random qualification ID,
+and arguments for every mode; it starts no effect and mints no receipt. Use the existing
+normal authorization path to obtain one standard LETS protected permit per listed mode.
+Do not reuse a permit, sign inside the runner, or put private keys in the bundle. Store
+the returned permits privately as:
+
+```json
+{
+  "qualification_id": "<the exact 32-character ID in the plan>",
+  "permits": {
+    "authorized": "<standard permit object, not a string>",
+    "read_secret": "<standard permit object>",
+    "write_outside": "<standard permit object>",
+    "network_connect": "<standard permit object>",
+    "unix_ipc": "<standard permit object>",
+    "symlink_escape": "<standard permit object>",
+    "exhaust_output": "<standard permit object>",
+    "hang": "<standard permit object>",
+    "spawn_descendant": "<standard permit object>"
+  }
+}
+```
+
+With the normal LETS executor environment configured, run:
+
+```bash
+python -m orchestrator.sandbox_qualification \
+  --permit-bundle /private/operator/permits.json \
+  --artifact-cache-dir /private/operator/srt-cache \
+  --record-log /private/operator/qualification-log.jsonl
+```
+
+Every permit is checked and claimed by the existing executor for audience, owner, scope,
+arguments, digest, expiry, authority state, and replay before its mode starts. Bundle
+entries are consumed once and bound to the planned ID; the bundle cannot authorize an
+argument change. `--permit-file` also requires its planned `--qualification-id` and runs
+only the authorized smoke; a successful partial run has status `probe`, not `passed`.
+A full `passed` record requires all modes in order and no injected runtime/supervisor.
+Exit codes are 0 for passed/probe/plan, 2 usage, 3 failed, and 4 unavailable.
+
+## Independent synthetic Linux qualification
+
+The focused suite's existing isolated LETS fixture authority creates fresh Ed25519
+keys, a signed trust manifest, and independent replay/authority stores. These fixtures
+are test-only and pass genuine signed permits through the existing receipt verifier;
+there is no synthetic runtime authorization mode. To require the actual SRT profile,
+prepare the default cache on the non-root supported runner, then execute:
+
+```bash
+PYTHONPATH=backend python -m orchestrator.sandbox_qualification \
+  --probe-only --allow-artifact-download
+ASTRAL_SRT_REQUIRE_QUALIFICATION=1 \
+ASTRAL_SRT_QUALIFICATION_RECORD=/private/operator/actual-srt-record.json \
+PYTHONPATH=backend python -m pytest \
+  backend/tests/test_sandbox_runtime_qualification.py::test_full_qualification_passes_on_supported_host -q
+```
+
+The required flag makes missing primitives fail the test instead of skipping it. The
+record is written before result assertions and retains support checks, the full
+dependency-lock digest, artifact/profile/receipt digests, and audit correlation. Bind it
+to the exact candidate SHA and host/tool identities outside the candidate tree. Retain
+receipt-denial/replay and lifecycle test results separately; no unsupported-host or
+injected-runtime result substitutes for this record.
+
+Parent-side checks independently inspect authorized output digests, denied secret reads,
+absence of writes across `/tmp`, `/var/tmp`, `/dev/shm` and the session boundary, zero
+accepted loopback/Unix-socket connections, unchanged symlink targets, bounded output,
+deadline termination and descendant cleanup, plus upstream degradation markers. Fixed
+fixtures use only synthetic data and local controlled listeners. Out of scope remain
+control-fd updates, persistent agents, interactive terminals, Windows/macOS, weak nested
+containers, AppleEvents, provider egress, and production integration. Preserve private
+session/permit artifacts according to operator policy; only sanitized records belong in
+review evidence.
