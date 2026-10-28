@@ -8,6 +8,7 @@ import pytest
 
 from devtools import codex_security_review as csr
 from tests.test_codex_security_review import (
+    REAL_POLICY,
     build_checkout,
     run_args,
     write_fakes,
@@ -64,13 +65,15 @@ def test_egress_is_rejected_before_any_scanner_invocation(tmp_path, capsys):
         "scripts\\..\\private.txt",
     ],
 )
-def test_sanitizer_rejects_escaped_or_network_paths(uri):
-    policy = json.loads(Path("tooling/codex-security/review-policy.json").read_text())
+def test_sanitizer_rejects_escaped_or_network_paths(uri, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    policy = json.loads(REAL_POLICY.read_text())
     with pytest.raises(csr.SanitizationError):
         csr.sanitize_document({"uri": uri}, Path("/source"), policy)
 
 
-def test_read_result_adapts_actual_upstream_mock_artifacts(tmp_path):
+def test_read_result_adapts_actual_upstream_mock_artifacts(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     fixtures = Path(__file__).parent / "fixtures" / "codex_security"
     for original, destination in [
         ("upstream-manifest.json", "scan-manifest.json"),
@@ -82,7 +85,7 @@ def test_read_result_adapts_actual_upstream_mock_artifacts(tmp_path):
     shutil.copyfile(
         fixtures / "upstream-results.sarif", tmp_path / "exports/results.sarif"
     )
-    policy = json.loads(Path("tooling/codex-security/review-policy.json").read_text())
+    policy = json.loads(REAL_POLICY.read_text())
     shutil.copyfile(
         fixtures / "upstream-adapter-validation.json",
         tmp_path / "adapter-validation.json",
