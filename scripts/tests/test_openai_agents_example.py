@@ -39,6 +39,15 @@ from scripts.openai_agents_example.tests.mcp_fakes import (
     REVOKED_BEARER, FakeAstral, operation as _operation,
 )
 
+
+@pytest.fixture(autouse=True)
+def observed_server_fixture(monkeypatch):
+    from scripts.openai_agents_example import qualify
+
+    identity = {"container_id": "b" * 64, "image_digest": "sha256:" + "c" * 64,
+                "published_port": 8001, "observation": "local_docker_direct_publish"}
+    monkeypatch.setattr(qualify, "observe_server", lambda *_: dict(identity))
+
 def _client(fake, **kwargs):
     defaults = dict(base_url="http://testserver", bearer=BEARER, transport=fake.transport)
     defaults.update(kwargs)
@@ -50,6 +59,9 @@ def _run(coroutine):
 
 
 def _install_agents_stub(monkeypatch):
+    from scripts.openai_agents_example import qualify
+
+    monkeypatch.setattr(qualify, "_source_revision", lambda: "a" * 40)
     calls = []
 
     class FakeTool:
@@ -510,7 +522,7 @@ def test_run_qualification_requires_bearer():
 
 def test_run_qualification_full_receipt_and_sanitization(monkeypatch):
     _install_agents_stub(monkeypatch)
-    fake = FakeAstral(behaviors={"astral_get_artifact": ("tool_error", "work_not_found")})
+    fake = FakeAstral()
     captured = []
 
     async def flow():
@@ -564,6 +576,9 @@ def test_main_writes_receipt(monkeypatch, tmp_path):
     def with_transport(environ=None):
         config = original(environ)
         config.transport = fake.transport
+        config.readonly_bearer = READONLY_BEARER
+        config.other_owner_bearer = OTHER_BEARER
+        config.revoked_bearer = REVOKED_BEARER
         return config
 
     monkeypatch.setattr(QualificationConfig, "from_environment", staticmethod(with_transport))
@@ -771,3 +786,222 @@ def test_agent_tool_wrappers_bind_every_operation(monkeypatch):
         "astral_get_operation", "astral_list_operations", "astral_get_operation_events",
         "astral_get_artifact", "astral_cancel_operation",
     ]
+
+
+@pytest.mark.parametrize("code", ["work_not_found", "work_repository_unavailable", "unexpected_error"])
+def test_qualification_artifact_errors_fail_closed(monkeypatch, code):
+    _install_agents_stub(monkeypatch)
+    fake = FakeAstral(behaviors={"astral_get_artifact": ("tool_error", code)})
+    receipt = _run(run_qualification(_qualifying_config(fake)))
+    assert _outcome(receipt, "work_artifact_access") == "failed"
+
+
+@pytest.mark.parametrize("result", [None, {}, {"text": "unverified"},
+    {"version": 1, "available": True, "reason": None, "content": None},
+    {"version": 1, "available": False, "reason": "unavailable", "content": None}])
+def test_qualification_artifact_requires_truthful_result_envelope(monkeypatch, result):
+    _install_agents_stub(monkeypatch)
+    fake = FakeAstral(behaviors={"astral_get_artifact": {
+        "id": OPERATION_ID, "revision": 3, "result": result,
+    }})
+    receipt = _run(run_qualification(_qualifying_config(fake)))
+    assert _outcome(receipt, "work_artifact_access") == "failed"
+
+
+@pytest.mark.parametrize("first,second", [
+    ({"applied": False, "operation": _operation("queued", 1)},
+     {"applied": False, "operation": _operation("queued", 1)}),
+    ({"applied": True, "operation": _operation("active", 2)},
+     {"applied": False, "operation": _operation("active", 2)}),
+    ({"applied": True, "operation": _operation("cancelled", 3)},
+     {"applied": True, "operation": _operation("cancelled", 3)}),
+    ({"applied": True, "operation": _operation("cancelled", 3)},
+     {"applied": False, "operation": {**_operation("cancelled", 3), "id": "another"}}),
+])
+def test_qualification_cancel_requires_applied_terminal_and_idempotent_replay(monkeypatch, first, second):
+    from scripts.openai_agents_example.qualify import check_cancel
+
+    _install_agents_stub(monkeypatch)
+    fake = FakeAstral(behaviors={"astral_cancel_operation": [first, second]})
+    context = types.SimpleNamespace(config=_qualifying_config(fake), client=_client(fake))
+    assert _run(check_cancel(context))["outcome"] == "failed"
+
+
+def test_qualification_does_not_label_client_git_as_observed_server(monkeypatch):
+    from scripts.openai_agents_example import qualify
+
+    _install_agents_stub(monkeypatch)
+    monkeypatch.setattr(qualify, "_source_revision", lambda: "a" * 40)
+    monkeypatch.setattr(qualify, "observe_server", lambda *_: None)
+    receipt = _run(run_qualification(_qualifying_config(FakeAstral())))
+    assert "candidate" not in receipt
+    assert receipt["client"]["source_revision"] == "a" * 40
+    assert receipt["server"] is None
+    assert _outcome(receipt, "server_artifact_observed") == "failed"
+
+
+def test_main_refuses_incomplete_qualification(monkeypatch, tmp_path):
+    from scripts.openai_agents_example import qualify
+
+    async def incomplete(_config):
+        return {"failures": [], "checks": [{"name": "cross_owner", "outcome": "skipped"}]}
+
+    monkeypatch.setattr(qualify, "run_qualification", incomplete)
+    assert main(["--output", str(tmp_path / "incomplete.json")]) == 1
+
+
+def _docker_observation(monkeypatch, *, endpoint="unix:///var/run/docker.sock", identity=None,
+                        selected="desktop-linux", failed_step=None, invalid_json_step=None):
+    from scripts.openai_agents_example import server_identity
+
+    document = {"container_id": "b" * 64, "image_digest": "sha256:" + "c" * 64,
+                "running": True, "ports": {"8001/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18001"}]}}
+    if identity:
+        document.update(identity)
+    calls = []
+
+    def run(argv, **kwargs):
+        index = len(calls)
+        calls.append((argv, kwargs))
+        value = [selected, json.dumps(endpoint), json.dumps(document)][index]
+        if index == invalid_json_step:
+            value = "{" if index else "invalid context"
+        return types.SimpleNamespace(stdout=value, returncode=int(index == failed_step))
+
+    monkeypatch.setattr(server_identity.subprocess, "run", run)
+    return calls
+
+
+def test_server_observation_binds_actual_local_image_and_published_endpoint(monkeypatch):
+    from scripts.openai_agents_example.server_identity import observe_server
+
+    calls = _docker_observation(monkeypatch)
+    observed = observe_server("http://127.0.0.1:18001", "candidate-backend")
+    assert observed == {"container_id": "b" * 64, "image_digest": "sha256:" + "c" * 64,
+                        "docker_context": "desktop-linux", "published_port": 18001,
+                        "observation": "local_docker_direct_publish"}
+    assert calls[-1][0][:4] == ["docker", "--context", "desktop-linux", "inspect"]
+    assert calls[-1][0][-1] == "candidate-backend"
+    assert all(options == {"capture_output": True, "text": True, "timeout": 10, "check": False}
+               for _, options in calls)
+    assert "Config" not in calls[-1][0][-2] and "Env" not in calls[-1][0][-2]
+
+
+@pytest.mark.parametrize("url,container", [
+    ("https://remote.example", "candidate"), ("http://user:secret@localhost:18001", "candidate"),
+    ("ftp://localhost:18001", "candidate"), ("http://localhost:18001/mcp", "candidate"),
+    ("http://localhost:18001?secret=value", "candidate"), ("http://localhost:18001#fragment", "candidate"),
+    ("http://localhost:bad", "candidate"), ("http://localhost:18001", None),
+    ("http://localhost:18001", "--all"), ("http://localhost:18001", "x" * 129),
+])
+def test_server_observation_refuses_unbound_endpoint_without_querying_docker(monkeypatch, url, container):
+    from scripts.openai_agents_example.server_identity import observe_server
+
+    calls = _docker_observation(monkeypatch)
+    assert observe_server(url, container) is None
+    assert calls == []
+
+
+@pytest.mark.parametrize("changes", [
+    {"running": False}, {"container_id": "bad"}, {"image_digest": "latest"}, {"ports": None},
+    {"ports": {"8001/tcp": None}}, {"ports": {"8001/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8001"}]}},
+    {"ports": {"8001/tcp": [{"HostIp": "192.0.2.1", "HostPort": "18001"}]}},
+])
+def test_server_observation_rejects_invalid_stopped_or_unbound_container(monkeypatch, changes):
+    from scripts.openai_agents_example.server_identity import observe_server
+
+    _docker_observation(monkeypatch, identity=changes)
+    assert observe_server("http://localhost:18001", "candidate") is None
+
+
+@pytest.mark.parametrize("options", [
+    {"endpoint": "ssh://another-machine"}, {"endpoint": 17}, {"selected": "invalid context"},
+    {"failed_step": 0}, {"failed_step": 1}, {"failed_step": 2},
+    {"invalid_json_step": 1}, {"invalid_json_step": 2},
+])
+def test_server_observation_rejects_failed_or_remote_context_inspection(monkeypatch, options):
+    from scripts.openai_agents_example.server_identity import observe_server
+
+    _docker_observation(monkeypatch, **options)
+    assert observe_server("http://localhost:18001", "candidate") is None
+
+
+def test_server_observation_handles_missing_docker_and_timeout(monkeypatch):
+    from scripts.openai_agents_example import server_identity
+
+    for failure in (OSError("unavailable"), server_identity.subprocess.TimeoutExpired("docker", 10)):
+        def unavailable(*_args, **_kwargs):
+            raise failure
+
+        monkeypatch.setattr(server_identity.subprocess, "run", unavailable)
+        assert server_identity.observe_server("http://localhost:18001", "candidate") is None
+
+
+def test_qualification_fails_when_server_is_replaced_during_run(monkeypatch):
+    from scripts.openai_agents_example import qualify
+
+    _install_agents_stub(monkeypatch)
+    observations = iter([{"image_digest": "sha256:" + "b" * 64}, {"image_digest": "sha256:" + "c" * 64}])
+    monkeypatch.setattr(qualify, "observe_server", lambda *_: next(observations))
+    receipt = _run(run_qualification(_qualifying_config(FakeAstral())))
+    assert _outcome(receipt, "server_artifact_observed") == "failed"
+
+
+@pytest.mark.parametrize("payload", ["Contact synthetic-patient@example.com about a private result",
+                                     "synthetic_private_payload"])
+def test_tool_error_payload_is_absent_from_logs_and_receipt(monkeypatch, caplog, payload):
+    _install_agents_stub(monkeypatch)
+    caplog.set_level(logging.INFO)
+    fake = FakeAstral(behaviors={"astral_get_artifact": ("tool_error", payload)})
+    receipt = _run(run_qualification(_qualifying_config(fake)))
+    assert payload not in json.dumps(receipt)
+    assert payload not in caplog.text
+
+
+@pytest.mark.parametrize("tool,check_name", [
+    ("astral_decide_operation", "human_only_actions_denied"),
+    ("astral_submit_operation", "phi_submission_refused"),
+])
+def test_unrelated_tool_failure_does_not_prove_policy_denial(monkeypatch, tool, check_name):
+    _install_agents_stub(monkeypatch)
+    fake = FakeAstral(behaviors={tool: ("tool_error", "sensitive_storage_unavailable")})
+    receipt = _run(run_qualification(_qualifying_config(fake)))
+    assert _outcome(receipt, check_name) == "failed"
+
+
+def test_qualification_requires_stable_clean_client_source(monkeypatch):
+    from scripts.openai_agents_example import qualify
+
+    _install_agents_stub(monkeypatch)
+    for observations in ([None, None], ["a" * 40, "b" * 40]):
+        identities = iter(observations)
+        monkeypatch.setattr(qualify, "_source_revision", lambda: next(identities))
+        receipt = _run(run_qualification(_qualifying_config(FakeAstral())))
+        assert _outcome(receipt, "client_source_observed") == "failed"
+
+
+def test_observation_does_not_bind_ipv4_request_to_other_ipv6_container(monkeypatch):
+    from scripts.openai_agents_example.server_identity import observe_server
+
+    _docker_observation(monkeypatch, identity={"ports": {
+        "8001/tcp": [{"HostIp": "::1", "HostPort": "18001"}],
+    }})
+    assert observe_server("http://127.0.0.1:18001", "candidate") is None
+
+
+def test_source_revision_is_from_clean_module_checkout(monkeypatch):
+    from pathlib import Path
+    from scripts.openai_agents_example import qualify
+
+    for dirty in ("", " M source.py\n", "?? unexpected.py\n"):
+        responses = iter([types.SimpleNamespace(returncode=0, stdout="a" * 40),
+                          types.SimpleNamespace(returncode=0, stdout=dirty)])
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return next(responses)
+
+        monkeypatch.setattr(qualify.subprocess, "run", run)
+        assert qualify._source_revision() == (None if dirty else "a" * 40)
+        assert all(options["cwd"] == Path(qualify.__file__).resolve().parents[2] for _, options in calls)

@@ -25,6 +25,8 @@ from scripts.openai_agents_example.redaction import log_event
 
 _LOGGER = logging.getLogger("astral_openai_agents_example")
 _MCP_PATH = "/mcp"
+_SAFE_TOOL_ERROR_CODES = frozenset({"assignment_sensitive_content_refused", "framework_scope_required",
+    "work_not_found", "work_read_unavailable", "work_repository_unavailable"})
 
 
 class MCPProtocolError(Exception):
@@ -151,7 +153,8 @@ class AstralWorkClient:
             content = result.get("content")
             if isinstance(content, list) and content and isinstance(content[0], dict):
                 message = str(content[0].get("text", ""))
-            log_event(self._logger, "tool_refused", tool=name, detail_code=message[:64] or None)
+            code = message if message in _SAFE_TOOL_ERROR_CODES else "tool_call_refused"
+            log_event(self._logger, "tool_refused", tool=name, detail_code=code)
             raise ToolCallError(message or "tool_call_refused")
         structured = result.get("structuredContent")
         if not isinstance(structured, dict):

@@ -21,7 +21,8 @@ product image, `backend/requirements.txt`, or the `backend.agents` namespace.
   artifact, cancel). The `agents` module is imported lazily and verified against the
   OpenAI SDK surface, because Astral's own `backend/agents` namespace shadows the import
   when the backend source root is on `PYTHONPATH`.
-- `qualify.py` — the live qualification runner; writes a synthetic staging receipt.
+- `qualify.py` — the qualification runner; records client checkout and observed server image separately.
+- `server_identity.py` — read-only observation of a directly published local Docker container; it reads no environment or credential values.
 - `tests/` — the real-SDK offline suite (runs in this directory's isolated environment).
 - `../../tests/test_openai_agents_example.py` (`scripts/tests/`) — the deterministic
   offline suite repo CI runs; it needs neither the third-party SDK nor a network.
@@ -75,26 +76,54 @@ Distinguish: **source review** (the SDK pin's provenance above), **tests** (the 
 offline suites; deterministic, no network), **live qualification** (below), and
 **deployment** (none — this example is not deployed; platform acceptance runs in PR CI).
 
-Live qualification ran against a real local deployment (development posture, real
-Keycloak issuer, real PostgreSQL through AstralPlane, `FF_MCP_SERVER=true` with
-`FF_FRAMEWORK_CREDENTIALS=true` and `FF_PERSISTENT_AGENTS=true` enabled for the
-qualification environment). Credentials were issued and revoked through the product's
-Connections surface by the operator; the MCP `2026-07-28` metadata/header contract, the
-Work lifecycle (submit, idempotent retry, bounded poll to a truthful `cancelled`
-terminal state, artifact access, cancel with idempotent replay), and every denial class
-(cross-owner `work_not_found`, revoked credential `401` + `WWW-Authenticate`, out-of-scope
-tool projection, PHI `assignment_sensitive_content_refused`, human-only refusals) were
-verified through the real server. The receipt is `qualification/staging-receipt.json`.
+The original producer reported a local deployment run on 2026-10-27. Its unchanged
+raw receipt is retained at `qualification/history/2026-10-27-unverified-receipt.json`
+for provenance. It is **not current qualification**: it labels the client checkout
+as the server candidate and predates corrections that reject artifact errors,
+unapplied cancellation, non-idempotent control replay, unrelated policy failures,
+and missing observation. The reported prior result is not independently established.
+No fresh configured-auth staging run is claimed for the repaired candidate.
 
-### Discovered defect (follow-up issue required)
+The runner now requires a clean, stable client checkout and independently observes
+the actual serving container ID/image ID before and after the checks. Configure
+`ASTRAL_BASE_URL` to the backend's directly published local port and
+`ASTRAL_QUALIFICATION_SERVER_CONTAINER` to its exact container name/ID. The observer
+accepts only local Docker contexts, loopback URLs, and a matching published backend
+port8001; it pins the inspected Docker context explicitly, and refuses remote,
+proxied, ambiguous, stopped, missing, or replaced targets. An external/proxied
+installation needs an independently qualified observation mechanism; it cannot be
+qualified by supplying an arbitrary SHA or copying the client revision.
+The image ID identifies the observed immutable image, not an attestation that its
+running filesystem is unmodified or that the image equals the client source.
+The local receipt is a diagnostic and does not replace protected release evidence.
 
-Live qualification exposed that the persistent-assignment runner never executes
-framework-authority one-shot operations: the runner tick discovers due operations only
-through AstralPlane's `discover_due_operations_for_administration`, whose query filters
-`data->'operation'->'authority'->>'origin'='interactive'`, so framework-submitted
-operations remain `queued` indefinitely. Cancel and other control paths work, and this
-qualification reaches a truthful `cancelled` terminal state through them, but
-`completed`/`failed` terminal states are unreachable for framework submissions until the
-component adds a framework-aware discovery (an AstralPlane change under its own
-constitution, adopted here by pin movement). Fixing it is deliberately out of scope
-here: this issue adds no orchestration.
+Provide the main, readonly, other-owner, and revoked framework credentials through
+the approved product flow, using `ASTRAL_WORK_BEARER`,
+`ASTRAL_WORK_BEARER_READONLY`, `ASTRAL_WORK_BEARER_OTHER_OWNER`, and
+`ASTRAL_WORK_BEARER_REVOKED`. The human completes sign-in and issuance. Run from the
+clean repository root in the isolated SDK environment, writing outside the checkout:
+
+```bash
+python -m scripts.openai_agents_example.qualify --output /private/path/new-receipt.json
+```
+
+Any failed or skipped required check exits nonzero. The artifact probe requires
+successful authorized access to the actual versioned result envelope. A server
+`unsupported`, `not_completed`, or `not_retained` envelope records its explicit
+unavailability; it does not prove generated artifact content. Unexpected tool errors,
+malformed data and generic `unavailable` results fail. Cancellation must apply to the
+submitted operation, return `cancelled`, and replay without applying again. Refusal
+checks accept specific policy outcomes; an outage is not a policy-denial success.
+Logs/receipts retain bounded codes and identities, without server error payloads.
+
+### Remaining qualification under #321
+
+The earlier producer reported framework-origin one-shot operations staying `queued`:
+Plane's administrative discovery selected interactive authority only. This is a
+historical observation, not a verified defect at the repaired candidate. Cancelled
+terminal control and an explicitly unavailable artifact must not be described as
+successful model execution or artifact production. Recheck the real configured
+server, worker, owner isolation, scope/admission/PHI refusal and revocation paths
+against the exact repaired client and observed server artifact before merge.
+No shared deployment, provider sign-in, component schema or orchestration change is
+part of this isolated consumer example.

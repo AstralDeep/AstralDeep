@@ -1,8 +1,5 @@
-"""Runs the live qualification checklist against a real Astral deployment and writes a
-synthetic staging receipt bound to the running candidate source. Credentials arrive as
-operator-issued framework bearers from the product's Connections surface; this runner
-never signs in, mints, revokes, prints, or persists credentials, and every recorded
-field passes the shared redaction.
+"""Checks an external SDK consumer against Astral's authenticated Work endpoint.
+Records client source and directly observed server image identities separately without storing credentials or payloads.
 """
 
 from __future__ import annotations
@@ -11,6 +8,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import uuid
@@ -30,6 +28,7 @@ from scripts.openai_agents_example.client import (
     ToolCallError,
 )
 from scripts.openai_agents_example.redaction import scrub_text
+from scripts.openai_agents_example.server_identity import observe_server
 
 DEFAULT_BASE_URL = "http://localhost:8001"
 DEFAULT_MAX_POLLS = 30
@@ -49,6 +48,8 @@ _HUMAN_ONLY_TOOLS = (
     "astral_decide_operation", "astral_reconcile_operation", "astral_delete_operation",
 )
 _METADATA_FIELDS = {"resource", "authorization_servers", "scopes_supported", "bearer_methods_supported"}
+_SCOPE_REFUSALS = frozenset({"Tool is unavailable or not authorized",
+    "Tool is unavailable or no longer authorized", "Work read is no longer authorized", "framework_scope_required"})
 
 
 @dataclass
@@ -64,6 +65,7 @@ class QualificationConfig:
     operation_instructions: str = SYNTHETIC_INSTRUCTIONS
     phi_instructions: str = SYNTHETIC_PHI_INSTRUCTIONS
     transport: Any = None
+    server_container: str | None = None
 
     def _client(self, bearer: str) -> AstralWorkClient:
         return AstralWorkClient(
@@ -79,6 +81,7 @@ class QualificationConfig:
             readonly_bearer=env.get("ASTRAL_WORK_BEARER_READONLY") or None,
             other_owner_bearer=env.get("ASTRAL_WORK_BEARER_OTHER_OWNER") or None,
             revoked_bearer=env.get("ASTRAL_WORK_BEARER_REVOKED") or None,
+            server_container=env.get("ASTRAL_QUALIFICATION_SERVER_CONTAINER") or None,
             max_polls=int(env.get("ASTRAL_QUALIFICATION_MAX_POLLS", DEFAULT_MAX_POLLS)),
             interval_seconds=float(
                 env.get("ASTRAL_QUALIFICATION_INTERVAL_SECONDS", DEFAULT_INTERVAL_SECONDS)
@@ -101,12 +104,22 @@ class _Context:
 def _source_revision() -> str | None:
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10, check=False,
+            ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[2],
+            capture_output=True, text=True, timeout=10, check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
     revision = result.stdout.strip()
-    return revision if result.returncode == 0 and len(revision) == 40 else None
+    if result.returncode != 0 or not re.fullmatch(r"[a-f0-9]{40}", revision):
+        return None
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
+            cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return revision if status.returncode == 0 and not status.stdout.strip() else None
 
 
 def _check(name: str, outcome: str, detail: str | None = None) -> dict[str, Any]:
@@ -137,7 +150,7 @@ async def check_metadata_contract(context: _Context) -> dict[str, Any]:
     discovery = await context.client.discover()
     versions = discovery.get("supportedVersions")
     if versions != ["2026-07-28"]:
-        return _check("mcp_discover_contract", "failed", f"versions={versions}")
+        return _check("mcp_discover_contract", "failed", "versions_unexpected")
     return _check("mcp_protected_resource_metadata", "passed")
 
 
@@ -168,6 +181,11 @@ async def check_submit_idempotent_retry(context: _Context) -> dict[str, Any]:
         return _check("work_submit_idempotent_retry", "failed", "operation_id_diverged")
     if first.get("created") is not True or second.get("created") is not False:
         return _check("work_submit_idempotent_retry", "failed", "created_flags_unexpected")
+    try:
+        if str(uuid.UUID(first.get("id"))) != first["id"]:
+            raise ValueError
+    except (ValueError, TypeError, AttributeError):
+        return _check("work_submit_idempotent_retry", "failed", "operation_id_invalid")
     context.submitted["operation"] = first
     return _check("work_submit_idempotent_retry", "passed", f"operation_id={first.get('id')}")
 
@@ -178,8 +196,8 @@ async def check_poll_events_bounded(context: _Context) -> dict[str, Any]:
         return _check("work_poll_events_bounded", "skipped", "no_submitted_operation")
     try:
         first = await context.client.events(operation["id"], after_revision=operation.get("revision"))
-    except ToolCallError as exc:
-        return _check("work_poll_events_bounded", "failed", f"error={exc}")
+    except ToolCallError:
+        return _check("work_poll_events_bounded", "failed", "events_request_refused")
     if not isinstance(first.get("revision"), int):
         return _check("work_poll_events_bounded", "failed", "first_poll_revision_missing")
     if first.get("changed") is not True and first.get("operation") is not None:
@@ -190,8 +208,8 @@ async def check_poll_events_bounded(context: _Context) -> dict[str, Any]:
         applied = await context.client.cancel(
             operation["id"], submission_id=submission_id, expected_revision=revision,
         )
-    except ToolCallError as exc:
-        return _check("work_poll_events_bounded", "failed", f"cancel_refused={exc}")
+    except ToolCallError:
+        return _check("work_poll_events_bounded", "failed", "cancel_request_refused")
     if applied.get("applied") is not True:
         return _check("work_poll_events_bounded", "failed", "cancel_not_applied")
     try:
@@ -201,10 +219,10 @@ async def check_poll_events_bounded(context: _Context) -> dict[str, Any]:
             interval_seconds=context.config.interval_seconds,
             timeout_seconds=context.config.timeout_seconds,
         )
-    except OperationPendingTimeout as exc:
-        return _check("work_poll_events_bounded", "failed", str(exc))
+    except OperationPendingTimeout:
+        return _check("work_poll_events_bounded", "failed", "terminal_poll_timeout")
     if terminal.get("disposition") != "cancelled":
-        return _check("work_poll_events_bounded", "failed", f"disposition={terminal.get('disposition')}")
+        return _check("work_poll_events_bounded", "failed", "terminal_disposition_unexpected")
     context.submitted["terminal"] = terminal
     return _check("work_poll_events_bounded", "passed", "disposition=cancelled")
 
@@ -215,11 +233,23 @@ async def check_artifact_access(context: _Context) -> dict[str, Any]:
         return _check("work_artifact_access", "skipped", "no_submitted_operation")
     try:
         artifact = await context.client.artifact(operation["id"])
-    except ToolCallError as exc:
-        return _check("work_artifact_access", "passed", f"server_refusal={exc}")
+    except ToolCallError:
+        return _check("work_artifact_access", "failed", "artifact_request_refused")
     if artifact.get("id") != operation["id"]:
         return _check("work_artifact_access", "failed", "artifact_id_mismatch")
-    return _check("work_artifact_access", "passed")
+    result = artifact.get("result")
+    if (type(artifact.get("revision")) is not int or artifact["revision"] < 1
+            or type(result) is not dict or set(result) != {"version", "available", "reason", "content"}
+            or type(result["version"]) is not int or result["version"] != 1
+            or type(result["available"]) is not bool):
+        return _check("work_artifact_access", "failed", "artifact_envelope_invalid")
+    if result["available"]:
+        if result["reason"] is not None or type(result["content"]) is not dict or not result["content"]:
+            return _check("work_artifact_access", "failed", "artifact_content_invalid")
+        return _check("work_artifact_access", "passed", "artifact_available=true")
+    if result["reason"] not in ("unsupported", "not_completed", "not_retained") or result["content"] is not None:
+        return _check("work_artifact_access", "failed", "artifact_unavailable")
+    return _check("work_artifact_access", "passed", f"artifact_available=false reason={result['reason']}")
 
 
 async def check_cancel(context: _Context) -> dict[str, Any]:
@@ -238,7 +268,14 @@ async def check_cancel(context: _Context) -> dict[str, Any]:
     second = await context.client.cancel(
         operation["id"], submission_id=submission_id, expected_revision=revision,
     )
+    cancelled = first.get("operation") or {}
     replayed = second.get("operation") or {}
+    if (first.get("applied") is not True or second.get("applied") is not False
+            or type(cancelled.get("revision")) is not int or cancelled["revision"] <= revision
+            or cancelled.get("id") != operation["id"] or replayed.get("id") != operation["id"]
+            or cancelled.get("disposition") != "cancelled" or replayed.get("disposition") != "cancelled"
+            or replayed.get("revision") != cancelled["revision"]):
+        return _check("work_cancel", "failed", "cancel_or_replay_not_applied_as_expected")
     return _check(
         "work_cancel",
         "passed",
@@ -251,9 +288,9 @@ async def check_phi_refusal(context: _Context) -> dict[str, Any]:
         idempotency_key=str(uuid.uuid4()), name=SYNTHETIC_OPERATION_NAME,
         instructions=context.config.phi_instructions,
     ))
-    if "sensitive" not in detail:
-        return _check("phi_submission_refused", "failed", f"detail={detail}")
-    return _check("phi_submission_refused", "passed", f"refusal={detail}")
+    if detail != "assignment_sensitive_content_refused":
+        return _check("phi_submission_refused", "failed", "expected_phi_refusal_missing")
+    return _check("phi_submission_refused", "passed", "sensitive_content_refused")
 
 
 async def check_readonly_permission_denial(context: _Context) -> dict[str, Any]:
@@ -267,9 +304,9 @@ async def check_readonly_permission_denial(context: _Context) -> dict[str, Any]:
             idempotency_key=str(uuid.uuid4()), name=SYNTHETIC_OPERATION_NAME,
             instructions=context.config.operation_instructions,
         ))
-        if "authorized" not in detail and "unavailable" not in detail:
-            return _check("permission_denied_out_of_scope", "failed", f"detail={detail}")
-    return _check("permission_denied_out_of_scope", "passed", f"refusal={detail}")
+        if detail not in _SCOPE_REFUSALS:
+            return _check("permission_denied_out_of_scope", "failed", "expected_scope_refusal_missing")
+    return _check("permission_denied_out_of_scope", "passed", "scope_refused")
 
 
 async def check_cross_owner_isolation(context: _Context) -> dict[str, Any]:
@@ -283,9 +320,9 @@ async def check_cross_owner_isolation(context: _Context) -> dict[str, Any]:
         if "astral_get_operation" not in tools:
             return _check("cross_owner_isolated", "skipped", "other_owner_lacks_read_scope")
         detail = await _refusal_detail(lambda: other.get(operation["id"]))
-    if "not_found" not in detail and "unavailable" not in detail and "authorized" not in detail:
-        return _check("cross_owner_isolated", "failed", f"detail={detail}")
-    return _check("cross_owner_isolated", "passed", f"refusal={detail}")
+    if detail != "work_not_found":
+        return _check("cross_owner_isolated", "failed", "expected_owner_refusal_missing")
+    return _check("cross_owner_isolated", "passed", "work_not_found")
 
 
 async def check_revoked_credential_refused(context: _Context) -> dict[str, Any]:
@@ -295,25 +332,25 @@ async def check_revoked_credential_refused(context: _Context) -> dict[str, Any]:
         try:
             await revoked.discover()
         except CredentialRefused as exc:
-            if not exc.challenge:
+            if (exc.status != 401 or not exc.challenge or not exc.challenge.lower().startswith("bearer ")
+                    or "resource_metadata=" not in exc.challenge.lower()):
                 return _check("revoked_credential_refused", "failed", "challenge_header_missing")
             return _check("revoked_credential_refused", "passed", f"status={exc.status}")
-        except MCPProtocolError as exc:
-            return _check("revoked_credential_refused", "failed", f"unexpected={exc.code}")
+        except MCPProtocolError:
+            return _check("revoked_credential_refused", "failed", "unexpected_credential_failure")
     return _check("revoked_credential_refused", "failed", "revoked_bearer_accepted")
 
 
 async def check_human_only_denials(context: _Context) -> dict[str, Any]:
-    denials = []
+    denied = []
     for tool in _HUMAN_ONLY_TOOLS:
         detail = await _refusal_detail(
             lambda tool=tool: context.client.call_tool(tool, {"operation_id": str(uuid.uuid4())})
         )
-        denials.append(f"{tool}={detail}")
-    joined = ";".join(denials)
-    if "refusal-expected" in joined:
-        return _check("human_only_actions_denied", "failed", f"detail={joined}")
-    return _check("human_only_actions_denied", "passed", f"refusals={joined}")
+        denied.append(detail in _SCOPE_REFUSALS)
+    if not all(denied):
+        return _check("human_only_actions_denied", "failed", "expected_human_only_refusal_missing")
+    return _check("human_only_actions_denied", "passed", "all_human_only_actions_refused")
 
 
 def _named(function, name):
@@ -339,6 +376,8 @@ CHECKS = (
 async def run_qualification(config: QualificationConfig) -> dict[str, Any]:
     if not config.bearer:
         raise SystemExit("ASTRAL_WORK_BEARER is required; issue it in the Connections surface")
+    client_before = _source_revision()
+    server_before = observe_server(config.base_url, config.server_container)
     async with config._client(config.bearer) as client:
         session = AstralAgentSession(client=client)
         tools = await client.list_tools()
@@ -353,16 +392,25 @@ async def run_qualification(config: QualificationConfig) -> dict[str, Any]:
         for check in CHECKS:
             try:
                 checks.append(await check(context))
-            except (MCPProtocolError, ToolCallError) as exc:
+            except (MCPProtocolError, ToolCallError):
                 checks.append(_check(
-                    check.receipt_name, "failed", f"error={getattr(exc, 'code', 'tool_error')}",
+                    check.receipt_name, "failed", "request_failed",
                 ))
+    server_after = observe_server(config.base_url, config.server_container)
+    checks.append(_check("client_source_observed",
+        "passed" if client_before is not None and client_before == _source_revision() else "failed",
+        "stable_clean_checkout" if client_before is not None else "client_source_unavailable"))
+    checks.append(_check("server_artifact_observed",
+        "passed" if server_before is not None and server_before == server_after else "failed",
+        "stable_direct_container" if server_before is not None and server_before == server_after
+        else "missing_or_changed_server_observation"))
     failures = [item["name"] for item in checks if item["outcome"] == "failed"]
     return {
         "receipt_kind": "synthetic_staging_qualification",
         "generated_at": datetime.now(UTC).isoformat(),
         "base_url": config.base_url,
-        "candidate": {"source_revision": _source_revision()},
+        "client": {"source_revision": client_before},
+        "server": server_before,
         "credential_source": "operator_connections_surface",
         "checks": checks,
         "boundaries": {
@@ -392,7 +440,7 @@ def main(argv: list[str] | None = None) -> int:
         f"qualification receipt written to {args.output}: "
         f"{len(receipt['checks']) - failed - skipped} passed, {failed} failed, {skipped} skipped"
     )
-    return 1 if failed else 0
+    return 1 if failed or skipped else 0
 
 
 if __name__ == "__main__":

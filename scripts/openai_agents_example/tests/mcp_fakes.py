@@ -60,6 +60,7 @@ class FakeAstral:
         self.bearers = []
         self.submissions = {}
         self.cancelled = set()
+        self.control_receipts = set()
         self.transport = httpx.MockTransport(self._handle)
 
     def _rpc_result(self, request_id, result):
@@ -186,8 +187,11 @@ class FakeAstral:
             })
         if name == "astral_cancel_operation":
             self.cancelled.add(arguments.get("operation_id"))
+            identity = (arguments.get("operation_id"), arguments.get("submission_id"))
+            applied = identity not in self.control_receipts
+            self.control_receipts.add(identity)
             return self._tool_result(request_id, {
-                "operation": operation("cancelled", 3), "applied": True,
+                "operation": operation("cancelled", 3), "applied": applied,
             })
         if name == "astral_pause_operation":
             return self._tool_result(request_id, {
@@ -195,6 +199,7 @@ class FakeAstral:
             })
         if name == "astral_get_artifact":
             return self._tool_result(request_id, {
-                "id": OPERATION_ID, "revision": 3, "result": {"text": "synthetic artifact"},
+                "id": OPERATION_ID, "revision": 3,
+                "result": {"version": 1, "available": False, "reason": "unsupported", "content": None},
             })
         return self._tool_result(request_id, {}, error=UNAUTHORIZED_CODE)
