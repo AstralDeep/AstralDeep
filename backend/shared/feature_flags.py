@@ -58,6 +58,7 @@ class FeatureFlags:
             "computer_use": self._read("FF_COMPUTER_USE", False),
             "terminal_shell": self._read("FF_TERMINAL_SHELL", False),
             "mcp_server": self._read("FF_MCP_SERVER", False),
+            "mcp_work_panel": self._read("FF_MCP_WORK_PANEL", False),
             "a2a_server": self._read("FF_A2A_SERVER", False),
             "conversational_voice": self._read(
                 "FF_CONVERSATIONAL_VOICE",

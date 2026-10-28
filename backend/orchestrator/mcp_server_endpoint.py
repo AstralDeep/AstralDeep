@@ -1,5 +1,6 @@
-"""Serves flag-gated MCP discovery, tools, and owner-authorized Work status and retained-result resources.
-Installed by orchestrator.py, it binds mcp_authz.py authorization and mcp_projection.py tool dispatch.
+"""Serves flag-gated MCP discovery, tools, and owner-authorized Work status, retained-result,
+and external-host panel resources. Installed by orchestrator.py, it binds mcp_authz.py
+authorization, mcp_panel.py view building, and mcp_projection.py tool dispatch.
 """
 
 from __future__ import annotations
@@ -865,15 +866,19 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                                 orchestrator, user_id, claims, scope=resource_scope(uri),
                             )
                             resource = await resource_authority.read(uri)
-                            result = {
-                                "resultType": "complete",
-                                "contents": [{
-                                    "uri": resource["uri"],
-                                    "mimeType": resource["mimeType"],
-                                    "text": json.dumps(resource["boundedViewModel"], ensure_ascii=False,
-                                                       allow_nan=False, separators=(",", ":")),
-                                }],
-                            }
+                            contents = [{
+                                "uri": resource["uri"],
+                                "mimeType": resource["mimeType"],
+                                "text": json.dumps(resource["boundedViewModel"], ensure_ascii=False,
+                                                   allow_nan=False, separators=(",", ":")),
+                            }]
+                            result = {"resultType": "complete", "contents": contents}
+                            meta = resource.get("_meta")
+                            if meta:
+                                result["_meta"] = {
+                                    **meta,
+                                    "io.modelcontextprotocol/serverInfo": _server_info(),
+                                }
                             cache_control = "no-store"
                         except MCPAuthError as exc:
                             result_code = exc.error
