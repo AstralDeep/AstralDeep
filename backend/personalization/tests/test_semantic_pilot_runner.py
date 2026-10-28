@@ -176,6 +176,14 @@ def _identity(profile="tei-http", revision="sha-a", **overrides):
     return fields
 
 
+def _profile_digest(identity):
+    import hashlib
+    import json
+
+    return hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def test_profile_qualification_paths():
     status_available = {"state": "available", "reason": "ok"}
     diagnostic = _identity(profile="offline-diagnostic", qualifier="diagnostic_only")
@@ -187,7 +195,8 @@ def test_profile_qualification_paths():
     unattested = profile_qualification(_identity(), status_available, None, CORPUS_DIGEST)
     assert unattested["state"] == "executed_unattested"
     attested = dict(performed_at="t", operator="o", corpus_digest=CORPUS_DIGEST,
-                    profile="tei-http", model_revision="r1")
+                    profile="tei-http", model_revision="r1",
+                    provider_identity_digest=_profile_digest(_identity(revision="r1")))
     assert profile_qualification(_identity(revision="r1"), status_available, attested,
                                  CORPUS_DIGEST)["state"] == "qualified_manual_run"
 

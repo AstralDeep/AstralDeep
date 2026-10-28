@@ -58,6 +58,10 @@ def snapshot_digest(rows: List[Dict[str, Any]]) -> str:
             "valid_to": row.get("valid_to"),
             "signature": row.get("signature"),
             "updated_at": row.get("updated_at"),
+            "category": row.get("category"),
+            "source": row.get("source"),
+            "superseded_by": row.get("superseded_by"),
+            "superseded_at": row.get("superseded_at"),
         }
         for row in rows
     ]
@@ -86,6 +90,8 @@ def revalidate_row(store: Any, user_id: str, scope: Optional[str], row: Dict[str
         return False, "tampered"
     if lm.temporal_enabled() and not lm.is_valid_at(fresh, int(time.time() * 1000)):
         return False, "validity_expired"
+    if snapshot_digest([fresh]) != snapshot_digest([row]):
+        return False, "row_changed"
     return True, "ok"
 
 
@@ -166,18 +172,6 @@ def rerank_candidates(tools: Any, store: Any, gateway: VectorGateway,
                       query: str, bounds: Bounds, usage: ProviderUsage,
                       cancel_check=None) -> CandidateRun:
     scope = _read_scope(project_id)
-    if not candidates.ranked:
-        return CandidateRun(
-            variant="reranked",
-            ranked=[],
-            snapshot_digest=candidates.snapshot_digest,
-            usage=usage,
-            snapshot_rows=candidates.snapshot_rows,
-            snapshot_bytes=candidates.snapshot_bytes,
-        )
-    texts = [str(row.get("value") or "") for row, _ in candidates.ranked]
-    bounds.validate_candidates(len(texts))
-    order = gateway.rerank(query, texts, bounds, usage, cancel_check)
     run = CandidateRun(
         variant="reranked",
         ranked=[],
@@ -186,8 +180,20 @@ def rerank_candidates(tools: Any, store: Any, gateway: VectorGateway,
         snapshot_rows=candidates.snapshot_rows,
         snapshot_bytes=candidates.snapshot_bytes,
     )
+    current = []
+    for row, score in candidates.ranked:
+        ok, reason = revalidate_row(store, user_id, scope, row)
+        if not ok:
+            run.revalidation_drops.append({"id": row.get("id"), "reason": reason})
+            continue
+        current.append((row, score))
+    if not current:
+        return run
+    texts = [str(row.get("value") or "") for row, _ in current]
+    bounds.validate_candidates(len(texts))
+    order = gateway.rerank(query, texts, bounds, usage, cancel_check)
     for index, score in order:
-        row = candidates.ranked[index][0]
+        row = current[index][0]
         ok, reason = revalidate_row(store, user_id, scope, row)
         if not ok:
             run.revalidation_drops.append({"id": row.get("id"), "reason": reason})

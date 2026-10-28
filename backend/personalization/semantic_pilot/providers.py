@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -25,7 +26,7 @@ QUALIFIER_DIAGNOSTIC = "diagnostic_only"
 QUALIFIER_DOUBLE = "provider_double_only"
 QUALIFIER_UNQUALIFIED = "unqualified_unattested"
 
-EmbedTransport = Callable[[str, Dict[str, Any]], Dict[str, Any]]
+EmbedTransport = Callable[[str, Dict[str, Any]], Any]
 CancelCheck = Optional[Callable[[], bool]]
 
 _TRANSIENT_HTTP_FAULTS = ("http_unreachable", "http_rate_limited")
@@ -58,6 +59,13 @@ class ProviderIdentity:
     rerank_model: Optional[str] = None
     rerank_revision: Optional[str] = None
     rerank_capable: bool = False
+    embedding_endpoint: Optional[str] = None
+    rerank_endpoint: Optional[str] = None
+    rerank_tokenizer_revision: Optional[str] = None
+    embedding_runtime_digest: Optional[str] = None
+    embedding_assets_digest: Optional[str] = None
+    rerank_runtime_digest: Optional[str] = None
+    rerank_assets_digest: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -72,6 +80,13 @@ class ProviderIdentity:
             "rerank_model": self.rerank_model,
             "rerank_revision": self.rerank_revision,
             "rerank_capable": self.rerank_capable,
+            "embedding_endpoint": self.embedding_endpoint,
+            "rerank_endpoint": self.rerank_endpoint,
+            "rerank_tokenizer_revision": self.rerank_tokenizer_revision,
+            "embedding_runtime_digest": self.embedding_runtime_digest,
+            "embedding_assets_digest": self.embedding_assets_digest,
+            "rerank_runtime_digest": self.rerank_runtime_digest,
+            "rerank_assets_digest": self.rerank_assets_digest,
         }
 
     @property
@@ -137,8 +152,8 @@ def build_embedding_payload(texts: Sequence[str], model: str) -> Dict[str, Any]:
     return {"model": model, "input": list(texts)}
 
 
-def build_rerank_payload(query: str, texts: Sequence[str], model: str) -> Dict[str, Any]:
-    return {"model": model, "query": query, "texts": list(texts)}
+def build_rerank_payload(query: str, texts: Sequence[str]) -> Dict[str, Any]:
+    return {"query": query, "texts": list(texts), "truncate": False, "return_text": False}
 
 
 def _finite_number(value: Any) -> bool:
@@ -181,13 +196,10 @@ def parse_embedding_payload(payload: Any, *, count: int,
 
 
 def parse_rerank_payload(payload: Any, *, count: int) -> List[Tuple[int, float]]:
-    if not isinstance(payload, dict):
-        raise ProviderFault("malformed_output", "rerank payload is not an object")
-    results = payload.get("results")
-    if not isinstance(results, list):
-        raise ProviderFault("malformed_output", "rerank payload has no results list")
+    if not isinstance(payload, list):
+        raise ProviderFault("malformed_output", "rerank payload is not a rank array")
     pairs: Dict[int, float] = {}
-    for entry in results:
+    for entry in payload:
         if not isinstance(entry, dict):
             raise ProviderFault("malformed_output", "rerank result is not an object")
         index = entry.get("index")
@@ -207,16 +219,16 @@ def parse_rerank_payload(payload: Any, *, count: int) -> List[Tuple[int, float]]
     return sorted(pairs.items(), key=lambda kv: (-kv[1], kv[0]))
 
 
-def _parse_json_response(raw: Any) -> Dict[str, Any]:
-    if isinstance(raw, dict):
+def _parse_json_response(raw: Any) -> Any:
+    if isinstance(raw, (dict, list)):
         return raw
     if isinstance(raw, (bytes, bytearray)):
         try:
             parsed = json.loads(bytes(raw).decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             raise ProviderFault("malformed_output", "response is not valid JSON") from None
-        if not isinstance(parsed, dict):
-            raise ProviderFault("malformed_output", "response JSON is not an object")
+        if not isinstance(parsed, (dict, list)):
+            raise ProviderFault("malformed_output", "response JSON is not an object or array")
         return parsed
     if isinstance(raw, str):
         return _parse_json_response(raw.encode("utf-8"))
@@ -235,7 +247,6 @@ class VectorGateway:
         texts = list(texts)
         total_tokens = sum(estimate_tokens(t) for t in texts)
         bounds.validate_token_total(usage.tokens_estimated + total_tokens)
-        usage.tokens_estimated += total_tokens
         vectors: List[Optional[List[float]]] = [None] * len(texts)
         for start in range(0, len(texts), bounds.max_batch_rows):
             if cancel_check is not None and cancel_check():
@@ -243,9 +254,8 @@ class VectorGateway:
             batch = texts[start:start + bounds.max_batch_rows]
             bounds.validate_batch(batch)
             payload = build_embedding_payload(batch, self.identity.model)
-            usage.bytes_sent += len(json.dumps(payload).encode("utf-8"))
             raw = self._call_transport(TEI_EMBEDDINGS_ROUTE, payload, bounds, usage,
-                                       cancel_check)
+                                       cancel_check, sum(estimate_tokens(t) for t in batch))
             usage.bytes_received += len(json.dumps(raw).encode("utf-8"))
             try:
                 parsed = parse_embedding_payload(raw, count=len(batch),
@@ -267,12 +277,13 @@ class VectorGateway:
         texts = list(texts)
         bounds.validate_candidates(len(texts))
         bounds.validate_query(query)
-        usage.tokens_estimated += sum(estimate_tokens(t) for t in texts)
+        total_tokens = sum(estimate_tokens(query) + estimate_tokens(t) for t in texts)
+        bounds.validate_token_total(usage.tokens_estimated + total_tokens)
         if cancel_check is not None and cancel_check():
             raise RunCancelled("cancelled before rerank call")
-        payload = build_rerank_payload(query, texts, self.identity.rerank_model or "")
-        usage.bytes_sent += len(json.dumps(payload).encode("utf-8"))
-        raw = self._call_transport(TEI_RERANK_ROUTE, payload, bounds, usage, cancel_check)
+        payload = build_rerank_payload(query, texts)
+        raw = self._call_transport(TEI_RERANK_ROUTE, payload, bounds, usage, cancel_check,
+                                   total_tokens)
         usage.bytes_received += len(json.dumps(raw).encode("utf-8"))
         try:
             return parse_rerank_payload(raw, count=len(texts))
@@ -281,7 +292,8 @@ class VectorGateway:
             raise
 
     def _call_transport(self, route: str, payload: Dict[str, Any], bounds: Bounds,
-                        usage: ProviderUsage, cancel_check: CancelCheck) -> Dict[str, Any]:
+                        usage: ProviderUsage, cancel_check: CancelCheck,
+                        tokens: int) -> Any:
         attempts = 0
         max_attempts = 1 + bounds.max_retries
         while attempts < max_attempts:
@@ -289,7 +301,12 @@ class VectorGateway:
                 raise RunCancelled("cancelled before provider call")
             bounds.validate_call_count(
                 usage.embedding_calls + usage.rerank_calls + 1)
+            bounds.validate_token_total(usage.tokens_estimated + tokens)
             attempts += 1
+            if attempts > 1:
+                usage.retries += 1
+            usage.tokens_estimated += tokens
+            usage.bytes_sent += len(json.dumps(payload).encode("utf-8"))
             try:
                 if route == TEI_EMBEDDINGS_ROUTE:
                     usage.embedding_calls += 1
@@ -299,29 +316,30 @@ class VectorGateway:
                 return _parse_json_response(raw)
             except ProviderFault as fault:
                 if fault.kind in _TRANSIENT_HTTP_FAULTS and attempts < max_attempts:
-                    usage.retries += 1
                     continue
                 usage.faults.append(fault.to_dict())
                 raise
         raise RuntimeError("provider call loop exited without a verdict")
 
 
-def tei_http_transport(endpoint: TeiEndpoint) -> EmbedTransport:
-    allowed_private = (
-        [external_http.normalize_url(endpoint.base_url).split("://", 1)[1]]
-        if endpoint.allow_private_endpoint else None
-    )
-
-    def transport(route: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        url = external_http.normalize_url(endpoint.base_url) + route
+def tei_http_transport(endpoint: TeiEndpoint,
+                       rerank_endpoint: Optional[TeiEndpoint] = None) -> EmbedTransport:
+    def transport(route: str, payload: Dict[str, Any]) -> Any:
+        selected = endpoint if route == TEI_EMBEDDINGS_ROUTE else rerank_endpoint
+        if selected is None:
+            raise ProviderFault("rerank_unavailable", "no explicit rerank endpoint configured")
+        base_url = external_http.normalize_url(selected.base_url)
+        allowed_private = ([base_url.split("://", 1)[1]]
+                           if selected.allow_private_endpoint else None)
+        url = base_url + route
         try:
             response = external_http.request(
                 "POST",
                 url,
-                api_key=endpoint.api_key,
+                api_key=selected.api_key,
                 json_body=payload,
-                timeout=endpoint.timeout_seconds,
-                max_response_bytes=endpoint.max_response_bytes,
+                timeout=selected.timeout_seconds,
+                max_response_bytes=selected.max_response_bytes,
                 allowed_private_hosts=allowed_private,
             )
         except external_http.EgressBlockedError as exc:
@@ -356,7 +374,7 @@ def _char_trigram_vector(text: str) -> List[float]:
 
 
 def offline_diagnostic_transport() -> EmbedTransport:
-    def transport(route: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def transport(route: str, payload: Dict[str, Any]) -> Any:
         if route == TEI_EMBEDDINGS_ROUTE:
             texts = payload.get("input") or []
             return {
@@ -373,7 +391,7 @@ def offline_diagnostic_transport() -> EmbedTransport:
             text_vector = _char_trigram_vector(str(text))
             score = sum(a * b for a, b in zip(query_vector, text_vector))
             results.append({"index": i, "score": score})
-        return {"results": results}
+        return results
 
     return transport
 
@@ -397,7 +415,7 @@ def scripted_transport(*, dimension: int = OFFLINE_DIMENSION,
             vector = [v / norm for v in vector]
         return vector
 
-    def transport(route: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def transport(route: str, payload: Dict[str, Any]) -> Any:
         fault = faults.get(route)
         if fault == "http_unreachable":
             raise ProviderFault("http_unreachable", "scripted transport unreachable")
@@ -428,7 +446,7 @@ def scripted_transport(*, dimension: int = OFFLINE_DIMENSION,
             return {"data": rows}
         texts = payload.get("texts") or []
         if fault == "truncated_payload":
-            return b'{"results": [{"index": 0'
+            return b'[{"index": 0'
         query_vector = _char_trigram_vector(str(payload.get("query") or ""))
         results = []
         for i, text in enumerate(texts):
@@ -445,7 +463,7 @@ def scripted_transport(*, dimension: int = OFFLINE_DIMENSION,
             results = results[:-1]
         if fault == "malformed_output":
             return [1, 2, 3]
-        return {"results": results}
+        return results
 
     return transport
 
@@ -528,8 +546,27 @@ def resolve_providers(profile: str,
             return _unavailable_tei("embed_model must be a non-empty string")
         rerank_model = run_config.get("rerank_model")
         rerank_revision = run_config.get("rerank_revision")
+        rerank_base_url = run_config.get("rerank_base_url")
+        rerank_tokenizer_revision = run_config.get("rerank_tokenizer_revision")
         if bool(rerank_model) != bool(rerank_revision):
             return _unavailable_tei("rerank_model and rerank_revision must be declared together")
+        if any((rerank_model, rerank_base_url, rerank_tokenizer_revision)):
+            missing = [name for name, value in (
+                ("rerank_model", rerank_model), ("rerank_revision", rerank_revision),
+                ("rerank_base_url", rerank_base_url),
+                ("rerank_tokenizer_revision", rerank_tokenizer_revision),
+            ) if not isinstance(value, str) or not value.strip()]
+            if missing:
+                return _unavailable_tei(f"rerank configuration is missing: {sorted(missing)}")
+            if not rerank_base_url.lower().startswith(("http://", "https://")):
+                return _unavailable_tei("rerank_base_url must be an http(s) URL")
+        digest_names = ["embedding_runtime_digest", "embedding_assets_digest"]
+        if rerank_model:
+            digest_names.extend(("rerank_runtime_digest", "rerank_assets_digest"))
+        for name in digest_names:
+            value = run_config.get(name)
+            if not isinstance(value, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value):
+                return _unavailable_tei(f"{name} must be an immutable sha256 digest")
         identity = ProviderIdentity(
             profile="tei-http",
             model=str(embed_model),
@@ -543,6 +580,14 @@ def resolve_providers(profile: str,
             rerank_model=str(rerank_model) if rerank_model else None,
             rerank_revision=str(rerank_revision) if rerank_revision else None,
             rerank_capable=bool(rerank_model),
+            embedding_endpoint=external_http.normalize_url(base_url),
+            rerank_endpoint=(external_http.normalize_url(rerank_base_url)
+                             if rerank_base_url else None),
+            rerank_tokenizer_revision=rerank_tokenizer_revision,
+            embedding_runtime_digest=run_config["embedding_runtime_digest"],
+            embedding_assets_digest=run_config["embedding_assets_digest"],
+            rerank_runtime_digest=run_config.get("rerank_runtime_digest") if rerank_model else None,
+            rerank_assets_digest=run_config.get("rerank_assets_digest") if rerank_model else None,
         )
         endpoint = TeiEndpoint(
             base_url=str(base_url),
@@ -551,11 +596,19 @@ def resolve_providers(profile: str,
             max_response_bytes=int(run_config.get("max_response_bytes") or 4_000_000),
             allow_private_endpoint=bool(run_config.get("allow_private_endpoint") or False),
         )
-        gateway = VectorGateway(identity, tei_http_transport(endpoint))
+        rerank_endpoint = (TeiEndpoint(
+            base_url=identity.rerank_endpoint,
+            api_key=str(run_config.get("rerank_api_key") or ""),
+            timeout_seconds=endpoint.timeout_seconds,
+            max_response_bytes=endpoint.max_response_bytes,
+            allow_private_endpoint=endpoint.allow_private_endpoint,
+        ) if identity.rerank_capable else None)
+        gateway = VectorGateway(identity, tei_http_transport(endpoint, rerank_endpoint))
         return gateway, identity, {
             "state": "available",
             "reason": "operator-provided run configuration",
             "endpoint": endpoint.to_dict(),
+            "rerank_endpoint": rerank_endpoint.to_dict() if rerank_endpoint else None,
         }
     raise UnavailableProvider(f"unknown provider profile {profile!r}")
 

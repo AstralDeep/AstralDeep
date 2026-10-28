@@ -70,7 +70,7 @@ class Bounds:
             raise BoundsExceeded(
                 f"snapshot has {len(rows)} rows, exceeding max_snapshot_rows "
                 f"{self.max_snapshot_rows}")
-        total_chars = 0
+        total_bytes = len(rows)
         for row in rows:
             value = row.get("value")
             if not isinstance(value, str):
@@ -79,8 +79,7 @@ class Bounds:
                 raise BoundsExceeded(
                     f"row {row.get('id')!r} value length {len(value)} exceeds "
                     f"max_row_chars {self.max_row_chars}")
-            total_chars += len(value)
-        total_bytes = total_chars + len(rows)
+            total_bytes += len(value.encode("utf-8"))
         if total_bytes > self.max_snapshot_bytes:
             raise BoundsExceeded(
                 f"snapshot bytes {total_bytes} exceed max_snapshot_bytes "

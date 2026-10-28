@@ -139,7 +139,7 @@ def test_revalidation_drops_expired_validity(env):
 def test_revalidation_accepts_current_row(env):
     fresh = {"id": "x", "user_id": "u", "source": "explicit",
              "valid_from": 0, "valid_to": None, "project_id": None}
-    ok, reason = revalidate_row(_store_returning(fresh), "u", None, {"id": "x"})
+    ok, reason = revalidate_row(_store_returning(fresh), "u", None, dict(fresh))
     assert ok and reason == "ok"
 
 

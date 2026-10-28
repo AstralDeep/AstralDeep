@@ -43,7 +43,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help=(
             "JSON file with the operator-provided run configuration required by the "
             "tei-http profile (base_url, embed_model/revision, tokenizer_revision, "
-            "dimension, license; optional rerank_model/revision, api_key, "
+            "dimension, license, embedding_runtime_digest, embedding_assets_digest; "
+            "reranking requires rerank_base_url, rerank_model, "
+            "rerank_revision, rerank_tokenizer_revision, "
+            "rerank_runtime_digest, rerank_assets_digest; optional api_key, rerank_api_key, "
             "allow_private_endpoint); never committed, never echoed"
         ),
     )
@@ -52,7 +55,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=None,
         help=(
             "JSON file attesting a bounded manual local run of the pinned model/runtime "
-            "against this corpus (profile, model_revision, corpus_digest, performed_at, "
+            "against this corpus (profile, model_revision, provider_identity_digest, "
+            "corpus_digest, performed_at, "
             "operator); without it tei-http stays unqualified"
         ),
     )

@@ -45,8 +45,8 @@ def _vec(value=1.0, dimension=4):
 
 def test_build_payloads_shape():
     assert build_embedding_payload(["a"], "m") == {"model": "m", "input": ["a"]}
-    assert build_rerank_payload("q", ["a"], "m") == {
-        "model": "m", "query": "q", "texts": ["a"]}
+    assert build_rerank_payload("q", ["a"]) == {
+        "query": "q", "texts": ["a"], "truncate": False, "return_text": False}
 
 
 def test_parse_embedding_payload_golden_row_association():
@@ -102,20 +102,20 @@ def test_parse_embedding_payload_rejects_malformed_shapes():
 
 
 def test_parse_rerank_payload_sorts_by_score():
-    payload = {"results": [{"index": 0, "score": 0.1}, {"index": 1, "score": 0.9}]}
+    payload = [{"index": 0, "score": 0.1}, {"index": 1, "score": 0.9}]
     assert parse_rerank_payload(payload, count=2) == [(1, 0.9), (0, 0.1)]
 
 
 def test_parse_rerank_payload_rejects_bad_indices_and_scores():
     with pytest.raises(ProviderFault, match="duplicate_index"):
         parse_rerank_payload(
-            {"results": [{"index": 0, "score": 1.0}, {"index": 0, "score": 0.5}]}, count=2)
+            [{"index": 0, "score": 1.0}, {"index": 0, "score": 0.5}], count=2)
     with pytest.raises(ProviderFault, match="missing_index"):
-        parse_rerank_payload({"results": [{"index": 0, "score": 1.0}]}, count=2)
+        parse_rerank_payload([{"index": 0, "score": 1.0}], count=2)
     with pytest.raises(ProviderFault, match="out_of_range_index"):
-        parse_rerank_payload({"results": [{"index": 9, "score": 1.0}]}, count=1)
+        parse_rerank_payload([{"index": 9, "score": 1.0}], count=1)
     with pytest.raises(ProviderFault, match="non_finite_value"):
-        parse_rerank_payload({"results": [{"index": 0, "score": float("inf")}]}, count=1)
+        parse_rerank_payload([{"index": 0, "score": float("inf")}], count=1)
     with pytest.raises(ProviderFault, match="malformed_output"):
         parse_rerank_payload({"unexpected": True}, count=1)
 
@@ -318,6 +318,11 @@ def test_resolve_tei_http_full_config_is_available():
         "embed_model": "model-a", "embed_revision": "sha-a",
         "tokenizer_revision": "tok-a", "dimension": 768,
         "license": "Apache-2.0", "rerank_model": "model-b", "rerank_revision": "sha-b",
+        "rerank_base_url": "http://rerank.internal:8081", "rerank_tokenizer_revision": "tok-b",
+        "embedding_runtime_digest": "sha256:" + "a" * 64,
+        "embedding_assets_digest": "sha256:" + "b" * 64,
+        "rerank_runtime_digest": "sha256:" + "c" * 64,
+        "rerank_assets_digest": "sha256:" + "d" * 64,
         "api_key": "explicit-operator-key",
         "allow_private_endpoint": True,
     }
@@ -432,8 +437,9 @@ def test_parse_json_response_variants():
     assert providers_module._parse_json_response('{"a": 1}') == {"a": 1}
     with pytest.raises(ProviderFault, match="not valid JSON"):
         providers_module._parse_json_response(b"{truncated")
-    with pytest.raises(ProviderFault, match="not an object"):
-        providers_module._parse_json_response(b"[1,2]")
+    assert providers_module._parse_json_response(b"[1,2]") == [1, 2]
+    with pytest.raises(ProviderFault, match="not an object or array"):
+        providers_module._parse_json_response(b"42")
     with pytest.raises(ProviderFault, match="unsupported type"):
         providers_module._parse_json_response(42)
 
@@ -487,11 +493,11 @@ def test_gateway_enforces_call_bound_mid_loop():
 
 def test_parse_rerank_entry_shapes():
     with pytest.raises(ProviderFault, match="not an object"):
-        parse_rerank_payload({"results": ["x"]}, count=1)
+        parse_rerank_payload(["x"], count=1)
     with pytest.raises(ProviderFault, match="not an int"):
-        parse_rerank_payload({"results": [{"index": "0", "score": 1.0}]}, count=1)
+        parse_rerank_payload([{"index": "0", "score": 1.0}], count=1)
     with pytest.raises(ProviderFault, match="not an int"):
-        parse_rerank_payload({"results": [{"index": True, "score": 1.0}]}, count=1)
+        parse_rerank_payload([{"index": True, "score": 1.0}], count=1)
 
 
 def test_resolve_tei_http_empty_config_and_empty_model():

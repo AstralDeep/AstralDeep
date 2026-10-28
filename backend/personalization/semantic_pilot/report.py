@@ -76,7 +76,7 @@ def _attestation_problems(attestation: Dict[str, Any], identity: Dict[str, Any],
                           corpus_digest: str) -> List[str]:
     problems: List[str] = []
     for field_name in ("profile", "model_revision", "corpus_digest", "performed_at",
-                       "operator"):
+                       "operator", "provider_identity_digest"):
         if not attestation.get(field_name):
             problems.append(f"missing {field_name}")
     if attestation.get("profile") != identity.get("profile"):
@@ -85,6 +85,9 @@ def _attestation_problems(attestation: Dict[str, Any], identity: Dict[str, Any],
         problems.append("attestation model revision differs from the executed revision")
     if attestation.get("corpus_digest") != corpus_digest:
         problems.append("attestation corpus digest differs from the executed corpus")
+    identity_digest = _sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")))
+    if attestation.get("provider_identity_digest") != identity_digest:
+        problems.append("attestation provider identity digest differs from the executed profile")
     return problems
 
 

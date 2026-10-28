@@ -51,7 +51,18 @@ def test_cli_tei_http_unavailable_writes_report(defenses_on, tmp_path):
                for result in report["final"]["case_results"])
 
 
-def test_cli_run_config_file(defenses_on, tmp_path):
+def test_cli_run_config_file(defenses_on, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from personalization.semantic_pilot.providers import scripted_transport
+
+    transport = scripted_transport(dimension=384)
+
+    def request(method, url, **kwargs):
+        return SimpleNamespace(content=json.dumps(
+            transport("/v1/embeddings", kwargs["json_body"])).encode())
+
+    monkeypatch.setattr("personalization.semantic_pilot.providers.external_http.request", request)
     config_path = tmp_path / "tei-config.json"
     config_path.write_text(json.dumps({
         "base_url": "http://tei.internal:8080",
@@ -60,6 +71,8 @@ def test_cli_run_config_file(defenses_on, tmp_path):
         "tokenizer_revision": "tok-a",
         "dimension": 384,
         "license": "Apache-2.0",
+        "embedding_runtime_digest": "sha256:" + "a" * 64,
+        "embedding_assets_digest": "sha256:" + "b" * 64,
     }))
     path = tmp_path / "tei.json"
     code = main(["--profile", "tei-http", "--run-config", str(config_path),
