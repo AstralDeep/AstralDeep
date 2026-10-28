@@ -5,10 +5,7 @@ precedence, and refusal on session replacement during the guarded transaction.
 
 import importlib
 import asyncio
-from dataclasses import replace
-from datetime import datetime, timedelta, timezone
 import threading
-import time
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -18,6 +15,7 @@ from tests.test_work_submit_postgres_088 import (
     fixture as fixture, runtime as runtime, service as service, signing_key as signing_key,
 )
 from tests.test_request_session_authority_088 import request
+from tests.helpers.database_clock import expire_host_clock
 from tests.helpers.session_plane_runtime import get_session_record, replace_session_record
 from persistent_agents.models import AssignmentError
 from orchestrator import auth, work_control_authority as module
@@ -185,9 +183,8 @@ async def test_final_guard_rechecks_composition_after_waiting_session_assertion(
 
 
 @pytest.mark.parametrize("cookie", [True, False])
-async def test_expiry_after_real_audit_table_wait_rolls_back_prior_write(bound, fixture, runtime, cookie):
+async def test_expiry_after_real_audit_table_wait_rolls_back_prior_write(bound, fixture, runtime, cookie, monkeypatch):
     guard = await selected(bound, fixture, cookie=cookie)
-    guard = replace(guard, _until=datetime.now(timezone.utc) + timedelta(seconds=.08))
     entered = threading.Event()
     def mutation():
         with runtime.transaction() as tx:
@@ -202,8 +199,8 @@ async def test_expiry_after_real_audit_table_wait_rolls_back_prior_write(bound, 
     with runtime.transaction() as blocker:
         blocker.execute("LOCK TABLE audit_events IN ACCESS EXCLUSIVE MODE")
         pending = asyncio.create_task(asyncio.to_thread(mutation))
-        assert await asyncio.to_thread(entered.wait, 2)
-        await asyncio.sleep(max(0, guard._until.timestamp() - time.time()) + .02)
+        assert await asyncio.to_thread(entered.wait, 30)
+        expire_host_clock(monkeypatch, module, after=guard._until)
         assert not pending.done()
     with pytest.raises(AssignmentError, match="work_authentication_required"):
         await pending

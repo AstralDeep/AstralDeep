@@ -1,10 +1,12 @@
 """Clock controls for tests whose product code compares expiry against database or host
-time: read or wait on the PostgreSQL clock, or advance the samples that AstralPlane session
-guards and request-principal checks take once a test's condition holds, without sleeping.
+time: read or wait on the PostgreSQL clock, advance the samples that AstralPlane session
+guards and request-principal checks take, or move one module's host clock past an expiry,
+each once a test's condition holds, without sleeping.
 """
 
 import asyncio
 from dataclasses import replace
+from datetime import datetime, timedelta
 
 
 def database_now(runtime):
@@ -25,6 +27,15 @@ def advance_session_clock(monkeypatch, repository, *, to, when):
         return replace(state, observed_at=max(state.observed_at, to)) if when() else state
 
     monkeypatch.setattr(repository, "_assert_credential", observed)
+
+
+def expire_host_clock(monkeypatch, module, *, after):
+    class Expired(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return after + timedelta(seconds=1)
+
+    monkeypatch.setattr(module, "datetime", Expired)
 
 
 def expire_principal(monkeypatch, *, at, when):

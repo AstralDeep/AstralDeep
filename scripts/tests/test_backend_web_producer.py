@@ -125,12 +125,13 @@ def test_execute_uses_fixed_argv_sanitized_environment_and_safe_error(monkeypatc
 
 
 def test_phase_jobs_receipts_and_gate_budget_are_fixed():
-    assert producer.GATE_GROUPS == ("tests", "persistent_agents", "modules")
+    assert producer.GATE_GROUPS == ("tests_1", "tests_2", "persistent_agents", "modules")
     assert producer.GATE_TIMEOUT_SECONDS < 30 * 60
     assert [producer.phase_job(phase) for phase in producer.PHASES] == [
         "qualify-backend-web", "qualify-backend-web-gates", "qualify-backend-web-services", "qualify-backend-web"]
     assert [producer.receipt_name(*item) for item in producer.expected_receipts()] == [
-        "phase-gate-tests.json", "phase-gate-persistent_agents.json", "phase-gate-modules.json", "phase-services.json"]
+        "phase-gate-tests_1.json", "phase-gate-tests_2.json", "phase-gate-persistent_agents.json",
+        "phase-gate-modules.json", "phase-services.json"]
 
 
 @pytest.mark.parametrize("phase,group,job", [
@@ -185,7 +186,7 @@ def test_context_keeps_private_materials_and_public_evidence_separate(args, monk
 @pytest.mark.parametrize("field,value", [
     ("candidate_sha", "bad"), ("port", 80), ("port", None), ("candidate_image", "latest"),
     ("candidate_image", None), ("lets_image", "latest"), ("output", Path("relative")),
-    ("private_root", Path("relative")), ("group", "tests"), ("receipts", Path("/receipts")),
+    ("private_root", Path("relative")), ("group", "tests_1"), ("receipts", Path("/receipts")),
     ("source", None), ("baseline_plane_source", None), ("phase", "unknown"),
 ])
 def test_invalid_context_refused_before_commands(args, monkeypatch, field, value):
@@ -302,11 +303,12 @@ def test_local_pass_records_missing_acceptance_without_fake_success(args, monkey
     assert "backend-complete" in report["pending_checks"]
     assert not (args.output / "evidence.json").exists()
     assert "sensitive" not in json.dumps(report)
-    assert [row["phase"] for row in report["phase_observations"][:3]] == [
+    gates = len(producer.GATE_GROUPS)
+    assert [row["phase"] for row in report["phase_observations"][:gates]] == [
         "complete-backend-unit-gates-" + group for group in producer.GATE_GROUPS]
-    gate_statuses = [row["status"] for row in report["phase_observations"][:3]]
-    assert gate_statuses == {"gates": ["failed"] * 3, "gate-modules": ["executed", "executed", "failed"]}.get(
-        failure, ["executed"] * 3)
+    gate_statuses = [row["status"] for row in report["phase_observations"][:gates]]
+    assert gate_statuses == {"gates": ["failed"] * gates,
+                             "gate-modules": ["executed"] * (gates - 1) + ["failed"]}.get(failure, ["executed"] * gates)
     assert json.loads((args.output / "producer-status.json").read_text()) == report
     if failure is None:
         assert "session-renewal" in report["observed_checks"]
@@ -390,25 +392,25 @@ def fail_second(receipt):
 
 
 @pytest.mark.parametrize("name,mutation", [
-    ("phase-gate-tests.json", lambda r: r.update(candidate_sha="0" * 40)),
-    ("phase-gate-tests.json", lambda r: r.update(policy_commit="0" * 40)),
-    ("phase-gate-tests.json", lambda r: r.update(candidate_image="latest")),
-    ("phase-gate-tests.json", lambda r: r.update(group="modules")),
-    ("phase-gate-tests.json", lambda r: r.update(phase="services")),
-    ("phase-gate-tests.json", lambda r: r.update(release_authorized=True)),
-    ("phase-gate-tests.json", lambda r: r.update(protected_context=True)),
-    ("phase-gate-tests.json", lambda r: r.update(run={"run_id": "1", "run_attempt": "1"})),
-    ("phase-gate-tests.json", lambda r: r.update(script_sha256="0" * 64)),
-    ("phase-gate-tests.json", lambda r: r.update(extra=True)),
-    ("phase-gate-tests.json", lambda r: r.update(schema_version=2)),
-    ("phase-gate-tests.json", lambda r: r.update(observed_checks=["backend-complete"])),
-    ("phase-gate-tests.json", lambda r: r.update(qualification_id="f" * 32)),
-    ("phase-gate-tests.json", lambda r: r.update(phase_observations=[])),
-    ("phase-gate-tests.json", lambda r: r.update(phase_observations="executed")),
-    ("phase-gate-tests.json", lambda r: r["phase_observations"][0].update(exit_code=False)),
-    ("phase-gate-tests.json", lambda r: r["phase_observations"][0].update(status="skipped")),
-    ("phase-gate-tests.json", lambda r: r["phase_observations"][0].update(phase="complete-backend-unit-gates")),
-    ("phase-gate-tests.json", lambda r: r["phase_observations"].append(dict(r["phase_observations"][0]))),
+    ("phase-gate-tests_1.json", lambda r: r.update(candidate_sha="0" * 40)),
+    ("phase-gate-tests_1.json", lambda r: r.update(policy_commit="0" * 40)),
+    ("phase-gate-tests_1.json", lambda r: r.update(candidate_image="latest")),
+    ("phase-gate-tests_1.json", lambda r: r.update(group="modules")),
+    ("phase-gate-tests_1.json", lambda r: r.update(phase="services")),
+    ("phase-gate-tests_1.json", lambda r: r.update(release_authorized=True)),
+    ("phase-gate-tests_1.json", lambda r: r.update(protected_context=True)),
+    ("phase-gate-tests_1.json", lambda r: r.update(run={"run_id": "1", "run_attempt": "1"})),
+    ("phase-gate-tests_1.json", lambda r: r.update(script_sha256="0" * 64)),
+    ("phase-gate-tests_1.json", lambda r: r.update(extra=True)),
+    ("phase-gate-tests_1.json", lambda r: r.update(schema_version=2)),
+    ("phase-gate-tests_1.json", lambda r: r.update(observed_checks=["backend-complete"])),
+    ("phase-gate-tests_1.json", lambda r: r.update(qualification_id="f" * 32)),
+    ("phase-gate-tests_1.json", lambda r: r.update(phase_observations=[])),
+    ("phase-gate-tests_1.json", lambda r: r.update(phase_observations="executed")),
+    ("phase-gate-tests_1.json", lambda r: r["phase_observations"][0].update(exit_code=False)),
+    ("phase-gate-tests_1.json", lambda r: r["phase_observations"][0].update(status="skipped")),
+    ("phase-gate-tests_1.json", lambda r: r["phase_observations"][0].update(phase="complete-backend-unit-gates")),
+    ("phase-gate-tests_1.json", lambda r: r["phase_observations"].append(dict(r["phase_observations"][0]))),
     ("phase-services.json", lambda r: r["phase_observations"].pop()),
     ("phase-services.json", fail_second),
     ("phase-services.json", lambda r: r.update(qualification_id="not-hex")),
@@ -447,9 +449,9 @@ def test_assembly_refuses_unexpected_members_and_mixed_candidates(assembly, tmp_
         (assembly.receipts / "nested").mkdir()
     elif hazard == "symlink":
         target = tmp_path / "elsewhere.json"
-        target.write_text((assembly.receipts / "phase-gate-tests.json").read_text())
-        (assembly.receipts / "phase-gate-tests.json").unlink()
-        (assembly.receipts / "phase-gate-tests.json").symlink_to(target)
+        target.write_text((assembly.receipts / "phase-gate-tests_1.json").read_text())
+        (assembly.receipts / "phase-gate-tests_1.json").unlink()
+        (assembly.receipts / "phase-gate-tests_1.json").symlink_to(target)
     elif hazard == "orphan-authentication":
         (assembly.receipts / "authentication.json").write_text("{}")
     with pytest.raises(ValueError):
@@ -477,8 +479,8 @@ def test_cli_incomplete_is_nonzero_and_does_not_authorize(args, monkeypatch, cap
 
 
 @pytest.mark.parametrize("phase,group,statuses,expected", [
-    ("gate", "tests", ["executed"], 0),
-    ("gate", "tests", ["failed"], 2),
+    ("gate", "tests_1", ["executed"], 0),
+    ("gate", "tests_1", ["failed"], 2),
     ("services", None, ["executed"] * 3, 0),
     ("services", None, ["executed", "failed"], 2),
 ])

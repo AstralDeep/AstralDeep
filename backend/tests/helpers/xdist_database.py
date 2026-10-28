@@ -44,6 +44,9 @@ def isolate_worker_database(environ: MutableMapping[str, str]) -> tuple[str, str
     from psycopg2.extensions import parse_dsn
 
     suite, target = selected
+    from psycopg2 import sql
+    from psycopg2.extensions import parse_dsn
+
     name = sql.Identifier(parse_dsn(target)["dbname"])
     _execute(suite, sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(name),
              sql.SQL("CREATE DATABASE {} TEMPLATE template0").format(name))

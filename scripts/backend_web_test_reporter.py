@@ -1,8 +1,10 @@
-"""Pytest plugin that writes failing test results immediately during backend/web suites
-so long runs stay diagnosable if interrupted, and writes each suite's collection inventory once:
-from the pytest-xdist controller when workers run the suite; loaded by run_backend_web_tests.py.
+"""Pytest plugin for backend/web suites, loaded by run_backend_web_tests.py: it keeps only the
+test files of the shard BQ_SUITE_SHARD names, writes the suite's collection inventory once (from
+the pytest-xdist controller when workers run it), and prints failures immediately so interrupted
+runs stay diagnosable.
 """
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,6 +13,25 @@ import re
 import pytest
 
 _XDIST_COLLECTIONS: dict[str, list[str]] = {}
+_SHARD = re.compile(r"([1-9][0-9]*)/([1-9][0-9]*)")
+
+
+def pytest_collection_modifyitems(session, config, items):
+    shard = os.environ.get("BQ_SUITE_SHARD")
+    if shard is None:
+        return
+    match = _SHARD.fullmatch(shard)
+    if match is None or int(match[1]) > int(match[2]):
+        raise ValueError("suite shard must be <index>/<count> with 1 <= index <= count")
+    index, count = int(match[1]), int(match[2])
+    selected, deselected = [], []
+    for item in items:
+        path = item.nodeid.split("::", 1)[0]
+        bucket = int(hashlib.sha256(path.encode("utf-8")).hexdigest(), 16) % count
+        (selected if bucket == index - 1 else deselected).append(item)
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+    items[:] = selected
 
 
 def _write_inventory(nodeids):

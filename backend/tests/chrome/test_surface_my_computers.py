@@ -50,8 +50,18 @@ def test_remote_control_on_card_keeps_badge_and_stop_without_explanation(enabled
     card, = components
     assert card["title"] == "This computer"
     kinds = [child["type"] for child in card["content"]]
-    assert kinds == ["badge", "button"]
+    assert kinds == ["badge", "button", "button"]
     assert card["content"][1]["payload"] == {"enabled": False}
+    assert (card["content"][2]["action"], card["content"][2]["label"], card["content"][2]["payload"]) == (
+        "chrome_computer_bypass_set", "Bypass permissions", {"host_id": "h1", "enabled": True})
+
+
+def test_bypass_on_shows_a_badge_and_offers_to_ask_again(enabled, monkeypatch):
+    card, = _components(monkeypatch, [], {"enabled": True, "name": "Studio", "host_id": "h1", "bypass": True})
+    assert [child["type"] for child in card["content"]] == ["badge", "badge", "button", "button"]
+    assert card["content"][1]["label"] == "bypass on"
+    assert (card["content"][3]["label"], card["content"][3]["payload"]) == (
+        "Ask for permission", {"host_id": "h1", "enabled": False})
 
 
 def test_remote_control_off_card_keeps_only_the_safety_line_beside_allow(enabled, monkeypatch):
@@ -186,3 +196,17 @@ def test_grant_revoke_is_refused_while_the_feature_is_off(monkeypatch):
     monkeypatch.setattr(my_computers, "_enabled", lambda: False)
     calls, _key, notice = _revoke(dict(_REVOKE))
     assert calls == [] and my_computers._DISABLED_MSG in notice
+
+
+def test_a_reregistered_mac_shows_once(enabled, monkeypatch):
+    from tests.test_computer_use_076 import OWNER, _FakeOrch, _host_named
+
+    orch = _FakeOrch()
+    _host_named(orch, "RyzenRoll Mobile", online=False, age_s=60)
+    _host_named(orch, "RyzenRoll Mobile")
+    monkeypatch.setattr(my_computers, "_this_computer", lambda orch, user, params: None)
+    cards = run(my_computers.components(orch, OWNER, ["user"], {}))
+    assert [card["title"] for card in cards] == ["RyzenRoll Mobile"]
+    assert "offline" not in json.dumps(cards[0]["content"][0])
+    html = run(my_computers.render(orch, OWNER, ["user"], {}))
+    assert html.count("RyzenRoll Mobile") == 1 and "1 online · 1 total" in html

@@ -57,6 +57,23 @@ def test_host_owned_file_read_exemption_matches_first_party_registry():
                     host_file_read=True)
 
 
+def test_host_owned_de_escalation_skips_review_only_for_its_registered_write_tool():
+    host = {("computer-use-1", "end_session")}
+    scopes = {"end_session": "tools:write", "resume_session": "tools:write", "run_command": "tools:execute"}
+    action = registered_action(scopes, "computer-use-1", "end_session", (), host)
+    assert action.effect is Effect.DE_ESCALATION and action.needs_review is False
+    assert review_risks(action) == ("source_bound", "de_escalation", "tools:write")
+    assert registered_action(scopes, "computer-use-1", "end_session").needs_review is True
+    assert registered_action(scopes, "computer-use-1", "resume_session", (), host).effect is Effect.MUTATION
+    assert registered_action(scopes, "user-agent", "end_session", (), host).effect is Effect.MUTATION
+    escalated = {("computer-use-1", "run_command")}
+    assert registered_action(scopes, "computer-use-1", "run_command", (), escalated).effect is Effect.PRIVILEGED
+    with pytest.raises(ValueError):
+        read_only_stream(scopes, "computer-use-1", "end_session")
+    with pytest.raises(ValueError, match="effect declaration"):
+        registered_action({}, "computer-use-1", "end_session", (), host)
+
+
 def test_unknown_or_derived_origin_cannot_become_human():
     assert combine_origins(Origin.HUMAN, Origin.TOOL) is Origin.DERIVED
     assert combine_origins(Origin.HUMAN, Origin.UNKNOWN) is Origin.UNKNOWN
