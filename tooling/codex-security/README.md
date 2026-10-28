@@ -150,10 +150,21 @@ arguments, admission, copying, cancellation and error handling; they do not prov
 kernel containment. `FIXTURE-PROVENANCE.md` records the exact acquisition and
 commands. Required CI remains offline and unchanged.
 
-The dedicated locked runtime built and its real upstream mock scan completed in
-a network-disabled Linux container. A real Bubblewrap 0.8.0 probe in an ordinary
-unprivileged task container was denied because the host does not allow the needed
-namespaces. **Real supported-host Bubblewrap execution and filesystem/network
-canaries remain unqualified.** Preserve that failure and keep the workflow's
-containment acceptance blocked until a supported Linux runner passes. No paid
-scan, actual vulnerability finding, deployment or release qualification is claimed.
+The earlier Bubblewrap probe in an ordinary unprivileged task container was denied
+by the host namespace policy; that failure remains retained. On 2026-10-28, wrapper
+source `8aa578640dd24439efc97d7d310b6c0d13f5f5b4` completed the actual upstream mock
+scan, canonical artifact validation and report verification in a separate
+unprivileged Debian 12 x86-64 guest, kernel `6.1.0-54-cloud-amd64`, with Bubblewrap
+0.8.0. Its dedicated runtime image was
+`sha256:5694bf65aa895624eadefc684e50535146c035a9da052bf8054944b69dee8553`;
+the approved extracted rootfs digest was
+`c4e5795bd4e54c19792a36eac380bda6e33a37ea7800772a6b29acaa913f50ac`.
+
+Only fresh synthetic source and canaries were used. Real probes witnessed distinct
+user, PID, mount, network, IPC, UTS and cgroup namespaces, zero capabilities,
+read-only runtime/source mounts, absent host-private/excluded/Git/untracked files,
+tracked-file and parent-symlink denials, blocked loopback/metadata/private-network
+connections, and temporary-source/process cleanup. This qualifies that exact
+synthetic workflow and supported-host configuration. It does not qualify arbitrary
+hosts, paid scanning, security analysis, actual vulnerability findings, production
+deployment or release; current final-candidate CI remains required.
