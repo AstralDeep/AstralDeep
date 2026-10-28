@@ -961,19 +961,28 @@ def _validate_missing_provider_failure(
         "error_message_sha256",
         "base_sha",
         "candidate_sha",
+        "required_targets",
+        "missing_platform_reports",
         "protected_release_authorization",
     }:
         raise BootstrapError("evidence parser did not emit the exact failure contract")
+    required_targets = [
+        name.removesuffix("_evidence")
+        for name in EVIDENCE_INPUTS
+        if name in PROVIDER_EVIDENCE_INPUTS
+    ]
     expected = {
         "document_type": "release_evidence_local_failure",
         "schema_version": 1,
         "error_code": "missing_provider_inputs",
         "base_sha": base_sha,
         "candidate_sha": candidate_sha,
+        "required_targets": required_targets,
+        "missing_platform_reports": required_targets,
         "protected_release_authorization": False,
     }
     for field, value in expected.items():
-        if failure.get(field) != value:
+        if type(failure.get(field)) is not type(value) or failure.get(field) != value:
             raise BootstrapError(
                 f"evidence parser failure {field} is not bootstrap-eligible"
             )

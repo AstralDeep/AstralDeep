@@ -36,6 +36,7 @@ CREATED = "2026-08-02T11:00:00Z"
 EXPIRES = "2026-08-09T10:59:59Z"
 REPOSITORY = "AstralDeep/AstralDeep"
 BRANCH = "065-conversational-voice"
+TARGETS = ("backend", "web", "windows", "android", "macos", "ios", "watchos", "docs")
 
 
 def _state(**updates: Any) -> Any:
@@ -126,6 +127,8 @@ def _failed_evidence(stderr: str = "provider evidence is missing") -> Any:
             "error_message_sha256": bootstrap._bytes_sha256(stderr),
             "base_sha": BASE,
             "candidate_sha": CANDIDATE,
+            "required_targets": list(TARGETS),
+            "missing_platform_reports": list(TARGETS),
             "protected_release_authorization": False,
         },
     )
@@ -304,6 +307,8 @@ def test_inventory_rejects_passing_parser(
                     "error_message_sha256": "d" * 64,
                     "base_sha": BASE,
                     "candidate_sha": CANDIDATE,
+                    "required_targets": list(TARGETS),
+                    "missing_platform_reports": list(TARGETS),
                     "protected_release_authorization": False,
                 },
             ),
@@ -1390,3 +1395,116 @@ def test_main_rejects_identical_push_record_paths_before_remote_mutation(
 def test_parser_has_no_caller_controlled_clock() -> None:
     help_text = bootstrap._parser().format_help()
     assert "--now" not in help_text
+
+
+@pytest.fixture(scope="module")
+def current_parser_missing_provider_failure(tmp_path_factory):
+    root = tmp_path_factory.mktemp("current-parser-failure")
+    failure = root / "failure.json"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts/prepare_release_evidence.py"),
+            "--repo",
+            str(REPO_ROOT),
+            "--evidence-dir",
+            str(root / "missing-platform-reports"),
+            "--base-sha",
+            BASE,
+            "--candidate-sha",
+            CANDIDATE,
+            "--failure-output",
+            str(failure),
+            "--output",
+            str(root / "diagnostic.json"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 2, completed.stderr
+    document = json.loads(failure.read_text(encoding="utf-8"))
+    assert document["error_code"] == "missing_provider_inputs"
+    return document
+
+
+def test_bootstrap_accepts_current_real_parser_missing_provider_receipt(
+    current_parser_missing_provider_failure,
+):
+    bootstrap._validate_missing_provider_failure(
+        current_parser_missing_provider_failure,
+        base_sha=BASE,
+        candidate_sha=CANDIDATE,
+    )
+
+
+@pytest.mark.parametrize("field", ["required_targets", "missing_platform_reports"])
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        None,
+        True,
+        1,
+        "backend",
+        {"backend": True},
+        [],
+        [*TARGETS, "unknown"],
+        ["unknown", *TARGETS[1:]],
+        [TARGETS[0], *TARGETS[:-1]],
+        list(TARGETS[:-1]),
+        list(reversed(TARGETS)),
+        [None, *TARGETS[1:]],
+        [True, *TARGETS[1:]],
+        [["backend"], *TARGETS[1:]],
+    ],
+)
+def test_bootstrap_rejects_changed_or_malformed_missing_target_inventory(
+    current_parser_missing_provider_failure, field, replacement
+):
+    failure = {**current_parser_missing_provider_failure, field: replacement}
+    with pytest.raises(bootstrap.BootstrapError, match="not bootstrap-eligible"):
+        bootstrap._validate_missing_provider_failure(
+            failure, base_sha=BASE, candidate_sha=CANDIDATE
+        )
+
+
+@pytest.mark.parametrize("removed", ["required_targets", "missing_platform_reports", "both"])
+def test_bootstrap_rejects_incomplete_or_legacy_parser_failure_contract(
+    current_parser_missing_provider_failure, removed
+):
+    failure = dict(current_parser_missing_provider_failure)
+    for field in ["required_targets", "missing_platform_reports"]:
+        if removed in [field, "both"]:
+            failure.pop(field)
+    with pytest.raises(bootstrap.BootstrapError, match="exact failure contract"):
+        bootstrap._validate_missing_provider_failure(
+            failure, base_sha=BASE, candidate_sha=CANDIDATE
+        )
+
+
+def test_bootstrap_rejects_extra_parser_failure_contract_field(
+    current_parser_missing_provider_failure,
+):
+    failure = {**current_parser_missing_provider_failure, "unexpected": True}
+    with pytest.raises(bootstrap.BootstrapError, match="exact failure contract"):
+        bootstrap._validate_missing_provider_failure(
+            failure, base_sha=BASE, candidate_sha=CANDIDATE
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("schema_version", True),
+        ("schema_version", 1.0),
+        ("protected_release_authorization", 0),
+    ],
+)
+def test_bootstrap_rejects_noncanonical_scalar_types_in_parser_failure(
+    current_parser_missing_provider_failure, field, replacement
+):
+    failure = {**current_parser_missing_provider_failure, field: replacement}
+    with pytest.raises(bootstrap.BootstrapError, match="not bootstrap-eligible"):
+        bootstrap._validate_missing_provider_failure(
+            failure, base_sha=BASE, candidate_sha=CANDIDATE
+        )
