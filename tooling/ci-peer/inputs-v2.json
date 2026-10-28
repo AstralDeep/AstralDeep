@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "status": "compatibility_inventory_explicit_v0125_caller",
+  "verifier": "scripts/ci_fence_fixture_verifier_v2.py",
+  "selection": "explicit_reviewed_caller_complete_action_pin_only",
+  "python": "3.11-compatible stdlib only",
+  "verifier_node_major": 24,
+  "runtime_evidence_schema_version": 5,
+  "policy_hash_schema_version": 9,
+  "fence_profiles": [
+    {
+      "fence_action": "openai/fence@abc5790eac3445fe3854eea6b506aa7d31bed67c",
+      "fence_version": "v0.10.5",
+      "source_commit": "567ebd3787467b0ea8eaddc00f5ad9247ace585b",
+      "manifest_schema_version": 4,
+      "signer_workflow": "openai/fence/.github/workflows/release.yml",
+      "action_sha256": {
+        "lib.cts": "d53ff329ebf8a9521dd8e60cbd88f19c41843acea915e59ffcc90de84086f818",
+        "main.cts": "5491b1e11675d68f5cf0b91c9cc10a1801b39f0d99ee78ba478c22db07c48d03",
+        "log.cts": "71e6224a4f9a2ecb4836a16680373ffb368857f89b2d638bcb98e5c993cbf631",
+        "post.cts": "c6626a6e0141839d37d51afd06897cab77eb0818f89e891ee8481249290e7fe4",
+        "bundle-manifest.json": "bf615b288ea0945943ab5767a13fd594f36e016c9ffac1538b24de46eabc7c41",
+        "bin/fence": "94892cb42a43d06a0998f0d6255280911f82fa322928ecb699104a7ec3a4f5d5"
+      }
+    },
+    {
+      "fence_action": "openai/fence@f9751ca5d767dc0199e88733c2b286bd4800a008",
+      "fence_version": "v0.12.5",
+      "source_commit": "424c1ac6cc2f844986f38defc6d43150796f35f5",
+      "manifest_schema_version": 4,
+      "signer_workflow": "openai/fence/.github/workflows/release.yml",
+      "action_sha256": {
+        "lib.cts": "27d1c3e33629a42bd0cf5daa6df9d2204899e50550c36b3b78fba6056bab7635",
+        "main.cts": "49a3bd0454d30c3cd29b880104ee4b047f6755341de89b25c4923b33e46d2791",
+        "log.cts": "b2b5c364e23671db2c27d60d6c107fe338cbeb7f80788092ef9ac0380dd16947",
+        "post.cts": "e9c0ed0860922861b494cfaaf1ecd56b9203195d1e0844358070b5f8a7e2f772",
+        "bundle-manifest.json": "c7543cb874bb7ee52497ce00724e926a3b3d4dc0fdae2f50b2404a6eca6fa005",
+        "bin/fence": "3434ef8eb32d130daf272c4794772b497a5d4390d458fd0ef73bac6612b6aa1a"
+      }
+    }
+  ],
+  "qualification_scope": "parser_checksum_invariant_inventory_only_actual_enforcement_requires_current_head_CI"
+}
