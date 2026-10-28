@@ -305,7 +305,6 @@ async def test_completion_after_registered_wait_wakes_the_target(work):
 @pytest.mark.asyncio
 async def test_completion_between_source_read_and_wait_registration_is_not_lost(work, monkeypatch):
     import threading
-    from contextvars import ContextVar
 
     from orchestrator import work_subscriptions
 
@@ -314,11 +313,9 @@ async def test_completion_between_source_read_and_wait_registration_is_not_lost(
                                    name="Concurrent completion", instructions="Read public data.")
     source_id = source["id"]
     target = _operation(work)
-    observed, attempting, release = threading.Event(), threading.Event(), threading.Event()
-    control_transaction = ContextVar("completion_control_transaction", default=False)
+    observed, release = threading.Event(), threading.Event()
     backend_ids = {}
     original_read = work_subscriptions._owned_operation
-    original_transaction = work.service.store.transaction
 
     def hold_source(tx, repository, owner, identity, **options):
         result = original_read(tx, repository, owner, identity, **options)
@@ -329,44 +326,31 @@ async def test_completion_between_source_read_and_wait_registration_is_not_lost(
             assert release.wait(timeout=10), "source-read barrier did not settle"
         return result
 
-    async def observe_transaction(callback, **options):
-        is_control = control_transaction.get()
-
-        def transaction(tx, repository):
-            if is_control:
-                backend_ids["completion"] = tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
-                attempting.set()
-            return callback(tx, repository)
-
-        return await original_transaction(transaction, **options)
-
-    async def cancel_source():
-        token = control_transaction.set(True)
-        try:
-            return await work.ops.cancel(control_caller, operation_id=source_id,
-                                          expected_revision=source["revision"], submission_id=str(uuid4()))
-        finally:
-            control_transaction.reset(token)
-
     def subscriber_blocks_completion():
         with work.runtime.transaction() as tx:
-            return tx.fetch_one("SELECT %s=ANY(pg_blocking_pids(%s)) AS blocked",
-                                (backend_ids["subscriber"], backend_ids["completion"]))["blocked"]
+            blocked = tx.fetch_all(
+                "SELECT pid FROM pg_stat_activity WHERE datname = current_database() "
+                "AND %s = ANY(pg_blocking_pids(pid))", (backend_ids["subscriber"],))
+            if blocked:
+                assert len(blocked) == 1
+                backend_ids["completion"] = blocked[0]["pid"]
+                return True
+            return False
 
     monkeypatch.setattr(work_subscriptions, "_owned_operation", hold_source)
-    monkeypatch.setattr(work.service.store, "transaction", observe_transaction)
     subscription = asyncio.create_task(_subscribe(work, caller, source_id, target))
     completion = None
     try:
         assert await asyncio.to_thread(observed.wait, 10), "source read was not reached"
-        completion = asyncio.create_task(cancel_source())
-        assert await asyncio.to_thread(attempting.wait, 10), "completion transaction was not reached"
-        assert backend_ids["subscriber"] != backend_ids["completion"]
+        completion = asyncio.create_task(work.ops.cancel(control_caller, operation_id=source_id,
+            expected_revision=source["revision"], submission_id=str(uuid4())))
         async with asyncio.timeout(10):
             while not completion.done():
                 if await asyncio.to_thread(subscriber_blocks_completion):
                     break
                 await asyncio.sleep(0)
+        assert "completion" in backend_ids, "completion never waited on the subscriber transaction"
+        assert backend_ids["subscriber"] != backend_ids["completion"]
         release.set()
         subscribed, cancelled = await asyncio.gather(subscription, completion, return_exceptions=True)
         assert isinstance(cancelled, dict) and cancelled["applied"] is True
