@@ -38,7 +38,7 @@ class FakeAdapter:
     def configured(self):
         return self._configured
 
-    def send(self, *, device_token, title, body, notification_id):
+    def send(self, *, device_token, title, body, notification_id, expires_at=None):
         if not self._configured:
             raise PushProviderError(
                 transient=True,
@@ -137,6 +137,7 @@ def coordinator(plane_runtime, store, audit_repository):
         options = {
             "audit_repository": audit_repository,
             "clock": lambda: BASE_NOW,
+            "delivery_policy": lambda *_: True,
         }
         options.update(kwargs)
         return PushDeliveryCoordinator(
@@ -200,13 +201,8 @@ def test_minimal_payload_bounds_and_fields():
         ),
         "notif-1",
     )
-    assert data["title"] == "T" * 128
-    assert data["body"].startswith("B x")
-    assert len(data["body"]) <= 256
-    assert data["activity_id"] == "42"
-    assert len(data["assignment_id"]) == 128
-    assert data["kind"] == "schedule" and data["level"] == "info"
-    assert "token" not in data
+    assert data == {"notification_id": "notif-1", "title": "AstralDeep",
+                    "body": "You have a new notification."}
     empty = pde.minimal_payload({"type": "notification", "title": "  "}, "notif-2")
     assert empty is None
     untitled = pde.minimal_payload(
@@ -511,6 +507,11 @@ def test_notify_user_hook_fans_out_to_push(monkeypatch):
     import shared.feature_flags as ff
 
     monkeypatch.setitem(ff.flags._flags, "push_delivery", True)
+    monkeypatch.setitem(ff.flags._flags, "notification_routing", True)
+    async def route(**_kwargs):
+        return {"foreground": False, "push": True}
+    orch.notification_routing = type("Routing", (), {"route": staticmethod(route)})()
+    orch._owner_surface_active = lambda _owner: False
     asyncio.run(Orchestrator.notify_user(orch, "u1", payload))
     assert enqueued == [("u1", payload)]
 
@@ -734,8 +735,9 @@ async def test_acknowledgment_cannot_borrow_another_owners_or_devices_delivery(
         await push.acknowledge(owner, "device-owner-01", "owner-bound-id")
 
 
+@pytest.mark.parametrize("return_to_old_token", [False, True])
 async def test_stale_provider_rejection_cannot_revoke_a_rotated_destination(
-    store, coordinator, owner
+    store, coordinator, owner, return_to_old_token
 ):
     device = "device-race-01"
     store.enroll(owner, device_id=device, platform="android", token="old-token")
@@ -743,6 +745,8 @@ async def test_stale_provider_rejection_cannot_revoke_a_rotated_destination(
     class RotatingAdapter(FakeAdapter):
         def send(self, **kwargs):
             store.enroll(owner, device_id=device, platform="android", token="new-token")
+            if return_to_old_token:
+                store.enroll(owner, device_id=device, platform="android", token="old-token")
             raise PushProviderError(transient=False, code="token_unregistered")
 
     push = coordinator({"fcm": RotatingAdapter()})
@@ -750,7 +754,8 @@ async def test_stale_provider_rejection_cannot_revoke_a_rotated_destination(
     await push.dispatch_once()
     destination = store.delivery_target(owner, device)
     assert destination is not None
-    assert destination["push_token"] == "new-token"
+    assert destination["push_token"] == ("old-token" if return_to_old_token else "new-token")
+    assert destination["token_generation"] == (3 if return_to_old_token else 2)
 
 
 async def test_exhausted_claim_cannot_contact_the_provider(
@@ -845,3 +850,66 @@ async def test_durable_provider_success_reconciles_a_lost_ack_without_resending(
     await push.dispatch_once(now=moment + pde.LEASE_DURATION + timedelta(seconds=1))
     assert len(adapter.calls) == 1
     assert _outbox_row(plane_runtime, owner)["status"] == "succeeded"
+
+
+async def test_returning_to_an_old_token_never_revives_an_old_delivery(coordinator, store, owner, plane_runtime):
+    adapter = FakeAdapter()
+    push = coordinator({"fcm": adapter})
+    device = "device-generation-01"
+    store.enroll(owner, device_id=device, platform="android", token="generation-a")
+    await push.enqueue_notification(owner, _notification(notification_id="generation-old-delivery"))
+    store.enroll(owner, device_id=device, platform="android", token="generation-b")
+    store.enroll(owner, device_id=device, platform="android", token="generation-a")
+    await push.dispatch_once()
+    assert adapter.calls == []
+    assert _outbox_row(plane_runtime, owner)["status"] == "succeeded"
+    with pytest.raises(AckRejected):
+        await push.acknowledge(owner, device, "generation-old-delivery")
+
+
+async def test_persisted_push_payload_never_contains_source_or_notification_content(coordinator, store, owner, plane_runtime):
+    store.enroll(owner, device_id="device-privacy-0001", platform="android", token="privacy-token")
+    push = coordinator({"fcm": FakeAdapter()})
+    assert await push.enqueue_notification(owner, _notification(title="Patient Private",
+        body="MRN 123456", source="Private source", chat_id="private-chat")) == 1
+    rows = plane_runtime.fetch_all("SELECT canonical_payload FROM astralplane_outbox WHERE topic = %s",
+                                   (pde.OUTBOX_TOPIC,))
+    assert len(rows) == 1
+    raw = bytes(rows[0]["canonical_payload"])
+    assert b"Patient" not in raw and b"MRN" not in raw and b"Private" not in raw and b"private-chat" not in raw
+
+
+@pytest.mark.parametrize("outage", [False, True])
+async def test_dispatch_rechecks_current_owner_policy_before_provider_effect(coordinator, store, owner,
+                                                                             plane_runtime, outage):
+    store.enroll(owner, device_id="device-policy-0001", platform="android", token="policy-token")
+    adapter = FakeAdapter()
+    push = coordinator({"fcm": adapter})
+    await push.enqueue_notification(owner, _notification())
+
+    def policy(*_):
+        if outage:
+            raise RuntimeError("policy unavailable")
+        return False
+
+    push._delivery_policy = policy
+    await push.dispatch_once()
+    assert adapter.calls == []
+    row = _outbox_row(plane_runtime, owner)
+    assert row["status"] == ("retry" if outage else "succeeded")
+
+
+async def test_expired_queued_notification_cannot_contact_provider(coordinator, store, owner, plane_runtime,
+                                                                  audit_events):
+    store.enroll(owner, device_id="device-expiry-0001", platform="android", token="expiry-token")
+    adapter = FakeAdapter()
+    clock = {"now": BASE_NOW}
+    push = coordinator({"fcm": adapter}, clock=lambda: clock["now"])
+    await push.enqueue_notification(owner, _notification(delivery_expires_at=int(BASE_NOW) + 10))
+    clock["now"] += 11
+    await push.dispatch_once()
+    assert adapter.calls == []
+    assert _outbox_row(plane_runtime, owner)["status"] == "succeeded"
+    suppressed = [event for event in audit_events if event.action_type == "push.delivery.stale_suppressed"]
+    assert suppressed[-1].inputs_meta["reason"] == "notification_expired"
+    assert suppressed[-1].inputs_meta["delivery_outcome"] == "suppressed"

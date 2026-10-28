@@ -276,6 +276,7 @@ def test_delivery_targets_expose_raw_token_only_internally(store, owner):
         "provider": "fcm",
         "push_token": "target-token-1",
         "token_fingerprint": pd.token_fingerprint("target-token-1"),
+        "token_generation": 1,
     }
 
 

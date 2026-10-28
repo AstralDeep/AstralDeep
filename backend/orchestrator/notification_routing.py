@@ -114,8 +114,10 @@ def classify_event(payload: Any) -> str | None:
     if not isinstance(payload, dict) or payload.get("type") != "notification":
         return None
     kind = payload.get("event_kind")
-    if isinstance(kind, str) and kind in EVENT_KINDS:
-        return kind
+    if "event_kind" in payload:
+        return kind if isinstance(kind, str) and kind in EVENT_KINDS else None
+    if payload.get("progress") is not None or payload.get("unchanged") is True:
+        return None
     if payload.get("action_required"):
         return "required_action"
     if payload.get("level") in _FAILURE_LEVELS:
@@ -502,6 +504,14 @@ class NotificationRoutingCoordinator:
                 raise NotificationStoreUnavailable(
                     "notification policy record is malformed"
                 )
+            try:
+                if type(record.get("quiet_enabled")) is not bool:
+                    raise NotificationPolicyInvalid("quiet_enabled must be a boolean")
+                validate_quiet_window(start_minute=record.get("quiet_start_minute"),
+                                      end_minute=record.get("quiet_end_minute"),
+                                      tz_offset_minutes=record.get("tz_offset_minutes"))
+            except NotificationPolicyInvalid:
+                raise NotificationStoreUnavailable("notification policy record is malformed") from None
             return {
                 "version": POLICY_VERSION,
                 "quiet_enabled": bool(record.get("quiet_enabled")),
@@ -607,7 +617,8 @@ class NotificationRoutingCoordinator:
                 limit=limit,
                 unacknowledged_only=unacknowledged_only,
             )
-            return [_decrypt_entry(entry) for entry in entries]
+            return [_decrypt_entry(entry) for entry in entries
+                    if entry.retention_expires_at > self._clock()]
 
         try:
             return self._notifications.call(_read)
@@ -623,7 +634,7 @@ class NotificationRoutingCoordinator:
             entry = self._notifications.repository.get_entry(
                 transaction, owner_id=owner_id, entry_id=entry_id
             )
-            if entry is None:
+            if entry is None or entry.deleted_at is not None or entry.retention_expires_at <= self._clock():
                 raise NotificationEntryNotFound("notification entry not found")
             return _decrypt_entry(entry)
 
@@ -740,7 +751,7 @@ class NotificationRoutingCoordinator:
         escalate_push = (
             bool(prefs.get(f"push_{kind}"))
             and push_available
-            and not has_active_surface
+            and not (has_active_surface and foreground)
             and not quiet_blocks
         )
         decision: dict[str, Any] = {
@@ -752,13 +763,11 @@ class NotificationRoutingCoordinator:
             "urgency": urgency,
             "quiet": quiet,
         }
-        if not record_inbox:
-            self._metric("notification_routing_decisions_total")
-            return decision
         bucket = int(now_s // SUPPRESSION_WINDOW_SECONDS)
         deduplication_key = _deduplication_key(owner_id, kind, payload, bucket)
         created_at = int(now_s)
-        content = _entry_content(payload, kind, urgency, created_at)
+        content = (_entry_content(payload, kind, urgency, created_at)
+                   if record_inbox else {"version": POLICY_VERSION, "source": "notification"})
         ciphertext = _fernet().encrypt(
             json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
         )
@@ -790,7 +799,8 @@ class NotificationRoutingCoordinator:
                     content_ciphertext=ciphertext,
                     content_sha256=hashlib.sha256(ciphertext).hexdigest(),
                     created_at=created_at,
-                    retention_expires_at=created_at + INBOX_RETENTION_SECONDS,
+                    retention_expires_at=created_at + (INBOX_RETENTION_SECONDS if record_inbox
+                                                       else SUPPRESSION_WINDOW_SECONDS),
                 )
             except RepositoryConflictError:
                 decision["duplicate"] = True
@@ -801,6 +811,11 @@ class NotificationRoutingCoordinator:
                 _register_identity(transaction, entry.entry_id, "foreground")
             if decision["push"]:
                 _register_identity(transaction, entry.entry_id, "push")
+            if not record_inbox:
+                self._notifications.repository.delete_entry(
+                    transaction, owner_id=owner_id, entry_id=entry.entry_id,
+                    expected_revision=entry.revision, deleted_at=created_at,
+                )
             return entry
 
         try:
@@ -811,12 +826,23 @@ class NotificationRoutingCoordinator:
             raise NotificationStoreUnavailable(
                 "notification inbox is unavailable"
             ) from None
-        decision["inbox"] = entry is not None
+        decision["inbox"] = entry is not None and record_inbox
+        decision["entry_id"] = entry.entry_id if entry is not None else None
+        decision["retention_expires_at"] = entry.retention_expires_at if entry is not None else None
         if decision["duplicate"]:
             self._metric("notification_routing_duplicates_total")
         else:
             self._metric("notification_routing_decisions_total")
         return decision
+
+    def push_allowed(self, owner_id: str, kind: str, urgency: str, *, has_active_surface: bool = False) -> bool:
+        if kind not in EVENT_KINDS or urgency not in URGENCIES:
+            return False
+        preferences = self.preferences(owner_id)
+        policy = self.quiet_hours(owner_id)
+        return (bool(preferences.get(f"push_{kind}"))
+                and not (has_active_surface and bool(preferences.get(f"in_app_{kind}")))
+                and (urgency == "critical" or not in_quiet_hours(policy, self._clock())))
 
 
 __all__ = (

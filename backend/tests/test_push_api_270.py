@@ -68,6 +68,7 @@ def coordinator(plane_runtime, store, audit_repository):
         plane_repositories=plane_runtime.repositories,
         destinations=store,
         adapters={"fcm": FakeAdapter(), "apns": FakeAdapter()},
+        delivery_policy=lambda *_: True,
         audit_repository=audit_repository,
     )
 
@@ -296,3 +297,55 @@ def test_delivery_outcomes_when_audit_query_fails(
     monkeypatch.setattr(audit_repository, "list_for_user", broken)
     response = authed_client.get("/api/push/deliveries/sched-20260101-a")
     assert response.status_code == 503
+
+
+def test_late_logout_cannot_revoke_a_reenrolled_generation(authed_client):
+    enrolled = authed_client.post("/api/push/destinations", json=_enroll_body()).json()
+    rotated = authed_client.post("/api/push/destinations", json=_enroll_body(token="rotation-new")).json()
+    stale = authed_client.delete("/api/push/destinations/device-api-00001",
+                                params={"expected_token_generation": enrolled["token_generation"]})
+    assert stale.status_code == 409 and stale.json()["detail"] == "destination_conflict"
+    assert authed_client.get("/api/push/destinations/device-api-00001").json()["status"] == "active"
+    revoked = authed_client.delete("/api/push/destinations/device-api-00001",
+                                  params={"expected_token_generation": rotated["token_generation"]})
+    assert revoked.status_code == 204
+
+
+def test_actual_foreground_proof_uses_registered_connection_and_current_destination(app, authed_client,
+                                                                                  coordinator, owner,
+                                                                                  store, monkeypatch):
+    from orchestrator.notification_presence import NotificationPresence
+    from orchestrator.notification_routing import NotificationRoutingCoordinator, default_preferences
+    from orchestrator.orchestrator import Orchestrator
+    from shared.feature_flags import flags
+
+    orch = app.state.orchestrator
+    socket = object()
+    orch.ui_sessions = {socket: {"sub": owner, "exp": 4_000_000_000}}
+    orch.push_destinations = store
+    orch.notification_presence = NotificationPresence()
+    orch.notification_presence.register(socket, owner, "device-api-00001", "connection-1")
+    orch._owner_surface_active = lambda user: Orchestrator._owner_surface_active(orch, user)
+    orch.notification_routing = NotificationRoutingCoordinator(
+        plane_runtime=coordinator._runtime, plane_repositories=coordinator._runtime.repositories,
+        audit_repository=coordinator.audit_repository)
+    monkeypatch.setitem(flags._flags, "push_delivery", True)
+    monkeypatch.setitem(flags._flags, "notification_routing", True)
+    assert not orch._owner_surface_active(owner)
+    body = {"device_id": "device-api-00001", "connection_generation": "connection-1",
+            "sequence": 1, "foreground": True}
+    from orchestrator.notification_api import notification_router
+    app.include_router(notification_router)
+    assert authed_client.post("/api/notifications/presence", json=body).status_code == 200
+    assert orch._owner_surface_active(owner)
+    assert not Orchestrator._push_notification_allowed(orch, owner, "completion", "normal")
+    routing = {key: value for key, value in default_preferences().items() if key not in {"revision", "updated_at"}}
+    orch.notification_routing.update_preferences(owner, expected_revision=0, **{**routing, "in_app_completion": False})
+    assert Orchestrator._push_notification_allowed(orch, owner, "completion", "normal")
+    enrolled = authed_client.post("/api/push/destinations", json=_enroll_body()).json()
+    assert not orch._owner_surface_active(owner)
+    assert authed_client.post("/api/notifications/presence", json={**body, "sequence": 2}).status_code == 200
+    assert orch._owner_surface_active(owner)
+    authed_client.delete("/api/push/destinations/device-api-00001",
+                        params={"expected_token_generation": enrolled["token_generation"]})
+    assert not orch._owner_surface_active(owner)

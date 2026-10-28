@@ -1400,6 +1400,7 @@ class Orchestrator:
             adapters=adapters_from_env(),
             audit_repository=self.audit_repo,
             metrics=self._push_delivery_metric,
+            delivery_policy=self._push_notification_allowed,
         )
 
         from orchestrator.notification_routing import NotificationRoutingCoordinator
@@ -1409,6 +1410,8 @@ class Orchestrator:
             audit_repository=self.audit_repo,
             metrics=self._notification_metric,
         )
+        from orchestrator.notification_presence import NotificationPresence
+        self.notification_presence = NotificationPresence()
 
         from orchestrator.human_request_authority import HumanRequestBoundary
         self.human_request_boundary = HumanRequestBoundary(self)
@@ -10082,6 +10085,9 @@ class Orchestrator:
                     if previous_owner != user_data.get("sub"):
                         self.rote.cleanup(websocket)
                     self.ui_sessions[websocket] = user_data
+                    presence = getattr(self, "notification_presence", None)
+                    if presence is not None:
+                        presence.register(websocket, user_data.get("sub"), msg.device_id, msg.connection_generation)
                     _hosts = getattr(self, "_agent_host_sockets", None)
                     if _hosts is not None:
                         if invalid_host_field is not None:
@@ -13266,10 +13272,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         observability.record(name)
 
     def _owner_surface_active(self, user_id: str) -> bool:
-        for _ws, claims in list(self.ui_sessions.items()):
-            if (claims or {}).get("sub") == user_id:
-                return True
-        return False
+        presence = getattr(self, "notification_presence", None)
+        return bool(presence is not None and presence.active(
+            user_id, self.ui_sessions, self.push_destinations.presence_identity))
+
+    def _push_notification_allowed(self, owner_id: str, kind: str, urgency: str) -> bool:
+        return (flags.is_enabled("push_delivery") and flags.is_enabled("notification_routing")
+                and self.notification_routing.push_allowed(
+                    owner_id, kind, urgency, has_active_surface=self._owner_surface_active(owner_id)))
 
     async def notify_user(self, user_id: str, payload: Dict[str, Any]) -> None:
         try:
@@ -13278,26 +13288,33 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.debug("notify_user: unserializable payload", exc_info=True)
             return
         foreground = True
-        push_enabled = flags.is_enabled("push_delivery")
+        push_enabled = False
         coordinator = getattr(self, "notification_routing", None)
         decision = None
-        if coordinator is not None and flags.is_enabled("notification_routing"):
+        if flags.is_enabled("notification_routing") and payload.get("type") == "notification":
+            foreground = False
             try:
                 decision = await coordinator.route(
                     owner_id=user_id,
                     payload=payload,
                     has_active_surface=self._owner_surface_active(user_id),
-                    push_available=push_enabled,
+                    push_available=flags.is_enabled("push_delivery"),
                 )
+                if decision is not None:
+                    foreground = decision["foreground"] is True
+                    push_enabled = decision["push"] is True
             except Exception:
+                foreground = push_enabled = False
                 logger.warning(
-                    "notify_user: routing unavailable, delivering foreground",
+                    "notify_user: owner policy unavailable, notification withheld",
                     exc_info=True,
                 )
                 decision = None
-            if decision is not None:
-                foreground = bool(decision["foreground"])
-                push_enabled = bool(decision["push"])
+            if decision is not None and decision.get("entry_id"):
+                payload = {**payload, "notification_id": decision["entry_id"],
+                           "event_kind": decision["kind"], "urgency": decision["urgency"],
+                           "delivery_expires_at": decision["retention_expires_at"]}
+                data = json.dumps(payload)
         sent = 0
         if foreground:
             for ws in list(self.ui_clients):
@@ -23481,6 +23498,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if websocket in self.ui_clients:
                 self.ui_clients.remove(websocket)
             self._clear_voice_control_binding(websocket)
+            presence = getattr(self, "notification_presence", None)
+            if presence is not None:
+                presence.clear(websocket)
             terminal_sessions = getattr(self, "terminal_sessions", None)
             if terminal_sessions is not None:
                 await asyncio.to_thread(terminal_sessions.close_for_connection, websocket)
@@ -23532,6 +23552,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if websocket in self.ui_clients:
                 self.ui_clients.remove(websocket)
             self._clear_voice_control_binding(websocket)
+            presence = getattr(self, "notification_presence", None)
+            if presence is not None:
+                presence.clear(websocket)
             terminal_sessions = getattr(self, "terminal_sessions", None)
             if terminal_sessions is not None:
                 await asyncio.to_thread(terminal_sessions.close_for_connection, websocket)

@@ -682,3 +682,38 @@ async def test_preview_never_returns_to_changed_session(runtime, monkeypatch, st
     response = await _dispatch(runtime)
     assert response.error and response.ui_components is None
     assert not getattr(orch, "_hitl_pending_calls", {})
+
+
+@pytest.mark.parametrize("change", ["valid", "wrong_binding", "wrong_session", "copied_to_content", "nested"])
+async def test_terminal_identifier_exemptions_require_current_server_authority(runtime, monkeypatch, change):
+    orch, ws = runtime
+    binding = "12345678-1234-4000-8000-00000000abcd"
+    session = "87654321-1234-4000-8000-00000000abcd"
+    checked = []
+
+    def preview(owner, *, runtime_binding, session_id):
+        checked.append((owner, runtime_binding, session_id))
+        if owner != "owner-a" or runtime_binding != binding or session_id != session:
+            raise RuntimeError("terminal authority changed")
+        return "Approved terminal"
+
+    orch.terminal_sessions = SimpleNamespace(runtime_preview=preview)
+    monkeypatch.setattr("personalization.phi_gate.get_phi_gate",
+                        lambda: SimpleNamespace(contains_phi=lambda text: binding in text or session in text))
+    args = {"runtime_binding": binding, "session_id": session, "command": "echo ready"}
+    if change == "wrong_binding":
+        args["runtime_binding"] = "00000000-1234-4000-8000-00000000abcd"
+    elif change == "wrong_session":
+        args["session_id"] = "00000000-1234-4000-8000-00000000abcd"
+    elif change == "copied_to_content":
+        args["body"] = binding
+    elif change == "nested":
+        args["options"] = {"runtime_binding": binding}
+    response = await hc.evaluate(orch, ws, "owner-a", "chat-a", "terminal-shell-1", "terminal_write", args,
+                                 [hitl.EGRESS])
+    assert checked
+    if change == "valid":
+        assert _decision(response)["hitl_request_id"]
+    else:
+        assert response.error and "Review unavailable" in response.error["message"]
+        assert not getattr(orch, "_hitl_pending_calls", {})

@@ -106,23 +106,6 @@ _SECRET_MARKERS = re.compile(r"(?i)(?:api[_ -]?key|access[_ -]?token|secret|pass
                              r"bearer |credential|-----BEGIN|\bsk-[\w-]{12,}|\beyJ[\w-]+\.[\w-]+\.[\w-]+)")
 _EMAIL_DESTINATION = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _PHONE_DESTINATION = re.compile(r"\+?[0-9(). -]{10,24}")
-_MACHINE_TOKEN = re.compile(r"(?i)(?<![0-9a-f-])[0-9a-f](?:[0-9a-f-]{14,68}[0-9a-f])?(?![0-9a-f-])")
-
-
-def _machine_identifier(value: str) -> bool:
-    token = value.strip()
-    return (
-        len(token) >= 16
-        and _MACHINE_TOKEN.fullmatch(token) is not None
-        and re.search(r"[a-f]", token, re.IGNORECASE) is not None
-    )
-
-
-def _scan_text(visible_strings: list) -> str:
-    return _MACHINE_TOKEN.sub(
-        lambda match: " " if _machine_identifier(match.group(0)) else match.group(0),
-        "\n".join(visible_strings))
-
 
 def _routing_address(key, value) -> bool:
     if key.lower() not in _DESTINATION_FIELDS or not isinstance(value, str) or len(value) > 320:
@@ -710,7 +693,7 @@ def _review_summary(args: dict) -> str:
     return description
 
 
-def _review_arguments(args: dict) -> tuple[str, bool]:
+def _review_arguments(args: dict, *, trusted_identifiers: dict | None = None) -> tuple[str, bool]:
     from orchestrator.hitl import _SENSITIVE_INPUT, sensitive_url
     from personalization.phi_gate import get_phi_gate
     from shared.phi_redactor import PHI_FIELD_PATTERNS, redact
@@ -718,7 +701,7 @@ def _review_arguments(args: dict) -> tuple[str, bool]:
     reviewable = True
     visible_strings = []
 
-    def walk(value, key=""):
+    def walk(value, key="", trusted=False):
         nonlocal reviewable
         destination = _routing_address(key, value)
         sensitive_key = _SECRET_MARKERS.search(key) or any(
@@ -728,14 +711,17 @@ def _review_arguments(args: dict) -> tuple[str, bool]:
             reviewable = False
             return "[REDACTED — review unavailable]"
         if isinstance(value, dict):
-            return {name: walk(child, name) for name, child in value.items()}
+            return {name: walk(child, name, value is args and isinstance(child, str)
+                               and (trusted_identifiers or {}).get(name) == child)
+                    for name, child in value.items()}
         if isinstance(value, list):
             return [walk(child, key) for child in value]
         if isinstance(value, str):
+            if trusted:
+                return value
             decoded = unquote(unquote(value))
             if _SECRET_MARKERS.search(decoded) or (
-                not destination and not _machine_identifier(decoded)
-                and _SENSITIVE_INPUT.search(decoded)):
+                not destination and _SENSITIVE_INPUT.search(decoded)):
                 reviewable = False
                 return "[REDACTED — review unavailable]"
             if key == "url":
@@ -760,7 +746,7 @@ def _review_arguments(args: dict) -> tuple[str, bool]:
         return "[Arguments exceed the complete review limit. Use a smaller action.]", False
     if reviewable and visible_strings:
         try:
-            if get_phi_gate().contains_phi(_scan_text(visible_strings)):
+            if get_phi_gate().contains_phi("\n".join(visible_strings)):
                 return "[Private identifiers cannot be shown in an approval preview.]", False
         except Exception:
             return "[Privacy review unavailable. Reissue the action when it is available.]", False
@@ -796,7 +782,19 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             return _refused("Review unavailable: action targets could not be resolved. Reissue the action when they are available.")
         shown = {key: value for key, value in args.items()
                  if not (key == "computer" and agent == "computer-use-1") and not (key == "user_id" and value == owner)}
-        preview, reviewable = await asyncio.to_thread(_review_arguments, shown)
+        trusted_identifiers = {}
+        if agent == "terminal-shell-1" and tool in {"start_terminal", "terminal_write"}:
+            try:
+                await asyncio.to_thread(orch.terminal_sessions.runtime_preview, owner,
+                                        runtime_binding=args.get("runtime_binding"),
+                                        session_id=args.get("session_id") if tool == "terminal_write" else None)
+                trusted_identifiers["runtime_binding"] = args.get("runtime_binding")
+                if tool == "terminal_write":
+                    trusted_identifiers["session_id"] = args.get("session_id")
+            except Exception:
+                return _refused("Review unavailable: terminal authority changed. Reissue the action.")
+        preview, reviewable = await asyncio.to_thread(_review_arguments, shown,
+                                                    trusted_identifiers=trusted_identifiers)
         if not reviewable:
             return _refused("Review unavailable: this action includes sensitive or oversized arguments that cannot be "
                             "shown completely. Remove private identifiers or credentials, or use a smaller action.")

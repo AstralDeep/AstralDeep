@@ -7,6 +7,7 @@ and provider outages.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import json
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives import serialization
@@ -111,7 +112,8 @@ def test_fcm_send_success_and_token_cache():
     assert send["api_key"] == "tok-1"
     message = send["json_body"]["message"]
     assert message["token"] == "dev-token"
-    assert message["notification"] == {"title": "Task finished", "body": "All good"}
+    assert "notification" not in message
+    assert message["android"] == {"ttl": "300s"}
     assert message["data"] == {"notification_id": "notif-1"}
 
 
@@ -262,7 +264,10 @@ def test_apns_send_success_with_required_headers():
     assert call["url"] == "https://api.push.apple.com/3/device/ios-device-token"
     assert call["extra_headers"]["apns-topic"] == "com.astral.app"
     assert call["extra_headers"]["apns-push-type"] == "alert"
-    assert call["json_body"]["aps"]["alert"] == {"title": "Hello", "body": "World"}
+    assert call["json_body"]["aps"] == {"alert": {"title": "AstralDeep",
+                                                       "body": "You have a new notification."}}
+    assert call["extra_headers"]["apns-expiration"] == "1300"
+    assert len(call["extra_headers"]["apns-collapse-id"].encode()) <= 64
     assert call["json_body"]["notification_id"] == "notif-9"
 
 
@@ -570,3 +575,30 @@ def test_request_http2_stops_reading_at_the_response_size_bound(monkeypatch, no_
         )
     assert stream.closed
     assert stream.reads <= 2
+
+
+@pytest.mark.parametrize("provider", ["fcm", "apns"])
+def test_provider_expiry_is_bounded_by_remaining_server_validity(provider):
+    transport = FakeTransport(responses=[FakeResponse(text='{"access_token":"oauth"}'), FakeResponse()]
+                              if provider == "fcm" else [FakeResponse()])
+    if provider == "fcm":
+        adapter = FcmPushAdapter(project_id="proj", client_email="sa@proj.iam", private_key=_pem_rsa(),
+                                 transport=transport, clock=lambda: 1000.0)
+    else:
+        adapter = ApnsPushAdapter(key_id="KEYID", team_id="TEAM", private_key=_pem_ec(), topic="com.astral.app",
+                                  transport=transport, clock=lambda: 1000.0)
+    adapter.send(device_token="device", title="Patient private", body="MRN secret", notification_id="opaque-event",
+                 expires_at=1020)
+    call = transport.calls[-1]
+    serialized = json.dumps(call["json_body"])
+    assert "Patient" not in serialized and "MRN" not in serialized
+    if provider == "fcm":
+        assert call["json_body"]["message"]["android"]["ttl"] == "20s"
+        assert call["json_body"]["message"]["data"] == {"notification_id": "opaque-event"}
+    else:
+        assert call["extra_headers"]["apns-expiration"] == "1020"
+    calls = len(transport.calls)
+    with pytest.raises(PushProviderError) as error:
+        adapter.send(device_token="device", title="private", body="private", notification_id="expired", expires_at=999)
+    assert error.value.code == "notification_expired"
+    assert len(transport.calls) == calls

@@ -4,8 +4,7 @@ import base64
 from copy import deepcopy
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
-import uuid
+from unittest.mock import AsyncMock
 
 from fastapi import FastAPI
 import pytest
@@ -96,13 +95,9 @@ async def active(human, socket_request, isolated, monkeypatch, tmp_path):
     assert review_registered_terminal(orch)
     for tool, entry in mcp_tools.TOOL_REGISTRY.items():
         orch.tool_permissions.set_tool_permission(owner, AGENT_ID, tool, entry["scope"], True)
-    # A random hex session id matches the preview's seven-digit-run sensitive
-    # pattern ~4% of the time; the fixture pins one that never can.
-    safe_session_uuid = uuid.UUID("a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6")
-    with patch.object(uuid, "uuid4", lambda: safe_session_uuid):
-        info = orch.terminal_sessions.create(owner,
-            authority=bind_terminal_authority(orch, socket, owner, "start_terminal"),
-            runtime_binding=orch.terminal_sessions.runtime_binding(owner))
+    info = orch.terminal_sessions.create(owner,
+        authority=bind_terminal_authority(orch, socket, owner, "start_terminal"),
+        runtime_binding=orch.terminal_sessions.runtime_binding(owner))
     session = orch.terminal_sessions._sessions[info["session_id"]]
     chat = orch.history.create_chat(user_id=owner)
     orch.history.add_file_mapping(chat, "uploaded.txt", "/mapped/uploaded.txt", user_id=owner)

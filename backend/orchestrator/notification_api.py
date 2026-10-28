@@ -6,12 +6,13 @@ Mounted by orchestrator.py alongside the other routers.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from orchestrator.api import _get_orchestrator
 from orchestrator.auth import verify_user
@@ -26,6 +27,7 @@ notification_router = APIRouter(prefix="/api/notifications", tags=["Notification
 
 
 class PreferenceUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
     expected_revision: int = Field(ge=0)
     in_app_completion: bool
     in_app_failure: bool
@@ -39,6 +41,7 @@ class PreferenceUpdateRequest(BaseModel):
 
 
 class QuietHoursUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
     expected_revision: int = Field(ge=0)
     enabled: bool
     start_minute: int = Field(ge=0, le=1439)
@@ -47,7 +50,16 @@ class QuietHoursUpdateRequest(BaseModel):
 
 
 class AcknowledgeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
     expected_revision: int = Field(ge=0)
+
+
+class PresenceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    device_id: str = Field(min_length=1, max_length=128)
+    connection_generation: str = Field(min_length=1, max_length=128)
+    sequence: int = Field(ge=1, le=2**53 - 1)
+    foreground: bool
 
 
 def _owner_id(payload: dict = Depends(verify_user)) -> str:
@@ -74,14 +86,32 @@ def _entry_id(raw: str) -> str:
         ) from None
 
 
+@notification_router.post("/presence")
+async def update_presence(body: PresenceRequest, request: Request, owner_id: str = Depends(_owner_id)):
+    from orchestrator.notification_presence import NotificationPresenceError
+
+    orch = _get_orchestrator(request)
+    presence = getattr(orch, "notification_presence", None)
+    if presence is None:
+        raise HTTPException(409, "notification_presence_conflict")
+    try:
+        return presence.update(owner_id, body.device_id, body.connection_generation, body.sequence,
+                               body.foreground, orch.ui_sessions, orch.push_destinations.presence_identity)
+    except NotificationPresenceError as exc:
+        raise HTTPException(exc.status, exc.code) from None
+
+
 @notification_router.get("/preferences")
 async def get_preferences(
     request: Request,
     owner_id: str = Depends(_owner_id),
 ) -> dict[str, Any]:
     coordinator = _coordinator(request)
-    preferences = coordinator.preferences(owner_id)
-    quiet = coordinator.quiet_hours(owner_id)
+    try:
+        preferences = await asyncio.to_thread(coordinator.preferences, owner_id)
+        quiet = await asyncio.to_thread(coordinator.quiet_hours, owner_id)
+    except NotificationRoutingError as exc:
+        raise _routing_error(exc) from None
     return {"routing": preferences, "quiet_hours": quiet}
 
 

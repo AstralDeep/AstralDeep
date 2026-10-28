@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from orchestrator.api import _get_orchestrator
@@ -126,10 +126,13 @@ async def revoke_destination(
     device_id: str,
     request: Request,
     owner_id: str = Depends(_owner_id),
+    expected_token_generation: int | None = Query(default=None, ge=1),
 ) -> None:
     store = _coordinator(request).destinations
     try:
-        store.revoke(owner_id, device_id)
+        result = store.revoke(owner_id, device_id, expected_token_generation=expected_token_generation)
+        if expected_token_generation is not None and result["token_generation"] != expected_token_generation:
+            raise HTTPException(409, "destination_conflict")
     except PushDestinationError as exc:
         raise _destination_error(exc) from None
     logger.info(

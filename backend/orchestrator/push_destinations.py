@@ -397,6 +397,7 @@ class PushDestinationStore:
         *,
         reason: str = "logout",
         expected_token_fingerprint: str | None = None,
+        expected_token_generation: int | None = None,
     ) -> dict[str, Any]:
         validate_device_id(device_id)
         now = _now_ms()
@@ -407,6 +408,8 @@ class PushDestinationStore:
             if (
                 expected_token_fingerprint is not None
                 and record.get("token_fingerprint") != expected_token_fingerprint
+                or expected_token_generation is not None
+                and record.get("token_generation") != expected_token_generation
             ):
                 return public_destination(record)
             if record.get("status") == STATUS_REVOKED:
@@ -440,10 +443,19 @@ class PushDestinationStore:
                 "provider": record["provider"],
                 "push_token": record["push_token"],
                 "token_fingerprint": record["token_fingerprint"],
+                "token_generation": record["token_generation"],
             }
             for record in records
             if record.get("status") == STATUS_ACTIVE
         ]
+
+    def presence_identity(self, owner_id: str, device_id: str) -> tuple | None:
+        validate_device_id(device_id)
+        with self._credentials.transaction() as transaction:
+            record = self._get_record(transaction, owner_id, device_id)
+        if record is None:
+            return None
+        return record["status"], record["token_fingerprint"], record["token_generation"]
 
     def delivery_target(self, owner_id: str, device_id: str) -> dict[str, Any] | None:
         validate_device_id(device_id)
@@ -456,4 +468,5 @@ class PushDestinationStore:
             "provider": record["provider"],
             "push_token": record["push_token"],
             "token_fingerprint": record["token_fingerprint"],
+            "token_generation": record["token_generation"],
         }

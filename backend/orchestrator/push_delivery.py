@@ -22,7 +22,7 @@ from audit.schemas import AuditEventCreate, AuditEventDTO
 
 from orchestrator.plane_repository_context import repository_from
 from orchestrator.push_destinations import DestinationNotFound, PushDestinationStore
-from orchestrator.push_providers import PushProviderError
+from orchestrator.push_providers import GENERIC_PUSH_BODY, GENERIC_PUSH_TITLE, MAX_PUSH_LIFETIME_SECONDS, PushProviderError
 
 logger = logging.getLogger("Orchestrator.PushDelivery")
 
@@ -42,6 +42,7 @@ OUTCOME_DELIVERED = "provider_accepted"
 OUTCOME_ACKED = "client_acknowledged"
 OUTCOME_FAILED = "failed"
 OUTCOME_UNAVAILABLE = "unavailable"
+OUTCOME_SUPPRESSED = "suppressed"
 
 _NOTIFICATION_ID = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]+")
@@ -121,18 +122,11 @@ def minimal_payload(
     body = _clean_text(payload.get("body"), MAX_BODY_CHARS)
     if not title and not body:
         return None
-    data: dict[str, Any] = {
+    return {
         "notification_id": notification_id,
-        "kind": _clean_text(payload.get("source"), 64) or "notification",
-        "level": _clean_text(payload.get("level"), 32) or "info",
-        "title": title,
-        "body": body,
+        "title": GENERIC_PUSH_TITLE,
+        "body": GENERIC_PUSH_BODY,
     }
-    for key in _DATA_KEYS:
-        value = payload.get(key)
-        if isinstance(value, (str, int)) and str(value).strip():
-            data[key] = _clean_text(value, 128)
-    return data
 
 
 def _retry_delay(attempt: int) -> int:
@@ -167,6 +161,7 @@ class PushDeliveryCoordinator:
         sleep: Callable[..., Any] = asyncio.sleep,
         metrics: Callable[[str, dict[str, str]], None] | None = None,
         batch_limit: int = BATCH_LIMIT,
+        delivery_policy: Callable[[str, str, str], bool] | None = None,
     ) -> None:
         outbox, runtime = repository_from(
             "outbox",
@@ -184,6 +179,7 @@ class PushDeliveryCoordinator:
         self._metrics = metrics
         self._batch_limit = batch_limit
         self._worker_id = f"push-{uuid.uuid4().hex[:12]}"
+        self._delivery_policy = delivery_policy
 
     def _metric(self, name: str, labels: dict[str, str]) -> None:
         if self._metrics is None:
@@ -269,7 +265,16 @@ class PushDeliveryCoordinator:
             raise PushDeliveryError("durable push delivery audit unavailable")
 
     async def enqueue_notification(self, user_id: str, payload: dict[str, Any]) -> int:
+        from orchestrator.notification_routing import classify_event, resolve_urgency
+
+        kind = classify_event(payload)
+        if kind is None:
+            return 0
         now_s = self._clock()
+        expires_at = payload.get("delivery_expires_at", int(now_s) + MAX_PUSH_LIFETIME_SECONDS)
+        if type(expires_at) is not int or expires_at <= now_s:
+            return 0
+        expires_at = min(expires_at, int(now_s) + MAX_PUSH_LIFETIME_SECONDS)
         identity = await asyncio.to_thread(
             notification_identity, user_id, payload, now_s=now_s
         )
@@ -300,6 +305,10 @@ class PushDeliveryCoordinator:
                 "device_id": target["device_id"],
                 "provider": target["provider"],
                 "token_fingerprint": target["token_fingerprint"],
+                "token_generation": target["token_generation"],
+                "event_kind": kind,
+                "urgency": resolve_urgency(payload),
+                "expires_at": expires_at,
                 **data,
             }
             payload_bytes = json.dumps(
@@ -337,6 +346,8 @@ class PushDeliveryCoordinator:
                             "device_id": target["device_id"],
                             "provider": target["provider"],
                             "token_fingerprint": target["token_fingerprint"],
+                            "token_generation": target["token_generation"],
+                            "delivery_outcome": OUTCOME_QUEUED,
                         },
                     )
                     queued += 1
@@ -463,13 +474,31 @@ class PushDeliveryCoordinator:
         if target is None:
             self._suppress_stale(claimed, canonical, "destination_unavailable")
             return
-        if target["token_fingerprint"] != canonical.get("token_fingerprint"):
+        if (target["token_fingerprint"] != canonical.get("token_fingerprint")
+                or target["token_generation"] != canonical.get("token_generation")):
             self._suppress_stale(claimed, canonical, "token_rotated")
             return
         if not await self._start_attempt(claimed, canonical):
             return
+        expires_at = canonical.get("expires_at")
+        if type(expires_at) is not int:
+            self._suppress_stale(claimed, canonical, "unsupported_delivery")
+            return
+        if expires_at <= self._clock():
+            self._suppress_stale(claimed, canonical, "notification_expired")
+            return
         adapter = self._adapters.get(canonical.get("provider"))
         try:
+            try:
+                if self._delivery_policy is None:
+                    raise PushDeliveryError("current owner policy is unavailable")
+                admitted = await asyncio.to_thread(self._delivery_policy, owner_id,
+                                                   canonical.get("event_kind"), canonical.get("urgency"))
+            except Exception:
+                raise PushProviderError(transient=True, code="policy_unavailable") from None
+            if admitted is not True:
+                self._suppress_stale(claimed, canonical, "current_owner_policy")
+                return
             if adapter is None:
                 raise PushProviderError(
                     transient=True,
@@ -482,6 +511,7 @@ class PushDeliveryCoordinator:
                 title=canonical["title"],
                 body=canonical["body"],
                 notification_id=notification_id,
+                expires_at=expires_at,
             )
         except Exception as exc:
             await self._record_provider_error(claimed, canonical, exc)
@@ -577,6 +607,7 @@ class PushDeliveryCoordinator:
                 canonical["device_id"],
                 reason="token_unregistered",
                 expected_token_fingerprint=canonical["token_fingerprint"],
+                expected_token_generation=canonical["token_generation"],
             )
 
     def _fence(
@@ -616,7 +647,7 @@ class PushDeliveryCoordinator:
                 "notification_id": canonical.get("notification_id"),
                 "device_id": canonical.get("device_id"),
                 "reason": reason,
-                "delivery_outcome": OUTCOME_QUEUED,
+                "delivery_outcome": OUTCOME_SUPPRESSED,
             },
         )
         self._fence(self._outbox.ack, claimed)
@@ -686,6 +717,7 @@ class PushDeliveryCoordinator:
             or queued.inputs_meta.get("device_id") != device_id
             or target is None
             or queued.inputs_meta.get("token_fingerprint") != target["token_fingerprint"]
+            or queued.inputs_meta.get("token_generation") != target["token_generation"]
         ):
             self._audit_outcome(
                 owner_id=owner_id,

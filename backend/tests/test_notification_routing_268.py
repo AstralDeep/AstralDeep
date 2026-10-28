@@ -118,7 +118,7 @@ def test_classification_covers_kinds_urgency_and_progress():
     assert classify_event(_notification(level="critical")) == "failure"
     assert classify_event(_notification(action_required=True)) == "required_action"
     assert classify_event(_notification(event_kind="required_action")) == "required_action"
-    assert classify_event(_notification(event_kind="bogus")) == "completion"
+    assert classify_event(_notification(event_kind="bogus")) is None
     assert classify_event({"type": "chat_status", "status": "info"}) is None
     assert classify_event({"type": "task_started"}) is None
     assert classify_event("not-a-dict") is None
@@ -633,10 +633,10 @@ def test_notify_user_hook_routes_and_suppresses(monkeypatch, plane_runtime, owne
     before = len(push.enqueued)
     asyncio.run(Orchestrator.notify_user(orch, owner, _notification(title="Legacy")))
     assert len(sends) == 2
-    assert len(push.enqueued) == before + 1
+    assert len(push.enqueued) == before
 
 
-def test_notify_user_hook_falls_back_when_routing_fails(monkeypatch, owner):
+def test_notify_user_hook_withholds_when_routing_fails(monkeypatch, owner):
     from orchestrator.orchestrator import Orchestrator
 
     class BrokenCoordinator:
@@ -670,11 +670,11 @@ def test_notify_user_hook_falls_back_when_routing_fails(monkeypatch, owner):
 
     orch = FakeOrch()
     asyncio.run(Orchestrator.notify_user(orch, owner, _notification()))
-    assert len(sends) == 1
+    assert sends == []
 
     other = OtherUserOrch()
     asyncio.run(Orchestrator.notify_user(other, owner, _notification()))
-    assert len(sends) == 1
+    assert sends == []
 
 
 def test_fernet_key_gaps_fail_closed(monkeypatch, plane_runtime, owner):
@@ -1033,3 +1033,59 @@ def test_delivery_identity_conflict_is_swallowed(coordinator, owner, monkeypatch
     )
     assert decision["foreground"] is True
     assert decision["inbox"] is True
+
+
+def test_inbox_opt_out_keeps_durable_duplicate_suppression_without_content(coordinator, owner):
+    routing = default_preferences()
+    routing.pop("revision")
+    routing.pop("updated_at")
+    coordinator.update_preferences(owner, expected_revision=0, **{**routing, "inbox_completion": False})
+    event = _notification(title="Private patient result", body="Private contents")
+    first = asyncio.run(coordinator.route(owner_id=owner, payload=event,
+                                        has_active_surface=False, push_available=True))
+    assert first["foreground"] and first["push"] and not first["inbox"]
+    assert coordinator.list_inbox(owner) == []
+    second = asyncio.run(coordinator.route(owner_id=owner, payload=event,
+                                         has_active_surface=False, push_available=True))
+    assert second["duplicate"] and not second["foreground"] and not second["push"]
+    assert coordinator.list_inbox(owner) == []
+
+
+@pytest.mark.parametrize("kind", ["progress", "unchanged", "unknown", ""])
+def test_non_actionable_event_kinds_are_not_completion_notifications(coordinator, owner, kind):
+    event = _notification(event_kind=kind)
+    assert asyncio.run(coordinator.route(owner_id=owner, payload=event,
+                                        has_active_surface=False, push_available=True)) is None
+    assert coordinator.list_inbox(owner) == []
+
+
+@pytest.mark.parametrize("field,value", [("quiet_enabled", "false"), ("quiet_start_minute", "22:00"),
+                                          ("quiet_end_minute", 1500), ("tz_offset_minutes", 841)])
+def test_corrupt_stored_quiet_policy_never_allows_routing(coordinator, owner, plane_runtime, field, value):
+    from orchestrator.push_destinations import _encode_record
+
+    record = {**nre.default_quiet_hours(), field: value}
+    coordinator._credentials.call(coordinator._credentials.repository.upsert_credential,
+        owner_id=owner, agent_id=nre.POLICY_NAMESPACE, credential_key=nre.POLICY_CREDENTIAL_KEY,
+        encrypted_value=_encode_record(record), updated_at=123)
+    with pytest.raises(nre.NotificationStoreUnavailable):
+        asyncio.run(coordinator.route(owner_id=owner, payload=_notification(),
+                                      has_active_surface=False, push_available=True))
+
+
+def test_expired_content_is_unavailable_even_without_another_notification(coordinator, owner, clock):
+    asyncio.run(coordinator.route(owner_id=owner, payload=_notification(),
+                                  has_active_surface=False, push_available=True))
+    entry = coordinator.list_inbox(owner)[0]
+    clock.advance(nre.INBOX_RETENTION_SECONDS + 1)
+    assert coordinator.list_inbox(owner) == []
+    with pytest.raises(nre.NotificationEntryNotFound):
+        coordinator.get_entry(owner, entry["entry_id"])
+
+
+def test_active_surface_cannot_suppress_push_when_foreground_delivery_is_disabled(coordinator, owner):
+    routing = {**_all_flags(True), "in_app_completion": False}
+    coordinator.update_preferences(owner, expected_revision=0, **routing)
+    decision = asyncio.run(coordinator.route(owner_id=owner, payload=_notification(),
+                                            has_active_surface=True, push_available=True))
+    assert not decision["foreground"] and decision["push"]

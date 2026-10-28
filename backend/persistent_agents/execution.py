@@ -974,8 +974,7 @@ class ActionExecutor:
             def commit(tx, repository, _current):
                 nonlocal candidate_permit
                 session_current()
-                # The re-authorization just re-observed the session; fencing the
-                # start against that fresher observation stays inside its window.
+                # Reauthorization keeps the execution fence inside its current authority window.
                 candidate_permit = repository.start_action_for_execution(tx, fence=self.claim.fence,
                     binding=self.binding, authority=checks["authority"].observation,
                     action_id=action.action_id,
