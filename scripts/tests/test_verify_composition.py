@@ -1114,7 +1114,7 @@ def test_reviewed_assignment_schema_import_matches_canonical_digest_without_exec
 
 @pytest.mark.parametrize("stem", [
     "atlas_revision", "atlas_link", "capability_publication", "harness_binding",
-    "push_delivery", "observation",
+    "push_delivery", "observation", "project", "harness_capture",
 ])
 @pytest.mark.parametrize("mutation", ["valid", "rebound", "executable"])
 def test_composed_schema_edges_retain_static_literal_admission(tmp_path, stem, mutation):
@@ -1128,6 +1128,8 @@ def test_composed_schema_edges_retain_static_literal_admission(tmp_path, stem, m
         source += f'{symbol} = ("SELECT 2",)\n'
     root = _write_migration(tmp_path / "AstralPlane", source)
     schema = f'{symbol} = (" SELECT 1 ".strip(),)\n'
+    if stem == "project":
+        schema = f'from typing import Final\n{symbol}: Final = ("SELECT 1",)\n'
     if mutation == "executable":
         schema += 'raise AssertionError("must never execute")\n'
     _write(root / f"src/astralplane/database/{stem}_schema.py", schema)

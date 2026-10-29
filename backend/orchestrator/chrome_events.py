@@ -176,6 +176,8 @@ def _notice_components(notice_html: str) -> list:
 
 async def _push_surface(orch, websocket, surface_key, title, admin_only, components):
     from shared.protocol import ChromeSurface
+    if _surface_delivery(orch, websocket, surface_key) is None:
+        return
     generation = None
     response = _response_scope(orch, websocket, surface_key)
     if response is not None:
@@ -197,9 +199,29 @@ async def _push_surface(orch, websocket, surface_key, title, admin_only, compone
 _NATIVE_SDUI_DEVICE_TYPES = ("windows", "android", "ios", "macos")
 
 
+def _surface_delivery(orch, websocket, surface_key):
+    if surface_key == "connection":
+        try:
+            from rote.capabilities import DeviceType
+            profile = orch.rote.get_profile(websocket)
+            device = getattr(profile.device_type, "value", str(profile.device_type))
+        except Exception:
+            return None
+        if device in {"watch", "watchos"}:
+            return "watch"
+        if device not in {kind.value for kind in DeviceType}:
+            return None
+    else:
+        device = _device_type(orch, websocket)
+    return "native" if device in _NATIVE_SDUI_DEVICE_TYPES else "html"
+
+
 async def _push_error_notice(orch, websocket, title: str, message: str,
                              surface_key: str = ""):
-    if _device_type(orch, websocket) in _NATIVE_SDUI_DEVICE_TYPES:
+    delivery = _surface_delivery(orch, websocket, surface_key)
+    if delivery is None:
+        return
+    if delivery in {"native", "watch"}:
         from webrender.chrome.surfaces import _sdui
         await _push_surface(orch, websocket, surface_key or "error", title, False,
                             [_sdui.alert(message, "error")])
@@ -235,7 +257,11 @@ def capture_surface_request(orch, websocket, action, payload, request_generation
 
     if not isinstance(action, str):
         return
-    if (not is_native_sdui(orch, websocket)
+    surface = payload.get("surface") if action == "chrome_open" and isinstance(payload, dict) else open_surface_for(orch, websocket)
+    delivery = _surface_delivery(orch, websocket, surface)
+    if delivery is None:
+        return
+    if (delivery not in {"native", "watch"}
             and action not in {"chrome_safety_stop", "chrome_safety_resume", "chrome_safety_verify"}
             and not action.startswith("chrome_mesh_")
             and not (action == "chrome_open" and isinstance(payload, dict)
@@ -260,8 +286,9 @@ def capture_surface_request(orch, websocket, action, payload, request_generation
         if owner not in SURFACE_MODULES:
             return
     elif action == "chrome_close":
-        owner = ""
-        _note_open_surface(orch, websocket, "")
+        owner = surface if delivery == "watch" else ""
+        if delivery != "watch":
+            _note_open_surface(orch, websocket, "")
     elif _is_chrome_action(action):
         owner = (_handlers().get(action) or ("", None))[0]
         if not owner or owner in {"work", "guidance", "agent_intro"}:
@@ -280,12 +307,12 @@ def surface_request_current(orch, websocket, surface_key, request_generation) ->
         surface_key, request_generation))
 
 
-async def claim_current_action_surface(orch, websocket, surface_key, request_generation, user_id):
+async def claim_current_action_surface(orch, websocket, surface_key, request_generation, user_id, *, replacing=False):
     from orchestrator.projection_surfaces import SURFACE_MODULES
 
     if (request_generation is None or surface_key not in SURFACE_MODULES
             or surface_key in {"work", "guidance", "agent_intro"}
-            or (surface_key not in {"safety", "mesh"} and not is_native_sdui(orch, websocket))):
+            or (surface_key not in {"safety", "mesh"} and _surface_delivery(orch, websocket, surface_key) not in {"native", "watch"})):
         return None
     context = (getattr(orch, "_connection_contexts", None) or {}).get(id(websocket))
     registration = (getattr(orch, "ui_sessions", None) or {}).get(websocket)
@@ -293,6 +320,7 @@ async def claim_current_action_surface(orch, websocket, surface_key, request_gen
         return None
     generation = getattr(context, "connection_generation", None)
     captured = deepcopy(registration)
+    previous_surface = open_surface_for(orch, websocket)
 
     def current():
         return bool((getattr(orch, "_connection_contexts", None) or {}).get(id(websocket)) is context
@@ -302,15 +330,20 @@ async def claim_current_action_surface(orch, websocket, surface_key, request_gen
             and not getattr(websocket, "closed", False)
             and (getattr(orch, "ui_sessions", None) or {}).get(websocket) is registration
             and registration == captured and registration.get("sub") == user_id
-            and open_surface_for(orch, websocket) in {"", surface_key}
+            and (open_surface_for(orch, websocket) in {"", surface_key}
+                 or replacing and open_surface_for(orch, websocket) == previous_surface)
             and surface_request_current(orch, websocket, surface_key, request_generation))
 
     if not current():
         return None
+    if _surface_delivery(orch, websocket, surface_key) == "watch":
+        response = _response_scope(orch, websocket, surface_key)
+        if response is not None:
+            response.delivery_guard = current
     await _verify_human_delivery(orch, websocket)
     if not current():
         return None
-    if not open_surface_for(orch, websocket):
+    if replacing or not open_surface_for(orch, websocket):
         _note_open_surface(orch, websocket, surface_key)
     return current
 
@@ -340,6 +373,14 @@ async def push_close(orch, websocket, *, surface_key=None, request_generation=No
     if (delivery_guard is None and response is not None and response.orchestrator is orch
             and response.websocket is websocket and response.surface_key == surface_key):
         delivery_guard = response.current
+    delivery = _surface_delivery(orch, websocket, surface_key or open_surface_for(orch, websocket))
+    if delivery is None:
+        return False
+    if delivery == "watch" and delivery_guard is None:
+        delivery_guard = await claim_current_action_surface(orch, websocket, surface_key, request_generation,
+            ((getattr(orch, "ui_sessions", None) or {}).get(websocket) or {}).get("sub"))
+        if delivery_guard is None:
+            return False
     if surface_key is not None and (open_surface_for(orch, websocket) != surface_key
             or not surface_request_current(orch, websocket, surface_key, request_generation)):
         return False
@@ -351,7 +392,9 @@ async def push_close(orch, websocket, *, surface_key=None, request_generation=No
         return False
     if delivery_guard is not None and not delivery_guard():
         return False
-    if is_native_sdui(orch, websocket):
+    if _surface_delivery(orch, websocket, surface_key or open_surface_for(orch, websocket)) is None:
+        return False
+    if delivery in {"native", "watch"}:
         delivered = await orch._safe_send(websocket, ChromeSurface(
             request_generation=request_generation).to_json())
     else:
@@ -368,6 +411,9 @@ async def _render_surface(orch, websocket, user_id, roles, surface_key: str,
         from persistent_agents.models import AssignmentError
         raise AssignmentError("explicit_note_navigation_unavailable", 503)
     response = _response_scope(orch, websocket, surface_key)
+    delivery = _surface_delivery(orch, websocket, surface_key)
+    if delivery is None or delivery == "watch" and (response is None or response.delivery_guard is None):
+        return
     if (response is not None
             and (not response.current() or open_surface_for(orch, websocket) != surface_key
                  or not surface_request_current(orch, websocket, surface_key, response.request_generation))):
@@ -376,7 +422,7 @@ async def _render_surface(orch, websocket, user_id, roles, surface_key: str,
     _note_open_surface(orch, websocket, surface_key)
     try:
         with perf_span("surface.render." + surface_key, surface=surface_key):
-            if _device_type(orch, websocket) in _NATIVE_SDUI_DEVICE_TYPES:
+            if delivery in {"native", "watch"}:
                 await _render_surface_sdui(orch, websocket, user_id, roles,
                                            surface_key, params, notice_html)
             else:
@@ -660,12 +706,17 @@ async def _handle_chrome_event(orch, websocket, action: str, payload: dict,
                 owner = requested
         else:
             owner = (_handlers().get(action) or ("", None))[0]
+    if action == "chrome_close" and _surface_delivery(orch, websocket, open_surface_for(orch, websocket)) == "watch":
+        owner = "connection"
+    delivery = _surface_delivery(orch, websocket, owner)
+    if delivery is None:
+        return True
     response = (_OrdinarySurfaceResponse(orch, websocket, owner, request_generation)
                 if (owner or action == "chrome_close") and request_generation is not None
-                and (owner in {"safety", "mesh", "search"} or is_native_sdui(orch, websocket)) else None)
+                and (owner in {"safety", "mesh", "search"} or delivery in {"native", "watch"}) else None)
     token = _ordinary_surface_response.set(response)
     try:
-        if response is not None and action == "chrome_open":
+        if response is not None and action == "chrome_open" and delivery != "watch":
             if surface_request_current(orch, websocket, owner, request_generation):
                 _note_open_surface(orch, websocket, owner)
         return await _dispatch_chrome_event(orch, websocket, action, payload, user_id,
@@ -683,6 +734,17 @@ async def _dispatch_chrome_event(orch, websocket, action: str, payload: dict,
     if not _is_chrome_action(action):
         return False
     payload = payload or {}
+    if action in {"chrome_work_continuity", "chrome_work_result_save"}:
+        from orchestrator.projection_surfaces import get_surface
+        from persistent_agents.models import AssignmentError
+
+        surface = get_surface("work")
+        handler = surface.deliver_continuity if action == "chrome_work_continuity" else surface.deliver_result_save
+        delivered = await handler(orch, websocket, user_id, [], payload,
+            request_generation=request_generation, work_read=work_read)
+        if not delivered:
+            raise AssignmentError("work_control_unavailable", 503)
+        return True
     if action == "chrome_open" and isinstance(payload, dict) and payload.get("surface") == "evidence":
         from orchestrator.projection_surfaces import get_surface
         return await get_surface("evidence").deliver(orch, websocket, user_id, payload, request_generation)
@@ -718,12 +780,29 @@ async def _dispatch_chrome_event(orch, websocket, action: str, payload: dict,
     current = None
 
     try:
+        if action in {"chrome_open", "chrome_close"}:
+            surface = payload.get("surface") if action == "chrome_open" else open_surface_for(orch, websocket)
+            delivery = _surface_delivery(orch, websocket, surface)
+            if delivery is None:
+                return True
+            if delivery == "watch":
+                err_surface = "connection"
+                response = _response_scope(orch, websocket, "connection")
+                if response is None:
+                    return True
+                current = await claim_current_action_surface(orch, websocket, "connection", request_generation,
+                    user_id, replacing=action == "chrome_open")
+                if current is None:
+                    return True
+                response.delivery_guard = current
         if action == "chrome_close":
             await push_close(orch, websocket)
             return True
 
         if action == "chrome_open":
             surface = str(payload.get("surface") or "")
+            if surface == "connection":
+                err_surface = surface
             params = payload.get("params") or {}
             if isinstance(params, str):
                 try:

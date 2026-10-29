@@ -23,14 +23,23 @@ from persistent_agents.research_result import build_page_result
 from persistent_agents.runtime_values import thaw
 
 
-def route() -> dict:
-    return {
-        "kind": "model",
-        "provider": "openai",
-        "model": profile.MODEL,
-        "max_output_tokens": profile.OUTPUT_TOKENS,
-        "response_format": {"type": "json_object"},
-    }
+def route(record=None) -> dict:
+    from orchestrator.harness.production_profiles import model_route
+    return model_route(record)
+
+
+async def _configuration(record, config_store, key_id):
+    captured = getattr(record, "harness_capture", None)
+    if captured is not None:
+        from orchestrator.harness.selection_service import select_captured_config
+        selected, key = await select_captured_config(captured, store=config_store,
+                                                     owner_id=record.owner_id)
+        if key_id is not None and key.key_id != key_id:
+            _deny()
+        return selected, key
+    key = private_binding_key(key_id)
+    return profile.select_config(await config_store.capture_user(record.owner_id),
+        store=config_store, binding_key=key), key
 
 
 def _deny():
@@ -121,13 +130,16 @@ class ResearchGuidance:
                 from orchestrator.projection_surfaces.authoring import DeclarativeAgentService
                 parsed = DeclarativeAgentService._stored_definition(self.captured.agent_revision)
                 limits = parsed.to_dict()["limits"]
-                requested = json.loads(self._record_json)["definition"]["limits"]
+                from orchestrator.harness.production_profiles import profile_for_capture_value
+                original = json.loads(self._record_json)
+                selected_profile = profile_for_capture_value(original.get("harness_capture"))
+                requested = original["definition"]["limits"]
                 if (not byo_enabled() or not parsed.fixed_research_shape
                         or any(requested[name] > limits[period][name]
                             for period in ("daily", "lifetime")
                             for name in ("model_calls", "tool_calls", "tokens", "elapsed_ms"))
                         or requested["max_retries"] > limits["max_retries"]
-                        or limits["step_timeout_ms"] < max(profile.RESERVED_MILLISECONDS,
+                        or limits["step_timeout_ms"] < max(selected_profile.reserved_milliseconds,
                             self._service.tool_bound("web-research-1:fetch_page")["elapsed_ms"])
                         or any(limits[period]["spend_micro_units"] is not None
                                for period in ("daily", "lifetime"))):
@@ -194,17 +206,21 @@ def _record_identity(record) -> str:
     else:
         fixed_reader_source(record)
     operation = thaw(record.operation)
+    selected = operation.get("authority", {})
+    interactive = (selected.get("origin") == "interactive"
+                   and selected.get("reference_kind") == "session_incarnation")
+    framework = (kind == "chat" and selected.get("origin") == "framework"
+                 and selected.get("reference_kind") == "credential"
+                 and operation.get("selection") is None)
     if (
         record.execution_profile != "one_shot"
         or operation.get("version") != 2
         or operation.get("kind") not in {"research", "chat"}
         or operation.get("source_retention") not in {"operation", "none"}
-        or operation.get("authority", {}).get("origin") != "interactive"
-        or operation.get("authority", {}).get("reference_kind") != "session_incarnation"
+        or not (interactive or framework)
     ):
         _deny()
-    return canonical(
-        {
+    identity = {
             "owner_id": record.owner_id,
             "assignment_id": record.assignment_id,
             "instruction_revision": record.instruction_revision,
@@ -212,7 +228,10 @@ def _record_identity(record) -> str:
             "definition": thaw(record.definition),
             "operation": operation,
         }
-    )
+    capture = getattr(record, "harness_capture", None)
+    if capture is not None:
+        identity["harness_capture"] = capture.to_dict()
+    return canonical(identity)
 
 
 def _source_identity(record, action) -> tuple[str, dict]:
@@ -286,7 +305,7 @@ class ResearchInput:
 
     @classmethod
     async def capture_chat(cls, record, *, config_store, key_id=None, guidance=None):
-        from persistent_agents.chat_episode import CHAT_PROFILE, build_chat_request
+        from persistent_agents.chat_episode import build_chat_request, chat_profile_name
 
         try:
             context = config_store._repository
@@ -301,24 +320,20 @@ class ResearchInput:
                 guidance.assert_local()
                 if guidance.metadata() is not None:
                     _deny()
-            key = private_binding_key(key_id)
-            config = profile.select_config(
-                await config_store.capture_user(record.owner_id),
-                store=config_store,
-                binding_key=key,
-            )
+            config, key = await _configuration(record, config_store, key_id)
             if config.owner_id != record.owner_id:
                 _deny()
-            request = build_chat_request(record.definition.instructions)
+            request = build_chat_request(record.definition.instructions, profile_spec=config.profile)
+            profile_name = chat_profile_name(config.profile)
             values = {
-                "profile": CHAT_PROFILE,
+                "profile": profile_name,
                 "record": record_json,
                 "config_revision": config.revision,
                 "body": request.body.decode("utf-8"),
             }
             binding = key.sign("input", canonical(values).encode("utf-8"))
             return cls(record.owner_id, record.assignment_id, None, binding, record_json,
-                       canonical({"profile": CHAT_PROFILE}), config, key, request,
+                       canonical({"profile": profile_name}), config, key, request,
                        None, guidance, config_binding, "chat")
         except (ValueError, TypeError, KeyError, AttributeError, PermissionError):
             _deny()
@@ -352,20 +367,17 @@ class ResearchInput:
                     if key_id is not None and key_id != selected_input["binding_key_id"]:
                         _deny()
                     key_id = selected_input["binding_key_id"]
-            key = private_binding_key(key_id)
-            config = profile.select_config(
-                await config_store.capture_user(record.owner_id),
-                store=config_store,
-                binding_key=key,
-            )
+            config, key = await _configuration(record, config_store, key_id)
             if config.owner_id != record.owner_id:
                 _deny()
-            request = (profile.build_request(record.definition.instructions, observation)
+            request = (profile.build_request(record.definition.instructions, observation,
+                                             profile=config.profile)
                        if selected_input is None else guidance.captured.compose(
                            observation=observation,
-                           approved_request_bytes=profile.MAX_REQUEST_BYTES).request)
+                           approved_request_bytes=profile.MAX_REQUEST_BYTES,
+                           profile_spec=config.profile).request)
             values = {
-                "profile": profile.PROFILE,
+                "profile": config.profile.name,
                 "record": record_json,
                 "source": source_json,
                 "config_revision": config.revision,
@@ -397,6 +409,40 @@ class ResearchInput:
             _deny()
 
     @property
+    def harness_adapter_identity(self):
+        value = json.loads(self._record_json).get("harness_capture")
+        if value is None:
+            return None
+        from astralplane.repositories.harness_capture import harness_capture_from_value
+        from orchestrator.harness.production_profiles import deployment_for_capture
+        return deployment_for_capture(harness_capture_from_value(value)).adapter_identity
+
+    @property
+    def profile(self):
+        return self._config.profile
+
+    @property
+    def request_route(self):
+        return {"kind": "model", "provider": self._config._capture._record.provider,
+            "model": self.profile.model, "max_output_tokens": self.profile.output_tokens,
+            "response_format": {"type": "json_object"}}
+
+    @property
+    def reservation(self):
+        return self.profile.reservation()
+
+    @property
+    def timeout_seconds(self):
+        return self.profile.reserved_milliseconds / 1000
+
+    @property
+    def profile_name(self):
+        if self.kind == "chat":
+            from persistent_agents.chat_episode import chat_profile_name
+            return chat_profile_name(self.profile)
+        return self.profile.name
+
+    @property
     def key_id(self) -> str:
         return self._key.key_id
 
@@ -414,8 +460,9 @@ class ResearchInput:
     def parse(self, body, *, status_code):
         if self._kind == "chat":
             from persistent_agents.chat_episode import parse_chat_response
-            return parse_chat_response(body, status_code=status_code)
-        return profile.parse_response(body, status_code=status_code, passage_ids=self.passage_ids)
+            return parse_chat_response(body, status_code=status_code, profile_spec=self.profile)
+        return profile.parse_response(body, status_code=status_code, passage_ids=self.passage_ids,
+                                      profile=self.profile)
 
     def transient(self) -> AssignmentTransientInput:
         references = () if self._kind == "chat" else (
@@ -458,6 +505,11 @@ class ResearchInput:
             self._guidance.assert_local()
 
     def assert_body(self, owner_id, body) -> None:
+        captured = json.loads(self._record_json).get("harness_capture")
+        if captured is not None:
+            from astralplane.repositories.harness_capture import harness_capture_from_value
+            from orchestrator.harness.production_profiles import deployment_for_capture
+            deployment_for_capture(harness_capture_from_value(captured))
         if (
             owner_id != self.owner_id
             or canonical(body).encode("utf-8") != self._request.body
@@ -481,7 +533,7 @@ class ResearchInput:
         if (
             action.owner_id != self.owner_id
             or action.assignment_id != self.assignment_id
-            or thaw(action.intent.request) != route()
+            or thaw(action.intent.request) != self.request_route
             or action.intent.request_digest != self.payload_binding
             or thaw(action.intent.transient_input) != thaw(self.transient())
             or action.intent.boundary != "unreplayable"
@@ -504,7 +556,7 @@ class ResearchInput:
         )
         result = {
             "version": 1,
-            "profile": profile.PROFILE,
+            "profile": self.profile.name,
             "passage_ids": list(selected),
             "source_action_id": self.source_action_id,
             "source_result_digest": source["result_digest"],
@@ -514,11 +566,7 @@ class ResearchInput:
         return result
 
     def receipt_digest(self, *, action_id, attempt_id, outcome, result, actual) -> str:
-        if self._kind == "chat":
-            from persistent_agents.chat_episode import CHAT_PROFILE
-            profile_name = CHAT_PROFILE
-        else:
-            profile_name = profile.PROFILE
+        profile_name = self.profile_name
         return self._key.sign(
             "result",
             receipt_payload(payload_binding=self.payload_binding, action_id=action_id,
@@ -552,7 +600,7 @@ class ResearchInput:
             if key not in {"result_available", "reacquisition_reason"}
         }
         try:
-            rebuilt = chat_result_value(result["text"])
+            rebuilt = chat_result_value(result["text"], profile_spec=self.profile)
         except (TypeError, KeyError, ValueError):
             _deny()
         if (
@@ -673,10 +721,15 @@ async def invoke_fixed_user_model(
         or orch._llm_context_user_id(websocket) != selected.owner_id
     ):
         _deny()
+    from llm_config.provider_egress import capture_private_policy
+    egress_policy = capture_private_policy() if selected.profile.local else None
     body = selected.body()
     body["messages"] = messages
     selected.assert_body(context.owner_id, body)
     actor, principal = orch._llm_audit_principals(websocket)
+    authority = json.loads(selected._record_json)["operation"]["authority"]
+    if authority["origin"] == "framework":
+        principal = "framework:" + authority["reference_id"]
     response = None
     unsent = None
     provider_attempt = None
@@ -685,16 +738,22 @@ async def invoke_fixed_user_model(
     async def physical():
         nonlocal response, unsent, provider_attempt
         selected.assert_body(context.owner_id, body)
+        if egress_policy is not None:
+            egress_policy.assert_current()
         provider_attempt = provider_started()
         try:
+            from urllib.parse import urlsplit
+            private = ({"require_private_endpoint": True} if egress_policy is not None
+                       and urlsplit(selected.profile.endpoint).scheme == "http" else {})
             response = await isolated_http.request(
                 "POST",
-                profile.ENDPOINT,
+                selected.profile.endpoint,
                 api_key=selected._config._api_key,
                 json_body=body,
-                allowed_private_hosts=(),
+                allowed_private_hosts=() if egress_policy is None else egress_policy.hosts,
                 max_response_bytes=profile.MAX_RESPONSE_BYTES,
                 timeout_seconds=60,
+                **private,
             )
         except isolated_http.IsolatedHttpError as error:
             # Only these codes count as never-sent; else stays uncertain
@@ -720,8 +779,8 @@ async def invoke_fixed_user_model(
                     pass
             return SimpleNamespace(usage=reported_usage)
 
-        await orch._context_model_call(websocket, context.conversation_id, feature, profile.MODEL, receipt,
-                                       request=body, base_url=profile.BASE_URL, provider_capture=selected._config,
+        await orch._context_model_call(websocket, context.conversation_id, feature, selected.profile.model, receipt,
+                                       request=body, base_url=selected.profile.base_url, provider_capture=selected._config,
                                        account_invocation=False)
         return unsent if unsent is not None else response
 
@@ -746,8 +805,8 @@ async def invoke_fixed_user_model(
             auth_principal=principal,
             feature=feature,
             credential_source=CredentialSource.USER,
-            resolved=ResolvedConfig(profile.BASE_URL, profile.MODEL),
-            routed_model=profile.MODEL,
+            resolved=ResolvedConfig(selected.profile.base_url, selected.profile.model),
+            routed_model=selected.profile.model,
             total_tokens=parsed.usage.total_tokens if parsed and parsed.usage else None,
             outcome="success" if _accepted(parsed) else "failure",
         )

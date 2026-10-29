@@ -92,6 +92,8 @@ async def ingress(surface, runtime, monkeypatch):
     orch.rote = SimpleNamespace(get_profile=previous.rote.get_profile, cleanup=lambda _: None)
     orch.work_admission = await asyncio.to_thread(WorkAdmissionCoordinator.from_plane,
         plane_runtime=runtime, slot_lease=timedelta(seconds=60))
+    from orchestrator.harness.selection_service import HarnessSelectionService
+    orch.harness_selection = HarnessSelectionService(plane_runtime=runtime)
     calls, arrivals, finished, registrations = [], asyncio.Queue(), asyncio.Queue(), asyncio.Queue()
     state = Ingress(orch, socket, original_claims["_raw_token"], identity, str(uuid4()),
                     registrations, calls, arrivals, finished)

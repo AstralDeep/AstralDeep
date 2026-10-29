@@ -448,3 +448,60 @@ async def test_revoke_committed_during_config_wait_refuses_acceptance(
         await worker
     assert shared["observed_wait"]
     no_acceptance(runtime, fixture[1])
+
+
+@pytest.mark.parametrize("enabled,code", [
+    (False, "harness_selection_disabled"), (True, "harness_qualification_missing"),
+])
+async def test_actual_work_admission_denies_selected_unavailable_profile_without_default_fallback(
+        research_service, fixture, runtime, monkeypatch, enabled, code):
+    from astralplane.repositories.harness_bindings import HarnessProfileIdentity
+    from shared.feature_flags import flags
+    monkeypatch.setitem(flags._flags, "harness_profile_selection", enabled)
+    with runtime.transaction() as tx:
+        runtime.repositories.preferences.harness.compare_and_set(tx, owner_id=fixture[1],
+            expected_revision=0, identity=HarnessProfileIdentity("standard_local", "1.0.0", "a" * 64),
+            qualification_digest="b" * 64)
+    with pytest.raises(AssignmentError, match=code):
+        await research_service.submit(await context(fixture, runtime), research_command(research_service))
+    no_acceptance(runtime, fixture[1])
+
+
+async def test_prepared_default_selection_change_refuses_actual_acceptance_fence(
+        research_service, fixture, runtime):
+    from astralplane.repositories.harness_bindings import HarnessProfileIdentity
+    service = research_service
+    body = json.loads(research_command(service))
+    authority = await context(fixture, runtime)
+    refreshed = await __import__("orchestrator.work_submit_authority", fromlist=[
+        "refresh_work_submission_authority"]).refresh_work_submission_authority(
+            authority, sessions=service.sessions)
+    definition = await service._definition(authority, refreshed, body)
+    prepared = await service.research_preflight.prepare(owner_id=fixture[1], runtime=runtime,
+        definition=definition, source_bound=service.assignments.tool_bound("web-research-1:fetch_page"))
+    assert prepared.harness.selection.revision == 0 and prepared.harness.capture is None
+    with runtime.transaction() as tx:
+        runtime.repositories.preferences.harness.compare_and_set(tx, owner_id=fixture[1],
+            expected_revision=0, identity=HarnessProfileIdentity("standard_local", "1.0.0", "a" * 64),
+            qualification_digest="b" * 64)
+    with runtime.transaction() as tx, pytest.raises(AssignmentError, match="harness_selection_conflict"):
+        service.research_preflight.assert_current(tx, runtime=runtime, owner_id=fixture[1], prepared=prepared)
+    no_acceptance(runtime, fixture[1])
+
+
+async def test_existing_work_preflight_retains_legacy_capture_after_new_owner_selection(
+        research_service, fixture, runtime):
+    from astralplane.repositories.harness_bindings import HarnessProfileIdentity
+    service = research_service
+    accepted = await service.submit(await context(fixture, runtime), research_command(service))
+    with runtime.transaction() as tx:
+        runtime.repositories.preferences.harness.compare_and_set(tx, owner_id=fixture[1],
+            expected_revision=0, identity=HarnessProfileIdentity("standard_local", "1.0.0", "a" * 64),
+            qualification_digest="b" * 64)
+    prepared = await service.research_preflight.prepare_existing(accepted.record, runtime=runtime,
+        source_bound=service.assignments.tool_bound("web-research-1:fetch_page"))
+    assert prepared.selection.profile == profile.OPENAI_PROFILE
+    assert prepared.harness is None
+    with runtime.transaction() as tx:
+        service.research_preflight.assert_current(tx, runtime=runtime, owner_id=fixture[1], prepared=prepared)
+    assert totals(runtime, fixture[1]) == (1, 1, 1)

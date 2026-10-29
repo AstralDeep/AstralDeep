@@ -138,14 +138,14 @@ async def test_resume_snapshots_validated_body_before_awaiting_config(api, monke
     original_id = request_body.submission_id
     expected_digest = digest({"api_version": 1, "operation_id": record.assignment_id,
                               "command": "resume", **request_body.model_dump()})
-    original_prepare = FixedResearchPreflight.prepare
+    original_prepare = FixedResearchPreflight.prepare_existing
 
-    async def prepare(self, **kwargs):
-        prepared = await original_prepare(self, **kwargs)
+    async def prepare(self, *args, **kwargs):
+        prepared = await original_prepare(self, *args, **kwargs)
         request_body.submission_id = str(uuid4())
         return prepared
 
-    monkeypatch.setattr(FixedResearchPreflight, "prepare", prepare)
+    monkeypatch.setattr(FixedResearchPreflight, "prepare_existing", prepare)
     result = await service_for(api).resume(record.assignment_id, request_body,
                                          caller=await caller(api, api.fixture[2]))
     assert result["applied"] is True
@@ -162,10 +162,10 @@ async def test_resume_rejects_changes_after_preflight_without_overwriting_or_par
 ):
     record = await paused(api)
     expected = [record]
-    original = FixedResearchPreflight.prepare
+    original = FixedResearchPreflight.prepare_existing
 
-    async def prepare(self, **kwargs):
-        prepared = await original(self, **kwargs)
+    async def prepare(self, *args, **kwargs):
+        prepared = await original(self, *args, **kwargs)
         if change == "policy":
             api.orch.tool_permissions.set_agent_scopes(
                 record.owner_id, "web-research-1", {"tools:read": False})
@@ -176,7 +176,7 @@ async def test_resume_rejects_changes_after_preflight_without_overwriting_or_par
                 api.runtime.repositories.encrypted_llm_config.delete_user(tx, owner_id=record.owner_id)
         return prepared
 
-    monkeypatch.setattr(FixedResearchPreflight, "prepare", prepare)
+    monkeypatch.setattr(FixedResearchPreflight, "prepare_existing", prepare)
     with pytest.raises(AssignmentError):
         await service_for(api).resume(record.assignment_id, body(record),
                                      caller=await caller(api, api.fixture[2]))

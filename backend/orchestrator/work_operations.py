@@ -129,7 +129,7 @@ class FrameworkWorkOperations:
                             "name": bounded_name, "instructions": bounded_instructions,
                             "conversation_id": conversation, "limits": limit_map})
 
-        observation = self.credentials.fresh_observation(caller)
+        observation = await asyncio.to_thread(self.credentials.fresh_observation, caller)
         if observation is None:
             raise AssignmentError("framework_credential_authority_unavailable", 409)
         deadline = min(
@@ -204,7 +204,7 @@ class FrameworkWorkOperations:
         plane_command = "stop" if command == "cancel" else command
         signature = digest({"api_version": 1, "namespace": _ORIGIN_NAMESPACE, "operation_id": identity,
                             "command": command, "submission_id": sid})
-        observation = self.credentials.fresh_observation(caller)
+        observation = await asyncio.to_thread(self.credentials.fresh_observation, caller)
         if observation is None:
             raise AssignmentError("framework_credential_authority_unavailable", 409)
 

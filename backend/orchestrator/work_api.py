@@ -29,6 +29,7 @@ from orchestrator.work_completion_wake import (
     WorkCompletionWakeService, WorkContinuationConfirmRequest, WorkContinuationProposalRequest,
 )
 from orchestrator.work_control_authority import WorkCallerAuthority, authenticate_work_control_request
+from orchestrator.work_continuity import WorkContinuityService
 from orchestrator.work_continuations import (
     WorkContinuationService, WorkJobWaitRequest, WorkOwnerWaitRequest, WorkReconcileRequest,
 )
@@ -184,6 +185,7 @@ class WorkReadRoute(APIRoute):
                     "assignment_authorization_unavailable", "assignment_tool_unavailable",
                     "assignment_scope_unavailable", "assignment_source_not_read_only",
                     "work_result_unavailable", "work_proposal_expired",
+                    "work_completion_source_missing", "work_job_completion_unconfirmed",
                     "assignment_proposal_changed", "assignment_approval_invalid",
                     "assignment_deadline_exceeded", "work_continuation_source_terminal",
                     "work_continuation_waiter_unsupported",
@@ -377,6 +379,12 @@ async def wait_work(identity: str, body: WorkOwnerWaitRequest, request: Request)
 @work_router.post("/{identity}/wait-job")
 async def wait_job_work(identity: str, body: WorkJobWaitRequest, request: Request):
     return _json(await WorkContinuationService(_service(request).assignments).wait_job(
+        identity, body, caller=_write_caller(request)))
+
+
+@work_router.post("/{identity}/continuity")
+async def continuity_work(identity: str, body: WorkControlRequest, request: Request):
+    return _json(await WorkContinuityService(_service(request).assignments).recheck(
         identity, body, caller=_write_caller(request)))
 
 

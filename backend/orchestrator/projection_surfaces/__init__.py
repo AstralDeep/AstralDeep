@@ -34,6 +34,7 @@ SURFACE_MODULES = {
     "remote_machines": "orchestrator.projection_surfaces.remote_machines",
     "my_computers": "orchestrator.projection_surfaces.my_computers",
     "connections": "orchestrator.projection_surfaces.connections",
+    "connection": "orchestrator.projection_surfaces.connection",
     "saved_results": "orchestrator.projection_surfaces.saved_results",
     "atlas": "orchestrator.projection_surfaces.atlas",
     "search": "orchestrator.projection_surfaces.search",

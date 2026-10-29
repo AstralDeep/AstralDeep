@@ -73,9 +73,10 @@ def _classes(*, shared_active_limit: int = 20) -> tuple[AdmissionClassConfig, ..
 
 
 def _coordinator(*, shared_active_limit: int = 20) -> WorkAdmissionCoordinator:
+    from tests.helpers.harness_host import DefaultHarnessRepository
     return WorkAdmissionCoordinator(
         admission_classes=_classes(shared_active_limit=shared_active_limit),
-        repository=InMemoryWorkAdmissionRepository(),
+        repository=DefaultHarnessRepository(),
         clock=_Clock(),
         operation_retention=timedelta(hours=24),
     )
@@ -159,10 +160,14 @@ def _runtime_voice_frame(connection_generation: str) -> dict[str, Any]:
 def _runtime_orchestrator(
     websocket: object,
     *,
+    context: ConnectionContext,
     user_id: str = "voice-owner",
 ) -> Orchestrator:
     orchestrator = object.__new__(Orchestrator)
     orchestrator.work_admission = _coordinator()
+    from tests.helpers.harness_host import default_harness_service
+    orchestrator.harness_selection = default_harness_service()
+    orchestrator._connection_contexts = {id(websocket): context}
     orchestrator.ui_sessions = {websocket: {"sub": user_id}}
     orchestrator._ws_active_chat = {}
     orchestrator.runtime_observability = None
@@ -208,7 +213,7 @@ def test_runtime_routes_only_voice_chat_to_voice_interactive_admission() -> None
     websocket = object()
     connection_generation = str(uuid.uuid4())
     context = _runtime_context(websocket, connection_generation)
-    orchestrator = _runtime_orchestrator(websocket)
+    orchestrator = _runtime_orchestrator(websocket, context=context)
     voice_raw = _runtime_voice_frame(connection_generation)
     voice_frame = orchestrator._connection_frame(
         context,
@@ -252,7 +257,7 @@ async def test_runtime_claims_voice_operation_from_voice_class() -> None:
     websocket = object()
     connection_generation = str(uuid.uuid4())
     context = _runtime_context(websocket, connection_generation)
-    orchestrator = _runtime_orchestrator(websocket)
+    orchestrator = _runtime_orchestrator(websocket, context=context)
     raw = _runtime_voice_frame(connection_generation)
     frame = orchestrator._connection_frame(
         context,
@@ -285,7 +290,7 @@ async def test_runtime_capacity_refusal_is_voice_correlated_before_acceptance(
     websocket = object()
     connection_generation = str(uuid.uuid4())
     context = _runtime_context(websocket, connection_generation)
-    orchestrator = _runtime_orchestrator(websocket)
+    orchestrator = _runtime_orchestrator(websocket, context=context)
     sent: list[dict[str, Any]] = []
     persisted: list[dict[str, Any]] = []
     worker_rejections: list[dict[str, Any]] = []
@@ -400,7 +405,7 @@ async def test_runtime_identity_denial_uses_terminal_voice_disposition() -> None
     websocket = object()
     connection_generation = str(uuid.uuid4())
     context = _runtime_context(websocket, connection_generation)
-    orchestrator = _runtime_orchestrator(websocket)
+    orchestrator = _runtime_orchestrator(websocket, context=context)
     raw = _runtime_voice_frame(connection_generation)
     frame = orchestrator._connection_frame(
         context,

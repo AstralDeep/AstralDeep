@@ -53,6 +53,7 @@ def thaw(value):
 def public_record(record):
     data = thaw(record)
     data.pop("owner_id", None)
+    data.pop("harness_capture", None)
     grant = data["definition"].pop("offline_grant_id", None)
     data["definition"].pop("cost_quote_coverage", None)
     data["authority"] = {"grant_bound": bool(grant)}
@@ -296,7 +297,8 @@ class AssignmentService:
         definition = await self._definition(owner_id, claims, body)
         prepared = await self._prepare_consent(owner_id, selected_session)
         definition = replace(definition, offline_grant_id=prepared.grant_id)
-        result = await self._mutation("create_assignment", "create", prepared=prepared, owner_id=owner_id,
+        harness = await self.orch.harness_selection.prepare(owner_id)
+        result = await self._mutation("create_assignment", "create", prepared=prepared, harness=harness, owner_id=owner_id,
             assignment_id=assignment_id, submission_id=body.submission_id,
             submission_digest=submission_digest, definition=definition,
             max_owned_assignments=25, max_retained_assignments=256)
@@ -361,11 +363,11 @@ class AssignmentService:
                 owner_id=owner_id, assignment_id=assignment_id, submission_id=submission_id,
                 submission_digest=submission_digest, command=command), bound_session_waits=True)
 
-    async def _mutation(self, method, command, *, prepared, **kwargs):
+    async def _mutation(self, method, command, *, prepared, harness=None, **kwargs):
         try:
             return await self.store.transaction(
                 lambda transaction, repository: self._consented_mutation(
-                    transaction, repository, method, command, prepared, kwargs),
+                    transaction, repository, method, command, prepared, kwargs, harness=harness),
                 bound_session_waits=True)
         except AssignmentError as exc:
             if exc.status_code != 409:
@@ -376,7 +378,7 @@ class AssignmentService:
                 raise
             return receipt if method == "create_assignment" else AssignmentControlResult(receipt, False)
 
-    def _consented_mutation(self, transaction, repository, method, command, prepared, kwargs):
+    def _consented_mutation(self, transaction, repository, method, command, prepared, kwargs, *, harness=None):
         from astralplane.errors import PlaneError
         from orchestrator.offline_grant import OfflineGrantError
         receipt = repository.get_submission_receipt(transaction,
@@ -387,7 +389,14 @@ class AssignmentService:
             return receipt if method == "create_assignment" else AssignmentControlResult(receipt, False)
         grants = self.orch.offline_grants
         try:
+            if method == "create_assignment":
+                self.orch.harness_selection.assert_current(transaction, harness)
             grants.capture_in_transaction(transaction, prepared, plane_runtime=self.store.plane_runtime)
+            if method == "create_assignment":
+                self.orch.harness_selection.assert_current(transaction, harness)
+                if harness is not None:
+                    kwargs = {**kwargs, "harness_selection": harness.selection,
+                              "harness_capture": harness.capture}
             result = getattr(repository, method)(transaction, **kwargs)
             record = result if method == "create_assignment" else result.assignment
             if record.definition.offline_grant_id != prepared.grant_id:

@@ -44,7 +44,6 @@ from orchestrator.work_admission import (
     AdmissionClass,
     AdmissionClassConfig,
     ExecutionFence,
-    InMemoryWorkAdmissionRepository,
     OperationState,
     StaleExecutionFenceError,
     WorkAdmissionCoordinator,
@@ -253,6 +252,8 @@ def _revision_delivery_orchestrator(
     operation_fence = ExecutionFence(uuid.uuid4(), 1, uuid.uuid4())
     operation_owner = SimpleNamespace(owner_user_id="owner-060")
     orchestrator = Orchestrator.__new__(Orchestrator)
+    from tests.helpers.harness_host import default_harness_service
+    orchestrator.harness_selection = default_harness_service()
     orchestrator._personal_agent_activation_locks = {}
     orchestrator._personal_agent_ready_waiters = {}
     orchestrator._personal_agent_session_sockets = {}
@@ -293,6 +294,7 @@ def _personal_agent_operation_orchestrator() -> tuple[
     Orchestrator,
     WorkAdmissionCoordinator,
 ]:
+    from tests.helpers.harness_host import DefaultHarnessRepository, default_harness_service
     coordinator = WorkAdmissionCoordinator(
         admission_classes=(
             AdmissionClassConfig(
@@ -304,12 +306,13 @@ def _personal_agent_operation_orchestrator() -> tuple[
                 config_revision="personal-agent-retry-test",
             ),
         ),
-        repository=InMemoryWorkAdmissionRepository(),
+        repository=DefaultHarnessRepository(),
         clock=lambda: datetime.now(UTC),
         operation_retention=timedelta(hours=1),
     )
     orchestrator = Orchestrator.__new__(Orchestrator)
     orchestrator.work_admission = coordinator
+    orchestrator.harness_selection = default_harness_service()
 
     async def call(callback, *args, **kwargs):
         return callback(*args, **kwargs)
@@ -705,7 +708,7 @@ async def test_delivery_admission_failure_precedes_host_selection(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("ack_point", ("submit", "claim_operation"))
+@pytest.mark.parametrize("ack_point", ("submit_with_harness", "claim_operation"))
 async def test_delivery_admission_commit_ack_loss_is_typed_pending(ack_point):
     owner_id = "owner-060"
     agent_id = f"agent-{ack_point}-ack-loss"

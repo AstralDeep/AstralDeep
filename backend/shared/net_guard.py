@@ -1,6 +1,5 @@
-"""Stdlib-only, scheme-neutral connection-time guard for the remote-compute SSH agents:
-blocks loopback/link-local/reserved addresses but permits RFC1918, unlike
-shared/external_http.py, since on-prem clusters live there.
+"""Connection-time guards for SSH agents and selected HTTP providers.
+SSH blocks loopback and link-local targets; the shared HTTP predicate preserves operator-approved loopback and RFC1918 semantics.
 """
 
 from __future__ import annotations
@@ -17,6 +16,18 @@ __all__ = [
     "resolve_host_addresses",
     "assert_ssh_target_allowed",
 ]
+
+
+_PRIVATE_HTTP_NETWORKS = tuple(ipaddress.ip_network(value) for value in
+                               ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+
+
+def is_private_http_address(value):
+    address = ipaddress.ip_address(value)
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return address.is_loopback or isinstance(address, ipaddress.IPv4Address) and any(
+        address in network for network in _PRIVATE_HTTP_NETWORKS)
 
 
 class NetGuardError(Exception):

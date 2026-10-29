@@ -28,6 +28,10 @@ from orchestrator.work_write_boundary import (
 )
 
 _ERRORS = {
+    "harness_selection_disabled", "harness_selection_conflict", "harness_qualification_missing",
+    "harness_component_unavailable", "harness_profile_unknown", "harness_capture_invalid",
+    "harness_config_changed", "harness_config_unavailable", "harness_artifact_unavailable",
+    "harness_capture_changed", "harness_unavailable",
     "work_submit_invalid",
     "work_submit_unavailable",
     "work_body_too_large",

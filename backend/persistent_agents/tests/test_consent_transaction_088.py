@@ -46,6 +46,8 @@ def fixture(runtime, monkeypatch):
     host = SimpleNamespace(offline_grants=grants, web_sessions=sessions,
         tool_permissions=SimpleNamespace(list_disabled_agents=lambda owner: [],
                                          get_tool_scope=lambda *args: "tools:read"))
+    from orchestrator.harness.selection_service import HarnessSelectionService
+    host.harness_selection = HarnessSelectionService(plane_runtime=runtime)
     monkeypatch.setattr("persistent_agents.service.eligible_tool_pairs",
                         lambda *args, **kwargs: [("web-research-1", SimpleNamespace(id="fetch_page"))])
     monkeypatch.setattr("persistent_agents.service.validate_egress_url", lambda url: None)

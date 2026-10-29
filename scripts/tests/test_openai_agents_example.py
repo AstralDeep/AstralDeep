@@ -1,0 +1,1252 @@
+"""Offline, deterministic verification of scripts/openai_agents_example: the fake server
+enforces the MCP 2026-07-28 metadata/header contract on every request, models scope- and
+owner-aware tool projection, the lifecycle, denial, failure, and recovery paths run over
+an in-process transport, redaction keeps credentials and payloads out of logs and
+receipts, and the SDK binding disables cloud trace export before any request. No
+third-party SDK and no network are required here; the real-SDK qualification suite lives
+in scripts/openai_agents_example/tests/.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import itertools
+import json
+import logging
+import sys
+import types
+
+import httpx
+import pytest
+
+from scripts.openai_agents_example import contract
+from scripts.openai_agents_example.agent import (
+    AGENT_INSTRUCTIONS, AGENT_TOOL_NAMES, EXCLUDED_TOOL_NAMES, AstralAgentSession,
+)
+from scripts.openai_agents_example.client import (
+    AstralWorkClient, CredentialRefused, MCPProtocolError, OperationPendingTimeout, ToolCallError,
+)
+from scripts.openai_agents_example.qualify import (
+    SYNTHETIC_PHI_INSTRUCTIONS, QualificationConfig, main, run_qualification,
+)
+from scripts.openai_agents_example.redaction import (
+    RedactingFilter, sanitize_line, sanitize_mapping, scrub_text,
+)
+
+from scripts.openai_agents_example.tests.mcp_fakes import (
+    ADMISSION_BEARER, ARTIFACT_OPERATION_ID, EXPIRED_BEARER,
+    BEARER, FULL_TOOLS, OPERATION_ID, OTHER_BEARER, READONLY_BEARER, READONLY_TOOLS,
+    REVOKED_BEARER, FakeAstral, operation as _operation,
+)
+
+
+@pytest.fixture(autouse=True)
+def observed_server_fixture(monkeypatch):
+    from scripts.openai_agents_example import qualify
+
+    identity = {"container_id": "b" * 64, "image_digest": "sha256:" + "c" * 64,
+                "published_port": 8001, "observation": "local_docker_direct_publish"}
+    monkeypatch.setattr(qualify, "observe_server", lambda *_: dict(identity))
+
+def _client(fake, **kwargs):
+    defaults = dict(base_url="http://testserver", bearer=BEARER, transport=fake.transport)
+    defaults.update(kwargs)
+    return AstralWorkClient(**defaults)
+
+
+def _run(coroutine):
+    return asyncio.run(coroutine)
+
+
+def _install_agents_stub(monkeypatch):
+    from scripts.openai_agents_example import qualify
+
+    monkeypatch.setattr(qualify, "_source_revision", lambda: "a" * 40)
+    calls = []
+
+    class FakeTool:
+        def __init__(self, name, function):
+            self.name = name
+            self.function = function
+
+    def function_tool(func=None, *, name_override=None, description_override=None,
+                      use_docstring_info=None, strict_mode=None, **_kwargs):
+        def decorate(fn):
+            calls.append(("function_tool", name_override or fn.__name__))
+            return FakeTool(name_override or fn.__name__, fn)
+
+        return decorate(func) if func is not None else decorate
+
+    class FakeAgent:
+        def __init__(self, *, name, instructions, tools, model=None):
+            calls.append(("agent", name, tuple(tool.name for tool in tools)))
+            self.name = name
+            self.instructions = instructions
+            self.tools = tools
+            self.model = model
+
+    module = types.ModuleType("agents")
+    module.set_tracing_disabled = lambda flag: calls.append(("set_tracing_disabled", flag))
+    module.set_trace_processors = lambda processors: calls.append(("set_trace_processors", list(processors)))
+    module.function_tool = function_tool
+    module.Agent = FakeAgent
+    monkeypatch.setitem(sys.modules, "agents", module)
+    return calls
+
+
+def _qualifying_config(fake, **overrides):
+    defaults = dict(
+        bearer=BEARER, readonly_bearer=READONLY_BEARER, other_owner_bearer=OTHER_BEARER,
+        revoked_bearer=REVOKED_BEARER, transport=fake.transport,
+        expired_bearer=EXPIRED_BEARER, admission_bearer=ADMISSION_BEARER,
+        artifact_operation_id=ARTIFACT_OPERATION_ID,
+        max_polls=3, interval_seconds=0.0, timeout_seconds=30.0,
+    )
+    defaults.update(overrides)
+    return QualificationConfig(**defaults)
+
+
+def test_envelope_carries_required_metadata():
+    envelope = contract.request_envelope("server/discover", None, request_id=7)
+    assert envelope["jsonrpc"] == "2.0" and envelope["id"] == 7
+    meta = envelope["params"]["_meta"]
+    assert meta["io.modelcontextprotocol/protocolVersion"] == "2026-07-28"
+    assert "io.modelcontextprotocol/clientCapabilities" in meta
+
+
+def test_headers_carry_mirror_fields():
+    headers = contract.request_headers(
+        bearer=BEARER, method="tools/call", tool_name="astral_get_operation",
+    )
+    assert headers["MCP-Protocol-Version"] == "2026-07-28"
+    assert headers["Mcp-Method"] == "tools/call"
+    assert headers["Mcp-Name"] == "astral_get_operation"
+    assert headers["Authorization"] == f"Bearer {BEARER}"
+
+
+def test_mirror_name_sentinel_for_unsafe_names():
+    assert contract.encode_mirror_name("astral_get_operation") == "astral_get_operation"
+    unsafe = contract.encode_mirror_name("tool with space/ü")
+    assert unsafe.startswith("=?base64?") and unsafe.endswith("?=")
+    decoded = base64.b64decode(unsafe[len("=?base64?"):-len("?=")]).decode("utf-8")
+    assert decoded == "tool with space/ü"
+    assert contract.encode_mirror_name("=?base64?YQ==?=").startswith("=?base64?")
+
+
+def test_terminal_dispositions_match_server_contract():
+    assert contract.TERMINAL_DISPOSITIONS == {"completed", "failed", "cancelled"}
+    assert contract.TERMINAL_DISPOSITIONS < contract.DISPOSITIONS
+
+
+def test_discover_and_tools_listing_over_contract_fakes():
+    fake = FakeAstral()
+
+    async def flow():
+        async with _client(fake) as client:
+            return await client.discover(), await client.list_tools()
+
+    discovery, tools = _run(flow())
+    assert discovery["supportedVersions"] == ["2026-07-28"]
+    assert tools == FULL_TOOLS
+
+
+def test_full_lifecycle_paths_over_fake():
+    fake = FakeAstral()
+
+    async def flow():
+        async with _client(fake) as client:
+            submitted = await client.submit(
+                idempotency_key="retry-key-1", name="qualification",
+                instructions="synthetic instructions",
+            )
+            replay = await client.submit(
+                idempotency_key="retry-key-1", name="qualification",
+                instructions="synthetic instructions",
+            )
+            current = await client.get(submitted["id"])
+            listed = await client.list(limit=10)
+            terminal = await client.wait_terminal(
+                submitted["id"], after_revision=1, interval_seconds=0.0,
+                sleep=lambda *_: asyncio.sleep(0),
+            )
+            artifact = await client.artifact(submitted["id"])
+            cancelled = await client.cancel(submitted["id"], expected_revision=terminal["revision"])
+            replayed = await client.cancel(
+                submitted["id"], submission_id="kept-submission-id",
+                expected_revision=terminal["revision"],
+            )
+            paused = await client.pause(submitted["id"], expected_revision=terminal["revision"])
+            return submitted, replay, current, listed, terminal, artifact, cancelled, replayed, paused
+
+    (submitted, replay, current, listed, terminal, artifact,
+     cancelled, _replayed, paused) = _run(flow())
+    assert submitted["id"] == OPERATION_ID and submitted["created"] is True
+    assert replay["id"] == OPERATION_ID and replay["created"] is False
+    assert current["id"] == OPERATION_ID
+    assert listed["operations"] == []
+    assert terminal["disposition"] == "completed"
+    assert artifact["id"] == OPERATION_ID
+    assert cancelled["applied"] is True
+    assert paused["operation"]["disposition"] == "paused"
+
+
+def test_tool_error_raises_typed_error():
+    fake = FakeAstral(behaviors={"astral_get_operation": ("tool_error", "work_not_found")})
+
+    async def flow():
+        async with _client(fake) as client:
+            await client.get(OPERATION_ID)
+
+    with pytest.raises(ToolCallError, match="work_not_found"):
+        _run(flow())
+
+
+def test_revoked_credential_refused_with_challenge():
+    fake = FakeAstral()
+
+    async def flow():
+        async with _client(fake, bearer=REVOKED_BEARER) as client:
+            await client.discover()
+
+    with pytest.raises(CredentialRefused) as excinfo:
+        _run(flow())
+    assert excinfo.value.status == 401
+    assert excinfo.value.challenge
+
+
+def test_http_and_rpc_errors_are_typed():
+    def unavailable_handler(request):
+        return httpx.Response(503, text="unavailable")
+
+    async def flow_http():
+        client = AstralWorkClient(
+            base_url="http://testserver", bearer=BEARER,
+            transport=httpx.MockTransport(unavailable_handler),
+        )
+        async with client:
+            await client.discover()
+
+    with pytest.raises(MCPProtocolError) as excinfo:
+        _run(flow_http())
+    assert excinfo.value.status == 503
+
+    def rpc_error_handler(request):
+        return httpx.Response(
+            200, json={"jsonrpc": "2.0", "id": 1, "error": {"code": -32601, "message": "no"}},
+        )
+
+    async def flow_rpc():
+        client = AstralWorkClient(
+            base_url="http://testserver", bearer=BEARER,
+            transport=httpx.MockTransport(rpc_error_handler),
+        )
+        async with client:
+            await client.discover()
+
+    with pytest.raises(MCPProtocolError, match="rpc_error"):
+        _run(flow_rpc())
+
+
+def test_malformed_responses_fail_closed():
+    def plain_handler(request):
+        return httpx.Response(200, text="not-json")
+
+    def wrong_envelope_handler(request):
+        return httpx.Response(200, json={"unexpected": True})
+
+    def no_result_handler(request):
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1})
+
+    for handler, code in (
+        (plain_handler, "invalid_response_body"),
+        (wrong_envelope_handler, "invalid_response_envelope"),
+        (no_result_handler, "invalid_response_envelope"),
+    ):
+        async def flow(handler=handler):
+            client = AstralWorkClient(
+                base_url="http://testserver", bearer=BEARER,
+                transport=httpx.MockTransport(handler),
+            )
+            async with client:
+                await client.discover()
+
+        with pytest.raises(MCPProtocolError, match=code):
+            _run(flow())
+
+
+def test_transport_failure_is_typed():
+    def failing_handler(request):
+        raise httpx.ConnectError("down")
+
+    async def flow():
+        client = AstralWorkClient(
+            base_url="http://testserver", bearer=BEARER,
+            transport=httpx.MockTransport(failing_handler),
+        )
+        async with client:
+            await client.discover()
+
+    with pytest.raises(MCPProtocolError, match="transport_unavailable"):
+        _run(flow())
+
+
+def test_wait_terminal_truthful_success_paths():
+    for final in ("completed", "failed", "cancelled"):
+        fake = FakeAstral(behaviors={"astral_get_operation_events": [
+            {"revision": 2, "changed": True, "resync_required": False,
+             "operation": _operation("active", 2)},
+            {"revision": 3, "changed": True, "resync_required": False,
+             "operation": _operation(final, 3)},
+        ]})
+
+        async def flow():
+            async with _client(fake) as client:
+                return await client.wait_terminal(
+                    OPERATION_ID, after_revision=1, interval_seconds=0.0, max_polls=5,
+                    sleep=lambda *_: asyncio.sleep(0),
+                )
+
+        terminal = _run(flow())
+        assert terminal["disposition"] == final
+        assert terminal["revision"] == 3
+
+
+def test_wait_terminal_bounded_polls_never_fabricate_state():
+    fake = FakeAstral(behaviors={"astral_get_operation_events": [
+        {"revision": 2, "changed": True, "resync_required": False,
+         "operation": _operation("active", 2)},
+        {"revision": 2, "changed": False, "resync_required": False, "operation": None},
+    ]})
+
+    async def flow():
+        async with _client(fake) as client:
+            await client.wait_terminal(
+                OPERATION_ID, after_revision=1, interval_seconds=0.0, max_polls=2,
+                timeout_seconds=60.0, sleep=lambda *_: asyncio.sleep(0),
+            )
+
+    with pytest.raises(OperationPendingTimeout) as excinfo:
+        _run(flow())
+    assert "polls=2" in str(excinfo.value.detail)
+    polls = [
+        request for request in fake.requests
+        if json.loads(request.content)["method"] == "tools/call"
+    ]
+    assert len(polls) == 2
+
+
+def test_wait_terminal_wall_clock_bound():
+    fake = FakeAstral()
+    ticks = itertools.count(0, 2)
+
+    async def flow():
+        client = _client(fake, clock=lambda: float(next(ticks)))
+        async with client:
+            await client.wait_terminal(
+                OPERATION_ID, after_revision=1, interval_seconds=0.0, max_polls=100,
+                timeout_seconds=5.0, sleep=lambda *_: asyncio.sleep(0),
+            )
+
+    with pytest.raises(OperationPendingTimeout):
+        _run(flow())
+
+
+def test_wait_terminal_resync_drops_cursor():
+    fake = FakeAstral(behaviors={"astral_get_operation_events": [
+        {"revision": 2, "changed": True, "resync_required": True, "operation": _operation("active", 2)},
+        {"revision": 3, "changed": True, "resync_required": False,
+         "operation": _operation("completed", 3)},
+    ]})
+
+    async def flow():
+        async with _client(fake) as client:
+            return await client.wait_terminal(
+                OPERATION_ID, after_revision=9, interval_seconds=0.0, max_polls=5,
+                sleep=lambda *_: asyncio.sleep(0),
+            )
+
+    assert _run(flow())["disposition"] == "completed"
+
+
+def test_wait_terminal_refuses_out_of_contract_disposition():
+    fake = FakeAstral(behaviors={"astral_get_operation_events": [
+        {"revision": 2, "changed": True, "resync_required": False,
+         "operation": _operation("mysterious", 2)},
+    ]})
+
+    async def flow():
+        async with _client(fake) as client:
+            await client.wait_terminal(
+                OPERATION_ID, after_revision=1, interval_seconds=0.0, max_polls=3,
+                sleep=lambda *_: asyncio.sleep(0),
+            )
+
+    with pytest.raises(MCPProtocolError, match="disposition_out_of_contract"):
+        _run(flow())
+
+
+def test_wait_terminal_rejects_invalid_bounds():
+    fake = FakeAstral()
+
+    async def flow():
+        async with _client(fake) as client:
+            await client.wait_terminal(OPERATION_ID, max_polls=0)
+
+    with pytest.raises(ValueError):
+        _run(flow())
+
+
+def test_redaction_scrubs_credentials_and_payloads():
+    scrubbed = scrub_text("bearer afk_alpha.beta.gamma and more afk_short_text")
+    assert "afk_" not in scrubbed
+    assert "[redacted]" in scrubbed
+    assert sanitize_line("token afk_x.y.z trailing") == "token [redacted] trailing"
+
+
+def test_sanitize_mapping_allowlist():
+    sanitized = sanitize_mapping({
+        "event": "request_completed", "method": "tools/call", "tool": "astral_get_operation",
+        "status": 200, "elapsed_ms": 4, "operation_id": OPERATION_ID,
+        "instructions": "secret payload", "authorization": "Bearer afk_x.y.z",
+        "unknown_field": "drop-me",
+    })
+    assert set(sanitized) == {
+        "event", "method", "tool", "status", "elapsed_ms", "operation_id",
+    }
+    assert sanitized["operation_id"] == OPERATION_ID
+
+
+def test_redacting_filter_cleans_records():
+    logger = logging.getLogger("redaction-probe")
+    logger.setLevel(logging.INFO)
+    records = []
+    handler = logging.Handler()
+    handler.emit = lambda record: records.append(record.getMessage())
+    handler.addFilter(RedactingFilter())
+    logger.addHandler(handler)
+    try:
+        logger.info("submit failed for afk_alpha.beta.delta with %s", "instructions text")
+    finally:
+        logger.removeHandler(handler)
+    assert "afk_alpha.beta.delta" not in records[0]
+    assert "instructions text" in records[0]
+
+
+def test_session_requires_sdk_package(monkeypatch):
+    monkeypatch.setitem(sys.modules, "agents", None)
+    fake = FakeAstral()
+    with pytest.raises(ImportError, match="requirements.lock.txt"):
+        AstralAgentSession(client=_client(fake))
+
+
+def test_session_disables_tracing_before_any_request(monkeypatch):
+    calls = _install_agents_stub(monkeypatch)
+    fake = FakeAstral()
+    client = _client(fake)
+    session = AstralAgentSession(client=client)
+    assert calls[0] == ("set_tracing_disabled", True)
+    assert calls[1] == ("set_trace_processors", [])
+    assert session.tracing_before_first_request is True
+
+    async def flow():
+        return await client.get(OPERATION_ID)
+
+    _run(flow())
+    assert session.tracing_before_first_request is True
+    assert fake.requests
+
+
+def test_session_detects_requests_before_tracing_disable(monkeypatch):
+    calls = _install_agents_stub(monkeypatch)
+    fake = FakeAstral()
+
+    async def first_request():
+        async with _client(fake) as client:
+            await client.get(OPERATION_ID)
+            return client
+
+    client = _run(first_request())
+    session = AstralAgentSession(client=client)
+    assert calls[0] == ("set_tracing_disabled", True)
+    assert session.tracing_before_first_request is False
+
+
+def test_agent_tools_bind_client_and_respect_boundaries(monkeypatch):
+    _install_agents_stub(monkeypatch)
+    fake = FakeAstral()
+    session = AstralAgentSession(client=_client(fake))
+    agent = session.build_agent()
+    tool_names = [tool.name for tool in agent.tools]
+    assert tuple(tool_names) == AGENT_TOOL_NAMES
+    assert not EXCLUDED_TOOL_NAMES & set(tool_names)
+    assert agent.instructions == AGENT_INSTRUCTIONS
+    submit_tool = next(tool for tool in agent.tools if tool.name == "astral_submit_operation")
+
+    async def invoke():
+        return await submit_tool.function(
+            idempotency_key="bound-key", name="qualification", instructions="bound instructions",
+        )
+
+    bound = _run(invoke())
+    assert bound["id"] == OPERATION_ID
+    assert fake.requests[-1].headers["Mcp-Name"] == "astral_submit_operation"
+
+
+def test_excluded_tools_cover_subscriptions_emergency_and_pause():
+    assert EXCLUDED_TOOL_NAMES == {
+        "astral_pause_operation",
+        "astral_emergency_status", "astral_emergency_stop", "astral_emergency_resume",
+        "astral_subscribe_operation_completion",
+        "astral_list_operation_completion_subscriptions",
+        "astral_cancel_operation_completion_subscription",
+    }
+
+
+def test_qualification_config_from_environment():
+    config = QualificationConfig.from_environment({
+        "ASTRAL_BASE_URL": "http://example.test:9999",
+        "ASTRAL_WORK_BEARER": BEARER,
+        "ASTRAL_WORK_BEARER_READONLY": READONLY_BEARER,
+        "ASTRAL_WORK_BEARER_OTHER_OWNER": OTHER_BEARER,
+        "ASTRAL_WORK_BEARER_REVOKED": REVOKED_BEARER,
+        "ASTRAL_QUALIFICATION_MAX_POLLS": "7",
+        "ASTRAL_QUALIFICATION_INTERVAL_SECONDS": "0.5",
+        "ASTRAL_QUALIFICATION_TIMEOUT_SECONDS": "45",
+    })
+    assert config.base_url == "http://example.test:9999"
+    assert config.bearer == BEARER
+    assert config.max_polls == 7 and config.interval_seconds == 0.5 and config.timeout_seconds == 45.0
+
+
+def test_run_qualification_requires_bearer():
+    with pytest.raises(SystemExit, match="ASTRAL_WORK_BEARER"):
+        _run(run_qualification(QualificationConfig(bearer="")))
+
+
+def test_run_qualification_full_receipt_and_sanitization(monkeypatch):
+    _install_agents_stub(monkeypatch)
+    fake = FakeAstral()
+    captured = []
+
+    async def flow():
+        receipt = await run_qualification(_qualifying_config(fake))
+        captured.append(json.dumps(receipt))
+        return receipt
+
+    receipt = _run(flow())
+    outcomes = {item["name"]: item["outcome"] for item in receipt["checks"]}
+    assert outcomes["tracing_disabled_before_first_request"] == "passed"
+    assert outcomes["mcp_protected_resource_metadata"] == "passed"
+    assert outcomes["mcp_tools_listing_scoped"] == "passed"
+    assert outcomes["work_submit_idempotent_retry"] == "passed"
+    assert outcomes["work_poll_events_bounded"] == "passed"
+    assert outcomes["work_artifact_access"] == "passed"
+    assert outcomes["work_cancel"] == "passed"
+    assert outcomes["phi_submission_refused"] == "passed"
+    assert outcomes["permission_denied_out_of_scope"] == "passed"
+    assert outcomes["cross_owner_isolated"] == "passed"
+    assert outcomes["revoked_credential_refused"] == "passed"
+    assert outcomes["human_only_actions_denied"] == "passed"
+    assert receipt["receipt_kind"] == "synthetic_staging_qualification"
+    assert receipt["failures"] == []
+    assert BEARER not in captured[0]
+    assert "qc-probe@example.com" not in captured[0]
+
+
+def test_run_qualification_records_failures_and_skips(monkeypatch):
+    _install_agents_stub(monkeypatch)
+    fake = FakeAstral()
+
+    async def flow():
+        return await run_qualification(_qualifying_config(
+            fake, readonly_bearer=None, other_owner_bearer=None, revoked_bearer=None,
+        ))
+
+    receipt = _run(flow())
+    outcomes = {item["name"]: item["outcome"] for item in receipt["checks"]}
+    assert outcomes["permission_denied_out_of_scope"] == "skipped"
+    assert outcomes["cross_owner_isolated"] == "skipped"
+    assert outcomes["revoked_credential_refused"] == "skipped"
+    assert receipt["failures"] == []
+
+
+def test_main_writes_receipt(monkeypatch, tmp_path):
+    _install_agents_stub(monkeypatch)
+    fake = FakeAstral()
+    output = tmp_path / "receipt.json"
+    original = QualificationConfig.from_environment
+
+    def with_transport(environ=None):
+        config = original(environ)
+        config.transport = fake.transport
+        config.readonly_bearer = READONLY_BEARER
+        config.other_owner_bearer = OTHER_BEARER
+        config.revoked_bearer = REVOKED_BEARER
+        config.expired_bearer = EXPIRED_BEARER
+        config.admission_bearer = ADMISSION_BEARER
+        config.artifact_operation_id = ARTIFACT_OPERATION_ID
+        return config
+
+    monkeypatch.setattr(QualificationConfig, "from_environment", staticmethod(with_transport))
+    monkeypatch.setenv("ASTRAL_WORK_BEARER", BEARER)
+    exit_code = main(["--output", str(output), "--base-url", "http://testserver"])
+    document = json.loads(output.read_text(encoding="utf-8"))
+    assert document["receipt_kind"] == "synthetic_staging_qualification"
+    assert document["checks"]
+    assert exit_code == 0
+
+
+def test_phi_instructions_are_synthetic():
+    assert "@example.com" in SYNTHETIC_PHI_INSTRUCTIONS
+    assert "follow-up schedule" in SYNTHETIC_PHI_INSTRUCTIONS
+
+
+def _outcome(receipt, name):
+    return next(item["outcome"] for item in receipt["checks"] if item["name"] == name)
+
+
+def test_source_revision_handles_git_failures(monkeypatch):
+    from scripts.openai_agents_example import qualify
+
+    def raising_run(*args, **kwargs):
+        raise OSError("no git")
+
+    monkeypatch.setattr(qualify.subprocess, "run", raising_run)
+    assert qualify._source_revision() is None
+
+    def garbage_run(*args, **kwargs):
+        return types.SimpleNamespace(returncode=0, stdout="not-a-revision\n")
+
+    monkeypatch.setattr(qualify.subprocess, "run", garbage_run)
+    assert qualify._source_revision() is None
+
+
+def test_metadata_contract_failures(monkeypatch):
+    _install_agents_stub(monkeypatch)
+
+    async def collect(fake):
+        receipt = await run_qualification(_qualifying_config(fake))
+        return {item["name"]: item["outcome"] for item in receipt["checks"]}
+
+    cases = [
+        (FakeAstral(metadata_status=500), "mcp_protected_resource_metadata", "failed"),
+        (FakeAstral(metadata={"resource": "x"}), "mcp_protected_resource_metadata", "failed"),
+        (FakeAstral(metadata={
+            "resource": "x", "authorization_servers": ["iam"],
+            "bearer_methods_supported": ["header"],
+        }), "mcp_protected_resource_metadata", "failed"),
+        (FakeAstral(metadata={
+            "resource": "x", "authorization_servers": ["iam"],
+            "scopes_supported": ["mcp:tools:invoke"], "bearer_methods_supported": ["body"],
+        }), "mcp_protected_resource_metadata", "failed"),
+        (FakeAstral(discovery={"supportedVersions": ["1999-01-01"]}),
+         "mcp_discover_contract", "failed"),
+    ]
+    for fake, name, expected in cases:
+        outcomes = _run(collect(fake))
+        assert outcomes[name] == expected, name
+
+
+def test_tools_listing_and_submit_branches(monkeypatch):
+    _install_agents_stub(monkeypatch)
+
+    async def collect(fake, **overrides):
+        receipt = await run_qualification(_qualifying_config(fake, **overrides))
+        return {item["name"]: item["outcome"] for item in receipt["checks"]}
+
+    outcomes = _run(collect(FakeAstral(tools_by_bearer={BEARER: READONLY_TOOLS})))
+    assert outcomes["mcp_tools_listing_scoped"] == "failed"
+
+    outcomes = _run(collect(
+        FakeAstral(behaviors={"astral_submit_operation": [
+            {**_operation("queued", 1), "created": True, "id": OPERATION_ID},
+            {**_operation("queued", 1), "created": False, "id": "another-op"},
+        ]}),
+    ))
+    assert outcomes["work_submit_idempotent_retry"] == "failed"
+
+    outcomes = _run(collect(
+        FakeAstral(behaviors={"astral_submit_operation": [
+            {**_operation("queued", 1), "created": False},
+        ]}),
+    ))
+    assert outcomes["work_submit_idempotent_retry"] == "failed"
+
+    outcomes = _run(collect(
+        FakeAstral(behaviors={"astral_get_operation": ("tool_error", "work_unavailable")}),
+    ))
+    assert outcomes["work_cancel"] == "failed"
+
+    outcomes = _run(collect(FakeAstral(behaviors={
+        "astral_submit_operation": ("tool_error", "work_repository_unavailable"),
+    })))
+    assert outcomes["work_poll_events_bounded"] == "skipped"
+    assert outcomes["work_artifact_access"] == "passed"
+
+
+def test_denial_branches(monkeypatch):
+    _install_agents_stub(monkeypatch)
+
+    async def collect(fake, **overrides):
+        receipt = await run_qualification(_qualifying_config(fake, **overrides))
+        return {item["name"]: item["outcome"] for item in receipt["checks"]}
+
+    outcomes = _run(collect(
+        FakeAstral(), phi_instructions="Plain synthetic text without trigger patterns",
+    ))
+    assert outcomes["phi_submission_refused"] == "failed"
+
+    outcomes = _run(collect(
+        FakeAstral(tools_by_bearer={READONLY_BEARER: FULL_TOOLS}),
+    ))
+    assert outcomes["permission_denied_out_of_scope"] == "failed"
+
+    outcomes = _run(collect(
+        FakeAstral(readonly_submit_error="work_not_found"),
+    ))
+    assert outcomes["permission_denied_out_of_scope"] == "failed"
+
+    outcomes = _run(collect(
+        FakeAstral(tools_by_bearer={OTHER_BEARER: [{"name": "astral_list_operations"}]}),
+    ))
+    assert outcomes["cross_owner_isolated"] == "skipped"
+
+    outcomes = _run(collect(
+        FakeAstral(other_owner_get_succeeds=True),
+    ))
+    assert outcomes["cross_owner_isolated"] == "failed"
+
+    outcomes = _run(collect(FakeAstral(revoked_challenge=False)))
+    assert outcomes["revoked_credential_refused"] == "failed"
+
+    outcomes = _run(collect(FakeAstral(revoked_status=503)))
+    assert outcomes["revoked_credential_refused"] == "failed"
+
+    outcomes = _run(collect(FakeAstral(revoked_bearers=set())))
+    assert outcomes["revoked_credential_refused"] == "failed"
+
+    outcomes = _run(collect(FakeAstral(behaviors={
+        "astral_decide_operation": {"approved": True},
+    })))
+    assert outcomes["human_only_actions_denied"] == "failed"
+
+
+def test_run_qualification_records_check_exceptions(monkeypatch):
+    _install_agents_stub(monkeypatch)
+    fake = FakeAstral(behaviors={
+        "astral_get_operation_events": MCPProtocolError("invalid_poll_revision"),
+    })
+
+    async def flow():
+        return await run_qualification(_qualifying_config(fake))
+
+    receipt = _run(flow())
+    outcomes = {item["name"]: item["outcome"] for item in receipt["checks"]}
+    assert outcomes["work_poll_events_bounded"] == "failed"
+
+
+def test_main_returns_failure_exit_code(monkeypatch, tmp_path):
+    _install_agents_stub(monkeypatch)
+    fake = FakeAstral()
+    output = tmp_path / "receipt.json"
+    original = QualificationConfig.from_environment
+
+    def with_transport(environ=None):
+        config = original(environ)
+        config.transport = fake.transport
+        config.phi_instructions = "plain synthetic text"
+        return config
+
+    monkeypatch.setattr(QualificationConfig, "from_environment", staticmethod(with_transport))
+    monkeypatch.setenv("ASTRAL_WORK_BEARER", BEARER)
+    exit_code = main(["--output", str(output), "--base-url", "http://testserver"])
+    assert exit_code == 1
+    document = json.loads(output.read_text(encoding="utf-8"))
+    assert "phi_submission_refused" in document["failures"]
+
+
+def test_agent_tool_wrappers_bind_every_operation(monkeypatch):
+    _install_agents_stub(monkeypatch)
+    fake = FakeAstral()
+    session = AstralAgentSession(client=_client(fake))
+
+    async def flow():
+        get_tool, list_tool, events_tool, artifact_tool, cancel_tool = (
+            session.build_agent().tools[1:]
+        )
+        await get_tool.function(operation_id=OPERATION_ID)
+        await list_tool.function(limit=5, after_id=None)
+        await events_tool.function(operation_id=OPERATION_ID, after_revision=2)
+        await artifact_tool.function(operation_id=OPERATION_ID)
+        await cancel_tool.function(
+            operation_id=OPERATION_ID, submission_id="wrapper-submission", expected_revision=1,
+        )
+
+    _run(flow())
+    tools_called = [
+        json.loads(request.content).get("params", {}).get("name")
+        for request in fake.requests
+        if json.loads(request.content)["method"] == "tools/call"
+    ]
+    assert tools_called == [
+        "astral_get_operation", "astral_list_operations", "astral_get_operation_events",
+        "astral_get_artifact", "astral_cancel_operation",
+    ]
+
+
+@pytest.mark.parametrize("code", ["work_not_found", "work_repository_unavailable", "unexpected_error"])
+def test_qualification_artifact_errors_fail_closed(monkeypatch, code):
+    _install_agents_stub(monkeypatch)
+    fake = FakeAstral(behaviors={"astral_get_artifact": ("tool_error", code)})
+    receipt = _run(run_qualification(_qualifying_config(fake)))
+    assert _outcome(receipt, "work_artifact_access") == "failed"
+
+
+@pytest.mark.parametrize("result", [None, {}, {"text": "unverified"},
+    {"version": 1, "available": True, "reason": None, "content": None},
+    {"version": 1, "available": False, "reason": "unavailable", "content": None}])
+def test_qualification_artifact_requires_truthful_result_envelope(monkeypatch, result):
+    _install_agents_stub(monkeypatch)
+    fake = FakeAstral(behaviors={"astral_get_artifact": {
+        "id": ARTIFACT_OPERATION_ID, "revision": 3, "result": result,
+    }})
+    receipt = _run(run_qualification(_qualifying_config(fake)))
+    assert _outcome(receipt, "work_artifact_access") == "failed"
+
+
+@pytest.mark.parametrize("first,second", [
+    ({"applied": False, "operation": _operation("queued", 1)},
+     {"applied": False, "operation": _operation("queued", 1)}),
+    ({"applied": True, "operation": _operation("active", 2)},
+     {"applied": False, "operation": _operation("active", 2)}),
+    ({"applied": True, "operation": _operation("cancelled", 3)},
+     {"applied": True, "operation": _operation("cancelled", 3)}),
+    ({"applied": True, "operation": _operation("cancelled", 3)},
+     {"applied": False, "operation": {**_operation("cancelled", 3), "id": "another"}}),
+])
+def test_qualification_cancel_requires_applied_terminal_and_idempotent_replay(monkeypatch, first, second):
+    from scripts.openai_agents_example.qualify import check_cancel
+
+    _install_agents_stub(monkeypatch)
+    fake = FakeAstral(behaviors={"astral_cancel_operation": [first, second]})
+    context = types.SimpleNamespace(config=_qualifying_config(fake), client=_client(fake))
+    assert _run(check_cancel(context))["outcome"] == "failed"
+
+
+def test_qualification_does_not_label_client_git_as_observed_server(monkeypatch):
+    from scripts.openai_agents_example import qualify
+
+    _install_agents_stub(monkeypatch)
+    monkeypatch.setattr(qualify, "_source_revision", lambda: "a" * 40)
+    monkeypatch.setattr(qualify, "observe_server", lambda *_: None)
+    receipt = _run(run_qualification(_qualifying_config(FakeAstral())))
+    assert "candidate" not in receipt
+    assert receipt["client"]["source_revision"] == "a" * 40
+    assert receipt["server"] is None
+    assert _outcome(receipt, "server_artifact_observed") == "failed"
+
+
+def test_main_refuses_incomplete_qualification(monkeypatch, tmp_path):
+    from scripts.openai_agents_example import qualify
+
+    async def incomplete(_config):
+        return {"failures": [], "checks": [{"name": "cross_owner", "outcome": "skipped"}]}
+
+    monkeypatch.setattr(qualify, "run_qualification", incomplete)
+    assert main(["--output", str(tmp_path / "incomplete.json")]) == 1
+
+
+def _docker_observation(monkeypatch, *, endpoint="unix:///var/run/docker.sock", identity=None,
+                        selected="desktop-linux", failed_step=None, invalid_json_step=None):
+    from scripts.openai_agents_example import server_identity
+
+    document = {"container_id": "b" * 64, "image_digest": "sha256:" + "c" * 64,
+                "running": True, "ports": {"8001/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18001"}]}}
+    if identity:
+        document.update(identity)
+    calls = []
+
+    def run(argv, **kwargs):
+        index = len(calls)
+        calls.append((argv, kwargs))
+        value = [selected, json.dumps(endpoint), json.dumps(document)][index]
+        if index == invalid_json_step:
+            value = "{" if index else "invalid context"
+        return types.SimpleNamespace(stdout=value, returncode=int(index == failed_step))
+
+    monkeypatch.setattr(server_identity.subprocess, "run", run)
+    return calls
+
+
+def test_server_observation_binds_actual_local_image_and_published_endpoint(monkeypatch):
+    from scripts.openai_agents_example.server_identity import observe_server
+
+    calls = _docker_observation(monkeypatch)
+    observed = observe_server("http://127.0.0.1:18001", "candidate-backend")
+    assert observed == {"container_id": "b" * 64, "image_digest": "sha256:" + "c" * 64,
+                        "docker_context": "desktop-linux", "published_port": 18001,
+                        "observation": "local_docker_direct_publish"}
+    assert calls[-1][0][:4] == ["docker", "--context", "desktop-linux", "inspect"]
+    assert calls[-1][0][-1] == "candidate-backend"
+    assert all(options == {"capture_output": True, "text": True, "timeout": 10, "check": False}
+               for _, options in calls)
+    assert "Config" not in calls[-1][0][-2] and "Env" not in calls[-1][0][-2]
+
+
+@pytest.mark.parametrize("url,container", [
+    ("https://remote.example", "candidate"), ("http://user:secret@localhost:18001", "candidate"),
+    ("ftp://localhost:18001", "candidate"), ("http://localhost:18001/mcp", "candidate"),
+    ("http://localhost:18001?secret=value", "candidate"), ("http://localhost:18001#fragment", "candidate"),
+    ("http://localhost:bad", "candidate"), ("http://localhost:18001", None),
+    ("http://localhost:18001", "--all"), ("http://localhost:18001", "x" * 129),
+])
+def test_server_observation_refuses_unbound_endpoint_without_querying_docker(monkeypatch, url, container):
+    from scripts.openai_agents_example.server_identity import observe_server
+
+    calls = _docker_observation(monkeypatch)
+    assert observe_server(url, container) is None
+    assert calls == []
+
+
+@pytest.mark.parametrize("changes", [
+    {"running": False}, {"container_id": "bad"}, {"image_digest": "latest"}, {"ports": None},
+    {"ports": {"8001/tcp": None}}, {"ports": {"8001/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8001"}]}},
+    {"ports": {"8001/tcp": [{"HostIp": "192.0.2.1", "HostPort": "18001"}]}},
+])
+def test_server_observation_rejects_invalid_stopped_or_unbound_container(monkeypatch, changes):
+    from scripts.openai_agents_example.server_identity import observe_server
+
+    _docker_observation(monkeypatch, identity=changes)
+    assert observe_server("http://localhost:18001", "candidate") is None
+
+
+@pytest.mark.parametrize("options", [
+    {"endpoint": "ssh://another-machine"}, {"endpoint": 17}, {"selected": "invalid context"},
+    {"failed_step": 0}, {"failed_step": 1}, {"failed_step": 2},
+    {"invalid_json_step": 1}, {"invalid_json_step": 2},
+])
+def test_server_observation_rejects_failed_or_remote_context_inspection(monkeypatch, options):
+    from scripts.openai_agents_example.server_identity import observe_server
+
+    _docker_observation(monkeypatch, **options)
+    assert observe_server("http://localhost:18001", "candidate") is None
+
+
+def test_server_observation_handles_missing_docker_and_timeout(monkeypatch):
+    from scripts.openai_agents_example import server_identity
+
+    for failure in (OSError("unavailable"), server_identity.subprocess.TimeoutExpired("docker", 10)):
+        def unavailable(*_args, **_kwargs):
+            raise failure
+
+        monkeypatch.setattr(server_identity.subprocess, "run", unavailable)
+        assert server_identity.observe_server("http://localhost:18001", "candidate") is None
+
+
+def test_qualification_fails_when_server_is_replaced_during_run(monkeypatch):
+    from scripts.openai_agents_example import qualify
+
+    _install_agents_stub(monkeypatch)
+    observations = iter([{"image_digest": "sha256:" + "b" * 64}, {"image_digest": "sha256:" + "c" * 64}])
+    monkeypatch.setattr(qualify, "observe_server", lambda *_: next(observations))
+    receipt = _run(run_qualification(_qualifying_config(FakeAstral())))
+    assert _outcome(receipt, "server_artifact_observed") == "failed"
+
+
+@pytest.mark.parametrize("payload", ["Contact synthetic-patient@example.com about a private result",
+                                     "synthetic_private_payload"])
+def test_tool_error_payload_is_absent_from_logs_and_receipt(monkeypatch, caplog, payload):
+    _install_agents_stub(monkeypatch)
+    caplog.set_level(logging.INFO)
+    fake = FakeAstral(behaviors={"astral_get_artifact": ("tool_error", payload)})
+    receipt = _run(run_qualification(_qualifying_config(fake)))
+    assert payload not in json.dumps(receipt)
+    assert payload not in caplog.text
+
+
+@pytest.mark.parametrize("tool,check_name", [
+    ("astral_decide_operation", "human_only_actions_denied"),
+    ("astral_submit_operation", "phi_submission_refused"),
+])
+def test_unrelated_tool_failure_does_not_prove_policy_denial(monkeypatch, tool, check_name):
+    _install_agents_stub(monkeypatch)
+    fake = FakeAstral(behaviors={tool: ("tool_error", "sensitive_storage_unavailable")})
+    receipt = _run(run_qualification(_qualifying_config(fake)))
+    assert _outcome(receipt, check_name) == "failed"
+
+
+def test_qualification_requires_stable_clean_client_source(monkeypatch):
+    from scripts.openai_agents_example import qualify
+
+    _install_agents_stub(monkeypatch)
+    for observations in ([None, None], ["a" * 40, "b" * 40]):
+        identities = iter(observations)
+        monkeypatch.setattr(qualify, "_source_revision", lambda: next(identities))
+        receipt = _run(run_qualification(_qualifying_config(FakeAstral())))
+        assert _outcome(receipt, "client_source_observed") == "failed"
+
+
+def test_observation_does_not_bind_ipv4_request_to_other_ipv6_container(monkeypatch):
+    from scripts.openai_agents_example.server_identity import observe_server
+
+    _docker_observation(monkeypatch, identity={"ports": {
+        "8001/tcp": [{"HostIp": "::1", "HostPort": "18001"}],
+    }})
+    assert observe_server("http://127.0.0.1:18001", "candidate") is None
+
+
+def test_source_revision_is_from_clean_module_checkout(monkeypatch):
+    from pathlib import Path
+    from scripts.openai_agents_example import qualify
+
+    for dirty in ("", " M source.py\n", "?? unexpected.py\n"):
+        responses = iter([types.SimpleNamespace(returncode=0, stdout="a" * 40),
+                          types.SimpleNamespace(returncode=0, stdout=dirty)])
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return next(responses)
+
+        monkeypatch.setattr(qualify.subprocess, "run", run)
+        assert qualify._source_revision() == (None if dirty else "a" * 40)
+        assert all(options["cwd"] == Path(qualify.__file__).resolve().parents[2] for _, options in calls)
+
+
+@pytest.mark.parametrize("response_id", [None, "unrelated-request", True, 2])
+def test_rpc_response_must_match_captured_request_id(response_id):
+    def handler(_request):
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": response_id, "result": {}})
+
+    async def flow():
+        async with AstralWorkClient(base_url="http://testserver", bearer=BEARER,
+                                    transport=httpx.MockTransport(handler)) as client:
+            await client.discover()
+
+    with pytest.raises(MCPProtocolError, match="invalid_response_envelope"):
+        _run(flow())
+
+
+def test_rpc_error_code_cannot_log_private_response_text(caplog):
+    caplog.set_level(logging.INFO)
+    payload = "SYNTHETIC_PRIVATE_PAYLOAD_321"
+
+    def handler(request):
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": json.loads(request.content)["id"],
+                                        "error": {"code": payload, "message": "failure"}})
+
+    async def flow():
+        async with AstralWorkClient(base_url="http://testserver", bearer=BEARER,
+                                    transport=httpx.MockTransport(handler)) as client:
+            await client.discover()
+
+    with pytest.raises(MCPProtocolError):
+        _run(flow())
+    assert payload not in caplog.text
+
+
+@pytest.mark.parametrize("patch", [
+    {"operation": {**_operation("cancelled", 3), "id": "another-operation"}},
+    {"operation": _operation("cancelled", 4)}, {"revision": True},
+    {"operation": ["cancelled"]}, {"changed": False}, {"operation": None},
+])
+def test_polling_rejects_uncorrelated_or_inconsistent_terminal_bodies(patch):
+    event = {"revision": 3, "changed": True, "resync_required": False,
+             "operation": _operation("cancelled", 3), **patch}
+    fake = FakeAstral(behaviors={"astral_get_operation_events": event})
+
+    async def flow():
+        async with _client(fake) as client:
+            await client.wait_terminal(OPERATION_ID, after_revision=1, interval_seconds=0, max_polls=2)
+
+    with pytest.raises(MCPProtocolError, match="invalid_poll_event"):
+        _run(flow())
+
+
+@pytest.mark.parametrize("bounds", [{"interval_seconds": float("inf")},
+    {"interval_seconds": float("nan")}, {"timeout_seconds": float("inf")},
+    {"timeout_seconds": float("nan")}, {"max_polls": True}])
+def test_polling_refuses_nonfinite_or_boolean_bounds_before_request(bounds):
+    fake = FakeAstral()
+
+    async def flow():
+        async with _client(fake) as client:
+            await client.wait_terminal(OPERATION_ID, sleep=lambda *_: asyncio.sleep(0), **bounds)
+
+    with pytest.raises(ValueError):
+        _run(flow())
+    assert fake.requests == []
+
+
+def test_polling_caps_sleep_to_remaining_deadline():
+    now = [0.0]
+    sleeps = []
+    fake = FakeAstral(behaviors={"astral_get_operation_events": {
+        "revision": 2, "changed": True, "resync_required": False, "operation": _operation("active", 2),
+    }})
+
+    async def bounded_sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    async def flow():
+        async with _client(fake, clock=lambda: now[0]) as client:
+            await client.wait_terminal(OPERATION_ID, after_revision=1, timeout_seconds=1.0,
+                                       interval_seconds=3600.0, max_polls=2, sleep=bounded_sleep)
+
+    with pytest.raises(OperationPendingTimeout):
+        _run(flow())
+    assert sleeps == [1.0]
+    assert len(fake.requests) == 1
+
+
+@pytest.mark.parametrize("url", ["http://user:secret@localhost:8001", "http://localhost:8001?token=secret",
+                                 "http://localhost:8001#secret", "file:///private/path"])
+def test_credentials_or_nonhttp_base_urls_are_refused_before_use(monkeypatch, url):
+    _install_agents_stub(monkeypatch)
+    fake = FakeAstral()
+    with pytest.raises(ValueError, match="invalid_base_url"):
+        _client(fake, base_url=url)
+    with pytest.raises(ValueError, match="invalid_base_url"):
+        config = _qualifying_config(fake, base_url=url)
+        _run(run_qualification(config))
+    assert fake.requests == []
+
+
+def test_qualification_matrix_includes_distinct_expiry_and_admission(monkeypatch):
+    _install_agents_stub(monkeypatch)
+    receipt = _run(run_qualification(_qualifying_config(FakeAstral())))
+    assert _outcome(receipt, "expired_credential_refused") == "passed"
+    assert _outcome(receipt, "admission_allowance_denied") == "passed"
+
+
+def test_unavailable_result_does_not_qualify_retained_artifact_access(monkeypatch):
+    _install_agents_stub(monkeypatch)
+
+    class UnavailableArtifact(FakeAstral):
+        def _tool_call(self, request_id, params, bearer):
+            if params["name"] == "astral_get_artifact":
+                return self._tool_result(request_id, {
+                    "id": params["arguments"]["operation_id"], "revision": 3,
+                    "result": {"version": 1, "available": False, "reason": "unsupported", "content": None},
+                })
+            return super()._tool_call(request_id, params, bearer)
+
+    fake = UnavailableArtifact()
+    receipt = _run(run_qualification(_qualifying_config(fake)))
+    assert _outcome(receipt, "work_artifact_access") == "failed"
+
+
+def test_http_response_bytes_are_bounded_before_json_use():
+    def handler(request):
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": json.loads(request.content)["id"],
+                                        "result": {"padding": "x" * (4 * 1024 * 1024)}})
+
+    async def flow():
+        async with AstralWorkClient(base_url="http://testserver", bearer=BEARER,
+                                    transport=httpx.MockTransport(handler)) as client:
+            await client.discover()
+
+    with pytest.raises(MCPProtocolError, match="response_too_large"):
+        _run(flow())
+
+
+def test_poll_timeout_cancels_a_pending_transport_without_wall_clock_assertion(monkeypatch):
+    cancelled = []
+
+    async def flow():
+        loop = asyncio.get_running_loop()
+        original_time = loop.time
+        now = [original_time()]
+        monkeypatch.setattr(loop, "time", lambda: now[0])
+
+        async def handler(_request):
+            loop.call_soon(lambda: now.__setitem__(0, now[0] + 2))
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(True)
+
+        try:
+            async with AstralWorkClient(base_url="http://testserver", bearer=BEARER,
+                transport=httpx.MockTransport(handler), clock=lambda: now[0]) as client:
+                with pytest.raises(OperationPendingTimeout):
+                    await client.wait_terminal(OPERATION_ID, timeout_seconds=1)
+        finally:
+            monkeypatch.setattr(loop, "time", original_time)
+
+    _run(flow())
+    assert cancelled == [True]
+
+
+@pytest.mark.parametrize("changes,expected", [
+    ({"expired_bearer": None}, ("expired_credential_refused", "skipped")),
+    ({"admission_bearer": None}, ("admission_allowance_denied", "skipped")),
+    ({"artifact_operation_id": None}, ("work_artifact_access", "skipped")),
+])
+def test_qualification_records_missing_required_inputs_as_incomplete(monkeypatch, changes, expected):
+    _install_agents_stub(monkeypatch)
+    receipt = _run(run_qualification(_qualifying_config(FakeAstral(), **changes)))
+    assert _outcome(receipt, expected[0]) == expected[1]
+
+
+@pytest.mark.parametrize("fake", [FakeAstral(revoked_bearers={REVOKED_BEARER}),
+                                  FakeAstral(revoked_status=403), FakeAstral(revoked_challenge=False)])
+def test_expiry_probe_requires_an_actual_authentication_refusal(monkeypatch, fake):
+    _install_agents_stub(monkeypatch)
+    receipt = _run(run_qualification(_qualifying_config(fake)))
+    assert _outcome(receipt, "expired_credential_refused") == "failed"
+
+
+@pytest.mark.parametrize("failure", ["work_repository_unavailable", "framework_scope_required"])
+def test_admission_probe_does_not_misclassify_outage_or_scope_refusal(monkeypatch, failure):
+    _install_agents_stub(monkeypatch)
+    fake = FakeAstral(behaviors={"astral_submit_operation": ("tool_error", failure)})
+    receipt = _run(run_qualification(_qualifying_config(fake)))
+    assert _outcome(receipt, "admission_allowance_denied") == "failed"
+
+
+@pytest.mark.parametrize("changes", [{"expired_bearer": REVOKED_BEARER},
+    {"artifact_operation_id": "not-an-operation"}, {"readonly_bearer": "x" * 8193}])
+def test_qualification_configuration_rejects_ambiguous_or_unbounded_inputs(changes):
+    with pytest.raises(ValueError):
+        _qualifying_config(FakeAstral(), **changes)
+
+
+def test_concurrent_rpc_responses_use_each_calls_original_id():
+    async def flow():
+        second_started = asyncio.Event()
+
+        async def handler(request):
+            request_id = json.loads(request.content)["id"]
+            if request_id == 1:
+                await second_started.wait()
+            else:
+                second_started.set()
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": request_id,
+                                            "result": {"call": request_id}})
+
+        async with AstralWorkClient(base_url="http://testserver", bearer=BEARER,
+                                    transport=httpx.MockTransport(handler)) as client:
+            return await asyncio.gather(client.discover(), client.discover())
+
+    assert _run(flow()) == [{"call": 1}, {"call": 2}]
+
+
+def test_streaming_http_response_cannot_grow_past_byte_admission():
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for _ in range(65):
+                yield b"x" * 65536
+
+    def handler(_request):
+        return httpx.Response(200, stream=Body())
+
+    async def flow():
+        async with AstralWorkClient(base_url="http://testserver", bearer=BEARER,
+                                    transport=httpx.MockTransport(handler)) as client:
+            await client.discover()
+
+    with pytest.raises(MCPProtocolError, match="response_too_large"):
+        _run(flow())

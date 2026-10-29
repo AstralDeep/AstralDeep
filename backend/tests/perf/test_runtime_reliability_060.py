@@ -220,10 +220,10 @@ def entrypoint(request: pytest.FixtureRequest) -> str:
 
 
 def _coordinator() -> object:
+    from tests.helpers.harness_host import DefaultHarnessRepository
     from orchestrator.work_admission import (
         AdmissionClass,
         AdmissionClassConfig,
-        InMemoryWorkAdmissionRepository,
         WorkAdmissionCoordinator,
     )
 
@@ -239,7 +239,7 @@ def _coordinator() -> object:
                 config_revision="test-t021",
             ),
         ),
-        repository=InMemoryWorkAdmissionRepository(),
+        repository=DefaultHarnessRepository(),
         clock=lambda: current,
         operation_retention=timedelta(hours=24),
     )
@@ -273,6 +273,8 @@ def _orchestrator(runtime: Any, probe: _MessageProbe) -> Any:
     orch.work_admission = coordinator
     orch.operation_coordinator = coordinator
     orch._work_admission = coordinator
+    from tests.helpers.harness_host import default_harness_service
+    orch.harness_selection = default_harness_service()
     orch._safe_send = types.MethodType(runtime.Orchestrator._safe_send, orch)
     orch.handle_ui_message = types.MethodType(_handle, orch)
     probe.orchestrator = orch
@@ -315,11 +317,11 @@ class _SubmitFailureProbe:
     def __getattr__(self, name: str) -> Any:
         return getattr(self.delegate, name)
 
-    def submit(self, request: object) -> object:
+    def submit_with_harness(self, request: object, **options: object) -> object:
         if not self.failed:
             self.failed = True
             raise RuntimeError("submit probe failure")
-        return self.delegate.submit(request)
+        return self.delegate.submit_with_harness(request, **options)
 
 
 class _QueryFailureProbe:

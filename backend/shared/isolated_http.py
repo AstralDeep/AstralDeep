@@ -130,7 +130,13 @@ def _validate_request(value: dict) -> None:
         "version", "method", "url", "api_key", "json_body",
         "allowed_private_hosts", "max_response_bytes", "deadline",
     }
-    if set(value) != expected or type(value["version"]) is not int or value["version"] != 1:
+    if "require_private_endpoint" in value:
+        expected.add("require_private_endpoint")
+    if (set(value) != expected or type(value["version"]) is not int or value["version"] != 1
+            or type(value.get("require_private_endpoint", False)) is not bool
+            or (value.get("require_private_endpoint") is True
+                and (value.get("method") != "POST" or not _safe_url(value.get("url"))
+                     or urlsplit(value["url"]).scheme != "http"))):
         raise IsolatedHttpError("invalid_request")
     method, key, hosts = value["method"], value["api_key"], value["allowed_private_hosts"]
     size, deadline = value["max_response_bytes"], value["deadline"]
@@ -250,10 +256,13 @@ async def request(
     allowed_private_hosts: tuple[str, ...] = (),
     max_response_bytes: int = MAX_RESPONSE_BYTES,
     timeout_seconds: float = MAX_ATTEMPT_SECONDS,
+    require_private_endpoint: bool = False,
 ) -> IsolatedHttpResponse:
     if sys.platform not in ("linux", "darwin") or os.name != "posix":
         raise IsolatedHttpError("unsupported_platform")
     if type(timeout_seconds) not in (int, float) or not 0 < timeout_seconds <= MAX_ATTEMPT_SECONDS:
+        raise IsolatedHttpError("invalid_request")
+    if type(require_private_endpoint) is not bool:
         raise IsolatedHttpError("invalid_request")
     if type(allowed_private_hosts) is not tuple:
         raise IsolatedHttpError("invalid_request")
@@ -263,6 +272,8 @@ async def request(
         "json_body": json_body, "allowed_private_hosts": list(allowed_private_hosts),
         "max_response_bytes": max_response_bytes, "deadline": deadline,
     }
+    if require_private_endpoint:
+        envelope["require_private_endpoint"] = True
     _validate_request(envelope)
     raw = _json_bytes(envelope, MAX_REQUEST_BYTES)
     supervisor = ProcessSupervisor()
@@ -365,11 +376,18 @@ def _perform(value: dict) -> dict:
     remaining = value["deadline"] - time.monotonic()
     if not 0 < remaining <= MAX_ATTEMPT_SECONDS:
         raise IsolatedHttpError("deadline")
+    pinned = {}
+    if value.get("require_private_endpoint") is True:
+        captured = external_http.capture_private_http_target(value["url"],
+            allowed_private_hosts=tuple(value["allowed_private_hosts"]))
+        pinned["_private_http_capture"] = captured
     response = external_http.request(
         value["method"], value["url"], api_key=value["api_key"],
-        json_body=value["json_body"], allowed_private_hosts=value["allowed_private_hosts"],
+        json_body=value["json_body"], allowed_private_hosts=(tuple(value["allowed_private_hosts"])
+            if pinned else value["allowed_private_hosts"]),
         max_response_bytes=value["max_response_bytes"], timeout=remaining,
         allow_redirects=False, require_identity_encoding=True, trust_environment=False,
+        **pinned,
     )
     if 300 <= response.status_code < 400:
         raise IsolatedHttpError("redirect")

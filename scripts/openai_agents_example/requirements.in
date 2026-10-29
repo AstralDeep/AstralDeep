@@ -1,0 +1,7 @@
+# Isolated environment for the OpenAI Agents SDK example: the external SDK runtime and
+# its test doubles never enter product images or backend requirements. Regenerate the
+# lock with pip-compile --generate-hashes; qualify pins only against this file.
+openai-agents==0.23.1
+httpx==0.28.1
+pytest==9.1.1
+pytest-asyncio==1.4.1

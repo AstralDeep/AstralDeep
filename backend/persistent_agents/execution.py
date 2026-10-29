@@ -163,13 +163,13 @@ class ActionExecutor:
             from persistent_agents.research_input import ResearchInput, route
             if _research is None:
                 if self._chat_kind():
-                    if (request != route() or self.operation_sessions is None or self.interactive
+                    if (request != route(self.record) or self.operation_sessions is None or self.interactive
                             or self.remote_marker is not None or self.approved_action_id is not None):
                         raise DispatchDenied("assignment_operation_profile_unavailable")
                 else:
                     self._operation_reader(request)
             else:
-                if (type(_research) is not ResearchInput or request != route()
+                if (type(_research) is not ResearchInput or request != route(self.record)
                         or self.operation_sessions is None or self.interactive
                         or self.remote_marker is not None or self.approved_action_id is not None
                         or (_research.kind == "chat") != self._chat_kind()):
@@ -178,16 +178,15 @@ class ActionExecutor:
                 if _research._ephemeral is not None:
                     _research._ephemeral.assert_executor(self)
             if authority is None:
-                from orchestrator.session_authority import refresh_operation_execution_authority
-                authority = await refresh_operation_execution_authority(
-                    owner_id=self.claim.fence.owner_id, assignment_id=self.claim.fence.assignment_id,
+                from orchestrator.framework_operation_authority import refresh_assignment_execution_authority
+                authority = await refresh_assignment_execution_authority(self.record,
                     sessions=self.operation_sessions, plane_runtime=self.store.plane_runtime)
             current = await self.store.call_for_operation("assert_current_assignment_execution",
                 fence=self.claim.fence, binding=self.binding, authority=authority.observation)
             with turn_permission_memo():
                 if self._chat_kind(current):
                     from persistent_agents.chat_episode import chat_execution_checks
-                    if request != route():
+                    if request != route(self.record):
                         raise DispatchDenied("assignment_operation_profile_unavailable")
                     checks = chat_execution_checks(self.service, current.owner_id,
                         authority.claims, current, authority=authority)
@@ -598,6 +597,7 @@ class ActionExecutor:
             if retained_result.get("result_available") is False:
                 raise DispatchDenied("assignment_result_unavailable")
 
+        from orchestrator.work_admission import OperationOwner, OwnerScope
         context = PersistentDispatchContext(
             owner_id=self.record.owner_id, kind=request["kind"],
             agent_id=request.get("agent_id"), tool_name=request.get("tool_name"),
@@ -605,6 +605,8 @@ class ActionExecutor:
             timeout_seconds=action.intent.maximum.elapsed_ms / 1000,
             max_input_bytes=65536, max_output_tokens=request.get("max_output_tokens", 1024),
             authorize=authorize, start=start, observe=observe,
+            operation_owner=OperationOwner(OwnerScope.USER, self.record.owner_id, None),
+            operation_fence=self.operation_fence, harness_capture=getattr(self.record, "harness_capture", None),
             remote_marker=self.remote_marker,
             strict_final_arguments=self.one_shot,
             conversation_id=self.record.definition.conversation_id if self.one_shot else None,
@@ -681,7 +683,8 @@ class ActionExecutor:
         captured = None
         def capture(tx, repository, current):
             nonlocal captured
-            now = self.store.plane_runtime.repositories.history.sessions.assert_current_execution(
+            from orchestrator.framework_operation_authority import authority_repository
+            now = authority_repository(self.store.plane_runtime, authority).assert_current_execution(
                 tx, observation=authority.observation).observed_at
             captured = ResearchGuidance.capture(tx, repository, current, orchestrator=self.orch,
                 runtime=self.store.plane_runtime, now=now, service=self.service,
@@ -779,7 +782,6 @@ class ActionExecutor:
 
     async def research_selection(self, key: str, *, source_action_id: str, ephemeral=None):
         import re
-        from llm_config import research_profile as profile
         from persistent_agents.research_input import ResearchInput, route
 
         if (not self.one_shot or self.operation_sessions is None or self.interactive
@@ -821,9 +823,8 @@ class ActionExecutor:
             private = await ResearchInput.capture(current, source, config_store=self.orch._llm_store,
                 key_id=key_id, ephemeral=ephemeral, guidance=self._research_guidance)
             await safe_text(canonical(private.body()["messages"]), reviewed_urls(current.definition.source))
-            checks = await self.refresh(route(), authority=initial["authority"], _research=private)
-            maximum = AssignmentResourceAmount(model_calls=1, tokens=profile.RESERVED_TOKENS,
-                                               elapsed_ms=profile.RESERVED_MILLISECONDS)
+            checks = await self.refresh(route(self.record), authority=initial["authority"], _research=private)
+            maximum = AssignmentResourceAmount(**private.reservation)
             if existing is not None:
                 private.assert_action(existing)
                 if existing.intent.maximum != maximum:
@@ -845,7 +846,7 @@ class ActionExecutor:
             if current.definition.limits.get("currency") is not None:
                 raise DispatchDenied("assignment_cost_bound_unavailable")
             if existing is None:
-                intent = AssignmentActionIntent(action_key="research-v1-" + key, request=route(),
+                intent = AssignmentActionIntent(action_key="research-v1-" + key, request=route(self.record),
                     request_digest=private.payload_binding, maximum=maximum,
                     permission_digest=checks["permission_digest"], precondition_digest=checks["precondition_digest"],
                     transient_input=private.transient(), boundary="unreplayable")
@@ -859,7 +860,6 @@ class ActionExecutor:
 
     async def chat_turn(self, key: str):
         import re
-        from llm_config import research_profile as profile
         from persistent_agents.chat_episode import CHAT_KEY_PREFIX, chat_action_key
         from persistent_agents.research_input import ResearchInput, route
 
@@ -869,7 +869,7 @@ class ActionExecutor:
                 or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", key)):
             raise DispatchDenied("assignment_operation_profile_unavailable")
         async with _OperationAuthorityWindow(self.operation_authority_lock) as window:
-            initial = await self.refresh(route())
+            initial = await self.refresh(route(self.record))
             if key != chat_action_key(self.record):
                 raise DispatchDenied("assignment_research_binding_changed")
             current = self.record
@@ -885,9 +885,8 @@ class ActionExecutor:
             private = await ResearchInput.capture_chat(current, config_store=self.orch._llm_store,
                 key_id=key_id, guidance=self._research_guidance)
             await safe_text(canonical(private.body()["messages"]))
-            checks = await self.refresh(route(), authority=initial["authority"], _research=private)
-            maximum = AssignmentResourceAmount(model_calls=1, tokens=profile.RESERVED_TOKENS,
-                                               elapsed_ms=profile.RESERVED_MILLISECONDS)
+            checks = await self.refresh(route(self.record), authority=initial["authority"], _research=private)
+            maximum = AssignmentResourceAmount(**private.reservation)
             if existing is not None:
                 private.assert_action(existing)
                 if existing.intent.maximum != maximum:
@@ -907,7 +906,7 @@ class ActionExecutor:
             if current.definition.limits.get("currency") is not None:
                 raise DispatchDenied("assignment_cost_bound_unavailable")
             if existing is None:
-                intent = AssignmentActionIntent(action_key=CHAT_KEY_PREFIX + key, request=route(),
+                intent = AssignmentActionIntent(action_key=CHAT_KEY_PREFIX + key, request=route(self.record),
                     request_digest=private.payload_binding, maximum=maximum,
                     permission_digest=checks["permission_digest"], precondition_digest=checks["precondition_digest"],
                     transient_input=private.transient(), boundary="unreplayable")
@@ -921,7 +920,6 @@ class ActionExecutor:
 
     async def _execute_research(self, action, private, operation_checks, window):
         from astralplane.repositories.assignment_models import AssignmentResultDisposition
-        from llm_config import research_profile as profile
         from persistent_agents.research_input import PRE_SEND_FAILURE, UnsentAttempt, route
 
         attempt_id = str(uuid.uuid4())
@@ -945,10 +943,10 @@ class ActionExecutor:
             raise DispatchDenied("assignment_attempt_already_reserved")
         invocation = object()
         authority = operation_checks["authority"]
-        expected_session = authority.claims
-        expected_session.update(_raw_token=authority.subject_token, _invocation_channel="background")
-        private_session = authority.claims
-        private_session.update(_raw_token=authority.subject_token, _invocation_channel="background")
+        context_id = self.record.definition.conversation_id or self.record.assignment_id
+        from orchestrator.framework_operation_authority import invocation_principal
+        expected_session = invocation_principal(authority)
+        private_session = invocation_principal(authority)
         self.orch.ui_sessions[invocation] = private_session
         checks = operation_checks
         candidate_permit = None
@@ -957,13 +955,13 @@ class ActionExecutor:
 
         def session_current():
             if (self.orch.ui_sessions.get(invocation) is not private_session
-                    or private_session != expected_session):
+                    or private_session != expected_session or context.conversation_id != context_id):
                 raise DispatchDenied("assignment_authorization_required")
 
         async def authorize():
             nonlocal checks
             session_current()
-            checks = await self.refresh(route(), authority=authority, _research=private)
+            checks = await self.refresh(route(self.record), authority=authority, _research=private)
             session_current()
             if (checks["permission_digest"] != action.intent.permission_digest
                     or checks["precondition_digest"] != action.intent.precondition_digest):
@@ -1006,7 +1004,7 @@ class ActionExecutor:
                                                    elapsed_ms=elapsed)
                 outcome = "failed"
                 if private.kind == "chat":
-                    usable = parsed.text is not None and elapsed <= profile.RESERVED_MILLISECONDS
+                    usable = parsed.text is not None and elapsed <= private.profile.reserved_milliseconds
                     if usable:
                         try:
                             await safe_text(parsed.text)
@@ -1020,7 +1018,7 @@ class ActionExecutor:
                         outcome = "succeeded"
                     else:
                         result = {"code": refusal}
-                elif parsed.passage_ids is not None and elapsed <= profile.RESERVED_MILLISECONDS:
+                elif parsed.passage_ids is not None and elapsed <= private.profile.reserved_milliseconds:
                     result = private.selection_result(parsed.passage_ids)
                     outcome = "succeeded"
                 else:
@@ -1038,7 +1036,7 @@ class ActionExecutor:
             current_result = False
             try:
                 async with _OperationAuthorityWindow(self.operation_authority_lock):
-                    fresh = await self.refresh(route(), _research=private)
+                    fresh = await self.refresh(route(self.record), _research=private)
                     if (fresh["permission_digest"] != action.intent.permission_digest
                             or fresh["precondition_digest"] != action.intent.precondition_digest):
                         raise DispatchDenied("assignment_precondition_changed")
@@ -1076,9 +1074,10 @@ class ActionExecutor:
                 raise DispatchDenied(refusal)
 
         context = PersistentDispatchContext(owner_id=private.owner_id, kind="model", agent_id=None,
-            tool_name=None, arguments=route(), timeout_seconds=65, max_input_bytes=65536,
-            max_output_tokens=1024, authorize=authorize, start=start, observe=observe,
-            strict_final_arguments=True, research_input=private)
+            tool_name=None, arguments=private.request_route, timeout_seconds=private.timeout_seconds,
+            max_input_bytes=65536, max_output_tokens=private.profile.output_tokens,
+            authorize=authorize, start=start, observe=observe, strict_final_arguments=True,
+            research_input=private, conversation_id=context_id)
         try:
             with bind_dispatch(context), turn_permission_memo():
                 await self.orch._call_llm(invocation, private.body()["messages"],

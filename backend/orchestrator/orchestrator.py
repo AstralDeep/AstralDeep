@@ -286,6 +286,7 @@ class _ConnectionIngressFrame:
     deadline_at_monotonic: float | None
     deadline_at_utc: datetime | None
     authenticated_user_id: str | None = field(default=None, repr=False)
+    ingress_registration: tuple | None = field(default=None, repr=False)
     local_final_verified: bool = False
     foreground: bool = False
     remote_effect_call: object = field(default=None, repr=False)
@@ -1422,6 +1423,8 @@ class Orchestrator:
 
         from orchestrator.human_request_authority import HumanRequestBoundary
         self.human_request_boundary = HumanRequestBoundary(self)
+        from orchestrator.harness.selection_service import HarnessSelectionService
+        self.harness_selection = HarnessSelectionService(self)
         from personalization.explicit_note_service import ExplicitNoteService
         self.explicit_notes = ExplicitNoteService(self)
         from orchestrator.projection_surfaces.authoring import DeclarativeAgentService
@@ -3011,6 +3014,8 @@ class Orchestrator:
         ).hexdigest()
         attempt_key = idempotency_key
         attempt_parent = parent_operation_id
+        retry_observation = None
+        harness = self.harness_selection
         # Retry key stays fixed: avoids a duplicate physical attempt
         for _attempt_depth in range(64):
             request = OperationRequest(
@@ -3026,9 +3031,14 @@ class Orchestrator:
                 connection_generation=None,
                 request_generation=request_generation,
             )
-            admitted = await self._call_work_admission(
-                self.work_admission.submit, request
-            )
+            if retry_observation is None:
+                admitted = await self._call_work_admission(
+                    self.work_admission.submit_with_harness, request,
+                    service=harness, owner_id=owner_user_id)
+            else:
+                admitted = await self._call_work_admission(
+                    self.work_admission.submit_harness_retry, request,
+                    observation=retry_observation, service=harness, owner_id=owner_user_id)
             if not admitted.accepted:
                 if admitted.code == "idempotency_conflict":
                     raise _PersonalAgentOperationIdentityConflict(
@@ -3047,6 +3057,9 @@ class Orchestrator:
             if projection.state is OperationState.RETRYABLE and retry_terminal:
                 attempt_parent = admitted.operation_id
                 attempt_key = f"retry:{admitted.operation_id}"
+                retry_observation = await self._call_work_admission(
+                    self.work_admission.observe_harness_retry, owner=owner,
+                    operation_id=admitted.operation_id, service=harness, owner_id=owner_user_id)
                 continue
             if projection.state in {
                 OperationState.COMPLETED,
@@ -3081,6 +3094,9 @@ class Orchestrator:
                 if projection.state is OperationState.RETRYABLE and retry_terminal:
                     attempt_parent = admitted.operation_id
                     attempt_key = f"retry:{admitted.operation_id}"
+                    retry_observation = await self._call_work_admission(
+                        self.work_admission.observe_harness_retry, owner=owner,
+                        operation_id=admitted.operation_id, service=harness, owner_id=owner_user_id)
                     break
                 if projection.state in {
                     OperationState.COMPLETED,
@@ -7111,6 +7127,28 @@ class Orchestrator:
             except AssignmentError:
                 return None
         is_work_read = is_ui_event and action == "chrome_open" and surface == "work"
+        is_work_continuity = is_ui_event and action == "chrome_work_continuity"
+        is_work_save = is_ui_event and action == "chrome_work_result_save"
+        if is_work_save:
+            from rote.work import validate_work_save_command
+
+            try:
+                validate_work_save_command(payload)
+            except ValueError:
+                return None
+            surface = "work"
+        if is_work_continuity:
+            if (set(frame) != {"type", "action", "session_id", "submission_id", "request_generation",
+                               "connection_generation", "payload"}
+                    or frame.get("session_id") is not None or supplied_connection is None):
+                return None
+            try:
+                from astralprojection.work_continuity import validate_continuity_payload
+
+                validate_continuity_payload(payload)
+            except (ImportError, ValueError):
+                return None
+            surface = "work"
         if is_work_read:
             if payload.get("surface") != "work":
                 return None
@@ -7168,7 +7206,7 @@ class Orchestrator:
             "chrome_note_search", "chrome_note_save", "chrome_note_toggle", "chrome_note_forget",
             "chrome_turn_selection_set",
         }
-        chat_id = str(chat_value) if chat_value is not None and not (is_work_read or is_guidance) else None
+        chat_id = str(chat_value) if chat_value is not None and not (is_work_read or is_work_continuity or is_work_save or is_guidance) else None
         safe_payload_identity = {
             key: value
             for key in _CONNECTION_IDENTITY_FIELDS
@@ -7176,6 +7214,8 @@ class Orchestrator:
             or isinstance(value, (bool, int))
             or (isinstance(value, str) and len(value) <= 512)
         }
+        if is_work_continuity or is_work_save:
+            safe_payload_identity = dict(payload)
         if payload.get("project_id") is not None:
             try:
                 safe_payload_identity["project_id"] = canonical_uuid(payload["project_id"])
@@ -7264,6 +7304,9 @@ class Orchestrator:
                 if hasattr(self, "ui_sessions") and hasattr(context, "websocket")
                 else None
             ),
+            ingress_registration=((self, context, context.websocket, context.connection_generation,
+                                   self.ui_sessions.get(context.websocket))
+                                  if hasattr(self, "ui_sessions") and hasattr(context, "websocket") else None),
         )
 
     async def _enqueue_connection_frame(
@@ -7327,7 +7370,7 @@ class Orchestrator:
                 retry_after_ms=1000,
             )
             return
-        if frame.action == "chrome_open" and frame.surface == "work":
+        if frame.surface == "work" and frame.action in {"chrome_open", "chrome_work_continuity", "chrome_work_result_save"}:
             from orchestrator.work_surface_authority import WorkSurfaceRead
             from persistent_agents.models import AssignmentError
 
@@ -7547,7 +7590,8 @@ class Orchestrator:
                     call = frame.remote_effect_call
                     if getattr(self, "_hitl_pending_calls", {}).get(call.request_id) is not call:
                         raise RuntimeError("remote approval intent changed before admission")
-                result = coordinator.submit(request)
+                from orchestrator.harness.host_admission import submit_connection
+                result = submit_connection(self, context, frame, request)
             except Exception as exc:
                 result = exc
             projection = None
@@ -7617,7 +7661,7 @@ class Orchestrator:
         self,
         context: ConnectionContext,
     ) -> None:
-        # Yield coalesces the burst; not a no-op
+        from orchestrator.harness.host_admission import admission_refusal
         await asyncio.sleep(0)
         while context.ingress:
             batch = list(context.ingress)
@@ -7646,10 +7690,12 @@ class Orchestrator:
                 )
             except BaseException:
                 for frame in batch:
+                    frame.ingress_registration = None
                     frame.close_work_read()
                 raise
             scheduled: list[tuple[_ConnectionOperation, Any]] = []
             for frame, owner, result, projection in results:
+                frame.ingress_registration = None
                 if isinstance(result, Exception):
                     frame.close_work_read()
                     context.submission_digests.pop(frame.submission_id, None)
@@ -7664,8 +7710,7 @@ class Orchestrator:
                     await self._send_connection_admission_refusal(
                         context,
                         frame,
-                        code="operation_failed",
-                        retryable=True,
+                        **admission_refusal(result),
                     )
                     continue
                 if not result.accepted:
@@ -10419,6 +10464,15 @@ class Orchestrator:
                                          exc_info=True)
 
                     try:
+                        from orchestrator import connection_guide
+                        await connection_guide.maybe_push_on_register(
+                            self, websocket, user_id)
+                    except Exception:
+                        logger.debug(
+                            "connection guide push failed (non-fatal)",
+                            exc_info=True)
+
+                    try:
                         if (
                             not _llm_gated
                             and not self._ws_active_chat.get(id(websocket))
@@ -10577,7 +10631,8 @@ class Orchestrator:
                 human_caller = (await human_request.authenticate()
                                 if human_request is not None and human_request.purpose == "metadata" else None)
                 work_read = (_CONNECTION_OPERATION_CONTEXT.get() or {}).get("work_read")
-                if msg.action == "chrome_open" and (msg.payload or {}).get("surface") == "work":
+                if (msg.action == "chrome_open" and (msg.payload or {}).get("surface") == "work"
+                        or msg.action in {"chrome_work_continuity", "chrome_work_result_save"}):
                     if _CONNECTION_OPERATION_CONTEXT.get() is not None:
                         from orchestrator.work_surface_authority import WorkSurfaceRead
                         from persistent_agents.models import AssignmentError
@@ -11725,7 +11780,8 @@ class Orchestrator:
                 else:
                     from orchestrator.chrome_events import handle_chrome_event
                     work_arguments = {"request_generation": msg.request_generation}
-                    if msg.action == "chrome_open" and (msg.payload or {}).get("surface") == "work":
+                    if (msg.action == "chrome_open" and (msg.payload or {}).get("surface") == "work"
+                            or msg.action in {"chrome_work_continuity", "chrome_work_result_save"}):
                         work_arguments = {"request_generation": msg.request_generation,
                                           "work_read": work_read}
                     elif ((msg.action == "chrome_open" and (msg.payload or {}).get("surface") == "guidance")
@@ -16344,9 +16400,46 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         reasoning_effort=None, allow_stream: bool = False,
                         stream_chat_id: Optional[str] = None,
                         tool_choice=None, evidence_transient=False):
+        from llm_config.invocation import runner_started
+        from orchestrator.harness.execution_binding import prepare_model_binding
+        from orchestrator.harness.runtime import run_standard_invocation, tool_metadata
+        from persistent_agents.dispatch_context import current_dispatch
+        runner_started()
+        persistent = current_dispatch()
+        selected = None
+        if persistent is not None and persistent.research_input is not None:
+            from persistent_agents.research_input import ResearchInput
+            if type(persistent.research_input) is not ResearchInput:
+                from persistent_agents.dispatch_context import DispatchDenied
+                raise DispatchDenied("assignment_research_binding_changed")
+            adapter = persistent.research_input.harness_adapter_identity
+            owner_id = persistent.owner_id
+        else:
+            selected = await prepare_model_binding(self, websocket,
+                _CONNECTION_OPERATION_CONTEXT.get(), persistent)
+            adapter = None if selected is None else selected.adapter_identity
+            owner_id = None if selected is None else selected.owner_id
+        async def guarded():
+            return await Orchestrator._call_llm_guarded(self, websocket, messages, tools_desc=tools_desc,
+                temperature=temperature, feature=feature, response_format=response_format,
+                reasoning_effort=reasoning_effort, allow_stream=allow_stream,
+                stream_chat_id=stream_chat_id, tool_choice=tool_choice,
+                evidence_transient=evidence_transient, _harness_binding=selected)
+        if adapter is None:
+            return await guarded()
+        return await run_standard_invocation(guarded, owner_id=owner_id,
+            adapter_identity=adapter, tools=tool_metadata(tools_desc))
+
+    async def _call_llm_guarded(self, websocket, messages, tools_desc=None, temperature=None,
+                        feature: str = "tool_dispatch", response_format=None,
+                        reasoning_effort=None, allow_stream: bool = False,
+                        stream_chat_id: Optional[str] = None,
+                        tool_choice=None, evidence_transient=False, _harness_binding=None):
         from llm_config.native_provider import NativeMessagesClient
         from llm_config.invocation import runner_failed, runner_started, runner_unavailable
         runner_started()
+        if _harness_binding is not None:
+            await _harness_binding.assert_current()
         actor_user_id, auth_principal = self._llm_audit_principals(websocket)
         from persistent_agents.dispatch_context import current_dispatch
         persistent_dispatch = current_dispatch()
@@ -16356,10 +16449,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 tools_desc=tools_desc, temperature=temperature, feature=feature,
                 response_format=response_format, reasoning_effort=reasoning_effort,
                 allow_stream=allow_stream, stream_chat_id=stream_chat_id)
+        harness_binding = _harness_binding
         evidence_bound = evidence_context.has_references(messages)
         native_call = False
         try:
-            if evidence_bound:
+            if harness_binding is not None:
+                client, source, resolved = harness_binding.client(
+                    evidence_bound=evidence_bound or evidence_context.enabled())
+            elif evidence_bound:
                 client, source, resolved = await self._resolve_llm_client_for(websocket, evidence_bound=True)
             else:
                 client, source, resolved = await self._resolve_llm_client_for(websocket)
@@ -16384,7 +16481,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         effort = self._valid_reasoning_effort(effort)
         _route_tier: Optional[int] = None
         escalated = False
-        if not native_call and model_router.router_enabled():
+        if harness_binding is None and not native_call and model_router.router_enabled():
             try:
                 prof = self.rote.get_profile(websocket) if websocket is not None else None
                 dtype = prof.device_type.value if prof is not None else None
@@ -16419,7 +16516,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             stream_chat_id = _NARRATIVE_STREAM_CHAT.get()
         stream_allowed = (allow_stream and websocket is not None
                           and self._llm_streaming_enabled() and not evidence_bound and not evidence_transient)
-        if persistent_dispatch is not None:
+        if persistent_dispatch is not None or harness_binding is not None:
             stream_allowed = False
         attempt = 0
         _vision_cache = getattr(self, "_llm_vision_unsupported", None)
@@ -16434,12 +16531,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             nonlocal previous_context_attempt
             retry_of = previous_context_attempt
             previous_context_attempt = str(_uuid.uuid4())
-            return await self._context_model_call(
-                websocket, stream_chat_id, feature, call_model, invoke,
+            if harness_binding is not None:
+                harness_binding.request(request)
+                await harness_binding.assert_current()
+            async def physical():
+                return (await harness_binding.invoke(request) if harness_binding is not None
+                        else await invoke())
+            response = await self._context_model_call(
+                websocket, stream_chat_id, feature, call_model, physical,
                 attempt_id=previous_context_attempt, retry_of=retry_of,
                 request=request, base_url=getattr(resolved, "base_url", None),
                 provider_capture=getattr(client, "_evidence_provider_capture", None),
             )
+            if harness_binding is not None:
+                await harness_binding.assert_current()
+                harness_binding.response(response, request=request)
+            return response
 
         attempt_limit = 1 if native_call else self.MAX_RETRIES
         while attempt < attempt_limit:
@@ -16527,6 +16634,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     routed_model=call_model,
                     total_tokens=total_tokens,
                     outcome="success",
+                    **({"harness_capture": harness_binding.capture} if harness_binding is not None else {}),
                 )
                 if source == self._CredentialSource.USER and websocket is not None:
                     await self._emit_llm_usage_report(
@@ -16555,6 +16663,19 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     await client.validate()
                 return _msg, usage
             except Exception as e:
+                if harness_binding is not None:
+                    error = self._safe_llm_error_metadata(e)
+                    runner_failed(error.exception_class, credential_rejected=error.status_code == 401)
+                    await self._record_llm_call(self.audit_recorder,
+                        actor_user_id=actor_user_id, auth_principal=auth_principal,
+                        feature=feature, credential_source=source, resolved=resolved,
+                        routed_model=call_model, total_tokens=None, outcome="failure",
+                        upstream_error_class=error.upstream_error_class,
+                        harness_capture=harness_binding.capture)
+                    if source == self._CredentialSource.USER and websocket is not None:
+                        await self._emit_llm_usage_report(websocket, feature=feature,
+                            model=call_model, usage=None, outcome="failure")
+                    raise
                 if persistent_dispatch is not None:
                     raise
                 if not native_call and _forced_choice is not None and not _forced_choice_retried:
@@ -21855,6 +21976,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         history_messages=None,
         active_agent=None,
     ):
+        from orchestrator.harness.execution_binding import prepare_model_binding
+        if await prepare_model_binding(self, websocket, _CONNECTION_OPERATION_CONTEXT.get()) is not None:
+            return None, None
         try:
             from orchestrator.typesafe_routing import RoutingRequest, start_routing
             from orchestrator.typesafe_routing.questions import AgentOption, ToolOption
@@ -24315,6 +24439,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(chrome_router)
         from orchestrator.lets_health_api import lets_router
         app.include_router(lets_router)
+        from orchestrator.connection_guide import connection_router
+        app.include_router(connection_router)
         app.include_router(notification_router)
         from orchestrator.a2a_publication_api import publication_router
         app.include_router(publication_router)
@@ -24325,6 +24451,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(mesh_router)
         app.include_router(mesh_web_router)
         app.include_router(push_router)
+        from orchestrator.harness.selection_api import harness_router
+        app.include_router(harness_router)
         app.include_router(web_auth_router)
         if flags.is_enabled("kiosk_login"):
             from orchestrator.web_auth import kiosk_router

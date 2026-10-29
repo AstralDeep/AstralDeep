@@ -28,8 +28,8 @@ from tests.test_work_submit_postgres_088 import (
 )
 from tests.test_work_save_postgres_088 import (
     approval_for, completed as completed, gate_orchestrator as gate_orchestrator,
-    operation as operation, path as save_operation_path, plane as plane,
-    post as save_post, proposal_body, research as research, saved as saved,
+    operation as operation, plane as plane,
+    proposal_body, research as research, saved as saved,
 )
 
 
@@ -365,35 +365,18 @@ def _save_payload(saved_value, action_id, review):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", [{"tokens": 300_000}], indirect=True)
-async def test_ws_propose_then_save_matches_the_http_route(save_surface):
+async def test_direct_save_dispatch_requires_the_original_socket_request(save_surface):
     saved_value, orch, socket = save_surface
     command = proposal_body(saved_value)
-    handled = await chrome_events.handle_chrome_event(
-        orch, socket, "chrome_work_result_save", _propose_payload(saved_value, command), saved_value.op.owner)
-    assert handled is True
-    assert len(orch.sent) == 1
-    review_frame = orch.sent[-1]
-    assert "Review the exact content" in review_frame["html"]
-    assert "Reviewed result destination" in review_frame["html"]
-    assert command["submission_id"] in review_frame["html"]
-
-    http_review = await save_post(saved_value, save_operation_path(saved_value), command)
-    assert http_review.status_code == 200, http_review.text
-    review = http_review.json()
-
-    handled = await chrome_events.handle_chrome_event(
-        orch, socket, "chrome_work_result_save",
-        _save_payload(saved_value, command["submission_id"], review), saved_value.op.owner)
-    assert handled is True
-    assert len(orch.sent) == 2
-    saved_frame = orch.sent[-1]
-    assert "Result saved" in saved_frame["html"]
-    assert saved_frame["type"] == "chrome_render" and saved_frame["region"] == "modal"
-
+    with pytest.raises(AssignmentError) as refused:
+        await chrome_events.handle_chrome_event(orch, socket, "chrome_work_result_save",
+            _propose_payload(saved_value, command), saved_value.op.owner)
+    assert refused.value.code == "human_authentication_required"
+    assert not orch.sent
     with saved_value.op.runtime.transaction() as tx:
-        chat = saved_value.op.runtime.repositories.history.conversations.get(
-            tx, owner_id=saved_value.op.owner, conversation_id=saved_value.chat_id)
-    assert (chat.render_revision, chat.publication_id) == (1, command["publication_id"])
+        chat = saved_value.op.runtime.repositories.history.conversations.get(tx,
+            owner_id=saved_value.op.owner, conversation_id=saved_value.chat_id)
+    assert (chat.render_revision, chat.publication_id) == (0, None)
 
 
 @pytest.mark.asyncio
@@ -403,18 +386,11 @@ async def test_ws_save_never_authenticates_a_foreign_or_forged_caller(save_surfa
     command = proposal_body(saved_value)
     payload = _propose_payload(saved_value, command)
 
-    handled = await chrome_events.handle_chrome_event(
-        orch, socket, "chrome_work_result_save", payload, "someone-else")
-    assert handled is True
-    assert "Save request refused" in orch.sent[-1]["html"] or "went wrong" in orch.sent[-1]["html"]
-
-    socket.scope["headers"] = [(b"cookie", ("astral_session=" + web_auth._sign(saved_value.op.sid)).encode()),
-                               (b"origin", b"https://evil.invalid")]
-    handled = await chrome_events.handle_chrome_event(
-        orch, socket, "chrome_work_result_save", payload, saved_value.op.owner)
-    assert handled is True
-    last = orch.sent[-1]["html"]
-    assert "Save request refused" in last or "went wrong" in last
+    for owner in ("someone-else", saved_value.op.owner):
+        with pytest.raises(AssignmentError) as refused:
+            await chrome_events.handle_chrome_event(orch, socket, "chrome_work_result_save", payload, owner)
+        assert refused.value.code == "human_authentication_required"
+    assert not orch.sent
 
     with saved_value.op.runtime.transaction() as tx:
         chat = saved_value.op.runtime.repositories.history.conversations.get(
@@ -424,9 +400,10 @@ async def test_ws_save_never_authenticates_a_foreign_or_forged_caller(save_surfa
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", [{"tokens": 300_000}], indirect=True)
-async def test_ws_malformed_save_command_is_a_silent_no_op(save_surface):
+async def test_direct_malformed_save_cannot_bypass_socket_admission(save_surface):
     saved_value, orch, socket = save_surface
-    handled = await chrome_events.handle_chrome_event(
-        orch, socket, "chrome_work_result_save", {"command": "propose"}, saved_value.op.owner)
-    assert handled is True
+    with pytest.raises(AssignmentError) as refused:
+        await chrome_events.handle_chrome_event(orch, socket, "chrome_work_result_save",
+            {"command": "propose"}, saved_value.op.owner)
+    assert refused.value.code == "human_authentication_required"
     assert not orch.sent

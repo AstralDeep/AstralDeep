@@ -76,7 +76,8 @@ def service(monkeypatch):
         prepare_capture=Mock(return_value=SimpleNamespace(grant_id="grant-1")),
         capture_in_transaction=Mock(return_value="grant-1"), assert_current_capture=Mock(),
         is_valid=Mock(return_value=True))
-    orch = SimpleNamespace(tool_permissions=permissions, offline_grants=grants,
+    harness = SimpleNamespace(prepare=AsyncMock(return_value=None), assert_current=Mock())
+    orch = SimpleNamespace(tool_permissions=permissions, offline_grants=grants, harness_selection=harness,
         web_sessions=SimpleNamespace(latest_refresh_token_for=Mock(return_value="never-print-token")),
         history=SimpleNamespace(get_chat=Mock(return_value={"id": "chat-1"})), ui_sessions={})
     monkeypatch.setattr("persistent_agents.service.eligible_tool_pairs", lambda *a, **kw:

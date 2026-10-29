@@ -108,7 +108,7 @@ class ResearchCompletion:
         self.private.assert_record(executor.record)
         source = await executor.refresh(source_request(executor.record))
         model = await executor.refresh(
-            route(), authority=source["authority"], _research=self.private
+            route(executor.record), authority=source["authority"], _research=self.private
         )
         return {"source": source, "model": model}
 

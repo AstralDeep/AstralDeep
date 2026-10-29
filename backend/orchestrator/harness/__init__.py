@@ -1,6 +1,7 @@
 """The versioned harness contract package: contract.py defines the seams,
 typesafe_adapter.py and standard_llm_adapter.py bind the existing runners,
-selection.py gates profile rollout, and conformance.py verifies deployments.
+selection.py gates profile rollout, conformance.py verifies deployments, and
+rollout.py controls qualified new-work rollout with stable owner bindings.
 """
 
 from .contract import (
@@ -27,6 +28,13 @@ from .contract import (
     validate_deployment,
 )
 from .conformance import ConformanceReport, run_conformance
+from .rollout import (
+    HarnessBinding,
+    HarnessProfileUnavailable,
+    HarnessRollout,
+    HarnessRolloutTransition,
+    default_rollout,
+)
 from .selection import (
     ROLLOUT_FLAG,
     HarnessCatalog,
@@ -42,6 +50,7 @@ __all__ = (
     "AccountingSeam",
     "ConformanceReport",
     "HarnessAccounting",
+    "HarnessBinding",
     "HarnessCancellationPending",
     "HarnessAgentOption",
     "HarnessCatalog",
@@ -50,8 +59,11 @@ __all__ = (
     "HarnessExecution",
     "HarnessIdentity",
     "HarnessOutcome",
+    "HarnessProfileUnavailable",
     "HarnessProviderFrame",
     "HarnessResult",
+    "HarnessRollout",
+    "HarnessRolloutTransition",
     "HarnessSelectionUnavailable",
     "HarnessToolOption",
     "HarnessToolSurface",
@@ -63,6 +75,7 @@ __all__ = (
     "TypeSafeRoutingHarness",
     "assert_credential_free",
     "default_catalog",
+    "default_rollout",
     "empty_surface",
     "run_conformance",
     "standard_deployment",

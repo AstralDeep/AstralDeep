@@ -4,6 +4,7 @@ Composes work controls and auditing with authoritative source completion and run
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from collections.abc import Mapping
@@ -85,16 +86,16 @@ class WorkSubscriptionService(WorkControlService):
         super().__init__(assignments)
         self.credentials = credentials
 
-    def _caller(self, caller, scope: str):
+    async def _caller(self, caller, scope: str):
         _require_scope(caller, scope)
-        observation = self.credentials.fresh_observation(caller)
+        observation = await asyncio.to_thread(self.credentials.fresh_observation, caller)
         if observation is None:
             raise AssignmentError("framework_credential_authority_unavailable", 409)
         return caller.owner_id, observation
 
     async def subscribe(self, caller, *, source_operation_id, target_operation_id,
                         submission_id, expected_revision) -> dict:
-        owner, observation = self._caller(caller, "operations.control")
+        owner, observation = await self._caller(caller, "operations.control")
         source_id, target_id = _identity(source_operation_id), _identity(target_operation_id)
         sid = _submission_id(submission_id)
         revision = _revision(expected_revision)
@@ -151,7 +152,7 @@ class WorkSubscriptionService(WorkControlService):
         return await self.store.transaction(subscribe, bound_session_waits=True)
 
     async def subscriptions(self, caller, *, limit=50, after_id=None) -> dict:
-        owner, observation = self._caller(caller, "operations.read")
+        owner, observation = await self._caller(caller, "operations.read")
         if type(limit) is not int or not 1 <= limit <= _MAX_LIST:
             raise AssignmentError("work_control_invalid", 422)
         cursor = None if after_id is None else _identity(after_id)
@@ -187,7 +188,7 @@ class WorkSubscriptionService(WorkControlService):
 
     async def cancel(self, caller, *, source_operation_id, target_operation_id,
                      submission_id, expected_revision) -> dict:
-        owner, observation = self._caller(caller, "operations.control")
+        owner, observation = await self._caller(caller, "operations.control")
         source_id, target_id = _identity(source_operation_id), _identity(target_operation_id)
         sid = _submission_id(submission_id)
         revision = _revision(expected_revision)

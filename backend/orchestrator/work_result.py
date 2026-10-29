@@ -24,7 +24,7 @@ from astralplane.repositories.assignment_models import (
     AssignmentTransientInput,
 )
 from audit.pii import private_binding_key
-from llm_config import research_profile as profile
+from orchestrator.harness.production_profiles import HarnessSelectionError, profile_for_record
 from persistent_agents.dispatch_context import DispatchDenied
 from persistent_agents.models import validate_id
 from persistent_agents.research_input import _source_identity, receipt_payload, route
@@ -146,15 +146,15 @@ def _model_source(record, model, expected_key, selected):
     _digest(transient.payload_binding)
     _require(type(transient.binding_key_id) is str
              and re.fullmatch(r"[a-z][a-z0-9_]{0,31}", transient.binding_key_id) is not None)
-    _require(thaw(model.intent.request) == route()
+    _require(thaw(model.intent.request) == route(record)
              and type(model.intent.request["max_output_tokens"]) is int
              and model.intent.action_key == expected_key
              and model.intent.request_digest == transient.payload_binding
              and model.intent.boundary == "unreplayable"
              and type(model.intent.maximum) is AssignmentResourceAmount
              and model.intent.maximum == AssignmentResourceAmount(
-                 model_calls=1, tokens=profile.RESERVED_TOKENS,
-                 elapsed_ms=profile.RESERVED_MILLISECONDS))
+                 model_calls=1, tokens=profile_for_record(record).reserved_tokens,
+                 elapsed_ms=profile_for_record(record).reserved_milliseconds))
     return transient, reference.resource_id
 
 
@@ -179,7 +179,7 @@ def _page(record, model, source, transient, source_key, selected):
     selection = result["result"]
     _require(type(selection) is dict and type(selection.get("version")) is int)
     expected = {
-        "version": 1, "profile": profile.PROFILE,
+        "version": 1, "profile": profile_for_record(record).name,
         "passage_ids": selection.get("passage_ids"),
         "source_action_id": source.action_id,
         "source_result_digest": retained["result_digest"],
@@ -193,6 +193,7 @@ def _page(record, model, source, transient, source_key, selected):
     _require(key.verify("result", receipt_payload(payload_binding=transient.payload_binding,
         action_id=model.action_id, attempt_id=attempt["attempt_id"],
         outcome="succeeded", result=selection, actual=result["actual"],
+        profile_name=profile_for_record(record).name,
         selected_input=metadata), result["result_digest"]))
     page = build_page_result(observation, selection["passage_ids"],
         source_action_id=source.action_id, source_result_digest=retained["result_digest"])
@@ -272,5 +273,6 @@ def project_research_result(transaction, repository, *, owner_id, read):
             assignment_id=record.assignment_id)))
         return _envelope(content=page)
     except (ValueError, TypeError, AttributeError, KeyError, OverflowError,
-            RepositoryConflictError, RepositoryDataError, RepositoryNotFoundError, DispatchDenied):
+            RepositoryConflictError, RepositoryDataError, RepositoryNotFoundError,
+            DispatchDenied, HarnessSelectionError):
         return _envelope("unavailable")

@@ -9,7 +9,7 @@ import re
 import threading
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Any, Callable, ContextManager, Iterator, Protocol, Sequence
@@ -25,6 +25,18 @@ _OPERATION_KIND_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SAFE_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _TERMINAL_STATES: frozenset["OperationState"]
+_HARNESS_RETRY_AUTHORITY = object()
+_PREPARE_HARNESS = object()
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _HarnessRetryObservation:
+    authority: object
+    repository: object
+    owner_id: str
+    parent: object
+    capture: object
+
 
 
 class AdmissionClass(str, Enum):
@@ -155,6 +167,9 @@ class OperationRequest:
     parent_operation_id: uuid.UUID | None
     connection_generation: uuid.UUID | None
     request_generation: uuid.UUID | None
+    harness_selection: object = field(default=None, repr=False)
+    harness_capture: object = field(default=None, repr=False)
+    harness_assignment_id: uuid.UUID | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not _OPERATION_KIND_RE.fullmatch(self.operation_kind):
@@ -172,6 +187,7 @@ class OperationRequest:
             ("parent_operation_id", self.parent_operation_id),
             ("connection_generation", self.connection_generation),
             ("request_generation", self.request_generation),
+            ("harness_assignment_id", self.harness_assignment_id),
         ):
             if value is not None and not isinstance(value, uuid.UUID):
                 raise ValueError(f"{name} must be a UUID when supplied")
@@ -594,6 +610,47 @@ class WorkAdmissionCoordinator:
             retention=self._operation_retention,
             slot_lease=self._slot_lease,
         )
+
+    def submit_with_harness(self, request, *, service, owner_id, prepared=_PREPARE_HARNESS, origin=None):
+        from orchestrator.harness.production_profiles import HarnessSelectionError
+        if self._submission_gate is not None:
+            refusal = self._submission_gate(request)
+            if refusal:
+                return RefusedAdmission(False, refusal, False, None)
+        submit = getattr(self._repository, "submit_with_harness", None)
+        if not callable(submit):
+            raise HarnessSelectionError("harness_component_unavailable")
+        return submit(request, service=service, prepared=prepared, owner_id=owner_id, origin=origin,
+                      now=self._now(), retention=self._operation_retention,
+                      slot_lease=self._slot_lease)
+
+    def observe_harness_retry(self, *, owner, operation_id, service, owner_id):
+        from orchestrator.harness.production_profiles import HarnessSelectionError
+        observe = getattr(self._repository, "observe_harness_retry", None)
+        if not callable(observe):
+            raise HarnessSelectionError("harness_component_unavailable")
+        return observe(owner=owner, operation_id=operation_id, service=service, owner_id=owner_id)
+
+    def submit_harness_retry(self, request, *, observation, service, owner_id):
+        from orchestrator.harness.production_profiles import HarnessSelectionError
+        if self._submission_gate is not None:
+            refusal = self._submission_gate(request)
+            if refusal:
+                return RefusedAdmission(False, refusal, False, None)
+        submit = getattr(self._repository, "submit_harness_retry", None)
+        if not callable(submit):
+            raise HarnessSelectionError("harness_component_unavailable")
+        return submit(request, observation=observation, service=service, owner_id=owner_id,
+                      now=self._now(), retention=self._operation_retention, slot_lease=self._slot_lease)
+
+    def harness_capture(self, *, owner, fence, service, owner_id,
+                        expected=None, config=None, key=None):
+        from orchestrator.harness.production_profiles import HarnessSelectionError
+        method = getattr(self._repository, "harness_capture", None)
+        if not callable(method):
+            raise HarnessSelectionError("harness_component_unavailable")
+        return method(owner=owner, fence=fence, service=service, owner_id=owner_id,
+                      expected=expected, config=config, key=key)
 
     def claim_next(self, class_name: AdmissionClass) -> OperationClaim | None:
         return self._repository.claim_next(
@@ -2207,6 +2264,9 @@ def _from_plane_config(
 
 
 def _to_plane_request(request: OperationRequest) -> plane_admission.OperationRequest:
+    captured = {name: getattr(request, name) for name in
+                ("harness_selection", "harness_capture", "harness_assignment_id")
+                if getattr(request, name) is not None}
     return plane_admission.OperationRequest(
         operation_kind=request.operation_kind,
         admission_class=_to_plane_class(request.admission_class),
@@ -2219,6 +2279,7 @@ def _to_plane_request(request: OperationRequest) -> plane_admission.OperationReq
         parent_operation_id=request.parent_operation_id,
         connection_generation=request.connection_generation,
         request_generation=request.request_generation,
+        **captured,
     )
 
 
@@ -2425,6 +2486,10 @@ class PlaneWorkAdmissionRepository:
                 bind_admission=True)
         except EmergencyStopRefused as exc:
             return RefusedAdmission(False, exc.code, False, None)
+        return self._admission_result(result)
+
+    @staticmethod
+    def _admission_result(result):
         if isinstance(result, plane_admission.AcceptedAdmission):
             return AcceptedAdmission(
                 accepted=result.accepted,
@@ -2440,6 +2505,152 @@ class PlaneWorkAdmissionRepository:
             retryable=result.retryable,
             retry_after_ms=result.retry_after_ms,
         )
+
+    def submit_with_harness(self, request, *, service, owner_id, now, retention,
+                            slot_lease, prepared=_PREPARE_HARNESS, origin=None):
+        from orchestrator.harness.production_profiles import HarnessSelectionError
+        from orchestrator.harness.selection_service import (
+            HarnessAdmission, HarnessSelectionService, _owner,
+        )
+        _owner(owner_id)
+        if (type(service) is not HarnessSelectionService or service.runtime is not self._runtime
+                or (prepared is not _PREPARE_HARNESS and prepared is not None
+                    and (type(prepared) is not HarnessAdmission or prepared.selection.owner_id != owner_id))
+                or (request.owner.owner_user_id is not None
+                    and request.owner.owner_user_id != owner_id)):
+            raise HarnessSelectionError("harness_owner_invalid", 403)
+        service._current()
+        service.assert_connection_origin(origin)
+        if prepared is not _PREPARE_HARNESS:
+            service.assert_origin(prepared)
+        if service.repository is None:
+            if prepared is _PREPARE_HARNESS:
+                prepared = service.prepare_sync(owner_id)
+            service.assert_current(None, prepared)
+            return self.submit(request, now=now, retention=retention, slot_lease=slot_lease)
+        if any(getattr(request, name) is not None for name in
+               ("harness_selection", "harness_capture", "harness_assignment_id")):
+            raise HarnessSelectionError("harness_capture_invalid")
+        try:
+            with self._runtime.transaction() as tx:
+                service.repository.lock_owner(tx, owner_id=owner_id)
+                converted = _to_plane_request(request)
+                if not self._plane_repository.has_admission_replay(tx, converted):
+                    if prepared is _PREPARE_HARNESS:
+                        prepared = service.prepare_sync(owner_id)
+                    service.assert_current(tx, prepared)
+                    converted = _to_plane_request(replace(request,
+                        harness_selection=prepared.selection, harness_capture=prepared.capture))
+                service._current()
+                service.assert_connection_origin(origin)
+                if prepared is not _PREPARE_HARNESS:
+                    service.assert_origin(prepared)
+                result = self._invoke(self._plane_repository.submit, converted,
+                    now=now, retention=retention, slot_lease=slot_lease,
+                    admission_owner=request.owner, bind_admission=True, transaction=tx)
+                service.assert_connection_origin(origin)
+                if prepared is not _PREPARE_HARNESS:
+                    service.assert_origin(prepared)
+            return self._admission_result(result)
+        except EmergencyStopRefused as exc:
+            return RefusedAdmission(False, exc.code, False, None)
+
+    def observe_harness_retry(self, *, owner, operation_id, service, owner_id):
+        from orchestrator.harness.production_profiles import HarnessSelectionError
+        from orchestrator.harness.selection_service import HarnessSelectionService, _owner
+        _owner(owner_id)
+        if (type(service) is not HarnessSelectionService or service.runtime is not self._runtime
+                or owner.owner_scope is not OwnerScope.USER or owner.owner_user_id != owner_id):
+            raise HarnessSelectionError("harness_owner_invalid", 403)
+        service._current()
+        if service.repository is None:
+            service.assert_current(None, None)
+            return None
+        with self._runtime.transaction() as tx:
+            service.repository.lock_owner(tx, owner_id=owner_id)
+            parent = self._plane_repository.get_operation_record(tx, _to_plane_owner(owner),
+                operation_id, for_update=True)
+            if parent is None or parent.state is not plane_admission.OperationState.RETRYABLE:
+                raise HarnessSelectionError("harness_retry_changed", 409)
+            captured = self._plane_repository.get_harness_capture(tx, _to_plane_owner(owner), operation_id)
+            return _HarnessRetryObservation(_HARNESS_RETRY_AUTHORITY, self, owner_id, parent, captured)
+
+    def submit_harness_retry(self, request, *, observation, service, owner_id,
+                             now, retention, slot_lease):
+        from orchestrator.harness.production_profiles import HarnessSelectionError
+        from orchestrator.harness.selection_service import HarnessSelectionService
+        if (type(service) is not HarnessSelectionService or service.runtime is not self._runtime
+                or request.owner.owner_scope is not OwnerScope.USER
+                or request.owner.owner_user_id != owner_id):
+            raise HarnessSelectionError("harness_owner_invalid", 403)
+        service._current()
+        if observation is None:
+            service.assert_current(None, None)
+            return self.submit(request, now=now, retention=retention, slot_lease=slot_lease)
+        if (type(observation) is not _HarnessRetryObservation
+                or observation.authority is not _HARNESS_RETRY_AUTHORITY
+                or observation.repository is not self or observation.owner_id != owner_id):
+            raise HarnessSelectionError("harness_retry_invalid", 403)
+        converted = _to_plane_request(request)
+        try:
+            with self._runtime.transaction() as tx:
+                service.repository.lock_owner(tx, owner_id=owner_id)
+                if not self._plane_repository.has_admission_replay(tx, converted):
+                    current = self._plane_repository.get_operation_record(tx, converted.owner,
+                        observation.parent.operation_id, for_update=True)
+                    if current != observation.parent:
+                        raise HarnessSelectionError("harness_retry_changed", 409)
+                    service.assert_captured_current(tx, observation.capture)
+                result = self._invoke(self._plane_repository.submit_retry, converted,
+                    expected_parent=observation.parent, expected_capture=observation.capture,
+                    now=now, retention=retention, slot_lease=slot_lease,
+                    admission_owner=request.owner, bind_admission=True, transaction=tx)
+            return self._admission_result(result)
+        except EmergencyStopRefused as exc:
+            return RefusedAdmission(False, exc.code, False, None)
+        except (PlaneRepositoryConflictError, WorkAdmissionConflictError):
+            raise HarnessSelectionError("harness_retry_changed", 409) from None
+
+    def harness_capture(self, *, owner, fence, service, owner_id,
+                        expected=None, config=None, key=None):
+        from audit.pii import private_binding_key
+        from orchestrator.harness.production_profiles import (
+            HarnessSelectionError, deployment_for_capture,
+        )
+        from orchestrator.harness.selection_service import HarnessSelectionService, _owner
+        _owner(owner_id)
+        if (type(service) is not HarnessSelectionService or service.runtime is not self._runtime
+                or (owner.owner_user_id is not None and owner.owner_user_id != owner_id)):
+            raise HarnessSelectionError("harness_owner_invalid", 403)
+        service._current()
+        if service.repository is None:
+            if service.enabled() or expected is not None:
+                raise HarnessSelectionError("harness_component_unavailable")
+            return None
+        with self._runtime.transaction() as tx:
+            service.repository.lock_owner(tx, owner_id=owner_id)
+            record = self._plane_repository.get_operation_record(tx, _to_plane_owner(owner),
+                fence.operation_id, for_update=True)
+            if record is None:
+                raise OperationNotFoundError("operation not found")
+            self._invoke(self._plane_repository.assert_current_execution_lease,
+                         _to_plane_fence(fence), execution_fence=fence, transaction=tx)
+            captured = self._plane_repository.get_harness_capture(tx, _to_plane_owner(owner),
+                                                                  fence.operation_id)
+            if captured is not None and captured.owner_id != owner_id:
+                raise HarnessSelectionError("harness_owner_invalid", 403)
+            if expected is not None:
+                if captured != expected:
+                    raise HarnessSelectionError("harness_capture_changed")
+                deployment_for_capture(captured)
+                if (config is None or key is None or private_binding_key(key.key_id) != key
+                        or not config.matches(self._runtime.repositories.encrypted_llm_config.get_user_for_update(
+                            tx, owner_id=owner_id))):
+                    raise HarnessSelectionError("harness_config_changed")
+                self._plane_repository.bind_harness_profile(tx, _to_plane_owner(owner),
+                    _to_plane_fence(fence), captured.identity)
+            service._current()
+            return captured
 
     @staticmethod
     def _claim(

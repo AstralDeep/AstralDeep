@@ -15,6 +15,7 @@ from astralplane.repositories.guidance_models import (
     ExplicitNoteRecord, GuidanceReference, SkillHead,
 )
 from persistent_agents.models import AssignmentError
+from llm_config.research_profile import OPENAI_PROFILE
 from personalization.explicit_note_expansion import capture_note_reference
 from personalization.explicit_notes import ExplicitNoteUnavailable
 from personalization.selected_guidance import (
@@ -30,10 +31,11 @@ class CapturedSelectedGuidance:
     _inputs: object = field(repr=False)
     _boundary: object = field(repr=False)
 
-    def compose(self, *, observation, approved_request_bytes):
+    def compose(self, *, observation, approved_request_bytes, profile_spec=OPENAI_PROFILE):
         self._boundary.assert_current()
         return reconstruct_selected_research_input(self.prepared.envelope,
-            **self._inputs, observation=observation, approved_request_bytes=approved_request_bytes)
+            **self._inputs, observation=observation, approved_request_bytes=approved_request_bytes,
+            profile_spec=profile_spec)
 
 
 class SelectedGuidanceBoundary:

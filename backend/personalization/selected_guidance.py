@@ -340,13 +340,13 @@ def prepare_selected_guidance(
 
 
 def compose_selected_research_input(
-    *, observation, approved_request_bytes, **selection
+    *, observation, approved_request_bytes, profile_spec=profile.OPENAI_PROFILE, **selection
 ) -> SelectedResearchInput:
     try:
         prepared = prepare_selected_guidance(
             **selection, approved_guidance_bytes=approved_request_bytes
         )
-        base = profile.build_request(selection["instruction"], observation)
+        base = profile.build_request(selection["instruction"], observation, profile=profile_spec)
         if prepared.envelope is None:
             encoded = base.body
         else:

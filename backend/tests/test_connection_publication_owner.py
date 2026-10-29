@@ -65,6 +65,7 @@ def runtime():
     host._workspace_locks = {}
     host.rote = Rote()
     context = ConnectionContext(socket, uuid4(), 999999, connection_generation=uuid4(), registered=True)
+    host._connection_contexts = {id(socket): context}
     return host, socket, context
 
 
@@ -90,6 +91,8 @@ def attach_plane(host, database):
     host.history = HistoryManager(plane_runtime=database, plane_repositories=database.repositories)
     host.workspace = _workspace_manager(host.history, database)
     host.work_admission = _coordinator(database)
+    from orchestrator.harness.selection_service import HarnessSelectionService
+    host.harness_selection = HarnessSelectionService(plane_runtime=database)
     host.conversation_commits = _repository(database, host.work_admission)
 
 

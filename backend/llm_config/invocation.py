@@ -87,6 +87,11 @@ class InvocationState:
     credential_outcome: str | None = None
     error_class: str | None = None
     failed: bool = False
+    _parents: tuple = field(default=(), init=False, repr=False)
+    _scope: Any = field(default=None, init=False, repr=False)
+    _owner: Any = field(default=None, init=False, repr=False)
+    _children: int = field(default=0, init=False, repr=False)
+    _used: bool = field(default=False, init=False, repr=False)
 
     @property
     def usage_complete(self):
@@ -137,12 +142,38 @@ _CURRENT: ContextVar[InvocationState | None] = ContextVar(
 )
 
 
+_SCOPE: ContextVar[object | None] = ContextVar("llm_invocation_scope", default=None)
+
+
+def _state_chain(state):
+    if state is None:
+        return ()
+    if type(state) is not InvocationState or type(state._parents) is not tuple:
+        raise InvocationContractError("invalid invocation lineage")
+    chain = (state, *state._parents)
+    if (len(chain) > 32 or any(type(item) is not InvocationState for item in chain)
+            or len({id(item) for item in chain}) != len(chain)):
+        raise InvocationContractError("invalid invocation lineage")
+    return chain
+
+
+def _current_states():
+    state = _CURRENT.get()
+    if state is not None and (state._scope is None or state._scope is not _SCOPE.get()):
+        raise InvocationContractError("retired invocation scope")
+    return _state_chain(state)
+
+
 @dataclass(slots=True)
 class ProviderAttempt:
     state: InvocationState | None = field(repr=False)
     closed: bool = False
     reported_tokens: int | None = None
     lock: Any = field(default_factory=Lock, repr=False)
+    _states: tuple = field(default=(), init=False, repr=False)
+
+    def __post_init__(self):
+        self._states = _state_chain(self.state)
 
 
 _ACTIVE_ATTEMPT: ContextVar[ProviderAttempt | None] = ContextVar(
@@ -160,11 +191,14 @@ def provider_reported_usage(usage):
 
 
 def provider_started():
-    state = _CURRENT.get()
-    if state is not None:
+    states = _current_states()
+    if any(state._scope is None or state._owner is None for state in states):
+        raise InvocationContractError("retired invocation lineage")
+    attempt = ProviderAttempt(states[0] if states else None)
+    for state in attempt._states:
         state.attempts += 1
         state.pending += 1
-    return ProviderAttempt(state)
+    return attempt
 
 
 def provider_finished(attempt, usage=None, *, sent=True):
@@ -173,30 +207,31 @@ def provider_finished(attempt, usage=None, *, sent=True):
     with attempt.lock:
         if attempt.closed:
             return
+        if any(state.pending < 1 or state.attempts < 1 for state in attempt._states):
+            raise InvocationContractError("invalid pending invocation")
         attempt.closed = True
-        if attempt.state is None:
-            return
-        attempt.state.pending -= 1
-        if sent:
-            attempt.state.record_usage(usage)
-            if usage_tokens(usage) is None and attempt.reported_tokens is not None:
-                attempt.state.record_usage({"total_tokens": attempt.reported_tokens})
-        else:
-            attempt.state.attempts -= 1
+        for state in attempt._states:
+            state.pending -= 1
+            if sent:
+                state.record_usage(usage)
+                if usage_tokens(usage) is None and attempt.reported_tokens is not None:
+                    state.record_usage({"total_tokens": attempt.reported_tokens})
+            else:
+                state.attempts -= 1
 
 
 def runner_started():
-    if (state := _CURRENT.get()) is not None:
+    for state in _current_states():
         state.started = True
 
 
 def runner_unavailable():
-    if (state := _CURRENT.get()) is not None:
+    for state in _current_states():
         state.credential_outcome = "unavailable"
 
 
 def runner_failed(error_class, *, credential_rejected=False):
-    if (state := _CURRENT.get()) is not None:
+    for state in _current_states():
         state.failed = True
         state.error_class = error_class
         if credential_rejected:
@@ -224,7 +259,21 @@ async def observe_provider(invoke: Callable[[], Awaitable[Any]]):
 async def invoke_accounted(
     invoke: Callable[[], Awaitable[Any]], state: InvocationState
 ):
+    parents = _current_states()
+    owner = asyncio.current_task()
+    reentrant = bool(parents and state is parents[0] and state._owner is owner)
+    if (type(state) is not InvocationState or (not reentrant and (
+            state._scope is not None or state._owner is not None
+            or state._children or state._used and state.pending
+            or any(item is state for item in parents) or len(parents) >= 32))):
+        raise InvocationContractError("invocation state is already in use")
+    if not reentrant:
+        state._parents, state._scope, state._owner = parents, object(), owner
+        state._used = True
+        for parent in parents:
+            parent._children += 1
     token = _CURRENT.set(state)
+    scope_token = _SCOPE.set(state._scope)
     try:
         return state.finish(await invoke())
     except (asyncio.CancelledError, InvocationContractError):
@@ -235,4 +284,9 @@ async def invoke_accounted(
         state.error_class = type(error).__name__
         return state.result("failed")
     finally:
+        _SCOPE.reset(scope_token)
         _CURRENT.reset(token)
+        if not reentrant and state._owner is owner:
+            state._parents, state._scope, state._owner = (), None, None
+            for parent in parents:
+                parent._children -= 1

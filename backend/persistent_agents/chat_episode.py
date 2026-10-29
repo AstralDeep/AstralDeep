@@ -1,6 +1,5 @@
-"""One fixed, source-less USER chat turn per owner instruction: no tool, source or
-guidance. Answer is retained under research's keyed receipt binding; invoked by
-persistent_agents/runner.py, consumed via orchestrator/work_chat_result.py.
+"""Bounded source-less USER chat turns use a declared research profile without tools or guidance.
+The runner retains answers under keyed receipts consumed by orchestrator/work_chat_result.py.
 """
 
 from __future__ import annotations
@@ -16,6 +15,7 @@ from persistent_agents.research_input import ResearchInput, chat_definition, rou
 from persistent_agents.runtime_values import canonical, digest, thaw
 
 CHAT_PROFILE = "openai-chat-turn/v1"
+LOCAL_CHAT_PROFILE = "local-chat-turn/v1"
 CHAT_KEY_PREFIX = "chat-v1-"
 # 8 KiB Plane result bound minus envelope overhead
 MAX_ANSWER_BYTES = 6144
@@ -35,12 +35,21 @@ def chat_action_key(record) -> str:
     return digest(["chat-turn-v1", record.instruction_revision, record.control_epoch])
 
 
-def build_chat_request(instruction: str) -> ResearchRequest:
+def chat_profile_name(profile_spec=profile.OPENAI_PROFILE) -> str:
+    profile._declared_profile(profile_spec)
+    if not profile_spec.bound:
+        profile._refuse()
+    return LOCAL_CHAT_PROFILE if profile_spec.local else CHAT_PROFILE
+
+
+def build_chat_request(
+        instruction: str, *, profile_spec=profile.OPENAI_PROFILE) -> ResearchRequest:
+    chat_profile_name(profile_spec)
     profile._text(instruction, 32768)
     try:
         body = profile._canonical({
-            "model": profile.MODEL, "stream": False, "store": False, "n": 1,
-            "max_completion_tokens": profile.OUTPUT_TOKENS,
+            "model": profile_spec.model, "stream": False, "store": False, "n": 1,
+            "max_completion_tokens": profile_spec.output_tokens,
             "response_format": {"type": "json_object"},
             "messages": [{"role": "system", "content": _SYSTEM},
                          {"role": "user", "content": instruction}],
@@ -52,12 +61,13 @@ def build_chat_request(instruction: str) -> ResearchRequest:
         profile._refuse()
 
 
-def chat_result_value(text) -> dict:
+def chat_result_value(text, *, profile_spec=profile.OPENAI_PROFILE) -> dict:
+    profile_name = chat_profile_name(profile_spec)
     if type(text) is not str or not text.strip() or "\x00" in text:
         raise ValueError("chat answer unavailable")
     if len(text.encode("utf-8")) > MAX_ANSWER_BYTES:
         raise ValueError("chat answer unavailable")
-    return {"version": 1, "profile": CHAT_PROFILE, "text": text}
+    return {"version": 1, "profile": profile_name, "text": text}
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +93,10 @@ def _answer(content) -> str:
         profile._refuse()
 
 
-def parse_chat_response(body: bytes, *, status_code: int) -> ChatResponse:
+def parse_chat_response(
+        body: bytes, *, status_code: int,
+        profile_spec=profile.OPENAI_PROFILE) -> ChatResponse:
+    chat_profile_name(profile_spec)
     try:
         if type(status_code) is not int or status_code != 200:
             profile._refuse()
@@ -101,9 +114,9 @@ def parse_chat_response(body: bytes, *, status_code: int) -> ChatResponse:
                 profile._text(value[key], 256)
     except ResearchProfileUnavailable:
         return ChatResponse(None, None, "response_invalid")
-    usage = profile._usage(value["usage"])
+    usage = profile._usage(value["usage"], profile_spec)
     try:
-        if value["model"] != profile.MODEL:
+        if value["model"] != profile_spec.model:
             profile._refuse()
         choices = value["choices"]
         if type(choices) is not list or len(choices) != 1 or type(choices[0]) is not dict:
@@ -130,6 +143,9 @@ def parse_chat_response(body: bytes, *, status_code: int) -> ChatResponse:
 
 
 def chat_execution_checks(service, owner_id, claims, record, *, authority) -> dict:
+    from orchestrator.framework_operation_authority import (
+        FrameworkOperationExecutionAuthority, authority_repository,
+    )
     from orchestrator.session_authority import OperationExecutionAuthority
     from persistent_agents.models import AssignmentError
 
@@ -137,7 +153,7 @@ def chat_execution_checks(service, owner_id, claims, record, *, authority) -> di
     if record.owner_id != owner_id:
         raise AssignmentError("assignment_not_found", 404)
     chat_definition(record)
-    if (not isinstance(authority, OperationExecutionAuthority)
+    if (not isinstance(authority, (OperationExecutionAuthority, FrameworkOperationExecutionAuthority))
             or authority.plane_runtime is not service.store.plane_runtime
             or authority.claims != claims
             or authority.record.owner_id != owner_id
@@ -150,12 +166,20 @@ def chat_execution_checks(service, owner_id, claims, record, *, authority) -> di
         raise AssignmentError("assignment_authorization_required", 403)
     selected = record.operation.get("authority", {})
     credential = authority.observation.credential
-    if (selected.get("origin") != "interactive"
-            or selected.get("reference_kind") != "session_incarnation"
+    framework = type(authority) is FrameworkOperationExecutionAuthority
+    authority_repository(service.store.plane_runtime, authority)
+    origin, kind, reference = (("framework", "credential", credential.credential_id) if framework
+        else ("interactive", "session_incarnation", credential.incarnation_id))
+    if (selected.get("origin") != origin
+            or selected.get("reference_kind") != kind
             or selected.get("owner_id") != owner_id
-            or selected.get("reference_id") != credential.incarnation_id
+            or selected.get("reference_id") != reference
             or credential.owner_id != owner_id or record.definition.offline_grant_id is not None):
         raise AssignmentError("assignment_authorization_required", 403)
+    if framework:
+        from orchestrator.evidence_context import has_references
+        if has_references([{"content": record.definition.instructions}]):
+            raise AssignmentError("assignment_operation_profile_unavailable", 403)
     permission = digest({"tools": {}, "instruction_revision": record.instruction_revision,
                          "control_epoch": record.control_epoch,
                          "operation_authority": thaw(record.operation["authority"])})
@@ -194,7 +218,7 @@ class ChatCompletion:
 
     async def refresh(self, executor):
         self.private.assert_record(executor.record)
-        model = await executor.refresh(route(), _research=self.private)
+        model = await executor.refresh(route(executor.record), _research=self.private)
         return {"model": model}
 
     def assert_completion(self, executor, tx, repository, current, checks, completion):

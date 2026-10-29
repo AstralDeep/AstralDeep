@@ -79,8 +79,7 @@ class WorkResumeService(WorkControlService):
                 conversation_id=selected.definition.conversation_id)
             if tuple(sorted(set(scopes.values()))) != selected.definition.consented_scopes:
                 raise AssignmentError("assignment_scope_changed", 403)
-            prepared = await preflight.prepare(owner_id=owner, runtime=self.store.plane_runtime,
-                definition=selected.definition,
+            prepared = await preflight.prepare_existing(selected, runtime=self.store.plane_runtime,
                 source_bound=self.assignments.tool_bound("web-research-1:fetch_page"))
             composition.new_admission()
 
