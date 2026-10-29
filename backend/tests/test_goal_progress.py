@@ -517,7 +517,8 @@ def test_failed_file_call_cannot_be_waived_by_inspecting_existing_contents():
     assert progress.assess(decision).status == "continue"
 
 
-def test_out_of_range_write_can_be_resolved_by_smaller_same_path_write():
+@pytest.mark.parametrize("error_code", ["out_of_range", "invalid_tool_arguments"])
+def test_pre_effect_oversized_write_can_be_resolved_by_smaller_same_path_write(error_code):
     from orchestrator.computer_use_policy import MAX_WRITE_BYTES
 
     progress = GoalProgress("Create a playable game")
@@ -530,7 +531,7 @@ def test_out_of_range_write_can_be_resolved_by_smaller_same_path_write():
         "oversized-write", "write_file",
         {"path": path, "content": "x" * (MAX_WRITE_BYTES + 1), "if_exists": "overwrite"},
         SimpleNamespace(error=ComputerHostError(
-            "out_of_range", "content exceeds the write limit", effect_state="not_started",
+            error_code, "content exceeds the write limit", effect_state="not_started",
         ), result={"_data": {}}),
         **context,
     )
@@ -545,14 +546,15 @@ def test_out_of_range_write_can_be_resolved_by_smaller_same_path_write():
     assert progress.assess(decision).status == "complete"
 
 
-def test_no_effect_write_rejection_without_path_is_not_an_unresolved_failure():
+@pytest.mark.parametrize("error_code", ["out_of_range", "invalid_tool_arguments"])
+def test_no_effect_write_rejection_without_path_is_not_an_unresolved_failure(error_code):
     from orchestrator.computer_use_policy import MAX_WRITE_BYTES
 
     progress = GoalProgress("Create a playable game")
     progress.record(
         "malformed-write", "write_file", {"content": "x" * (MAX_WRITE_BYTES + 1)},
         SimpleNamespace(error=ComputerHostError(
-            "out_of_range", "path is required", effect_state="not_started",
+            error_code, "path is required", effect_state="not_started",
         ), result={"_data": {}}),
         agent_id="computer-use-1", computer_id="computer-1", computer_name="workspace",
         project_context={"project_id": "project-1"},
@@ -566,6 +568,7 @@ def test_no_effect_write_rejection_without_path_is_not_an_unresolved_failure():
 @pytest.mark.parametrize(("error_code", "effect_state", "success_path", "success_identity"), [
     ("permission_denied", "not_started", "/workspace/game.py", {}),
     ("out_of_range", None, "/workspace/game.py", {}),
+    ("invalid_tool_arguments", None, "/workspace/game.py", {}),
     ("out_of_range", "not_started", "/workspace/other.py", {}),
     ("out_of_range", "not_started", "/workspace/game.py", {"computer_id": "computer-2"}),
 ])

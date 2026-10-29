@@ -24,6 +24,7 @@ _BASE64_TEXT = re.compile(r"^[A-Za-z0-9+/]{80,}={0,2}$")
 _logger = logging.getLogger(__name__)
 _TERMINAL_JOB_STATES = frozenset({"exited", "timed_out", "interrupted"})
 _UNCERTAIN_CODES = frozenset({"uncertain", "outcome_uncertain", "effect_uncertain"})
+_NO_EFFECT_WRITE_REJECTION_CODES = frozenset({"out_of_range", "invalid_tool_arguments"})
 
 
 @dataclass(frozen=True)
@@ -147,7 +148,7 @@ class GoalProgress:
         failure_signature = json.dumps([tool_name, self._safe(args), self._safe(data), self._safe(error)], sort_keys=True, separators=(",", ":"))
         no_effect_malformed_write = (
             tool_name == "write_file" and outcome == "failure"
-            and error_code == "out_of_range" and effect_state == "not_started"
+            and error_code in _NO_EFFECT_WRITE_REJECTION_CODES and effect_state == "not_started"
             and not (isinstance(args.get("path"), str) and args["path"].strip())
         )
         if outcome == "failure":
@@ -436,7 +437,7 @@ class GoalProgress:
         file_effect = unresolved["tool"] in {"write_file", "delete_path", "read_file"}
         tool = unresolved["tool"]
         if (not unknown and tool == "write_file"
-                and unresolved.get("error_code") == "out_of_range"
+                and unresolved.get("error_code") in _NO_EFFECT_WRITE_REJECTION_CODES
                 and unresolved.get("effect_state") == "not_started"):
             from orchestrator.computer_use_policy import MAX_WRITE_BYTES
 

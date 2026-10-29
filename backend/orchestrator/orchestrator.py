@@ -16023,7 +16023,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         rejected_write = any(
                             item.get("tool") == "write_file"
                             and item.get("outcome") == "failure"
-                            and item.get("error_code") == "out_of_range"
+                            and item.get("error_code") in {"out_of_range", "invalid_tool_arguments"}
                             and item.get("effect_state") == "not_started"
                             and (
                                 not isinstance(item.get("arguments", {}).get("path"), str)
