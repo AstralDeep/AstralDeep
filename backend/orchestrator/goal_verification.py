@@ -14,6 +14,9 @@ Use observable milestones and bounded independent delegation when available, wit
 For runnable project work, use the selected project's granted local folder, inspect its existing state,
 and use that host's computer-use tools for local files and commands. A remote-compute machine is a different
 executor: do not send a local project path to it. Create needed parents with computer-use run_command before writes.
+Start setup commands from the validated primary_root. Confirm a subfolder exists before using it as cwd;
+create it from the existing root first. Missing paths or executables are repairable input issues: inspect the
+existing root, choose an installed executable, and correct the arguments before declaring execution unavailable.
 create an appropriate isolated environment (.venv for Python), declare and install needed dependencies,
 run meaningful tests, repair failures, and verify startup before claiming it works.
 A canvas code artifact or static code review alone is not a runnable local project.
@@ -49,6 +52,9 @@ Writing tests is different from running them. A static review or canvas artifact
 Apply criteria appropriate to the objective; informational answers can complete without tools.
 Return continue with concrete missing actions if available authorized tools can finish the work.
 Return blocked for a genuine permission, user-input, unavailable capability, or uncertain-effect boundary.
+Missing files, directories, dependencies, or executables do not by themselves prove a capability unavailable.
+Require recovery from the validated existing primary folder before accepting that conclusion; a successful
+scoped command there disproves a claim that all command execution is unavailable. Continue with path/setup repair.
 Do not invent additional goals or require tools for an already sufficient informational answer.
 Return exactly one JSON object, no markdown or surrounding text, with exactly these keys:
 {"status":"complete|continue|blocked","remaining":["concrete remaining action"],"reason":"short reason"}.

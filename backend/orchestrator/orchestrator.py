@@ -15758,6 +15758,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                     canonical_tool_name=lambda call: (tool_to_unqualified or {}).get(
                                         call.function.name, call.function.name),
                                 )
+                                del llm_msg.tool_calls[len(tool_results):]
                             elif len(llm_msg.tool_calls) == 1:
                                 tc = llm_msg.tool_calls[0]
                                 res = await self.execute_single_tool(websocket, tc, tool_to_agent, chat_id, user_id=user_id, tool_to_unqualified=tool_to_unqualified)

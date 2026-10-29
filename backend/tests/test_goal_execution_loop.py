@@ -154,3 +154,36 @@ async def test_final_review_repairs_malformed_output_without_new_tool_effect(goa
     assert reviews == 2
     o.execute_single_tool.assert_not_awaited()
     assert "Four." in await _last_assistant_text(o, chat_id, "seam-user")
+
+
+@pytest.mark.asyncio
+async def test_failed_first_batch_call_retains_only_executed_calls_in_provider_history(goal_orch, user_skills_disabled):
+    o = goal_orch
+    _register(o, "run_command")
+    chat_id, ws = await _chat(o)
+    plans = 0
+
+    async def provider(_socket, messages, tools_desc=None, **kwargs):
+        nonlocal plans
+        if kwargs.get("feature") == "goal_verification":
+            return _verdict("complete")
+        plans += 1
+        if plans == 1:
+            return _msg(tool_calls=[_tc("run_command", "parent"), _tc("run_command", "undispatched-child")]), _usage()
+        if plans == 2:
+            requests = [item for item in messages if getattr(item, "tool_calls", None)]
+            assert len(requests) == 1
+            assert [call.id for call in requests[0].tool_calls] == ["parent"]
+            results = [item for item in messages if isinstance(item, dict) and item.get("role") == "tool"]
+            assert [item["tool_call_id"] for item in results] == ["parent"]
+            return _msg(tool_calls=[_tc("run_command", "retry-parent")]), _usage()
+        return _msg(content="The requested check passed."), _usage()
+
+    o._call_llm = provider
+    o.execute_single_tool = AsyncMock(side_effect=[SimpleNamespace(
+        result={"_data": {"exit_code": status}}, error=None, ui_components=[], correlation_id=None,
+    ) for status in (1, 0)])
+    await o.handle_chat_message(ws, "Run and verify the requested check", chat_id, user_id="seam-user")
+    assert plans == 3
+    assert o.execute_single_tool.await_count == 2
+    assert "check passed" in await _last_assistant_text(o, chat_id, "seam-user")
