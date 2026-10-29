@@ -27,6 +27,7 @@ def clinical_module():
 
 @pytest.fixture
 async def host(orchestrator_factory, monkeypatch, tmp_path):
+    monkeypatch.setenv("AUDIT_HMAC_SECRET", "clinical-test-private-binding-" + uuid4().hex)
     for name in (
         "fhir",
         "clinical_note_extract",
@@ -1473,9 +1474,13 @@ async def test_current_safe_baseline_uses_public_store_truth_inside_an_active_tu
                 "fhir-1", prior_safe, marked_by="synthetic-admin"
             )
             if prior_ownership is None:
-                runtime = orch.runtime_composition.plane.runtime
-                with runtime.transaction() as tx:
-                    runtime.repositories.agents.remove_ownership(tx, agent_id="fhir-1")
+                current_ownership = registry.get_agent_ownership("fhir-1")
+                if current_ownership is not None:
+                    runtime = orch.runtime_composition.plane.runtime
+                    with runtime.transaction() as tx:
+                        runtime.repositories.agents.remove_ownership(
+                            tx, agent_id="fhir-1", owner_email=current_ownership["owner_email"]
+                        )
             else:
                 registry.set_agent_ownership(
                     "fhir-1",
