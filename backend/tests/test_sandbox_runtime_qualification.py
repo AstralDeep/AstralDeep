@@ -2162,12 +2162,28 @@ def locked_runtime_fixture(tmp_path, monkeypatch):
         )
     )
     monkeypatch.setattr(sq, "_manifest_path", lambda: directory / "manifest.json")
+    if shutil_which("npm") is None:
+        original = sq._which_or_none
+        monkeypatch.setattr(
+            sq, "_which_or_none",
+            lambda name, override: Path(TRUE_COMMAND) if name == "npm" else original(name, override),
+        )
     return directory, cache, pin
+
+
+def require_locked_install_tools():
+    missing = [name for name in ("node", "npm") if shutil_which(name) is None]
+    if missing:
+        message = "Actual offline installation requires " + ", ".join(missing)
+        if os.environ.get("ASTRAL_SRT_REQUIRE_QUALIFICATION") == "1":
+            pytest.fail(message)
+        pytest.skip(message)
 
 
 def test_locked_install_starts_cli_without_ambient_modules(
     locked_runtime_fixture, monkeypatch
 ):
+    require_locked_install_tools()
     _directory, cache, pin = locked_runtime_fixture
     monkeypatch.setenv("NODE_PATH", "/nonexistent-ambient-modules")
     runtime = sq.prepare_srt_runtime(
@@ -2266,6 +2282,7 @@ def test_locked_install_cleans_failed_installations(
         monkeypatch.setattr(sq.subprocess, "run", unavailable)
         expected = "locked_installation_failed"
     else:
+        require_locked_install_tools()
         monkeypatch.setattr(
             sq, "_run_probe_command", lambda *args, **kwargs: (False, "missing module")
         )
@@ -2285,6 +2302,7 @@ def test_locked_install_cleans_failed_installations(
 def test_locked_dependency_download_is_verified_before_install(
     locked_runtime_fixture, monkeypatch
 ):
+    require_locked_install_tools()
     _directory, cache, pin = locked_runtime_fixture
     payloads = {}
     for target in cache.glob("*.tgz"):

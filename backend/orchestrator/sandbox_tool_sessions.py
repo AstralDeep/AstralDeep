@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import shutil
 import stat
+import sys
 import tempfile
 import threading
 import time
@@ -789,13 +790,19 @@ class QualificationToolSessions:
     def _asset_identity(self, runtime):
         if type(runtime) is not sq.SrtRuntime:
             raise ToolDenied("sandbox_qualification_runtime_changed")
+        try:
+            effect_python = sq._effect_python()
+        except sq.SandboxQualificationError:
+            raise ToolDenied("sandbox_qualification_runtime_changed") from None
         paths = [
+            Path(sys.executable),
+            Path(effect_python),
             runtime.node_path,
             runtime.apply_seccomp_path,
             runtime.bwrap_path,
             runtime.socat_path,
         ]
-        for name in ("python3", "rg", "bash", "sh"):
+        for name in ("rg", "bash", "sh"):
             command = shutil.which(name)
             if command is None:
                 raise ToolDenied("sandbox_qualification_runtime_changed")

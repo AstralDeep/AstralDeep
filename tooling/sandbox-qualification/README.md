@@ -64,6 +64,11 @@ python -m orchestrator.sandbox_qualification --probe-only \
 Acquisition is a separate opt-in preparation step. Repeating the command without
 `--allow-artifact-download` must succeed entirely from verified cached tarballs. Ordinary
 CI does not download this graph or contact a third-party service.
+Actual offline-install integration cases require Node and npm; ordinary hosts without
+those optional primitives report explicit skips for those cases. Setting
+`ASTRAL_SRT_REQUIRE_QUALIFICATION=1` makes a missing tool a failure. Cache/lock denial
+unit cases stay independent of ambient npm, and the real native qualification runs
+the complete pinned installation before accepting any effect.
 
 ## Immutable filesystem and network policy
 

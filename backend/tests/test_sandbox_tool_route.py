@@ -531,6 +531,12 @@ def local_effect(monkeypatch, tmp_path):
         executor=executor,
         supervisor=fixtures.UnsandboxedEffectSupervisor(),
     )
+    original_which = route.shutil.which
+    monkeypatch.setattr(
+        route.shutil, "which",
+        lambda name, *args, **kwargs: fixtures.TRUE_COMMAND if name == "rg"
+        else original_which(name, *args, **kwargs),
+    )
     state.assets = service._asset_identity(runtime)
     state.binding = binding(runtime_id=state.runtime_id)
     service.orchestrator.lets_runtime = SimpleNamespace(
@@ -1408,3 +1414,27 @@ async def test_shutdown_fences_and_joins_late_preparation(
         release_thread.set()
         await asyncio.gather(prepare, shutdown, return_exceptions=True)
         await service.shutdown()
+
+
+def test_runtime_assets_bind_the_contained_interpreter(local_effect, monkeypatch, tmp_path):
+    from orchestrator import sandbox_qualification as sq
+
+    interpreter = tmp_path / "contained-python"
+    interpreter.write_bytes(b"first interpreter identity")
+    monkeypatch.setattr(sq, "_effect_python", lambda: str(interpreter))
+    state = local_effect.state
+    state.assets = local_effect.service._asset_identity(state.runtime)
+    interpreter.write_bytes(b"replacement interpreter identity")
+    with pytest.raises(route.ToolDenied, match="sandbox_qualification_runtime_changed"):
+        local_effect.service._verify_runtime(state)
+
+
+def test_runtime_assets_refuse_a_missing_contained_interpreter(local_effect, monkeypatch):
+    from orchestrator import sandbox_qualification as sq
+
+    def missing():
+        raise sq.SandboxQualificationError("effect_python_unavailable")
+
+    monkeypatch.setattr(sq, "_effect_python", missing)
+    with pytest.raises(route.ToolDenied, match="sandbox_qualification_runtime_changed"):
+        local_effect.service._asset_identity(local_effect.runtime)

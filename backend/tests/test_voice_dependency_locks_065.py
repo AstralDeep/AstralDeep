@@ -62,6 +62,8 @@ FEATURE_075_DEPENDENCY_AUTHORITIES = {
     ),
 }
 CURRENT_DEPENDENCY_AUTHORITIES = {
+    "tooling/sandbox-qualification/package.json": "eaaffe389d93fa5368216ea451d94e4c6abb8c9bcd7b81266508c6c86f56b3a3",
+    "tooling/sandbox-qualification/package-lock.json": "5b6925032bd3fbda37e7847037a2feb04b485afb7a66a26da57d6c65b7f6664b",
     **FEATURE_075_DEPENDENCY_AUTHORITIES,
     "backend/security_benchmark/requirements-eval.txt": "97a1d75fd45c83331e33e7029f8f23a12870593b67c7bbc8e4470d6baf2affee",
     "backend/requirements-document-worker.txt": "28383cb135800b5415ca4c9504ea83e1514fa3e6f1d89257ab06fd5e8116508a",
