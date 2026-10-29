@@ -58,4 +58,7 @@ def test_javascript_test_command_and_http_startup_are_bounded_and_local():
     assert "127.0.0.1:4173" in argv[2]
     assert "20000" in argv[2]
     assert "SIGTERM" in argv[2]
+    assert "detached:true" in argv[2]
+    assert "process.kill(-p.pid" in argv[2]
+    assert "r.status>=200&&r.status<400" in argv[2]
     assert _javascript_http_startup_argv("npm", {"test": "vitest"}) is None
