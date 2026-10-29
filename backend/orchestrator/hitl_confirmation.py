@@ -35,7 +35,7 @@ POINTER_REFUSAL = "Call list_windows and pass hwnd for the target window."
 CONTROL_VERBS = frozenset({"interrupt_command"})
 CONTINUATION_TEXT = ("The exact approved action completed. Continue the remaining original task using current "
                      "observations; any further effects still require their ordinary authorization and review.")
-REMOTE_REVIEWED_VERBS = frozenset({"run_command"})
+REMOTE_REVIEWED_VERBS = frozenset({"run_command", "write_file", "delete_path"})
 _BUNDLE_ID = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
 
 
@@ -76,6 +76,12 @@ class PendingCall:
     grant_offers: tuple = ()
     grant_id: str | None = None
     approval_source: str | None = None
+    project_origin: object = None
+    review_host: object = None
+    review_generation: int = 0
+    review_connection: object = None
+    review_connection_generation: object = None
+    review_accepted: bool = False
 
 
 @dataclass(frozen=True)
@@ -148,11 +154,28 @@ def _attended(orch, websocket, owner: str) -> bool:
 def _current_session(orch, websocket, call: PendingCall, *, allow_local_pause=False) -> bool:
     from orchestrator.remote_confirmation import computer_approval_current
 
+    from orchestrator.project_authority import origin_current
+    if call.review_host is not None:
+        if (orch.computer_hosts.get(call.owner, call.review_host.host_id) is not call.review_host
+                or call.review_connection is None
+                or getattr(orch, "_connection_contexts", {}).get(id(websocket)) is not call.review_connection
+                or not call.review_connection.registered or call.review_connection.closing
+                or call.review_connection.connection_generation != call.review_connection_generation
+                or not call.review_accepted and call.review_generation !=
+                getattr(orch.computer_sessions, "review_generations", {}).get((call.owner, call.review_host.host_id), 0)):
+            return False
+    if call.project_origin is not None and not origin_current(orch, call.project_origin):
+        return False
+    if call.approval_source in {"bypass", "project_grant"} and not bypass_covers(
+            orch, websocket, call.owner, call.chat, call.agent, call.tool,
+            json.loads(call.arguments), call.risks):
+        return False
     return (_attended(orch, websocket, call.owner)
             and (call.websocket is None or call.websocket is websocket)
             and call.cancellation is not None
             and cancellation_witness(orch, websocket, call.owner, call.chat) is call.cancellation
-            and getattr(orch, "_ws_active_chat", {}).get(id(websocket)) == call.chat
+            and (call.project_origin is not None and call.approval_source in {"bypass", "project_grant"}
+                 or getattr(orch, "_ws_active_chat", {}).get(id(websocket)) == call.chat)
             and call.expires > time.monotonic()
             and not getattr(orch, "cancelled_sessions", {}).get(id(websocket), False)
             and (call.task is None or _task(orch, websocket, call.owner, call.chat) is call.task)
@@ -248,6 +271,14 @@ def approved_call(orch, owner, chat, agent, tool) -> bool:
             == (owner, chat, agent, tool))
 
 
+def computer_presentation_source(orch, owner, chat, tool):
+    approval = _APPROVAL.get()
+    if (not approved_call(orch, owner, chat, "computer-use-1", tool)
+            or not approval.consumed or not approval.effect_started):
+        return None
+    return approval.call.approval_source
+
+
 def consume_terminal_input(orch, session, tool, args) -> bool:
     approval = _APPROVAL.get()
     if (not isinstance(approval, Approval) or approval.orchestrator is not orch or not approval.consumed
@@ -325,7 +356,8 @@ async def _audit(orch, call: PendingCall, transition: str) -> None:
             event_class="agent_tool_call", action_type=f"hitl.{transition}",
             description=f"{transition}: {call.tool}", correlation_id=correlation,
             conversation_id=call.chat,
-            outcome="interrupted" if transition == "effect_uncertain" else "success",
+            outcome=("interrupted" if transition == "effect_uncertain" else
+                     "failure" if transition == "effect_failed_no_effect" else "success"),
             inputs_meta={"agent_id": call.agent, "tool": call.tool,
                          "risks": list(call.risks),
                          "arguments_sha256": hashlib.sha256(
@@ -356,10 +388,11 @@ async def audit_pre_effect(orch, call: PendingCall) -> None:
     await _audit(orch, call, "effect_started")
 
 
-async def audit_effect_outcome(orch, call: PendingCall, *, uncertain: bool) -> None:
+async def audit_effect_outcome(orch, call: PendingCall, *, uncertain: bool, no_effect: bool = False) -> None:
     if "source_bound" not in call.risks:
         raise ValueError("source-bound approval required")
-    await _audit(orch, call, "effect_uncertain" if uncertain else "effect_response_success")
+    await _audit(orch, call, "effect_failed_no_effect" if no_effect else
+                 "effect_uncertain" if uncertain else "effect_response_success")
 
 
 def _surface_confirmations(orch) -> dict[str, SurfaceConfirmation]:
@@ -414,8 +447,11 @@ async def consume_surface_confirmation(orch, websocket, owner, action, target, c
     return True
 
 
-def _refused(message: str) -> MCPResponse:
-    return MCPResponse(error={"message": message, "retryable": False})
+def _refused(message: str, *, code: str | None = None) -> MCPResponse:
+    error = {"message": message, "retryable": False}
+    if code is not None:
+        error["code"] = code
+    return MCPResponse(error=error)
 
 
 def _input_request(authority, tool, args) -> GrantRequest | None:
@@ -452,7 +488,8 @@ def _input_request(authority, tool, args) -> GrantRequest | None:
 def _command_request(authority, args) -> GrantRequest:
     from orchestrator import computer_use_policy as policy
 
-    grant = policy.command_grant(args, authority.host.workspace_roots)
+    roots = authority.project_origin.roots if authority.project_origin else authority.host.workspace_roots
+    grant = policy.command_grant(args, roots)
     argv = args.get("argv")
     first = argv[0] if isinstance(argv, list) and argv and isinstance(argv[0], str) else ""
     target = {"argv0": grant["argv0"] if grant else first, "cwd": args.get("cwd"), "destructive": grant is None}
@@ -568,50 +605,131 @@ async def granted_dispatch(orch, websocket, owner, chat, agent, tool, args, risk
     return await _dispatch_approved(orch, websocket, call)
 
 
-def bypass_covers(orch, websocket, owner, chat, agent, tool, args, risks) -> bool:
+def consent_decision(orch, websocket, owner, chat, agent, tool, args, risks) -> tuple[str, str | None]:
     from orchestrator import computer_use_policy as policy
     from orchestrator.computer_hosts import ComputerHostError
     from orchestrator.hitl import CROSS_PRINCIPAL, UNTRUSTED_TAINTED
-    from orchestrator.remote_confirmation import computer_card_host
+    from orchestrator.remote_confirmation import computer_card_host, capture_computer_approval
 
     sessions = getattr(orch, "computer_sessions", None)
-    if (agent != policy.AGENT_ID or tool not in policy.BYPASS_VERBS or not isinstance(args, dict)
-            or sessions is None or not _attended(orch, websocket, owner)
-            or {"terminal_input", CROSS_PRINCIPAL, UNTRUSTED_TAINTED} & set(risks)):
-        return False
+    if agent != policy.AGENT_ID or sessions is None or not isinstance(args, dict):
+        return "review", None
     try:
         host = computer_card_host(orch, owner, chat, args)
     except ComputerHostError:
-        return False
-    if not sessions.bypass_on(owner, host.host_id) or _tainted_sink(orch, chat, agent, tool, args):
-        return False
+        return "review", None
     session = sessions.live_for_host(owner, host.host_id)
+    if (session is not None and session.state == "paused" and tool not in {"end_session", "wait", "list_computers"}
+            and (session.pause_reason != "approval_not_completed"
+                 or capture_computer_approval(orch, websocket, owner, chat, args) is None)):
+        return "refuse", "This Mac is paused. Resume it on the Mac before continuing."
+    from orchestrator.project_authority import FILE_VERBS, PROJECT_CONSENT_VERBS, current_origin
+    project_standing = False
+    if getattr(host, "project_mode", False):
+        origin = current_origin(orch, owner, chat, host)
+        if origin is None:
+            return "refuse", "The origin project's authority is unavailable. Reconnect this Mac."
+        if tool in PROJECT_CONSENT_VERBS:
+            if not origin.roots and tool in FILE_VERBS:
+                return "refuse", "Choose folders for this project on this Mac before using file or command tools."
+            project_standing = bool(origin.roots)
+    if not project_standing and not sessions.bypass_on(owner, host.host_id):
+        approval = _APPROVAL.get()
+        if (isinstance(approval, Approval) and approval.orchestrator is orch
+                and approval.call.approval_source == "bypass"
+                and (approval.call.owner, approval.call.chat, approval.call.agent, approval.call.tool)
+                == (owner, chat, agent, tool)):
+            return "refuse", "Bypass authority was revoked. Nothing was run."
+        return "review", None
+    if (tool not in policy.BYPASS_VERBS or not _attended(orch, websocket, owner)
+            or {CROSS_PRINCIPAL, UNTRUSTED_TAINTED} & set(risks) or _tainted_sink(orch, chat, agent, tool, args)):
+        return "refuse", "This action is outside this Mac's current authority. Choose an allowed target."
     hwnd = args.get("hwnd")
     entry = session.window_cache.get(hwnd) if session is not None and type(hwnd) is int else None
-    return not policy.bypass_floor(tool, args, entry["bundle_id"] if entry else None)
+    if policy.bypass_floor(tool, args, entry["bundle_id"] if entry else None):
+        return "refuse", "This action requires an allowed app or a current window target. List windows and choose an allowed target."
+    return "standing", None
+
+
+def bypass_refusal(orch, websocket, owner, chat, agent, tool, args, risks) -> str | None:
+    decision, reason = consent_decision(orch, websocket, owner, chat, agent, tool, args, risks)
+    return reason if decision == "refuse" else None
+
+
+def bypass_covers(orch, websocket, owner, chat, agent, tool, args, risks) -> bool:
+    return consent_decision(orch, websocket, owner, chat, agent, tool, args, risks)[0] == "standing"
+
+
+def standing_source(orch, owner, chat, host, tool):
+    from orchestrator.project_authority import PROJECT_CONSENT_VERBS, current_origin
+    origin = current_origin(orch, owner, chat, host)
+    return "project_grant" if origin is not None and origin.roots and tool in PROJECT_CONSENT_VERBS else "bypass"
 
 
 async def bypass_dispatch(orch, websocket, owner, chat, agent, tool, args, risks, *, authority=None):
-    from orchestrator.remote_confirmation import source_review_proposal
+    from orchestrator.remote_confirmation import (source_review_proposal, computer_approval_current,
+                                                 capture_computer_approval, computer_card_host)
 
     if approved_call(orch, owner, chat, agent, tool) or not bypass_covers(
             orch, websocket, owner, chat, agent, tool, args, risks):
         return None
+    host = computer_card_host(orch, owner, chat, args)
+    source = standing_source(orch, owner, chat, host, tool)
+    from orchestrator.project_authority import current_origin
+    project_origin = current_origin(orch, owner, chat, host)
+    if authority is None:
+        if orch.computer_sessions.live_for_host(owner, host.host_id) is not None:
+            authority = capture_computer_approval(orch, websocket, owner, chat, args, standing=True)
+            if authority is None:
+                return _refused("The computer session no longer belongs to this conversation. Re-request it on the Mac.")
+    if authority is not None and authority.session.state == "paused":
+        if (authority.session.pause_reason != "approval_not_completed"
+                or not computer_approval_current(orch, websocket, authority, allow_local_pause=True)):
+            return _refused("The paused session lost its recovery authority. Resume it on the Mac.")
+        generation = authority.session.authority_generation + 1
+        await orch.computer_sessions.resume(authority.session)
+        authority = replace(authority, generation=generation)
     call = PendingCall(str(uuid.uuid4()), owner, chat, agent, tool, _arguments(args), tuple(sorted(risks)),
                        time.monotonic() + TTL_SECONDS, _task(orch, websocket, owner, chat), authority,
                        source_review_proposal(orch, owner, chat, agent, tool, args), websocket,
-                       cancellation_witness(orch, websocket, owner, chat, create=True), approval_source="bypass")
+                       cancellation_witness(orch, websocket, owner, chat, create=True), approval_source=source,
+                       project_origin=project_origin)
     if not _current_session(orch, websocket, call):
-        return None
+        return _refused("The computer authority changed before dispatch. Reconnect the Mac and retry.")
     try:
-        await _audit(orch, call, "bypass")
+        await _audit(orch, call, source)
     except Exception:
         return _refused("Action audit is unavailable. The action was not run.")
     response = await _dispatch_approved(orch, websocket, call)
     data = response.result.get("_data") if isinstance(response.result, dict) else None
     if isinstance(data, dict):
-        response.result = {**response.result, "_data": {**data, "approval_source": "bypass"}}
+        response.result = {**response.result, "_data": {**data, "approval_source": source}}
     return response
+
+
+async def project_read_approval(orch, websocket, owner, chat, agent, tool, args):
+    from orchestrator.project_authority import FILE_VERBS, current_origin
+    from orchestrator.remote_confirmation import computer_card_host, capture_computer_approval
+
+    if agent != "computer-use-1" or tool not in FILE_VERBS:
+        return None
+    host = computer_card_host(orch, owner, chat, args)
+    if not getattr(host, "project_mode", False):
+        return None
+    origin = current_origin(orch, owner, chat, host)
+    if origin is None:
+        raise RuntimeError("project authority unavailable")
+    origin.require_grant()
+    authority = capture_computer_approval(orch, websocket, owner, chat, args, standing=True)
+    call = PendingCall(str(uuid.uuid4()), owner, chat, agent, tool, _arguments(args), ("source_bound",),
+                       time.monotonic() + TTL_SECONDS, _task(orch, websocket, owner, chat), authority,
+                       None, websocket, cancellation_witness(orch, websocket, owner, chat, create=True),
+                       approval_source="project_grant", project_origin=origin)
+    if authority is None or not _current_session(orch, websocket, call):
+        raise RuntimeError("project session unavailable")
+    await _audit(orch, call, "project_grant")
+    await audit_pre_effect(orch, call)
+    return call
 
 
 def _consumed_command_review(orch, owner, chat, tool, args, proposal_id) -> bool:
@@ -693,7 +811,7 @@ def _review_summary(args: dict) -> str:
     return description
 
 
-def _review_arguments(args: dict, *, trusted_identifiers: dict | None = None) -> tuple[str, bool]:
+def _review_arguments(args: dict, *, trusted_identifiers: dict | None = None, project_targets=frozenset()) -> tuple[str, bool]:
     from orchestrator.hitl import _SENSITIVE_INPUT, sensitive_url
     from personalization.phi_gate import get_phi_gate
     from shared.phi_redactor import PHI_FIELD_PATTERNS, redact
@@ -701,9 +819,10 @@ def _review_arguments(args: dict, *, trusted_identifiers: dict | None = None) ->
     reviewable = True
     visible_strings = []
 
-    def walk(value, key="", trusted=False):
+    def walk(value, key="", trusted=False, *, top_level=False):
         nonlocal reviewable
-        destination = _routing_address(key, value)
+        destination = (_routing_address(key, value) or
+                       top_level and isinstance(value, str) and (key, value) in project_targets)
         sensitive_key = _SECRET_MARKERS.search(key) or any(
             marker in key.lower() for marker in ("password", "credential", "authorization", "cookie", "private_key"))
         if sensitive_key or (not destination and key not in {"url", "filename", "file_name", "hostname"}
@@ -712,8 +831,8 @@ def _review_arguments(args: dict, *, trusted_identifiers: dict | None = None) ->
             return "[REDACTED — review unavailable]"
         if isinstance(value, dict):
             return {name: walk(child, name, value is args and isinstance(child, str)
-                               and (trusted_identifiers or {}).get(name) == child)
-                    for name, child in value.items()}
+                               and (trusted_identifiers or {}).get(name) == child,
+                               top_level=value is args) for name, child in value.items()}
         if isinstance(value, list):
             return [walk(child, key) for child in value]
         if isinstance(value, str):
@@ -773,6 +892,9 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
                 return None
         if not chat or not _attended(orch, websocket, owner):
             return _refused("Confirmation requires an interactive signed-in conversation. Reissue the action there.")
+        from orchestrator.remote_confirmation import capture_manual_review, review_publication_refusal
+
+        publication = capture_manual_review(orch, websocket, owner, chat, agent, tool, args)
         try:
             args = json.loads(encoded)
             if agent != "terminal-shell-1":
@@ -793,13 +915,24 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
                     trusted_identifiers["session_id"] = args.get("session_id")
             except Exception:
                 return _refused("Review unavailable: terminal authority changed. Reissue the action.")
-        preview, reviewable = await asyncio.to_thread(_review_arguments, shown,
-                                                    trusted_identifiers=trusted_identifiers)
+        project_targets = frozenset()
+        if agent == "computer-use-1" and consent_decision(orch, websocket, owner, chat, agent, tool, args, risks)[0] == "standing":
+            from orchestrator.project_authority import project_review_targets
+            from orchestrator.remote_confirmation import computer_card_host
+
+            host = computer_card_host(orch, owner, chat, args)
+            project_targets = project_review_targets(orch, owner, chat, host, tool, args)
+        preview, reviewable = await asyncio.to_thread(
+            _review_arguments, shown, trusted_identifiers=trusted_identifiers, project_targets=project_targets)
+        obsolete = review_publication_refusal(orch, websocket, publication)
+        if obsolete is not None:
+            return _refused(obsolete[0], code="COMPUTER_REVIEW_CHANGED")
         if not reviewable:
             return _refused("Review unavailable: this action includes sensitive or oversized arguments that cannot be "
                             "shown completely. Remove private identifiers or credentials, or use a smaller action.")
         if (not _attended(orch, websocket, owner)
-                or getattr(orch, "_ws_active_chat", {}).get(id(websocket)) != chat
+                or (getattr(orch, "_ws_active_chat", {}).get(id(websocket)) != chat
+                    and consent_decision(orch, websocket, owner, chat, agent, tool, args, risks)[0] != "standing")
                 or cancellation_witness(orch, websocket, owner, chat) is not witness):
             return _refused("This confirmation is no longer valid for the active session.")
         pending = _pending(orch)
@@ -816,8 +949,12 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
                 card_host = computer_card_host(orch, owner, chat, args)
             except ComputerHostError as exc:
                 return _refused(f"{exc.code}: {exc.message}")
-        if agent == "computer-use-1" and tool in HOST_VERBS | {"confirm_action"}:
-            computer = capture_computer_approval(orch, websocket, owner, chat, args)
+            refusal = bypass_refusal(orch, websocket, owner, chat, agent, tool, args, risks)
+            if refusal is not None:
+                return _refused(refusal)
+        if agent == "computer-use-1" and tool in HOST_VERBS | {"confirm_action", "resume_session"}:
+            computer = capture_computer_approval(orch, websocket, owner, chat, args,
+                standing=consent_decision(orch, websocket, owner, chat, agent, tool, args, risks)[0] == "standing")
             if computer is None:
                 return _refused("The computer session is no longer current. Reissue the action in its active conversation.")
             hwnd = args.get("hwnd")
@@ -847,18 +984,29 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             call = PendingCall(str(uuid.uuid4()), owner, chat, agent, tool,
                                encoded, tuple(sorted(risks)), time.monotonic() + TTL_SECONDS,
                                task, computer, remote_proposal,
-                               websocket, witness, grant_offers=offers)
+                               websocket, witness, grant_offers=offers,
+                               review_host=card_host,
+                               review_generation=getattr(orch.computer_sessions, "review_generations", {}).get(
+                                   (owner, card_host.host_id), 0) if card_host is not None else 0,
+                               review_connection=getattr(orch, "_connection_contexts", {}).get(id(websocket)))
+            if card_host is not None:
+                from orchestrator.project_authority import current_origin
+                call = replace(call, project_origin=current_origin(orch, owner, chat, card_host),
+                               review_connection_generation=getattr(call.review_connection, "connection_generation", None))
             pending[call.request_id] = call
             try:
                 await _audit(orch, call, "proposed")
             except Exception:
                 pending.pop(call.request_id, None)
                 return _refused("Action audit is unavailable. The action was not proposed.")
-        if not _current_session(orch, websocket, call):
+        if not _current_session(orch, websocket, call, allow_local_pause=True):
             getattr(orch, "_hitl_pending_calls", {}).pop(call.request_id, None)
             return _refused("This confirmation is no longer valid for the active conversation.")
         summary = confirmation_request(tool, list(call.risks)).summary
         context = await _computer_context(call.computer_authority, tool, args) if call.computer_authority else []
+        if pending.get(call.request_id) is not call or not _current_session(orch, websocket, call, allow_local_pause=True):
+            pending.pop(call.request_id, None)
+            return _refused("This confirmation changed during preparation. Reissue the action.", code="COMPUTER_REVIEW_CHANGED")
         grant = [Button(label=offer.label, action="authorize_action", variant="secondary",
                         payload={"hitl_request_id": call.request_id, "decision": "grant_task",
                                  "grant_scope": offer.scope["kind"]})
@@ -879,6 +1027,8 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             Button(label="Decline", action="authorize_action", variant="secondary",
                    payload={"hitl_request_id": call.request_id, "decision": "decline"}),
         ]).to_dict()
+        if agent == "computer-use-1" and card_host is not None:
+            card["computer_host_id"] = card_host.host_id
         if agent == "computer-use-1" and tool == "write_file":
             from orchestrator.write_review import review_components
 
@@ -897,6 +1047,9 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             card["content"].insert(index, Text(content="This decision explicitly resumes this Mac session. Any focus change "
                 "is limited to the reviewed target. Current policy and privacy checks still apply before the exact action.",
                 variant="caption").to_dict())
+        if pending.get(call.request_id) is not call or not _current_session(orch, websocket, call, allow_local_pause=True):
+            pending.pop(call.request_id, None)
+            return _refused("This confirmation changed during preparation. Reissue the action.", code="COMPUTER_REVIEW_CHANGED")
         return MCPResponse(result={"_data": {"status": "confirmation_required",
                            "message": "An approval card is available. End this turn and wait for the user's decision; "
                                       "do not retry the action or ask again in text."}}, ui_components=[card])
@@ -990,7 +1143,13 @@ def turn_effect_cancelled(orch) -> bool:
     return bool(callable(take) and take())
 
 
-async def _finish_card(orch, websocket, call, title, message, components=None):
+async def _finish_card(orch, websocket, call, title, message, components=None, *, notify=True):
+    from orchestrator.approval_receipts import note
+    state = {"Outcome uncertain": "uncertain", "Cancelled": "uncertain", "Unavailable": "refused",
+             "Failed": "error", "Blocked": "refused", "Review changed": "refused",
+             "Further review needed": "refused"}.get(title)
+    if state is not None:
+        note(orch, call.request_id, state, message)
     try:
         component = Card(id=f"hitl_{call.request_id}", title=title, content=[Text(content=message)]).to_dict()
         cid = orch.workspace.resolve_identity(component)
@@ -1006,13 +1165,16 @@ async def _finish_card(orch, websocket, call, title, message, components=None):
             await orch.send_ui_upsert(None, call.chat, call.owner, ops)
     except Exception:
         logger.debug("HITL card replacement unavailable", exc_info=True)
-    await orch.send_ui_render(websocket, [Alert(message=message, variant="info").to_dict()], target="chat")
+    if notify:
+        await orch.send_ui_render(websocket, [Alert(message=message, variant="info").to_dict()], target="chat")
 
 
 async def handle_decision(orch, websocket, owner, payload, *, admission_check=None) -> None:
     held = []
     try:
-        await _handle_decision(orch, websocket, owner, payload, admission_check, held)
+        from orchestrator.approval_receipts import run
+        await run(orch, websocket, owner, payload, "hitl_request_id",
+                  lambda: _handle_decision(orch, websocket, owner, payload, admission_check, held))
     finally:
         for origin in held:
             origin.close()
@@ -1029,6 +1191,12 @@ async def _handle_decision(orch, websocket, owner, payload, admission_check, hel
     pending = _pending(orch)
     request_id = payload.get("hitl_request_id") if isinstance(payload, dict) else None
     call = pending.get(request_id) if isinstance(request_id, str) else None
+    if call is not None and call.owner == owner and call.websocket is websocket:
+        from orchestrator.approval_receipts import bind_origin
+        bind_origin(orch, request_id, call.chat)
+    if call is None:
+        from orchestrator.approval_receipts import note
+        note(orch, request_id, "expired", "This confirmation expired or was already handled.")
     resume_requested = isinstance(payload, dict) and payload.get("decision") == "approve_and_resume"
     grant_requested = isinstance(payload, dict) and payload.get("decision") == "grant_task"
     offer = _chosen_offer(call, payload) if grant_requested and call is not None else None
@@ -1099,6 +1267,8 @@ async def _handle_decision(orch, websocket, owner, payload, admission_check, hel
         return
     if payload["decision"] == "decline":
         await _audit(orch, call, "declined")
+        from orchestrator.approval_receipts import note
+        note(orch, call.request_id, "cancelled", "Declined; the action was not run.")
         await _finish_card(orch, websocket, call, "Declined", "Declined — the action was not run.")
         return
     try:
@@ -1128,6 +1298,16 @@ async def _handle_decision(orch, websocket, owner, payload, admission_check, hel
             await _finish_card(orch, websocket, call, "Unavailable", "The local resume authority changed. Reissue the action.")
             return
         call = replace(call, computer_authority=authority)
+    if call.computer_authority is not None:
+        from orchestrator.remote_confirmation import accept_computer_approval
+        accepted = accept_computer_approval(orch, websocket, call.computer_authority)
+        if accepted is None:
+            await _finish_card(orch, websocket, call, "Unavailable", "Computer approval mode or authority changed. Reissue the action.")
+            return
+        call = replace(call, computer_authority=accepted)
+    call = replace(call, review_accepted=True)
+    from orchestrator.approval_receipts import note
+    note(orch, call.request_id, "accepted", "Approval accepted. The action remains subject to effect-time checks.")
     await announce_turn(orch, websocket, "executing", f"Running: {call.tool}...")
     if not await _decided_effect(orch, websocket, owner, call, resume_requested, origin, guided, held):
         await announce_turn(orch, websocket, "done")

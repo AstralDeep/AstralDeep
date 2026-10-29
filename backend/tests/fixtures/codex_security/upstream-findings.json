@@ -1,0 +1,995 @@
+{
+  "documentType": "codex-security.findings",
+  "findings": [
+    {
+      "attackPath": {
+        "assumptions": [
+          "The fictional example exposes this operation to untrusted input."
+        ],
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example export route interpolates an untrusted filename into a shell command, allowing shell metacharacters to execute another command."
+      },
+      "codeEvidence": [
+        {
+          "code": "exec(`convert ${request.body.filename} output.pdf`);",
+          "explanation": "Illustrative fixture code; this file is not read from or written to the repository.",
+          "id": "example-sink",
+          "label": "Synthetic vulnerable operation",
+          "language": "typescript",
+          "path": "mock/command-injection.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Deterministic fixture; not a conclusion about the scanned repository."
+      },
+      "extensions": {
+        "mock": true,
+        "mockGroup": "command-injection",
+        "mockRecurrence": "shared"
+      },
+      "findingId": "csf_1cbd6fea53e3e0c9175d7997",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:c6eeb55acbe345c6c949d73a06b87ed93a6fe5a174f7b6f5ede6d0c769b88716"
+      },
+      "identity": {
+        "anchor": "command-injection"
+      },
+      "locations": [
+        {
+          "endLine": 10,
+          "path": "mock/command-injection.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "occurrenceId": "occ_4e593b27675e098649d2a03e",
+      "preventiveControls": [
+        "Pass the filename as a separate argument to a process API that does not invoke a shell."
+      ],
+      "provenance": {
+        "source": "mock"
+      },
+      "remediation": "Pass the filename as a separate argument to a process API that does not invoke a shell.",
+      "remediationTests": [
+        "In the example application, verify the fix: Pass the filename as a separate argument to a process API that does not invoke a shell."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example export route interpolates an untrusted filename into a shell command, allowing shell metacharacters to execute another command."
+      },
+      "ruleId": "mock.command-injection",
+      "severity": {
+        "level": "critical"
+      },
+      "summary": "Synthetic test finding. The example export route interpolates an untrusted filename into a shell command, allowing shell metacharacters to execute another command.",
+      "taxonomy": {
+        "category": "command-injection",
+        "cwe": [
+          "CWE-78"
+        ]
+      },
+      "title": "[Mock] Export filename reaches a shell command",
+      "validation": {
+        "method": "synthetic",
+        "status": "mock",
+        "summary": "Fixture only; no code was analyzed or executed."
+      }
+    },
+    {
+      "attackPath": {
+        "assumptions": [
+          "The fictional example exposes this operation to untrusted input."
+        ],
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example archive extractor writes a supplied entry name without checking containment, allowing a parent-directory entry to overwrite a file outside the extraction directory."
+      },
+      "codeEvidence": [
+        {
+          "code": "await writeFile(join(outputDirectory, entry.name), entry.contents);",
+          "explanation": "Illustrative fixture code; this file is not read from or written to the repository.",
+          "id": "example-sink",
+          "label": "Synthetic vulnerable operation",
+          "language": "typescript",
+          "path": "mock/path-traversal.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Deterministic fixture; not a conclusion about the scanned repository."
+      },
+      "extensions": {
+        "mock": true,
+        "mockGroup": "path-traversal",
+        "mockRecurrence": "shared"
+      },
+      "findingId": "csf_b6c2eb78bb806974a2435a6a",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:a3dc3a2d9135f6bf1c15867252d0d28f2b1341a569f5e84a1dc8a8fd808cd081"
+      },
+      "identity": {
+        "anchor": "path-traversal"
+      },
+      "locations": [
+        {
+          "endLine": 10,
+          "path": "mock/path-traversal.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "occurrenceId": "occ_07cce956dd67708ffb411c99",
+      "preventiveControls": [
+        "Resolve each entry destination and reject paths outside the extraction directory before writing."
+      ],
+      "provenance": {
+        "source": "mock"
+      },
+      "remediation": "Resolve each entry destination and reject paths outside the extraction directory before writing.",
+      "remediationTests": [
+        "In the example application, verify the fix: Resolve each entry destination and reject paths outside the extraction directory before writing."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example archive extractor writes a supplied entry name without checking containment, allowing a parent-directory entry to overwrite a file outside the extraction directory."
+      },
+      "ruleId": "mock.path-traversal",
+      "severity": {
+        "level": "high"
+      },
+      "summary": "Synthetic test finding. The example archive extractor writes a supplied entry name without checking containment, allowing a parent-directory entry to overwrite a file outside the extraction directory.",
+      "taxonomy": {
+        "category": "path-traversal",
+        "cwe": [
+          "CWE-22"
+        ]
+      },
+      "title": "[Mock] Archive entry escapes the extraction directory",
+      "validation": {
+        "method": "synthetic",
+        "status": "mock",
+        "summary": "Fixture only; no code was analyzed or executed."
+      }
+    },
+    {
+      "attackPath": {
+        "assumptions": [
+          "The fictional example exposes this operation to untrusted input."
+        ],
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example download handler accepts a document ID from any signed-in account and returns the document without checking that the account owns it."
+      },
+      "codeEvidence": [
+        {
+          "code": "response.json(await documents.findById(request.params.id));",
+          "explanation": "Illustrative fixture code; this file is not read from or written to the repository.",
+          "id": "example-sink",
+          "label": "Synthetic vulnerable operation",
+          "language": "typescript",
+          "path": "mock/missing-authorization.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Deterministic fixture; not a conclusion about the scanned repository."
+      },
+      "extensions": {
+        "mock": true,
+        "mockGroup": "missing-authorization",
+        "mockRecurrence": "shared"
+      },
+      "findingId": "csf_3a5872e338273017aaa8f1c6",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:a33a630da8dd0d0d303feee6bf3471283f836759abe9691c8fd7c82fd254507f"
+      },
+      "identity": {
+        "anchor": "missing-authorization"
+      },
+      "locations": [
+        {
+          "endLine": 10,
+          "path": "mock/missing-authorization.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "occurrenceId": "occ_fefe36b9c8c6e1c11cc0a985",
+      "preventiveControls": [
+        "Restrict document lookup to records the authenticated account is authorized to read."
+      ],
+      "provenance": {
+        "source": "mock"
+      },
+      "remediation": "Restrict document lookup to records the authenticated account is authorized to read.",
+      "remediationTests": [
+        "In the example application, verify the fix: Restrict document lookup to records the authenticated account is authorized to read."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example download handler accepts a document ID from any signed-in account and returns the document without checking that the account owns it."
+      },
+      "ruleId": "mock.missing-authorization",
+      "severity": {
+        "level": "high"
+      },
+      "summary": "Synthetic test finding. The example download handler accepts a document ID from any signed-in account and returns the document without checking that the account owns it.",
+      "taxonomy": {
+        "category": "missing-authorization",
+        "cwe": [
+          "CWE-862"
+        ]
+      },
+      "title": "[Mock] Document download omits the ownership check",
+      "validation": {
+        "method": "synthetic",
+        "status": "mock",
+        "summary": "Fixture only; no code was analyzed or executed."
+      }
+    },
+    {
+      "attackPath": {
+        "assumptions": [
+          "The fictional example exposes this operation to untrusted input."
+        ],
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example preview inserts a stored comment directly into HTML, allowing a comment author to execute script in another viewer's browser."
+      },
+      "codeEvidence": [
+        {
+          "code": "preview.innerHTML = comment.body;",
+          "explanation": "Illustrative fixture code; this file is not read from or written to the repository.",
+          "id": "example-sink",
+          "label": "Synthetic vulnerable operation",
+          "language": "typescript",
+          "path": "mock/stored-xss.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Deterministic fixture; not a conclusion about the scanned repository."
+      },
+      "extensions": {
+        "mock": true,
+        "mockGroup": "stored-xss",
+        "mockRecurrence": "shared"
+      },
+      "findingId": "csf_ab2502e138be57685ea6fe84",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:ca019fd45b356aa727c6ba6b8767bae900ca552b4b4dbdcf7d47d0a041623377"
+      },
+      "identity": {
+        "anchor": "stored-xss"
+      },
+      "locations": [
+        {
+          "endLine": 10,
+          "path": "mock/stored-xss.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "occurrenceId": "occ_d67c07ed0a93aed5b87eed62",
+      "preventiveControls": [
+        "Render comments as text or sanitize intentionally supported HTML before insertion."
+      ],
+      "provenance": {
+        "source": "mock"
+      },
+      "remediation": "Render comments as text or sanitize intentionally supported HTML before insertion.",
+      "remediationTests": [
+        "In the example application, verify the fix: Render comments as text or sanitize intentionally supported HTML before insertion."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example preview inserts a stored comment directly into HTML, allowing a comment author to execute script in another viewer's browser."
+      },
+      "ruleId": "mock.stored-xss",
+      "severity": {
+        "level": "medium"
+      },
+      "summary": "Synthetic test finding. The example preview inserts a stored comment directly into HTML, allowing a comment author to execute script in another viewer's browser.",
+      "taxonomy": {
+        "category": "stored-xss",
+        "cwe": [
+          "CWE-79"
+        ]
+      },
+      "title": "[Mock] Comment preview renders stored HTML",
+      "validation": {
+        "method": "synthetic",
+        "status": "mock",
+        "summary": "Fixture only; no code was analyzed or executed."
+      }
+    },
+    {
+      "attackPath": {
+        "assumptions": [
+          "The fictional example exposes this operation to untrusted input."
+        ],
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example error handler returns a stack trace to a remote caller, revealing internal module names and filesystem layout."
+      },
+      "codeEvidence": [
+        {
+          "code": "response.status(500).send(error.stack);",
+          "explanation": "Illustrative fixture code; this file is not read from or written to the repository.",
+          "id": "example-sink",
+          "label": "Synthetic vulnerable operation",
+          "language": "typescript",
+          "path": "mock/verbose-errors.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Deterministic fixture; not a conclusion about the scanned repository."
+      },
+      "extensions": {
+        "mock": true,
+        "mockGroup": "verbose-errors",
+        "mockRecurrence": "shared"
+      },
+      "findingId": "csf_7fc89b3d3728895b5657da66",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:f8abb5d570882652a3bb73ebea6c1a9b047c435133d91215c6cd827e8c25590f"
+      },
+      "identity": {
+        "anchor": "verbose-errors"
+      },
+      "locations": [
+        {
+          "endLine": 10,
+          "path": "mock/verbose-errors.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "occurrenceId": "occ_6c38ea9cc2446296de01e681",
+      "preventiveControls": [
+        "Return a generic error identifier and retain diagnostic details in internal logs."
+      ],
+      "provenance": {
+        "source": "mock"
+      },
+      "remediation": "Return a generic error identifier and retain diagnostic details in internal logs.",
+      "remediationTests": [
+        "In the example application, verify the fix: Return a generic error identifier and retain diagnostic details in internal logs."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example error handler returns a stack trace to a remote caller, revealing internal module names and filesystem layout."
+      },
+      "ruleId": "mock.verbose-errors",
+      "severity": {
+        "level": "low"
+      },
+      "summary": "Synthetic test finding. The example error handler returns a stack trace to a remote caller, revealing internal module names and filesystem layout.",
+      "taxonomy": {
+        "category": "verbose-errors",
+        "cwe": [
+          "CWE-209"
+        ]
+      },
+      "title": "[Mock] Error response exposes an internal stack trace",
+      "validation": {
+        "method": "synthetic",
+        "status": "mock",
+        "summary": "Fixture only; no code was analyzed or executed."
+      }
+    },
+    {
+      "attackPath": {
+        "assumptions": [
+          "The fictional example exposes this operation to untrusted input."
+        ],
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example response header exposes the precise framework version. This helps fingerprint the service but does not establish an exploitable vulnerability."
+      },
+      "codeEvidence": [
+        {
+          "code": "response.setHeader(\"X-Example-Version\", frameworkVersion);",
+          "explanation": "Illustrative fixture code; this file is not read from or written to the repository.",
+          "id": "example-sink",
+          "label": "Synthetic vulnerable operation",
+          "language": "typescript",
+          "path": "mock/version-disclosure.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Deterministic fixture; not a conclusion about the scanned repository."
+      },
+      "extensions": {
+        "mock": true,
+        "mockGroup": "version-disclosure",
+        "mockRecurrence": "shared"
+      },
+      "findingId": "csf_8d423409cf8c053ee87082ee",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:969b64e36a4c05e37d94f6b183d5f6b715705e814a20cc3177614a0d69953a39"
+      },
+      "identity": {
+        "anchor": "version-disclosure"
+      },
+      "locations": [
+        {
+          "endLine": 10,
+          "path": "mock/version-disclosure.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "occurrenceId": "occ_643e1b10a373f78126b37465",
+      "preventiveControls": [
+        "Omit the framework version from public response headers."
+      ],
+      "provenance": {
+        "source": "mock"
+      },
+      "remediation": "Omit the framework version from public response headers.",
+      "remediationTests": [
+        "In the example application, verify the fix: Omit the framework version from public response headers."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example response header exposes the precise framework version. This helps fingerprint the service but does not establish an exploitable vulnerability."
+      },
+      "ruleId": "mock.version-disclosure",
+      "severity": {
+        "level": "informational"
+      },
+      "summary": "Synthetic test finding. The example response header exposes the precise framework version. This helps fingerprint the service but does not establish an exploitable vulnerability.",
+      "taxonomy": {
+        "category": "version-disclosure",
+        "cwe": [
+          "CWE-200"
+        ]
+      },
+      "title": "[Mock] Response header advertises the framework version",
+      "validation": {
+        "method": "synthetic",
+        "status": "mock",
+        "summary": "Fixture only; no code was analyzed or executed."
+      }
+    },
+    {
+      "attackPath": {
+        "assumptions": [
+          "The fictional example exposes this operation to untrusted input."
+        ],
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example search handler concatenates request text into SQL, allowing a caller to change the query and read records beyond the intended search."
+      },
+      "codeEvidence": [
+        {
+          "code": "db.query(`SELECT * FROM items WHERE name = '${request.query.name}'`);",
+          "explanation": "Illustrative fixture code; this file is not read from or written to the repository.",
+          "id": "example-sink",
+          "label": "Synthetic vulnerable operation",
+          "language": "typescript",
+          "path": "mock/sql-injection-2bf35f0a-ac7a-4863-8d28-512ee71827bf.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Deterministic fixture; not a conclusion about the scanned repository."
+      },
+      "extensions": {
+        "mock": true,
+        "mockGroup": "sql-injection",
+        "mockRecurrence": "unique"
+      },
+      "findingId": "csf_db0585335bade9d7c439fa05",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:f6bcf0019fa752190c7faf0c5f7b993ed983e935ab467008cb01599d33ff7ceb"
+      },
+      "identity": {
+        "anchor": "sql-injection",
+        "instance": "2bf35f0a-ac7a-4863-8d28-512ee71827bf"
+      },
+      "locations": [
+        {
+          "endLine": 10,
+          "path": "mock/sql-injection-2bf35f0a-ac7a-4863-8d28-512ee71827bf.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "occurrenceId": "occ_2dfa108061329f65c0a8b4f7",
+      "preventiveControls": [
+        "Use a parameterized query for the search term."
+      ],
+      "provenance": {
+        "source": "mock"
+      },
+      "remediation": "Use a parameterized query for the search term.",
+      "remediationTests": [
+        "In the example application, verify the fix: Use a parameterized query for the search term."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example search handler concatenates request text into SQL, allowing a caller to change the query and read records beyond the intended search."
+      },
+      "ruleId": "mock.sql-injection",
+      "severity": {
+        "level": "high"
+      },
+      "summary": "Synthetic test finding. The example search handler concatenates request text into SQL, allowing a caller to change the query and read records beyond the intended search.",
+      "taxonomy": {
+        "category": "sql-injection",
+        "cwe": [
+          "CWE-89"
+        ]
+      },
+      "title": "[Mock] Search term is concatenated into a SQL query",
+      "validation": {
+        "method": "synthetic",
+        "status": "mock",
+        "summary": "Fixture only; no code was analyzed or executed."
+      }
+    },
+    {
+      "attackPath": {
+        "assumptions": [
+          "The fictional example exposes this operation to untrusted input."
+        ],
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example image proxy fetches a caller-supplied URL without restricting its destination, allowing requests to internal services reachable by the proxy."
+      },
+      "codeEvidence": [
+        {
+          "code": "return await fetch(request.query.imageUrl);",
+          "explanation": "Illustrative fixture code; this file is not read from or written to the repository.",
+          "id": "example-sink",
+          "label": "Synthetic vulnerable operation",
+          "language": "typescript",
+          "path": "mock/ssrf-2bf35f0a-ac7a-4863-8d28-512ee71827bf.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Deterministic fixture; not a conclusion about the scanned repository."
+      },
+      "extensions": {
+        "mock": true,
+        "mockGroup": "ssrf",
+        "mockRecurrence": "unique"
+      },
+      "findingId": "csf_2b292909a453931ca890ba93",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:f5e74d59d5a41166d9575cd28d3e764e82d7e149221f3309c3dfee871f62fc13"
+      },
+      "identity": {
+        "anchor": "ssrf",
+        "instance": "2bf35f0a-ac7a-4863-8d28-512ee71827bf"
+      },
+      "locations": [
+        {
+          "endLine": 10,
+          "path": "mock/ssrf-2bf35f0a-ac7a-4863-8d28-512ee71827bf.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "occurrenceId": "occ_f213020c4934988e5552c404",
+      "preventiveControls": [
+        "Restrict fetch destinations to the intended image hosts and enforce that policy across redirects."
+      ],
+      "provenance": {
+        "source": "mock"
+      },
+      "remediation": "Restrict fetch destinations to the intended image hosts and enforce that policy across redirects.",
+      "remediationTests": [
+        "In the example application, verify the fix: Restrict fetch destinations to the intended image hosts and enforce that policy across redirects."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example image proxy fetches a caller-supplied URL without restricting its destination, allowing requests to internal services reachable by the proxy."
+      },
+      "ruleId": "mock.ssrf",
+      "severity": {
+        "level": "medium"
+      },
+      "summary": "Synthetic test finding. The example image proxy fetches a caller-supplied URL without restricting its destination, allowing requests to internal services reachable by the proxy.",
+      "taxonomy": {
+        "category": "ssrf",
+        "cwe": [
+          "CWE-918"
+        ]
+      },
+      "title": "[Mock] Image proxy fetches arbitrary destinations",
+      "validation": {
+        "method": "synthetic",
+        "status": "mock",
+        "summary": "Fixture only; no code was analyzed or executed."
+      }
+    },
+    {
+      "attackPath": {
+        "assumptions": [
+          "The fictional example exposes this operation to untrusted input."
+        ],
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example sign-in callback redirects to a supplied URL without checking its origin, allowing an attacker to send users from the sign-in flow to an unrelated site."
+      },
+      "codeEvidence": [
+        {
+          "code": "response.redirect(request.query.returnTo);",
+          "explanation": "Illustrative fixture code; this file is not read from or written to the repository.",
+          "id": "example-sink",
+          "label": "Synthetic vulnerable operation",
+          "language": "typescript",
+          "path": "mock/open-redirect-2bf35f0a-ac7a-4863-8d28-512ee71827bf.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Deterministic fixture; not a conclusion about the scanned repository."
+      },
+      "extensions": {
+        "mock": true,
+        "mockGroup": "open-redirect",
+        "mockRecurrence": "unique"
+      },
+      "findingId": "csf_8933fdc2a17e7b65d50e59ba",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:6f25704dd5b4da5eb4d796a3698b6b9f83d51e351138712127cdcaddccf4a54a"
+      },
+      "identity": {
+        "anchor": "open-redirect",
+        "instance": "2bf35f0a-ac7a-4863-8d28-512ee71827bf"
+      },
+      "locations": [
+        {
+          "endLine": 10,
+          "path": "mock/open-redirect-2bf35f0a-ac7a-4863-8d28-512ee71827bf.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "occurrenceId": "occ_0c130bb83ff416bbdcc4ea00",
+      "preventiveControls": [
+        "Accept only application-relative return paths or explicitly permitted origins."
+      ],
+      "provenance": {
+        "source": "mock"
+      },
+      "remediation": "Accept only application-relative return paths or explicitly permitted origins.",
+      "remediationTests": [
+        "In the example application, verify the fix: Accept only application-relative return paths or explicitly permitted origins."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example sign-in callback redirects to a supplied URL without checking its origin, allowing an attacker to send users from the sign-in flow to an unrelated site."
+      },
+      "ruleId": "mock.open-redirect",
+      "severity": {
+        "level": "medium"
+      },
+      "summary": "Synthetic test finding. The example sign-in callback redirects to a supplied URL without checking its origin, allowing an attacker to send users from the sign-in flow to an unrelated site.",
+      "taxonomy": {
+        "category": "open-redirect",
+        "cwe": [
+          "CWE-601"
+        ]
+      },
+      "title": "[Mock] Sign-in callback accepts an external redirect",
+      "validation": {
+        "method": "synthetic",
+        "status": "mock",
+        "summary": "Fixture only; no code was analyzed or executed."
+      }
+    },
+    {
+      "attackPath": {
+        "assumptions": [
+          "The fictional example exposes this operation to untrusted input."
+        ],
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example session cookie is accessible to browser scripts because HttpOnly is absent, increasing the impact of a separate script-injection vulnerability."
+      },
+      "codeEvidence": [
+        {
+          "code": "response.cookie(\"session\", sessionId, { secure: true });",
+          "explanation": "Illustrative fixture code; this file is not read from or written to the repository.",
+          "id": "example-sink",
+          "label": "Synthetic vulnerable operation",
+          "language": "typescript",
+          "path": "mock/cookie-flags-2bf35f0a-ac7a-4863-8d28-512ee71827bf.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Deterministic fixture; not a conclusion about the scanned repository."
+      },
+      "extensions": {
+        "mock": true,
+        "mockGroup": "cookie-flags",
+        "mockRecurrence": "unique"
+      },
+      "findingId": "csf_17e9069df3462e483b574278",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:3ea8f486f0c87f88034f4c56e1ef4baaf4bf48ee77b5dc411f22d24f4c024734"
+      },
+      "identity": {
+        "anchor": "cookie-flags",
+        "instance": "2bf35f0a-ac7a-4863-8d28-512ee71827bf"
+      },
+      "locations": [
+        {
+          "endLine": 10,
+          "path": "mock/cookie-flags-2bf35f0a-ac7a-4863-8d28-512ee71827bf.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "occurrenceId": "occ_65f98bdd5eab7a00cba1df28",
+      "preventiveControls": [
+        "Set HttpOnly on the session cookie."
+      ],
+      "provenance": {
+        "source": "mock"
+      },
+      "remediation": "Set HttpOnly on the session cookie.",
+      "remediationTests": [
+        "In the example application, verify the fix: Set HttpOnly on the session cookie."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example session cookie is accessible to browser scripts because HttpOnly is absent, increasing the impact of a separate script-injection vulnerability."
+      },
+      "ruleId": "mock.cookie-flags",
+      "severity": {
+        "level": "low"
+      },
+      "summary": "Synthetic test finding. The example session cookie is accessible to browser scripts because HttpOnly is absent, increasing the impact of a separate script-injection vulnerability.",
+      "taxonomy": {
+        "category": "cookie-flags",
+        "cwe": [
+          "CWE-1004"
+        ]
+      },
+      "title": "[Mock] Session cookie omits HttpOnly",
+      "validation": {
+        "method": "synthetic",
+        "status": "mock",
+        "summary": "Fixture only; no code was analyzed or executed."
+      }
+    },
+    {
+      "attackPath": {
+        "assumptions": [
+          "The fictional example exposes this operation to untrusted input."
+        ],
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example export route interpolates an untrusted filename into a shell command, allowing shell metacharacters to execute another command."
+      },
+      "codeEvidence": [
+        {
+          "code": "exec(`convert ${request.body.filename} output.pdf`);",
+          "explanation": "Illustrative fixture code; this file is not read from or written to the repository.",
+          "id": "example-sink",
+          "label": "Synthetic vulnerable operation",
+          "language": "typescript",
+          "path": "mock/command-injection.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Deterministic fixture; not a conclusion about the scanned repository."
+      },
+      "extensions": {
+        "mock": true,
+        "mockGroup": "command-injection",
+        "mockRecurrence": "shared"
+      },
+      "findingId": "csf_6e48fc49e5d2a8ca43cf95e8",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:62fe3caecd4e65c4d5d1f032ca0dc52db1397399e2643e9322a72ab462c5bf75"
+      },
+      "identity": {
+        "anchor": "command-injection-alternate-report"
+      },
+      "locations": [
+        {
+          "endLine": 10,
+          "path": "mock/command-injection.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "occurrenceId": "occ_1491e417950104765b1668d3",
+      "preventiveControls": [
+        "Pass the filename as a separate argument to a process API that does not invoke a shell."
+      ],
+      "provenance": {
+        "source": "mock"
+      },
+      "remediation": "Pass the filename as a separate argument to a process API that does not invoke a shell.",
+      "remediationTests": [
+        "In the example application, verify the fix: Pass the filename as a separate argument to a process API that does not invoke a shell."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example export route interpolates an untrusted filename into a shell command, allowing shell metacharacters to execute another command."
+      },
+      "ruleId": "mock.command-injection",
+      "severity": {
+        "level": "critical"
+      },
+      "summary": "Synthetic test finding. The example export route interpolates an untrusted filename into a shell command, allowing shell metacharacters to execute another command.",
+      "taxonomy": {
+        "category": "command-injection",
+        "cwe": [
+          "CWE-78"
+        ]
+      },
+      "title": "[Mock] Shell metacharacters in the export name execute commands",
+      "validation": {
+        "method": "synthetic",
+        "status": "mock",
+        "summary": "Fixture only; no code was analyzed or executed."
+      }
+    },
+    {
+      "attackPath": {
+        "assumptions": [
+          "The fictional example exposes this operation to untrusted input."
+        ],
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example archive extractor writes a supplied entry name without checking containment, allowing a parent-directory entry to overwrite a file outside the extraction directory."
+      },
+      "codeEvidence": [
+        {
+          "code": "await writeFile(join(outputDirectory, entry.name), entry.contents);",
+          "explanation": "Illustrative fixture code; this file is not read from or written to the repository.",
+          "id": "example-sink",
+          "label": "Synthetic vulnerable operation",
+          "language": "typescript",
+          "path": "mock/path-traversal.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Deterministic fixture; not a conclusion about the scanned repository."
+      },
+      "extensions": {
+        "mock": true,
+        "mockGroup": "path-traversal",
+        "mockRecurrence": "shared"
+      },
+      "findingId": "csf_157cf21af134613dc4f101d8",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:d23c92e139b5d38637000bff28f320c7435efde1df7259052b1909373d93fc96"
+      },
+      "identity": {
+        "anchor": "path-traversal-alternate-report"
+      },
+      "locations": [
+        {
+          "endLine": 10,
+          "path": "mock/path-traversal.ts",
+          "role": "sink",
+          "startLine": 10
+        }
+      ],
+      "occurrenceId": "occ_c3ae21ba421627e5674fa604",
+      "preventiveControls": [
+        "Resolve each entry destination and reject paths outside the extraction directory before writing."
+      ],
+      "provenance": {
+        "source": "mock"
+      },
+      "remediation": "Resolve each entry destination and reject paths outside the extraction directory before writing.",
+      "remediationTests": [
+        "In the example application, verify the fix: Resolve each entry destination and reject paths outside the extraction directory before writing."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "example-sink"
+        ],
+        "summary": "The example archive extractor writes a supplied entry name without checking containment, allowing a parent-directory entry to overwrite a file outside the extraction directory."
+      },
+      "ruleId": "mock.path-traversal",
+      "severity": {
+        "level": "high"
+      },
+      "summary": "Synthetic test finding. The example archive extractor writes a supplied entry name without checking containment, allowing a parent-directory entry to overwrite a file outside the extraction directory.",
+      "taxonomy": {
+        "category": "path-traversal",
+        "cwe": [
+          "CWE-22"
+        ]
+      },
+      "title": "[Mock] Parent-directory archive names overwrite files outside extraction",
+      "validation": {
+        "method": "synthetic",
+        "status": "mock",
+        "summary": "Fixture only; no code was analyzed or executed."
+      }
+    }
+  ],
+  "scanId": "2bf35f0a-ac7a-4863-8d28-512ee71827bf",
+  "schemaVersion": "1.0"
+}

@@ -865,6 +865,7 @@ class VoiceSessionRepository:
         reason: str,
         delete_chat: bool,
         now: datetime,
+        transaction: Any | None = None,
     ) -> ChatUnavailableMutation:
         user_id = _user_id(user_id)
         chat_id = _opaque(chat_id, "invalid_chat_id", max_length=255)
@@ -878,7 +879,7 @@ class VoiceSessionRepository:
         session_end_reason = (
             "chat_deleted" if reason == "deleted" else "chat_unauthorized"
         )
-        with self._transaction() as transaction:
+        with self._transaction_or_existing(transaction) as transaction:
             self._lock_identity(transaction, "owner_chat", user_id, chat_id)
             chat_available = self._voice.chat_exists(
                 transaction,

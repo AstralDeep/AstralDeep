@@ -345,3 +345,62 @@ def test_decision_frames_can_carry_a_guidance_read(monkeypatch):
         assert (request is not None) is (method is not None)
     assert [kwargs["method"] for kwargs in built] == ["WS_READ"] * 3
     assert all(kwargs["purpose"] == "skill_lookup" for kwargs in built)
+
+
+@pytest.mark.parametrize("remote", [False, True])
+@pytest.mark.parametrize("cache_loss", [False, True])
+async def test_mode_withdrawal_or_authority_cache_loss_never_replays_hydrated_review(
+        task_runtime, guided, monkeypatch, remote, cache_loss):
+    from orchestrator.approval_receipts import withdraw_computer_reviews
+    session, host = await _mac(task_runtime, remote=remote)
+    card = (await _call(task_runtime, "run_command", argv=["wc", "notes.md"], cwd=ROOT) if remote else
+            await _call(task_runtime, "type_text", text="hello", hwnd=42))
+    payload = _payload(card, "approve")
+    assert card.ui_components[0]["computer_host_id"] == host.host_id
+    async def presentation(*args, **kwargs):
+        pass
+    monkeypatch.setattr(hc, "_finish_card", presentation)
+    monkeypatch.setattr(rc, "_replace_card", presentation)
+    if cache_loss:
+        guided.orch._hitl_pending_calls = {}
+        guided.orch._computer_approval_authorities = {}
+    else:
+        await withdraw_computer_reviews(guided.orch, OWNER, host.host_id)
+    await guided.orch.computer_sessions.set_bypass(host, True)
+    await guided.orch.computer_sessions.set_bypass(host, False)
+    handler = rc.handle_decision if remote else hc.handle_decision
+    await handler(guided.orch, guided.ws, OWNER, payload)
+    await handler(guided.orch, guided.ws, OWNER, payload)
+    await _settle()
+    assert not guided.effects and not guided.turns
+    await guided.orch.computer_sessions.end(session, "user_stop")
+
+
+async def test_withdrawn_review_has_no_suspended_turn_or_automatic_continuation(task_runtime, monkeypatch):
+    from orchestrator.approval_receipts import withdraw_computer_reviews
+    orch, ws, effects, turns, *_ = task_runtime
+    session, host = await _mac(task_runtime)
+    cards = []
+    async def chat(websocket, message, chat_id, display, **kwargs):
+        turns.append(message)
+        cards.append(await _call(task_runtime, "type_text", text="hello", hwnd=42))
+    orch.handle_chat_message = chat
+    origin = asyncio.create_task(orch._serialized_chat(ws, "origin", "chat-a", "origin", user_id=OWNER))
+    await origin
+    assert origin.done() and not origin.cancelled()
+    assert not orch._chat_locks[(id(ws), "chat-a")].locked()
+    assert not orch._workspace_locks["chat-a"].locked()
+    assert orch._hitl_pending_calls and not effects
+    unrelated = asyncio.Event()
+    other = asyncio.create_task(unrelated.wait())
+    async def presentation(*args, **kwargs):
+        pass
+    monkeypatch.setattr(hc, "_finish_card", presentation)
+    await withdraw_computer_reviews(orch, OWNER, host.host_id)
+    assert not orch._hitl_pending_calls and not other.done()
+    await hc.handle_decision(orch, ws, OWNER, _payload(cards[0], "approve"))
+    await _settle()
+    assert turns == ["origin"] and not effects and not other.done()
+    unrelated.set()
+    await other
+    await orch.computer_sessions.end(session, "user_stop")
