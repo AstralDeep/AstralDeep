@@ -6,7 +6,7 @@ tool-selection endpoints, drafts, and A2A agent-key validation.
 import os
 import sys
 import time
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -157,6 +157,9 @@ def _create_test_app(plane_runtime, *, data_dir: str):
             "capabilities"
         ]
     )
+    from orchestrator.orchestrator import Orchestrator
+
+    mock_orch._broadcast_user_history = MethodType(Orchestrator._broadcast_user_history, mock_orch)
     mock_orch.ui_clients = []
     mock_orch.ui_sessions = {}
     mock_orch.workspace = WorkspaceManager(

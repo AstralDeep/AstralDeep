@@ -86,6 +86,10 @@ from orchestrator.work_recovery import (
 )
 from orchestrator.runtime_observability import RuntimeObservability
 from orchestrator.concurrency_cap import ConcurrencyCap
+from orchestrator.projects import (
+    ProjectError, canonical_uuid, check_socket_chat, create_socket_chat,
+    project_workspaces_negotiated, send_project_error,
+)
 from orchestrator.voice_control_binding import (
     VoiceControlBindingError,
     VoiceControlBindingIssuer,
@@ -390,6 +394,7 @@ _UI_OPERATION_REFUSAL_MESSAGES = {
     "refine_failed": "The component could not be refined. Try again.",
     "version_unavailable": "That version is no longer available.",
     "restore_failed": "The component could not be restored. Try again.",
+    "project_selection_required": "Select or create a project before starting this chat.",
     "action_incomplete": "The action could not be completed. Try again.",
 }
 
@@ -1809,9 +1814,24 @@ class Orchestrator:
             await self._cancel_turn(websocket, session.owner_sub, session.chat_id)
 
     async def _register_computer_host(self, websocket, owner_sub: str, descriptor) -> None:
-        host_id = descriptor.host_id if hasattr(descriptor, "host_id") else descriptor["host_id"]
+        from orchestrator.project_authority import prepare_project_advertisement, acknowledge_project_manifest
+        from orchestrator.computer_hosts import ComputerHostError
+        from shared.project_workspaces import ProjectManifest
+
+        data = descriptor.to_dict() if hasattr(descriptor, "to_dict") else descriptor
+        host_id = data["host_id"]
+        try:
+            project_mode, project_manifest = await prepare_project_advertisement(self, websocket, owner_sub, data)
+        except ComputerHostError as exc:
+            raw = data.get("project_manifest")
+            await acknowledge_project_manifest(self, websocket, host_id,
+                ProjectManifest.from_dict(raw) if raw is not None else None, error=exc)
+            return
         displaced = (self.computer_hosts.get(owner_sub, host_id), self.computer_hosts.host_for_socket(websocket))
         host, superseded = self.computer_hosts.register(owner_sub, websocket, descriptor)
+        host.project_mode = project_mode
+        host.project_manifest = project_manifest
+        host.project_manifest_highwater = project_manifest.generation if project_manifest else 0
         ended = set()
         for previous in (*displaced, superseded):
             if previous is None or (previous.owner_sub, previous.host_id) in ended:
@@ -1821,6 +1841,7 @@ class Orchestrator:
             await self.computer_sessions.end_all_for_host(
                 previous.owner_sub, previous.host_id, "host_superseded")
         await self.computer_hosts.push_presence(host, "online")
+        await acknowledge_project_manifest(self, websocket, host_id, project_manifest)
 
     async def _teardown_computer_host(self, websocket) -> None:
         host = self.computer_hosts.on_socket_closed(websocket)
@@ -1874,7 +1895,15 @@ class Orchestrator:
             await self._register_computer_host(websocket, owner_sub, descriptor)
             return
         host = self.computer_hosts.host_for_socket(websocket)
-        if host is None:
+        if host is None or host.owner_sub != owner_sub or payload.get("host_id", host.host_id) != host.host_id:
+            return
+        if event == "project_workspaces_changed":
+            from orchestrator.project_authority import replace_project_manifest
+            from shared.project_workspaces import ProjectWorkspaceError
+            try:
+                await replace_project_manifest(self, websocket, host, payload.get("project_manifest"))
+            except ProjectWorkspaceError:
+                logger.warning("Malformed complete project manifest refused")
             return
         if event == "withdraw":
             await self.computer_sessions.clear_bypass(owner_sub, host.host_id, "access_disabled")
@@ -6864,6 +6893,8 @@ class Orchestrator:
         code: int,
         reason: str,
     ) -> None:
+        from orchestrator.approval_receipts import drop_connection
+        drop_connection(self, websocket)
         try:
             await websocket.close(code=code, reason=reason)
         except Exception:
@@ -7121,6 +7152,11 @@ class Orchestrator:
             or isinstance(value, (bool, int))
             or (isinstance(value, str) and len(value) <= 512)
         }
+        if payload.get("project_id") is not None:
+            try:
+                safe_payload_identity["project_id"] = canonical_uuid(payload["project_id"])
+            except ProjectError:
+                return None
         is_credential_save = action in _LLM_CREDENTIAL_SAVE_ACTIONS
         is_voice_chat = (
             action == "chat_message"
@@ -8840,7 +8876,7 @@ class Orchestrator:
             if message.action == "computer_response":
                 await self._handle_computer_response(context.websocket, message)
             elif message.action == "computer_event" and message.payload.get("event") in {
-                    "announce", "withdraw", "heartbeat", "paused", "resumed", "stopped"}:
+                    "announce", "withdraw", "heartbeat", "paused", "resumed", "stopped", "project_workspaces_changed"}:
                 host = self.computer_hosts.host_for_socket(context.websocket)
                 if message.payload["event"] != "announce" and (
                         host is None or host.owner_sub != self.ui_sessions[context.websocket].get("sub")
@@ -10098,9 +10134,6 @@ class Orchestrator:
                         else:
                             _hosts.pop(id(websocket), None)
                     _ch = getattr(msg, "computer_host", None)
-                    if _ch is not None and flags.is_enabled("computer_use"):
-                        await self._register_computer_host(
-                            websocket, user_data.get("sub", "legacy"), _ch)
                     _register_started = time.monotonic()
                     user_id = user_data.get("sub", "legacy")
                     _resume_requested = getattr(msg, "resume", None) is not None
@@ -10158,8 +10191,17 @@ class Orchestrator:
                     _llm_gate_task = asyncio.create_task(
                         self.llm_configured_for(user_data.get("sub", "")))
 
-                    device_info = msg.device or {}
+                    device_info = dict(msg.device or {})
+                    device_info["project_workspaces_v1"] = (
+                        device_info.get("project_workspaces_v1") is True
+                        and "project_workspaces_v1" in user_data["_client_capabilities"])
                     rote_profile = self.rote.register_device(websocket, device_info)
+                    user_data["_project_workspaces_v1"] = project_workspaces_negotiated(
+                        rote_profile, device_info, user_data["_client_capabilities"])
+                    user_data["_project_device_id"] = msg.device_id
+                    user_data["_project_connection_generation"] = msg.connection_generation
+                    if _ch is not None and flags.is_enabled("computer_use"):
+                        await self._register_computer_host(websocket, user_data.get("sub", "legacy"), _ch)
 
                     try:
                         _dt = getattr(rote_profile.device_type, "value", str(rote_profile.device_type))
@@ -10231,6 +10273,7 @@ class Orchestrator:
                         resume_chat_id = resume["active_chat_id"]
                         resume_request_generation = resume["request_generation"]
                         try:
+                            await check_socket_chat(self, websocket, user_id, resume_chat_id)
                             await self._emit_hydration_snapshot(
                                 websocket,
                                 chat_id=resume_chat_id,
@@ -10246,6 +10289,9 @@ class Orchestrator:
                                 await self._replay_chat_task(
                                     websocket, resume_chat_id
                                 )
+                        except ProjectError as exc:
+                            self._ws_active_chat.pop(id(websocket), None)
+                            await send_project_error(self, websocket, exc, raw_frame)
                         except ConversationNotFound:
                             _resume_confirmed_not_found = True
                             await self._safe_send(
@@ -10333,10 +10379,14 @@ class Orchestrator:
                                 user_id,
                             )
                             if owned:
+                                await check_socket_chat(self, websocket, user_id, msg.session_id)
                                 self._ws_active_chat[id(websocket)] = msg.session_id
                                 await self._resume_chat_streams(
                                     websocket, user_id, msg.session_id)
                                 await self._replay_chat_task(websocket, msg.session_id)
+                        except ProjectError as exc:
+                            self._ws_active_chat.pop(id(websocket), None)
+                            await send_project_error(self, websocket, exc, raw_frame)
                         except Exception:
                             logger.debug("register_ui chat resume failed (non-fatal)",
                                          exc_info=True)
@@ -10596,6 +10646,7 @@ class Orchestrator:
                                 retry_policy="none",
                             )
                             return
+                        await check_socket_chat(self, websocket, user_id, chat_id)
                         voice_dispatch = await self._admit_voice_chat_message(
                             websocket,
                             msg,
@@ -10607,24 +10658,25 @@ class Orchestrator:
                             return
                         user_message = voice_dispatch.admission.canonical_text
                     elif not chat_id:
-                        chat_id = await asyncio.to_thread(
-                            self.history.create_chat, user_id=user_id)
+                        chat_id, project_fields = await create_socket_chat(
+                            self, websocket, user_id, msg.payload)
                         await self._adopt_operation_chat(chat_id)
                         await self._safe_send(websocket, json.dumps({
                             "type": "chat_created",
-                            "payload": {"chat_id": chat_id, "from_message": True}
+                            "payload": {"chat_id": chat_id, "from_message": True, **project_fields}
                         }))
                     else:
                         if not await asyncio.to_thread(
                                 self.history.get_chat, chat_id, user_id=user_id):
-                            await asyncio.to_thread(
-                                self.history.create_chat, chat_id, user_id=user_id)
+                            chat_id, project_fields = await create_socket_chat(
+                                self, websocket, user_id, msg.payload, chat_id)
                             await self._adopt_operation_chat(chat_id)
                             await self._safe_send(websocket, json.dumps({
                                 "type": "chat_created",
-                                "payload": {"chat_id": chat_id, "from_message": True}
+                                "payload": {"chat_id": chat_id, "from_message": True, **project_fields}
                             }))
 
+                    await check_socket_chat(self, websocket, user_id, chat_id)
                     if voice_origin is None:
                         self._ws_active_chat[id(websocket)] = chat_id
 
@@ -10792,6 +10844,7 @@ class Orchestrator:
 
                 elif msg.action == "load_chat":
                     chat_id = msg.payload.get("chat_id")
+                    await check_socket_chat(self, websocket, user_id, chat_id)
                     chat = await asyncio.to_thread(
                         self.history.get_chat, chat_id, user_id=user_id)
                     if chat:
@@ -10961,8 +11014,8 @@ class Orchestrator:
                         )
 
                     try:
-                        chat_id = await asyncio.to_thread(
-                            self.history.create_chat, user_id=user_id)
+                        chat_id, project_fields = await create_socket_chat(
+                            self, websocket, user_id, msg.payload)
                     except Exception:
                         if not new_chat_session_is_current():
                             return
@@ -11005,6 +11058,7 @@ class Orchestrator:
                                     "schema_version": msg.schema_version,
                                     "chat_id": chat_id,
                                     "from_message": False,
+                                    **project_fields,
                                     "connection_generation": (
                                         msg.connection_generation
                                     ),
@@ -11021,6 +11075,7 @@ class Orchestrator:
                             "payload": {
                                 "chat_id": chat_id,
                                 "from_message": False,
+                                **project_fields,
                             },
                         }))
                 elif msg.action in ("combine_components", "condense_components",
@@ -11337,7 +11392,8 @@ class Orchestrator:
                 elif msg.action == "update_device":
                     registration = self.ui_sessions.get(websocket)
                     viewport_binding = getattr(self, "_conversation_scopes", {}).get(id(websocket))
-                    device_info = msg.payload.get("device") or {}
+                    device_info = dict(msg.payload.get("device") or {})
+                    device_info["project_workspaces_v1"] = (registration or {}).get("_project_workspaces_v1") is True
                     old_profile = self.rote.get_profile(websocket)
                     canonical_cached = self.rote.get_cached_components(websocket) or []
                     new_profile, re_adapted, profile_changed = self.rote.update_device(websocket, device_info)
@@ -11662,6 +11718,9 @@ class Orchestrator:
                         if _CONNECTION_OPERATION_CONTEXT.get() is not None:
                             raise RuntimeError("ui_event action is not supported")
 
+        except ProjectError as exc:
+            self._register_ui_operation_refusal(exc.code)
+            await send_project_error(self, websocket, exc, raw_frame)
         except Exception as e:
             if (
                 isinstance(raw_frame, dict)
@@ -12555,6 +12614,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         connection_generation: Any,
         request_generation: Any,
     ) -> Dict[str, Any]:
+        await check_socket_chat(self, websocket, user_id, chat_id)
         snapshot = await self._conversation_snapshot_candidate(
             websocket,
             chat_id=chat_id,
@@ -14139,6 +14199,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     ):
         from persistent_agents.models import AssignmentError
 
+        await check_socket_chat(self, websocket, user_id or self._get_user_id(websocket), chat_id)
         stop = getattr(self, "emergency_stop", None)
         stop_owner = user_id or self._get_user_id(websocket)
         if (stop is not None and stop_owner and stop_owner != "legacy"
@@ -17530,6 +17591,32 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         initiating_agent_id: Optional[str] = None,
         auto_subscribe_stream: bool = True,
     ):
+        from orchestrator.project_authority import project_dispatch_scope
+        from orchestrator.computer_hosts import ComputerHostError
+        admitted = False
+        try:
+            async with project_dispatch_scope(self, websocket, user_id, chat_id, agent_id, tool_name, args):
+                admitted = True
+                return await self._run_project_bound_gate_stack(websocket, agent_id, tool_name, args, chat_id, user_id,
+                    stream_params=stream_params, parent_token=parent_token, initiating_agent_id=initiating_agent_id,
+                    auto_subscribe_stream=auto_subscribe_stream)
+        except ComputerHostError as exc:
+            if admitted:
+                raise
+            await self._audit_gate_denial(websocket, user_id, agent_id, tool_name, chat_id, args,
+                                         gate="project_authority", detail=exc.code)
+            return GateRefusal(response=MCPResponse(error={"code": exc.code, "message": exc.message,
+                "retryable": False, "effect_state": "not_started"}),
+                render_components=[Alert(message=exc.message, variant="error").to_dict()], render_target="chat")
+
+    async def _run_project_bound_gate_stack(
+        self, websocket, agent_id: Optional[str], tool_name: str, args: Dict,
+        chat_id: str = None, user_id: str = None, *,
+        stream_params: Optional[Dict] = None,
+        parent_token: Optional[Dict[str, Any]] = None,
+        initiating_agent_id: Optional[str] = None,
+        auto_subscribe_stream: bool = True,
+    ):
         if stream_params is None:
             stream_params = dict(args)
 
@@ -17704,10 +17791,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from orchestrator import remote_confirmation
             from orchestrator.terminal_security import TerminalError
 
+            _review_publication = remote_confirmation.capture_manual_review(
+                self, websocket, user_id, chat_id, agent_id, tool_name, args)
+            _write_snapshot = None
+            if agent_id == "computer-use-1" and tool_name == "write_file":
+                from orchestrator.write_review import prepare_write_review
+
+                _write_snapshot = await prepare_write_review(self, websocket, user_id, chat_id, args)
             try:
-                _conf = await asyncio.to_thread(
-                    remote_confirmation.evaluate, self, websocket, agent_id, tool_name,
-                    args, chat_id, user_id)
+                _conf = remote_confirmation.review_publication_refusal(self, websocket, _review_publication)
+                if _conf is None:
+                    _conf = await asyncio.to_thread(
+                        remote_confirmation.evaluate, self, websocket, agent_id, tool_name,
+                        args, chat_id, user_id)
+                _conf = remote_confirmation.review_publication_refusal(
+                    self, websocket, _review_publication, _conf) or _conf
             except TerminalError as exc:
                 if agent_id != "terminal-shell-1":
                     raise
@@ -17727,7 +17825,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 _msg, _comps = _conf
                 if agent_id == "computer-use-1" and tool_name == "write_file":
                     from orchestrator.write_review import attach_write_diff
-                    _comps = await attach_write_diff(self, websocket, user_id, chat_id, args, _comps)
+                    _comps = await attach_write_diff(self, websocket, user_id, chat_id, args, _comps,
+                                                     snapshot=_write_snapshot)
+                _obsolete = remote_confirmation.review_publication_refusal(
+                    self, websocket, _review_publication, _conf)
+                if _obsolete is not None:
+                    _conf = _obsolete
+                    _msg, _comps = _obsolete
                 _policy = remote_confirmation.policy_for(agent_id)
                 if (_policy is not None and _policy.card_as_result
                         and not isinstance(_conf, remote_confirmation.Refusal)
@@ -17739,7 +17843,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         render_components=None, render_target=None)
                 return GateRefusal(
                     response=MCPResponse(
-                        error={"message": _msg, "retryable": False}),
+                        error={"message": _msg, "retryable": False,
+                               **({"code": "COMPUTER_REVIEW_CHANGED"}
+                                  if isinstance(_conf, remote_confirmation.ObsoleteReview) else {})}),
                     render_components=_comps, render_target="chat")
 
         if user_id:
@@ -19223,6 +19329,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator import hitl_confirmation
 
         async def reviewed_invoke(capabilities):
+            from orchestrator.project_authority import project_dispatch_scope
+            from orchestrator.computer_hosts import ComputerHostError
+            admitted = False
+            try:
+                async with project_dispatch_scope(self, websocket, user_id, conversation_id, agent_id, tool_name, args):
+                    admitted = True
+                    return await project_bound_invoke(capabilities)
+            except ComputerHostError as exc:
+                return MCPResponse(error={"code": exc.code, "message": exc.message, "retryable": False,
+                    **({"effect_state": "not_started"} if not admitted or exc.effect_state == "not_started" else {})})
+
+        async def project_bound_invoke(capabilities):
             from orchestrator import mesh_admission
             from orchestrator import source_bound
             claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
@@ -19254,6 +19372,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     logger.exception("Source-bound pre-effect audit unavailable")
                     return MCPResponse(error={"code": "effect_audit_unavailable",
                         "message": "Action audit is unavailable.", "retryable": False})
+            project_read = None
+            if not action.needs_review:
+                try:
+                    project_read = await hitl_confirmation.project_read_approval(
+                        self, websocket, user_id, conversation_id, agent_id, tool_name, args)
+                except Exception:
+                    return MCPResponse(error={"code": "project_authority_unavailable",
+                        "message": "The project grant or its audit is no longer available.", "retryable": False,
+                        "effect_state": "not_started"})
             refusal = hitl_confirmation.effect_refusal(
                 self, websocket, user_id, conversation_id, agent_id, tool_name, args, start=True)
             if refusal is not None:
@@ -19271,10 +19398,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 else:
                     result = await invoke(capabilities)
             except (Exception, asyncio.CancelledError):
-                if action.needs_review:
+                outcome_call = approval.call if action.needs_review else project_read
+                if outcome_call is not None:
                     try:
                         await hitl_confirmation.audit_effect_outcome(
-                            self, approval.call, uncertain=True)
+                            self, outcome_call, uncertain=True)
                     except Exception:
                         logger.exception("Source-bound uncertain-outcome audit unavailable")
                 raise
@@ -19282,12 +19410,25 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 try:
                     await hitl_confirmation.audit_effect_outcome(
                         self, approval.call, uncertain=(
-                            result is None or bool(result.error)))
+                            result is None or bool(result.error)), no_effect=(
+                            agent_id == "computer-use-1" and result is not None and isinstance(result.error, dict)
+                            and result.error.get("effect_state") == "not_started"))
                 except Exception:
                     logger.exception("Source-bound effect outcome audit unavailable")
                     return MCPResponse(error={"code": "outcome_uncertain",
                         "message": "Action outcome could not be audited; reconcile before retrying.",
                         "retryable": False})
+            if project_read is not None:
+                try:
+                    await hitl_confirmation.audit_effect_outcome(self, project_read,
+                        uncertain=result is None or bool(result.error))
+                except Exception:
+                    return MCPResponse(error={"code": "outcome_uncertain", "retryable": False,
+                        "message": "The project read outcome could not be audited."})
+                if result is not None and isinstance(result.result, dict):
+                    data = result.result.get("_data")
+                    if isinstance(data, dict):
+                        result.result = {**result.result, "_data": {**data, "approval_source": "project_grant"}}
             return result
 
         adapter = self._governed_dispatch_adapter()
@@ -21885,7 +22026,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:  # pragma: no cover
                 logger.debug("vws chat_status fan failed", exc_info=True)
 
-    async def _broadcast_user_history(self, user_id: str | None = None):
+    async def _broadcast_user_history(self, user_id: str | None = None, *, projects_changed: bool = False):
         if not self.ui_clients:
             return
 
@@ -21900,7 +22041,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         for uid, clients in clients_by_user.items():
             history_list = await asyncio.to_thread(
                 self.history.get_recent_chats, user_id=uid)
-            msg = json.dumps({"type": "history_list", "chats": history_list})
+            msg = json.dumps({"type": "history_list", "chats": history_list,
+                              **({"projects_changed": True} if projects_changed else {})})
             for c in clients:
                 tasks.append(self._safe_send(c, msg))
                 tasks.append(self._push_history_surface(c, chats=history_list))
@@ -24019,6 +24161,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from persistent_agents.api import assignment_router
         from orchestrator.emergency_stop_api import emergency_stop_router
         from dreaming.api import dreaming_router
+        from orchestrator.api import project_router
+
+        app.include_router(project_router)
         app.include_router(chat_router)
         app.include_router(component_router)
         app.include_router(agent_router)

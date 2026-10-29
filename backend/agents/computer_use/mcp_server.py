@@ -63,9 +63,13 @@ class MCPServer:
                     if error_comp is not None:
                         msg = error_comp.get("message", "Tool returned an error")
                         logger.info("Tool '%s' refused: %s", tool_name, msg)
+                        data = result.get("_data")
+                        data = data if isinstance(data, dict) else {}
                         return MCPResponse(
                             request_id=request.request_id,
-                            error={"code": -32603, "message": msg, "retryable": False},
+                            error={"code": data.get("code", -32603), "message": msg, "retryable": False,
+                                   **({"effect_state": "not_started"}
+                                      if data.get("effect_state") == "not_started" else {})},
                         )
                     payload = {"_data": result.get("_data")}
                     if result.get("_images"):

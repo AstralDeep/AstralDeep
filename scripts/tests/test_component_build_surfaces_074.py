@@ -67,7 +67,7 @@ def test_make_bootstrap_and_lifecycle_require_full_composition_preflight() -> No
     assert "git submodule update --init --recursive" in makefile
     assert "setuptools==83.0.0" in makefile
     assert "hatchling==1.27.0" in makefile
-    assert "uv_build==0.12.15" in makefile
+    assert "uv_build==0.12.23" in makefile
     assert "-r backend/requirements.txt" in makefile
     assert "composition-preflight:" in makefile
     assert "scripts/verify_composition.py" in makefile
@@ -178,7 +178,7 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
         "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
         "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
         "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9",
-        "openai/fence@abc5790eac3445fe3854eea6b506aa7d31bed67c",
+        "openai/fence@f9751ca5d767dc0199e88733c2b286bd4800a008",
     }
     assert all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", value) for value in external_actions)
 

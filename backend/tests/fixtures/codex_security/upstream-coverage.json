@@ -1,0 +1,87 @@
+{
+  "completeness": "complete",
+  "deferred": [],
+  "documentType": "codex-security.coverage",
+  "excludePaths": [],
+  "explicitExclusions": [],
+  "includePaths": [
+    "."
+  ],
+  "inventoryStrategy": "repository",
+  "mode": "repository",
+  "openQuestions": [],
+  "scanId": "2bf35f0a-ac7a-4863-8d28-512ee71827bf",
+  "schemaVersion": "1.0",
+  "surfaces": [
+    {
+      "disposition": "reported",
+      "id": "mock-command-injection",
+      "label": "[Mock] Export filename reaches a shell command",
+      "notes": "Synthetic mock scan for testing. No LLM calls or security analysis were performed. Locations and code snippets describe fictional examples.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "reported",
+      "id": "mock-path-traversal",
+      "label": "[Mock] Archive entry escapes the extraction directory",
+      "notes": "Synthetic mock scan for testing. No LLM calls or security analysis were performed. Locations and code snippets describe fictional examples.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "reported",
+      "id": "mock-missing-authorization",
+      "label": "[Mock] Document download omits the ownership check",
+      "notes": "Synthetic mock scan for testing. No LLM calls or security analysis were performed. Locations and code snippets describe fictional examples.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "reported",
+      "id": "mock-stored-xss",
+      "label": "[Mock] Comment preview renders stored HTML",
+      "notes": "Synthetic mock scan for testing. No LLM calls or security analysis were performed. Locations and code snippets describe fictional examples.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "reported",
+      "id": "mock-verbose-errors",
+      "label": "[Mock] Error response exposes an internal stack trace",
+      "notes": "Synthetic mock scan for testing. No LLM calls or security analysis were performed. Locations and code snippets describe fictional examples.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "reported",
+      "id": "mock-version-disclosure",
+      "label": "[Mock] Response header advertises the framework version",
+      "notes": "Synthetic mock scan for testing. No LLM calls or security analysis were performed. Locations and code snippets describe fictional examples.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "reported",
+      "id": "mock-sql-injection",
+      "label": "[Mock] Search term is concatenated into a SQL query",
+      "notes": "Synthetic mock scan for testing. No LLM calls or security analysis were performed. Locations and code snippets describe fictional examples.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "reported",
+      "id": "mock-ssrf",
+      "label": "[Mock] Image proxy fetches arbitrary destinations",
+      "notes": "Synthetic mock scan for testing. No LLM calls or security analysis were performed. Locations and code snippets describe fictional examples.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "reported",
+      "id": "mock-open-redirect",
+      "label": "[Mock] Sign-in callback accepts an external redirect",
+      "notes": "Synthetic mock scan for testing. No LLM calls or security analysis were performed. Locations and code snippets describe fictional examples.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "reported",
+      "id": "mock-cookie-flags",
+      "label": "[Mock] Session cookie omits HttpOnly",
+      "notes": "Synthetic mock scan for testing. No LLM calls or security analysis were performed. Locations and code snippets describe fictional examples.",
+      "receiptRefs": []
+    }
+  ]
+}

@@ -363,3 +363,42 @@ async def test_chat_skill_read_uses_original_capture_without_extending_to_chat_e
         await cleaned(frame)
     finally:
         release.set()
+
+
+@pytest.mark.parametrize("initial", ["registered", "preregistration"])
+async def test_real_serialized_foreground_turn_keeps_original_guidance_authority(
+    metadata, fixture, monkeypatch, initial,
+):
+    from orchestrator import turn_guidance_authority as guidance
+
+    state, _, _ = metadata
+    orch = state.orch
+    orch.cancelled_sessions = {}
+    chat_id = str(uuid4())
+    monkeypatch.setattr(orch.history, "get_chat", lambda *_args, **_kwargs: {"id": chat_id})
+    monkeypatch.setattr("orchestrator.user_skills.enabled", lambda: True)
+    readers = []
+
+    async def execute(socket, _message, chat, *_args, **_kwargs):
+        reader = await guidance.acquire_turn_guidance_reader(
+            expected_orchestrator=orch, websocket=socket, chat_id=chat)
+        try:
+            found = await reader.transaction(lambda tx, repos: repos.history.sessions.get_execution_state(
+                tx, owner_id=reader.owner_id, session_id=fixture[2]), expected_orchestrator=orch)
+            await reader.verify_delivery()
+            with pytest.raises(AssignmentError, match="human_write_required"):
+                reader.require_write()
+            readers.append(found.credential.incarnation_id)
+        finally:
+            reader.close()
+
+    monkeypatch.setattr(orch, "_handle_chat_message_with_guidance", execute)
+    if initial == "registered":
+        await registered(state)
+    send(state, "chat_message", message="synthetic foreground turn", chat_id=chat_id)
+    if initial == "preregistration":
+        await state.barrier()
+        await registered(state)
+    result = await terminal(state)
+    assert result["state"] == ("completed" if initial == "registered" else "failed"), state.socket.payloads()
+    assert len(readers) == (1 if initial == "registered" else 0)

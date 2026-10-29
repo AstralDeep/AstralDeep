@@ -278,3 +278,40 @@ async def test_native_closed_reply_completes_approved_operation_on_same_socket(t
         assert session.state == ('active' if response_kind == 'response_ok' else 'paused')
         assert any(work.frame.action == 'authorize_action'
                    for work in orch._connection_contexts[id(websocket)].operations.values())
+
+async def test_project_manifest_updates_cross_urgent_ingress_without_reregistering_or_clearing_bypass(task_runtime, monkeypatch):  # noqa: F811
+    from orchestrator import project_authority
+
+    project = '12345678-1234-1234-9234-123456789abc'
+    class Service:
+        def __init__(self, history):
+            pass
+        def get(self, owner, project_id):
+            assert owner == 'owner-a' and project_id == project
+            return {'project_id': project_id}
+    monkeypatch.setattr(project_authority, 'ProjectService', Service)
+    async with _ingress(task_runtime, monkeypatch) as state:
+        orch, ws = state.orch, state.websocket
+        orch.ui_sessions[ws]['_project_workspaces_v1'] = True
+        announce = json.loads(_native_frame('announce'))
+        announce['payload']['host']['workspace_roots'] = []
+        announce['payload']['host']['project_manifest'] = {'generation': 1, 'projects': []}
+        await state.feed(json.dumps(announce))
+        host = orch.computer_hosts.host_for_socket(ws)
+        assert host is not None and host.project_mode
+        await orch.computer_sessions.set_bypass(host, True)
+        value = {'generation': 2, 'projects': [{'project_id': project, 'grant_revision': 1,
+            'roots': [{'name': 'Root', 'path': '/tmp/project'}]}]}
+        frame = {**announce, 'payload': {'event': 'project_workspaces_changed', 'host_id': host.host_id,
+            'project_manifest': value}}
+        await state.feed(json.dumps(frame))
+        assert orch.computer_hosts.host_for_socket(ws) is host
+        assert host.project_manifest.to_dict() == value
+        assert orch.computer_sessions.bypass_on('owner-a', host.host_id)
+        acknowledgments = [f['project_manifest_ack'] for f in state.sent if 'project_manifest_ack' in f]
+        assert acknowledgments[-1] == {'generation': 2, 'digest': host.project_manifest.digest, 'accepted': True}
+        frame['payload']['project_manifest'] = {'generation': 1, 'projects': []}
+        await state.feed(json.dumps(frame))
+        assert host.project_manifest.to_dict() == value
+        assert orch.computer_sessions.bypass_on('owner-a', host.host_id)
+        assert not state.effects
