@@ -25,7 +25,7 @@ from shared.stream_sdk import is_streaming_tool
 EXPECTED_TOOLS = {
     "patient_measurements", "aggregate_a1c",
     "icu_census", "patient_overview", "vital_sign_trends", "laboratory_results", "medication_review", "patient_timeline",
-    "query_fhir_records", "fhir_source_status", "watch_icu_activity", "stream_patient_vitals",
+    "query_fhir_records", "fhir_source_status", "watch_icu_activity", "stream_patient_vitals", "extract_note_fields",
 }
 
 

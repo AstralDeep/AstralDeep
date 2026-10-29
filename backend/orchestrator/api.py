@@ -2431,10 +2431,11 @@ def _roles_from_payload(payload: dict) -> list:
         "are omitted for non-admins; server-side authorization stays authoritative."
     ),
 )
-async def get_chrome_menu(payload: dict = Depends(get_current_user_payload)):
+async def get_chrome_menu(payload: dict = Depends(get_current_user_payload), request: Request = None):
     from orchestrator.chrome_availability import projection_chrome_availability
     from webrender.chrome.menu_model import menu_model_dict
-    availability = projection_chrome_availability()
+    orch = getattr(request.app.state, "orchestrator", None) if request is not None else None
+    availability = projection_chrome_availability(orch)
     availability["work_enabled"] = False
     availability["notes_enabled"] = False
     return menu_model_dict(

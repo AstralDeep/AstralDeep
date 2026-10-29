@@ -38,6 +38,7 @@ SURFACE_MODULES = {
     "saved_results": "orchestrator.projection_surfaces.saved_results",
     "atlas": "orchestrator.projection_surfaces.atlas",
     "search": "orchestrator.projection_surfaces.search",
+    "notifications": "orchestrator.projection_surfaces.notifications",
 }
 
 

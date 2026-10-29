@@ -45,6 +45,7 @@ def _check_probe_rate(user_id: str) -> None:
 
 
 class TestConnectionRequest(BaseModel):
+    provider: Optional[str] = None
     api_key: str = Field(..., min_length=1)
     base_url: str = Field(..., min_length=1)
     model: str = Field(..., min_length=1)
@@ -140,24 +141,37 @@ async def test_connection(
     upstream_message: Optional[str] = None
     ok = False
     try:
-        client = OpenAI(
-            base_url=body.base_url,
-            timeout=PROBE_TIMEOUT_SECONDS,
-            max_retries=0,
-            **openai_auth_kwargs(body.api_key),
-        )
-        response = await asyncio.to_thread(
-            client.chat.completions.create,
-            model=body.model,
-            messages=[{"role": "user", "content": "ping"}],
-            max_tokens=1,
-        )
-        if not getattr(response, "choices", None):
-            raise ValueError("response missing 'choices' — not an OpenAI-compatible chat-completions endpoint")
-        first = response.choices[0]
-        if not getattr(first, "message", None):
-            raise ValueError("response.choices[0] missing 'message' — not an OpenAI-compatible chat-completions endpoint")
-        ok = True
+        if body.provider == "anthropic-native":
+            from .native_wire import NativeContractError
+            from .probe import probe_native_saved
+            try:
+                store = getattr(orch, "_llm_store", None)
+                config = await store.get(user_id) if store is not None else None
+            except Exception:
+                raise NativeContractError("native_saved_configuration_required") from None
+            if (config is None or config.provider != body.provider or config.base_url != body.base_url
+                    or config.model != body.model or config.api_key != body.api_key):
+                raise NativeContractError("native_saved_configuration_required")
+            ok, error_class, upstream_message = await probe_native_saved(config)
+        else:
+            client = OpenAI(
+                base_url=body.base_url,
+                timeout=PROBE_TIMEOUT_SECONDS,
+                max_retries=0,
+                **openai_auth_kwargs(body.api_key),
+            )
+            response = await asyncio.to_thread(
+                client.chat.completions.create,
+                model=body.model,
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=1,
+            )
+            if not getattr(response, "choices", None):
+                raise ValueError("response missing 'choices' — not an OpenAI-compatible chat-completions endpoint")
+            first = response.choices[0]
+            if not getattr(first, "message", None):
+                raise ValueError("response.choices[0] missing 'message' — not an OpenAI-compatible chat-completions endpoint")
+            ok = True
     except Exception as exc:
         ok = False
         error_class = _classify_probe_error(exc)

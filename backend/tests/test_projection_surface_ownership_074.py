@@ -34,6 +34,7 @@ HOST_SURFACES = frozenset(
         "llm_system",
         "mesh",
         "my_computers",
+        "notifications",
         "personalization",
         "pulse",
         "remote_machines",

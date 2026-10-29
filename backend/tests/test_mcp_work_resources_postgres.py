@@ -467,3 +467,118 @@ async def test_current_status_and_subscription_http_reads_succeed(resource_owner
         assert content["subscriptions"][0]["source_operation_id"] == record["id"]
         assert content["subscriptions"][0]["target_operation_id"] == target
     assert token not in response.text
+
+
+@pytest.mark.asyncio
+async def test_panel_resource_serves_bounded_view_with_meta(resource_owner, monkeypatch):
+    from orchestrator.mcp_panel import panel_state
+    from shared.feature_flags import flags
+
+    monkeypatch.setitem(flags._flags, "framework_credentials", True)
+    monkeypatch.setitem(flags._flags, "mcp_server", True)
+    monkeypatch.setitem(flags._flags, "mcp_work_panel", True)
+    orch, caller, token, record = resource_owner
+    response = await _http(orch, token, "resources/read", uri=_uri(record, "panel"))
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    result = response.json()["result"]
+    assert result["_meta"]["astral/panelKind"] == "astral_work_status"
+    assert result["_meta"]["astral/dataFlow"] == "owner-scoped; no third-party data flow"
+    view = json.loads(result["contents"][0]["text"])
+    current = await orch.framework_work_operations.get(caller, record["id"])
+    expected = {
+        "kind": "astral_work_status", "state": panel_state(current["disposition"]),
+        "title": "Synthetic work",
+    }
+    if current["phase"] is not None:
+        expected["detail"] = current["phase"]
+    assert view == expected
+    assert token not in response.text and caller.credential_id not in response.text
+    assert "owner" not in view and "http" not in json.dumps(view)
+
+
+@pytest.mark.asyncio
+async def test_panel_resource_is_unavailable_while_disabled(resource_owner, monkeypatch):
+    from shared.feature_flags import flags
+
+    monkeypatch.setitem(flags._flags, "mcp_server", True)
+    monkeypatch.setitem(flags._flags, "mcp_work_panel", False)
+    orch, caller, _, record = resource_owner
+    with pytest.raises(MCPAuthError) as error:
+        await read_resource(orch, caller.owner_id, _uri(record, "panel"), _claims(caller))
+    assert error.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_panel_resource_requires_the_status_scope(resource_owner):
+    from dataclasses import replace
+
+    orch, caller, _, record = resource_owner
+    limited = replace(caller, scopes=frozenset({"artifacts.read"}))
+    with pytest.raises(MCPAuthError) as error:
+        await read_resource(orch, caller.owner_id, _uri(record, "panel"), _claims(limited))
+    assert error.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_panel_descriptors_ride_the_owner_scoped_listing(resource_owner, monkeypatch):
+    from shared.feature_flags import flags
+
+    monkeypatch.setitem(flags._flags, "framework_credentials", True)
+    monkeypatch.setitem(flags._flags, "mcp_server", True)
+    monkeypatch.setitem(flags._flags, "mcp_work_panel", True)
+    orch, caller, token, record = resource_owner
+    response = await _http(orch, token, "resources/list")
+    assert response.status_code == 200, response.text
+    resources = response.json()["result"]["resources"]
+    assert [item["uri"] for item in resources] == [
+        f"astral://work/{record['id']}/status", f"astral://work/{record['id']}/panel",
+    ]
+    descriptor = resources[1]
+    assert descriptor["mimeType"] == "application/json"
+    assert descriptor["_meta"]["astral/panelKind"] == "astral_work_status"
+    assert token not in response.text
+
+
+@pytest.mark.asyncio
+async def test_revoked_credential_cannot_read_the_panel(resource_owner, monkeypatch):
+    from shared.feature_flags import flags
+
+    monkeypatch.setitem(flags._flags, "mcp_server", True)
+    monkeypatch.setitem(flags._flags, "mcp_work_panel", True)
+    orch, caller, _, record = resource_owner
+    orch.framework_credentials.revoke(owner_id=caller.owner_id, credential_id=caller.credential_id)
+    with pytest.raises(MCPAuthError):
+        await read_resource(orch, caller.owner_id, _uri(record, "panel"), _claims(caller))
+
+
+@pytest.mark.asyncio
+async def test_panel_uri_guessing_fails_closed(resource_owner, monkeypatch):
+    from shared.feature_flags import flags
+
+    monkeypatch.setitem(flags._flags, "mcp_server", True)
+    monkeypatch.setitem(flags._flags, "mcp_work_panel", True)
+    orch, caller, _, _ = resource_owner
+    stranger = "bef2c1aa-9b4d-4f7a-8c1e-2d5b6a7c8e9a"
+    with pytest.raises(MCPAuthError) as error:
+        await read_resource(orch, caller.owner_id, f"astral://work/{stranger}/panel",
+                            _claims(caller))
+    assert error.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_phi_bearing_title_never_crosses_the_panel(resource_owner, monkeypatch):
+    from shared.feature_flags import flags
+
+    monkeypatch.setitem(flags._flags, "mcp_server", True)
+    monkeypatch.setitem(flags._flags, "mcp_work_panel", True)
+    orch, caller, _, _ = resource_owner
+    gate = orch.persistent_assignments.phi_gate
+    with monkeypatch.context() as ingress:
+        ingress.setattr(gate, "contains_phi", lambda _: False)
+        legacy = await orch.framework_work_operations.submit(
+            caller, idempotency_key=str(uuid.uuid4()), name="Patient MRN: 1234567",
+            instructions="Synthetic panel legacy fixture.",
+        )
+    with pytest.raises(MCPAuthError):
+        await read_resource(orch, caller.owner_id, _uri(legacy, "panel"), _claims(caller))

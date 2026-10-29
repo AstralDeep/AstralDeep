@@ -255,6 +255,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
 
     expected_scripts = {
         "check_acceptance_mutations.py",
+        "ci_browser_retry.py",
         "ci_fence_egress_pilot.py",
         "ci_review_diagnostics.py",
         "ci_plane_lane.py",
@@ -306,6 +307,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         expected_scripts
     )
     expected_test_paths = {
+        "scripts/tests/test_ci_browser_retry.py",
         "scripts/tests/test_ci_network_fixture.py",
         "scripts/tests/test_ci_fence_fixture_verifier.py",
         "scripts/tests/test_ci_fence_egress_pilot.py",

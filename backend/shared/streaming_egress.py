@@ -1,7 +1,4 @@
-"""Bounded HTTP/1.1-only egress transport pinned to one fixed, operator-configured
-origin for the voice speech worker; no redirects, proxies, cookies, or netrc.
-Implements FixedOriginHttpTransport, consumed by voice_agent/speech_adapters.py.
-"""
+"""Bounded HTTP/1.1 egress with pinned DNS, TLS, framing, and close limits. Voice speech adapters use buffered responses; external_http consumes the bounded streaming extension."""
 
 from __future__ import annotations
 
@@ -182,6 +179,39 @@ class FixedOriginHttpTransport:
 
     async def get(self, request: HttpRequestLike) -> StreamingHttpResponse:
         return await self._request("GET", request)
+
+    async def post_stream(self, request: HttpRequestLike):
+        validated = _validate_request(request, self._origin, self._limits, method="POST")
+        try:
+            async with asyncio.timeout(min(validated.timeout_seconds, self._limits.total_timeout)):
+                addresses = await self._resolve()
+                reader, writer = await self._connect(addresses)
+                try:
+                    await _with_timeout(_write_request(
+                        writer, _request_head(self._origin, validated), validated.body,
+                        chunk_bytes=self._limits.write_chunk_bytes,
+                    ), self._limits.write_timeout, "write_timeout")
+                    raw, initial = await _with_timeout(
+                        _read_header_block(reader, self._limits.max_header_bytes),
+                        self._limits.read_timeout, "read_timeout",
+                    )
+                    status, headers = _parse_headers(raw, max_headers=self._limits.max_headers)
+                    if not 200 <= status <= 299:
+                        raise EgressProtocolError(f"http_status_{status}")
+                    if headers.get("content-encoding", "identity").lower() != "identity":
+                        raise EgressProtocolError("content_encoding_refused")
+                    async for part in _stream_body(reader, headers, initial, validated.max_response_bytes):
+                        yield part
+                finally:
+                    await _close_writer(writer, self._limits.close_timeout)
+        except asyncio.CancelledError:
+            raise
+        except TimeoutError:
+            raise EgressTimeoutError("total_timeout") from None
+        except StreamingEgressError:
+            raise
+        except Exception:
+            raise EgressConnectionError("transport_failed") from None
 
     async def _request(
         self,
@@ -574,6 +604,80 @@ async def _read_response(
         headers=MappingProxyType(dict(headers)),
         body=bytes(body),
     )
+
+
+class _BodyReader:
+    def __init__(self, reader, initial):
+        self.reader = reader
+        self.pending = bytearray(initial)
+
+    async def read(self, count):
+        if self.pending:
+            result = bytes(self.pending[:count])
+            del self.pending[:count]
+            return result
+        result = await self.reader.read(count)
+        if not result:
+            raise EgressProtocolError("truncated_response")
+        return result
+
+    async def exact(self, count):
+        result = bytearray()
+        while len(result) < count:
+            result.extend(await self.read(count - len(result)))
+        return bytes(result)
+
+    async def line(self):
+        result = bytearray()
+        while not result.endswith(b"\r\n"):
+            result.extend(await self.read(1))
+            if len(result) > 128:
+                raise EgressProtocolError("chunk_header_limit")
+        return bytes(result)
+
+
+async def _stream_body(reader, headers, initial, maximum):
+    source = _BodyReader(reader, initial)
+    encoding = headers.get("transfer-encoding")
+    length = headers.get("content-length")
+    if encoding is not None:
+        if encoding.lower() != "chunked" or length is not None:
+            raise EgressProtocolError("ambiguous_framing")
+        total = 0
+        chunks = 0
+        while True:
+            chunks += 1
+            if chunks > 4096:
+                raise EgressLimitError("chunk_count_limit")
+            size = (await source.line())[:-2]
+            if not size or len(size) > 16 or any(char not in b"0123456789abcdefABCDEF" for char in size):
+                raise EgressProtocolError("invalid_chunk")
+            count = int(size, 16)
+            if not count:
+                if await source.line() != b"\r\n" or source.pending:
+                    raise EgressProtocolError("chunk_trailer_refused")
+                return
+            total += count
+            if total > maximum:
+                raise EgressLimitError("response_too_large")
+            while count:
+                part = await source.read(min(65536, count))
+                count -= len(part)
+                yield part
+            if await source.exact(2) != b"\r\n":
+                raise EgressProtocolError("invalid_chunk")
+    else:
+        if length is None or not length.isascii() or not length.isdigit() or len(length) > 16:
+            raise EgressProtocolError("ambiguous_framing")
+        count = int(length)
+        if count > maximum:
+            raise EgressLimitError("response_too_large")
+        if len(initial) > count:
+            raise EgressProtocolError("ambiguous_framing")
+        while count:
+            part = await source.read(min(65536, count))
+            count -= len(part)
+            yield part
 
 
 async def _read_header_block(

@@ -506,7 +506,7 @@ async def test_actual_registration_menu_negotiates_only_shared_work(
     monkeypatch, register_chrome_branch, device, capable, enabled,
 ):
     from unittest.mock import AsyncMock
-    monkeypatch.setattr(chrome_availability, "projection_chrome_availability", lambda: {
+    monkeypatch.setattr(chrome_availability, "projection_chrome_availability", lambda _orch=None: {
         "work_enabled": enabled, "export_enabled": True, "share_enabled": True,
     })
     host, ws = SimpleNamespace(_safe_send=AsyncMock()), object()

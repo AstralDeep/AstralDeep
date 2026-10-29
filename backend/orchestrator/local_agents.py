@@ -58,6 +58,7 @@ FIRST_PARTY_PUBLIC_AGENT_IDS = (
     "fhir-1",
     "evidence-1",
     "cresco-1",
+    "sandbox-qualification-runner",
 )
 
 
@@ -195,6 +196,11 @@ async def register_built_ins(orch) -> List[str]:
                     dirs.append(name)
     except Exception:  # noqa: BLE001
         logger.debug("FHIR flag check failed; agent remains disabled", exc_info=True)
+    try:
+        if flags.is_enabled("sandbox_qualification") and flags.is_enabled("inprocess_agents"):
+            dirs.append("sandbox_qualification")
+    except Exception:
+        logger.debug("Sandbox qualification flag check failed; agent remains disabled", exc_info=True)
     for dir_name in dirs:
         try:
             cls = _load_agent_class(dir_name)
@@ -244,6 +250,10 @@ async def register_built_ins(orch) -> List[str]:
                         (agent.card.agent_id, verb) for verb in DE_ESCALATION_VERBS}
                 else:
                     logger.error("Computer-use session effects changed; de-escalation exemption disabled")
+            if dir_name == "fhir":
+                from orchestrator.clinical_extraction import register as register_clinical_extraction
+
+                register_clinical_extraction(orch)
             if dir_name == "terminal_shell":
                 from orchestrator.terminal_host_review import review_registered_terminal
 

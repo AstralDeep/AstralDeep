@@ -972,13 +972,15 @@ class ActionExecutor:
             def commit(tx, repository, _current):
                 nonlocal candidate_permit
                 session_current()
+                # Reauthorization keeps the execution fence inside its current authority window.
                 candidate_permit = repository.start_action_for_execution(tx, fence=self.claim.fence,
-                    binding=self.binding, authority=authority.observation, action_id=action.action_id,
+                    binding=self.binding, authority=checks["authority"].observation,
+                    action_id=action.action_id,
                     attempt_id=attempt_id, expected_request_digest=private.payload_binding,
                     current_permission_digest=checks["permission_digest"],
                     current_precondition_digest=checks["precondition_digest"])
                 return candidate_permit
-            permit = await self._research_transaction(private, authority, commit, action_id=action.action_id)
+            permit = await self._research_transaction(private, checks["authority"], commit, action_id=action.action_id)
             effect_started = time.monotonic()
             window.release()
             return permit
