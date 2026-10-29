@@ -255,7 +255,7 @@ class ToolPermissionManager:
             self._policy.repository.set_tool_selection,
             owner_id=user_id,
             agent_id=agent_id,
-            selected_tools=selected_tools,
+            tool_names=selected_tools,
             updated_at=int(time.time() * 1000),
         )
         return list(selected)

@@ -35,15 +35,22 @@ _PRESETS: Tuple[ProviderPreset, ...] = (
     ProviderPreset(CUSTOM_PROVIDER_KEY, "Custom OpenAI-compatible endpoint", None, False, ""),
 )
 
-_BY_KEY = {p.key: p for p in _PRESETS}
+_NATIVE_PRESET = ProviderPreset("anthropic-native", "Anthropic native Messages", "https://api.anthropic.com/v1", True, "sk-ant-...")
+_BY_KEY = {p.key: p for p in (*_PRESETS, _NATIVE_PRESET)}
+
+
+def _native_enabled():
+    from shared.feature_flags import flags
+    return flags.is_enabled("anthropic_native")
 
 
 def all_presets() -> Tuple[ProviderPreset, ...]:
-    return _PRESETS
+    return (*_PRESETS[:-1], _NATIVE_PRESET, _PRESETS[-1]) if _native_enabled() else _PRESETS
 
 
 def get_preset(key: str) -> Optional[ProviderPreset]:
-    return _BY_KEY.get((key or "").strip().lower())
+    preset = _BY_KEY.get((key or "").strip().lower())
+    return None if preset is _NATIVE_PRESET and not _native_enabled() else preset
 
 
 def resolve_base_url(provider_key: str, submitted_base_url: str = "") -> Optional[str]:

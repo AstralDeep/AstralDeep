@@ -117,7 +117,7 @@ def validate_egress_url(
     host = parsed.hostname
     if not host:
         raise EgressBlockedError("URL has no host")
-    allowed = set(allowed_private_hosts or _allowed_private_hosts_from_env())
+    allowed = set(_allowed_private_hosts_from_env() if allowed_private_hosts is None else allowed_private_hosts)
     if host in allowed:
         return
     try:
@@ -276,3 +276,62 @@ def request_http2(
         snippet = (resp.text or "")[:500]
         raise BadRequestError(f"Upstream returned {status}: {snippet}")
     return resp
+
+
+async def async_post(
+    url: str, *, body: bytes, headers: Dict[str, str],
+    timeout_seconds: float = 60.0, max_response_bytes: int = 2 * 1024 * 1024,
+):
+    import asyncio
+    import math
+    from types import SimpleNamespace
+    from urllib.parse import urlsplit
+
+    from shared.streaming_egress import EgressLimits, FixedOriginHttpTransport, StreamingEgressError
+
+    if (type(url) is not str or len(url) > 4096
+            or type(body) is not bytes or len(body) > 1024 * 1024
+            or type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
+            or not 0 < timeout_seconds <= 60
+            or type(max_response_bytes) is not int or not 0 < max_response_bytes <= 2 * 1024 * 1024):
+        raise ExternalHttpError("async_request_invalid")
+    try:
+        parsed = urlsplit(url)
+        if (parsed.scheme != "https" or not parsed.hostname or parsed.username is not None
+                or parsed.password is not None or parsed.query or parsed.fragment
+                or parsed.port not in (None, 443)):
+            raise ValueError
+    except ValueError:
+        raise EgressBlockedError("async_endpoint_invalid") from None
+
+    async def resolver(host, port):
+        records = await asyncio.get_running_loop().getaddrinfo(
+            host, port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM,
+            proto=socket.IPPROTO_TCP,
+        )
+        if not records or len(records) > 8 or any(
+                _is_private_address(record[4][0])
+                or not ipaddress.ip_address(record[4][0]).is_global
+                or not _decode_embedded_ipv4(ipaddress.ip_address(record[4][0])).is_global
+                for record in records):
+            raise EgressBlockedError("async_dns_denied")
+        return records
+
+    limits = EgressLimits(max_request_bytes=1024 * 1024, max_response_bytes=2 * 1024 * 1024,
+                          total_timeout=timeout_seconds)
+    transport = FixedOriginHttpTransport(f"https://{parsed.netloc}", limits=limits, _resolver=resolver)
+    request = SimpleNamespace(path=parsed.path, headers=headers, body=body,
+                              max_response_bytes=max_response_bytes, timeout_seconds=timeout_seconds)
+    source = transport.post_stream(request)
+    try:
+        async for part in source:
+            yield part
+    except asyncio.CancelledError:
+        raise
+    except StreamingEgressError as error:
+        failure = ExternalHttpError("async_egress_" + error.reason)
+        if error.reason.startswith("http_status_"):
+            failure.status_code = int(error.reason.rsplit("_", 1)[1])
+        raise failure from None
+    finally:
+        await source.aclose()

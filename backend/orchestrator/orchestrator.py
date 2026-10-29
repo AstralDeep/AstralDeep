@@ -52,6 +52,7 @@ from orchestrator.credential_manager import CredentialManager
 from orchestrator.delegation import DelegationService
 from orchestrator.tool_security import ToolSecurityAnalyzer
 from orchestrator.compaction import compact_messages
+from llm_config.client_factory import create_completion
 from llm_config.tool_continuation import (
     is_gemini_continuation_profile,
     merge_continuation_signature,
@@ -841,6 +842,7 @@ class _NoCacheStaticFiles(StaticFiles):
         return response
 
 TOOL_TIMEOUT_OVERRIDES = {
+    "sandbox_qualification_scratch_write": 180.0,
     "research_brief": 150.0,
     "fetch_page": 45.0,
     "summarize_url": 60.0,
@@ -1577,6 +1579,17 @@ class Orchestrator:
         owner_hint: Optional[str],
     ):
         from orchestrator.governed_dispatch import DispatchRuntime
+
+        from orchestrator.sandbox_tool_sessions import AGENT_ID, ToolDenied, trusted_service
+        if agent_id == AGENT_ID:
+            service = trusted_service(self)
+            if service is None:
+                raise ToolDenied()
+            runtime = await service.runtime_for_owner(owner_hint)
+            if runtime is not None:
+                return runtime
+            return DispatchRuntime(owner_hint, agent_id, "builtin", None, None, None, False,
+                                   "dispatch_mediated_only")
 
         registered = getattr(self, "_governed_dispatch_runtimes", {}).get(agent_id)
         if registered is not None:
@@ -16331,6 +16344,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         reasoning_effort=None, allow_stream: bool = False,
                         stream_chat_id: Optional[str] = None,
                         tool_choice=None, evidence_transient=False):
+        from llm_config.native_provider import NativeMessagesClient
         from llm_config.invocation import runner_failed, runner_started, runner_unavailable
         runner_started()
         actor_user_id, auth_principal = self._llm_audit_principals(websocket)
@@ -16343,11 +16357,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 response_format=response_format, reasoning_effort=reasoning_effort,
                 allow_stream=allow_stream, stream_chat_id=stream_chat_id)
         evidence_bound = evidence_context.has_references(messages)
+        native_call = False
         try:
             if evidence_bound:
                 client, source, resolved = await self._resolve_llm_client_for(websocket, evidence_bound=True)
             else:
                 client, source, resolved = await self._resolve_llm_client_for(websocket)
+            native_call = isinstance(client, NativeMessagesClient)
+            if (native_call and source == self._CredentialSource.USER
+                    and client.binding.owner_id != actor_user_id):
+                raise self._LLMUnavailable("native_owner_binding_changed")
         except self._LLMUnavailable:
             runner_unavailable()
             await self._record_llm_unconfigured(
@@ -16365,7 +16384,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         effort = self._valid_reasoning_effort(effort)
         _route_tier: Optional[int] = None
         escalated = False
-        if model_router.router_enabled():
+        if not native_call and model_router.router_enabled():
             try:
                 prof = self.rote.get_profile(websocket) if websocket is not None else None
                 dtype = prof.device_type.value if prof is not None else None
@@ -16386,7 +16405,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                              exc_info=True)
         def _probe_state(model_name: str):
             key = (getattr(resolved, "base_url", None), model_name)
-            rejected = getattr(self, "_llm_unsupported_params", {}).get(key, set())
+            rejected = set() if native_call else getattr(self, "_llm_unsupported_params", {}).get(key, set())
             kwargs: Dict[str, Any] = {}
             if response_format is not None and "response_format" not in rejected:
                 kwargs["response_format"] = response_format
@@ -16404,7 +16423,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             stream_allowed = False
         attempt = 0
         _vision_cache = getattr(self, "_llm_vision_unsupported", None)
-        if (_vision_cache is not None and cap_key in _vision_cache
+        if (not native_call and _vision_cache is not None and cap_key in _vision_cache
                 and self._messages_have_images(messages)):
             self._strip_image_parts(messages)
         _forced_choice = tool_choice if tool_choice not in (None, "auto") else None
@@ -16422,7 +16441,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 provider_capture=getattr(client, "_evidence_provider_capture", None),
             )
 
-        while attempt < self.MAX_RETRIES:
+        attempt_limit = 1 if native_call else self.MAX_RETRIES
+        while attempt < attempt_limit:
             attempt += 1
             try:
                 kwargs = {
@@ -16456,6 +16476,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 context_base_url=getattr(resolved, "base_url", None),
                             )
                     except Exception as _stream_exc:
+                        if native_call:
+                            raise
                         stream_error = self._safe_llm_error_metadata(_stream_exc)
                         logger.warning(
                             "LLM streaming failed exception_class=%s "
@@ -16472,12 +16494,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     if persistent_dispatch is not None:
                         response = await persistent_dispatch.invoke_model(
                             lambda request_kwargs=kwargs: tracked_provider(
-                                lambda: asyncio.to_thread(client.chat.completions.create, **request_kwargs), request_kwargs),
+                                lambda: create_completion(client, **request_kwargs), request_kwargs),
                             kwargs,
                         )
                     else:
                         response = await tracked_provider(
-                            lambda: asyncio.to_thread(client.chat.completions.create, **kwargs), kwargs,
+                            lambda: create_completion(client, **kwargs), kwargs,
                         )
                 choices = getattr(response, "choices", None)
                 if not choices:
@@ -16514,7 +16536,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         usage=usage,
                         outcome="success",
                     )
-                if (persistent_dispatch is None
+                if (not native_call and persistent_dispatch is None
                         and _route_tier is not None and not escalated and not tools_desc
                         and model_router.router_enabled()
                         and not model_router.confidence_ok(getattr(_msg, "content", None))):
@@ -16529,11 +16551,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                     _next_model)
                         attempt -= 1
                         continue
+                if native_call:
+                    await client.validate()
                 return _msg, usage
             except Exception as e:
                 if persistent_dispatch is not None:
                     raise
-                if _forced_choice is not None and not _forced_choice_retried:
+                if not native_call and _forced_choice is not None and not _forced_choice_retried:
                     _forced_choice_retried = True
                     _forced_choice = None
                     logger.info(
@@ -16542,7 +16566,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     attempt -= 1
                     continue
 
-                if (self._messages_have_images(messages)
+                if (not native_call and self._messages_have_images(messages)
                         and self._llm_rejects_images(e)):
                     _vc = getattr(self, "_llm_vision_unsupported", None)
                     if _vc is None:
@@ -16555,7 +16579,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 # Provider error text stays in memory only, never logged
                 drop = (
                     self._llm_unsupported_extras(str(e), extra_kwargs)
-                    if extra_kwargs
+                    if extra_kwargs and not native_call
                     else set()
                 )
                 if drop:
@@ -16575,14 +16599,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     "LLM call failed attempt=%d/%d exception_class=%s "
                     "status_code=%s upstream_error_class=%s retryable=%s",
                     attempt,
-                    self.MAX_RETRIES,
+                    attempt_limit,
                     error.exception_class,
                     error.status_code,
                     error.upstream_error_class,
                     error.retryable,
                 )
 
-                if not error.retryable or attempt == self.MAX_RETRIES:
+                if not error.retryable or attempt == attempt_limit:
                     runner_failed(error.exception_class, credential_rejected=error.status_code == 401)
                     await self._record_llm_call(
                         self.audit_recorder,
@@ -16592,7 +16616,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         credential_source=source,
                         resolved=resolved,
                         routed_model=call_model,
-                        total_tokens=None,
+                        total_tokens=(getattr(getattr(e, "usage", None), "total_tokens", None)
+                                      if native_call else None),
                         outcome="failure",
                         upstream_error_class=error.upstream_error_class,
                     )
@@ -16609,7 +16634,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     "Transient LLM error; retrying attempt=%d/%d "
                     "backoff_seconds=%.3f",
                     attempt,
-                    self.MAX_RETRIES,
+                    attempt_limit,
                     backoff,
                 )
                 await asyncio.sleep(backoff)
@@ -16714,8 +16739,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     async def _call_llm_streamed(self, websocket, client, kwargs, chat_id, *, context_attempt=None, context_retry=None,
                                   purpose="conversation", context_base_url=None, context_provider_capture=None):
+        from llm_config.native_provider import NativeMessagesClient
+        native_call = isinstance(client, NativeMessagesClient)
         loop = asyncio.get_running_loop()
-        queue: asyncio.Queue = asyncio.Queue()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=64 if native_call else 0)
         from threading import Event
         abandoned = Event()
         preserve_continuation = is_gemini_continuation_profile(context_base_url)
@@ -16739,17 +16766,37 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     exc.usage = reported_usage
                 raise
 
+        async def _pump_native():
+            from llm_config.invocation import provider_reported_usage
+            from types import SimpleNamespace
+            reported_usage = None
+            source = client.stream_async(**kwargs)
+            try:
+                async for chunk in source:
+                    if chunk.usage is not None:
+                        reported_usage = chunk.usage
+                        provider_reported_usage(reported_usage)
+                    await queue.put(("chunk", chunk))
+                await queue.put(("done", None))
+                return SimpleNamespace(usage=reported_usage)
+            finally:
+                await source.aclose()
+
         async def pump():
             try:
                 return await self._context_model_call(
-                    websocket, chat_id, purpose, kwargs["model"], lambda: asyncio.to_thread(_pump),
+                    websocket, chat_id, purpose, kwargs["model"],
+                    _pump_native if native_call else lambda: asyncio.to_thread(_pump),
                     attempt_id=context_attempt, retry_of=context_retry,
                     request=kwargs, base_url=context_base_url,
                     provider_capture=context_provider_capture,
                 )
             except Exception as exc:
                 if not abandoned.is_set():
-                    queue.put_nowait(("error", exc))
+                    if native_call:
+                        await queue.put(("error", exc))
+                    else:
+                        queue.put_nowait(("error", exc))
                 raise
 
         pump_task = asyncio.create_task(pump())
@@ -16772,6 +16819,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if kind == "error":
                     raise payload
                 chunk = payload
+                if native_call:
+                    await client.validate()
                 if getattr(chunk, "usage", None) is not None:
                     usage = chunk.usage
                 choices = getattr(chunk, "choices", None) or []
@@ -16841,6 +16890,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             raise
         except Exception:
             abandoned.set()
+            if native_call:
+                pump_task.cancel()
             await asyncio.gather(pump_task, return_exceptions=True)
             if emitted:
                 try:
@@ -16850,8 +16901,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     logger.debug("narrative stream cleanup failed", exc_info=True)
             raise
         await pump_task
+        if native_call:
+            await client.validate()
         message = self._assemble_streamed_message(
             "".join(content_parts), tool_calls_acc)
+        if native_call and finish_reason == "content_filter":
+            message.refusal = message.content or "The provider declined the request."
         from types import SimpleNamespace
         return SimpleNamespace(
             choices=[SimpleNamespace(message=message, finish_reason=finish_reason)],
@@ -17199,7 +17254,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             summary_request = {"model": resolved.model, "messages": summary_messages, "max_tokens": 300}
             response = await self._context_model_call(
                 websocket, chat_id, feature, resolved.model,
-                lambda: asyncio.to_thread(client.chat.completions.create, **summary_request),
+                lambda: create_completion(client, **summary_request),
                 request=summary_request, base_url=getattr(resolved, "base_url", None),
                 provider_capture=getattr(client, "_evidence_provider_capture", None),
             )
@@ -18071,7 +18126,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             render_target="chat" if pending.error else None)
 
         if chat_id:
-            if agent_id != "terminal-shell-1":
+            if agent_id != "terminal-shell-1" and (agent_id, tool_name) != ("fhir-1", "extract_note_fields"):
                 args = await asyncio.to_thread(
                     self._map_file_paths, chat_id, args, user_id=user_id)
                 if self._tool_accepts_context_arg(agent_id, tool_name, "session_id"):
@@ -18081,26 +18136,27 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             ):
                 args["user_id"] = user_id
 
-        if user_id and agent_id:
-            creds = await asyncio.to_thread(
-                self.credential_manager.get_agent_credentials_encrypted, user_id, agent_id)
-            if creds:
-                args["_credentials"] = creds
-                args["_credentials_encrypted"] = True
+        if (agent_id, tool_name) != ("fhir-1", "extract_note_fields") and agent_id != "sandbox-qualification-runner":
+            if user_id and agent_id:
+                creds = await asyncio.to_thread(
+                    self.credential_manager.get_agent_credentials_encrypted, user_id, agent_id)
+                if creds:
+                    args["_credentials"] = creds
+                    args["_credentials_encrypted"] = True
 
-        # Plaintext creds: only for in-process, trusted agents
-        if agent_id in self.local_agents:
-            _llm_ctx_user = self._llm_context_user_id(websocket)
-            if _llm_ctx_user is None:
-                _llm_cfg = await self._llm_store.get_system()
-            else:
-                _llm_cfg = await self._llm_store.get(_llm_ctx_user)
-            if _llm_cfg is not None:
-                args["_session_llm_credentials"] = {
-                    "OPENAI_API_KEY": _llm_cfg.api_key,
-                    "OPENAI_BASE_URL": _llm_cfg.base_url,
-                    "LLM_MODEL": _llm_cfg.model,
-                }
+            # Plaintext creds: only for in-process, trusted agents
+            if agent_id in self.local_agents:
+                _llm_ctx_user = self._llm_context_user_id(websocket)
+                if _llm_ctx_user is None:
+                    _llm_cfg = await self._llm_store.get_system()
+                else:
+                    _llm_cfg = await self._llm_store.get(_llm_ctx_user)
+                if _llm_cfg is not None:
+                    args["_session_llm_credentials"] = {
+                        "OPENAI_API_KEY": _llm_cfg.api_key,
+                        "OPENAI_BASE_URL": _llm_cfg.base_url,
+                        "LLM_MODEL": _llm_cfg.model,
+                    }
 
         if not agent_id and tool_name:
             owner = self._find_tool_owner(tool_name)
@@ -18141,13 +18197,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if isinstance(minted, GateRefusal):
                 return minted
             delegation_token, hop_correlation_id = minted
-            if not _untrusted_tunnel_agent:
+            if not _untrusted_tunnel_agent and (agent_id, tool_name) != ("fhir-1", "extract_note_fields"):
                 args["_delegation_token"] = delegation_token
         elif user_id and agent_id and not _untrusted_tunnel_agent:
             delegation_token = await self._get_delegation_token(websocket, agent_id, user_id)
-            if delegation_token:
+            if delegation_token and (agent_id, tool_name) != ("fhir-1", "extract_note_fields"):
                 args["_delegation_token"] = delegation_token
-            elif (self._delegation_required() or machine_scopes is not None
+            elif not delegation_token and (self._delegation_required() or machine_scopes is not None
                   or mesh_admission.MEMBER_CLAIM in _session_claims):
                 permissions_fault = await self._delegation_denied_for_permissions(
                     websocket, agent_id, user_id)
@@ -19585,6 +19641,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             # One approval authorizes exactly one physical attempt
             max_retries = 1
 
+        if (agent_id, tool_name) == ("fhir-1", "extract_note_fields"):
+            max_retries = 1
         default_timeout = TOOL_TIMEOUT_OVERRIDES.get(tool_name, 30.0)
         if agent_id == "computer-use-1":
             from orchestrator.computer_use_policy import dispatch_timeout
@@ -19858,6 +19916,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             "retryable": False, "offline": True})
             except Exception:
                 logger.debug("user-agent offline check failed", exc_info=True)
+        if (agent_id, tool_name) == ("fhir-1", "extract_note_fields"):
+            from orchestrator.clinical_extraction import invoke as invoke_clinical
+
+            return await guarded(args, lambda capabilities: invoke_clinical(
+                self, ui_websocket, args, owner=tool_owner,
+                chat=protected_conversation_id, timeout=timeout))
         if agent_id in self.local_agents:
             return await guarded(
                 args,
@@ -20338,6 +20402,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     error={"message": str(exc), "retryable": True}))
 
         try:
+            if agent_id == "sandbox-qualification-runner":
+                from orchestrator.sandbox_tool_sessions import bind_dispatch
+                bind_dispatch(self, request, call_args, ui_websocket)
             agent = self.local_agents[agent_id]
             loopback = LoopbackSocket(self, agent_id)
             task = asyncio.create_task(agent.handle_mcp_request(loopback, request))
@@ -24374,6 +24441,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             raise
 
     async def _close_started_services_once(self) -> None:
+        qualification_agent = getattr(self, "local_agents", {}).get("sandbox-qualification-runner")
+        if qualification_agent is not None:
+            from agents.sandbox_qualification.sandbox_qualification_agent import SandboxQualificationAgent
+            from orchestrator.sandbox_tool_sessions import QualificationToolSessions
+            if (type(qualification_agent) is SandboxQualificationAgent
+                    and type(qualification_agent.sessions) is QualificationToolSessions
+                    and qualification_agent.sessions.orchestrator is self):
+                await qualification_agent.sessions.shutdown()
         terminal_sessions = getattr(self, "terminal_sessions", None)
         if terminal_sessions is not None:
             await asyncio.to_thread(terminal_sessions.shutdown)
@@ -24654,7 +24729,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             ], "max_tokens": 300}
             response = await self._context_model_call(
                 websocket, chat_id, feature, resolved.model,
-                lambda: asyncio.to_thread(client.chat.completions.create, **title_request),
+                lambda: create_completion(client, **title_request),
                 request=title_request, base_url=getattr(resolved, "base_url", None),
                 provider_capture=getattr(client, "_evidence_provider_capture", None),
             )
