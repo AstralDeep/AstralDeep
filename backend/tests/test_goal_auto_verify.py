@@ -1,4 +1,9 @@
-from orchestrator.goal_auto_verify import _startup_argv
+from orchestrator.goal_auto_verify import (
+    _javascript_http_startup_argv,
+    _javascript_package_manager,
+    _javascript_script_argv,
+    _startup_argv,
+)
 
 
 def test_startup_discovery_uses_declared_smoke_flag_without_project_specific_paths():
@@ -28,3 +33,32 @@ def test_package_entrypoint_uses_smoke_flag_from_delegated_module():
         entry: "from .game import main\nraise SystemExit(main())",
         game: "def main(): handle('--smoke')",
     }) == ["./.venv/bin/python", "-m", "minecraft_clone", "--smoke"]
+
+
+def test_javascript_package_manager_prefers_locked_install_and_supports_unlocked_npm():
+    assert _javascript_package_manager({"package-lock.json"}) == (
+        "npm", ["npm", "ci", "--no-audit", "--no-fund"],
+    )
+    assert _javascript_package_manager({"pnpm-lock.yaml"}) == (
+        "pnpm", ["pnpm", "install", "--frozen-lockfile"],
+    )
+    assert _javascript_package_manager({"yarn.lock"}) == (
+        "yarn", ["yarn", "install", "--immutable"],
+    )
+    assert _javascript_package_manager({"bun.lock"})[0] == "bun"
+    assert _javascript_package_manager({"package.json"}) == (
+        "npm", ["npm", "install", "--no-audit", "--no-fund"],
+    )
+
+
+def test_javascript_test_command_and_http_startup_are_bounded_and_local():
+    assert _javascript_script_argv("npm", "test") == ["npm", "run", "test"]
+    argv = _javascript_http_startup_argv("npm", {"preview": "vite preview"})
+    assert argv[:2] == ["node", "-e"]
+    assert "127.0.0.1:4173" in argv[2]
+    assert "20000" in argv[2]
+    assert "SIGTERM" in argv[2]
+    assert "detached:true" in argv[2]
+    assert "process.kill(-p.pid" in argv[2]
+    assert "r.status>=200&&r.status<400" in argv[2]
+    assert _javascript_http_startup_argv("npm", {"test": "vitest"}) is None

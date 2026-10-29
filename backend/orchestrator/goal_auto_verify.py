@@ -1,4 +1,4 @@
-"""Bounded deterministic verification for Python projects on the granted computer."""
+"""Bounded deterministic verification for local Python and JavaScript projects."""
 
 from __future__ import annotations
 
@@ -17,9 +17,10 @@ _MAX_FILES = 128
 _MAX_DEPTH = 3
 _IGNORED_DIRS = frozenset({".git", ".venv", "venv", "__pycache__", "node_modules", ".tox"})
 _SOURCE_SUFFIXES = frozenset({".py"})
+_JS_SOURCE_SUFFIXES = frozenset({".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"})
 
 
-async def verify_python_project(
+async def verify_local_project(
     orch,
     websocket,
     goal_progress,
@@ -31,7 +32,7 @@ async def verify_python_project(
     user_id,
     task=None,
 ) -> dict[str, list[str]]:
-    """Run project-scoped Python setup, tests and a bounded startup check.
+    """Run project-scoped setup, tests and a bounded startup check.
 
     Returns references only when the ordinary private-observation validator accepts
     all required categories. Tool dispatch always uses ``execute_single_tool``.
@@ -83,6 +84,17 @@ async def verify_python_project(
     listing = await call("list_dir", {"path": root})
     if listing is None or stopped():
         return {}
+    root_entries = listing.get("entries")
+    if isinstance(root_entries, list) and any(
+        isinstance(entry, dict) and entry.get("name") == "package.json" and entry.get("is_dir") is not True
+        for entry in root_entries
+    ) and not any(
+        isinstance(entry, dict) and entry.get("name") in {"pyproject.toml", "requirements.txt", "setup.py", "setup.cfg"}
+        and entry.get("is_dir") is not True for entry in root_entries
+    ):
+        return await _verify_javascript_project(
+            root, listing, call, stopped, goal_contract, goal_progress, goal_project,
+        )
     root_files: set[str] = set()
     queue: list[tuple[str, int]] = [(root, 0)]
     files: list[str] = []
@@ -200,6 +212,142 @@ def _root_granted(root: str, project: dict[str, Any]) -> bool:
         and (root == row["path"] or row["path"] == "/" or root.startswith(row["path"].rstrip("/") + "/"))
         for row in rows
     )
+
+
+async def _verify_javascript_project(root, listing, call, stopped, goal_contract, goal_progress, goal_project):
+    """Install, test, build and serve a root JavaScript project through Mac tools."""
+    entries = listing.get("entries", [])
+    root_files = {entry["name"].lower() for entry in entries
+                  if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+                  and entry.get("is_dir") is not True}
+    package_path = str(PurePosixPath(root) / "package.json")
+    package_data = await call("read_file", {"path": package_path, "max_bytes": 32768})
+    if package_data is None or stopped():
+        return {}
+    package_text = package_data.get("text")
+    if not isinstance(package_text, str) or package_data.get("truncated") is True:
+        return {}
+    try:
+        package = json.loads(package_text)
+    except (ValueError, TypeError):
+        return {}
+    scripts = package.get("scripts") if isinstance(package, dict) else None
+    if not isinstance(scripts, dict):
+        return {}
+
+    sources = []
+    queue = [(root, 0)]
+    seen = set()
+    while queue and len(seen) < _MAX_DIRECTORIES and len(sources) < _MAX_FILES:
+        directory, depth = queue.pop(0)
+        if directory in seen:
+            continue
+        seen.add(directory)
+        data = listing if directory == root else await call("list_dir", {"path": directory})
+        if data is None or stopped():
+            return {}
+        for entry in data.get("entries", [])[:500]:
+            if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+                continue
+            name = entry["name"]
+            if not name or name in {".", ".."} or "/" in name or "\x00" in name:
+                continue
+            path = str(PurePosixPath(directory) / name)
+            if entry.get("is_dir") is True:
+                if depth < _MAX_DEPTH and name not in _IGNORED_DIRS and not name.startswith("."):
+                    queue.append((path, depth + 1))
+            elif PurePosixPath(name).suffix.lower() in _JS_SOURCE_SUFFIXES:
+                sources.append(path)
+                if len(sources) >= _MAX_FILES:
+                    break
+    if not sources:
+        return {}
+    readable = False
+    for path in sorted(sources)[:16]:
+        data = await call("read_file", {"path": path, "max_bytes": 32768})
+        if data is None or stopped():
+            return {}
+        if (type(data.get("size")) is int and data["size"] >= 128
+                and data.get("truncated") is False and isinstance(data.get("text"), str)
+                and data["text"].strip()):
+            readable = True
+    if not readable:
+        return {}
+
+    package_manager = _javascript_package_manager(root_files)
+    if package_manager is None or not isinstance(scripts.get("test"), str) or not scripts["test"].strip():
+        return {}
+    manager, install = package_manager
+    if "node_modules" not in root_files:
+        result = await call("run_command", {
+            "argv": install, "cwd": root, "timeout_s": 300, "background": False,
+        })
+        if result is None or stopped():
+            return {}
+    for script in ("test", "build"):
+        if script == "build" and (not isinstance(scripts.get(script), str) or not scripts[script].strip()):
+            return {}
+        argv = _javascript_script_argv(manager, script)
+        result = await call("run_command", {
+            "argv": argv, "cwd": root, "timeout_s": 240, "background": False,
+            "env": {"CI": "true"} if script == "test" else {},
+        })
+        if result is None or stopped():
+            return {}
+
+    startup = _javascript_http_startup_argv(manager, scripts)
+    if startup is None:
+        return {}
+    result = await call("run_command", {
+        "argv": startup, "cwd": root, "timeout_s": 30, "background": False,
+    })
+    if result is None or stopped():
+        return {}
+    return select_goal_proof_references(
+        goal_contract, goal_progress.private_observations(), goal_project,
+    )
+
+
+def _javascript_package_manager(root_files: set[str]):
+    if "package-lock.json" in root_files:
+        return "npm", ["npm", "ci", "--no-audit", "--no-fund"]
+    if "npm-shrinkwrap.json" in root_files:
+        return "npm", ["npm", "ci", "--no-audit", "--no-fund"]
+    if "pnpm-lock.yaml" in root_files:
+        return "pnpm", ["pnpm", "install", "--frozen-lockfile"]
+    if "yarn.lock" in root_files:
+        return "yarn", ["yarn", "install", "--immutable"]
+    if "bun.lock" in root_files or "bun.lockb" in root_files:
+        return "bun", ["bun", "install", "--frozen-lockfile"]
+    return "npm", ["npm", "install", "--no-audit", "--no-fund"]
+
+
+def _javascript_script_argv(manager: str, script: str) -> list[str]:
+    return {"npm": ["npm", "run", script],
+            "pnpm": ["pnpm", "run", script], "yarn": ["yarn", script],
+            "bun": ["bun", "run", script]}[manager]
+
+
+def _javascript_http_startup_argv(manager: str, scripts: dict[str, Any]) -> list[str] | None:
+    script = "preview" if isinstance(scripts.get("preview"), str) and scripts["preview"].strip() else (
+        "start" if isinstance(scripts.get("start"), str) and scripts["start"].strip() else None
+    )
+    if script is None:
+        return None
+    launch = {"npm": ["npm", "run", script, "--", "--host", "127.0.0.1", "--port", "4173"],
+              "pnpm": ["pnpm", "run", script, "--host", "127.0.0.1", "--port", "4173"],
+              "yarn": ["yarn", script, "--host", "127.0.0.1", "--port", "4173"],
+              "bun": ["bun", "run", script, "--host", "127.0.0.1", "--port", "4173"]}[manager]
+    # Keep the child lifetime bounded and require an HTTP response before success.
+    node = ("const {spawn}=require('node:child_process');const p=spawn(" + json.dumps(launch[0]) + "," +
+            json.dumps(launch[1:]) + ",{stdio:'ignore',detached:true});let done=false;" +
+            "const stop=()=>{if(!p.pid)return;try{process.kill(-p.pid,'SIGTERM')}catch{p.kill('SIGTERM')}};" +
+            "const end=(c)=>{if(done)return;done=true;stop();process.exit(c)};" +
+            "p.on('error',()=>end(1));p.on('exit',c=>{if(!done)end(c||1)});" +
+            "process.on('SIGTERM',()=>end(1));process.on('SIGINT',()=>end(1));" +
+            "const t=Date.now();(async()=>{while(Date.now()-t<20000){try{const r=await fetch('http://127.0.0.1:4173/');" +
+            "if(r.status>=200&&r.status<400)return end(0)}catch{}await new Promise(r=>setTimeout(r,250))}end(1)})();")
+    return ["node", "-e", node]
 
 
 def _canonical_root(value: Any) -> str | None:
