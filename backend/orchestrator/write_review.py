@@ -60,12 +60,14 @@ def unified_diff(path: str, current: Optional[str], proposed: str) -> Tuple[str,
     return "\n".join(lines), False
 
 
-async def _current_text(orch, websocket, owner: str, chat: Optional[str], args: Dict[str, Any]) -> Optional[str]:
+async def _current_text(orch, websocket, owner: str, chat: Optional[str], args: Dict[str, Any]) -> Tuple[str, Optional[str]]:
     from orchestrator.remote_confirmation import capture_computer_approval, computer_approval_current
 
-    authority = capture_computer_approval(orch, websocket, owner, chat, args)
+    from orchestrator.hitl_confirmation import consent_decision
+    authority = capture_computer_approval(orch, websocket, owner, chat, args,
+        standing=consent_decision(orch, websocket, owner, chat, "computer-use-1", "write_file", args, ())[0] == "standing")
     if authority is None:
-        return None
+        return "unavailable", None
     session = authority.session
 
     async def read():
@@ -81,47 +83,81 @@ async def _current_text(orch, websocket, owner: str, chat: Optional[str], args: 
 
     try:
         result = await asyncio.wait_for(read(), READ_TIMEOUT_S)
-    except (ComputerHostError, asyncio.TimeoutError) as exc:
+    except ComputerHostError as exc:
+        if exc.code == "not_found":
+            return "missing", None
         logger.info("write review read unavailable: %s", getattr(exc, "code", type(exc).__name__))
-        return None
+        return "unavailable", None
+    except asyncio.TimeoutError:
+        return "unavailable", None
     except Exception:  # noqa: BLE001
         logger.warning("write review read failed", exc_info=True)
-        return None
+        return "unavailable", None
     if not isinstance(result, dict) or result.get("truncated") or not isinstance(result.get("text"), str):
+        return "unavailable", None
+    return "present", result["text"]
+
+
+async def prepare_write_review(orch, websocket, owner: str, chat: Optional[str], args: Dict[str, Any]):
+    from orchestrator.computer_use_policy import CwdRefusal, resolve_workspace_path
+    from orchestrator.hitl_confirmation import approved_call, consent_decision
+    from orchestrator.remote_confirmation import _MARKER, computer_card_host
+
+    if args.get(_MARKER) or approved_call(orch, owner, chat, "computer-use-1", "write_file"):
         return None
-    return result["text"]
+    if consent_decision(orch, websocket, owner, chat, "computer-use-1", "write_file", args, ())[0] == "refuse":
+        return None
+    try:
+        host = computer_card_host(orch, owner, chat, args)
+        if host.platform != "macos":
+            return None
+        from orchestrator.project_authority import project_roots
+        roots = project_roots(orch, owner, chat, host, required=True)
+        primary = roots[0]["path"] if roots and getattr(host, "project_mode", False) else None
+        args["path"] = resolve_workspace_path(args.get("path"), roots, host.name, primary=primary)
+    except (ComputerHostError, CwdRefusal):
+        return None
+    snapshot = await _current_text(orch, websocket, owner, chat, args)
+    if snapshot[0] == "missing":
+        args["if_exists"] = "refuse"
+    return snapshot
 
 
 async def diff_components(orch, websocket, owner: str, chat: Optional[str], args: Dict[str, Any],
-                          component_id: Optional[str]) -> List[Dict[str, Any]]:
+                          component_id: Optional[str], *, snapshot=None) -> List[Dict[str, Any]]:
     path, proposed = args.get("path"), args.get("content")
     if not isinstance(path, str) or not isinstance(proposed, str):
         return [Text(id=component_id, content=UNAVAILABLE_TEXT, variant="caption").to_dict()]
-    current = await _current_text(orch, websocket, owner, chat, args)
-    if current is None and args.get("if_exists") == "overwrite":
+    state, current = snapshot if snapshot is not None else await _current_text(orch, websocket, owner, chat, args)
+    if state == "unavailable" or state == "missing" and args.get("if_exists") == "overwrite":
         return [Text(id=component_id, content=UNAVAILABLE_TEXT, variant="caption").to_dict()]
     diff, _truncated = await asyncio.to_thread(unified_diff, path, current, proposed)
     if not diff:
-        return [Text(id=component_id, content=UNCHANGED_TEXT, variant="caption").to_dict()]
+        return [Text(id=component_id, content="Create an empty file." if state == "missing" else UNCHANGED_TEXT,
+                     variant="caption").to_dict()]
     return [CodeBlock(id=component_id, code=diff, language="diff").to_dict()]
 
 
 async def review_components(orch, websocket, owner: str, chat: Optional[str], args: Dict[str, Any],
-                            component_id: Optional[str]) -> List[Dict[str, Any]]:
+                            component_id: Optional[str], *, snapshot=None) -> List[Dict[str, Any]]:
     try:
-        return await diff_components(orch, websocket, owner, chat, args, component_id)
+        return await diff_components(orch, websocket, owner, chat, args, component_id, snapshot=snapshot)
     except Exception:  # noqa: BLE001
         logger.warning("write review diff could not be built", exc_info=True)
         return [Text(id=component_id, content=UNAVAILABLE_TEXT, variant="caption").to_dict()]
 
 
 async def attach_write_diff(orch, websocket, owner: str, chat: Optional[str], args: Dict[str, Any],
-                            components: Any) -> Any:
+                            components: Any, *, snapshot=None) -> Any:
     card = components[0] if isinstance(components, list) and len(components) == 1 else None
     if (not isinstance(card, dict) or card.get("type") != "card" or not isinstance(card.get("content"), list)
             or not any(isinstance(item, dict) and item.get("action") == "remote_op_decision"
                        for item in card["content"])):
         return components
     component_id = f"{card['id']}_diff" if isinstance(card.get("id"), str) else None
-    parts = await review_components(orch, websocket, owner, chat, args, component_id)
-    return [{**card, "content": [*card["content"][:1], *parts, *card["content"][1:]]}]
+    parts = await review_components(orch, websocket, owner, chat, args, component_id, snapshot=snapshot)
+    summary = card["content"][:1]
+    if summary and any(part.get("code", "").startswith("--- /dev/null\n")
+                       or part.get("content") == "Create an empty file." for part in parts):
+        summary = [{**summary[0], "content": summary[0].get("content", "").replace("(overwrite)", "(create)", 1)}]
+    return [{**card, "content": [*summary, *parts, *card["content"][1:]]}]

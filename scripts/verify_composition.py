@@ -687,7 +687,7 @@ def _plane_schema_literal_import(
             and isinstance(declarations[0].value, ast.Constant) and isinstance(declarations[0].value.value, str)):
         declarations = declarations[1:]
     # Recognizes this exact Final syntax only, never evaluates
-    if (stem == "declarative_agent" and len(declarations) == 2
+    if (stem in {"declarative_agent", "project"} and len(declarations) == 2
             and isinstance(declarations[0], ast.ImportFrom)
             and declarations[0].module == "typing" and declarations[0].level == 0
             and len(declarations[0].names) == 1
@@ -747,6 +747,7 @@ def _plane_migration_digest(component_root: Path) -> str:
         ("harness_binding", "HARNESS_BINDING_SCHEMA_STATEMENTS"),
         ("push_delivery", "PUSH_DELIVERY_SCHEMA_STATEMENTS"),
         ("observation", "OBSERVATION_SCHEMA_STATEMENTS"),
+        ("project", "PROJECT_SCHEMA_STATEMENTS"),
     ):
         reviewed_literals.update(_plane_schema_literal_import(
             component_root, tree, stem=stem, symbol=symbol))

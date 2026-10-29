@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from orchestrator.models import (
     ChatMessageRequest, ChatMessageResponse,
     ChatListResponse, ChatSummary,
-    ChatCreateRequest, ChatCreateResponse,
+    ChatCreateRequest, ChatCreateResponse, ProjectCreateRequest, ProjectRenameRequest,
     ChatDetailResponse, ChatDetail,
     DeleteResponse,
     ComponentSaveRequest, ComponentSaveResponse, SavedComponent,
@@ -539,6 +539,90 @@ async def get_runtime_reliability_metrics(
 
 
 chat_router = APIRouter(prefix="/api/chats", tags=["Chat"])
+project_router = APIRouter(prefix="/api/projects", tags=["Projects"])
+
+
+async def _project_operation(orch, owner_id, operation, *args, changed=False, **kwargs):
+    from orchestrator.projects import ProjectError
+
+    try:
+        result = await asyncio.to_thread(operation, *args, **kwargs)
+    except ProjectError as exc:
+        raise HTTPException(status_code=exc.status,
+                            detail={"code": exc.code, "message": exc.message}) from None
+    if changed:
+        await orch._broadcast_user_history(user_id=owner_id, projects_changed=True)
+    return result
+
+
+@project_router.post("", status_code=201, summary="Create a project")
+async def create_project(request: Request, body: ProjectCreateRequest,
+                         user_id: str = Depends(require_user_id)):
+    from orchestrator.projects import ProjectService
+
+    orch = _get_orchestrator(request)
+    return await _project_operation(orch, user_id, ProjectService(orch.history).create,
+        user_id, body.project_id, body.name, body.position, changed=True)
+
+
+@project_router.get("", summary="List projects")
+async def list_projects(request: Request, cursor: Optional[str] = None, limit: int = 50,
+                        user_id: str = Depends(require_user_id)):
+    from orchestrator.projects import ProjectService
+
+    orch = _get_orchestrator(request)
+    return await _project_operation(orch, user_id, ProjectService(orch.history).list,
+                                    user_id, cursor=cursor, limit=limit)
+
+
+@project_router.get("/{project_id}", summary="Load a project")
+async def get_project(request: Request, project_id: str,
+                      user_id: str = Depends(require_user_id)):
+    from orchestrator.projects import ProjectService
+
+    orch = _get_orchestrator(request)
+    return await _project_operation(orch, user_id, ProjectService(orch.history).get,
+                                    user_id, project_id)
+
+
+@project_router.patch("/{project_id}", summary="Rename a project")
+async def rename_project(request: Request, project_id: str, body: ProjectRenameRequest,
+                         user_id: str = Depends(require_user_id)):
+    from orchestrator.projects import ProjectService
+
+    orch = _get_orchestrator(request)
+    return await _project_operation(orch, user_id, ProjectService(orch.history).rename,
+        user_id, project_id, body.name, body.revision, changed=True)
+
+
+@project_router.delete("/{project_id}", response_model=DeleteResponse, summary="Delete a project, optionally including its chats")
+async def delete_project(request: Request, project_id: str, revision: int,
+                         delete_chats: bool = False,
+                         user_id: str = Depends(require_user_id)):
+    from orchestrator.projects import ProjectService
+
+    orch = _get_orchestrator(request)
+    deletion = await _project_operation(orch, user_id, ProjectService(orch.history).delete,
+                                       user_id, project_id, revision, delete_chats=delete_chats)
+    from orchestrator.project_authority import invalidate_deleted_project
+
+    await invalidate_deleted_project(orch, user_id, project_id)
+    for mutation in deletion.chats:
+        await _notify_chat_deleted(orch, user_id, mutation.chat_id, mutation)
+    await orch._broadcast_user_history(user_id=user_id, projects_changed=True)
+    return DeleteResponse()
+
+
+@project_router.get("/{project_id}/chats", summary="List project chats, including empty chats")
+async def list_project_chats(request: Request, project_id: str,
+                             cursor: Optional[str] = None, limit: int = 50,
+                             user_id: str = Depends(require_user_id)):
+    from orchestrator.projects import ProjectService
+
+    orch = _get_orchestrator(request)
+    return await _project_operation(orch, user_id, ProjectService(orch.history).list_chats,
+                                    user_id, project_id, cursor=cursor, limit=limit)
+
 
 
 @chat_router.get(
@@ -578,8 +662,16 @@ async def create_chat(
 ):
     orch = _get_orchestrator(request)
     agent_id = body.agent_id if body is not None else None
-    chat_id = await asyncio.to_thread(orch.history.create_chat, user_id=user_id, agent_id=agent_id)
-    return ChatCreateResponse(chat_id=chat_id, agent_id=agent_id)
+    from orchestrator.projects import ProjectService, request_requires_project
+
+    project_id = body.project_id if body else None
+    if (project_id is not None or (body is not None and body.chat_id is not None)
+            or request_requires_project(orch, request, user_id)):
+        chat_id = await _project_operation(orch, user_id, ProjectService(orch.history).create_chat,
+            user_id, project_id, body.chat_id if body else None, agent_id, changed=True)
+    else:
+        chat_id = await asyncio.to_thread(orch.history.create_chat, user_id=user_id, agent_id=agent_id)
+    return ChatCreateResponse(chat_id=chat_id, agent_id=agent_id, project_id=project_id)
 
 
 @chat_router.get(
@@ -598,6 +690,11 @@ async def get_chat(
     chat = await asyncio.to_thread(orch.history.get_chat, chat_id, user_id=user_id)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
+    from orchestrator.projects import ProjectService, request_requires_project
+
+    if request_requires_project(orch, request, user_id):
+        await _project_operation(orch, user_id, ProjectService(orch.history).require_chat,
+                                 user_id, chat_id)
     return ChatDetailResponse(chat=ChatDetail(**chat))
 
 
@@ -619,6 +716,12 @@ async def delete_chat(
         chat_id,
         user_id=user_id,
     )
+    await _notify_chat_deleted(orch, user_id, chat_id, voice_mutation)
+    await orch._broadcast_user_history(user_id=user_id, projects_changed=True)
+    return DeleteResponse(message=f"Chat {chat_id} deleted")
+
+
+async def _notify_chat_deleted(orch, user_id, chat_id, voice_mutation):
     voice_services = getattr(orch, "voice_services", None)
     if voice_services is not None:
         try:
@@ -644,7 +747,6 @@ async def delete_chat(
                 }))
         except Exception:
             logger.debug("delete_chat socket notification failed", exc_info=True)
-    return DeleteResponse(message=f"Chat {chat_id} deleted")
 
 
 @chat_router.get(

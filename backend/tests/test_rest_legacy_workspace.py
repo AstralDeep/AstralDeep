@@ -287,6 +287,15 @@ def test_rest_delete_chat_ends_timeline_view_and_notifies_sockets(chat_env):
         ws_other_user = _FakeWS("other-user-tab")
         fake = _make_fake(history, user_id,
                           user_map={id(ws_other_user): other_user})
+        from orchestrator.orchestrator import Orchestrator
+
+        surfaces = []
+
+        async def push_history_surface(ws, *, chats):
+            surfaces.append((ws, chats))
+
+        fake._broadcast_user_history = types.MethodType(Orchestrator._broadcast_user_history, fake)
+        fake._push_history_surface = push_history_surface
         fake.ui_clients = [ws_timeline, ws_plain, ws_other_chat, ws_other_user]
         fake._ws_active_chat = {
             id(ws_timeline): chat_id,
@@ -303,8 +312,21 @@ def test_rest_delete_chat_ends_timeline_view_and_notifies_sockets(chat_env):
         assert not history.get_chat(chat_id, user_id=user_id)
 
         by_ws = {}
+        histories = []
         for ws, msg in fake._sent:
-            by_ws.setdefault(id(ws), []).append(msg)
+            if msg["type"] == "history_list":
+                histories.append((ws, msg))
+            else:
+                by_ws.setdefault(id(ws), []).append(msg)
+
+        assert len(histories) == 3
+        assert {ws for ws, _ in histories} == {ws_timeline, ws_plain, ws_other_chat}
+        assert all(msg == {
+            "type": "history_list", "chats": [], "projects_changed": True,
+        } for _, msg in histories)
+        assert len(surfaces) == 3
+        assert {ws for ws, _ in surfaces} == {ws_timeline, ws_plain, ws_other_chat}
+        assert all(chats == [] for _, chats in surfaces)
 
         timeline_msgs = by_ws.get(id(ws_timeline), [])
         assert timeline_msgs == [

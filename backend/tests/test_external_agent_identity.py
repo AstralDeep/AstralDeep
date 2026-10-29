@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 from orchestrator.agent_identity import (
@@ -185,6 +185,7 @@ def test_shared_dispatch_gate_denies_a_missing_identity_before_permissions():
         ui_sessions={websocket: {"sub": "sam"}},
         tool_permissions=_AllowAllPermissions(),
     )
+    orch._run_project_bound_gate_stack = MethodType(Orchestrator._run_project_bound_gate_stack, orch)
     result = asyncio.run(Orchestrator._run_gate_stack(
         orch,
         websocket,
