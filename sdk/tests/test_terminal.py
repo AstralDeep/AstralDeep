@@ -468,11 +468,14 @@ class TestTerminalAttachInProcess:
         session_id = _create(fake_server)
         client = _client(fake_server)
         writes = {"n": 0}
+        write_completed = th.Event()
         real_write = type(client).write_terminal
 
         def counting_write(inner_client, sid, data):
             writes["n"] += 1
-            return real_write(inner_client, sid, data)
+            result = real_write(inner_client, sid, data)
+            write_completed.set()
+            return result
 
         monkeypatch.setattr(type(client), "write_terminal", counting_write)
         script = [b"typed\n"]
@@ -488,12 +491,11 @@ class TestTerminalAttachInProcess:
 
         thread = th.Thread(target=target, daemon=True)
         thread.start()
-        deadline = __import__("time").monotonic() + 10
-        while writes["n"] < 1 and __import__("time").monotonic() < deadline:
-            __import__("time").sleep(0.02)
+        write_completed.wait(timeout=10)
         client.close_terminal(session_id)
         thread.join(timeout=10)
         assert result.get("code") == 0
+        assert write_completed.is_set()
         assert writes["n"] >= 1
         with _client(fake_server) as reader:
             out = reader.read_terminal(session_id, offset=0)
