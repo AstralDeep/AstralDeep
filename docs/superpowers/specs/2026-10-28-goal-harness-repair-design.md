@@ -20,9 +20,19 @@ Before execution, a separate bounded classification freezes whether the original
 
 Failure resolution cannot waive an invocation with an unrelated success. Retries retain the same invocation and trusted identity; background observations retain the same job. An unknown file write requires a same-path, untruncated read with a digest matching the requested bytes. Unknown deletions remain unresolved. The bounded classifier and evaluator still make semantic judgments; these guards establish observed execution and scope, without claiming a general proof that arbitrary software is correct.
 
+## Progress checkpoints
+
+After each eight tool outcomes, a separate bounded review compares recent execution with the original objective and frozen requirements. It can suggest concrete next steps or report a genuine block; it cannot declare completion, grant permission, or resolve uncertain effects. The ordinary planner receives its advice as quoted data within existing authority. Cancellation and the execution fence are rechecked before planning resumes, and the final evidence gate remains mandatory. Whole-file writes, parent creation, readback, setup, tests and startup form observable milestones rather than an open-ended series of tiny writes or probes.
+
+Provider tool-call IDs remain correlation data for provider messages. Goal observations allocate unique request-local identities when those IDs repeat or collide, so failure and completion evidence cannot alias separate operations. A known failed write may be explicitly resolved by an authorized successful retry with the same canonical path, content digest and trusted identity when overwrite mode changes; uncertain writes still require the existing matching readback.
+
 ## Model transport and terminal failures
 
 Goal planning retains permitted provider streaming while buffering the proposed narrative until completion verification. Buffering does not change provider eligibility, evidence capture, selected harness or persistent-worker restrictions. A buffered stream must carry a recognized terminal finish reason before assembled tool calls are returned; clean EOF without that evidence is malformed and cannot dispatch partial arguments. Truncation retains its explicit finish reason so the ordinary goal gate can reject it. Cancellation after an awaited planner response or dispatch-status send discards late tool calls before effects begin. Completed provider usage remains accounted for even when the result is cancelled. Exhausted model calls publish the original user request and a durable incomplete outcome atomically rather than returning before conversation publication; cancellation retains its own terminal publisher.
+
+## Visible terminal outcomes
+
+A failed goal retains its committed assistant warning in the canonical conversation snapshot. The chat-rail reducer preserves standalone and nested Alert and List components while retaining its existing canvas deduplication. Native-profile admitted tests verify the actual emitted snapshot, not only stored message rows, so a durable incomplete outcome cannot disappear during projection.
 
 ## Scope and rollout
 

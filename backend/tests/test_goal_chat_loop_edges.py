@@ -263,10 +263,14 @@ async def test_goal_budget_allows_more_than_24_tool_rounds(goal_orch, monkeypatc
     _register(o, "search_tool")
     chat_id, ws = await _chat(o)
     planner = 0
+    checkpoints = 0
 
     async def provider(websocket, messages, tools_desc=None, **kwargs):
-        nonlocal planner
+        nonlocal planner, checkpoints
         if kwargs.get("feature") == "goal_verification":
+            if json.loads(messages[-1]["content"]).get("review_phase") == "in_progress":
+                checkpoints += 1
+                return _verdict("continue", ["Continue the remaining independent research actions."])
             return _verdict("complete")
         planner += 1
         if planner <= 25:
@@ -280,4 +284,5 @@ async def test_goal_budget_allows_more_than_24_tool_rounds(goal_orch, monkeypatc
     await o.handle_chat_message(ws, "Complete the requested research and verify it", chat_id, user_id="seam-user")
     assert "completed all 25" in (await _last_assistant_text(o, chat_id, "seam-user")).lower()
     assert planner == 26
+    assert checkpoints == 3
     assert o.execute_single_tool.await_count == 25

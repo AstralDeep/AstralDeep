@@ -288,6 +288,8 @@ def _wrapper_parts(
                     parts.append(_lifted_text_part(text, child.get("variant")))
             elif child_type == "collapsible":
                 parts.append({"type": "components", "components": [dict(child)]})
+            elif child_type in {"alert", "list"}:
+                parts.append({"type": "components", "components": [dict(child)]})
             elif child_type in _RAIL_WRAPPER_TYPES:
                 parts.extend(_wrapper_parts(child, canvas_component_ids))
     return parts
@@ -328,6 +330,8 @@ def _rail_parts(
                     text = comp.get("text")
                 if isinstance(text, str) and text.strip():
                     kept.append(_lifted_text_part(text, comp.get("variant")))
+            elif comp_type in {"alert", "list"}:
+                kept.append({"type": "components", "components": [dict(comp)]})
             elif comp_type == "collapsible" and _is_rail_text_only([comp]):
                 kept.append({"type": "components", "components": [dict(comp)]})
             elif (

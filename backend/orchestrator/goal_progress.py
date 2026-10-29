@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import posixpath
 import re
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ _SENSITIVE_KEYS = re.compile(r"(credential|password|secret|token|authorization|a
 _SENSITIVE_TEXT = re.compile(r"(?:credential|password|secret|token|authorization|api.?key)\s*(?:[:=]|\s)", re.I)
 _SENSITIVE_ARG = re.compile(r"(?:^|[-_])(?:credential|password|secret|token|authorization|api.?key)(?:$|=)", re.I)
 _BASE64_TEXT = re.compile(r"^[A-Za-z0-9+/]{80,}={0,2}$")
+_logger = logging.getLogger(__name__)
 _TERMINAL_JOB_STATES = frozenset({"exited", "timed_out", "interrupted"})
 _UNCERTAIN_CODES = frozenset({"uncertain", "outcome_uncertain", "effect_uncertain"})
 
@@ -45,6 +47,7 @@ class GoalProgress:
     _uncertain_jobs: set[str] = field(default_factory=set, init=False, repr=False)
     _uncertain_result: bool = field(default=False, init=False, repr=False)
     _sequence: int = field(default=0, init=False, repr=False)
+    _call_ids: set[str] = field(default_factory=set, init=False, repr=False)
     _unresolved_failures: dict[str, dict[str, Any]] = field(default_factory=dict, init=False, repr=False)
     _successful_calls: dict[str, dict[str, Any]] = field(default_factory=dict, init=False, repr=False)
     _call_outcomes: list[dict[str, Any]] = field(default_factory=list, init=False, repr=False)
@@ -67,6 +70,7 @@ class GoalProgress:
         self._uncertain_jobs = set()
         self._uncertain_result = False
         self._sequence = 0
+        self._call_ids = set()
         self._unresolved_failures = {}
         self._successful_calls = {}
         self._call_outcomes = []
@@ -106,7 +110,8 @@ class GoalProgress:
         status = self._job_state(data)
         outcome = self._outcome(data, error, status)
         self._sequence += 1
-        call_id = str(tool_call_id)[:128]
+        provider_call_id = str(tool_call_id)[:128]
+        call_id = self._observation_call_id(provider_call_id, self._sequence)
         fingerprint = self._fingerprint(tool_name, args)
         completed = self._completed(tool_name, data, outcome)
         observation_args = self._observation_arguments(tool_name, args)
@@ -197,6 +202,7 @@ class GoalProgress:
             del self._call_outcomes[:-_MAX_CALLS]
         self._private_observations.append({
             "call_id": call_id,
+            **({"provider_call_id": provider_call_id} if call_id != provider_call_id else {}),
             "tool": str(tool_name)[:128],
             **identity,
             "arguments": observation_args,
@@ -219,6 +225,21 @@ class GoalProgress:
         self._evidence.append(item)
         if len(self._evidence) > _MAX_EVIDENCE:
             del self._evidence[:-_MAX_EVIDENCE]
+
+    def _observation_call_id(self, provider_call_id: str, sequence: int) -> str:
+        if provider_call_id and provider_call_id not in self._call_ids:
+            self._call_ids.add(provider_call_id)
+            return provider_call_id
+        if provider_call_id:
+            _logger.warning("goal.provider_call_id_reused sequence=%d", sequence)
+        base = f"goal-call-{sequence}"
+        candidate = base
+        suffix = 1
+        while candidate in self._call_ids:
+            suffix += 1
+            candidate = f"{base}-{suffix}"
+        self._call_ids.add(candidate)
+        return candidate
 
     def evidence(self) -> dict[str, Any]:
         return {
@@ -328,6 +349,18 @@ class GoalProgress:
             return True
         tool = unresolved["tool"]
         if file_effect:
+            if (not unknown and tool == "write_file" and success["tool"] == "write_file"
+                    and unresolved["arguments"].get("if_exists", "refuse") == "refuse"
+                    and success["arguments"].get("if_exists") == "overwrite"):
+                expected_digest = unresolved["arguments"].get("content_sha256")
+                return (
+                    GoalProgress._same_path(
+                        unresolved["arguments"].get("path"), unresolved["arguments"].get("cwd"),
+                        success["arguments"].get("path"), success["arguments"].get("cwd"),
+                    )
+                    and isinstance(expected_digest, str)
+                    and success["arguments"].get("content_sha256") == expected_digest
+                )
             if not unknown or tool == "delete_path":
                 return False
             if success["tool"] != "read_file" or success["result"].get("truncated") is True:
@@ -392,12 +425,12 @@ class GoalProgress:
 
     @classmethod
     def _observation_arguments(cls, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
-        allowed = {"cwd", "argv", "command", "path", "job_id", "computer"}
+        allowed = {"cwd", "argv", "command", "path", "job_id", "computer", "if_exists"}
         observed = {}
         for key in allowed:
             value = args.get(key)
             if isinstance(value, str):
-                if not _SENSITIVE_TEXT.search(value):
+                if (key != "if_exists" or value in {"refuse", "overwrite"}) and not _SENSITIVE_TEXT.search(value):
                     observed[key] = value[:512]
             elif key == "argv" and isinstance(value, list):
                 argv = [item[:512] if isinstance(item, str) else cls._safe(item) for item in value[:32]]

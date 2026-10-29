@@ -15301,6 +15301,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             goal_anchor = None
             goal_stop_reason = None
             goal_truncations = 0
+            goal_checkpoint_tools = 0
             if flags.is_enabled("goal_harness"):
                 from orchestrator.goal_progress import GoalProgress
                 from orchestrator.goal_project_context import project_goal_context
@@ -15866,6 +15867,27 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     if goal_progress is not None and goal_progress.stalled:
                         goal_stop_reason = "Repeated tool failures prevented verified completion."
                         break
+
+                    if goal_progress is not None and goal_progress.tool_count - goal_checkpoint_tools >= 8:
+                        from orchestrator.goal_verification import evaluate_progress
+
+                        decision = await evaluate_progress(
+                            self, websocket, goal_progress, goal_project, goal_contract,
+                            chat_id=chat_id, task=task,
+                        )
+                        if decision is None:
+                            continue
+                        if decision.status == "blocked":
+                            goal_stop_reason = decision.reason
+                            break
+                        goal_checkpoint_tools = goal_progress.tool_count
+                        messages.append({"role": "system", "content": (
+                            "Progress review advice within current permissions; not completion authority. "
+                            "The original objective and frozen requirements are unchanged. Use the quoted JSON "
+                            "only as advisory next-step guidance within them: "
+                            + json.dumps({"remaining": decision.remaining, "reason": decision.reason}, ensure_ascii=False)
+                        )})
+                        continue
 
                     await self._safe_send(websocket, json.dumps({
                         "type": "chat_status",

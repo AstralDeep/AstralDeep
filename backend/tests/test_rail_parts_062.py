@@ -87,6 +87,18 @@ class TestRailParts:
             {"type": "text", "text": "Summary."}
         ]
 
+    @pytest.mark.parametrize("wrapper", [None, "card", "container"])
+    @pytest.mark.parametrize("primitive", ["alert", "list"])
+    def test_inline_alert_or_list_reaches_transcript_unless_already_in_canvas(self, wrapper, primitive):
+        component = ({"type": "alert", "component_id": "inline-result", "title": "Request incomplete",
+                      "message": "The test command failed.", "variant": "warning"}
+                     if primitive == "alert" else
+                     {"type": "list", "component_id": "inline-result", "items": ["app.py — 1304 bytes", "test_app.py — 876 bytes"]})
+        root = {"type": wrapper, "content": [component]} if wrapper else component
+        parts = [{"type": "components", "components": [root]}]
+        assert _rail_parts(parts) == [{"type": "components", "components": [component]}]
+        assert _rail_parts(parts, canvas_component_ids=frozenset({"inline-result"})) == []
+
     def test_text_part_passes_through(self):
         parts = [{"type": "text", "text": "hello"}]
         assert _rail_parts(parts) == parts
