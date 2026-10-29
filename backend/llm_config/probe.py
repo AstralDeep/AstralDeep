@@ -70,3 +70,25 @@ async def probe_chat_completion(
         return False, "transport_error", "Provider probe timed out"
     except Exception as exc:
         return False, classify_probe_error(exc), str(exc)[:1024]
+
+
+async def probe_native_saved(config, *, timeout=PROBE_TIMEOUT_SECONDS, source=None):
+    from .client_factory import build_llm_client, create_completion
+    from .types import CredentialSource
+    try:
+        client, _, resolved = build_llm_client(config, CredentialSource.USER if source is None else source, timeout=timeout)
+        response = await create_completion(client, model=resolved.model,
+            messages=[{"role": "user", "content": "ping"}], max_tokens=1)
+        if not response.choices or response.choices[0].message is None:
+            raise ValueError
+        return True, None, None
+    except TimeoutError:
+        return False, "transport_error", "Native provider probe timed out"
+    except Exception as error:
+        if getattr(error, "code", None) == "native_response_truncated":
+            return True, None, None
+        status = getattr(error, "status_code", None)
+        category = ("auth_failed" if status in (401, 403) else "model_not_found" if status == 404
+                    else "provider_unavailable" if status == 429 or status is not None and status >= 500
+                    else "contract_violation")
+        return False, category, "Native provider configuration or response was unavailable"

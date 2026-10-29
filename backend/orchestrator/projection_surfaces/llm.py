@@ -655,6 +655,9 @@ async def _handle_models(orch: Any, websocket: Any, user_id: str, roles: Any, pa
     fields = _fields(payload)
     provider = _provider_key(fields)
     keep = _keep_params(fields, provider)
+    if provider == "anthropic-native":
+        return (SURFACE_KEY, keep, notice_block("info",
+            "Model discovery is not supported by this native profile; enter an exact model id manually."))
     base_url = _effective_base_url(provider, fields)
     if not base_url:
         return (SURFACE_KEY, keep, notice_block(
@@ -719,7 +722,8 @@ async def _handle_test(orch: Any, websocket: Any, user_id: str, roles: Any, payl
         ))
     try:
         body = TestConnectionRequest(api_key=api_key or "not-needed",
-                                     base_url=base_url, model=model)
+                                     base_url=base_url, model=model,
+                                     provider=provider if provider == "anthropic-native" else None)
     except ValidationError as exc:
         return (SURFACE_KEY, keep, notice_block("error", _validation_message(exc)))
 

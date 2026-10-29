@@ -7,6 +7,7 @@ chrome_events.py.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any, Dict
 
 from pydantic import ValidationError
@@ -145,6 +146,9 @@ async def _handle_models(orch: Any, websocket: Any, user_id: str, roles: Any, pa
     fields = _fields(payload)
     provider = _provider_key(fields)
     keep = _keep(fields, provider)
+    if provider == "anthropic-native":
+        return (SURFACE_KEY, keep, notice_block("info",
+            "Model discovery is not supported by this native profile; enter an exact model id manually."))
     base_url = resolve_base_url(provider, fields.get("base_url", ""))
     if not base_url:
         return (SURFACE_KEY, keep, notice_block(
@@ -174,6 +178,21 @@ async def _handle_models(orch: Any, websocket: Any, user_id: str, roles: Any, pa
         "success", f"Loaded {len(resp.models)} models from {body.base_url}."))
 
 
+async def _probe_native_system(orch, websocket, user_id, config):
+    from llm_config.probe import probe_native_saved
+    from llm_config.types import CredentialSource
+    ok, error_class, upstream = await probe_native_saved(config, source=CredentialSource.SYSTEM)
+    actor_user_id, auth_principal = _actor(orch, websocket, user_id)
+    try:
+        await record_llm_config_change(orch.audit_recorder, actor_user_id=actor_user_id,
+            auth_principal=auth_principal, action="tested", base_url=config.base_url,
+            model=config.model, transport="ws", result="success" if ok else "failure",
+            error_class=error_class if not ok else None, scope="system")
+    except Exception:
+        logger.warning("Native system connection-check audit unavailable")
+    return ok, error_class, upstream
+
+
 async def _handle_test(orch: Any, websocket: Any, user_id: str, roles: Any, payload: Any):
     _ = roles
     from llm_config.api import TestConnectionRequest, test_connection
@@ -200,8 +219,18 @@ async def _handle_test(orch: Any, websocket: Any, user_id: str, roles: Any, payl
                                      base_url=base_url, model=model)
     except ValidationError as exc:
         return (SURFACE_KEY, keep, notice_block("error", _validation_message(exc)))
-    resp = await test_connection(body=body, request=_request_shim(orch),
-                                 user_id=user_id, user_payload=_claims(orch, websocket))
+    if provider == "anthropic-native":
+        from llm_config.api import TestConnectionResponse
+        config = await _system_config(orch)
+        if (config is None or config.provider != provider or config.model != model
+                or config.base_url != base_url or config.api_key != api_key):
+            return (SURFACE_KEY, keep, notice_block("error", "Save the native system configuration before testing it."))
+        ok, error_class, upstream = await _probe_native_system(orch, websocket, user_id, config)
+        resp = TestConnectionResponse(ok=ok, model=model, probed_at=datetime.now(UTC).isoformat(), error_class=error_class,
+                                      upstream_message=upstream)
+    else:
+        resp = await test_connection(body=body, request=_request_shim(orch),
+                                     user_id=user_id, user_payload=_claims(orch, websocket))
     if resp.ok:
         latency = f" in {int(resp.latency_ms)} ms" if resp.latency_ms is not None else ""
         return (SURFACE_KEY, keep, notice_block(
@@ -233,20 +262,21 @@ async def _handle_save(orch: Any, websocket: Any, user_id: str, roles: Any, payl
             "error", "; ".join(f"{k}: {v}" for k, v in errors.items())))
 
     actor_user_id, auth_principal = _actor(orch, websocket, user_id)
-    ok, error_class, upstream = await probe_chat_completion(
-        api_key=norm["api_key"], base_url=norm["base_url"], model=norm["model"])
-    try:
-        await record_llm_config_change(
-            orch.audit_recorder, actor_user_id=actor_user_id,
-            auth_principal=auth_principal, action="tested",
-            base_url=norm["base_url"], model=norm["model"], transport="ws",
-            result="success" if ok else "failure",
-            error_class=error_class if not ok else None, scope="system")
-    except Exception:  # pragma: no cover
-        logger.warning("system llm tested audit failed", exc_info=True)
-    if not ok:
-        return (SURFACE_KEY, keep, _failure_notice(
-            "Connection test failed — nothing saved", error_class, upstream))
+    if provider != "anthropic-native":
+        ok, error_class, upstream = await probe_chat_completion(
+            api_key=norm["api_key"], base_url=norm["base_url"], model=norm["model"])
+        try:
+            await record_llm_config_change(
+                orch.audit_recorder, actor_user_id=actor_user_id,
+                auth_principal=auth_principal, action="tested",
+                base_url=norm["base_url"], model=norm["model"], transport="ws",
+                result="success" if ok else "failure",
+                error_class=error_class if not ok else None, scope="system")
+        except Exception:  # pragma: no cover
+            logger.warning("system llm tested audit failed", exc_info=True)
+        if not ok:
+            return (SURFACE_KEY, keep, _failure_notice(
+                "Connection test failed — nothing saved", error_class, upstream))
 
     prior = await _system_config(orch)
     await store.set_system(
@@ -261,6 +291,12 @@ async def _handle_save(orch: Any, websocket: Any, user_id: str, roles: Any, payl
             scope="system")
     except Exception:  # pragma: no cover
         logger.warning("system llm save audit failed", exc_info=True)
+    if provider == "anthropic-native":
+        config = await store.get_system()
+        ok, error_class, upstream = await _probe_native_system(orch, websocket, user_id, config)
+        if not ok:
+            return (SURFACE_KEY, keep, notice_block("error",
+                "Native system settings saved; connection check failed. Recheck the saved configuration."))
     suffix = " (kept the previously saved API key)" if used_saved else ""
     return (SURFACE_KEY, keep, notice_block(
         "success", f"System LLM credential saved{suffix}. Background features "

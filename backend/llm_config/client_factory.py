@@ -1,12 +1,9 @@
-"""Pure factory turning a resolved credential record into an OpenAI client: keyless
-configs route through a stripped-Authorization transport, and a missing record raises
-LLMUnavailable rather than borrowing another owner's credentials.
-"""
+"""Builds provider clients from resolved encrypted configuration. Compatibility remains the default; explicit native profiles preserve owner and record provenance through the same factory."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Optional, Protocol, Tuple
+from typing import Any, Iterable, Optional, Protocol, Tuple
 
 from openai import OpenAI
 
@@ -80,7 +77,7 @@ def build_llm_client(
     source: CredentialSource,
     *,
     timeout: Optional[float] = None,
-) -> Tuple[OpenAI, CredentialSource, ResolvedConfig]:
+) -> Tuple[Any, CredentialSource, ResolvedConfig]:
     if source == CredentialSource.OPERATOR_DEFAULT:
         raise ValueError(
             "CredentialSource.OPERATOR_DEFAULT is retired (feature 054): "
@@ -94,6 +91,15 @@ def build_llm_client(
                 if source == CredentialSource.USER
                 else "no system credential has been configured by an admin."
             )
+        )
+    if (getattr(config, "provider", None) == "anthropic-native"
+            or getattr(config, "_native_binding", None) is not None):
+        from .native_provider import NATIVE_PROFILE, NATIVE_PROVIDER, native_client
+        client = native_client(config, source, DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS if timeout is None else timeout)
+        binding = client.binding
+        return client, source, ResolvedConfig(
+            base_url=binding.base_url, model=binding.model, provider=NATIVE_PROVIDER,
+            profile=NATIVE_PROFILE, owner_id=binding.owner_id, config_revision=binding.revision,
         )
     kwargs = {
         "base_url": config.base_url,
@@ -111,3 +117,11 @@ def build_llm_client(
         source,
         ResolvedConfig(base_url=config.base_url, model=config.model),
     )
+
+
+async def create_completion(client, **kwargs):
+    import asyncio
+    from .native_provider import NativeMessagesClient
+    if isinstance(client, NativeMessagesClient):
+        return await client.create_async(**kwargs)
+    return await asyncio.to_thread(client.chat.completions.create, **kwargs)
