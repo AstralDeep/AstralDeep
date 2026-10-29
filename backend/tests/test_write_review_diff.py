@@ -80,10 +80,23 @@ async def test_unreadable_target_yields_diff_unavailable(task_runtime, monkeypat
 
 
 async def test_create_card_diffs_against_an_absent_file(task_runtime, monkeypatch):
-    card, _calls = await _card(task_runtime, monkeypatch, ComputerHostError("failed", "errno 2"), if_exists="refuse")
+    card, _calls = await _card(task_runtime, monkeypatch, ComputerHostError("not_found", "File does not exist"), if_exists="refuse")
     diff, = _diff(card)
     assert diff["code"].splitlines()[:2] == ["--- /dev/null", f"+++ {PATH}"]
     assert diff["code"].splitlines()[-2:] == ["+line one", "+new"]
+
+
+async def test_overwrite_of_a_missing_file_still_shows_a_create_diff(task_runtime, monkeypatch):
+    card, _calls = await _card(task_runtime, monkeypatch, ComputerHostError("not_found", "File does not exist"))
+    diff, = _diff(card)
+    assert diff["code"].splitlines()[:2] == ["--- /dev/null", f"+++ {PATH}"]
+
+
+async def test_unreadable_new_file_is_not_reported_as_an_empty_file(task_runtime, monkeypatch):
+    card, _calls = await _card(task_runtime, monkeypatch, ComputerHostError("permission_denied", "refused"),
+                               if_exists="refuse")
+    marker, = _diff(card)
+    assert marker["type"] == "text" and marker["content"] == wr.UNAVAILABLE_TEXT
 
 
 async def test_unchanged_content_says_so(task_runtime, monkeypatch):
@@ -201,3 +214,86 @@ async def test_a_busy_session_times_out_to_diff_unavailable(task_runtime, monkey
     finally:
         session.lock.release()
     assert calls == [] and parts[0]["content"] == wr.UNAVAILABLE_TEXT
+
+
+@pytest.mark.parametrize("content", ["poem", ""])
+async def test_missing_file_summary_says_create_even_when_overwrite_was_requested(task_runtime, monkeypatch, content):
+    card, _calls = await _card(task_runtime, monkeypatch, ComputerHostError("not_found", "missing"), content=content)
+    assert "(create)" in card["content"][0]["content"]
+    assert "(overwrite)" not in card["content"][0]["content"]
+
+
+async def test_missing_file_binds_absence_before_review_and_exact_dispatch(task_runtime, monkeypatch):
+    from orchestrator import remote_confirmation as rc
+    from tests.test_computer_grant_flow_102 import OWNER
+
+    orch, ws, effects, *_ = task_runtime
+    card, calls = await _card(task_runtime, monkeypatch, ComputerHostError("not_found", "missing"))
+    payload = next(part["payload"] for part in card["content"] if part.get("payload", {}).get("decision") == "approve")
+    context = rc._proposal_context(orch)
+    row = context.call(context.repository.get, owner_id=OWNER, proposal_id=payload["proposal_id"])
+    assert row.arguments["if_exists"] == "refuse"
+    assert row.args_fingerprint == rc._fingerprint(row.arguments)
+    preview = next(part for part in card["content"] if part.get("language") == "json")
+    import json
+    assert json.loads(preview["code"])["if_exists"] == "refuse"
+    await rc.handle_decision(orch, ws, OWNER, payload)
+    assert len(effects) == 1 and effects[0][1]["if_exists"] == "refuse"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("initial_bypass", [False, True])
+async def test_bypass_transition_binds_missing_file_before_any_create_review(task_runtime, monkeypatch, initial_bypass):
+    import json
+
+    from orchestrator import remote_confirmation as rc
+    from tests.test_computer_grant_flow_102 import OWNER
+
+    orch, ws, effects, *_ = task_runtime
+    _session, host = await _mac(task_runtime, remote=True)
+    orch.tool_permissions.get_tool_scope_map.return_value = {**SCOPES, "write_file": "tools:files"}
+    await orch.computer_sessions.set_bypass(host, initial_bypass)
+    calls = _host_reads(monkeypatch, orch, ComputerHostError("not_found", "missing"))
+    prepare = wr.prepare_write_review
+
+    async def toggle_after_preparation(*args, **kwargs):
+        snapshot = await prepare(*args, **kwargs)
+        await orch.computer_sessions.set_bypass(host, not initial_bypass)
+        return snapshot
+
+    monkeypatch.setattr(wr, "prepare_write_review", toggle_after_preparation)
+    response = await _call(task_runtime, "write_file", path=PATH, content="new", if_exists="overwrite")
+    if initial_bypass:
+        assert response.error is None
+        card, = response.ui_components
+        payload = next(part["payload"] for part in card["content"]
+                       if part.get("payload", {}).get("decision") == "approve")
+        context = rc._proposal_context(orch)
+        row = context.call(context.repository.get, owner_id=OWNER, proposal_id=payload["proposal_id"])
+        assert row.arguments["if_exists"] == "refuse"
+        preview = next(part for part in card["content"] if part.get("language") == "json")
+        assert json.loads(preview["code"])["if_exists"] == "refuse"
+        await rc.handle_decision(orch, ws, OWNER, payload)
+    else:
+        assert response.error is not None
+        from orchestrator.tool_feedback import tool_failure_content
+        failure = json.loads(tool_failure_content("write_file", response.error))
+        assert failure["code"] == "COMPUTER_REVIEW_CHANGED" and "fresh request" in failure["message"]
+        assert failure["retryable"] is False
+        assert not response.ui_components and not rc._PENDING_CARDS and not effects
+        monkeypatch.setattr(wr, "prepare_write_review", prepare)
+        response = await _call(task_runtime, "write_file", path=PATH, content="new", if_exists="overwrite")
+        assert response.error is None and not response.ui_components
+    assert len(effects) == 1 and effects[0][1]["if_exists"] == "refuse"
+    assert len(calls) == (1 if initial_bypass else 2)
+
+
+async def test_unbound_overwrite_review_never_claims_create_after_a_late_missing_read(task_runtime, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(wr, "prepare_write_review", AsyncMock(return_value=None))
+    card, calls = await _card(task_runtime, monkeypatch, ComputerHostError("not_found", "missing"))
+    assert "(create)" not in card["content"][0]["content"]
+    marker, = _diff(card)
+    assert marker["type"] == "text" and marker["content"] == wr.UNAVAILABLE_TEXT
+    assert len(calls) == 1

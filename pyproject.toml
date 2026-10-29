@@ -20,7 +20,7 @@ build-tools = [
   "setuptools==83.0.0",
   "wheel==0.45.1",
   "hatchling==1.27.0",
-  "uv_build==0.12.15",
+  "uv_build==0.12.23",
 ]
 
 [tool.astraldeep.local-components.astral-projection]
@@ -54,7 +54,7 @@ required-wheel-paths = [
 
 [tool.astraldeep.local-components.astral-plane]
 distribution = "astralplane"
-version = "0.1.5"
+version = "0.1.6"
 path = "components/AstralPlane"
 contract = "astralplane.contract/v1"
 availability = "required-embedded"
