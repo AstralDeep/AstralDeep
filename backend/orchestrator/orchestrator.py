@@ -15715,8 +15715,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                     approval_token=worker_token,
                                     worker_attested=True,
                                 )
-                            logger.info("goal.worker chat=%s status=%s exit=%s", chat_id,
-                                        worker_state.status, worker_state.exit_code)
+                            logger.warning("goal.worker chat=%s status=%s exit=%s detail=%s", chat_id,
+                                           worker_state.status, worker_state.exit_code,
+                                           worker_state.message[:256])
                             if goal_progress.requires_approval:
                                 goal_stop_reason = "Waiting for approval of the local coding worker. The original goal will continue after approval."
                                 break
