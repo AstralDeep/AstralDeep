@@ -160,6 +160,117 @@ def validate_goal_proofs(
     return ProofAssessment(not missing and not invalid, tuple(missing), tuple(invalid))
 
 
+def select_goal_proof_references(
+    contract: GoalContract,
+    observations: Iterable[dict[str, Any]],
+    project_context: dict[str, Any] | None,
+) -> dict[str, list[str]]:
+    """Select proof IDs from private observations; never infer IDs from model prose."""
+    if (not isinstance(contract, GoalContract) or contract.kind != "local_project"
+            or not _contract_valid(contract) or contract.blocked_reason
+            or not _project_context_valid(project_context)):
+        return {}
+    if isinstance(observations, (str, bytes, dict)):
+        return {}
+    rows: list[dict[str, Any]] = []
+    try:
+        for row in observations:
+            rows.append(row)
+            if len(rows) > _MAX_OBSERVATIONS:
+                return {}
+    except TypeError:
+        return {}
+    calls, errors = _index_observations(rows)
+    if errors:
+        return {}
+    roots = _project_roots(project_context)
+    ordered = sorted(calls, key=lambda call_id: (
+        calls[call_id].get("sequence") if type(calls[call_id].get("sequence")) is int else 2**31,
+        call_id,
+    ))
+
+    # A file artifact needs a source readback paired either with a matching write
+    # or with an attested worker whose cwd contains the readback.
+    reads: list[str] = []
+    writes: list[str] = []
+    workers: list[str] = []
+    for call_id in ordered:
+        call = calls[call_id]
+        if not _valid_local_observation("files", call, calls, roots, project_context):
+            continue
+        args = call.get("arguments", {})
+        data = _result_data(call.get("result", call.get("data")))
+        if call.get("tool") == "run_command" and call.get("attested_worker") is True:
+            if _inside_roots(args.get("cwd"), roots) is not None:
+                workers.append(call_id)
+        elif call.get("tool") == "read_file":
+            path = _inside_roots(args.get("path"), roots)
+            if (path and _source_path(path) and type(data.get("size")) is int
+                    and data["size"] >= 256 and data.get("has_meaningful_content") is True
+                    and data.get("truncated") is False and isinstance(data.get("content_sha256"), str)):
+                reads.append(call_id)
+        elif call.get("tool") == "write_file":
+            path = _inside_roots(args.get("path"), roots)
+            size = args.get("content_size", data.get("bytes", data.get("bytes_written")))
+            if (path and _source_path(path) and type(size) is int and size >= 256
+                    and isinstance(args.get("content_sha256"), str)):
+                writes.append(call_id)
+
+    file_options: list[tuple[str, ...]] = []
+    for read_id in reads:
+        read = calls[read_id]
+        read_args = read.get("arguments", {})
+        read_data = _result_data(read.get("result", read.get("data")))
+        read_path = _inside_roots(read_args.get("path"), roots)
+        for write_id in writes:
+            write = calls[write_id]
+            write_data = _result_data(write.get("result", write.get("data")))
+            if (_inside_roots(write.get("arguments", {}).get("path"), roots) == read_path
+                    and write.get("arguments", {}).get("content_sha256") == read_data.get("content_sha256")):
+                file_options.append((write_id, read_id))
+        for worker_id in workers:
+            cwd = _inside_roots(calls[worker_id].get("arguments", {}).get("cwd"), roots)
+            if cwd and read_path.startswith(cwd.rstrip("/") + "/"):
+                file_options.append((worker_id, read_id))
+    file_options = sorted(set(file_options), key=lambda refs: tuple(ordered.index(item) for item in refs))
+    if not file_options:
+        return {}
+
+    stage_options = {
+        category: [call_id for call_id in ordered
+                   if _valid_project_stage(category, calls[call_id], calls, roots, project_context)]
+        for category in ("environment", "dependencies", "tests", "startup")
+    }
+    if any(not stage_options[category] for category in contract.required_categories[1:]):
+        return {}
+
+    # Try file witnesses in deterministic order. Backtrack over stage choices so
+    # one observation cannot be assigned to multiple categories.
+    for file_refs in file_options:
+        selected = {"files": list(file_refs)}
+        used = set(file_refs)
+        stages = sorted(contract.required_categories[1:], key=lambda c: (len(stage_options[c]), c))
+
+        def assign(index: int) -> bool:
+            if index == len(stages):
+                return validate_goal_proofs(contract, selected, rows, project_context).accepted
+            category = stages[index]
+            for call_id in stage_options[category]:
+                if call_id in used:
+                    continue
+                used.add(call_id)
+                selected[category] = [call_id]
+                if assign(index + 1):
+                    return True
+                selected.pop(category, None)
+                used.remove(call_id)
+            return False
+
+        if assign(0):
+            return {category: selected[category] for category in contract.required_categories}
+    return {}
+
+
 def _parse_references(contract: GoalContract, references: Any) -> tuple[dict[str, tuple[str, ...]], list[str]]:
     if type(references) is not dict:
         return {}, ["proof references must be an object"]

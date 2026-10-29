@@ -6,6 +6,7 @@ from orchestrator.goal_requirements import (
     GoalContract,
     build_goal_contract,
     parse_goal_contract,
+    select_goal_proof_references,
     validate_goal_proofs,
 )
 
@@ -115,6 +116,41 @@ def test_local_project_contract_fails_closed_without_current_granted_root():
         bound = build_goal_contract(contract.kind, context)
         assert bound.blocked_reason
         assert not validate_goal_proofs(bound, {}, [], context).accepted
+
+
+def test_selector_builds_distinct_references_from_valid_private_observations():
+    observations = _source_pair() + _stage_calls()
+
+    references = select_goal_proof_references(_local_contract(), observations, PROJECT)
+
+    assert references == {
+        "files": ["write", "read"],
+        "environment": ["env"],
+        "dependencies": ["deps"],
+        "tests": ["tests"],
+        "startup": ["startup"],
+    }
+    all_ids = [call_id for ids in references.values() for call_id in ids]
+    assert len(all_ids) == len(set(all_ids))
+    assert validate_goal_proofs(_local_contract(), references, observations, PROJECT).accepted
+
+
+def test_selector_returns_empty_for_unscoped_or_incomplete_evidence():
+    assert select_goal_proof_references(_local_contract(), [], PROJECT) == {}
+    assert select_goal_proof_references(_local_contract(), _source_pair() + _stage_calls(), None) == {}
+
+
+def test_selector_accepts_attested_worker_with_source_readback():
+    worker = _run("worker", argv=["/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex", "exec", "-"], sequence=1)
+    worker["attested_worker"] = True
+    source_read = _source_pair()[1]
+    source_read["sequence"] = 2
+    references = select_goal_proof_references(
+        _local_contract(), [worker, source_read, *_stage_calls()], PROJECT)
+
+    assert references["files"] == ["worker", "read"]
+    assert validate_goal_proofs(_local_contract(), references,
+                                [worker, source_read, *_stage_calls()], PROJECT).accepted
 
 
 def test_granted_contract_fails_if_project_context_is_stale_or_revoked():

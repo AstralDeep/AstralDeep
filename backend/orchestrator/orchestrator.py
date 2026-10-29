@@ -16312,18 +16312,36 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                     if goal_progress is not None:
                         from orchestrator.goal_progress import CompletionDecision
-                        from orchestrator.goal_requirements import validate_goal_proofs
+                        from orchestrator.goal_requirements import (
+                            select_goal_proof_references, validate_goal_proofs,
+                        )
                         from orchestrator.goal_verification import evaluate_completion
 
                         await self._send_chat_status(websocket, "thinking", "Verifying the requested outcome…")
+                        worker_succeeded = False
+                        proof_references = {}
                         try:
-                            reviewed = await evaluate_completion(
-                                self, websocket, goal_progress, content, goal_project, goal_contract,
-                                chat_id=chat_id, task=task,
+                            observations = goal_progress.private_observations()
+                            worker_succeeded = any(
+                                item.get("attested_worker") is True
+                                and item.get("outcome") == "success"
+                                and item.get("completed") is True
+                                for item in observations
                             )
-                            if reviewed is None:
-                                continue
-                            decision, proof_references = reviewed
+                            proof_references = (
+                                select_goal_proof_references(goal_contract, observations, goal_project)
+                                if worker_succeeded and goal_contract.kind == "local_project" else {}
+                            )
+                            if proof_references:
+                                decision = CompletionDecision("complete")
+                            else:
+                                reviewed = await evaluate_completion(
+                                    self, websocket, goal_progress, content, goal_project, goal_contract,
+                                    chat_id=chat_id, task=task,
+                                )
+                                if reviewed is None:
+                                    continue
+                                decision, proof_references = reviewed
                         except asyncio.CancelledError:
                             raise
                         except Exception:
@@ -16362,6 +16380,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         if decision.status == "blocked":
                             goal_stop_reason = decision.reason
                             break
+                        if proof_references and worker_succeeded:
+                            content = (
+                                "The project is complete in the selected folder. I verified the source, "
+                                "isolated environment, installed dependencies, tests, and startup."
+                            )
 
                     _plain = not content.lstrip().startswith(("{", "["))
                     if _plain and _tools_used == 0:
