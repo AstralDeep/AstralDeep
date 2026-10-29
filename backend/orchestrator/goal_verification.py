@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 
 from orchestrator.goal_requirements import GOAL_CLASSIFIER_GUIDANCE, build_goal_contract, parse_goal_contract
 
@@ -77,6 +78,14 @@ Do not change or remove the frozen requirements. Missing proof must produce cont
 
 
 async def classify_goal(orch, websocket, request, project_context, chat_id):
+    # Unambiguous local software delivery requests should not depend on a
+    # separate model call before a coding worker can begin. Keep less clear
+    # requests on the ordinary classifier path.
+    if (isinstance(request, str)
+            and re.search(r"\b(create|build|implement|develop|make)\b", request, re.I)
+            and re.search(r"\b(game|app|application|program|software|clone|website|service)\b", request, re.I)
+            and re.search(r"\b(test|tests|verify|run|working|install)\b", request, re.I)):
+        return build_goal_contract("local_project", project_context)
     reply, usage = await orch._call_llm(
         websocket, [
             {"role": "system", "content": GOAL_CLASSIFIER_GUIDANCE},

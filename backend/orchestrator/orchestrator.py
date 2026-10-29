@@ -15640,6 +15640,37 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         and item.get("tool") in {"start_session", "run_command", "read_file", "list_dir"}
                         for item in goal_progress.private_observations()
                     )
+                    if not worker_session_ready and goal_progress.tool_count == 0:
+                        start_name = next((name for name, agent in tool_to_agent.items()
+                            if agent == "computer-use-1"
+                            and (tool_to_unqualified or {}).get(name, name) == "start_session"), None)
+                        if start_name is not None:
+                            await self._send_chat_status(websocket, "executing", "Connecting to the local project…")
+                            start_token = _uuid.uuid4().hex
+                            start_call = SimpleNamespace(
+                                id=f"goal-session-{start_token[:16]}",
+                                function=SimpleNamespace(name=start_name, arguments="{}"),
+                            )
+                            with hitl_confirmation.goal_call_scope(start_token):
+                                start_result = await self.execute_single_tool(
+                                    websocket, start_call, tool_to_agent, chat_id, user_id=user_id,
+                                    tool_to_unqualified=tool_to_unqualified,
+                                )
+                            if self.cancelled_sessions.get(id(websocket)):
+                                continue
+                            if task:
+                                await self.task_manager.assert_current_execution(task)
+                            if (GoalProgress.is_completed_success("start_session", start_result)
+                                    or GoalProgress.is_approval_pending(start_result)):
+                                goal_progress.record(
+                                    start_call.id, "start_session", "{}", start_result,
+                                    agent_id="computer-use-1", project_context=goal_project,
+                                    approval_token=start_token,
+                                )
+                            if goal_progress.requires_approval:
+                                goal_stop_reason = "Waiting for approval of the local computer session."
+                                break
+                            worker_session_ready = GoalProgress.is_completed_success("start_session", start_result)
                     logger.info("goal.worker.preflight chat=%s tools=%d command=%s session=%s", chat_id,
                                 goal_progress.tool_count, command_name is not None, worker_session_ready)
                     if (command_name is not None and worker_session_ready
