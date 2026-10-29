@@ -20,6 +20,7 @@ from tests.test_work_control_authority_088 import (
     signing_key as signing_key, incoming,
 )
 from tests.helpers.session_plane_runtime import get_session_record, replace_session_record
+from tests.helpers.subtask_admission import admitted_parent
 
 pytestmark = pytest.mark.asyncio
 
@@ -122,9 +123,8 @@ async def test_subtask_inherits_actual_parent_origin_and_preserves_tool_budget(c
     from orchestrator.chain_authority import ChainBudget
     await catalog.save(caller=await selected(human, bound, fixture), **command())
     orch = human[2]
-    parent_ws = object()
-    orch.ui_sessions = {parent_ws: {'sub': fixture[1]}}
     orch.history = SimpleNamespace(create_chat=Mock(return_value='real-child'))
+    orch.ui_sessions = {}
     orch._chain_budgets = {}
     orch._safe_send = AsyncMock()
     observed = []
@@ -134,15 +134,22 @@ async def test_subtask_inherits_actual_parent_origin_and_preserves_tool_budget(c
         await websocket.send_json({'type':'chat_message', 'payload':{'text':'Bound child result'}})
     orch.handle_chat_message = turn
     origin = await origin_for(human, bound, fixture)
-    parent = guidance.bind_http_guidance(origin, expected_orchestrator=orch,
-                                        websocket=parent_ws, chat_id='parent')
     budget = ChainBudget(turn_id='parent').slice(max_hops=3)
     orch._chain_budgets['parent'] = budget.parent
     try:
-        with guidance.use_turn_guidance(parent, expected_orchestrator=orch):
-            result = await subtasks._run_one(orch, {'title':'Child', 'instruction':'Read guidance'},
-                user_id=fixture[1], parent_chat_id='parent', parent_ws=parent_ws,
-                allowed_tools=['fetch_page'], budget=budget, correlation_id='synthetic-child', guidance_parent=parent)
+        async with admitted_parent(orch=orch, user_id=fixture[1]) as parent_ws:
+            orch.ui_sessions[parent_ws] = {}
+            parent = guidance.bind_http_guidance(
+                origin, expected_orchestrator=orch,
+                websocket=parent_ws, chat_id='parent')
+            with guidance.use_turn_guidance(parent, expected_orchestrator=orch):
+                result = await subtasks._run_one(
+                    orch, {'title':'Child', 'instruction':'Read guidance'},
+                    user_id=fixture[1], parent_chat_id='parent', parent_ws=parent_ws,
+                    allowed_tools=['fetch_page'], budget=budget,
+                    correlation_id='synthetic-child',
+                    owner_binding=parent_ws._model_owner_binding,
+                    guidance_parent=parent)
         assert result.status == 'ok' and result.digest == 'Bound child result'
         binding, skills, kwargs = observed[0]
         assert binding.parent is parent and skills[0].command == 'weekly'
@@ -293,8 +300,7 @@ async def test_actual_subtask_fanout_retains_parent_and_child_boundaries(
     from orchestrator.orchestrator import Orchestrator
     import types
     orch = human[2]
-    parent_ws = object()
-    orch.ui_sessions = {parent_ws:{'sub':fixture[1], '_raw_token':'claims-are-not-guidance'}}
+    orch.ui_sessions = {}
     counter = iter(['child-one', 'child-two'])
     orch.history = SimpleNamespace(create_chat=Mock(side_effect=lambda **_: next(counter)))
     orch._chain_budgets = {'parent':ChainBudget(turn_id='parent', chat_id='parent',
@@ -322,6 +328,10 @@ async def test_actual_subtask_fanout_retains_parent_and_child_boundaries(
         await websocket.send_json({'type':'chat_message','payload':{'text':'Bound result'}})
     orch.handle_chat_message = turn
     origin = await origin_for(human, bound, fixture)
+    request_user_id = 'other-owner' if loss == 'wrong_owner' else fixture[1]
+    admitted = admitted_parent(orch=orch, user_id=request_user_id)
+    parent_ws = await admitted.__aenter__()
+    orch.ui_sessions[parent_ws] = {}
     holder = []
     async def parent_turn():
         parent = guidance.bind_http_guidance(origin, expected_orchestrator=orch, websocket=parent_ws, chat_id='parent')
@@ -334,7 +344,7 @@ async def test_actual_subtask_fanout_retains_parent_and_child_boundaries(
                 replace_session_record(runtime, get_session_record(runtime, fixture[2]))
             return await subtasks.handle_meta_tool(orch, 'delegate_subtasks',
                 {'subtasks':[{'title':'One','instruction':'Read one'}, {'title':'Two','instruction':'Read two'}],
-                 '_parent_tools':['fetch_page']}, user_id='other-owner' if loss == 'wrong_owner' else fixture[1],
+                 '_parent_tools':['fetch_page']}, user_id=request_user_id,
                 chat_id='other-chat' if loss == 'wrong_chat' else 'parent', websocket=parent_ws)
     pending = asyncio.create_task(parent_turn())
     try:
@@ -365,3 +375,4 @@ async def test_actual_subtask_fanout_retains_parent_and_child_boundaries(
             pending.cancel()
             await asyncio.gather(pending, return_exceptions=True)
         origin.close()
+        await admitted.__aexit__(None, None, None)

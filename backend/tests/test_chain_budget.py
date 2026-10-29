@@ -19,6 +19,7 @@ from orchestrator import subtasks  # noqa: E402
 from orchestrator.chain_authority import ChainBudget  # noqa: E402
 from orchestrator.orchestrator import Orchestrator  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
+from tests.helpers.subtask_admission import admitted_parent  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -55,9 +56,10 @@ SPECS = [{"title": f"t{i}", "instruction": f"do {i}"} for i in range(3)]
 async def test_exhausted_budget_yields_honest_partial_results(orch):
     orch._chain_budgets["c1"] = ChainBudget(turn_id="t", chat_id="c1",
                                             max_hops=2, wall_clock_s=999)
-    resp = await subtasks.handle_meta_tool(
-        orch, "delegate_subtasks", {"subtasks": SPECS},
-        user_id="u1", chat_id="c1", websocket=MagicMock())
+    async with admitted_parent(orch=orch) as parent_ws:
+        resp = await subtasks.handle_meta_tool(
+            orch, "delegate_subtasks", {"subtasks": SPECS},
+            user_id="u1", chat_id="c1", websocket=parent_ws)
     results = resp.result["subtasks"]
     ok = [r for r in results if r["status"] == "ok"]
     stopped = [r for r in results if r["status"] == "cancelled"]
@@ -71,9 +73,10 @@ async def test_exhausted_budget_yields_honest_partial_results(orch):
 async def test_wall_clock_exhaustion_stops_the_tree(orch):
     orch._chain_budgets["c1"] = ChainBudget(turn_id="t", chat_id="c1",
                                             max_hops=99, wall_clock_s=0.0)
-    resp = await subtasks.handle_meta_tool(
-        orch, "delegate_subtasks", {"subtasks": SPECS},
-        user_id="u1", chat_id="c1", websocket=MagicMock())
+    async with admitted_parent(orch=orch) as parent_ws:
+        resp = await subtasks.handle_meta_tool(
+            orch, "delegate_subtasks", {"subtasks": SPECS},
+            user_id="u1", chat_id="c1", websocket=parent_ws)
     results = resp.result["subtasks"]
     assert all(r["status"] == "cancelled" for r in results)
     assert all("wall_clock" in r["detail"] for r in results)
