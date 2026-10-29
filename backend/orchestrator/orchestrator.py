@@ -733,6 +733,8 @@ _NARRATIVE_STREAM_CHAT: contextvars.ContextVar = contextvars.ContextVar(
     "narrative_stream_chat", default=None)
 _NARRATIVE_STREAMED: contextvars.ContextVar = contextvars.ContextVar(
     "narrative_streamed", default=False)
+_GOAL_BUFFERED_RESPONSE: contextvars.ContextVar = contextvars.ContextVar(
+    "goal_buffered_response", default=False)
 
 
 def _static_asset_version(static_dir: str) -> str:
@@ -15561,6 +15563,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     _round_kwargs["evidence_transient"] = True
                 if turn_count == 1 and round_one_choice is not None:
                     _round_kwargs["tool_choice"] = round_one_choice
+                _goal_buffer_token = _GOAL_BUFFERED_RESPONSE.set(goal_progress is not None)
                 try:
                     with perf_span("turn.route", chat=chat_id):
                         llm_msg, usage = await self._call_llm(
@@ -15578,6 +15581,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     raise
                 finally:
                     _NARRATIVE_STREAM_CHAT.reset(_stream_token)
+                    _GOAL_BUFFERED_RESPONSE.reset(_goal_buffer_token)
                 if task:
                     await self.task_manager.assert_current_execution(task)
                 if _phase_recorder is not None and _phase_step_id:
@@ -15587,6 +15591,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         logger.debug("phase step complete failed (non-fatal)", exc_info=True)
                 self._accumulate_usage(chat_id, usage)
                 if not llm_msg:
+                    if goal_progress is not None:
+                        if self.cancelled_sessions.get(id(websocket)):
+                            continue
+                        goal_stop_reason = (
+                            "The model did not return a response after the configured attempts."
+                        )
+                        task_error_on_exit = goal_stop_reason
+                        logger.error("LLM returned None, stopping goal loop.")
+                        break
                     task_terminal_on_exit = TaskState.FAILED
                     task_error_on_exit = "LLM returned no response"
                     logger.error("LLM returned None, stopping loop.")
@@ -16690,6 +16703,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return key, kwargs
 
         cap_key, extra_kwargs = _probe_state(call_model)
+        if _GOAL_BUFFERED_RESPONSE.get():
+            allow_stream = True
         if not allow_stream and _NARRATIVE_STREAM_CHAT.get() is not None:
             allow_stream = True
             stream_chat_id = _NARRATIVE_STREAM_CHAT.get()
@@ -17043,6 +17058,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                   purpose="conversation", context_base_url=None, context_provider_capture=None):
         from llm_config.native_provider import NativeMessagesClient
         native_call = isinstance(client, NativeMessagesClient)
+        buffer_narrative = _GOAL_BUFFERED_RESPONSE.get()
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue(maxsize=64 if native_call else 0)
         from threading import Event
@@ -17162,7 +17178,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         head = "".join(content_parts).lstrip()
                         if head:
                             mode = "silent" if head[0] in "{[`" else "content"
-                    if mode == "content" and (
+                    if not buffer_narrative and mode == "content" and (
                             not emitted or time.monotonic() - last_emit >= 0.15):
                         cumulative = "".join(content_parts)
                         safe_len = markdown_safe_prefix_len(cumulative)
@@ -17174,7 +17190,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             emitted = True
                             sent_len = safe_len
                             last_emit = time.monotonic()
-            if mode == "content":
+            if buffer_narrative and finish_reason not in {
+                    "stop", "tool_calls", "function_call", "length", "content_filter"}:
+                # Clean EOF can leave valid-looking partial tool arguments.
+                raise _LLMMalformedResponseError()
+            if mode == "content" and not buffer_narrative:
                 full = "".join(content_parts)
                 if len(full) > sent_len:
                     await self._emit_narrative_frame(

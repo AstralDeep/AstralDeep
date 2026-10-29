@@ -20,6 +20,10 @@ Before execution, a separate bounded classification freezes whether the original
 
 Failure resolution cannot waive an invocation with an unrelated success. Retries retain the same invocation and trusted identity; background observations retain the same job. An unknown file write requires a same-path, untruncated read with a digest matching the requested bytes. Unknown deletions remain unresolved. The bounded classifier and evaluator still make semantic judgments; these guards establish observed execution and scope, without claiming a general proof that arbitrary software is correct.
 
+## Model transport and terminal failures
+
+Goal planning retains permitted provider streaming while buffering the proposed narrative until completion verification. Buffering does not change provider eligibility, evidence capture, selected harness or persistent-worker restrictions. A buffered stream must carry a recognized terminal finish reason before assembled tool calls are returned; clean EOF without that evidence is malformed and cannot dispatch partial arguments. Truncation retains its explicit finish reason so the ordinary goal gate can reject it. Exhausted model calls publish the original user request and a durable incomplete outcome atomically rather than returning before conversation publication; cancellation retains its own terminal publisher.
+
 ## Scope and rollout
 
 Deep owns the request controller, evidence, project context, and evaluator integration. Existing tool, provider-disclosure, audit, project, confirmation, and Stop paths remain authoritative. No SQL migration, new primitive, or client protocol is required. A default-off `FF_GOAL_HARNESS` switch supports qualification and rollback; the sandbox will enable it for every ordinary request. A bounded configurable goal round budget replaces the small legacy budget only when enabled. No failed or incomplete request is marked completed.

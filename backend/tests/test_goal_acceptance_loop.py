@@ -209,3 +209,30 @@ def test_completion_proof_parser_fails_closed(text):
 
     with pytest.raises((ValueError, TypeError)):
         parse_review(text)
+
+
+@pytest.mark.asyncio
+async def test_goal_transport_buffer_is_limited_to_planning(acceptance_orch, user_skills_disabled):
+    from orchestrator.orchestrator import _GOAL_BUFFERED_RESPONSE
+
+    o = acceptance_orch
+    _register(o)
+    chat, ws = await _chat(o)
+    features = []
+
+    async def provider(websocket, messages, tools_desc=None, **kwargs):
+        feature = kwargs.get("feature")
+        features.append(feature)
+        assert _GOAL_BUFFERED_RESPONSE.get() is (feature == "tool_dispatch")
+        if feature == "goal_requirements":
+            return _msg(content='{"kind":"informational"}'), _usage()
+        if feature == "goal_verification":
+            return _review()
+        return _msg(content="A virtual environment isolates Python dependencies."), _usage()
+
+    o._call_llm = provider
+    o.execute_single_tool = AsyncMock()
+    await o.handle_chat_message(ws, "What is a virtual environment?", chat, user_id="seam-user")
+    assert features == ["goal_requirements", "tool_dispatch", "goal_verification"]
+    assert _GOAL_BUFFERED_RESPONSE.get() is False
+    o.execute_single_tool.assert_not_awaited()
