@@ -18,6 +18,11 @@ advertisement while disabled.
    flags are read once at import; a restart of an unchanged container is not a
    source-sync operation.
 
+The optional external-host Work panel resources additionally require
+`FF_MCP_WORK_PANEL=true` (default off). While it is off, the panel surface
+does not exist: listing returns only status and retained-result resources and
+a panel read returns `resource_unavailable`.
+
 The endpoint accepts header bearer credentials only, validates issuer and the
 `astral-mcp` audience, caps bodies at 1 MiB, and uses the durable `mcp`
 admission class (8 active, 32 queued, 5-second maximum wait). Its CORS policy
@@ -43,10 +48,23 @@ existing durable human-confirmation flow can apply.
 - `tools/list`
 - `tools/call`
 - `subscriptions/listen`, acknowledged with an empty notification set
+- `resources/list` and `resources/read` for owner-authorized Work resources:
+  `astral://work/{uuid4}/status`, `astral://work/{uuid4}/result`, and, with
+  `FF_MCP_WORK_PANEL` enabled, `astral://work/{uuid4}/panel`
 
 The server does not advertise list-changed notifications, MCP Tasks, MCP Apps,
-or any other extension. Tracked Astral operations remain ordinary structured
-tool results with Astral identifiers/status; they are not MCP task handles.
+or any other extension. Work resources are read-only JSON data served through
+the existing MCP resource methods; every read is bound to a resolved framework
+credential with the matching scope, screened by the local PHI sharing policy,
+rechecked after admission, and served with `Cache-Control: no-store`. The
+panel resource is a bounded owner-authorized view model (closed key set, no
+URLs, links, tokens, or owner identifiers) that an external host may present;
+it carries no actions, and host tool calls keep the normal confirmed and
+audited Work dispatch. The external-host HTML panel document and its CSP/
+sandbox posture belong to Projection's qualified panel renderer and are not
+served from this endpoint; external-host rendering acceptance is a separate
+verification. Tracked Astral operations remain ordinary structured tool
+results with Astral identifiers/status; they are not MCP task handles.
 `GET /mcp` and `DELETE /mcp` return 405 while enabled. Session and resumption
 headers are ignored and are never minted or echoed.
 

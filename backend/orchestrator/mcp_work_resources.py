@@ -1,5 +1,6 @@
-"""Projects owner-scoped Work status and verified retained results through WorkService.
-Framework credential fences and the local sharing policy guard every read and delivery.
+"""Projects owner-scoped Work status, verified retained results, and the optional external-host
+panel view through WorkService. Framework credential fences and the local sharing policy guard
+every read and delivery; panel view building and metadata live in mcp_panel.py.
 """
 
 from __future__ import annotations
@@ -13,6 +14,13 @@ from typing import Any
 from orchestrator.framework_credentials import FrameworkCaller, FrameworkCredentialService
 from orchestrator.framework_work_reads import FrameworkWorkReader
 from orchestrator.mcp_authz import MCPAuthError
+from orchestrator.mcp_panel import (
+    PANEL_URI_SEGMENT,
+    panel_descriptor,
+    panel_enabled,
+    panel_read_result,
+    panel_view,
+)
 from orchestrator.work_operations import FrameworkWorkOperations
 from persistent_agents.models import AssignmentError
 from persistent_agents.store import AssignmentStore
@@ -20,7 +28,9 @@ from personalization.phi_gate import PHIGate
 
 RESOURCE_SCOPES = ("mcp:tools:read",)
 WORK_UUID4 = r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
-RESOURCE_URI = re.compile(rf"^astral://work/({WORK_UUID4})/(status|result)\Z")
+RESOURCE_URI = re.compile(
+    rf"^astral://work/({WORK_UUID4})/(status|result|{PANEL_URI_SEGMENT})\Z"
+)
 RESOURCE_LIST_LIMIT = 50
 
 
@@ -38,7 +48,11 @@ def _text(value, maximum):
 def resource_scope(uri):
     match = RESOURCE_URI.fullmatch(uri) if isinstance(uri, str) else None
     if match is None:
-        raise MCPAuthError(400, "invalid_uri", "URI must be astral://work/{uuid4}/status or /result", RESOURCE_SCOPES)
+        raise MCPAuthError(
+            400, "invalid_uri",
+            "URI must be astral://work/{uuid4}/status, /result, or /panel",
+            RESOURCE_SCOPES,
+        )
     return "artifacts.read" if match.group(2) == "result" else "operations.read"
 
 
@@ -197,12 +211,15 @@ class WorkResourceAuthority:
         if not isinstance(records, list) or len(records) > RESOURCE_LIST_LIMIT:
             raise _refuse(503)
         resources = []
+        with_panel = panel_enabled()
         for record in records:
             view = bounded_status(record)
             resources.append({
                 "uri": f"astral://work/{view['id']}/status", "name": f"Status: {view['title']}",
                 "mimeType": "application/json", "description": f"Status for work item {view['id']}",
             })
+            if with_panel:
+                resources.append(panel_descriptor(view["id"], view["title"]))
         return await self._share(resources)
 
     async def read(self, uri):
@@ -210,6 +227,9 @@ class WorkResourceAuthority:
         if scope != self.reader.scope:
             raise _refuse()
         match = RESOURCE_URI.fullmatch(uri)
+        kind = match.group(2)
+        if kind == PANEL_URI_SEGMENT and not panel_enabled():
+            raise _refuse(503)
         retained = scope == "artifacts.read"
         try:
             record = await getattr(self.service, "result" if retained else "get")(
@@ -217,6 +237,14 @@ class WorkResourceAuthority:
             )
         except AssignmentError as exc:
             raise _refuse(exc.status_code) from None
+        if kind == PANEL_URI_SEGMENT:
+            if not isinstance(record, dict) or record.get("id") != match.group(1):
+                raise _refuse(503)
+            try:
+                view = panel_view(record)
+            except ValueError:
+                raise _refuse(503) from None
+            return await self._share(panel_read_result(uri, match.group(1), view))
         view = bounded_result(record) if retained else bounded_status(record)
         if view["id"] != match.group(1):
             raise _refuse(503)

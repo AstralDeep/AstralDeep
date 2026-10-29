@@ -60,6 +60,7 @@ class FeatureFlags:
             "terminal_shell": self._read("FF_TERMINAL_SHELL", False),
             "sandbox_qualification": self._read("FF_SANDBOX_QUALIFICATION", False),
             "mcp_server": self._read("FF_MCP_SERVER", False),
+            "mcp_work_panel": self._read("FF_MCP_WORK_PANEL", False),
             "a2a_server": self._read("FF_A2A_SERVER", False),
             "conversational_voice": self._read(
                 "FF_CONVERSATIONAL_VOICE",
