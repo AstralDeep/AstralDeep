@@ -123,6 +123,7 @@ class GoalProgress:
         computer_name: str | None = None,
         project_context: dict[str, Any] | None = None,
         approval_token: str | None = None,
+        worker_attested: bool = False,
     ) -> None:
         self.tool_count += 1
         self._no_tool_continues = 0
@@ -182,6 +183,7 @@ class GoalProgress:
                 "tool": str(tool_name)[:128],
                 "agent_id": identity["agent_id"],
                 "sequence": self._sequence,
+                "worker_attested": worker_attested is True,
             }
         self._update_jobs(tool_name, args, data, status)
         if outcome == "failure" and not no_effect_malformed_write:
@@ -247,6 +249,7 @@ class GoalProgress:
             "outcome": outcome,
             "completed": completed,
             "sequence": self._sequence,
+            **({"attested_worker": True} if worker_attested is True else {}),
             **({"error_code": error_code} if error_code else {}),
             **({"effect_state": effect_state} if effect_state else {}),
         })
@@ -364,6 +367,7 @@ class GoalProgress:
             f"approval-{pending['call_id']}", tool_name, arguments, result,
             agent_id=agent_id, computer_id=computer_id, computer_name=computer_name,
             project_context=project_context,
+            worker_attested=pending.get("worker_attested") is True,
         )
         return True
 

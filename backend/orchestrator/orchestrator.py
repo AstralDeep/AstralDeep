@@ -15379,6 +15379,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             goal_route_repairs = 0
             goal_response_repairs = 0
             goal_recovery_nudge_sent = False
+            goal_worker_attempted = False
             from orchestrator import hitl_confirmation
 
             resumed_goal = hitl_confirmation.current_goal_context(self, websocket, user_id, chat_id)
@@ -15390,6 +15391,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                 goal_progress = resumed_goal.progress if resumed_goal else GoalProgress(message)
                 goal_project = await project_goal_context(self, websocket, user_id, chat_id)
+                goal_worker_attempted = any(
+                    item.get("attested_worker") is True
+                    for item in goal_progress.private_observations()
+                )
                 if resumed_goal is not None:
                     goal_contract = resumed_goal.contract
                     goal_checkpoint_tools = goal_progress.tool_count
@@ -15614,6 +15619,80 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             agent == "computer-use-1" for agent in tool_to_agent.values()):
                         goal_stop_reason = "No authorized project execution tools are available on the selected computer."
                         break
+
+                if (goal_contract is not None and goal_contract.kind == "local_project"
+                        and not goal_worker_attempted and goal_progress.tool_count == 0):
+                    # A local coding goal needs a coding harness with its own iterative
+                    # edit/run/repair loop. Dispatch it through the same computer-use
+                    # permission and project bridge as every other local command.
+                    goal_worker_attempted = True
+                    from orchestrator.goal_worker import build_worker_command, classify_worker_result
+                    from types import SimpleNamespace
+
+                    command_name = next((name for name, agent in tool_to_agent.items()
+                        if agent == "computer-use-1"
+                        and (tool_to_unqualified or {}).get(name, name) == "run_command"), None)
+                    if command_name is not None and goal_project == await project_goal_context(
+                            self, websocket, user_id, chat_id):
+                        try:
+                            worker_args = build_worker_command(
+                                goal_progress.request, goal_contract.required_categories, goal_project)
+                        except ValueError as exc:
+                            logger.info("goal.worker.unavailable chat=%s reason=%s", chat_id, exc)
+                            messages.append({"role": "system", "content": (
+                                "The local coding worker is unavailable. Continue the original objective "
+                                "through the authorized project tools and verify every outcome.")})
+                        else:
+                            await self._send_chat_status(websocket, "executing", "Building and verifying the local project…")
+                            worker_token = _uuid.uuid4().hex
+                            worker_call = SimpleNamespace(
+                                id=f"goal-worker-{worker_token[:16]}",
+                                function=SimpleNamespace(
+                                    name=command_name,
+                                    arguments=json.dumps(worker_args, ensure_ascii=False),
+                                ),
+                            )
+                            with hitl_confirmation.goal_call_scope(worker_token):
+                                worker_result = await self.execute_single_tool(
+                                    websocket, worker_call, tool_to_agent, chat_id, user_id=user_id,
+                                    tool_to_unqualified=tool_to_unqualified,
+                                )
+                            if self.cancelled_sessions.get(id(websocket)):
+                                continue
+                            if task:
+                                await self.task_manager.assert_current_execution(task)
+                            if goal_project != await project_goal_context(self, websocket, user_id, chat_id):
+                                goal_stop_reason = "The selected project's folder authority changed during worker execution."
+                                break
+                            worker_state = classify_worker_result(worker_result)
+                            if worker_state.status in {"success", "denied"}:
+                                goal_progress.record(
+                                    worker_call.id, "run_command", worker_call.function.arguments,
+                                    worker_result, agent_id="computer-use-1", project_context=goal_project,
+                                    approval_token=worker_token,
+                                    worker_attested=True,
+                                )
+                            logger.info("goal.worker chat=%s status=%s exit=%s", chat_id,
+                                        worker_state.status, worker_state.exit_code)
+                            if goal_progress.requires_approval:
+                                goal_stop_reason = "Waiting for approval of the local coding worker. The original goal will continue after approval."
+                                break
+                            if worker_state.status == "success":
+                                goal_checkpoint_tools = goal_progress.tool_count
+                                messages.append({"role": "system", "content": (
+                                    "The authorized local coding worker exited successfully inside the frozen "
+                                    "project root. Its prose is not proof. Inspect the resulting source and "
+                                    "manifest, run the project's environment, dependency, test, and startup "
+                                    "checks with the ordinary project tools, then request completion review "
+                                    "using distinct real tool evidence for each required category.")})
+                            elif worker_state.status != "denied":
+                                messages.append({"role": "system", "content": (
+                                    "The local coding worker could not finish. Inspect its possible file "
+                                    "effects and continue the original objective with authorized project tools. "
+                                    "Do not claim completion without direct verification.")})
+                            else:
+                                goal_stop_reason = "The local coding worker needs a project command grant before it can run."
+                                break
 
                 if not tool_prompt_context_added:
                     prompt_tools = tools_desc
