@@ -1,7 +1,6 @@
 """Tests strict goal contracts and proof validation against scoped successful observations."""
 
 import pytest
-
 from orchestrator.goal_requirements import (
     PROOF_CATEGORIES,
     GoalContract,
@@ -9,7 +8,6 @@ from orchestrator.goal_requirements import (
     parse_goal_contract,
     validate_goal_proofs,
 )
-
 
 ROOT = "/Users/sam/Work/project"
 PROJECT = {
@@ -53,6 +51,32 @@ def _run(call_id, *, argv=None, command=None, cwd=ROOT, data=None, **kwargs):
 
 def _local_contract():
     return build_goal_contract("local_project", PROJECT)
+
+
+def _source_pair(path=ROOT + "/main.py"):
+    content_hash = "a" * 64
+    return [
+        _call("write", "write_file", args={"path": path, "content_size": 512,
+                                             "content_sha256": content_hash},
+              data={"path": path, "bytes": 512}),
+        _call("read", "read_file", args={"path": path},
+              data={"path": path, "size": 512, "truncated": False,
+                    "has_meaningful_content": True, "content_sha256": content_hash}, sequence=2),
+    ]
+
+
+def _stage_calls():
+    return [
+        _run("env", argv=["python", "-m", "venv", ".venv"]),
+        _run("deps", argv=["python", "-m", "pip", "install", "-r", "requirements.txt"]),
+        _run("tests", argv=["python", "-m", "pytest", "-q"]),
+        _run("startup", argv=["python", "main.py"]),
+    ]
+
+
+def _stage_refs():
+    return {"environment": ["env"], "dependencies": ["deps"],
+            "tests": ["tests"], "startup": ["startup"]}
 
 
 def test_strict_goal_contract_parser_accepts_only_known_intents():
@@ -150,28 +174,114 @@ def test_action_proofs_reject_malformed_and_bounded_reference_violations(referen
 
 def test_local_project_requires_every_category_and_actual_scoped_successes():
     contract = _local_contract()
-    command = _run("cmd", argv=["python", "-m", "pytest"])
-    all_refs = {category: ["cmd"] for category in PROOF_CATEGORIES}
-    file_call = _call("file", "write_file", args={"path": ROOT + "/main.py"},
-                      data={"path": ROOT + "/main.py", "bytes": 10})
-    all_refs["files"] = ["file"]
-    assert validate_goal_proofs(contract, all_refs, [command, file_call], PROJECT).accepted
+    source_calls = _source_pair()
+    stages = _stage_calls()
+    all_refs = {"files": ["write", "read"], **_stage_refs()}
+    observations = source_calls + stages
+    assert validate_goal_proofs(contract, all_refs, observations, PROJECT).accepted
     for category in PROOF_CATEGORIES:
         missing = dict(all_refs)
         del missing[category]
-        result = validate_goal_proofs(contract, missing, [command, file_call], PROJECT)
+        result = validate_goal_proofs(contract, missing, observations, PROJECT)
         assert not result.accepted
         assert category in result.missing
 
 
+@pytest.mark.parametrize("path,size", [
+    (ROOT + "/probe.py", 512), (ROOT + "/probe_game.py", 512),
+    (ROOT + "/main.py", 32),
+])
+def test_local_project_rejects_probe_or_tiny_source_artifact(path, size):
+    write, read = _source_pair(path)
+    write["arguments"]["content_size"] = size
+    write["data"]["bytes"] = size
+    read["data"]["size"] = size
+    refs = {"files": ["write", "read"], **_stage_refs()}
+    result = validate_goal_proofs(_local_contract(), refs, [write, read] + _stage_calls(), PROJECT)
+    assert not result.accepted
+    assert "files" in result.invalid
+
+
+def test_local_project_requires_write_readback_of_same_source_revision():
+    write, read = _source_pair()
+    read["arguments"]["path"] = ROOT + "/other.py"
+    read["data"]["path"] = ROOT + "/other.py"
+    refs = {"files": ["write", "read"], **_stage_refs()}
+    result = validate_goal_proofs(_local_contract(), refs, [write, read] + _stage_calls(), PROJECT)
+    assert not result.accepted
+    assert "files" in result.invalid
+
+
+def test_attested_worker_command_plus_source_readback_can_prove_files():
+    worker = _run("worker", argv=["python", "worker.py"])
+    worker["attested_worker"] = True
+    worker["arguments"]["goal_worker"] = True
+    read = _call("read", "read_file", args={"path": ROOT + "/main.py"}, data={
+        "path": ROOT + "/main.py", "size": 512, "truncated": False,
+        "has_meaningful_content": True, "content_sha256": "a" * 64})
+    refs = {"files": ["worker", "read"], **_stage_refs()}
+    assert validate_goal_proofs(
+        _local_contract(), refs, [worker, read] + _stage_calls(), PROJECT).accepted
+    worker.pop("attested_worker")
+    result = validate_goal_proofs(
+        _local_contract(), refs, [worker, read] + _stage_calls(), PROJECT)
+    assert not result.accepted
+    assert "files" in result.invalid
+
+
+@pytest.mark.parametrize("stage,argv", [
+    ("environment", ["uv", "venv"]),
+    ("environment", ["python3", "-c", "assert sys.prefix != sys.base_prefix"]),
+    ("dependencies", ["npm", "ci"]),
+    ("dependencies", ["cargo", "fetch"]),
+    ("dependencies", ["go", "mod", "download"]),
+    ("dependencies", ["swift", "package", "resolve"]),
+    ("tests", ["npm", "test"]),
+    ("tests", ["cargo", "test"]),
+    ("tests", ["go", "test", "./..."]),
+    ("tests", ["swift", "test"]),
+    ("startup", ["npm", "start"]),
+    ("startup", ["cargo", "run"]),
+    ("startup", ["go", "run", "."]),
+    ("startup", ["swift", "run"]),
+])
+def test_project_stage_classifiers_cover_common_toolchains(stage, argv):
+    call = _run(stage, argv=argv)
+    refs = {"files": ["write", "read"], **_stage_refs()}
+    refs[stage] = [stage]
+    observations = _source_pair() + [call] + [
+        other for other in _stage_calls() if other["call_id"] != stage
+    ]
+    assert validate_goal_proofs(_local_contract(), refs, observations, PROJECT).accepted
+
+
+def test_project_stage_evidence_must_be_distinct_and_match_the_claimed_stage():
+    calls = _source_pair() + _stage_calls()
+    refs = {"files": ["write", "read"], **_stage_refs()}
+    refs["startup"] = ["tests"]
+    result = validate_goal_proofs(_local_contract(), refs, calls, PROJECT)
+    assert not result.accepted
+    assert "startup" in result.invalid
+    refs["startup"] = ["env"]
+    assert not validate_goal_proofs(_local_contract(), refs, calls, PROJECT).accepted
+
+
+def test_manifest_inspection_can_document_dependency_resolution_path():
+    manifest = _call("manifest", "read_file", args={"path": ROOT + "/pyproject.toml"}, data={
+        "path": ROOT + "/pyproject.toml", "size": 512, "truncated": False,
+        "has_meaningful_content": True})
+    refs = {"files": ["write", "read"], **_stage_refs()}
+    refs["dependencies"] = ["manifest"]
+    result = validate_goal_proofs(
+        _local_contract(), refs, _source_pair() + [manifest] + _stage_calls(), PROJECT)
+    assert result.accepted
+
+
 def test_each_project_category_rejects_mixed_real_and_fabricated_references():
     contract = _local_contract()
-    file_call = _call("file", "write_file", args={"path": ROOT + "/main.py"},
-                      data={"path": ROOT + "/main.py", "bytes": 10})
-    command = _run("cmd", argv=["python", "-m", "pytest"])
-    calls = [file_call, command]
+    calls = _source_pair() + _stage_calls()
+    refs = {"files": ["write", "read"], **_stage_refs()}
     for category in PROOF_CATEGORIES:
-        refs = {"files": ["file"], **{name: ["cmd"] for name in PROOF_CATEGORIES[1:]}}
         refs[category] = [refs[category][0], "fabricated"]
         result = validate_goal_proofs(contract, refs, calls, PROJECT)
         assert not result.accepted
@@ -180,14 +290,16 @@ def test_each_project_category_rejects_mixed_real_and_fabricated_references():
 
 def test_project_file_inspection_cannot_substitute_for_execution_categories():
     contract = _local_contract()
-    file_call = _call("file", "read_file", args={"path": ROOT + "/pyproject.toml"}, data={
-        "path": ROOT + "/pyproject.toml", "size": 10, "truncated": False})
-    command = _run("cmd", argv=["python", "-m", "pytest"])
-    refs = {category: ["cmd"] for category in PROOF_CATEGORIES}
-    for category in PROOF_CATEGORIES[1:]:
+    source_calls = _source_pair()
+    stages = _stage_calls()
+    refs = {"files": ["write", "read"], **_stage_refs()}
+    manifest = _call("manifest", "read_file", args={"path": ROOT + "/pyproject.toml"}, data={
+        "path": ROOT + "/pyproject.toml", "size": 30, "truncated": False,
+        "has_meaningful_content": True})
+    for category in ("environment", "tests", "startup"):
         only_file = dict(refs)
-        only_file[category] = ["file"]
-        result = validate_goal_proofs(contract, only_file, [file_call, command], PROJECT)
+        only_file[category] = ["manifest"]
+        result = validate_goal_proofs(contract, only_file, source_calls + stages + [manifest], PROJECT)
         assert not result.accepted
         assert category in result.invalid
 
@@ -214,13 +326,13 @@ def test_project_file_inspection_cannot_substitute_for_execution_categories():
 def test_invalid_execution_records_cannot_prove_local_categories(call):
     refs = {category: [call["call_id"]] for category in PROOF_CATEGORIES}
     file_call = _call("file", "write_file", args={"path": ROOT + "/main.py"},
-                      data={"path": ROOT + "/main.py", "bytes": 10})
+                      data={"path": ROOT + "/main.py", "bytes": 512})
     refs["files"] = ["file"]
     assert not validate_goal_proofs(_local_contract(), refs, [call, file_call], PROJECT).accepted
 
 
 def test_local_proofs_reject_wrong_tool_agent_or_missing_dispatch_identity():
-    refs = {category: ["call"] for category in PROOF_CATEGORIES}
+    refs = {"files": ["write", "read"], **_stage_refs()}
     for call in (
         _call("call", "search", args={"query": "project"}, data={"items": ["done"]}),
         _run("call", argv=["python", "-m", "pytest"], agent="another-agent"),
@@ -242,37 +354,47 @@ def test_obvious_noop_shell_commands_cannot_prove_local_categories(command):
 
 @pytest.mark.parametrize("command", ["pytest -q", "echo starting && pytest -q", "zsh -c 'pytest -q'"])
 def test_meaningful_shell_command_can_be_referenced(command):
-    call = _run("command", command=command)
-    refs = {category: ["command"] for category in PROOF_CATEGORIES}
-    assert validate_goal_proofs(_local_contract(), refs, [call], PROJECT).accepted
+    call = _run("tests", command=command)
+    calls = _source_pair() + _stage_calls()
+    calls = [call if item["call_id"] == "tests" else item for item in calls]
+    refs = {"files": ["write", "read"], **_stage_refs()}
+    assert validate_goal_proofs(_local_contract(), refs, calls, PROJECT).accepted
 
 
 @pytest.mark.parametrize("tool,args,data", [
-    ("write_file", {"path": ROOT + "/main.py"}, {"path": ROOT + "/main.py", "bytes": 10}),
-    ("read_file", {"path": ROOT + "/pyproject.toml"},
-     {"path": ROOT + "/pyproject.toml", "text": "[project]", "size": 9, "truncated": False}),
-    ("list_dir", {"path": ROOT}, {"path": ROOT, "entries": [{"name": "main.py"}], "count": 1}),
+    ("write_file", {"path": ROOT + "/main.py", "content_size": 512},
+     {"path": ROOT + "/main.py", "bytes": 512}),
+    ("read_file", {"path": ROOT + "/main.py"},
+     {"path": ROOT + "/main.py", "size": 512, "truncated": False,
+      "has_meaningful_content": True, "content_sha256": "a" * 64}),
 ])
 def test_local_file_proof_requires_scoped_success_and_matching_path(tool, args, data):
     contract = _local_contract()
     call = _call("file", tool, args=args, data=data)
-    command = _run("command", argv=["python", "-m", "pytest"])
-    refs = {category: ["command"] for category in PROOF_CATEGORIES}
-    refs["files"] = ["file"]
-    assert validate_goal_proofs(contract, refs, [call, command], PROJECT).accepted
+    refs = {"files": ["file"], **_stage_refs()}
+    write, read = _source_pair(path=args.get("path", ROOT + "/main.py"))
+    if tool == "write_file":
+        call["arguments"].update({"content_size": 512, "content_sha256": "a" * 64})
+        write["call_id"] = "file"
+    if tool == "read_file":
+        read = call
+    observations = [write, read] + _stage_calls()
+    refs["files"] = [write["call_id"], read["call_id"]]
+    assert validate_goal_proofs(contract, refs, observations, PROJECT).accepted
     bad = _call("file", tool, args=args, data={**data, "path": "/tmp/outside"})
-    assert not validate_goal_proofs(contract, refs, [bad, command], PROJECT).accepted
+    bad_observations = [bad if item["call_id"] == "file" else item for item in observations]
+    assert not validate_goal_proofs(contract, refs, bad_observations, PROJECT).accepted
 
 
 def test_file_observation_accepts_privacy_safe_result_markers_without_content():
-    contract = _local_contract()
-    call = _call("read", "read_file", args={"path": ROOT + "/pyproject.toml"}, data={
-        "path": ROOT + "/pyproject.toml", "size": 20, "truncated": False,
-        "has_meaningful_content": True})
-    command = _run("command", argv=["python", "-m", "pytest"])
-    refs = {category: ["command"] for category in PROOF_CATEGORIES}
-    refs["files"] = ["read"]
-    assert validate_goal_proofs(contract, refs, [call, command], PROJECT).accepted
+    call = _call("read", "read_file", args={"path": ROOT + "/main.py"}, data={
+        "path": ROOT + "/main.py", "size": 512, "truncated": False,
+        "has_meaningful_content": True, "content_sha256": "a" * 64})
+    write = _call("write", "write_file", args={"path": ROOT + "/main.py", "content_size": 512,
+                                                 "content_sha256": "a" * 64},
+                  data={"path": ROOT + "/main.py", "bytes": 512})
+    refs = {"files": ["write", "read"], **_stage_refs()}
+    assert validate_goal_proofs(_local_contract(), refs, [write, call] + _stage_calls(), PROJECT).accepted
 
 
 @pytest.mark.parametrize("tool,data", [
@@ -303,18 +425,18 @@ def test_background_execution_proof_requires_correlated_terminal_success():
     poll = _call("poll", "read_output", args={"job_id": "job-a"},
                  data={"job_id": "job-a", "state": "exited", "exit_code": 0,
                        "computer": "Sam's Mac"}, sequence=2)
-    file_call = _call("file", "write_file", args={"path": ROOT + "/main.py"},
-                      data={"path": ROOT + "/main.py", "bytes": 10})
-    refs = {category: ["poll"] for category in PROOF_CATEGORIES}
-    refs["files"] = ["file"]
-    assert validate_goal_proofs(contract, refs, [start, poll, file_call], PROJECT).accepted
+    file_calls = _source_pair()
+    refs = {"files": ["write", "read"], **_stage_refs()}
+    refs["tests"] = ["poll"]
+    other_stages = [call for call in _stage_calls() if call["call_id"] != "tests"]
+    assert validate_goal_proofs(contract, refs, [start, poll, *file_calls, *other_stages], PROJECT).accepted
     for bad_poll_data in (
         {"job_id": "job-b", "state": "exited", "exit_code": 0, "computer": "Sam's Mac"},
         {"job_id": "job-a", "state": "running", "exit_code": None, "computer": "Sam's Mac"},
         {"job_id": "job-a", "state": "exited", "exit_code": 1, "computer": "Sam's Mac"},
     ):
         bad = _call("poll", "read_output", args={"job_id": "job-a"}, data=bad_poll_data)
-        assert not validate_goal_proofs(contract, refs, [start, bad, file_call], PROJECT).accepted
+        assert not validate_goal_proofs(contract, refs, [start, bad, *file_calls, *other_stages], PROJECT).accepted
 
 
 def test_background_poll_cannot_prove_without_matching_real_origin_call():
@@ -325,6 +447,21 @@ def test_background_poll_cannot_prove_without_matching_real_origin_call():
     refs = {category: ["poll"] for category in PROOF_CATEGORIES}
     refs["files"] = ["file"]
     assert not validate_goal_proofs(_local_contract(), refs, [poll, file_call], PROJECT).accepted
+
+
+def test_background_startup_requires_correlated_successful_terminal_job():
+    contract = _local_contract()
+    start = _call("start", "run_command", args={"argv": ["npm", "start"], "cwd": ROOT},
+                  data={"job_id": "job-start", "background": True, "computer": "Sam's Mac"},
+                  completed=False, sequence=1)
+    poll = _call("poll", "read_output", args={"job_id": "job-start"},
+                 data={"job_id": "job-start", "state": "exited", "exit_code": 0,
+                       "computer": "Sam's Mac"}, sequence=2)
+    refs = {"files": ["write", "read"], **_stage_refs()}
+    refs["startup"] = ["poll"]
+    stages = [call for call in _stage_calls() if call["call_id"] != "startup"]
+    assert validate_goal_proofs(
+        contract, refs, _source_pair() + [start, poll] + stages, PROJECT).accepted
 
 
 def test_background_poll_requires_origin_from_same_agent_host_and_project_root():

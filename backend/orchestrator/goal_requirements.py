@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import os
 import shlex
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any, Iterable
-
+from typing import Any
 
 GOAL_CLASSIFIER_GUIDANCE = """Classify only the user's original request.
 Use informational for answers, explanations, and advice that do not ask to perform an action.
@@ -28,6 +28,17 @@ _MAX_PROOF_REFS = 8
 _MAX_TOTAL_REFS = 32
 _MAX_CALL_ID = 128
 _NOOP_EXECUTABLES = frozenset({"echo", "printf", "true", ":"})
+_SOURCE_EXTENSIONS = frozenset({
+    ".c", ".cc", ".cpp", ".cs", ".go", ".h", ".html", ".java", ".js",
+    ".jsx", ".kt", ".m", ".mm", ".py", ".rb", ".rs", ".swift", ".ts",
+    ".tsx", ".vue", ".css",
+})
+_PROBE_STEMS = frozenset({"probe", "scratch", "temp", "tmp"})
+_PROJECT_MANIFESTS = frozenset({
+    "cargo.toml", "go.mod", "package.json", "package-lock.json", "pnpm-lock.yaml",
+    "pyproject.toml", "requirements.txt", "setup.py", "swift.package", "package.swift",
+    "yarn.lock",
+})
 
 
 @dataclass(frozen=True)
@@ -118,14 +129,34 @@ def validate_goal_proofs(
     if contract.kind != "local_project" or not _project_context_valid(project_context):
         return ProofAssessment(False, contract.required_categories, ("current project authority is unavailable",))
     roots = _project_roots(project_context)
+    referenced_categories: dict[str, tuple[str, ...]] = {}
     for category in contract.required_categories:
         ids = parsed.get(category, ())
         if not ids:
             missing.append(category)
             continue
+        referenced_categories[category] = ids
         if any(not _valid_local_observation(category, calls.get(call_id), calls, roots, project_context)
                for call_id in ids):
             invalid.append(category)
+    owners = {}
+    for category, ids in referenced_categories.items():
+        for call_id in ids:
+            if call_id in owners:
+                invalid.extend((owners[call_id], category))
+            else:
+                owners[call_id] = category
+    if not missing:
+        if not _valid_source_artifact(referenced_categories.get("files", ()), calls, roots, project_context):
+            invalid.append("files")
+        for category in ("environment", "dependencies", "tests", "startup"):
+            ids = referenced_categories.get(category, ())
+            if ids and not any(
+                _valid_project_stage(category, calls.get(call_id), calls, roots, project_context)
+                for call_id in ids
+            ):
+                invalid.append(category)
+    invalid = list(dict.fromkeys(invalid))
     return ProofAssessment(not missing and not invalid, tuple(missing), tuple(invalid))
 
 
@@ -260,7 +291,9 @@ def _valid_local_observation(category: str, call: dict[str, Any] | None,
     if data.get("computer") != context["computer_name"]:
         return False
     if tool in {"read_file", "list_dir", "write_file"}:
-        if category != "files":
+        if category != "files" and not (
+            category == "dependencies" and tool == "read_file"
+        ):
             return False
         requested = _inside_roots(args.get("path"), roots)
         observed = _inside_roots(data.get("path"), roots)
@@ -279,6 +312,190 @@ def _valid_local_observation(category: str, call: dict[str, Any] | None,
     if tool == "read_output":
         return _successful_background_observation(call, args, data, observations, roots, context)
     return False
+
+
+def _valid_source_artifact(ids: tuple[str, ...], calls: dict[str, dict[str, Any]],
+                           roots: tuple[str, ...], context: dict[str, Any]) -> bool:
+    writes = []
+    workers = []
+    reads = []
+    for call_id in ids:
+        call = calls.get(call_id)
+        if not _valid_local_observation("files", call, calls, roots, context):
+            continue
+        args = call.get("arguments", {})
+        data = _result_data(call.get("result", call.get("data")))
+        if call.get("tool") == "run_command":
+            if call.get("attested_worker") is True:
+                cwd = _inside_roots(args.get("cwd"), roots)
+                if cwd is not None:
+                    workers.append(cwd)
+            continue
+        path = _inside_roots(args.get("path"), roots)
+        if path is None or not _source_path(path):
+            continue
+        if call.get("tool") == "write_file":
+            size = args.get("content_size", data.get("bytes", data.get("bytes_written")))
+            if type(size) is int and size >= 256 and isinstance(args.get("content_sha256"), str):
+                writes.append((path, args.get("content_sha256")))
+        elif call.get("tool") == "read_file":
+            size = data.get("size")
+            if (type(size) is int and size >= 256 and data.get("has_meaningful_content") is True
+                    and data.get("truncated") is False and isinstance(data.get("content_sha256"), str)):
+                reads.append((path, data.get("content_sha256")))
+    matched_write = any(write_path == read_path and write_hash == read_hash
+                        for write_path, write_hash in writes for read_path, read_hash in reads)
+    matched_worker = any(
+        read_path.startswith(cwd.rstrip("/") + "/")
+        for cwd in workers for read_path, _read_hash in reads
+    )
+    return matched_write or matched_worker
+
+
+def _source_path(path: str) -> bool:
+    basename = PurePosixPath(path).name.lower()
+    stem = PurePosixPath(basename).stem
+    return (PurePosixPath(basename).suffix in _SOURCE_EXTENSIONS
+            and "probe" not in stem
+            and stem not in _PROBE_STEMS
+            and not any(stem.startswith(prefix + "_") or stem.endswith("_" + prefix)
+                        for prefix in _PROBE_STEMS))
+
+
+def _valid_project_stage(category: str, call: dict[str, Any] | None,
+                         calls: dict[str, dict[str, Any]], roots: tuple[str, ...],
+                         context: dict[str, Any]) -> bool:
+    if not _valid_local_observation(category, call, calls, roots, context):
+        return False
+    if call.get("tool") in {"read_file", "list_dir"}:
+        if category != "dependencies" or call.get("tool") != "read_file":
+            return False
+        path = PurePosixPath(call.get("arguments", {}).get("path", "")).name.lower()
+        data = _result_data(call.get("result", call.get("data")))
+        return path in _PROJECT_MANIFESTS and data.get("truncated") is False and data.get("has_meaningful_content") is True
+    args = _command_arguments(call, calls)
+    if args is None:
+        return False
+    commands = _command_segments(args)
+    predicates = {
+        "environment": _is_environment_command,
+        "dependencies": _is_dependency_command,
+        "tests": _is_test_command,
+        "startup": _is_startup_command,
+    }
+    return any(predicates[category](segment) for segment in commands)
+
+
+def _command_arguments(call: dict[str, Any], calls: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    if call.get("tool") == "run_command":
+        return call.get("arguments") if isinstance(call.get("arguments"), dict) else None
+    if call.get("tool") != "read_output":
+        return None
+    job_id = call.get("arguments", {}).get("job_id")
+    for origin in calls.values():
+        data = _result_data(origin.get("result", origin.get("data")))
+        if (origin.get("tool") == "run_command" and isinstance(data, dict)
+                and data.get("job_id") == job_id and data.get("background") is True):
+            return origin.get("arguments") if isinstance(origin.get("arguments"), dict) else None
+    return None
+
+
+def _command_segments(args: dict[str, Any]) -> list[list[str]]:
+    argv = args.get("argv")
+    if isinstance(argv, list) and all(type(item) is str for item in argv):
+        words = argv
+    elif type(args.get("command")) is str:
+        try:
+            words = list(shlex.shlex(args["command"], posix=True, punctuation_chars=";&|"))
+        except ValueError:
+            return []
+    else:
+        return []
+    segments = []
+    current = []
+    for word in words:
+        if word in {";", "&&", "||", "|", "&"}:
+            if current:
+                segments.append(current)
+                current = []
+        else:
+            current.append(word)
+    if current:
+        segments.append(current)
+    normalized = []
+    for segment in segments:
+        if (len(segment) >= 3 and os.path.basename(segment[0]) in {"sh", "bash", "zsh"}
+                and "-c" in segment):
+            index = segment.index("-c") + 1
+            if index < len(segment):
+                normalized.extend(_command_segments({"command": segment[index]}))
+                continue
+        while segment and os.path.basename(segment[0]) in {"env", "command"}:
+            segment.pop(0)
+        normalized.append(segment)
+    return normalized
+
+
+def _tokens(segment: list[str]) -> list[str]:
+    return [os.path.basename(word).lower() for word in segment]
+
+
+def _has_sequence(tokens: list[str], sequence: tuple[str, ...]) -> bool:
+    return any(tuple(tokens[index:index + len(sequence)]) == sequence
+               for index in range(len(tokens) - len(sequence) + 1))
+
+
+def _is_environment_command(segment: list[str]) -> bool:
+    tokens = _tokens(segment)
+    return (_has_sequence(tokens, ("-m", "venv")) or _has_sequence(tokens, ("-m", "virtualenv"))
+            or _has_sequence(tokens, ("uv", "venv"))
+            or _has_sequence(tokens, ("uv", "run"))
+            or _has_sequence(tokens, ("virtualenv",))
+            or _has_sequence(tokens, ("poetry", "run"))
+            or _has_sequence(tokens, ("pipenv", "run"))
+            or any("sys.prefix" in word and "sys.base_prefix" in word for word in segment))
+
+
+def _is_dependency_command(segment: list[str]) -> bool:
+    tokens = _tokens(segment)
+    return (
+        _has_sequence(tokens, ("pip", "install")) or _has_sequence(tokens, ("pip3", "install"))
+        or _has_sequence(tokens, ("-m", "pip", "install"))
+        or _has_sequence(tokens, ("uv", "sync")) or _has_sequence(tokens, ("uv", "install"))
+        or _has_sequence(tokens, ("npm", "install")) or _has_sequence(tokens, ("npm", "ci"))
+        or _has_sequence(tokens, ("pnpm", "install")) or _has_sequence(tokens, ("yarn", "install"))
+        or _has_sequence(tokens, ("cargo", "fetch")) or _has_sequence(tokens, ("cargo", "build"))
+        or _has_sequence(tokens, ("go", "mod", "download"))
+        or _has_sequence(tokens, ("go", "mod", "tidy"))
+        or _has_sequence(tokens, ("swift", "package", "resolve"))
+    )
+
+
+def _is_test_command(segment: list[str]) -> bool:
+    tokens = _tokens(segment)
+    return (
+        "pytest" in tokens or "py.test" in tokens or _has_sequence(tokens, ("-m", "unittest"))
+        or _has_sequence(tokens, ("npm", "test")) or _has_sequence(tokens, ("npm", "run", "test"))
+        or _has_sequence(tokens, ("pnpm", "test")) or _has_sequence(tokens, ("yarn", "test"))
+        or _has_sequence(tokens, ("cargo", "test")) or _has_sequence(tokens, ("go", "test"))
+        or _has_sequence(tokens, ("swift", "test"))
+    )
+
+
+def _is_startup_command(segment: list[str]) -> bool:
+    tokens = _tokens(segment)
+    if _is_test_command(segment):
+        return False
+    return (
+        _has_sequence(tokens, ("npm", "start")) or _has_sequence(tokens, ("npm", "run", "start"))
+        or _has_sequence(tokens, ("pnpm", "start")) or _has_sequence(tokens, ("yarn", "start"))
+        or _has_sequence(tokens, ("cargo", "run")) or _has_sequence(tokens, ("go", "run"))
+        or _has_sequence(tokens, ("swift", "run"))
+        or (len(tokens) >= 2 and tokens[0] in {"python", "python3", "node"}
+            and (tokens[1].endswith((".py", ".js", ".mjs", ".cjs"))
+                 or tokens[1] == "-m" and len(tokens) >= 3
+                 and tokens[2] not in {"pip", "venv", "virtualenv", "pytest", "unittest"}))
+    )
 
 
 def _result_data(result: Any) -> Any:

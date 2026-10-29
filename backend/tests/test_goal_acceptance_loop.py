@@ -7,10 +7,17 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-
 from shared.feature_flags import flags
+
 from tests import test_turn_seams_loop as seams
-from tests.test_turn_seams_loop import _last_assistant_text, _msg, _register, _tc, _usage, _ws
+from tests.test_turn_seams_loop import (
+    _last_assistant_text,
+    _msg,
+    _register,
+    _tc,
+    _usage,
+    _ws,
+)
 
 orch = seams.orch
 
@@ -100,7 +107,7 @@ async def test_unusable_contract_stops_before_execution(acceptance_orch, user_sk
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("foreign", [False, True])
-async def test_local_completion_binds_proof_to_actual_computer_agent(acceptance_orch, user_skills_disabled, foreign):
+async def test_local_completion_requires_distinct_stage_evidence(acceptance_orch, user_skills_disabled, foreign):
     o = acceptance_orch
     _register(o, "run_command", "other-agent" if foreign else "computer-use-1")
     chat, ws = await _chat(o)
@@ -127,12 +134,13 @@ async def test_local_completion_binds_proof_to_actual_computer_agent(acceptance_
     ))
     await o.handle_chat_message(ws, "Create and verify a local game", chat, user_id="seam-user")
     final = await _last_assistant_text(o, chat, "seam-user")
+    assert "incomplete" in final.lower()
+    assert "installed, tested and launched" not in final
     if foreign:
-        assert "incomplete" in final.lower()
         assert planner_calls == 0
         o.execute_single_tool.assert_not_awaited()
     else:
-        assert "installed, tested and launched" in final
+        assert planner_calls > 0
         o.execute_single_tool.assert_awaited_once()
 
 
