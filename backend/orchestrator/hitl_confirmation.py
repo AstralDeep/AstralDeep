@@ -903,7 +903,8 @@ def _review_summary(args: dict) -> str:
     return description
 
 
-def _review_arguments(args: dict, *, trusted_identifiers: dict | None = None, project_targets=frozenset()) -> tuple[str, bool]:
+def _review_arguments(args: dict, *, trusted_identifiers: dict | None = None,
+                      project_targets=frozenset(), extended_fields=frozenset()) -> tuple[str, bool]:
     from orchestrator.hitl import _SENSITIVE_INPUT, sensitive_url
     from personalization.phi_gate import get_phi_gate
     from shared.phi_redactor import PHI_FIELD_PATTERNS, redact
@@ -944,7 +945,12 @@ def _review_arguments(args: dict, *, trusted_identifiers: dict | None = None, pr
                 except ValueError:
                     reviewable = False
                     return "[Invalid URL — review unavailable]"
-            cleaned, truncated = (value, False) if destination else redact(value)
+            # The user-authored coding objective can exceed the audit redactor's
+            # normal 512-character log limit. Keep its full scrubbed text in the
+            # bounded review preview only when the active goal produced this exact
+            # worker command; the complete preview still has a 4096-char ceiling.
+            cleaned, truncated = ((value, False) if destination else
+                                  redact(value, max_length=4096 if top_level and key in extended_fields else 512))
             if truncated or cleaned != value:
                 reviewable = False
             if not destination:
@@ -957,7 +963,15 @@ def _review_arguments(args: dict, *, trusted_identifiers: dict | None = None, pr
         return "[Arguments exceed the complete review limit. Use a smaller action.]", False
     if reviewable and visible_strings:
         try:
-            if get_phi_gate().contains_phi("\n".join(visible_strings)):
+            # A coding objective may legitimately name tools such as Vite, which
+            # the strict memory PHI profile identifies as a person. The sharing
+            # profile still rejects concrete private identifiers and clinical
+            # names without blocking ordinary project specifications.
+            gate = get_phi_gate()
+            visible = "\n".join(visible_strings)
+            private = (gate.contains_phi_for_sharing(visible) if extended_fields
+                       else gate.contains_phi(visible))
+            if private:
                 return "[Private identifiers cannot be shown in an approval preview.]", False
         except Exception:
             return "[Privacy review unavailable. Reissue the action when it is available.]", False
@@ -1014,8 +1028,21 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
 
             host = computer_card_host(orch, owner, chat, args)
             project_targets = project_review_targets(orch, owner, chat, host, tool, args)
+        extended_fields = frozenset()
+        if agent == "computer-use-1" and tool == "run_command" and current_goal_call_token():
+            binding = getattr(orch, "_hitl_goal_contexts", {}).get((owner, chat))
+            if _goal_context_current(binding):
+                from orchestrator.goal_worker import build_worker_command
+                try:
+                    expected_worker = build_worker_command(
+                        binding.progress.request, binding.contract.required_categories, binding.project)
+                except (AttributeError, TypeError, ValueError):
+                    expected_worker = None
+                if shown == expected_worker:
+                    extended_fields = frozenset({"stdin"})
         preview, reviewable = await asyncio.to_thread(
-            _review_arguments, shown, trusted_identifiers=trusted_identifiers, project_targets=project_targets)
+            _review_arguments, shown, trusted_identifiers=trusted_identifiers,
+            project_targets=project_targets, extended_fields=extended_fields)
         obsolete = review_publication_refusal(orch, websocket, publication)
         if obsolete is not None:
             return _refused(obsolete[0], code="COMPUTER_REVIEW_CHANGED")

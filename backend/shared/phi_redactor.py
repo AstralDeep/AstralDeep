@@ -182,14 +182,14 @@ def _redact_walk(value: Any, redacted: list) -> Any:
     return value
 
 
-def _truncate(s: str) -> Tuple[str, bool]:
-    if len(s) <= TRUNCATION_LIMIT:
+def _truncate(s: str, limit: int = TRUNCATION_LIMIT) -> Tuple[str, bool]:
+    if len(s) <= limit:
         return s, False
-    cutoff = max(0, TRUNCATION_LIMIT - len(TRUNCATION_MARKER))
+    cutoff = max(0, limit - len(TRUNCATION_MARKER))
     return s[:cutoff] + TRUNCATION_MARKER, True
 
 
-def redact(value: Any, *, kind: str = "args") -> Tuple[Optional[str], bool]:
+def redact(value: Any, *, kind: str = "args", max_length: int = TRUNCATION_LIMIT) -> Tuple[Optional[str], bool]:
     if value is None:
         return None, False
     try:
@@ -202,7 +202,7 @@ def redact(value: Any, *, kind: str = "args") -> Tuple[Optional[str], bool]:
                 serialised = json.dumps(scrubbed, default=str, ensure_ascii=False)
             except (TypeError, ValueError):
                 serialised = repr(scrubbed)
-        truncated, was_truncated = _truncate(serialised)
+        truncated, was_truncated = _truncate(serialised, max_length)
         if flag[0]:
             logger.info(
                 "phi_redactor.redaction_applied",
