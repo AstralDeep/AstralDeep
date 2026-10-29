@@ -15588,6 +15588,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                     try:
                         goal_contract = await classify_goal(self, websocket, goal_progress.request, goal_project, chat_id)
+                        logger.info("goal.classified chat=%s kind=%s folder=%s", chat_id,
+                                    goal_contract.kind,
+                                    (goal_project or {}).get("folder_status"))
                         if self.cancelled_sessions.get(id(websocket)):
                             continue
                         if task:
@@ -15621,19 +15624,28 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         break
 
                 if (goal_contract is not None and goal_contract.kind == "local_project"
-                        and not goal_worker_attempted and goal_progress.tool_count == 0):
+                        and not goal_worker_attempted):
                     # A local coding goal needs a coding harness with its own iterative
                     # edit/run/repair loop. Dispatch it through the same computer-use
                     # permission and project bridge as every other local command.
-                    goal_worker_attempted = True
                     from orchestrator.goal_worker import build_worker_command, classify_worker_result
                     from types import SimpleNamespace
 
                     command_name = next((name for name, agent in tool_to_agent.items()
                         if agent == "computer-use-1"
                         and (tool_to_unqualified or {}).get(name, name) == "run_command"), None)
-                    if command_name is not None and goal_project == await project_goal_context(
-                            self, websocket, user_id, chat_id):
+                    worker_session_ready = any(
+                        item.get("agent_id") == "computer-use-1"
+                        and item.get("outcome") == "success"
+                        and item.get("tool") in {"start_session", "run_command", "read_file", "list_dir"}
+                        for item in goal_progress.private_observations()
+                    )
+                    logger.info("goal.worker.preflight chat=%s tools=%d command=%s session=%s", chat_id,
+                                goal_progress.tool_count, command_name is not None, worker_session_ready)
+                    if (command_name is not None and worker_session_ready
+                            and goal_project == await project_goal_context(
+                                self, websocket, user_id, chat_id)):
+                        goal_worker_attempted = True
                         try:
                             worker_args = build_worker_command(
                                 goal_progress.request, goal_contract.required_categories, goal_project)
