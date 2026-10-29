@@ -586,7 +586,12 @@ async def test_fixed_research_http_attempt_is_accounted_inside_existing_reservat
     state = model_host(Completions([]))
     selected = object.__new__(research_input.ResearchInput)
     object.__setattr__(selected, "owner_id", "alice")
-    object.__setattr__(selected, "_record_json", "{}")
+    object.__setattr__(selected, "_record_json", json.dumps({
+        "operation": {"authority": {
+            "origin": "interactive",
+            "reference_kind": "session_incarnation",
+        }},
+    }))
     object.__setattr__(selected, "_config", SimpleNamespace(_api_key="synthetic-test-key",
                                                          profile=research_input.profile.OPENAI_PROFILE))
     monkeypatch.setattr(research_input.ResearchInput, "body", lambda _self: {"model": research_input.profile.MODEL})
@@ -621,7 +626,12 @@ async def test_fixed_research_failures_preserve_physical_charge_before_parsing(m
     state = model_host(Completions([]))
     selected = object.__new__(research_input.ResearchInput)
     object.__setattr__(selected, "owner_id", "alice")
-    object.__setattr__(selected, "_record_json", "{}")
+    object.__setattr__(selected, "_record_json", json.dumps({
+        "operation": {"authority": {
+            "origin": "interactive",
+            "reference_kind": "session_incarnation",
+        }},
+    }))
     object.__setattr__(selected, "_config", SimpleNamespace(_api_key="synthetic-test-key",
                                                          profile=research_input.profile.OPENAI_PROFILE))
     monkeypatch.setattr(research_input.ResearchInput, "body", lambda _self: {"model": research_input.profile.MODEL})

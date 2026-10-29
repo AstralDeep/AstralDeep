@@ -15,7 +15,8 @@ from pathlib import Path
 VERSION = r"[1-9]\d*\.\d+(?:\.\d+)?"
 TAG = re.compile(rf"macos-v({VERSION})-([1-9]\d*)")
 COMMIT = re.compile(r"[a-f0-9]{40}")
-FIRST_BUILD_FLOOR = 70
+FIRST_BUILD_FLOOR = 80
+MAX_BUILD_NUMBER = 2_147_483_647
 CONFIGURATION = "DirectDownload"
 BLOCK = re.compile(r"(?ms)^\t\t[0-9A-F]+ /\* [^*]* \*/ = \{\n(.*?)^\t\t\};")
 TAG_DEPTH = 5
@@ -47,19 +48,51 @@ def source_version(pbxproj_text: str) -> str:
     return versions.pop()
 
 
+def source_build(pbxproj_text: str) -> int:
+    builds = set()
+    for block in BLOCK.findall(pbxproj_text):
+        if "isa = XCBuildConfiguration;" not in block or f"\n\t\t\tname = {CONFIGURATION};" not in f"\n{block}":
+            continue
+        for value in re.findall(r"\bCURRENT_PROJECT_VERSION = (.+?);", block):
+            match = re.fullmatch(r'(?:([1-9]\d*)|"([1-9]\d*)")', value.strip())
+            if not match:
+                raise ValueError(f"CURRENT_PROJECT_VERSION {value} is not a positive integer")
+            digits = match.group(1) or match.group(2)
+            if len(digits) > 10 or (len(digits) == 10 and digits > str(MAX_BUILD_NUMBER)):
+                raise ValueError(f"CURRENT_PROJECT_VERSION {value} exceeds the bounded integer range")
+            builds.add(int(digits))
+    if not builds:
+        raise ValueError(f"The project has no {CONFIGURATION} CURRENT_PROJECT_VERSION")
+    if len(builds) > 1:
+        raise ValueError(f"{CONFIGURATION} configurations disagree on CURRENT_PROJECT_VERSION: {sorted(builds)}")
+    return builds.pop()
+
+
 def numbers(version: str) -> tuple[int, int, int]:
     parts = [int(part) for part in version.split(".")]
     return parts[0], parts[1], parts[2] if len(parts) == 3 else 0
 
 
-def decide(source: str, newest: dict | None, head_sha: str, descends: bool = True) -> dict:
+def decide(
+    source: str,
+    newest: dict | None,
+    head_sha: str,
+    descends: bool = True,
+    *,
+    source_build: int = FIRST_BUILD_FLOOR,
+) -> dict:
+    if type(source_build) is not int or not 1 <= source_build <= MAX_BUILD_NUMBER:
+        raise ValueError(f"source_build must be an integer from 1 to {MAX_BUILD_NUMBER}")
     major, minor, _ = numbers(source)
     if newest is None or (major, minor) > numbers(newest["version"])[:2]:
         version = source if source.count(".") == 2 else f"{major}.{minor}.0"
     else:
         old_major, old_minor, old_patch = numbers(newest["version"])
         version = f"{old_major}.{old_minor}.{old_patch + 1}"
-    build = max(newest["build"] if newest else FIRST_BUILD_FLOOR, FIRST_BUILD_FLOOR) + 1
+    build_base = max(newest["build"] if newest else FIRST_BUILD_FLOOR, FIRST_BUILD_FLOOR, source_build)
+    if build_base >= MAX_BUILD_NUMBER:
+        raise ValueError(f"next build would exceed the bounded integer range ending at {MAX_BUILD_NUMBER}")
+    build = build_base + 1
     reason = f"release macos-v{version}-{build}"
     skip = False
     if newest is not None and newest["target"] == head_sha:
@@ -131,7 +164,9 @@ def run(args: argparse.Namespace) -> dict:
     if not COMMIT.fullmatch(args.head):
         raise NextReleaseError("--head must be a full lowercase commit hash")
     try:
-        source = source_version(Path(args.pbxproj).read_text(encoding="utf-8"))
+        project_text = Path(args.pbxproj).read_text(encoding="utf-8")
+        source = source_version(project_text)
+        build_floor = source_build(project_text)
     except OSError as error:
         raise NextReleaseError(f"cannot read {args.pbxproj}: {error}") from error
     except ValueError as error:
@@ -141,7 +176,7 @@ def run(args: argparse.Namespace) -> dict:
     later = newest is None or newest["target"] == args.head or descends(checkout, newest["target"], args.head)
     if not later and not descends(checkout, args.head, newest["target"]):
         raise NextReleaseError(f"head and {newest['tag']} ({newest['target']}) have diverged; release from main's history")
-    return decide(source, newest, args.head, later)
+    return decide(source, newest, args.head, later, source_build=build_floor)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

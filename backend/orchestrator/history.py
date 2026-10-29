@@ -1578,9 +1578,16 @@ class ConversationCommitRepository:
         canvas_components: Sequence[Mapping[str, Any]],
         canvas_layouts: Optional[Sequence[Mapping[str, Any]]] = None,
         operation_fence: Any,
+        completion_state: str = "completed",
     ) -> dict[str, Any]:
         commit_id = _uuid4_text(commit_id, "commit_id")
         owner_user_id = _required_text(owner_user_id, "owner_user_id")
+        if not isinstance(completion_state, str) or completion_state not in {
+            "completed",
+            "failed",
+            "cancelled",
+        }:
+            raise ValueError("completion state is invalid")
         if operation_fence is None:
             raise ValueError("voice result publication requires an execution fence")
         candidate_components = self._validate_canvas(canvas_components)
@@ -1757,9 +1764,25 @@ class ConversationCommitRepository:
 
             self.operation_coordinator.terminalize(
                 operation_fence,
-                state=OperationState.COMPLETED,
-                terminal_code=None,
-                safe_summary="Conversation committed",
+                state=OperationState(completion_state),
+                terminal_code=(
+                    None
+                    if completion_state == "completed"
+                    else (
+                        "goal_incomplete"
+                        if completion_state == "failed"
+                        else "goal_cancelled"
+                    )
+                ),
+                safe_summary=(
+                    "Conversation committed"
+                    if completion_state == "completed"
+                    else (
+                        "Request incomplete; conversation committed"
+                        if completion_state == "failed"
+                        else "Request cancelled; conversation committed"
+                    )
+                ),
                 retry_after_ms=None,
                 transaction=transaction,
             )
@@ -1774,9 +1797,16 @@ class ConversationCommitRepository:
         canvas_layouts: Optional[Sequence[Mapping[str, Any]]] = None,
         operation_fence: Any = None,
         fault_hook: Optional[Callable[[str], None]] = None,
+        completion_state: str = "completed",
     ) -> dict[str, Any]:
         commit_id = _uuid4_text(commit_id, "commit_id")
         owner_user_id = _required_text(owner_user_id, "owner_user_id")
+        if not isinstance(completion_state, str) or completion_state not in {
+            "completed",
+            "failed",
+            "cancelled",
+        }:
+            raise ValueError("completion state is invalid")
         validated_messages = (
             None if messages is None else self._validate_messages(messages)
         )
@@ -1994,9 +2024,25 @@ class ConversationCommitRepository:
 
                 self.operation_coordinator.terminalize(
                     operation_fence,
-                    state=OperationState.COMPLETED,
-                    terminal_code=None,
-                    safe_summary="Conversation committed",
+                    state=OperationState(completion_state),
+                    terminal_code=(
+                        None
+                        if completion_state == "completed"
+                        else (
+                            "goal_incomplete"
+                            if completion_state == "failed"
+                            else "goal_cancelled"
+                        )
+                    ),
+                    safe_summary=(
+                        "Conversation committed"
+                        if completion_state == "completed"
+                        else (
+                            "Request incomplete; conversation committed"
+                            if completion_state == "failed"
+                            else "Request cancelled; conversation committed"
+                        )
+                    ),
                     retry_after_ms=None,
                     transaction=transaction,
                 )

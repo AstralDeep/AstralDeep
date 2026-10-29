@@ -493,12 +493,15 @@ queued one, and its release includes the older commit's changes. Dry runs use a
 separate group, so a rehearsal never displaces a queued publication.
 
 **Version and build.** `scripts/next_macos_release.py` reads the newest
-non-draft `macos-v*` release and the `MARKETING_VERSION` of Projection's
+non-draft `macos-v*` release and the `MARKETING_VERSION` and positive integer
+`CURRENT_PROJECT_VERSION` of Projection's
 `DirectDownload` configurations (all must agree):
 
 - source `major.minor` newer than the newest release: `<major>.<minor>.0`;
 - otherwise: the newest release's patch plus one;
-- build: the larger of the newest build and 70, plus one;
+- build: the largest of the newest published build, the source build, and the
+  registered distributed-build floor of 80, plus one; the floor includes the
+  approved locally distributed build 80 so it remains eligible for auto-update;
 - no release when the newest release already targets the head commit, or when
   the head is older than that release's commit (a late or re-run CI), with a
   notice in the run log;
@@ -576,6 +579,28 @@ signature) and serves the download, `appcast.xml` and policy from that release's
 own assets, with its committed `data/downloads.json` as a floor. Its
 `release-sync.yml` checks every ten minutes and redeploys Pages when a newer
 release exists.
+
+### Goal-directed request execution
+
+`FF_GOAL_HARNESS=true` enables completion verification for ordinary requests on
+the shared server. It defaults to false for controlled qualification and rollback.
+`GOAL_MAX_TURNS` bounds each enabled request to 128 model/tool rounds by default;
+valid values are integers from 1 through 512. An invalid value dispatches no
+work and produces an incomplete outcome. Exhausting a budget never means success.
+
+The planner retains the original objective across compaction and receives only
+the current authenticated project's validated folder context. Runnable project
+work includes an appropriate isolated environment, declared and installed
+dependencies, executed tests, and a startup smoke check. Generated code, static
+review, and instructions for the owner to run later are partial results.
+
+A separate no-tools evaluation checks the proposed answer against recorded
+tool outcomes. Deterministic guards retain pending command jobs, stop repeated
+failures and prose-only continuation, and refuse incomplete or malformed
+evaluation. Useful partial results can commit while the underlying operation is
+failed with `goal_incomplete`. Normal authentication, project grants, provider
+disclosure, approvals, Stop, and execution fences continue to govern each step.
+The rollout switch changes no file or command authorization.
 
 ### Apple release runbook
 

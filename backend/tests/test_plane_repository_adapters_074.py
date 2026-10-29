@@ -410,13 +410,13 @@ class _ToolPolicy:
         *,
         owner_id,
         agent_id,
-        selected_tools,
+        tool_names,
         updated_at,
     ):
         assert updated_at >= 0
         self.selections = getattr(self, "selections", {})
-        self.selections[(owner_id, agent_id)] = tuple(selected_tools)
-        return tuple(selected_tools)
+        self.selections[(owner_id, agent_id)] = tuple(tool_names)
+        return tuple(tool_names)
 
     def clear_tool_selection(
         self,

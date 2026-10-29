@@ -153,6 +153,7 @@ async def env(monkeypatch):
     sockets, chats = {}, {}
     for device in ("browser", "android"):
         ws = _fresh_socket()
+        ws.llm_context_user_id = user_id
         orch.ui_sessions[ws] = {"sub": user_id, "preferred_username": user_id}
         orch.ui_clients.append(ws)
         orch.rote.register_device(ws, {"device_type": device})

@@ -23,11 +23,11 @@ HEAD = "a" * 40
 OLD = "b" * 40
 
 
-def configuration(ident: str, name: str, version: str | None) -> str:
+def configuration(ident: str, name: str, version: str | None, build: str = "70") -> str:
     setting = f"\t\t\t\tMARKETING_VERSION = {version};\n" if version is not None else ""
     return (
         f"\t\t{ident} /* {name} */ = {{\n\t\t\tisa = XCBuildConfiguration;\n\t\t\tbuildSettings = {{\n"
-        f"\t\t\t\tCURRENT_PROJECT_VERSION = 70;\n{setting}\t\t\t}};\n\t\t\tname = {name};\n\t\t}};\n"
+        f"\t\t\t\tCURRENT_PROJECT_VERSION = {build};\n{setting}\t\t\t}};\n\t\t\tname = {name};\n\t\t}};\n"
     )
 
 
@@ -65,10 +65,46 @@ def test_source_version_reads_the_direct_download_configurations_and_requires_ag
             nxt.source_version(broken)
 
 
+def test_source_build_reads_direct_download_configurations_and_requires_a_positive_bounded_integer():
+    text = project(
+        configuration("AF01", "DirectDownload", None, "80"),
+        configuration("AF02", "DirectDownload", "2.0.0", '"80"'),
+        configuration("AF03", "Release", "2.0.0", "900"),
+    )
+    assert nxt.source_build(text) == 80
+    for broken, message in (
+        (project(configuration("AF01", "DirectDownload", "2.0.0", "80"),
+                 configuration("AF02", "DirectDownload", "2.0.0", "81")), "disagree"),
+        (project(configuration("AF04", "Release", "2.0.0", "80")), "no DirectDownload"),
+        (project(configuration("AF01", "DirectDownload", "2.0.0", "0")), "positive integer"),
+        (project(configuration("AF01", "DirectDownload", "2.0.0", "2147483648")), "bounded integer"),
+        (project(configuration("AF01", "DirectDownload", "2.0.0", "$(BUILD)")), "positive integer"),
+        (project(configuration("AF01", "DirectDownload", "2.0.0", '"80')), "positive integer"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            nxt.source_build(broken)
+
+
+def test_source_build_floor_sets_next_build_but_published_build_still_wins():
+    assert nxt.decide("2.0.0", newest("2.0.7", 78), HEAD, source_build=80)["build"] == 81
+    assert nxt.decide("2.0.0", newest("2.0.7", 82), HEAD, source_build=80)["build"] == 83
+
+
+def test_registered_distributed_build_floor_outlives_a_stale_source_build():
+    assert nxt.decide("2.0.0", newest("2.0.7", 78), HEAD, source_build=71)["build"] == 81
+    assert nxt.decide("2.0.0", newest("2.0.7", 82), HEAD, source_build=71)["build"] == 83
+
+
+@pytest.mark.parametrize("floor", [0, -1, True, 2_147_483_647, 2_147_483_648, "80"])
+def test_decide_rejects_invalid_source_build_floors(floor):
+    with pytest.raises(ValueError):
+        nxt.decide("2.0.0", newest("2.0.7", 78), HEAD, source_build=floor)
+
+
 def test_first_release_after_source_bump_is_major_minor_zero():
     result = nxt.decide("2.0.0", newest("1.8", 69), HEAD)
     assert result == {
-        "skip": False, "reason": "release macos-v2.0.0-71", "version": "2.0.0", "build": 71,
+        "skip": False, "reason": "release macos-v2.0.0-81", "version": "2.0.0", "build": 81,
         "previous_tag": "macos-v1.8-69", "previous_target": OLD,
     }
     assert nxt.decide("2.0", newest("1.8", 69), HEAD)["version"] == "2.0.0"
@@ -77,7 +113,7 @@ def test_first_release_after_source_bump_is_major_minor_zero():
 
 def test_patch_bumps_when_source_minor_is_not_newer():
     result = nxt.decide("2.0.0", newest("2.0.0", 71), HEAD)
-    assert (result["version"], result["build"], result["skip"]) == ("2.0.1", 72, False)
+    assert (result["version"], result["build"], result["skip"]) == ("2.0.1", 81, False)
     assert nxt.decide("2.0", newest("2.0", 75), HEAD)["version"] == "2.0.1"
     assert nxt.decide("1.9", newest("2.0.3", 79), HEAD)["version"] == "2.0.4"
     assert nxt.decide("2.0.9", newest("2.0.1", 72), HEAD)["version"] == "2.0.2"
@@ -92,10 +128,10 @@ def test_minor_bump_in_source_resets_patch():
 def test_first_release_ever_starts_after_build_seventy():
     result = nxt.decide("2.0", None, HEAD)
     assert result == {
-        "skip": False, "reason": "release macos-v2.0.0-71", "version": "2.0.0", "build": 71,
+        "skip": False, "reason": "release macos-v2.0.0-81", "version": "2.0.0", "build": 81,
         "previous_tag": None, "previous_target": None,
     }
-    assert nxt.decide("2.0.0", newest("1.0", 12), HEAD)["build"] == 71
+    assert nxt.decide("2.0.0", newest("1.0", 12), HEAD)["build"] == 81
 
 
 def test_skips_when_head_is_already_released():
@@ -215,6 +251,12 @@ def write_project(tmp_path: Path, version: str) -> Path:
     return path
 
 
+def write_project_build(tmp_path: Path, version: str, build: str) -> Path:
+    path = tmp_path / "project.pbxproj"
+    path.write_text(project(configuration("AF02", "DirectDownload", version, build)))
+    return path
+
+
 def test_cli_writes_github_output(tmp_path, monkeypatch, capsys):
     fake = FakeGitHub(
         [[entry("macos-v2.0.0-71")]],
@@ -229,12 +271,49 @@ def test_cli_writes_github_output(tmp_path, monkeypatch, capsys):
     ])
     assert code == 0
     assert output.read_text() == (
-        "earlier=kept\nversion=2.0.1\nbuild=72\nskip=false\nprevious_tag=macos-v2.0.0-71\n"
+        "earlier=kept\nversion=2.0.1\nbuild=81\nskip=false\nprevious_tag=macos-v2.0.0-71\n"
         f"previous_target={OLD}\n"
     )
     printed = json.loads(capsys.readouterr().out)
-    assert printed["version"] == "2.0.1" and printed["reason"] == "release macos-v2.0.1-72"
+    assert printed["version"] == "2.0.1" and printed["reason"] == "release macos-v2.0.1-81"
     assert ["git", "-C", str(tmp_path), "merge-base", "--is-ancestor", OLD, HEAD] in fake.calls
+
+
+def test_cli_uses_source_build_floor_before_publication(tmp_path, monkeypatch, capsys):
+    fake = FakeGitHub(
+        [[entry("macos-v2.0.7-78")]],
+        {"macos-v2.0.7-78": {"ref": "refs/tags/macos-v2.0.7-78", "object": {"type": "commit", "sha": OLD}}},
+    )
+    monkeypatch.setattr(nxt.subprocess, "run", fake.run)
+    output = tmp_path / "out"
+    code = nxt.main([
+        "--repo", "AstralDeep/AstralDeep", "--head", HEAD,
+        "--pbxproj", str(write_project_build(tmp_path, "2.0.7", "80")),
+        "--checkout", str(tmp_path), "--github-output", str(output),
+    ])
+    assert code == 0
+    assert "build=81\n" in output.read_text()
+    assert json.loads(capsys.readouterr().out)["build"] == 81
+
+
+def test_cli_rejects_missing_or_conflicting_source_build_before_github_or_output(tmp_path, monkeypatch, capsys):
+    fake = FakeGitHub([[]], {})
+    monkeypatch.setattr(nxt.subprocess, "run", fake.run)
+    output = tmp_path / "out"
+    for blocks in (
+        (configuration("AF01", "DirectDownload", "2.0.0", ""),),
+        (configuration("AF01", "DirectDownload", "2.0.0", "80"),
+         configuration("AF02", "DirectDownload", "2.0.0", "81")),
+    ):
+        path = tmp_path / "bad.pbxproj"
+        path.write_text(project(*blocks))
+        assert nxt.main([
+            "--repo", "AstralDeep/AstralDeep", "--head", HEAD,
+            "--pbxproj", str(path), "--github-output", str(output),
+        ]) == 1
+        assert "Next Mac release failed:" in capsys.readouterr().err
+        assert not output.exists()
+    assert fake.calls == []
 
 
 def test_cli_skips_a_released_head_and_handles_an_empty_history(tmp_path, monkeypatch, capsys):
@@ -252,10 +331,10 @@ def test_cli_skips_a_released_head_and_handles_an_empty_history(tmp_path, monkey
     fake.releases = [[]]
     output.unlink()
     assert nxt.main(argv) == 0
-    assert output.read_text() == "version=2.0.0\nbuild=71\nskip=false\nprevious_tag=\nprevious_target=\n"
+    assert output.read_text() == "version=2.0.0\nbuild=81\nskip=false\nprevious_tag=\nprevious_target=\n"
     capsys.readouterr()
     assert nxt.main(argv[:-2]) == 0
-    assert json.loads(capsys.readouterr().out)["build"] == 71
+    assert json.loads(capsys.readouterr().out)["build"] == 81
 
 
 def released_at_old(monkeypatch, ancestors):

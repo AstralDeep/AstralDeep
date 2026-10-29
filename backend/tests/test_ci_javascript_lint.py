@@ -36,11 +36,15 @@ PLAYWRIGHT_IMAGE_DIGEST = (
 )
 EXPECTED_DEV_DEPENDENCIES = {
     "@eslint/js": "10.0.1",
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/core": "2.4.0",
+    "@modelcontextprotocol/ext-apps": "2.0.4",
     "@playwright/test": PLAYWRIGHT_VERSION,
     "eslint": "10.7.0",
     "espree": "11.2.0",
     "globals": "17.7.0",
     "v8-to-istanbul": "9.3.0",
+    "zod": "4.6.7",
 }
 
 
