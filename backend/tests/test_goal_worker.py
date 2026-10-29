@@ -19,12 +19,11 @@ def test_prompt_preserves_objective_and_required_execution_criteria():
     prompt = goal_worker.build_worker_prompt("Make a small game", CATEGORIES, "/work/demo")
 
     assert "Make a small game" in prompt
-    assert "Granted project root: /work/demo" in prompt
     assert ".venv" in prompt
-    assert "declared dependencies" in prompt
-    assert "meaningful project tests" in prompt
-    assert "startup smoke check" in prompt
-    assert "not completion proof" in prompt
+    assert "install project dependencies" in prompt
+    assert "meaningful tests" in prompt
+    assert "startup with a bounded smoke check" in prompt
+    assert "Report observed results" in prompt
 
 
 def test_command_uses_configured_absolute_cli_and_bounded_argv():
@@ -35,7 +34,7 @@ def test_command_uses_configured_absolute_cli_and_bounded_argv():
 
     assert result["argv"] == [
         "/opt/codex/bin/codex", "exec", "--ignore-user-config", "--ephemeral",
-        "--skip-git-repo-check", "-C", "/work/demo", "-s", "workspace-write",
+        "--skip-git-repo-check", "--sandbox", "workspace-write",
         "-c", "sandbox_workspace_write.network_access=true", "-m", "gpt-6-luna",
         "-c", "model_reasoning_effort=medium", "-",
     ]

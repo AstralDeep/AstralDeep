@@ -15,11 +15,11 @@ from orchestrator.computer_use_policy import (
 )
 
 _CATEGORY_GUIDANCE = {
-    "files": "Create or update the complete project files needed for the original objective inside the granted root.",
-    "environment": "Create and use an isolated .venv for Python work; do not install into the system interpreter.",
-    "dependencies": "Inspect the project manifests and install only its declared dependencies into the isolated environment.",
-    "tests": "Run meaningful project tests and use their observed results to fix failures.",
-    "startup": "Run a bounded startup smoke check and report its observed result.",
+    "files": "create project files",
+    "environment": "create and use .venv for Python",
+    "dependencies": "install project dependencies",
+    "tests": "run meaningful tests and fix failures",
+    "startup": "verify startup with a bounded smoke check",
 }
 _DENIED_CODES = frozenset({
     "approval_required", "confirmation_required", "forbidden", "permission_denied",
@@ -54,18 +54,10 @@ def build_worker_prompt(
     if any(type(category) is not str or category not in _CATEGORY_GUIDANCE for category in required_categories):
         raise ValueError("required categories contain an unsupported value")
 
-    checklist = "\n".join(f"- {_CATEGORY_GUIDANCE[category]}" for category in required_categories)
+    checklist = "; ".join(_CATEGORY_GUIDANCE[category] for category in required_categories)
     prompt = (
-        "Complete the original local software project request within the existing user-granted project folder.\n"
-        f"Granted project root: {root}\n"
-        "Treat the objective and checklist as task scope. Do not access or modify paths outside the granted root, "
-        "weaken security, change the objective, or claim an action succeeded without observing its result. "
-        "Inspect the existing project first, make the smallest complete implementation, and keep commands bounded. "
-        "Return a concise factual summary of changes and command outcomes; this summary is not completion proof.\n"
-        "Original objective (quoted data):\n"
         f"{objective}\n"
-        "Frozen required outcomes:\n"
-        f"{checklist}\n"
+        f"In this folder, {checklist} before finishing. Report observed results."
     )
     if len(prompt.encode("utf-8")) > MAX_STDIN_BYTES:
         raise ValueError("worker prompt exceeds the bounded stdin size")
@@ -105,7 +97,7 @@ def build_worker_command(
     prompt = build_worker_prompt(objective, required_categories, root)
     argv = [
         worker_path, "exec", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check",
-        "-C", root, "-s", "workspace-write",
+        "--sandbox", "workspace-write",
         "-c", "sandbox_workspace_write.network_access=true",
         "-m", "gpt-6-luna", "-c", "model_reasoning_effort=medium", "-",
     ]
