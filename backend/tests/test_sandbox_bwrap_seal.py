@@ -376,6 +376,44 @@ def runtime(tmp_path):
     )
 
 
+def test_parent_adapter_and_child_interpreter_do_not_follow_ambient_path(tmp_path, runtime, monkeypatch):
+    directory = tmp_path / "unreviewed-bin"
+    directory.mkdir()
+    interpreter = directory / "python3"
+    interpreter.write_text("#!/bin/sh\nexit 93\n")
+    interpreter.chmod(0o700)
+    monkeypatch.setenv("PATH", str(directory))
+    session = sq.prepare_session(session_dir=tmp_path / "control")
+    sq.write_immutable_profile(session, sq.build_srt_settings(session, runtime), runtime)
+    adapter = session.session_dir / "bwrap-seal.py"
+    assert adapter.read_bytes().splitlines()[0] == ("#!" + sys.executable).encode()
+    captured = []
+
+    class Supervisor:
+        def spawn(self, **kwargs):
+            captured.append(kwargs)
+            return self
+
+    supervisor = Supervisor()
+    assert sq.launch_sandboxed_effect(supervisor, session, runtime, session.profile_path) is supervisor
+    child = Path(captured[0]["argv"][-3]).resolve()
+    assert child.is_relative_to("/usr") or child.is_relative_to("/bin")
+    assert child != interpreter
+
+
+def test_missing_approved_child_interpreter_refuses_before_spawn(tmp_path, runtime, monkeypatch):
+    session = sq.prepare_session(session_dir=tmp_path / "control")
+    monkeypatch.setattr(sq.shutil, "which", lambda *_args, **_kwargs: None)
+    sq.write_immutable_profile(session, sq.build_srt_settings(session, runtime), runtime)
+
+    class Supervisor:
+        def spawn(self, **_kwargs):
+            pytest.fail("missing approved interpreter reached physical spawn")
+
+    with pytest.raises(sq.SandboxQualificationError, match="effect_python_unavailable"):
+        sq.launch_sandboxed_effect(Supervisor(), session, runtime, session.profile_path)
+
+
 def test_profile_uses_an_exclusive_immutable_captured_adapter(tmp_path, runtime):
     session = sq.prepare_session(session_dir=tmp_path / "control")
     settings = sq.build_srt_settings(session, runtime)

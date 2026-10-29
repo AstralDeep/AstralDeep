@@ -34,6 +34,10 @@ The host must already permit these primitives. Do not weaken AppArmor, Docker se
 or user-namespace policy, enable privileged containers, or select SRT's weak nested mode.
 Record the exact host/kernel and installed tool versions alongside candidate evidence.
 Unsupported hosts report exit 4 (`unavailable`) before receipt consumption or effects.
+The host must provide a `python3` executable under `/usr/bin`, `/usr/local/bin`, or
+`/bin` whose resolved path remains inside the approved `/usr` or `/bin` runtime trees.
+The parent may run from a virtual environment; the contained payload uses this system
+interpreter because home-directory environments are intentionally hidden.
 Python 3.11 must include `tarfile.data_filter`; older patch releases without safe filtered
 extraction report `python_data_filter_unavailable` instead of using an unsafe fallback.
 

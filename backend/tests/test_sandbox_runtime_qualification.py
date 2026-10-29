@@ -510,7 +510,7 @@ def proc_namespace_fixture(tmp_path):
     (root / "400" / "cmdline").write_bytes(
         b"\0".join(
             [
-                os.fsencode(shutil.which("python3") or sys.executable),
+                os.fsencode(sq._effect_python()),
                 b"-c",
                 b"import time; time.sleep(300)",
                 session.qualification_id.encode(),
@@ -519,7 +519,7 @@ def proc_namespace_fixture(tmp_path):
         + b"\0"
     )
     (root / "400" / "exe").symlink_to(
-        Path(shutil.which("python3") or sys.executable).resolve()
+        Path(sq._effect_python()).resolve()
     )
     process = SimpleNamespace(
         pid=100, wait_for_line=lambda *args, **kwargs: b"ASTRAL_SRT_DESCENDANT:7\n"
@@ -577,7 +577,7 @@ def test_descendant_mapping_rejects_ambiguous_namespaces(proc_namespace_fixture)
     _proc_fixture_entry(root, 500, 200, 5000, (500, 7), "other-sandbox")
     (root / "500" / "cmdline").write_bytes((root / "400" / "cmdline").read_bytes())
     (root / "500" / "exe").symlink_to(
-        Path(shutil.which("python3") or sys.executable).resolve()
+        Path(sq._effect_python()).resolve()
     )
     with pytest.raises(
         sq.SandboxQualificationError, match="descendant_host_identity_unavailable"

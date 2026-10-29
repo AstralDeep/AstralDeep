@@ -911,7 +911,7 @@ def write_immutable_profile(
 
 
 def _bwrap_files(session: QualificationSession, runtime: SrtRuntime):
-    interpreter = shutil.which("python3") or sys.executable
+    interpreter = sys.executable
     if not Path(interpreter).is_absolute() or any(value.isspace() for value in interpreter):
         raise SandboxQualificationError("session_bwrap_changed")
     script = session.session_dir / "bwrap-seal.py"
@@ -1330,6 +1330,17 @@ def await_effect(
         process.terminate(reason=TerminationReason.CANCEL)
 
 
+def _effect_python() -> str:
+    candidate = shutil.which("python3", path="/usr/bin:/usr/local/bin:/bin")
+    try:
+        resolved = Path(candidate).resolve(strict=True) if candidate else None
+        if resolved is None or not any(resolved.is_relative_to(root) for root in ("/usr", "/bin")):
+            raise ValueError
+        return candidate
+    except (OSError, ValueError, TypeError):
+        raise SandboxQualificationError("effect_python_unavailable") from None
+
+
 def launch_sandboxed_effect(
     supervisor: ProcessSupervisor,
     session: QualificationSession,
@@ -1340,7 +1351,7 @@ def launch_sandboxed_effect(
         raise SandboxQualificationError("session_bwrap_changed")
     verify_bwrap_bundle(session, runtime)
     command = (
-        shutil.which("python3") or sys.executable,
+        _effect_python(),
         str(session.effect_script_path),
         str(session.spec_path),
     )
@@ -1580,7 +1591,7 @@ def _descendant_command_matches(
             (proc_root / str(pid) / "cmdline").read_bytes().rstrip(b"\0").split(b"\0")
         )
         expected = [
-            os.fsencode(shutil.which("python3") or sys.executable),
+            os.fsencode(_effect_python()),
             b"-c",
             b"import time; time.sleep(300)",
             session.qualification_id.encode(),
