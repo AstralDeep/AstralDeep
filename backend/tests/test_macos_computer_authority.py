@@ -481,3 +481,31 @@ async def test_owner_rebinding_ends_the_previous_owners_session_and_terminal_gra
     orch.ui_sessions[ws]["sub"] = "other-owner"
     await Orchestrator._register_computer_host(orch, ws, "other-owner", _descriptor(host_id=host.host_id))
     assert session.state == "ended" and not session.terminal_ok
+
+
+async def test_bypass_mode_change_permanently_retires_captured_manual_review(monkeypatch):
+    from orchestrator import approval_receipts
+    orch = _FakeOrch()
+    ws = orch.add(_WS(chat="chat-1"))
+    host, _ = orch.computer_hosts.register(OWNER, ws, _descriptor(platform="macos"))
+    session = await _session(orch, host, ws)
+    authority = rc.capture_computer_approval(orch, ws, OWNER, "chat-1", {})
+    assert rc.computer_approval_current(orch, ws, authority)
+    accepted = rc.accept_computer_approval(orch, ws, authority)
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def blocked(*args):
+        entered.set()
+        await release.wait()
+    monkeypatch.setattr(approval_receipts, "withdraw_computer_reviews", blocked)
+    enabling = asyncio.create_task(orch.computer_sessions.set_bypass(host, True))
+    await entered.wait()
+    assert not rc.computer_approval_current(orch, ws, authority)
+    assert rc.computer_approval_current(orch, ws, accepted)
+    release.set()
+    await enabling
+    await orch.computer_sessions.set_bypass(host, False)
+    assert not rc.computer_approval_current(orch, ws, authority)
+    fresh = rc.capture_computer_approval(orch, ws, OWNER, "chat-1", {})
+    assert rc.computer_approval_current(orch, ws, fresh)
+    assert fresh.review_generation > authority.review_generation
+    await orch.computer_sessions.end(session, "user_stop")

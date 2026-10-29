@@ -15,6 +15,7 @@ from astralprims import Alert
 
 _SEARCH_KEY = "Add a search provider API key in agent settings for higher limits."
 PUBLIC_ERRORS = {
+    "COMPUTER_REVIEW_CHANGED": "No action ran. This review is obsolete. Submit a fresh request only under current computer session authority; do not replay this request.",
     "SEARCH_BLOCKED": f"Keyless search is blocked. {_SEARCH_KEY}",
     "SEARCH_AUTH_FAILED": "Search credentials were rejected. Check the provider API key in agent settings.",
     "SEARCH_EGRESS_BLOCKED": "The search provider is blocked by network policy. Check its URL in agent settings.",

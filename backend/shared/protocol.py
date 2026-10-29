@@ -90,6 +90,14 @@ def _require_uuid4(value: object, field_name: str) -> str:
     return value
 
 
+def _require_project_id(value: object) -> None:
+    try:
+        if not isinstance(value, str) or str(uuid.UUID(value)) != value:
+            raise ValueError
+    except (ValueError, AttributeError):
+        raise ProtocolValidationError("project_id must be a canonical UUID string") from None
+
+
 def _require_uint64(value: object, field_name: str) -> int:
     if (
         isinstance(value, bool)
@@ -717,7 +725,14 @@ class CorrelatedNewChat(UIEvent):
             _require_uuid4(getattr(self, name), name)
         if not isinstance(self.payload, Mapping):
             raise ProtocolValidationError("new_chat payload must be an object")
-        payload_fields = set(self._CORRELATIONS)
+        payload_fields = set(self._CORRELATIONS) | (set(self.payload) & {"project_id", "chat_id", "agent_id"})
+        if "project_id" in self.payload:
+            _require_project_id(self.payload["project_id"])
+            _require_uuid4(self.payload.get("chat_id"), "payload.chat_id")
+        elif "chat_id" in self.payload:
+            _require_uuid4(self.payload["chat_id"], "payload.chat_id")
+        if "agent_id" in self.payload:
+            _require_bounded_string(self.payload["agent_id"], "payload.agent_id", minimum=1, maximum=512)
         _require_exact_fields(
             self.payload,
             payload_fields,
@@ -791,9 +806,11 @@ class ChatCreated(Message):
             raise ProtocolValidationError("chat_created payload must be an object")
         _require_exact_fields(
             self.payload,
-            self._PAYLOAD_FIELDS,
+            self._PAYLOAD_FIELDS | (set(self.payload) & {"project_id"}),
             label="chat_created payload",
         )
+        if "project_id" in self.payload:
+            _require_project_id(self.payload["project_id"])
         _require_uuid4(self.payload.get("chat_id"), "payload.chat_id")
         if self.payload.get("from_message") is not False:
             raise ProtocolValidationError(
@@ -2720,6 +2737,7 @@ class ComputerHostDescriptor:
     verbs: tuple
     protocol: int = COMPUTER_HOST_PROTOCOL
     workspace_roots: tuple = ()
+    project_manifest: Optional[dict] = None
 
     def _validate_roots(self) -> None:
         roots = self.workspace_roots
@@ -2786,6 +2804,14 @@ class ComputerHostDescriptor:
         if unknown:
             raise ProtocolValidationError(f"computer_host.verbs contains unknown verbs: {unknown}")
         self._validate_roots()
+        if self.project_manifest is not None:
+            from shared.project_workspaces import ProjectManifest, ProjectWorkspaceError
+            try:
+                ProjectManifest.from_dict(self.project_manifest)
+            except ProjectWorkspaceError as exc:
+                raise ProtocolValidationError(str(exc)) from None
+            if self.workspace_roots or self.platform != "macos":
+                raise ProtocolValidationError("Project hosts cannot carry legacy workspace roots")
 
     def to_dict(self) -> Dict[str, Any]:
         self.validate()
@@ -2800,6 +2826,9 @@ class ComputerHostDescriptor:
         }
         if self.workspace_roots:
             data["workspace_roots"] = [dict(root) for root in self.workspace_roots]
+        if self.project_manifest is not None:
+            from shared.project_workspaces import ProjectManifest
+            data["project_manifest"] = ProjectManifest.from_dict(self.project_manifest).to_dict()
         return data
 
     @classmethod
@@ -2807,7 +2836,7 @@ class ComputerHostDescriptor:
         if not isinstance(data, Mapping):
             raise ProtocolValidationError("computer_host must be an object")
         expected = {item.name for item in fields(cls)}
-        if not expected - {"workspace_roots"} <= set(data) <= expected:
+        if not expected - {"workspace_roots", "project_manifest"} <= set(data) <= expected:
             raise ProtocolValidationError(
                 "computer_host must contain exactly host_id, name, platform, client_version, "
                 "screens, verbs, protocol and optionally workspace_roots")
@@ -2827,6 +2856,7 @@ class ComputerHostDescriptor:
             verbs=tuple(verbs),
             protocol=data["protocol"],
             workspace_roots=tuple(dict(r) if isinstance(r, Mapping) else r for r in roots),
+            project_manifest=data.get("project_manifest"),
         )
         descriptor.validate()
         return descriptor

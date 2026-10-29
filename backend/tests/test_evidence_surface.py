@@ -173,8 +173,15 @@ def request(state, params=None, *, action="chrome_open", **updates):
 
 
 async def terminal(state, generation):
-    return await state.arrived(lambda value: value.get("type") == "operation_status"
-        and value.get("request_generation") == generation and value.get("terminal") is True)
+    async with asyncio.timeout(5):
+        value = await state.arrived(lambda value: value.get("type") == "operation_status"
+            and value.get("request_generation") == generation and value.get("terminal") is True)
+        context = state.orch._connection_contexts.get(id(state.socket))
+        work = next((item for item in context.operations.values()
+            if str(item.frame.request_generation) == generation), None) if context is not None else None
+        if work is not None and work.lane_complete is not None:
+            await asyncio.shield(work.lane_complete)
+        return value
 
 
 def surfaces(state):
@@ -598,6 +605,66 @@ async def test_navigation_invalidates_an_awaiting_read_on_web_and_native(inspect
     finally:
         release.set()
     assert not surfaces(state)
+
+
+async def test_terminal_waits_for_admitted_read_cleanup(inspection, fixture, monkeypatch):
+    state = inspection
+    await registered(state)
+    admitted, admission_release = asyncio.Event(), asyncio.Event()
+    cleanup_entered, cleanup_release = asyncio.Event(), asyncio.Event()
+    terminal_read = asyncio.Event()
+    original_admission = state.orch._call_work_admission
+    original_cleanup = state.orch._finish_pending_voice_dispatch
+    original_arrived = state.arrived
+
+    async def hold_admission(callback, *args, **kwargs):
+        if getattr(callback, "__name__", "") == "_submit_connection_batch":
+            admitted.set()
+            await admission_release.wait()
+        return await original_admission(callback, *args, **kwargs)
+
+    async def hold_cleanup(*args, **kwargs):
+        cleanup_entered.set()
+        await cleanup_release.wait()
+        return await original_cleanup(*args, **kwargs)
+
+    async def observe_terminal(predicate):
+        value = await original_arrived(predicate)
+        if value.get("type") == "operation_status" and value.get("terminal") is True:
+            terminal_read.set()
+        return value
+
+    monkeypatch.setattr(state.orch, "_call_work_admission", hold_admission)
+    monkeypatch.setattr(state.orch, "_finish_pending_voice_dispatch", hold_cleanup)
+    monkeypatch.setattr(state, "arrived", observe_terminal)
+    generation = request(state, {"kind": "source", "reference": state.reference})
+    finished = None
+    work = None
+    try:
+        async with asyncio.timeout(5):
+            await admitted.wait()
+            await asyncio.to_thread(fixture[0].delete, fixture[2])
+            admission_release.set()
+            finished = asyncio.create_task(terminal(state, generation))
+            await cleanup_entered.wait()
+            await terminal_read.wait()
+            context = state.orch._connection_contexts[id(state.socket)]
+            work = next(item for item in context.operations.values()
+                if str(item.frame.request_generation) == generation)
+            assert not work.lane_complete.done()
+            assert state.orch._evidence_navigation
+            assert not finished.done()
+            cleanup_release.set()
+            assert (await finished)["state"] == "failed"
+            assert work.lane_complete.done()
+            assert not state.orch._evidence_navigation
+    finally:
+        admission_release.set()
+        cleanup_release.set()
+        if finished is not None:
+            await asyncio.wait_for(finished, 5)
+        if work is not None:
+            await asyncio.wait_for(work.task, 5)
 
 
 @pytest.mark.parametrize("loss", ["active_chat", "registration", "token", "issuance", "consent", "operation", "provider_flags"])

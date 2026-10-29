@@ -80,6 +80,8 @@ class ComputerSession:
     command_jobs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     terminal_ok_until: float = 0.0
     authority_generation: int = 0
+    approval_pause_authority: Any = field(default=None, repr=False, compare=False)
+    project_origin: Any = field(default=None, repr=False, compare=False)
     acked: asyncio.Event = field(default_factory=asyncio.Event)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     verbs_run: int = 0
@@ -166,6 +168,7 @@ class ComputerSession:
             "last_activity_at": int(self.last_activity_at),
             "images_supported": self.images_supported,
             "verbs_run": self.verbs_run,
+            **({"project_context": self.project_origin.context.to_dict()} if self.project_origin else {}),
         }
 
     def frame(self, grants: Sequence[Dict[str, Any]] = (), bypass: bool = False) -> str:
@@ -181,6 +184,7 @@ class ComputerSessionManager:
         self._sweeper: Optional[asyncio.Task] = None
         self._audit_tasks: set = set()
         self._push_pending: set = set()
+        self.review_generations: dict[tuple[str, str], int] = {}
         self._bypass: Dict[Tuple[str, str], ComputerHost] = {}
         self.grants = GrantStore(events=self._grant_event)
 
@@ -206,6 +210,11 @@ class ComputerSessionManager:
         return True
 
     async def _bypass_changed(self, owner_sub: str, host_id: str, name: str, enabled: bool, reason: str) -> None:
+        if enabled:
+            from orchestrator.approval_receipts import withdraw_computer_reviews
+            key = (owner_sub, host_id)
+            self.review_generations[key] = self.review_generations.get(key, 0) + 1
+            await withdraw_computer_reviews(self._orch, owner_sub, host_id)
         try:
             from datetime import datetime, timezone
 
@@ -270,8 +279,33 @@ class ComputerSessionManager:
             return "another device"
 
     async def start(self, owner_sub: str, host: ComputerHost, websocket, chat_id: Optional[str],
-                    *, wait_for_ack: bool = True) -> ComputerSession:
+                    *, wait_for_ack: bool = True, caller_guard=None) -> ComputerSession:
+        from orchestrator.project_authority import resolve_project_origin, origin_current, ProjectSessionWitness
+        previous = self.live_for_host(owner_sub, host.host_id)
+        witness = ProjectSessionWitness.capture(self._orch, previous) if previous and host.project_mode else None
+        origin = await resolve_project_origin(self._orch, owner_sub, chat_id, host)
         existing = self.live_for_host(owner_sub, host.host_id)
+        if origin is not None and (existing is not previous or witness is not None and not witness.current(self._orch)):
+            raise ComputerHostError("stale_project_grant", "The session changed while resolving this project.",
+                                    effect_state="not_started")
+        if caller_guard is not None:
+            caller_guard()
+        if existing is not None and origin is not None:
+            previous = existing.project_origin
+            if (existing.controller_ws_id != id(websocket) or previous is None
+                    or previous.chat != chat_id or previous.context.project_id != origin.context.project_id
+                    or previous.entry != origin.entry or not origin_current(self._orch, previous)):
+                if existing.controller_ws_id != id(websocket) and self._controller_socket_alive(existing):
+                    raise ComputerHostError("controlled_by_other", "Stop the current controller before taking over.")
+                await self.end(existing, "consent_revoked", cancel_turn=False)
+                existing = None
+                if self.live_for_host(owner_sub, host.host_id) is not None:
+                    raise ComputerHostError("stale_project_grant", "A newer session superseded this rotation.",
+                                            effect_state="not_started")
+                if caller_guard is not None:
+                    caller_guard()
+                if not origin_current(self._orch, origin):
+                    raise ComputerHostError("stale_project_grant", "Project authority changed before session start.")
         if existing is not None:
             if existing.controller_ws_id == id(websocket):
                 if chat_id and existing.chat_id != chat_id:
@@ -311,6 +345,7 @@ class ComputerSessionManager:
             controller_device_id=self._device_id(websocket),
             controller_label=self._controller_label(websocket),
             chat_id=chat_id,
+            project_origin=origin,
         )
         self._sessions[session.session_id] = session
         self._ensure_sweeper()
@@ -326,19 +361,32 @@ class ComputerSessionManager:
                     "host_unresponsive",
                     f"{host.name} did not acknowledge the session — its client may be an older "
                     "version without remote control")
+        try:
+            if caller_guard is not None:
+                caller_guard()
+        except ComputerHostError:
+            await self.end(session, "consent_revoked", cancel_turn=False)
+            raise
+        if origin is not None and (not origin_current(self._orch, origin) or session.state != ACTIVE
+                                  or session.authority_generation != 0 or self.get(session.session_id) is not session):
+            await self.end(session, "consent_revoked", cancel_turn=False)
+            raise ComputerHostError("stale_project_grant", "Project authority changed before session acknowledgment.")
         return session
 
     async def pause(self, session: ComputerSession, reason: str, *, push: bool = True) -> None:
         if session.state == ENDED or session.state == PAUSED and session.pause_reason == reason:
             return
+        session.approval_pause_authority = None
         session.state = PAUSED
         session.terminal_ok_until = 0.0
         session.authority_generation += 1
         session.pause_reason = reason
         session.last_activity_at = time.time()
         self.grants.revoke(session.session_id, "takeover" if reason == "local_input" else "pause")
+        if push and session.project_origin is not None:
+            await self._push(session)
         await self._audit(session, "computer_session.paused", f"paused ({reason})")
-        if push:
+        if push and session.project_origin is None:
             await self._push(session)
 
     async def resume(self, session: ComputerSession, *, push: bool = True, local: bool = False) -> None:
@@ -350,6 +398,7 @@ class ComputerSessionManager:
                               outcome="failure", meta={"reason": refusal, "pause_reason": session.pause_reason})
             raise ComputerHostError(refusal, f"{session.host_name} was paused at the computer; only its own Resume "
                                              "control can continue the session")
+        session.approval_pause_authority = None
         session.state = ACTIVE
         session.authority_generation += 1
         session.pause_reason = None
@@ -363,6 +412,7 @@ class ComputerSessionManager:
             return
         if reason not in END_REASONS:
             reason = "user_stop"
+        session.approval_pause_authority = None
         session.state = ENDED
         session.terminal_ok_until = 0.0
         session.authority_generation += 1
@@ -374,12 +424,15 @@ class ComputerSessionManager:
         jobs = [job for job, record in session.command_jobs.items() if record.get("state", "running") == "running"]
         session.command_jobs.clear()
         host = self._registry.get(session.owner_sub, session.host_id)
-        if jobs and host is not None and reason in _KILL_REASONS:
+        if session.project_origin is not None:
+            await self._push(session)
+        elif jobs and host is not None and reason in _KILL_REASONS:
             await self._signal_jobs(host, session, jobs, "KILL")
         self._forget_browser(session)
         await self._audit(session, "computer_session.ended", f"ended ({reason})",
                           outcome="success" if reason in STOP_REASONS else "failure")
-        await self._push(session)
+        if session.project_origin is None:
+            await self._push(session)
         logger.info("076: session %s ended (%s) host=%s verbs=%d",
                     session.session_id[:12], reason, session.host_name, session.verbs_run)
         cancel = getattr(self._orch, "cancel_computer_turn", None)
@@ -395,7 +448,10 @@ class ComputerSessionManager:
         jobs = [job for job, record in session.command_jobs.items() if record.get("state", "running") == "running"]
         host = self._registry.get(session.owner_sub, session.host_id)
         if jobs and host is not None and session.state != ENDED:
-            await self._signal_jobs(host, session, jobs, signal)
+            if session.project_origin is not None and session.state == PAUSED:
+                await self._push(session)
+            else:
+                await self._signal_jobs(host, session, jobs, signal)
 
     async def _signal_jobs(self, host: ComputerHost, session: ComputerSession, jobs: List[str], signal: str) -> None:
         results = await asyncio.gather(*(self._registry.request(
@@ -509,7 +565,12 @@ class ComputerSessionManager:
     async def _push(self, session: ComputerSession) -> None:
         frame = session.frame(self.grant_rows(session) if session.state != ENDED else (),
                               self.bypass_on(session.owner_sub, session.host_id))
-        for ws in list(self._orch.ui_clients):
+        clients = list(self._orch.ui_clients)
+        host = self._registry.get(session.owner_sub, session.host_id)
+        if session.project_origin is not None and host is not None and host.websocket in clients:
+            clients.remove(host.websocket)
+            clients.insert(0, host.websocket)
+        for ws in clients:
             try:
                 if self._orch._get_user_id(ws) != session.owner_sub:
                     continue
