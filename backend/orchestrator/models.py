@@ -30,6 +30,7 @@ class ChatMessageResponse(BaseModel):
 
 class ChatSummary(BaseModel):
     id: str
+    project_id: Optional[str] = None
     title: str
     agent_id: Optional[str] = Field(
         None,
@@ -53,6 +54,7 @@ class ChatMessage(BaseModel):
 
 class ChatDetail(BaseModel):
     id: str
+    project_id: Optional[str] = None
     title: str
     agent_id: Optional[str] = Field(
         None,
@@ -70,11 +72,15 @@ class ChatListResponse(BaseModel):
 
 
 class ChatCreateRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    chat_id: Optional[str] = None
+    project_id: Optional[str] = None
     agent_id: Optional[str] = Field(None, description="Agent to bind this chat to.")
 
 
 class ChatCreateResponse(BaseModel):
     chat_id: str
+    project_id: Optional[str] = None
     agent_id: Optional[str] = Field(
         None,
         description="Echo of the agent the chat is bound to (Feature 013).",
@@ -399,3 +405,16 @@ Components are JSON objects with a `type` field:
 `progress`, `bar_chart`, `line_chart`, `pie_chart`, `plotly_chart`,
 `code`, `divider`, `collapsible`, `image`, `tabs`, `button`, `input`
 """
+
+
+class ProjectCreateRequest(BaseModel):
+    model_config = {"extra": "forbid", "strict": True}
+    project_id: str
+    name: str = Field(min_length=1, max_length=200)
+    position: int = Field(default=0, ge=0, le=2**53 - 1)
+
+
+class ProjectRenameRequest(BaseModel):
+    model_config = {"extra": "forbid", "strict": True}
+    name: str = Field(min_length=1, max_length=200)
+    revision: int = Field(ge=1, le=2**53 - 1)

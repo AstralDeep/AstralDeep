@@ -376,7 +376,11 @@ async def test_list_computers_shows_only_the_newest_registration():
     assert stale.host_id not in json.dumps(listed)
 
 
-async def test_request_response_correlation_and_socket_binding():
+async def test_request_response_correlation_and_socket_binding(monkeypatch):
+    from orchestrator import computer_hosts
+
+    monkeypatch.setattr(computer_hosts, "time", SimpleNamespace(
+        monotonic=lambda: 1000.0, time=time.time))
     orch = _FakeOrch()
     ws, host = await _online_host(orch)
     phone = orch.add(_WS())
