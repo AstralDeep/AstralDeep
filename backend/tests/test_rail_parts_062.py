@@ -114,6 +114,32 @@ class TestRailParts:
         parts = [{"type": "components", "components": [_metric(), _metric()]}]
         assert _rail_parts(parts) == []
 
+    def test_nested_reference_metadata_is_not_lifted_as_an_ordinary_alert(self):
+        nested = {
+            "type": "container",
+            "children": [
+                {"type": "badge", "label": "Partial accounting", "variant": "info"},
+                {"type": "keyvalue", "title": "Whole conversation usage", "columns": 1,
+                 "items": [{"key": "Attempts", "value": "untrusted count"}]},
+                {"type": "alert", "message": "Private warning payload", "variant": "warning"},
+            ],
+        }
+        parts = [{"type": "components", "components": [nested]}]
+        assert _rail_parts(parts) == []
+
+        ordinary = {
+            "type": "container",
+            "children": [
+                {"type": "alert", "component_id": "ordinary-alert",
+                 "message": "A normal warning remains visible.", "variant": "warning"},
+                {"type": "list", "component_id": "ordinary-list", "items": ["safe item"]},
+            ],
+        }
+        assert _rail_parts([{"type": "components", "components": [ordinary]}]) == [
+            {"type": "components", "components": [ordinary["children"][0]]},
+            {"type": "components", "components": [ordinary["children"][1]]},
+        ]
+
     def test_components_part_lifts_text_and_drops_rich(self):
         parts = [{"type": "components", "components": [_metric(), _text("the answer")]}]
         assert _rail_parts(parts) == [{"type": "text", "text": "the answer"}]

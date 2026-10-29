@@ -299,7 +299,10 @@ def _rail_parts(
     parts: list[dict[str, Any]], *, canvas_component_ids: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     from orchestrator.source_details import present_source_details
-    from orchestrator.context_presentation import canonical_reference_components
+    from orchestrator.context_presentation import (
+        canonical_reference_components,
+        is_reference_group_candidate,
+    )
 
     kept: list[dict[str, Any]] = []
     for part in parts:
@@ -313,9 +316,12 @@ def _rail_parts(
                 continue
             kept.append(part)
             continue
-        reference_group = canonical_reference_components(part.get("components"))
-        if reference_group is not None and not any(comp.get("component_id") in canvas_component_ids for comp in reference_group):
-            kept.append({"type": "components", "components": reference_group})
+        components = part.get("components")
+        if is_reference_group_candidate(components):
+            reference_group = canonical_reference_components(components)
+            if (reference_group is not None
+                    and not any(comp.get("component_id") in canvas_component_ids for comp in reference_group)):
+                kept.append({"type": "components", "components": reference_group})
             continue
         for comp in part.get("components", []):
             if not isinstance(comp, Mapping):

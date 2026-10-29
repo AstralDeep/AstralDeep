@@ -17,6 +17,8 @@ _LABELS = {
     "blocked": "Recall blocked",
     "limit": "Context limit",
 }
+_REFERENCE_GROUP_TITLES = frozenset({"Source identity", "Temporary view", "Whole conversation usage"})
+_REFERENCE_GROUP_LABELS = frozenset(_LABELS.values())
 _REFERENCE = re.compile(r"obs_[A-Za-z0-9_-]{43}")
 _VIEW = re.compile(r"view_[A-Za-z0-9_-]{43}")
 _DIGEST = re.compile(r"[a-f0-9]{64}")
@@ -206,6 +208,22 @@ def canonical_reference_components(group) -> list[dict] | None:
         return deepcopy(group)
     except (ValueError, TypeError, KeyError, AttributeError, UnicodeError, IndexError):
         return None
+
+
+def is_reference_group_candidate(group) -> bool:
+    # Reserved metadata must fail as a group without inspecting private prose.
+    if type(group) is not list or len(group) < 2:
+        return False
+    first = group[0]
+    if type(first) is not dict or first.get("type") != "badge":
+        return False
+    label = first.get("label")
+    if type(label) is str and label in _REFERENCE_GROUP_LABELS:
+        return True
+    second = group[1]
+    title = second.get("title") if type(second) is dict else None
+    return (type(second) is dict and second.get("type") == "keyvalue"
+            and type(title) is str and title in _REFERENCE_GROUP_TITLES)
 
 
 def evidence_components(
