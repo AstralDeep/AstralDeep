@@ -4,6 +4,7 @@ import pytest
 from orchestrator.goal_requirements import (
     PROOF_CATEGORIES,
     GoalContract,
+    _javascript_http_probe_argv,
     build_goal_contract,
     parse_goal_contract,
     select_goal_proof_references,
@@ -133,6 +134,40 @@ def test_selector_builds_distinct_references_from_valid_private_observations():
     all_ids = [call_id for ids in references.values() for call_id in ids]
     assert len(all_ids) == len(set(all_ids))
     assert validate_goal_proofs(_local_contract(), references, observations, PROJECT).accepted
+
+
+def test_selector_accepts_javascript_project_proof_with_distinct_stage_ids():
+    observations = _source_pair(ROOT + "/src/main.tsx") + [
+        _run("js-env", argv=["node", "--version"], sequence=3),
+        _run("js-deps", argv=["npm", "ci", "--no-audit", "--no-fund"], sequence=4),
+        _run("js-tests", argv=["npm", "run", "test"], sequence=5),
+        _run("js-startup", argv=_javascript_http_probe_argv("npm", "preview"),
+             sequence=6),
+    ]
+
+    references = select_goal_proof_references(_local_contract(), observations, PROJECT)
+
+    assert references == {
+        "files": ["write", "read"],
+        "environment": ["js-env"],
+        "dependencies": ["js-deps"],
+        "tests": ["js-tests"],
+        "startup": ["js-startup"],
+    }
+    ids = [call_id for category in references.values() for call_id in category]
+    assert len(ids) == len(set(ids))
+    assert validate_goal_proofs(_local_contract(), references, observations, PROJECT).accepted
+
+
+def test_startup_proof_rejects_arbitrary_node_eval_command():
+    observations = _source_pair(ROOT + "/src/main.tsx") + [
+        _run("js-env", argv=["node", "--version"], sequence=3),
+        _run("js-deps", argv=["npm", "ci"], sequence=4),
+        _run("js-tests", argv=["npm", "run", "test"], sequence=5),
+        _run("js-startup", argv=["node", "-e", "fetch('http://127.0.0.1:4173')"], sequence=6),
+    ]
+
+    assert select_goal_proof_references(_local_contract(), observations, PROJECT) == {}
 
 
 def test_selector_returns_empty_for_unscoped_or_incomplete_evidence():

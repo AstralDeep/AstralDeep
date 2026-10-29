@@ -19,7 +19,8 @@ def test_prompt_preserves_objective_and_required_execution_criteria():
     prompt = goal_worker.build_worker_prompt("Make a small game", CATEGORIES, "/work/demo")
 
     assert "Make a small game" in prompt
-    assert ".venv" in prompt
+    assert "language-appropriate project environment" in prompt
+    assert "Python uses .venv" in prompt
     assert "install project dependencies" in prompt
     assert "meaningful tests" in prompt
     assert "startup with a bounded smoke check" in prompt

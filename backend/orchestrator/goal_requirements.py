@@ -558,7 +558,8 @@ def _has_sequence(tokens: list[str], sequence: tuple[str, ...]) -> bool:
 
 def _is_environment_command(segment: list[str]) -> bool:
     tokens = _tokens(segment)
-    return (_has_sequence(tokens, ("-m", "venv")) or _has_sequence(tokens, ("-m", "virtualenv"))
+    return (len(tokens) == 2 and tokens[0] == "node" and segment[1] in {"--version", "-v"}
+            or _has_sequence(tokens, ("-m", "venv")) or _has_sequence(tokens, ("-m", "virtualenv"))
             or _has_sequence(tokens, ("uv", "venv"))
             or _has_sequence(tokens, ("uv", "run"))
             or _has_sequence(tokens, ("virtualenv",))
@@ -597,6 +598,12 @@ def _is_startup_command(segment: list[str]) -> bool:
     tokens = _tokens(segment)
     if _is_test_command(segment):
         return False
+    if segment in [
+        _javascript_http_probe_argv(manager, script)
+        for manager in ("npm", "pnpm", "yarn", "bun")
+        for script in ("preview", "start")
+    ]:
+        return True
     return (
         _has_sequence(tokens, ("npm", "start")) or _has_sequence(tokens, ("npm", "run", "start"))
         or _has_sequence(tokens, ("pnpm", "start")) or _has_sequence(tokens, ("yarn", "start"))
@@ -607,6 +614,27 @@ def _is_startup_command(segment: list[str]) -> bool:
                  or tokens[1] == "-m" and len(tokens) >= 3
                  and tokens[2] not in {"pip", "venv", "virtualenv", "pytest", "unittest"}))
     )
+
+
+def _javascript_http_probe_argv(manager: str, script: str) -> list[str]:
+    """Return the single canonical bounded HTTP probe accepted as JS startup proof."""
+    launch = {
+        "npm": [manager, "run", script, "--", "--host", "127.0.0.1", "--port", "4173"],
+        "pnpm": [manager, "run", script, "--host", "127.0.0.1", "--port", "4173"],
+        "yarn": [manager, script, "--host", "127.0.0.1", "--port", "4173"],
+        "bun": [manager, "run", script, "--host", "127.0.0.1", "--port", "4173"],
+    }.get(manager)
+    if launch is None or script not in {"preview", "start"}:
+        raise ValueError("unsupported JavaScript HTTP probe command")
+    node = ("const {spawn}=require('node:child_process');const p=spawn(" + json.dumps(launch[0]) + "," +
+            json.dumps(launch[1:]) + ",{stdio:'ignore',detached:true});let done=false;" +
+            "const stop=()=>{if(!p.pid)return;try{process.kill(-p.pid,'SIGTERM')}catch{p.kill('SIGTERM')}};" +
+            "const end=(c)=>{if(done)return;done=true;stop();process.exit(c)};" +
+            "p.on('error',()=>end(1));p.on('exit',c=>{if(!done)end(c||1)});" +
+            "process.on('SIGTERM',()=>end(1));process.on('SIGINT',()=>end(1));" +
+            "const t=Date.now();(async()=>{while(Date.now()-t<20000){try{const r=await fetch('http://127.0.0.1:4173/');" +
+            "if(r.status>=200&&r.status<400)return end(0)}catch{}await new Promise(r=>setTimeout(r,250))}end(1)})();")
+    return ["node", "-e", node]
 
 
 def _result_data(result: Any) -> Any:

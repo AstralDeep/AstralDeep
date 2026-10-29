@@ -16,7 +16,7 @@ from orchestrator.computer_use_policy import (
 
 _CATEGORY_GUIDANCE = {
     "files": "create project files",
-    "environment": "create and use .venv for Python",
+    "environment": "set up and use the language-appropriate project environment (Python uses .venv)",
     "dependencies": "install project dependencies",
     "tests": "run meaningful tests and fix failures",
     "startup": "verify startup with a bounded smoke check",

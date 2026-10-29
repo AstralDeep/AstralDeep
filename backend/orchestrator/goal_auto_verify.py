@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from orchestrator.goal_requirements import (
+    _javascript_http_probe_argv,
     select_goal_proof_references,
 )
 
@@ -278,6 +279,11 @@ async def _verify_javascript_project(root, listing, call, stopped, goal_contract
     if package_manager is None or not isinstance(scripts.get("test"), str) or not scripts["test"].strip():
         return {}
     manager, install = package_manager
+    environment = await call("run_command", {
+        "argv": ["node", "--version"], "cwd": root, "timeout_s": 15, "background": False,
+    })
+    if environment is None or stopped():
+        return {}
     if "node_modules" not in root_files:
         result = await call("run_command", {
             "argv": install, "cwd": root, "timeout_s": 300, "background": False,
@@ -334,20 +340,7 @@ def _javascript_http_startup_argv(manager: str, scripts: dict[str, Any]) -> list
     )
     if script is None:
         return None
-    launch = {"npm": ["npm", "run", script, "--", "--host", "127.0.0.1", "--port", "4173"],
-              "pnpm": ["pnpm", "run", script, "--host", "127.0.0.1", "--port", "4173"],
-              "yarn": ["yarn", script, "--host", "127.0.0.1", "--port", "4173"],
-              "bun": ["bun", "run", script, "--host", "127.0.0.1", "--port", "4173"]}[manager]
-    # Keep the child lifetime bounded and require an HTTP response before success.
-    node = ("const {spawn}=require('node:child_process');const p=spawn(" + json.dumps(launch[0]) + "," +
-            json.dumps(launch[1:]) + ",{stdio:'ignore',detached:true});let done=false;" +
-            "const stop=()=>{if(!p.pid)return;try{process.kill(-p.pid,'SIGTERM')}catch{p.kill('SIGTERM')}};" +
-            "const end=(c)=>{if(done)return;done=true;stop();process.exit(c)};" +
-            "p.on('error',()=>end(1));p.on('exit',c=>{if(!done)end(c||1)});" +
-            "process.on('SIGTERM',()=>end(1));process.on('SIGINT',()=>end(1));" +
-            "const t=Date.now();(async()=>{while(Date.now()-t<20000){try{const r=await fetch('http://127.0.0.1:4173/');" +
-            "if(r.status>=200&&r.status<400)return end(0)}catch{}await new Promise(r=>setTimeout(r,250))}end(1)})();")
-    return ["node", "-e", node]
+    return _javascript_http_probe_argv(manager, script)
 
 
 def _canonical_root(value: Any) -> str | None:
