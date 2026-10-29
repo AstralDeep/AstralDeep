@@ -3,6 +3,7 @@ tool-call/tool-result pairs intact; called by orchestrator.py's ReAct loop befor
 each LLM call.
 """
 
+import asyncio
 import json
 import logging
 from typing import List, Dict, Tuple, Callable
@@ -285,13 +286,15 @@ async def compact_messages(
 
     try:
         response, _ = await llm_call(None, summary_prompt)
-        if response and hasattr(response, "content") and response.content:
-            summary_text = response.content
-        else:
-            summary_text = "Prior conversation context was summarized but the summary could not be generated."
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         logger.warning(f"Compaction LLM call failed: {e}")
-        summary_text = f"[{compact_turn_count} earlier conversation turns were removed to fit context window]"
+        return messages, False
+    summary_text = getattr(response, "content", None)
+    if not isinstance(summary_text, str) or not summary_text.strip():
+        logger.warning("Compaction LLM call returned no usable summary; keeping original history")
+        return messages, False
 
     summary_msg = {
         "role": "system",

@@ -15238,44 +15238,58 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if routing_hints:
                     system_prompt += f"\n{routing_hints}\n"
 
-            if flags.is_enabled("skill_packs") and hasattr(self, 'knowledge_index'):
-                try:
-                    from orchestrator import skill_packs
-                    _meta = {"__orchestrator__", "__scheduler__", "__memory__", "__persistent_assignments__",
-                             "__desktop_codegen__", "__subtasks__", "__skill_guidance__"}
-                    _agents_in_play = {a for a in tool_to_agent.values() if a and a not in _meta}
-                    _digest = skill_packs.build_skill_digest(
-                        self.knowledge_index, _agents_in_play, user_skills=_current_user_skills)
-                    if _digest:
-                        system_prompt += f"\n{_digest}\n"
-                except Exception:
-                    logger.debug("skill_packs.fallback: injection skipped", exc_info=True)
+            def _tool_prompt_context(candidate_tools, candidate_owners) -> str:
+                fragments = []
+                if flags.is_enabled("skill_packs") and hasattr(self, "knowledge_index"):
+                    try:
+                        from orchestrator import skill_packs
 
-            personalization_skill_lines: List[str] = []
-            _meta_agent_ids = {"__orchestrator__", "__scheduler__", "__memory__", "__subtasks__", "__persistent_assignments__",
-                               "__desktop_codegen__", "__skill_guidance__"}
-            for _td in tools_desc:
-                try:
-                    _fn = _td.get("function") or {}
-                    _name = _fn.get("name")
-                    if not _name or tool_to_agent.get(_name) in _meta_agent_ids:
+                        meta_agents = {
+                            "__orchestrator__", "__scheduler__", "__memory__",
+                            "__persistent_assignments__", "__desktop_codegen__",
+                            "__subtasks__", "__skill_guidance__",
+                        }
+                        agents_in_play = {
+                            agent for agent in candidate_owners.values()
+                            if agent and agent not in meta_agents
+                        }
+                        digest = skill_packs.build_skill_digest(
+                            self.knowledge_index,
+                            agents_in_play,
+                            user_skills=_current_user_skills,
+                        )
+                        if digest:
+                            fragments.append(digest)
+                    except Exception:
+                        logger.debug("skill_packs.fallback: injection skipped", exc_info=True)
+
+                personalization_skill_lines: List[str] = []
+                meta_agent_ids = {
+                    "__orchestrator__", "__scheduler__", "__memory__", "__subtasks__",
+                    "__persistent_assignments__", "__desktop_codegen__", "__skill_guidance__",
+                }
+                for tool in candidate_tools:
+                    try:
+                        function = tool.get("function") or {}
+                        name = function.get("name")
+                        if not name or candidate_owners.get(name) in meta_agent_ids:
+                            continue
+                        description = (function.get("description") or "").strip().split(". ")[0][:160]
+                        personalization_skill_lines.append(
+                            f"- {name}: {description}" if description else f"- {name}"
+                        )
+                    except Exception:  # pragma: no cover
                         continue
-                    _desc = (_fn.get("description") or "").strip().split(". ")[0][:160]
-                    personalization_skill_lines.append(
-                        f"- {_name}: {_desc}" if _desc else f"- {_name}")
-                except Exception:  # pragma: no cover
-                    continue
-            personalization_skill_lines = personalization_skill_lines[:40] or None
-
-            try:
-                skill_lines = locals().get("personalization_skill_lines") or None
-                personalization_fragment = self.personalization_service.build_prompt_fragment(
-                    user_id, skill_lines=skill_lines
-                )
-                if personalization_fragment:
-                    system_prompt += f"\n\n{personalization_fragment}\n"
-            except Exception as exc:  # pragma: no cover
-                logger.warning(f"personalization injection failed (non-fatal): {exc}")
+                personalization_skill_lines = personalization_skill_lines[:40] or None
+                try:
+                    personalization_fragment = self.personalization_service.build_prompt_fragment(
+                        user_id, skill_lines=personalization_skill_lines
+                    )
+                    if personalization_fragment:
+                        fragments.append(personalization_fragment)
+                except Exception as exc:  # pragma: no cover
+                    logger.warning("personalization injection failed (non-fatal): %s", exc)
+                return "\n\n".join(fragments)
 
             if meta_tools_injected:
                 system_prompt += agentic_creation.SYSTEM_PROMPT_ADDENDUM
@@ -15358,6 +15372,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             goal_project = None
             goal_contract = None
             goal_anchor = None
+            tool_prompt_context_added = False
             goal_stop_reason = None
             goal_truncations = 0
             goal_checkpoint_tools = 0
@@ -15527,12 +15542,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     _compaction_cfg = (
                         _user_cfg if getattr(_user_cfg, "model", None) else _sys_cfg
                     )
+
+                    async def _owner_bound_compaction_call(_unused_websocket, summary_messages):
+                        return await self._call_llm(
+                            websocket,
+                            summary_messages,
+                            feature="context_compaction",
+                            allow_stream=False,
+                        )
+
                     messages, was_compacted = await compact_messages(
                         messages,
                         getattr(_user_cfg, "model", None)
                         or getattr(_sys_cfg, "model", None)
                         or "default",
-                        self._call_llm,
+                        _owner_bound_compaction_call,
                         provider=getattr(_compaction_cfg, "provider", None),
                         tools_desc=tools_desc,
                     )
@@ -15589,6 +15613,23 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             agent == "computer-use-1" for agent in tool_to_agent.values()):
                         goal_stop_reason = "No authorized project execution tools are available on the selected computer."
                         break
+
+                if not tool_prompt_context_added:
+                    prompt_tools = tools_desc
+                    prompt_owners = tool_to_agent
+                    if (
+                        goal_contract is not None
+                        and goal_contract.kind == "local_project"
+                        and not selected_tools
+                    ):
+                        prompt_tools, prompt_owners, _ = focus_project_catalog(
+                            prompt_tools, prompt_owners, tool_to_unqualified,
+                            goal_project, goal_contract,
+                        )
+                    prompt_context = _tool_prompt_context(prompt_tools, prompt_owners)
+                    if prompt_context:
+                        messages[0]["content"] += "\n\n" + prompt_context
+                    tool_prompt_context_added = True
 
                 call_feature = "chat_dispatch_text_only" if is_text_only else "tool_dispatch"
                 _phase_recorder = self._chat_recorders.get(id(websocket))
