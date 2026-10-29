@@ -9,7 +9,8 @@ from orchestrator.goal_requirements import GOAL_CLASSIFIER_GUIDANCE, build_goal_
 PLANNING_GUIDANCE = """Treat this request as an objective to achieve through execution and verification.
 Continue working after intermediate results; do not stop at a plan or instructions for the user to execute.
 Use independent tools in parallel only when their effects do not depend on each other.
-Create parent directories and write complete files in one call, then read them back; avoid line-by-line file edits.
+Create parent directories and write complete files up to 64 KiB UTF-8 in one call, then read them back; avoid line-by-line file edits.
+write_file accepts at most 256 KiB UTF-8 per call and does not append. Split larger source files into smaller modules instead of submitting a large monolithic file; never retry an oversized write unchanged.
 Use observable milestones and bounded independent delegation when available, within the same authorized host, project, root, and permissions.
 For runnable project work, use the selected project's granted local folder, inspect its existing state,
 and use that host's computer-use tools for local files and commands. A remote-compute machine is a different
