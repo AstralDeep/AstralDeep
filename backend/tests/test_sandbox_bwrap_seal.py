@@ -79,6 +79,46 @@ def test_duplicate_masks_are_sealed_once():
     assert result.count("--remount-ro") == 3
 
 
+@pytest.mark.parametrize("kind", ["http", "socks"])
+def test_pinned_proxy_socket_bind_must_precede_the_read_only_root(kind):
+    proxy = f"/tmp/claude-{kind}-0123456789abcdef.sock"
+    original = arguments()
+    original[0:0] = ["--bind", proxy, proxy]
+    assert seal.sealed_arguments(original, "/owned/scratch")[:3] == original[:3]
+    original = arguments()
+    boundary = original.index("--")
+    original[boundary:boundary] = ["--bind", proxy, proxy]
+    with pytest.raises(ValueError):
+        seal.sealed_arguments(original, "/owned/scratch")
+
+
+@pytest.mark.parametrize(
+    "source,target",
+    [
+        ("/review/outside", "/review/outside"),
+        ("/review/outside", "/owned/scratch"),
+        ("/owned/scratch", "/review/outside"),
+        ("/owned/scratch/child", "/owned/scratch/child"),
+        ("/tmp/claude-http-wrong.sock", "/tmp/claude-http-wrong.sock"),
+    ],
+)
+@pytest.mark.parametrize("before_root", [False, True])
+def test_unreviewed_writable_binds_are_refused(source, target, before_root):
+    original = arguments()
+    boundary = 0 if before_root else original.index("--")
+    original[boundary:boundary] = ["--bind", source, target]
+    with pytest.raises(ValueError):
+        seal.sealed_arguments(original, "/owned/scratch")
+
+
+def test_duplicate_root_bind_is_refused():
+    original = arguments()
+    boundary = original.index("--")
+    original[boundary:boundary] = ["--ro-bind", "/", "/"]
+    with pytest.raises(ValueError):
+        seal.sealed_arguments(original, "/owned/scratch")
+
+
 @pytest.mark.parametrize("value", ["--tmpfs", "--args", "--"])
 def test_environment_values_are_opaque_and_never_logged(capsys, value):
     original = arguments()

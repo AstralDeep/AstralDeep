@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 
@@ -147,7 +148,7 @@ def sealed_arguments(arguments, scratch):
         set(flags) != _FLAGS
         or len(flags) != len(_FLAGS)
         or cap_drop != ["ALL"]
-        or ("--ro-bind", "/", "/") not in mounts
+        or mounts.count(("--ro-bind", "/", "/")) != 1
         or ("--bind", "/", "/") in mounts
         or ("--bind", scratch, scratch) not in mounts
         or mounts.count(("--dev", "/dev")) != 1
@@ -158,6 +159,17 @@ def sealed_arguments(arguments, scratch):
         )
     ):
         raise ValueError("sandbox fences differ from the fixed profile")
+    root = mounts.index(("--ro-bind", "/", "/"))
+    for position, mount in enumerate(mounts):
+        if mount[0] != "--bind" or mount == ("--bind", scratch, scratch):
+            continue
+        if (
+            position >= root
+            or mount[1] != mount[2]
+            or re.fullmatch(r"/tmp/claude-(http|socks)-[a-f0-9]{16}\.sock", mount[1])
+            is None
+        ):
+            raise ValueError("writable mount differs from the fixed profile")
     extra = [word for target in seals for word in ["--remount-ro", target]]
     return _bounded([*words[:boundary], *extra, *words[boundary:]])
 
