@@ -15380,6 +15380,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             goal_response_repairs = 0
             goal_recovery_nudge_sent = False
             goal_worker_attempted = False
+            goal_auto_refs = {}
             from orchestrator import hitl_confirmation
 
             resumed_goal = hitl_confirmation.current_goal_context(self, websocket, user_id, chat_id)
@@ -15723,12 +15724,32 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 break
                             if worker_state.status == "success":
                                 goal_checkpoint_tools = goal_progress.tool_count
-                                messages.append({"role": "system", "content": (
-                                    "The authorized local coding worker exited successfully inside the frozen "
-                                    "project root. Its prose is not proof. Inspect the resulting source and "
-                                    "manifest, run the project's environment, dependency, test, and startup "
-                                    "checks with the ordinary project tools, then request completion review "
-                                    "using distinct real tool evidence for each required category.")})
+                                from orchestrator.goal_auto_verify import verify_python_project
+                                await self._send_chat_status(websocket, "executing", "Checking the project on this Mac…")
+                                try:
+                                    goal_auto_refs = await verify_python_project(
+                                        self, websocket, goal_progress, goal_project, goal_contract,
+                                        tool_to_agent, tool_to_unqualified, chat_id, user_id, task=task,
+                                    )
+                                except asyncio.CancelledError:
+                                    raise
+                                except Exception:
+                                    logger.warning("goal.auto_verify_failed chat=%s", chat_id, exc_info=True)
+                                if self.cancelled_sessions.get(id(websocket)):
+                                    continue
+                                if goal_progress.requires_approval:
+                                    goal_stop_reason = "Waiting for approval of a local project verification command."
+                                    break
+                                if goal_auto_refs:
+                                    logger.warning("goal.auto_verify chat=%s status=complete tools=%d", chat_id,
+                                                   goal_progress.tool_count)
+                                else:
+                                    messages.append({"role": "system", "content": (
+                                        "The authorized local coding worker exited successfully inside the frozen "
+                                        "project root. Its prose is not proof. Inspect the resulting source and "
+                                        "manifest, run the project's environment, dependency, test, and startup "
+                                        "checks with the ordinary project tools, then request completion review "
+                                        "using distinct real tool evidence for each required category.")})
                             elif worker_state.status != "denied":
                                 messages.append({"role": "system", "content": (
                                     "The local coding worker could not finish. Inspect its possible file "
@@ -15824,13 +15845,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     _round_kwargs["tool_choice"] = round_one_choice
                 _goal_buffer_token = _GOAL_BUFFERED_RESPONSE.set(goal_progress is not None)
                 try:
-                    with perf_span("turn.route", chat=chat_id):
-                        llm_msg, usage = await self._call_llm(
-                            websocket,
-                            messages,
-                            round_one_tools if turn_count == 1 else tools_desc,
-                            **_round_kwargs,
+                    if goal_auto_refs:
+                        llm_msg = SimpleNamespace(
+                            content="The project is complete in the selected folder. I verified the source, isolated environment, installed dependencies, tests, and startup.",
+                            tool_calls=None,
+                            _astral_finish_reason="stop",
                         )
+                        usage = None
+                    else:
+                        with perf_span("turn.route", chat=chat_id):
+                            llm_msg, usage = await self._call_llm(
+                                websocket,
+                                messages,
+                                round_one_tools if turn_count == 1 else tools_desc,
+                                **_round_kwargs,
+                            )
                 except Exception:
                     if _phase_recorder is not None and _phase_step_id:
                         try:
