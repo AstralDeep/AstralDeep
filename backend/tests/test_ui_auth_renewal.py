@@ -454,7 +454,8 @@ def test_subject_token_resolver_rejects_replaced_socket_generation_and_fence():
     assert resolver.resolve() is None
 
 
-def test_authenticated_websocket_ingress_renews_expired_token_for_same_running_operation():
+def test_authenticated_websocket_ingress_renews_expired_token_for_same_running_operation(caplog):
+    caplog.set_level("INFO", logger="Orchestrator")
     async def run():
         from orchestrator.orchestrator import Orchestrator
 
@@ -528,6 +529,9 @@ def test_authenticated_websocket_ingress_renews_expired_token_for_same_running_o
         assert context.operations[operation_id] is operation
         assert operation.fence == "fence-stable"
         assert all("renewed-token" not in message for message in sent)
+        assert f"request={request_id} connection={generation} accepted=True" in caplog.text
+        assert "renewed-token" not in caplog.text
+        assert "expired-token" not in caplog.text
     asyncio.run(run())
 
 

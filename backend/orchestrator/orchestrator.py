@@ -21105,6 +21105,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return
         renewal.signal(websocket)
         await self._safe_send(websocket, json.dumps(ack, separators=(",", ":")))
+        logger.info(
+            "UI authentication renewal outcome request=%s connection=%s accepted=%s",
+            ack["request_id"], ack["connection_generation"], ack["accepted"],
+        )
         session = self.ui_sessions.get(websocket) or {}
         exp = session.get("exp")
         if (
