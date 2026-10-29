@@ -29,7 +29,32 @@ TOOL = "make_dashboard"
 def _fresh_socket():
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     task = BackgroundTask(task_id=uuid.uuid4().hex, chat_id="", user_id="")
-    return VirtualWebSocket(task)
+
+    class HumanSocket:
+        def __init__(self, virtual_socket):
+            self._virtual_socket = virtual_socket
+            self.task = virtual_socket.task
+
+        async def send_text(self, data):
+            return await self._virtual_socket.send_text(data)
+
+        async def send_json(self, data, mode="text"):
+            return await self._virtual_socket.send_json(data, mode=mode)
+
+        async def receive_text(self):
+            return await self._virtual_socket.receive_text()
+
+        async def receive_json(self, mode="text"):
+            return await self._virtual_socket.receive_json(mode=mode)
+
+        async def close(self, code=1000):
+            return await self._virtual_socket.close(code=code)
+
+        @property
+        def client(self):
+            return self._virtual_socket.client
+
+    return HumanSocket(VirtualWebSocket(task))
 
 
 def _msg(content=None, tool_calls=None):
@@ -153,7 +178,6 @@ async def env(monkeypatch):
     sockets, chats = {}, {}
     for device in ("browser", "android"):
         ws = _fresh_socket()
-        ws.llm_context_user_id = user_id
         orch.ui_sessions[ws] = {"sub": user_id, "preferred_username": user_id}
         orch.ui_clients.append(ws)
         orch.rote.register_device(ws, {"device_type": device})

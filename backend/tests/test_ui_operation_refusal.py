@@ -741,7 +741,7 @@ class _Rote:
         return copy.deepcopy(components)
 
 
-def _integration_runtime():
+def _integration_runtime(database=None):
     host = object.__new__(Orchestrator)
     socket = _Socket()
     host.ui_sessions = {socket: {"sub": OWNER}}
@@ -752,8 +752,16 @@ def _integration_runtime():
     host._workspace_locks = {}
     host.rote = _Rote()
     from orchestrator.orchestrator import ConnectionContext
-    context = ConnectionContext(socket, uuid.uuid4(), 999999,
+    context = ConnectionContext(socket, uuid.uuid4(), asyncio.get_running_loop().time() + 60,
                                 connection_generation=uuid.uuid4(), registered=True)
+    host._connection_contexts = {id(socket): context}
+    host.audit_repo = None
+    host._llm_store = None
+    if database is not None:
+        host.runtime_composition = types.SimpleNamespace(plane=types.SimpleNamespace(
+            runtime=database, repositories=database.repositories))
+        from orchestrator.harness.selection_service import HarnessSelectionService
+        host.harness_selection = HarnessSelectionService(orchestrator=host)
     return host, socket, context
 
 
@@ -789,7 +797,7 @@ async def _integration_admitted(host, context, ingress):
 @pytest.mark.asyncio
 async def test_refused_component_action_fails_operation_with_reason_in_terminal_status(
         database):
-    host, socket, context = _integration_runtime()
+    host, socket, context = _integration_runtime(database)
     from orchestrator.history import HistoryManager
     host.history = HistoryManager(plane_runtime=database,
                                   plane_repositories=database.repositories)
@@ -862,7 +870,7 @@ async def test_refused_component_action_fails_operation_with_reason_in_terminal_
 
 @pytest.mark.asyncio
 async def test_refused_component_action_reaches_no_other_owner_socket(database):
-    host, socket, context = _integration_runtime()
+    host, socket, context = _integration_runtime(database)
     from orchestrator.history import HistoryManager
     host.history = HistoryManager(plane_runtime=database,
                                   plane_repositories=database.repositories)
@@ -909,7 +917,7 @@ async def test_refused_component_action_reaches_no_other_owner_socket(database):
 
 @pytest.mark.asyncio
 async def test_successful_component_action_still_completes(database):
-    host, socket, context = _integration_runtime()
+    host, socket, context = _integration_runtime(database)
     from orchestrator.history import HistoryManager
     host.history = HistoryManager(plane_runtime=database,
                                   plane_repositories=database.repositories)
@@ -986,7 +994,7 @@ async def test_dispatch_refusal_persists_only_safe_text_and_replays_once(
 
     sensitive = "patient=synthetic-patient Bearer synthetic-secret credential=synthetic-key"
     monkeypatch.setattr(audit.hooks, "record_ws_action", AsyncMock())
-    host, socket, context = _integration_runtime()
+    host, socket, context = _integration_runtime(database)
     host.history = HistoryManager(plane_runtime=database,
                                   plane_repositories=database.repositories)
     host.workspace = _workspace_manager(host.history, database)

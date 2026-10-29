@@ -86,6 +86,16 @@ async def terminal(state):
     return await state.arrived(lambda v: v.get("type") == "operation_status" and v.get("terminal") is True)
 
 
+async def admission_refusal(state, frame=None):
+    value = await state.arrived(lambda item: item.get("type") == "error"
+                                and item.get("code") == "harness_owner_invalid"
+                                and isinstance(item.get("submission_id"), str)
+                                and (frame is None or item.get("submission_id") == str(frame.submission_id)))
+    assert value["accepted"] is False
+    assert value["code"] == "harness_owner_invalid"
+    return value
+
+
 async def cleaned(frame):
     async with asyncio.timeout(5):
         while frame.human_request is not None:
@@ -170,7 +180,10 @@ async def test_original_capture_survives_real_admission_wait_without_adoption(
         else:
             monkeypatch.setenv("KEYCLOAK_ALLOWED_AZP", "still-allows-primary-but-changed-policy")
         release.set()
-        assert (await terminal(state))["state"] == "failed"
+        if change in {"registration", "context"}:
+            await admission_refusal(state, frame)
+        else:
+            assert (await terminal(state))["state"] == "failed"
         await cleaned(frame)
         assert not calls and frame.human_request is None and pending.closed
         assert len(fixture[-1]) == refreshes_before

@@ -9,6 +9,9 @@ import asyncio
 import os
 import sys
 import types
+import uuid
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -19,6 +22,43 @@ import audit.recorder as audit_recorder  # noqa: E402
 from orchestrator import subtasks  # noqa: E402
 from orchestrator.orchestrator import Orchestrator  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
+
+
+@asynccontextmanager
+async def _authenticated_operation(orch, websocket, *, owner_id="u1"):
+    from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
+    from orchestrator.work_admission import (
+        AdmissionClass, ExecutionFence, OperationOwner, OperationRecord,
+        OperationState, OwnerScope,
+    )
+
+    orch.ui_sessions[websocket] = {"sub": owner_id}
+    orch._llm_context_user_id = types.MethodType(
+        Orchestrator._llm_context_user_id, orch)
+    now = datetime.now(timezone.utc)
+    operation_id, lease_token = uuid.uuid4(), uuid.uuid4()
+    operation = OperationRecord(
+        operation_id=operation_id, operation_kind="interactive_turn",
+        admission_class=AdmissionClass.INTERACTIVE, owner_scope=OwnerScope.USER,
+        owner_user_id=owner_id, connection_scope_id=None,
+        idempotency_namespace=None, idempotency_key=None,
+        normalized_input_digest=None, chat_id="c1", parent_operation_id=None,
+        connection_generation=None, request_generation=None,
+        state=OperationState.RUNNING, phase_code=None, terminal_code=None,
+        safe_summary=None, retry_after_ms=None, execution_generation=1,
+        execution_lease_token=lease_token, state_revision=1, accepted_at=now,
+        updated_at=now, queue_deadline_at=None, started_at=now, terminal_at=None,
+        cancel_requested_at=None, purge_after=None,
+    )
+    owner = OperationOwner(OwnerScope.USER, owner_id, None)
+    fence = ExecutionFence(operation_id, 1, lease_token)
+    token = _CONNECTION_OPERATION_CONTEXT.set({
+        "owner": owner, "operation": operation, "execution_fence": fence,
+    })
+    try:
+        yield
+    finally:
+        _CONNECTION_OPERATION_CONTEXT.reset(token)
 
 
 @pytest.fixture(autouse=True)
@@ -63,9 +103,11 @@ async def test_parent_cancellation_cancels_subtasks(captured):
                                  "payload": {"text": "partial work"}})
 
     o = _orch(_slow)
-    parent = asyncio.create_task(subtasks.handle_meta_tool(
-        o, "delegate_subtasks", {"subtasks": SPECS},
-        user_id="u1", chat_id="c1", websocket=MagicMock()))
+    websocket = MagicMock()
+    async with _authenticated_operation(o, websocket):
+        parent = asyncio.create_task(subtasks.handle_meta_tool(
+            o, "delegate_subtasks", {"subtasks": SPECS},
+            user_id="u1", chat_id="c1", websocket=websocket))
     await asyncio.wait_for(started.wait(), timeout=2)
     parent.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -91,9 +133,11 @@ async def test_cancelled_subtask_partials_are_discarded(captured):
         await asyncio.sleep(30)
 
     o = _orch(_slow)
-    parent = asyncio.create_task(subtasks.handle_meta_tool(
-        o, "delegate_subtasks", {"subtasks": SPECS},
-        user_id="u1", chat_id="c1", websocket=MagicMock()))
+    websocket = MagicMock()
+    async with _authenticated_operation(o, websocket):
+        parent = asyncio.create_task(subtasks.handle_meta_tool(
+            o, "delegate_subtasks", {"subtasks": SPECS},
+            user_id="u1", chat_id="c1", websocket=websocket))
     await asyncio.sleep(0.1)
     parent.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -111,9 +155,11 @@ async def test_timeout_discards_partials_and_reports_honestly(captured, monkeypa
         await asyncio.sleep(5)
 
     o = _orch(_slow)
-    resp = await subtasks.handle_meta_tool(
-        o, "delegate_subtasks", {"subtasks": SPECS},
-        user_id="u1", chat_id="c1", websocket=MagicMock())
+    websocket = MagicMock()
+    async with _authenticated_operation(o, websocket):
+        resp = await subtasks.handle_meta_tool(
+            o, "delegate_subtasks", {"subtasks": SPECS},
+            user_id="u1", chat_id="c1", websocket=websocket)
     results = resp.result["subtasks"]
     assert all(r["status"] == "timeout" for r in results)
     assert all(r["digest"] == "" for r in results)
@@ -129,7 +175,8 @@ async def test_subtask_socket_binding_is_always_released(captured):
     ws = MagicMock()
     o = _orch(_boom)
     o.ui_sessions[ws] = {"sub": "u1"}
-    await subtasks.handle_meta_tool(
-        o, "delegate_subtasks", {"subtasks": SPECS},
-        user_id="u1", chat_id="c1", websocket=ws)
+    async with _authenticated_operation(o, ws):
+        await subtasks.handle_meta_tool(
+            o, "delegate_subtasks", {"subtasks": SPECS},
+            user_id="u1", chat_id="c1", websocket=ws)
     assert list(o.ui_sessions) == [ws]

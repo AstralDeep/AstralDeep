@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta
 import threading
+import time
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -21,6 +22,8 @@ from orchestrator.work_admission import (
     PlaneWorkAdmissionRepository,
     WorkAdmissionCoordinator,
 )
+from orchestrator.harness.selection_service import HarnessSelectionService
+from orchestrator.orchestrator import ConnectionContext, Orchestrator
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 from verification.drivers.fixture_admission import (
     FixtureAdmissionError,
@@ -46,20 +49,28 @@ def registered(database):
         slot_lease=timedelta(seconds=2),
     )
     websocket = object()
-    connection = SimpleNamespace(
-        registered=True, closing=False, connection_scope_id=uuid4(), connection_generation=uuid4(),
+    connection = ConnectionContext(
+        websocket, uuid4(), time.monotonic() + 60,
+        connection_generation=uuid4(), registered=True,
     )
-    orch = SimpleNamespace(
-        work_admission=coordinator, _connection_contexts={id(websocket): connection},
-        ui_sessions={websocket: {"sub": "synthetic-owner"}},
-        runtime_composition=SimpleNamespace(plane=SimpleNamespace(
-            runtime=database, repositories=database.repositories,
-        )),
-    )
+    orch = object.__new__(Orchestrator)
+    orch.work_admission = coordinator
+    orch._connection_contexts = {id(websocket): connection}
+    orch.ui_sessions = {websocket: {"sub": "synthetic-owner"}}
+    orch._ws_active_chat = {}
+    orch.runtime_composition = SimpleNamespace(plane=SimpleNamespace(
+        runtime=database, repositories=database.repositories,
+    ))
+    orch.audit_repo = None
+    orch._llm_store = None
+    orch.harness_selection = HarnessSelectionService(orchestrator=orch)
+    chat_id = str(uuid4())
     frame = {
-        "type": "ui_event", "action": "chat_message", "chat_id": "fixture-conversation",
+        "type": "ui_event", "action": "chat_message",
+        "session_id": chat_id,
         "submission_id": str(uuid4()), "request_generation": str(uuid4()),
         "connection_generation": str(connection.connection_generation),
+        "payload": {"chat_id": chat_id},
     }
     return orch, websocket, frame, object()
 
@@ -146,7 +157,8 @@ async def test_full_real_capacity_refuses_without_fabricating_a_claim(registered
         queued = orch.work_admission.submit(OperationRequest(
             operation_kind="chat_message", admission_class=AdmissionClass.INTERACTIVE,
             owner=first["owner"], submission_id=uuid4(), idempotency_namespace=None,
-            idempotency_key=None, normalized_input_digest=None, chat_id=frame["chat_id"],
+            idempotency_key=None, normalized_input_digest=None,
+            chat_id=str(first["operation"].chat_id),
             parent_operation_id=None, connection_generation=first["connection_generation"],
             request_generation=uuid4(),
         ))
@@ -225,7 +237,7 @@ async def test_unregistered_or_unbound_turn_is_refused(registered, mutation):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("blocked_method", ["submit", "claim_operation", "terminalize", "renew_execution_lease"])
+@pytest.mark.parametrize("blocked_method", ["submit_with_harness", "claim_operation", "terminalize", "renew_execution_lease"])
 async def test_blocking_calls_keep_loop_responsive_and_settle_through_cancellation(
     registered, monkeypatch, blocked_method,
 ):

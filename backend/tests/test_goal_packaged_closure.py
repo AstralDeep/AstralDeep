@@ -7,6 +7,8 @@ from tests.test_harness_packaged_artifacts import manifest_fact
 
 
 @pytest.mark.parametrize("name", [
+    "orchestrator/async_tasks.py",
+    "orchestrator/subtasks.py",
     "orchestrator/goal_progress.py",
     "orchestrator/goal_project_context.py",
     "orchestrator/goal_verification.py",

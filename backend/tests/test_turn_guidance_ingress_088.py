@@ -18,7 +18,7 @@ from tests.helpers.session_plane_runtime import get_session_record, replace_sess
 from tests.test_human_socket_ingress_088 import (
     metadata as metadata, ingress as ingress, surface as surface, command as command,
     context as context, fixture as fixture, runtime as runtime, service as service,
-    signing_key as signing_key, registered, send, terminal,
+    signing_key as signing_key, registered, send, terminal, admission_refusal,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -81,8 +81,11 @@ async def test_actual_foreground_admission_expands_only_original_current_guidanc
     if loss == 'preregistration':
         await state.barrier()
         await registered(state)
-    result = await terminal(state)
-    assert result['state'] == 'failed'
+    if loss == 'owner':
+        await admission_refusal(state)
+    else:
+        result = await terminal(state)
+        assert result['state'] == 'failed'
     if loss == 'none':
         assert len(observed) == 1
         assert 'Use the exact original weekly outline.' in observed[0] and 'original request' in observed[0]

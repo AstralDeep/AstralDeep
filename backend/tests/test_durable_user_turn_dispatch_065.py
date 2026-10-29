@@ -2204,6 +2204,7 @@ async def test_llm_none_terminalizes_voice_when_task_state_machine_is_disabled(
     runtime._notify_phi_if_detected = notify_phi
     runtime._start_heartbeat = start_heartbeat
     runtime._call_llm = call_llm
+    runtime._typesafe_start_routing = AsyncMock(return_value=(None, None))
     runtime.send_ui_render = render
     work = _work("voice_chat_message")
     work.owner = owner
