@@ -114,6 +114,18 @@ def _toml(path: Path) -> dict[str, Any]:
         return tomllib.load(stream)
 
 
+def test_build_tools_satisfy_every_pinned_component_backend() -> None:
+    local = _toml(REPOSITORY_ROOT / "pyproject.toml")["tool"]["astraldeep"]["local-components"]
+    tools = set(local["build-tools"])
+    dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text()
+    makefile = (REPOSITORY_ROOT / "Makefile").read_text()
+    for key in local["install-order"]:
+        component = _toml(REPOSITORY_ROOT / local[key]["path"] / "pyproject.toml")
+        required = set(component["build-system"]["requires"])
+        assert required <= tools, (key, required - tools)
+        assert all(requirement in dockerfile and requirement in makefile for requirement in required)
+
+
 def test_local_component_contract_matches_manifest_and_package_metadata() -> None:
     root_metadata = _toml(REPOSITORY_ROOT / "pyproject.toml")
     local = root_metadata["tool"]["astraldeep"]["local-components"]
@@ -131,7 +143,7 @@ def test_local_component_contract_matches_manifest_and_package_metadata() -> Non
         "setuptools==83.0.0",
         "wheel==0.45.1",
         "hatchling==1.27.0",
-        "uv_build==0.12.15",
+        "uv_build==0.12.23",
     ]
 
     manifest_path = REPOSITORY_ROOT / local["manifest"]

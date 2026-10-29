@@ -2435,6 +2435,7 @@ class TestBackgroundTaskShutdownAndObservability:
         observability = _RecordingObservability()
         observation_entered = threading.Event()
         observation_release = threading.Event()
+        observation_exited = threading.Event()
         calls = []
 
         if blocked_stage == "inspect":
@@ -2443,8 +2444,11 @@ class TestBackgroundTaskShutdownAndObservability:
             def blocked_inspect(class_name):
                 calls.append("inspect")
                 observation_entered.set()
-                observation_release.wait(timeout=0.4)
-                return original_inspect(class_name)
+                try:
+                    assert observation_release.wait(timeout=5)
+                    return original_inspect(class_name)
+                finally:
+                    observation_exited.set()
 
             monkeypatch.setattr(
                 mgr._coordinator,
@@ -2457,8 +2461,11 @@ class TestBackgroundTaskShutdownAndObservability:
             def blocked_observe(status, *, operation_kind):
                 calls.append("collector")
                 observation_entered.set()
-                observation_release.wait(timeout=0.4)
-                original_observe(status, operation_kind=operation_kind)
+                try:
+                    assert observation_release.wait(timeout=5)
+                    original_observe(status, operation_kind=operation_kind)
+                finally:
+                    observation_exited.set()
 
             monkeypatch.setattr(
                 observability,
@@ -2470,32 +2477,34 @@ class TestBackgroundTaskShutdownAndObservability:
         async def done(vws):
             return None
 
+        submitted = asyncio.create_task(
+            mgr.submit("c1", "u1", done, kind="background_chat")
+        )
         try:
-            task = await asyncio.wait_for(
-                mgr.submit("c1", "u1", done, kind="background_chat"),
-                timeout=0.15,
-            )
-            await asyncio.wait_for(
-                asyncio.to_thread(observation_entered.wait),
-                timeout=1,
-            )
+            assert await asyncio.to_thread(observation_entered.wait, 5)
+            task = await asyncio.wait_for(submitted, timeout=5)
+            observer = mgr._admission_observer_task
+            assert observer is not None and not observer.done()
             for _ in range(20):
                 await mgr._observe_admission()
+                assert mgr._admission_observer_task is observer
             await _collect(mgr)
+            assert not observation_release.is_set()
+            assert not observation_exited.is_set()
             assert task.status is TaskStatus.COMPLETED
             assert calls == [blocked_stage]
 
-            assert await asyncio.wait_for(
-                mgr.drain(timeout_seconds=0.05),
-                timeout=0.2,
-            ) == 0
+            assert await mgr.drain(timeout_seconds=0.05) == 0
+            assert not observation_release.is_set()
+            assert not observation_exited.is_set()
             assert (
                 mgr._admission_observer_task is None
                 or mgr._admission_observer_task.done()
             )
         finally:
             observation_release.set()
-            await asyncio.sleep(0)
+            assert await asyncio.to_thread(observation_exited.wait, 5)
+            await asyncio.wait_for(submitted, timeout=5)
 
     @pytest.mark.asyncio
     @_REQUIRES_BG_CONTINUITY

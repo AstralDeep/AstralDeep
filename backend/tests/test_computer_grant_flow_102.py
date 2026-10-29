@@ -538,8 +538,9 @@ async def test_browser_navigation_to_a_refused_url_never_gets_a_card(task_runtim
     orch, *_ = task_runtime
     await _mac(task_runtime, remote=True)
     response = await _call(task_runtime, "browser_navigate", url="javascript:alert(1)")
-    assert "url_rejected" in json.dumps(response.result)
-    assert not [c for c in response.ui_components if c.get("type") == "card"]
+    assert response.error and "url_rejected" in response.error["message"]
+    assert "confirmation_required" not in json.dumps(response.result)
+    assert not [c for c in (response.ui_components or []) if c.get("type") == "card"]
 
 
 def test_task_origin_carries_an_audit_task_id(task_runtime):

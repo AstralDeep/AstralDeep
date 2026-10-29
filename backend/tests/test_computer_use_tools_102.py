@@ -516,3 +516,31 @@ async def test_run_command_refuses_when_the_host_review_is_not_current(world, mo
     monkeypatch.setattr(terminal_host_review, "computer_use_review_current", lambda _orch: False)
     result = await world.call("run_command", command="ls", cwd=ROOT)
     assert result["_data"]["code"] == "security_blocked" and not world.requests("run_command")
+
+
+@pytest.mark.parametrize("state", ["not_started", "uncertain", None])
+async def test_host_typed_outcome_survives_the_mcp_error_boundary(world, state):
+    from agents.computer_use.mcp_server import MCPServer
+
+    error = {"code": "permission_denied", "message": "synthetic host denial"}
+    if state is not None:
+        error["effect_state"] = state
+    world.replies["write_file"] = {"ok": False, "error": error}
+    response = await asyncio.to_thread(MCPServer().process_request, MCPRequest(
+        method="tools/call", params={"name": "write_file", "arguments": {
+            **CTX, "path": ROOT + "/notes.md", "content": "safe"}}))
+    assert response.error["code"] == "permission_denied"
+    assert response.error.get("effect_state") == ("not_started" if state == "not_started" else None)
+
+
+async def test_file_effect_rechecks_the_current_host_roots(world):
+    world.host.descriptor["workspace_roots"] = [{"name": "other", "path": ROOT + "-other"}]
+    response = await world.call("write_file", path=ROOT + "/notes.md", content="safe")
+    assert response["_data"]["code"] == "path_outside_workspace"
+    assert response["_data"]["effect_state"] == "not_started" and not world.requests("write_file")
+
+
+async def test_file_effect_does_not_reinterpret_relative_reviewed_arguments(world):
+    response = await world.call("write_file", path="notes.md", content="safe")
+    assert response["_data"]["code"] == "path_outside_workspace"
+    assert response["_data"]["effect_state"] == "not_started" and not world.requests("write_file")
