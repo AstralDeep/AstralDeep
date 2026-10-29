@@ -15724,10 +15724,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 break
                             if worker_state.status == "success":
                                 goal_checkpoint_tools = goal_progress.tool_count
-                                from orchestrator.goal_auto_verify import verify_python_project
+                                from orchestrator.goal_auto_verify import verify_local_project
                                 await self._send_chat_status(websocket, "executing", "Checking the project on this Mac…")
                                 try:
-                                    goal_auto_refs = await verify_python_project(
+                                    goal_auto_refs = await verify_local_project(
                                         self, websocket, goal_progress, goal_project, goal_contract,
                                         tool_to_agent, tool_to_unqualified, chat_id, user_id, task=task,
                                     )
