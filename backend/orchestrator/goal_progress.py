@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import posixpath
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -16,6 +17,8 @@ _MAX_CALLS = 256
 _MAX_FAILURES = 256
 _MAX_VALUE_TEXT = 512
 _SENSITIVE_KEYS = re.compile(r"(credential|password|secret|token|authorization|api.?key|image|base64|audio|binary|blob)", re.I)
+_SENSITIVE_TEXT = re.compile(r"(?:credential|password|secret|token|authorization|api.?key)\s*(?:[:=]|\s)", re.I)
+_SENSITIVE_ARG = re.compile(r"(?:^|[-_])(?:credential|password|secret|token|authorization|api.?key)(?:$|=)", re.I)
 _BASE64_TEXT = re.compile(r"^[A-Za-z0-9+/]{80,}={0,2}$")
 _TERMINAL_JOB_STATES = frozenset({"exited", "timed_out", "interrupted"})
 _UNCERTAIN_CODES = frozenset({"uncertain", "outcome_uncertain", "effect_uncertain"})
@@ -48,6 +51,7 @@ class GoalProgress:
     _failure_overflow: int = field(default=0, init=False, repr=False)
     _unresolved_unknown: dict[str, dict[str, Any]] = field(default_factory=dict, init=False, repr=False)
     _unknown_overflow: int = field(default=0, init=False, repr=False)
+    _private_observations: list[dict[str, Any]] = field(default_factory=list, init=False, repr=False)
 
     def __init__(self, request: str) -> None:
         if not isinstance(request, str):
@@ -69,6 +73,7 @@ class GoalProgress:
         self._failure_overflow = 0
         self._unresolved_unknown = {}
         self._unknown_overflow = 0
+        self._private_observations = []
 
     @property
     def request(self) -> str:
@@ -82,7 +87,18 @@ class GoalProgress:
     def requires_inspection(self) -> bool:
         return bool(self._uncertain_result or self._unresolved_unknown or self._unknown_overflow)
 
-    def record(self, tool_call_id: str, tool_name: str, arguments: str | dict, result: object) -> None:
+    def record(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        arguments: str | dict,
+        result: object,
+        *,
+        agent_id: str | None = None,
+        computer_id: str | None = None,
+        computer_name: str | None = None,
+        project_context: dict[str, Any] | None = None,
+    ) -> None:
         self.tool_count += 1
         self._no_tool_continues = 0
         args = self._arguments(arguments)
@@ -93,6 +109,15 @@ class GoalProgress:
         call_id = str(tool_call_id)[:128]
         fingerprint = self._fingerprint(tool_name, args)
         completed = self._completed(tool_name, data, outcome)
+        observation_args = self._observation_arguments(tool_name, args)
+        observation_result = self._observation_result(tool_name, data)
+        context = project_context if isinstance(project_context, dict) else {}
+        identity = {
+            "agent_id": self._bounded_identity(agent_id),
+            "computer_id": self._bounded_identity(computer_id if computer_id is not None else context.get("computer_id")),
+            "computer_name": self._bounded_identity(computer_name if computer_name is not None else context.get("computer_name")),
+            "project_id": self._bounded_identity(context.get("project_id")),
+        }
         failure_signature = json.dumps([tool_name, self._safe(args), self._safe(data), self._safe(error)], sort_keys=True, separators=(",", ":"))
         if outcome == "failure":
             if failure_signature == self._last_failure:
@@ -126,6 +151,9 @@ class GoalProgress:
                         "fingerprint": fingerprint,
                         "sequence": self._sequence,
                         "tool": str(tool_name)[:128],
+                        "arguments": observation_args,
+                        "result": observation_result,
+                        **identity,
                     }
                 else:
                     self._failure_overflow += 1
@@ -136,17 +164,24 @@ class GoalProgress:
                         "fingerprint": fingerprint,
                         "sequence": self._sequence,
                         "tool": str(tool_name)[:128],
+                        "arguments": observation_args,
+                        "result": observation_result,
+                        **identity,
                     }
                 else:
                     self._unknown_overflow += 1
         elif outcome == "success" and completed:
             for failed_id, failure in tuple(self._unresolved_failures.items()):
-                if failure["fingerprint"] == fingerprint and failure["sequence"] < self._sequence:
+                if (failure["fingerprint"] == fingerprint and failure["sequence"] < self._sequence
+                        and self._same_identity(failure, identity)):
                     del self._unresolved_failures[failed_id]
             self._successful_calls[call_id] = {
                 "sequence": self._sequence,
                 "tool": str(tool_name)[:128],
                 "fingerprint": fingerprint,
+                "arguments": observation_args,
+                "result": observation_result,
+                **identity,
             }
             if len(self._successful_calls) > _MAX_CALLS:
                 del self._successful_calls[next(iter(self._successful_calls))]
@@ -160,6 +195,18 @@ class GoalProgress:
         })
         if len(self._call_outcomes) > _MAX_CALLS:
             del self._call_outcomes[:-_MAX_CALLS]
+        self._private_observations.append({
+            "call_id": call_id,
+            "tool": str(tool_name)[:128],
+            **identity,
+            "arguments": observation_args,
+            "result": observation_result,
+            "outcome": outcome,
+            "completed": completed,
+            "sequence": self._sequence,
+        })
+        if len(self._private_observations) > _MAX_CALLS:
+            del self._private_observations[:-_MAX_CALLS]
         item = {
             "call_id": call_id,
             "tool": str(tool_name)[:128],
@@ -197,6 +244,19 @@ class GoalProgress:
                 for call_id, item in self._successful_calls.items()
             ],
         }
+
+    def private_observations(self) -> list[dict[str, Any]]:
+        return [
+            {
+                **item,
+                "arguments": {
+                    key: list(value) if isinstance(value, list) else value
+                    for key, value in item["arguments"].items()
+                },
+                "result": dict(item["result"]),
+            }
+            for item in self._private_observations
+        ]
 
     def assess(self, decision: CompletionDecision) -> CompletionDecision:
         if self._stalled:
@@ -253,9 +313,128 @@ class GoalProgress:
             unknown = self._unresolved_unknown.get(failed_id)
             success = self._successful_calls.get(success_id)
             unresolved = failure or unknown
-            if unresolved and success and success["sequence"] > unresolved["sequence"]:
+            if unresolved and success and self._resolution_matches(unresolved, success, unknown=unknown is not None):
                 self._unresolved_failures.pop(failed_id, None)
                 self._unresolved_unknown.pop(failed_id, None)
+
+    @staticmethod
+    def _resolution_matches(unresolved: dict[str, Any], success: dict[str, Any], *, unknown: bool) -> bool:
+        if success["sequence"] <= unresolved["sequence"]:
+            return False
+        if not GoalProgress._same_identity(unresolved, success):
+            return False
+        file_effect = unresolved["tool"] in {"write_file", "delete_path", "read_file"}
+        if unresolved["fingerprint"] == success["fingerprint"] and not (unknown and file_effect):
+            return True
+        tool = unresolved["tool"]
+        if file_effect:
+            if not unknown or tool == "delete_path":
+                return False
+            if success["tool"] != "read_file" or success["result"].get("truncated") is True:
+                return False
+            if success["result"].get("has_meaningful_content") is not True:
+                return False
+            same_path = GoalProgress._same_path(
+                unresolved["arguments"].get("path"), unresolved["arguments"].get("cwd"),
+                success["arguments"].get("path"), success["arguments"].get("cwd"),
+            )
+            if tool == "write_file":
+                expected_digest = unresolved["arguments"].get("content_sha256")
+                return (same_path and isinstance(expected_digest, str)
+                        and success["result"].get("content_sha256") == expected_digest)
+            return same_path
+        if tool == "run_command":
+            original_result = unresolved["result"]
+            job_id = original_result.get("job_id")
+            return (
+                original_result.get("background") is True
+                and isinstance(job_id, str) and bool(job_id)
+                and success["tool"] == "read_output"
+                and success["arguments"].get("job_id") == job_id
+                and success["result"].get("job_id", job_id) == job_id
+                and success["result"].get("state", success["result"].get("status")) == "exited"
+                and success["result"].get("exit_code") == 0
+            )
+        if tool == "read_output":
+            job_id = unresolved["arguments"].get("job_id")
+            return (
+                isinstance(job_id, str) and bool(job_id)
+                and success["tool"] == "read_output"
+                and success["arguments"].get("job_id") == job_id
+                and success["result"].get("job_id", job_id) == job_id
+                and success["result"].get("state", success["result"].get("status")) == "exited"
+                and success["result"].get("exit_code") == 0
+            )
+        return False
+
+    @staticmethod
+    def _same_identity(first: dict[str, Any], second: dict[str, Any]) -> bool:
+        return all(first.get(key) == second.get(key)
+                   for key in ("agent_id", "computer_id", "computer_name", "project_id"))
+
+    @staticmethod
+    def _same_path(first: Any, first_cwd: Any, second: Any, second_cwd: Any) -> bool:
+        if not all(isinstance(path, str) and path for path in (first, second)):
+            return False
+        def canonical(path: str, cwd: Any) -> str:
+            if not posixpath.isabs(path):
+                if not isinstance(cwd, str) or not posixpath.isabs(cwd):
+                    return ""
+                path = posixpath.join(cwd, path)
+            return posixpath.normpath(path)
+        first_path = canonical(first, first_cwd)
+        second_path = canonical(second, second_cwd)
+        return bool(first_path and second_path and first_path == second_path)
+
+    @staticmethod
+    def _bounded_identity(value: Any) -> str | None:
+        return value[:128] if isinstance(value, str) and value else None
+
+    @classmethod
+    def _observation_arguments(cls, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+        allowed = {"cwd", "argv", "command", "path", "job_id", "computer"}
+        observed = {}
+        for key in allowed:
+            value = args.get(key)
+            if isinstance(value, str):
+                if not _SENSITIVE_TEXT.search(value):
+                    observed[key] = value[:512]
+            elif key == "argv" and isinstance(value, list):
+                argv = [item[:512] if isinstance(item, str) else cls._safe(item) for item in value[:32]]
+                if not any(isinstance(item, str) and (_SENSITIVE_TEXT.search(item) or _SENSITIVE_ARG.search(item)) for item in argv):
+                    observed[key] = argv
+        if tool_name == "write_file" and isinstance(args.get("content"), str):
+            encoded = args["content"].encode("utf-8")
+            observed["content_sha256"] = hashlib.sha256(encoded).hexdigest()
+            observed["content_size"] = len(encoded)
+        return observed
+
+    @classmethod
+    def _observation_result(cls, tool_name: str, data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            return {}
+        allowed = {"cwd", "path", "computer", "exit_code", "timed_out", "signal", "state", "status", "background", "job_id", "truncated", "size", "count", "has_entries", "bytes", "bytes_written"}
+        observed = {}
+        for key in allowed:
+            value = data.get(key)
+            if isinstance(value, (str, int, float, bool)):
+                observed[key] = value[:512] if isinstance(value, str) else value
+        if tool_name == "read_file":
+            content = next((data[key] for key in ("text", "source", "content", "code")
+                            if key in data and cls._meaningful_content(data[key])), None)
+            observed["has_meaningful_content"] = cls._meaningful_content(content)
+            if isinstance(content, str):
+                observed["content_sha256"] = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            observed["truncated"] = bool(data.get("truncated", data.get("was_truncated", False)))
+        return observed
+
+    @staticmethod
+    def _meaningful_content(value: Any) -> bool:
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, (list, dict)):
+            return bool(value)
+        return False
 
     @staticmethod
     def _fingerprint(tool_name: str, args: dict[str, Any]) -> str:

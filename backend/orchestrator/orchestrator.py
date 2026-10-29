@@ -15295,6 +15295,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
             goal_progress = None
             goal_project = None
+            goal_contract = None
             goal_anchor = None
             goal_stop_reason = None
             goal_truncations = 0
@@ -15470,6 +15471,28 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                 if goal_anchor is not None and not any(item is goal_anchor for item in messages):
                     messages.append(goal_anchor)
+
+                if goal_progress is not None and goal_contract is None:
+                    from orchestrator.goal_verification import classify_goal
+
+                    try:
+                        goal_contract = await classify_goal(self, websocket, goal_progress.request, goal_project, chat_id)
+                        if self.cancelled_sessions.get(id(websocket)):
+                            continue
+                        if task:
+                            await self.task_manager.assert_current_execution(task)
+                        if goal_contract.blocked_reason:
+                            goal_stop_reason = goal_contract.blocked_reason
+                            break
+                        goal_anchor["content"] += "\nFrozen completion requirements: " + json.dumps({
+                            "kind": goal_contract.kind, "required_categories": goal_contract.required_categories,
+                        })
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.warning("goal.requirements_failed chat=%s", chat_id, exc_info=True)
+                        goal_stop_reason = "The requested outcome could not be classified for verified execution."
+                        break
 
                 call_feature = "chat_dispatch_text_only" if is_text_only else "tool_dispatch"
                 _phase_recorder = self._chat_recorders.get(id(websocket))
@@ -15681,6 +15704,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             goal_progress.record(
                                 call.id, canonical_name, call.function.arguments,
                                 tool_results[index] if index < len(tool_results) else None,
+                                agent_id=tool_to_agent.get(call.function.name), project_context=goal_project,
                             )
                     _tools_used += len(_turn_tools)
                     for _i, _tc in enumerate(llm_msg.tool_calls):
@@ -15847,20 +15871,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         content = "I'm not sure how to help with that."
 
                     if goal_progress is not None:
-                        from orchestrator.goal_progress import CompletionDecision, parse_completion
-                        from orchestrator.goal_verification import review_messages
+                        from orchestrator.goal_progress import CompletionDecision
+                        from orchestrator.goal_requirements import validate_goal_proofs
+                        from orchestrator.goal_verification import parse_review, review_messages
 
                         await self._send_chat_status(websocket, "thinking", "Verifying the requested outcome…")
                         try:
                             review, review_usage = await self._call_llm(
-                                websocket, review_messages(goal_progress, content, goal_project),
+                                websocket, review_messages(goal_progress, content, goal_project, goal_contract),
                                 tools_desc=None, temperature=0, feature="goal_verification",
                                 allow_stream=False,
                             )
                             self._accumulate_usage(chat_id, review_usage)
                             if getattr(review, "_astral_finish_reason", None) in {"length", "content_filter"}:
                                 raise ValueError("completion evaluation was incomplete")
-                            decision = parse_completion(getattr(review, "content", None))
+                            decision, proof_references = parse_review(getattr(review, "content", None))
                         except asyncio.CancelledError:
                             raise
                         except Exception:
@@ -15870,6 +15895,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             continue
                         if task:
                             await self.task_manager.assert_current_execution(task)
+                        if decision.status == "complete":
+                            current_project = await project_goal_context(self, websocket, user_id, chat_id)
+                            if self.cancelled_sessions.get(id(websocket)):
+                                continue
+                            if task:
+                                await self.task_manager.assert_current_execution(task)
+                            if goal_contract.kind == "local_project" and current_project != goal_project:
+                                decision = CompletionDecision("blocked", reason="The selected project's folder authority changed before verification.")
+                            else:
+                                proof = validate_goal_proofs(goal_contract, proof_references, goal_progress.private_observations(), current_project)
+                                if not proof.accepted:
+                                    decision = CompletionDecision("continue", (
+                                        "Provide real successful tool evidence for the frozen outcome requirements: "
+                                        + json.dumps({"missing": proof.missing, "invalid": proof.invalid}),
+                                    ))
                         decision = goal_progress.assess(decision)
                         logger.info("goal.review chat=%s status=%s tools=%d", chat_id, decision.status, goal_progress.tool_count)
                         if decision.status == "continue":

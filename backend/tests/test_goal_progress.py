@@ -1,6 +1,7 @@
 """Tests the request-scoped completion controller that guards verifier decisions."""
 
 import json
+import hashlib
 from types import SimpleNamespace
 
 import pytest
@@ -123,6 +124,25 @@ def test_successful_retry_of_the_same_parsed_invocation_resolves_failure():
     assert progress.assess(_completion()).status == "complete"
 
 
+@pytest.mark.parametrize("retry_context", [
+    {"agent_id": "agent-2"},
+    {"computer_id": "computer-2", "computer_name": "workspace"},
+    {"computer_id": "computer-1", "computer_name": "workspace", "project_context": {"project_id": "project-2"}},
+])
+def test_same_invocation_retry_from_different_trusted_identity_does_not_clear_failure(retry_context):
+    progress = GoalProgress("Run a process")
+    original_context = {"agent_id": "agent-1", "computer_id": "computer-1", "computer_name": "workspace",
+                        "project_context": {"project_id": "project-1"}}
+    progress.record("failed-call", "run_command", {"argv": ["cmd", "x"]}, SimpleNamespace(
+        error=None, result={"_data": {"exit_code": 2, "timed_out": False}}), **original_context)
+    context = {**original_context, **retry_context}
+    progress.record("retry-call", "run_command", {"argv": ["cmd", "x"]}, SimpleNamespace(
+        error=None, result={"_data": {"exit_code": 0, "timed_out": False}}), **context)
+
+    assert "failed-call" in progress.evidence()["unresolved_failures"]
+    assert progress.assess(_completion()).status == "continue"
+
+
 def test_unrelated_success_does_not_resolve_failed_call():
     progress = GoalProgress("Look up a source")
     progress.record("failed-call", "search", {"query": "first source"}, _failed())
@@ -131,13 +151,27 @@ def test_unrelated_success_does_not_resolve_failed_call():
     assert progress.assess(_completion()).status == "continue"
 
 
-def test_explicit_resolution_accepts_later_successful_alternate_evidence():
+def test_explicit_resolution_rejects_later_successful_alternate_evidence():
     progress = GoalProgress("Look up a source")
     progress.record("failed-call", "search", {"query": "first source"}, _failed())
     progress.record("success-call", "search", {"query": "alternate source"}, SimpleNamespace(
         error=None, result={"_data": {"items": ["source"]}}))
     decision = CompletionDecision("complete", resolutions=(("failed-call", "success-call"),))
-    assert progress.assess(decision).status == "complete"
+    assert progress.assess(decision).status == "continue"
+    assert "failed-call" in progress.evidence()["unresolved_failures"]
+
+
+def test_explicit_resolution_cannot_clear_failed_command_with_unrelated_command():
+    progress = GoalProgress("Run the required verification command")
+    progress.record("failed-call", "run_command", {"argv": ["make", "verify"]}, SimpleNamespace(
+        error=None, result={"_data": {"exit_code": 1, "timed_out": False}}))
+    progress.record("unrelated-success", "run_command", {"argv": ["echo", "done"]}, SimpleNamespace(
+        error=None, result={"_data": {"exit_code": 0, "timed_out": False}}))
+
+    decision = CompletionDecision("complete", resolutions=(("failed-call", "unrelated-success"),))
+
+    assert progress.assess(decision).status == "continue"
+    assert "failed-call" in progress.evidence()["unresolved_failures"]
 
 
 def test_resolution_metadata_survives_tool_evidence_tail_truncation():
@@ -152,7 +186,7 @@ def test_resolution_metadata_survives_tool_evidence_tail_truncation():
     assert len(evidence["tools"]) == 64
     assert "success-call" in {item["call_id"] for item in evidence["completed_successes"]}
     assert "failed-call" in evidence["unresolved_failures"]
-    assert progress.assess(CompletionDecision("complete", resolutions=(("failed-call", "success-call"),))).status == "complete"
+    assert progress.assess(CompletionDecision("complete", resolutions=(("failed-call", "success-call"),))).status == "continue"
 
 
 def test_failed_call_id_cannot_resolve_itself_after_later_reuse():
@@ -418,16 +452,156 @@ def test_unknown_tracking_overflow_still_prevents_completion():
 
 def test_unknown_result_requires_explicit_later_verification_to_resolve():
     progress = GoalProgress("Inspect and verify a result")
-    progress.record("unknown-call", "write_file", {"path": "result.py"}, None)
+    progress.record("unknown-call", "write_file", {"path": "/workspace/result.py", "content": "print('ready')"}, None)
     assert progress.requires_inspection is True
-    progress.record("inspection-call", "read_file", {"path": "result.py"}, SimpleNamespace(
-        error=None, result={"_data": {"source": "print('ready')"}}))
+    progress.record("inspection-call", "read_file", {"path": "/workspace/result.py"}, SimpleNamespace(
+        error=None, result={"_data": {"path": "/workspace/result.py", "source": "print('ready')", "truncated": False}}))
 
     decision = CompletionDecision("complete", resolutions=(("unknown-call", "inspection-call"),))
 
     assert progress.assess(decision).status == "complete"
     assert progress.evidence()["unresolved_unknown"] == []
     assert progress.requires_inspection is False
+
+
+def test_unknown_effect_resolution_accepts_same_canonical_path_and_context():
+    progress = GoalProgress("Inspect and verify a result")
+    progress.record("unknown-call", "write_file", {"path": "result.py", "cwd": "/workspace/project", "content": "ready"}, None,
+                    agent_id="agent-1", computer_id="computer-1", computer_name="workspace",
+                    project_context={"project_id": "project-1"})
+    progress.record("inspection-call", "read_file", {"path": "/workspace/project/./result.py"}, SimpleNamespace(
+        error=None, result={"_data": {"path": "/workspace/project/result.py", "text": "ready", "truncated": False}}),
+        agent_id="agent-1", computer_id="computer-1", computer_name="workspace",
+        project_context={"project_id": "project-1"})
+
+    decision = CompletionDecision("complete", resolutions=(("unknown-call", "inspection-call"),))
+
+    assert progress.assess(decision).status == "complete"
+
+
+def test_unknown_write_effect_requires_inspected_content_to_match_requested_content():
+    progress = GoalProgress("Write and verify a file")
+    progress.record("unknown-call", "write_file", {"path": "/workspace/result.py", "content": "new content"}, None)
+    progress.record("inspection-call", "read_file", {"path": "/workspace/result.py"}, SimpleNamespace(
+        error=None, result={"_data": {"path": "/workspace/result.py", "text": "old content", "truncated": False}}))
+
+    decision = CompletionDecision("complete", resolutions=(("unknown-call", "inspection-call"),))
+
+    assert progress.assess(decision).status == "continue"
+
+
+def test_unknown_delete_cannot_be_resolved_by_reading_existing_path():
+    progress = GoalProgress("Delete a file")
+    progress.record("unknown-delete", "delete_path", {"path": "/workspace/result.py"}, None)
+    progress.record("inspection-call", "read_file", {"path": "/workspace/result.py"}, SimpleNamespace(
+        error=None, result={"_data": {"path": "/workspace/result.py", "text": "still exists", "truncated": False}}))
+
+    decision = CompletionDecision("complete", resolutions=(("unknown-delete", "inspection-call"),))
+
+    assert progress.assess(decision).status == "continue"
+
+
+def test_failed_file_call_cannot_be_waived_by_inspecting_existing_contents():
+    progress = GoalProgress("Write and verify a file")
+    progress.record("failed-write", "write_file", {"path": "/workspace/result.py", "content": "new"}, _failed(),
+                    agent_id="computer-use-1", computer_id="computer-1", computer_name="workspace",
+                    project_context={"project_id": "project-1"})
+    progress.record("inspection-call", "read_file", {"path": "/workspace/result.py"}, SimpleNamespace(
+        error=None, result={"_data": {"path": "/workspace/result.py", "text": "old", "size": 3, "truncated": False,
+                                        "computer": "workspace"}}),
+        agent_id="computer-use-1", computer_id="computer-1", computer_name="workspace",
+        project_context={"project_id": "project-1"})
+
+    decision = CompletionDecision("complete", resolutions=(("failed-write", "inspection-call"),))
+
+    assert progress.assess(decision).status == "continue"
+
+
+def test_unknown_effect_resolution_rejects_different_execution_context():
+    progress = GoalProgress("Inspect and verify a result")
+    progress.record("unknown-call", "write_file", {"path": "result.py"}, None,
+                    agent_id="agent-1", computer_id="computer-1", computer_name="workspace")
+    progress.record("inspection-call", "read_file", {"path": "result.py"}, SimpleNamespace(
+        error=None, result={"_data": {"path": "result.py", "text": "ready", "truncated": False}}),
+        agent_id="agent-2", computer_id="computer-1", computer_name="workspace")
+
+    decision = CompletionDecision("complete", resolutions=(("unknown-call", "inspection-call"),))
+
+    assert progress.assess(decision).status == "continue"
+
+
+def test_background_command_resolution_requires_same_observed_job():
+    progress = GoalProgress("Run a background command")
+    progress.record("failed-call", "run_command", {"argv": ["make", "verify"]}, SimpleNamespace(
+        error={"code": "timeout"}, result={"_data": {"background": True, "job_id": "job-1"}}),
+        agent_id="agent-1", computer_id="computer-1", computer_name="workspace")
+    progress.record("poll-call", "read_output", {"job_id": "job-1"}, SimpleNamespace(
+        error=None, result={"_data": {"job_id": "job-1", "state": "exited", "exit_code": 0}}),
+        agent_id="agent-1", computer_id="computer-1", computer_name="workspace")
+
+    decision = CompletionDecision("complete", resolutions=(("failed-call", "poll-call"),))
+
+    assert progress.assess(decision).status == "complete"
+
+
+def test_private_observations_are_bounded_structural_and_separate_from_public_evidence():
+    progress = GoalProgress("Inspect a file")
+    secret_text = "unique-private-source-content"
+    progress.record("inspection-call", "read_file", {"path": "result.py", "cwd": "/workspace", "unneeded": secret_text},
+                    SimpleNamespace(error=None, result={"_data": {"path": "result.py", "text": secret_text,
+                                                                      "truncated": False, "size": 29}}),
+                    agent_id="agent-1", computer_id="computer-1", computer_name="workspace",
+                    project_context={"project_id": "project-1"})
+
+    observations = progress.private_observations()
+    assert observations == [{
+        "call_id": "inspection-call", "tool": "read_file", "agent_id": "agent-1",
+        "computer_id": "computer-1", "computer_name": "workspace", "project_id": "project-1",
+        "arguments": {"path": "result.py", "cwd": "/workspace"},
+        "result": {"path": "result.py", "truncated": False, "size": 29, "has_meaningful_content": True,
+                   "content_sha256": hashlib.sha256(secret_text.encode()).hexdigest()},
+        "outcome": "success", "completed": True, "sequence": 1,
+    }]
+    assert secret_text not in repr(observations)
+
+
+def test_private_observation_copies_nested_arguments_and_omits_secret_bearing_commands():
+    progress = GoalProgress("Run a command")
+    progress.record("command-call", "run_command", {"argv": ["tool", "--token", "secret-value"]}, SimpleNamespace(
+        error=None, result={"_data": {"exit_code": 0}}))
+
+    observations = progress.private_observations()
+    assert observations[0]["arguments"] == {}
+    observations[0]["arguments"]["argv"] = ["caller-mutation"]
+    assert progress.private_observations()[0]["arguments"] == {}
+
+
+@pytest.mark.parametrize("verified_path, data", [
+    ("different.py", {"path": "different.py", "text": "print('ready')", "truncated": False}),
+    ("result.py", {"path": "result.py", "text": "partial", "truncated": True}),
+    ("result.py", {"path": "result.py", "text": "   ", "truncated": False}),
+])
+def test_unknown_file_effect_requires_meaningful_untruncated_same_path_inspection(verified_path, data):
+    progress = GoalProgress("Inspect and verify a result")
+    progress.record("unknown-call", "write_file", {"path": "result.py"}, None)
+    progress.record("inspection-call", "read_file", {"path": verified_path}, SimpleNamespace(
+        error=None, result={"_data": data}))
+
+    decision = CompletionDecision("complete", resolutions=(("unknown-call", "inspection-call"),))
+
+    assert progress.assess(decision).status == "continue"
+    assert "unknown-call" in progress.evidence()["unresolved_unknown"]
+
+
+def test_unknown_file_effect_cannot_resolve_relative_paths_without_known_cwd():
+    progress = GoalProgress("Inspect and verify a result")
+    progress.record("unknown-call", "write_file", {"path": "result.py", "content": "ready"}, None)
+    progress.record("inspection-call", "read_file", {"path": "result.py"}, SimpleNamespace(
+        error=None, result={"_data": {"path": "result.py", "text": "ready", "truncated": False}}))
+
+    decision = CompletionDecision("complete", resolutions=(("unknown-call", "inspection-call"),))
+
+    assert progress.assess(decision).status == "continue"
 
 
 @pytest.mark.parametrize("payload", [

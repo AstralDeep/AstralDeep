@@ -14,6 +14,12 @@ For a runnable project in a selected folder, code generation alone does not sati
 
 The completion evaluator returns strict JSON with `status` (`complete`, `continue`, `blocked`), `remaining`, and `reason`. Invalid evaluation cannot authorize completion. Deterministic code also prevents completion while command jobs are pending or effects uncertain, bounds repeated failures/prose-only continuation, and distinguishes budget exhaustion from success. Continuation stays inside the originating request and its existing cancellation fence; it does not replay a request or confer new authority.
 
+## Completion evidence contract
+
+Before execution, a separate bounded classification freezes whether the original request asks for information, an action, or a runnable local project. Informational requests can finish without tools; actions require a cited completed tool outcome. Runnable local projects require references for files, environment, dependencies, tests and startup. The verifier judges whether an actual command is relevant and meaningful, while deterministic validation requires every reference to name a real successful command or appropriate file operation from the originating request, computer-use agent, authorized host, project and folder. File operations cannot prove test or startup execution; pending background starts require a correlated later successful terminal observation. Current folder authority and cancellation are checked again immediately before accepting completion.
+
+Failure resolution cannot waive an invocation with an unrelated success. Retries retain the same invocation and trusted identity; background observations retain the same job. An unknown file write requires a same-path, untruncated read with a digest matching the requested bytes. Unknown deletions remain unresolved. The bounded classifier and evaluator still make semantic judgments; these guards establish observed execution and scope, without claiming a general proof that arbitrary software is correct.
+
 ## Scope and rollout
 
 Deep owns the request controller, evidence, project context, and evaluator integration. Existing tool, provider-disclosure, audit, project, confirmation, and Stop paths remain authoritative. No SQL migration, new primitive, or client protocol is required. A default-off `FF_GOAL_HARNESS` switch supports qualification and rollback; the sandbox will enable it for every ordinary request. A bounded configurable goal round budget replaces the small legacy budget only when enabled. No failed or incomplete request is marked completed.

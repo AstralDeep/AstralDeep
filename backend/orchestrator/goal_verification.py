@@ -2,6 +2,8 @@
 
 import json
 
+from orchestrator.goal_requirements import GOAL_CLASSIFIER_GUIDANCE, build_goal_contract, parse_goal_contract
+
 PLANNING_GUIDANCE = """Treat this request as an objective to achieve through execution and verification.
 Continue working after intermediate results; do not stop at a plan or instructions for the user to execute.
 Use independent tools in parallel only when their effects do not depend on each other.
@@ -31,15 +33,49 @@ recorded evidence. A background job starting, static code review, or unrelated a
 that a failed requested test passed. Leave unverified failures unresolved and continue their recovery.
 complete requires an empty remaining array; continue requires at least one remaining action;
 blocked requires a nonempty reason. Never claim an unobserved test, installation, or effect passed.
+For completion, also supply an evidence object mapping every frozen required category to a list of
+actual tool call IDs from this request. Informational answers use an empty evidence object.
+Local files may be proven by scoped file operations; environment, dependencies, tests and startup
+must cite completed successful commands on the selected project host and folder. A single command
+may cover multiple categories only when its actual invocation and observed output verify each one.
+An inspection may prove no dependencies need installation; explain that conclusion using its real
+command evidence. No-op commands, a canvas, another computer or an unrelated action cannot prove it.
+Do not change or remove the frozen requirements. Missing proof must produce continue or blocked.
 """
 
 
-def review_messages(progress, proposed_answer: str, project_context) -> list[dict]:
+async def classify_goal(orch, websocket, request, project_context, chat_id):
+    reply, usage = await orch._call_llm(
+        websocket, [
+            {"role": "system", "content": GOAL_CLASSIFIER_GUIDANCE},
+            {"role": "user", "content": json.dumps({"objective": request, "project": project_context}, ensure_ascii=False)},
+        ], tools_desc=None, temperature=0, feature="goal_requirements", allow_stream=False,
+    )
+    orch._accumulate_usage(chat_id, usage)
+    if getattr(reply, "_astral_finish_reason", None) in {"length", "content_filter"}:
+        raise ValueError("goal classification was incomplete")
+    return build_goal_contract(parse_goal_contract(getattr(reply, "content", None)).kind, project_context)
+
+
+def parse_review(text):
+    from orchestrator.goal_progress import parse_completion
+
+    if not isinstance(text, str) or len(text) > 4096:
+        raise ValueError("completion response must be bounded JSON text")
+    value = json.loads(text)
+    if not isinstance(value, dict):
+        raise ValueError("completion response must be a JSON object")
+    references = value.pop("evidence", {})
+    return parse_completion(json.dumps(value)), references
+
+
+def review_messages(progress, proposed_answer: str, project_context, contract=None) -> list[dict]:
     return [
         {"role": "system", "content": VERIFIER_GUIDANCE},
         {"role": "user", "content": json.dumps({
             "objective": progress.request,
             "project": project_context,
+            "requirements": {"kind": contract.kind, "required_categories": contract.required_categories} if contract else None,
             "observed_evidence": progress.evidence(),
             "proposed_answer": proposed_answer,
         }, ensure_ascii=False)},

@@ -51,6 +51,7 @@ _REQUIRED_IMPLEMENTATION = frozenset({
     "orchestrator/harness/selection_api.py",
     "orchestrator/async_tasks.py", "orchestrator/subtasks.py",
     "orchestrator/goal_progress.py", "orchestrator/goal_project_context.py",
+    "orchestrator/goal_requirements.py",
     "orchestrator/goal_verification.py", "orchestrator/conversation_publication.py",
     "orchestrator/history.py", "shared/feature_flags.py",
     "orchestrator/work_resume.py", "orchestrator/work_wake.py", "orchestrator/work_admission_api.py",

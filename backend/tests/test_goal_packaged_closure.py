@@ -11,6 +11,7 @@ from tests.test_harness_packaged_artifacts import manifest_fact
     "orchestrator/subtasks.py",
     "orchestrator/goal_progress.py",
     "orchestrator/goal_project_context.py",
+    "orchestrator/goal_requirements.py",
     "orchestrator/goal_verification.py",
     "orchestrator/conversation_publication.py",
     "orchestrator/history.py",

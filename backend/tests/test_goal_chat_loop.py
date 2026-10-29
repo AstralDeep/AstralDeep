@@ -24,6 +24,10 @@ orch = seams.orch
 
 @pytest.fixture
 def goal_orch(orch, monkeypatch):
+    from orchestrator import goal_verification
+    from orchestrator.goal_requirements import build_goal_contract
+
+    monkeypatch.setattr(goal_verification, "classify_goal", AsyncMock(return_value=build_goal_contract("informational")))
     monkeypatch.setitem(flags._flags, "goal_harness", True)
     monkeypatch.setitem(flags._flags, "typesafe_routing", False)
     monkeypatch.setitem(flags._flags, "designer_all_devices", False)
