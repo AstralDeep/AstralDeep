@@ -1259,8 +1259,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     "write_file": _entry(
         write_file, "Create a text file inside workspace_roots from list_computers or start_session. Existing files are refused by default. When a local-project task intends to replace an existing file, pass if_exists='overwrite' explicitly; this replaces that file's contents. Uses standing consent when available; otherwise reviews the exact path and diff once.",
         {"path": {"type": "string", "description": "Path inside workspace_roots; relative paths use the primary folder."},
-         "content": {"type": "string", "maxLength": 65536,
-                     "description": "UTF-8 text; maximum 256 KiB per write_file call. Prefer files no larger than 64 KiB UTF-8. Split larger source files into smaller modules instead of sending a very large file body."},
+         "content": {"type": "string", "maxLength": 262144,
+                     "description": "UTF-8 text; maximum 262144 characters and 256 KiB per write_file call. Prefer files no larger than 65536 bytes (64 KiB) UTF-8. Split larger source files into smaller modules instead of sending a very large file body."},
          "if_exists": {"type": "string", "enum": ["refuse", "overwrite"], "default": "refuse",
                        "description": "Existing files are refused by default. Pass overwrite only when replacing the existing file's contents is intended."}}, ["path", "content"]),
     "delete_path": _entry(

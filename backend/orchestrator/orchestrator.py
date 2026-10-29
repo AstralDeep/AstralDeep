@@ -19039,9 +19039,61 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             tool_name = tool_to_unqualified[llm_tool_name]
         else:
             tool_name = llm_tool_name
+        agent_id = tool_to_agent.get(llm_tool_name)
+        if agent_id is None and tool_to_agent:
+            wanted = llm_tool_name.replace("-", "_").lower()
+            matches = [k for k in tool_to_agent if k.replace("-", "_").lower() == wanted]
+            if len(matches) == 1:
+                logger.info("Tool name normalized: %r -> %r", llm_tool_name, matches[0])
+                llm_tool_name = matches[0]
+                tool_name = (tool_to_unqualified or {}).get(llm_tool_name, tool_name)
+                agent_id = tool_to_agent.get(llm_tool_name)
+        is_computer_write = agent_id == "computer-use-1" and tool_name == "write_file"
+        raw_arguments = tool_call.function.arguments
+
+        def invalid_write_arguments(message, *, missing_keys=(), limit_bytes=None):
+            error_data = {}
+            if missing_keys:
+                error_data["missing_keys"] = sorted(missing_keys)
+            if limit_bytes is not None:
+                error_data["limit_bytes"] = limit_bytes
+            return MCPResponse(error={
+                "code": "invalid_tool_arguments",
+                "message": message,
+                "retryable": True,
+                "effect_state": "not_started",
+                "data": error_data,
+            })
+
+        if is_computer_write:
+            from orchestrator.computer_use_policy import MAX_WRITE_BYTES
+
+            if not isinstance(raw_arguments, str):
+                return invalid_write_arguments(
+                    "The write_file call was not run because its arguments were not a JSON object. "
+                    "Provide a project path and string content. No file was changed."
+                )
+            try:
+                raw_argument_bytes = len(raw_arguments.encode("utf-8"))
+            except UnicodeError:
+                return invalid_write_arguments(
+                    "The write_file call was not run because its arguments were malformed. "
+                    "Provide valid JSON with a project path and string content. No file was changed."
+                )
+            if raw_argument_bytes > MAX_WRITE_BYTES * 6 + 4096:
+                return invalid_write_arguments(
+                    "The write_file arguments exceed the bounded request size. Split the source into "
+                    "smaller modules and retry; no file was changed.",
+                    limit_bytes=MAX_WRITE_BYTES,
+                )
         try:
-            args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+            args = json.loads(raw_arguments) if raw_arguments else {}
         except json.JSONDecodeError as _json_err:
+            if is_computer_write:
+                return invalid_write_arguments(
+                    "The write_file arguments were not run because they were invalid JSON. "
+                    "Provide a project path and string content. No file was changed."
+                )
             # Refuses bad args outright; never silently dispatches empty
             msg = (f"The arguments for '{tool_name}' were not valid JSON "
                    f"({str(_json_err).splitlines()[0]}). Re-emit the tool "
@@ -19052,19 +19104,54 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             await self.send_ui_render(websocket, [alert.to_dict()])
             return MCPResponse(error={"message": msg, "retryable": True})
 
-        stream_params = dict(args)
+        if is_computer_write:
+            from agents.computer_use.mcp_tools import TOOL_REGISTRY
+            from orchestrator.computer_use_policy import MAX_WRITE_BYTES
+            from jsonschema import Draft202012Validator
 
-        agent_id = tool_to_agent.get(llm_tool_name)
-        if agent_id is None and tool_to_agent:
-            wanted = llm_tool_name.replace("-", "_").lower()
-            matches = [k for k in tool_to_agent
-                       if k.replace("-", "_").lower() == wanted]
-            if len(matches) == 1:
-                logger.info(
-                    "Tool name normalized: %r -> %r", llm_tool_name, matches[0])
-                llm_tool_name = matches[0]
-                tool_name = (tool_to_unqualified or {}).get(llm_tool_name, tool_name)
-                agent_id = tool_to_agent.get(llm_tool_name)
+            if type(args) is not dict:
+                return invalid_write_arguments(
+                    "The write_file call was not run because its arguments must be an object. "
+                    "Provide a project path and string content. No file was changed."
+                )
+            content = args.get("content")
+            if isinstance(content, str):
+                try:
+                    content_bytes = len(content.encode("utf-8"))
+                except UnicodeError:
+                    return invalid_write_arguments(
+                        "The write_file content is not valid UTF-8 text. No file was changed."
+                    )
+                if content_bytes > MAX_WRITE_BYTES:
+                    return invalid_write_arguments(
+                        "The write_file content exceeds 262144 UTF-8 bytes. Keep each write at or below "
+                        "65536 bytes when possible, split larger source into smaller modules, and retry. "
+                        "No file was changed.",
+                        limit_bytes=MAX_WRITE_BYTES,
+                    )
+            schema = TOOL_REGISTRY["write_file"]["input_schema"]
+            errors = sorted(
+                Draft202012Validator(schema).iter_errors(args),
+                key=lambda error: (list(error.path), error.validator or ""),
+            )
+            if errors:
+                missing_keys = ()
+                required_error = next((error for error in errors if error.validator == "required"), None)
+                if required_error is not None and isinstance(required_error.instance, dict):
+                    missing_keys = set(required_error.validator_value) - set(required_error.instance)
+                if missing_keys:
+                    return invalid_write_arguments(
+                        "The write_file call was not run because required fields are missing. "
+                        "Include the path inside the selected project and the file content; no file was changed.",
+                        missing_keys=missing_keys,
+                    )
+                return invalid_write_arguments(
+                    "The write_file arguments do not match the tool schema. Provide a valid project path, "
+                    "string content within the size limit, and a supported if_exists value. No file was changed.",
+                    limit_bytes=MAX_WRITE_BYTES,
+                )
+
+        stream_params = dict(args)
         from persistent_agents.dispatch_context import current_dispatch
         persistent_dispatch = current_dispatch()
         if persistent_dispatch is not None:

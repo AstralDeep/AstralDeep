@@ -15,7 +15,8 @@ def test_write_file_schema_explains_existing_file_behavior():
     assert "refused by default" in tool["description"]
     assert "if_exists='overwrite' explicitly" in tool["description"]
     assert "replacing the existing file's contents" in schema["description"]
-    assert content["maxLength"] * 4 <= MAX_WRITE_BYTES
+    assert content["maxLength"] == MAX_WRITE_BYTES
     assert "64 KiB" in content["description"]
     assert "256 KiB" in content["description"]
+    assert "262144 characters" in content["description"]
     assert "Split larger source files into smaller modules" in PLANNING_GUIDANCE
