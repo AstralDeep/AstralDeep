@@ -105,8 +105,9 @@ def build_worker_command(
     prompt = build_worker_prompt(objective, required_categories, root)
     argv = [
         worker_path, "exec", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check",
-        "-C", root, "-s", "danger-full-access", "-m", "gpt-6-luna",
-        "-c", "model_reasoning_effort=medium", "-",
+        "-C", root, "-s", "workspace-write",
+        "-c", "sandbox_workspace_write.network_access=true",
+        "-m", "gpt-6-luna", "-c", "model_reasoning_effort=medium", "-",
     ]
     if len(argv) > MAX_ARGV_ITEMS or any(len(value) > MAX_ARG_CHARS for value in argv):
         raise ValueError("worker argv exceeds the bounded computer-use command limits")

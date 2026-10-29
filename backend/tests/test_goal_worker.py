@@ -35,8 +35,9 @@ def test_command_uses_configured_absolute_cli_and_bounded_argv():
 
     assert result["argv"] == [
         "/opt/codex/bin/codex", "exec", "--ignore-user-config", "--ephemeral",
-        "--skip-git-repo-check", "-C", "/work/demo", "-s", "danger-full-access",
-        "-m", "gpt-6-luna", "-c", "model_reasoning_effort=medium", "-",
+        "--skip-git-repo-check", "-C", "/work/demo", "-s", "workspace-write",
+        "-c", "sandbox_workspace_write.network_access=true", "-m", "gpt-6-luna",
+        "-c", "model_reasoning_effort=medium", "-",
     ]
     assert result["cwd"] == "/work/demo"
     assert result["timeout_s"] == 600
