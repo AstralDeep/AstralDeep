@@ -2537,7 +2537,7 @@ class PlaneWorkAdmissionRepository:
                 converted = _to_plane_request(request)
                 if not self._plane_repository.has_admission_replay(tx, converted):
                     if prepared is _PREPARE_HARNESS:
-                        prepared = service.prepare_sync(owner_id)
+                        prepared = service.prepare_sync(owner_id, transaction=tx)
                     service.assert_current(tx, prepared)
                     converted = _to_plane_request(replace(request,
                         harness_selection=prepared.selection, harness_capture=prepared.capture))

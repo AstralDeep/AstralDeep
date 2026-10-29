@@ -6,6 +6,7 @@ as socket ingress without granting caller authority or replacing repositories.
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import asynccontextmanager, suppress
 from typing import Any, AsyncIterator
 from uuid import UUID
@@ -56,8 +57,11 @@ async def _run_sync(callback: Any, *args: Any, **kwargs: Any) -> Any:
     return result
 
 
-def _submit_and_claim(coordinator: WorkAdmissionCoordinator, request: OperationRequest) -> Any:
-    accepted = coordinator.submit(request)
+def _submit_and_claim(orch: Any, context: Any, frame: Any, request: OperationRequest) -> Any:
+    from orchestrator.harness.host_admission import submit_connection
+
+    coordinator = orch.work_admission
+    accepted = submit_connection(orch, context, frame, request)
     if not isinstance(accepted, AcceptedAdmission) or not accepted.accepted:
         raise FixtureAdmissionError("registered turn admission was refused")
     try:
@@ -104,16 +108,22 @@ async def admitted_registered_turn(
     generation = _generation(frame.get("connection_generation"))
     if generation != context.connection_generation:
         raise FixtureAdmissionError("registered turn connection generation changed")
+    raw = json.dumps(frame, sort_keys=True, separators=(",", ":"))
+    ingress_frame = orch._connection_frame(context, raw, frame)
+    if (ingress_frame is None
+            or ingress_frame.ingress_registration is None
+            or ingress_frame.authenticated_user_id != orch.ui_sessions[websocket].get("sub")):
+        raise FixtureAdmissionError("registered turn is not bound to the current socket owner")
     owner = OperationOwner(OwnerScope.CONNECTION, None, context.connection_scope_id)
-    request_generation = _generation(frame.get("request_generation"))
+    request_generation = _generation(ingress_frame.request_generation)
     request = OperationRequest(
-        operation_kind="chat_message", admission_class=AdmissionClass.INTERACTIVE,
-        owner=owner, submission_id=_generation(frame.get("submission_id")),
+        operation_kind="chat_message", admission_class=orch._connection_admission_class(ingress_frame),
+        owner=owner, submission_id=_generation(ingress_frame.submission_id),
         idempotency_namespace=None, idempotency_key=None, normalized_input_digest=None,
-        chat_id=frame.get("chat_id"), parent_operation_id=None,
+        chat_id=ingress_frame.chat_id, parent_operation_id=None,
         connection_generation=generation, request_generation=request_generation,
     )
-    claim, cancellation = await _settle_call(_submit_and_claim, coordinator, request)
+    claim, cancellation = await _settle_call(_submit_and_claim, orch, context, ingress_frame, request)
     if cancellation is not None:
         await _run_sync(
             coordinator.terminalize, claim.fence, state=OperationState.CANCELLED,

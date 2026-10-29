@@ -32,6 +32,7 @@ from orchestrator.tests.test_voice_bootstrap_065 import (
     _voice_turn,
 )
 from orchestrator.task_state import TaskState
+from orchestrator.ui_auth_renewal import subject_auth_snapshot
 from orchestrator.work_admission import (
     AdmissionClass,
     AdmissionClassConfig,
@@ -118,18 +119,25 @@ def _runtime(origin: Any) -> Orchestrator:
         return None
 
     async def claim(_context: Any, work: _ConnectionOperation):
+        fence = SimpleNamespace(
+            operation_id=work.operation_id,
+            execution_generation=1,
+            execution_lease_token=uuid.uuid4(),
+        )
+        operation = SimpleNamespace(
+            operation_id=work.operation_id,
+            chat_id=work.frame.chat_id,
+            request_generation=work.frame.request_generation,
+            owner=work.owner,
+            fence=fence,
+            lease_lost=False,
+            subject_auth_claims=work.subject_auth_claims,
+        )
+        _context.operations[work.operation_id] = operation
         return (
             SimpleNamespace(
-                operation=SimpleNamespace(
-                    operation_id=work.operation_id,
-                    chat_id=work.frame.chat_id,
-                    request_generation=work.frame.request_generation,
-                ),
-                fence=SimpleNamespace(
-                    operation_id=work.operation_id,
-                    execution_generation=1,
-                    execution_lease_token=uuid.uuid4(),
-                ),
+                operation=operation,
+                fence=fence,
             ),
             None,
         )
@@ -372,6 +380,29 @@ async def test_voice_dispatch_retains_exact_authority_then_scrubs() -> None:
     runtime = _runtime(origin)
     work = _work("voice_chat_message")
     context = _context(origin)
+    generation = str(context.connection_generation)
+    claims = {
+        "sub": USER_ID,
+        "iss": "https://issuer.example/realms/astral",
+        "azp": "astral-frontend",
+        "sid": "durable-session-065",
+        "jti": "durable-token-065",
+        "iat": 1_700_000_000,
+        "exp": 2_000_000_000,
+        "scope": ["openid", "profile"],
+        "realm_access": {"roles": ["user"]},
+        "resource_access": {"astral-frontend": {"roles": ["user"]}},
+        "groups": ["members"],
+        "preferred_username": "durable-user",
+        "_raw_token": RAW_TOKEN,
+        "_auth_connection_generation": generation,
+        "_auth_context_generation": generation,
+        "_auth_refresh_enabled": True,
+    }
+    work.auth_claims = dict(claims)
+    work.subject_auth_claims = subject_auth_snapshot(claims)
+    runtime.ui_sessions[origin] = dict(claims)
+    runtime._connection_contexts = {id(origin): context}
     completed: list[uuid.UUID] = []
     observed: dict[str, Any] = {}
 
@@ -444,8 +475,13 @@ async def test_voice_dispatch_retains_exact_authority_then_scrubs() -> None:
         assert isinstance(websocket, DurableUserTurnWebSocket)
         assert websocket is accepted_work.runtime_websocket
         assert websocket is not origin
-        assert runtime.ui_sessions[websocket] == accepted_work.auth_claims
-        assert runtime.ui_sessions[websocket] is not accepted_work.auth_claims
+        proxy_session = runtime.ui_sessions[websocket]
+        assert proxy_session is not accepted_work.auth_claims
+        assert "_raw_token" not in proxy_session
+        resolver = proxy_session["_subject_token_resolver"]
+        assert resolver is not None
+        runtime.ui_sessions[origin]["_raw_token"] = "renewed-during-operation"
+        assert resolver.resolve() == "renewed-during-operation"
         observed["socket"] = websocket
         observed["user_llm"] = await Orchestrator._resolve_llm_client_for(
             runtime, websocket
@@ -482,7 +518,7 @@ async def test_voice_dispatch_retains_exact_authority_then_scrubs() -> None:
     assert observed["system_llm"] == ("system-config", "system")
     assert observed["delegation"] == "attenuated-token"
     assert observed["exchange"] == (
-        RAW_TOKEN,
+        "renewed-during-operation",
         "agent-065",
         ["tool-065"],
         USER_ID,
@@ -2204,6 +2240,7 @@ async def test_llm_none_terminalizes_voice_when_task_state_machine_is_disabled(
     runtime._notify_phi_if_detected = notify_phi
     runtime._start_heartbeat = start_heartbeat
     runtime._call_llm = call_llm
+    runtime._typesafe_start_routing = AsyncMock(return_value=(None, None))
     runtime.send_ui_render = render
     work = _work("voice_chat_message")
     work.owner = owner

@@ -181,13 +181,18 @@ class UserLLMConfigStore:
         self._cache_put(user_id, value)
         return value
 
-    def capture_user_sync(self, user_id: str) -> CapturedUserLLMConfig | None:
+    def capture_user_sync(self, user_id: str, *, transaction=None) -> CapturedUserLLMConfig | None:
         try:
             _capture_user_row(None, user_id)
-            with self._repository.transaction() as transaction:
+            if transaction is not None:
                 sessions = self._repository.plane_runtime.repositories.history.sessions
                 sessions.bound_request_execution_waits(transaction)
                 row = self._repository.repository.get_user(transaction, owner_id=user_id)
+                return _capture_user_row(row, user_id)
+            with self._repository.transaction() as active_transaction:
+                sessions = self._repository.plane_runtime.repositories.history.sessions
+                sessions.bound_request_execution_waits(active_transaction)
+                row = self._repository.repository.get_user(active_transaction, owner_id=user_id)
                 return _capture_user_row(row, user_id)
         except Exception:
             raise UserConfigCaptureUnavailable("user_config_capture_unavailable") from None

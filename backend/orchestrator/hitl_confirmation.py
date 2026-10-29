@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import copy
 import hashlib
 import json
 import logging
 import re
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from urllib.parse import unquote, urlsplit
@@ -82,6 +84,21 @@ class PendingCall:
     review_connection: object = None
     review_connection_generation: object = None
     review_accepted: bool = False
+    goal_context: object = None
+    goal_call_token: str | None = None
+
+
+@dataclass(frozen=True)
+class GoalContinuation:
+    orchestrator: object
+    websocket: object
+    owner: str
+    chat: str
+    task: object
+    cancellation: object
+    progress: object
+    project: object
+    contract: object
 
 
 @dataclass(frozen=True)
@@ -104,6 +121,8 @@ class Approval:
 
 
 _APPROVAL = contextvars.ContextVar("hitl_approval", default=None)
+_GOAL_CALL_TOKEN = contextvars.ContextVar("hitl_goal_call_token", default=None)
+_GOAL_CONTINUATION = contextvars.ContextVar("hitl_goal_continuation", default=None)
 _SERVER_ARGUMENTS = frozenset({"_credentials", "_credentials_encrypted", "_session_llm_credentials",
                                "_delegation_token", "_cap_job_id"})
 _DESTINATION_FIELDS = frozenset({"to", "cc", "bcc", "recipient", "recipients", "email", "to_email",
@@ -190,6 +209,7 @@ def begin_task(orch, websocket, owner, chat) -> None:
     tasks = getattr(orch, "_hitl_task_origins", {})
     tasks.pop((owner, chat), None)
     tasks[(owner, chat)] = (websocket, SimpleNamespace(task_id=uuid.uuid4().hex))
+    getattr(orch, "_hitl_goal_contexts", {}).pop((owner, chat), None)
     while len(tasks) > 256:
         tasks.pop(next(iter(tasks)))
     orch._hitl_task_origins = tasks
@@ -202,6 +222,7 @@ def _task(orch, websocket, owner, chat):
 
 def cancel_pending(orch, websocket, owner, chat) -> None:
     getattr(orch, "_hitl_cancellation_witnesses", {}).pop((websocket, owner, chat), None)
+    getattr(orch, "_hitl_goal_contexts", {}).pop((owner, chat), None)
     pending = getattr(orch, "_hitl_pending_calls", {})
     for request_id, call in list(pending.items()):
         if (call.owner, call.chat, call.websocket) == (owner, chat, websocket):
@@ -225,6 +246,77 @@ def cancellation_witness(orch, websocket, owner, chat, *, create=False):
         orch._hitl_cancellation_witnesses = witnesses
         return witness
     return entry[0] if entry is not None else None
+
+
+def bind_goal_context(orch, websocket, owner, chat, progress, project, contract):
+    if (not isinstance(owner, str) or not owner or not isinstance(chat, str) or not chat
+            or not _attended(orch, websocket, owner)
+            or getattr(orch, "_ws_active_chat", {}).get(id(websocket)) != chat):
+        return None
+    task = _task(orch, websocket, owner, chat)
+    if task is None or getattr(orch, "cancelled_sessions", {}).get(id(websocket), False):
+        return None
+    cancellation = cancellation_witness(orch, websocket, owner, chat, create=True)
+    try:
+        frozen_project = copy.deepcopy(project)
+    except Exception:
+        return None
+    binding = GoalContinuation(orch, websocket, owner, chat, task, cancellation, progress,
+                               frozen_project, contract)
+    contexts = getattr(orch, "_hitl_goal_contexts", {})
+    contexts[(owner, chat)] = binding
+    while len(contexts) > 256:
+        contexts.pop(next(iter(contexts)))
+    orch._hitl_goal_contexts = contexts
+    return binding
+
+
+def _goal_context_current(binding) -> bool:
+    if not isinstance(binding, GoalContinuation):
+        return False
+    orch = binding.orchestrator
+    return (
+        _attended(orch, binding.websocket, binding.owner)
+        and _task(orch, binding.websocket, binding.owner, binding.chat) is binding.task
+        and getattr(orch, "_hitl_goal_contexts", {}).get((binding.owner, binding.chat)) is binding
+        and cancellation_witness(orch, binding.websocket, binding.owner, binding.chat) is binding.cancellation
+        and not getattr(orch, "cancelled_sessions", {}).get(id(binding.websocket), False)
+        and getattr(orch, "_ws_active_chat", {}).get(id(binding.websocket)) == binding.chat
+    )
+
+
+def current_goal_context(orch, websocket, owner, chat):
+    binding = _GOAL_CONTINUATION.get()
+    if (not isinstance(binding, GoalContinuation)
+            or (binding.orchestrator, binding.websocket, binding.owner, binding.chat)
+            != (orch, websocket, owner, chat)
+            or not _goal_context_current(binding)):
+        return None
+    return binding
+
+
+@contextmanager
+def goal_call_scope(token):
+    if not isinstance(token, str) or not token or len(token) > 128:
+        raise ValueError("goal call token must be a bounded non-empty string")
+    context_token = _GOAL_CALL_TOKEN.set(token)
+    try:
+        yield
+    finally:
+        _GOAL_CALL_TOKEN.reset(context_token)
+
+
+def current_goal_call_token():
+    return _GOAL_CALL_TOKEN.get()
+
+
+@contextmanager
+def _goal_continuation_scope(binding):
+    context_token = _GOAL_CONTINUATION.set(binding)
+    try:
+        yield
+    finally:
+        _GOAL_CONTINUATION.reset(context_token)
 
 
 def matching_approval(orch, owner, chat, agent, tool, args) -> bool:
@@ -972,10 +1064,21 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
                                              authority=computer)
             if bypassed is not None:
                 return bypassed
+        goal_token = current_goal_call_token()
+        goal_context = None
+        if isinstance(goal_token, str) and goal_token:
+            candidate = getattr(orch, "_hitl_goal_contexts", {}).get((owner, chat))
+            if (_goal_context_current(candidate)
+                    and (candidate.orchestrator, candidate.websocket, candidate.owner, candidate.chat)
+                    == (orch, websocket, owner, chat)):
+                goal_context = candidate
+            else:
+                goal_token = None
         call = next((item for item in pending.values() if
                      (item.owner, item.chat, item.agent, item.tool, item.arguments, item.risks, item.remote_proposal)
                      == (owner, chat, agent, tool, encoded, tuple(sorted(risks)), remote_proposal)
-                     and item.task is task and item.websocket is websocket and item.cancellation is witness), None)
+                     and item.task is task and item.websocket is websocket and item.cancellation is witness
+                     and item.goal_call_token == goal_token), None)
         if call is None:
             if len(pending) >= 128 or sum(item.owner == owner for item in pending.values()) >= 32:
                 return _refused("Too many pending confirmations. Resolve an existing request and retry.")
@@ -988,7 +1091,8 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
                                review_host=card_host,
                                review_generation=getattr(orch.computer_sessions, "review_generations", {}).get(
                                    (owner, card_host.host_id), 0) if card_host is not None else 0,
-                               review_connection=getattr(orch, "_connection_contexts", {}).get(id(websocket)))
+                               review_connection=getattr(orch, "_connection_contexts", {}).get(id(websocket)),
+                               goal_context=goal_context, goal_call_token=goal_token)
             if card_host is not None:
                 from orchestrator.project_authority import current_origin
                 call = replace(call, project_origin=current_origin(orch, owner, chat, card_host),
@@ -1083,7 +1187,8 @@ async def continuation_guidance(orch, websocket):
         return None, False
 
 
-def continue_after_approval(orch, websocket, owner, chat, message, display, origin, *, guard=None, name):
+def continue_after_approval(orch, websocket, owner, chat, message, display, origin, *, guard=None,
+                            goal_context=None, name):
     from orchestrator.detached_context import detached_context
     from persistent_agents.models import AssignmentError
 
@@ -1095,13 +1200,23 @@ def continue_after_approval(orch, websocket, owner, chat, message, display, orig
         try:
             if guard is not None and not guard():
                 return
+            if goal_context is not None and not _goal_context_current(goal_context):
+                return
             await announce_turn(orch, websocket, "thinking", "Continuing after approval")
+            async def current_call():
+                if goal_context is None:
+                    await orch._serialized_chat(
+                        websocket, message, chat, display, user_id=owner, continuation_guard=guard)
+                else:
+                    with _goal_continuation_scope(goal_context):
+                        await orch._serialized_chat(
+                            websocket, message, chat, display, user_id=owner, continuation_guard=guard)
             if origin is None:
-                await orch._serialized_chat(websocket, message, chat, display, user_id=owner, continuation_guard=guard)
+                await current_call()
                 return
             binding = bind_http_guidance(origin, expected_orchestrator=orch, websocket=websocket, chat_id=chat)
             with use_turn_guidance(binding, expected_orchestrator=orch):
-                await orch._serialized_chat(websocket, message, chat, display, user_id=owner, continuation_guard=guard)
+                await current_call()
         except AssignmentError as exc:
             logger.warning("Approval continuation refused: %s (%s)", exc.code, exc.status_code)
         finally:
@@ -1322,8 +1437,13 @@ async def _decided_effect(orch, websocket, owner, call, resume_requested, origin
         try:
             tool_call = SimpleNamespace(id=f"hitl-{call.request_id}", function=SimpleNamespace(
                 name=call.tool, arguments=call.arguments))
-            response = await orch.execute_single_tool(websocket, tool_call, {call.tool: call.agent}, call.chat,
-                                                      user_id=owner)
+            if call.goal_context is not None and call.goal_call_token is not None:
+                with goal_call_scope(call.goal_call_token):
+                    response = await orch.execute_single_tool(
+                        websocket, tool_call, {call.tool: call.agent}, call.chat, user_id=owner)
+            else:
+                response = await orch.execute_single_tool(websocket, tool_call, {call.tool: call.agent}, call.chat,
+                                                          user_id=owner)
             cancelled = False
         except asyncio.CancelledError:
             if not turn_effect_cancelled(orch):
@@ -1375,6 +1495,15 @@ async def _decided_effect(orch, websocket, owner, call, resume_requested, origin
                            "The action still needs approval. Review the new card before it can run.",
                            response.ui_components)
         return False
+    if (call.goal_context is not None and call.goal_call_token is not None
+            and _goal_context_current(call.goal_context)):
+        project = call.goal_context.project if isinstance(call.goal_context.project, dict) else {}
+        call.goal_context.progress.resolve_approval(
+            call.goal_call_token, response, tool_name=call.tool,
+            arguments=json.loads(call.arguments), agent_id=call.agent,
+            computer_id=project.get("computer_id"), computer_name=project.get("computer_name"),
+            project_context=project,
+        )
     await _finish_card(orch, websocket, call, "Outcome uncertain" if uncertain else "Blocked" if failed else "Approved",
                        "The action outcome is uncertain. Inspect current state before issuing another action." if uncertain
                        else "The approved action was blocked or failed. See the tool message for details." if failed
@@ -1393,5 +1522,6 @@ async def _decided_effect(orch, websocket, owner, call, resume_requested, origin
         held.remove(origin)
     continue_after_approval(orch, websocket, call.owner, call.chat, CONTINUATION_TEXT, "Approved — continuing",
                             origin, guard=lambda: _current_session(orch, websocket, call),
+                            goal_context=call.goal_context,
                             name=f"hitl-continue-{call.request_id}")
     return True

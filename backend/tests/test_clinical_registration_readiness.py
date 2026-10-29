@@ -132,6 +132,7 @@ async def test_actual_ingress_waits_for_final_readiness_before_one_human_turn(
     monkeypatch.setattr(orch, "llm_configured_for", configured)
     monkeypatch.setattr(orch, "_resolve_llm_client_for", resolve)
     monkeypatch.setattr(orch, "_call_llm", model)
+    monkeypatch.setattr(orch, "_text_only_cta_components", lambda _user_id: [])
     chat_id = str(uuid4())
     await asyncio.to_thread(orch.history.create_chat, chat_id=chat_id, user_id=owner)
     await asyncio.to_thread(orch.history.update_chat_title, chat_id, "Synthetic readiness", user_id=owner)

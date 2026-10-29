@@ -87,6 +87,18 @@ class TestRailParts:
             {"type": "text", "text": "Summary."}
         ]
 
+    @pytest.mark.parametrize("wrapper", [None, "card", "container"])
+    @pytest.mark.parametrize("primitive", ["alert", "list"])
+    def test_inline_alert_or_list_reaches_transcript_unless_already_in_canvas(self, wrapper, primitive):
+        component = ({"type": "alert", "component_id": "inline-result", "title": "Request incomplete",
+                      "message": "The test command failed.", "variant": "warning"}
+                     if primitive == "alert" else
+                     {"type": "list", "component_id": "inline-result", "items": ["app.py — 1304 bytes", "test_app.py — 876 bytes"]})
+        root = {"type": wrapper, "content": [component]} if wrapper else component
+        parts = [{"type": "components", "components": [root]}]
+        assert _rail_parts(parts) == [{"type": "components", "components": [component]}]
+        assert _rail_parts(parts, canvas_component_ids=frozenset({"inline-result"})) == []
+
     def test_text_part_passes_through(self):
         parts = [{"type": "text", "text": "hello"}]
         assert _rail_parts(parts) == parts
@@ -101,6 +113,32 @@ class TestRailParts:
     def test_pure_tool_components_part_drops_entirely(self):
         parts = [{"type": "components", "components": [_metric(), _metric()]}]
         assert _rail_parts(parts) == []
+
+    def test_nested_reference_metadata_is_not_lifted_as_an_ordinary_alert(self):
+        nested = {
+            "type": "container",
+            "children": [
+                {"type": "badge", "label": "Partial accounting", "variant": "info"},
+                {"type": "keyvalue", "title": "Whole conversation usage", "columns": 1,
+                 "items": [{"key": "Attempts", "value": "untrusted count"}]},
+                {"type": "alert", "message": "Private warning payload", "variant": "warning"},
+            ],
+        }
+        parts = [{"type": "components", "components": [nested]}]
+        assert _rail_parts(parts) == []
+
+        ordinary = {
+            "type": "container",
+            "children": [
+                {"type": "alert", "component_id": "ordinary-alert",
+                 "message": "A normal warning remains visible.", "variant": "warning"},
+                {"type": "list", "component_id": "ordinary-list", "items": ["safe item"]},
+            ],
+        }
+        assert _rail_parts([{"type": "components", "components": [ordinary]}]) == [
+            {"type": "components", "components": [ordinary["children"][0]]},
+            {"type": "components", "components": [ordinary["children"][1]]},
+        ]
 
     def test_components_part_lifts_text_and_drops_rich(self):
         parts = [{"type": "components", "components": [_metric(), _text("the answer")]}]

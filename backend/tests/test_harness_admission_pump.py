@@ -43,7 +43,7 @@ async def test_actual_admission_pump_keeps_bounded_trusted_refusals(plane, monke
                   'unrelated': ValueError('private configuration must not leave server'),
                   'unknown_code': HarnessSelectionError('private configuration must not leave server', 409),
                   'wrong_status': HarnessSelectionError('harness_unavailable', 409)}
-        def failed(_owner):
+        def failed(_owner, *, transaction=None):
             raise errors[posture]
         monkeypatch.setattr(orch.harness_selection, 'prepare_sync', failed)
     context.ingress.append(frame)

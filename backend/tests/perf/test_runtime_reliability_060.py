@@ -317,11 +317,11 @@ class _SubmitFailureProbe:
     def __getattr__(self, name: str) -> Any:
         return getattr(self.delegate, name)
 
-    def submit_with_harness(self, request: object, **options: object) -> object:
+    def submit(self, request: object) -> object:
         if not self.failed:
             self.failed = True
             raise RuntimeError("submit probe failure")
-        return self.delegate.submit_with_harness(request, **options)
+        return self.delegate.submit(request)
 
 
 class _QueryFailureProbe:

@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from orchestrator import subtasks  # noqa: E402
 from orchestrator.orchestrator import Orchestrator  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
+from tests.helpers.subtask_admission import admitted_parent  # noqa: E402
 
 MANIFEST = os.path.join(
     os.path.dirname(__file__),
@@ -62,11 +63,12 @@ async def test_subtask_progress_uses_existing_chat_status_frame(monkeypatch):
 
     o.handle_chat_message = _turn
 
-    await subtasks.handle_meta_tool(
-        o, "delegate_subtasks",
-        {"subtasks": [{"title": "Program A", "instruction": "audit A"},
-                      {"title": "Program B", "instruction": "audit B"}]},
-        user_id="u1", chat_id="c1", websocket=MagicMock())
+    async with admitted_parent(orch=o) as parent_ws:
+        await subtasks.handle_meta_tool(
+            o, "delegate_subtasks",
+            {"subtasks": [{"title": "Program A", "instruction": "audit A"},
+                          {"title": "Program B", "instruction": "audit B"}]},
+            user_id="u1", chat_id="c1", websocket=parent_ws)
 
     assert sent, "progress must reach the originating chat"
     assert {f["type"] for f in sent} == {"chat_status"}

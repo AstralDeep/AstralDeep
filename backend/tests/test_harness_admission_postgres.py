@@ -108,8 +108,8 @@ def test_actual_connection_admission_denies_selected_flag_off(plane):
 def test_owner_change_during_capture_cannot_admit_the_previous_owner(plane, monkeypatch):
     orch, context, frame = host(plane)
     original = orch.harness_selection.prepare_sync
-    def replaced(owner):
-        prepared = original(owner)
+    def replaced(owner, *, transaction=None):
+        prepared = original(owner, transaction=transaction)
         orch.ui_sessions[context.websocket] = {"sub": "other"}
         return prepared
     monkeypatch.setattr(orch.harness_selection, "prepare_sync", replaced)

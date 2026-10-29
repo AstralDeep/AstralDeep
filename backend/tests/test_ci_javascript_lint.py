@@ -1,13 +1,15 @@
-"""Tests for the isolated JavaScript CI tooling's manifest and lock files: exact private
-dependencies, a digest-pinned Playwright image, ESLint coverage of maintained web JS,
-and no leakage into product manifests.
+"""Tests for the isolated JavaScript CI tooling and browser coverage workflow: exact private
+dependencies, bounded report mapping, a digest-pinned Playwright image, ESLint coverage of
+maintained web JS, and no leakage into product manifests.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,8 @@ ESLINT_CONFIG_PATH = TOOLING_ROOT / "eslint.config.mjs"
 PLAYWRIGHT_IMAGE_PATH = TOOLING_ROOT / "playwright-image.txt"
 RELEASE_RUNNER_PATH = TOOLING_ROOT / "release-runner.mjs"
 WORKFLOW_PATH = PROJECTION_ROOT / ".github" / "workflows" / "ci.yml"
+DEEP_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+CLIENT_COVERAGE_FIXTURE_PATH = TOOLING_ROOT / "tests" / "client-coverage-fixture.mjs"
 
 if not (TOOLING_ROOT.is_dir() and (REPO_ROOT / ".github").is_dir()):
     pytest.skip(
@@ -36,11 +40,15 @@ PLAYWRIGHT_IMAGE_DIGEST = (
 )
 EXPECTED_DEV_DEPENDENCIES = {
     "@eslint/js": "10.0.1",
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/core": "2.4.0",
+    "@modelcontextprotocol/ext-apps": "2.0.4",
     "@playwright/test": PLAYWRIGHT_VERSION,
     "eslint": "10.7.0",
     "espree": "11.2.0",
     "globals": "17.7.0",
     "v8-to-istanbul": "9.3.0",
+    "zod": "4.6.7",
 }
 
 
@@ -119,6 +127,62 @@ def test_web_ci_manifest_is_private_exact_and_ci_only() -> None:
     assert "coverage-union-cli.test.mjs" in scripts["test:coverage-union"]
     assert "npm 11.16.0" in scripts["check:package-manager"]
     assert scripts["check:product-isolation"] == "node product-isolation.mjs"
+
+
+def test_deep_browser_coverage_consumes_complete_projection_report_parts(
+    tmp_path: Path,
+) -> None:
+    workflow = DEEP_WORKFLOW_PATH.read_text(encoding="utf-8")
+    job = _workflow_job(workflow, "projection-backend-web")
+    fixture = CLIENT_COVERAGE_FIXTURE_PATH.read_text(encoding="utf-8")
+    assert 'name + ".part-" + String(index).padStart(3, "0") + ".json"' in fixture
+    match = re.search(
+        r"(?ms)^          append_client_coverage_inputs\(\) \{\n"
+        r"(?P<function>.*?)^          \}\n          browser_inputs=\(\)",
+        job,
+    )
+    assert match, "Deep CI does not map Projection's chunked browser coverage reports"
+    function = textwrap.dedent(
+        "append_client_coverage_inputs() {\n"
+        + match.group("function")
+        + "}\n"
+    )
+    evidence = tmp_path / "client-v8"
+    evidence.mkdir()
+    part_zero = evidence / "continuity-contract-060.part-000.json"
+    part_one = evidence / "continuity-contract-060.part-001.json"
+    part_zero.write_text("[]\n", encoding="utf-8")
+    part_one.write_text("[]\n", encoding="utf-8")
+    script = (
+        function
+        + "browser_inputs=()\n"
+        + f"append_client_coverage_inputs {shlex.quote(str(evidence))} continuity-contract-060\n"
+        + "printf '%s\\n' \"${browser_inputs[@]}\"\n"
+    )
+    result = subprocess.run(
+        ["bash", "-euc", script], capture_output=True, check=True, text=True
+    )
+    assert result.stdout.splitlines() == [
+        "--input",
+        str(part_zero),
+        "--input",
+        str(part_one),
+    ]
+    part_zero.unlink()
+    part_one.unlink()
+    single_report = evidence / "continuity-contract-060.json"
+    single_report.write_text("[]\n", encoding="utf-8")
+    result = subprocess.run(
+        ["bash", "-euc", script], capture_output=True, check=True, text=True
+    )
+    assert result.stdout.splitlines() == ["--input", str(single_report)]
+    single_report.unlink()
+    part_zero.touch()
+    (evidence / "continuity-contract-060.part-002.json").touch()
+    with pytest.raises(subprocess.CalledProcessError):
+        subprocess.run(
+            ["bash", "-euc", script], capture_output=True, check=True, text=True
+        )
 
 
 def test_package_lock_exactly_matches_manifest_and_pins_transitives() -> None:

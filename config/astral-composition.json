@@ -5,13 +5,13 @@
     "astral-projection": {
       "repository": "https://github.com/AstralDeep/AstralProjection.git",
       "path": "components/AstralProjection",
-      "commit": "345914dc1cf73b36d4408c3724fdea0e1d676f15",
+      "commit": "4111e74ce52e291847313624a652deb5394dc5f5",
       "contract_version": "astralprojection.contract/v1"
     },
     "astral-plane": {
       "repository": "https://github.com/AstralDeep/AstralPlane.git",
       "path": "components/AstralPlane",
-      "commit": "28e946bc6b5eb8183fd2f8157e04dba79306eec0",
+      "commit": "b49834b3f3a7647819e0fd7961dfa420d7573d88",
       "contract_version": "astralplane.contract/v1"
     },
     "astral-primitives": {
@@ -37,7 +37,7 @@
   "compatibility": {
     "ui_protocol": {
       "version": "1",
-      "sha256": "698b692281c9a346e6fff935733c9a9ea523397b8a97bd128e2a490dd5480175"
+      "sha256": "babb3987db74dbfb9b7e4f96287d3587f8b69c2e57b70e8e1fa1deba9a0ed83d"
     },
     "data_plane": {
       "contract_version": "astralplane.contract/v1",

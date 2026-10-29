@@ -288,6 +288,8 @@ def _wrapper_parts(
                     parts.append(_lifted_text_part(text, child.get("variant")))
             elif child_type == "collapsible":
                 parts.append({"type": "components", "components": [dict(child)]})
+            elif child_type in {"alert", "list"}:
+                parts.append({"type": "components", "components": [dict(child)]})
             elif child_type in _RAIL_WRAPPER_TYPES:
                 parts.extend(_wrapper_parts(child, canvas_component_ids))
     return parts
@@ -297,7 +299,10 @@ def _rail_parts(
     parts: list[dict[str, Any]], *, canvas_component_ids: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     from orchestrator.source_details import present_source_details
-    from orchestrator.context_presentation import canonical_reference_components
+    from orchestrator.context_presentation import (
+        canonical_reference_components,
+        is_reference_group_candidate,
+    )
 
     kept: list[dict[str, Any]] = []
     for part in parts:
@@ -311,9 +316,12 @@ def _rail_parts(
                 continue
             kept.append(part)
             continue
-        reference_group = canonical_reference_components(part.get("components"))
-        if reference_group is not None and not any(comp.get("component_id") in canvas_component_ids for comp in reference_group):
-            kept.append({"type": "components", "components": reference_group})
+        components = part.get("components")
+        if is_reference_group_candidate(components):
+            reference_group = canonical_reference_components(components)
+            if (reference_group is not None
+                    and not any(comp.get("component_id") in canvas_component_ids for comp in reference_group)):
+                kept.append({"type": "components", "components": reference_group})
             continue
         for comp in part.get("components", []):
             if not isinstance(comp, Mapping):
@@ -328,6 +336,8 @@ def _rail_parts(
                     text = comp.get("text")
                 if isinstance(text, str) and text.strip():
                     kept.append(_lifted_text_part(text, comp.get("variant")))
+            elif comp_type in {"alert", "list"}:
+                kept.append({"type": "components", "components": [dict(comp)]})
             elif comp_type == "collapsible" and _is_rail_text_only([comp]):
                 kept.append({"type": "components", "components": [dict(comp)]})
             elif (
@@ -1578,9 +1588,16 @@ class ConversationCommitRepository:
         canvas_components: Sequence[Mapping[str, Any]],
         canvas_layouts: Optional[Sequence[Mapping[str, Any]]] = None,
         operation_fence: Any,
+        completion_state: str = "completed",
     ) -> dict[str, Any]:
         commit_id = _uuid4_text(commit_id, "commit_id")
         owner_user_id = _required_text(owner_user_id, "owner_user_id")
+        if not isinstance(completion_state, str) or completion_state not in {
+            "completed",
+            "failed",
+            "cancelled",
+        }:
+            raise ValueError("completion state is invalid")
         if operation_fence is None:
             raise ValueError("voice result publication requires an execution fence")
         candidate_components = self._validate_canvas(canvas_components)
@@ -1757,9 +1774,25 @@ class ConversationCommitRepository:
 
             self.operation_coordinator.terminalize(
                 operation_fence,
-                state=OperationState.COMPLETED,
-                terminal_code=None,
-                safe_summary="Conversation committed",
+                state=OperationState(completion_state),
+                terminal_code=(
+                    None
+                    if completion_state == "completed"
+                    else (
+                        "goal_incomplete"
+                        if completion_state == "failed"
+                        else "goal_cancelled"
+                    )
+                ),
+                safe_summary=(
+                    "Conversation committed"
+                    if completion_state == "completed"
+                    else (
+                        "Request incomplete; conversation committed"
+                        if completion_state == "failed"
+                        else "Request cancelled; conversation committed"
+                    )
+                ),
                 retry_after_ms=None,
                 transaction=transaction,
             )
@@ -1774,9 +1807,16 @@ class ConversationCommitRepository:
         canvas_layouts: Optional[Sequence[Mapping[str, Any]]] = None,
         operation_fence: Any = None,
         fault_hook: Optional[Callable[[str], None]] = None,
+        completion_state: str = "completed",
     ) -> dict[str, Any]:
         commit_id = _uuid4_text(commit_id, "commit_id")
         owner_user_id = _required_text(owner_user_id, "owner_user_id")
+        if not isinstance(completion_state, str) or completion_state not in {
+            "completed",
+            "failed",
+            "cancelled",
+        }:
+            raise ValueError("completion state is invalid")
         validated_messages = (
             None if messages is None else self._validate_messages(messages)
         )
@@ -1994,9 +2034,25 @@ class ConversationCommitRepository:
 
                 self.operation_coordinator.terminalize(
                     operation_fence,
-                    state=OperationState.COMPLETED,
-                    terminal_code=None,
-                    safe_summary="Conversation committed",
+                    state=OperationState(completion_state),
+                    terminal_code=(
+                        None
+                        if completion_state == "completed"
+                        else (
+                            "goal_incomplete"
+                            if completion_state == "failed"
+                            else "goal_cancelled"
+                        )
+                    ),
+                    safe_summary=(
+                        "Conversation committed"
+                        if completion_state == "completed"
+                        else (
+                            "Request incomplete; conversation committed"
+                            if completion_state == "failed"
+                            else "Request cancelled; conversation committed"
+                        )
+                    ),
                     retry_after_ms=None,
                     transaction=transaction,
                 )

@@ -8,6 +8,10 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import types
+import uuid
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,6 +21,45 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from orchestrator import subtasks  # noqa: E402
 from orchestrator.chain_authority import ChainBudget  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
+
+
+@asynccontextmanager
+async def _authenticated_operation(orch, websocket, *, owner_id="u1", state=None):
+    from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
+    from orchestrator.orchestrator import Orchestrator
+    from orchestrator.work_admission import (
+        AdmissionClass, ExecutionFence, OperationOwner, OperationRecord,
+        OperationState, OwnerScope,
+    )
+
+    orch.ui_sessions.setdefault(websocket, {"sub": owner_id})
+    orch._llm_context_user_id = types.MethodType(
+        Orchestrator._llm_context_user_id, orch)
+    now = datetime.now(timezone.utc)
+    operation_id = uuid.uuid4()
+    lease_token = uuid.uuid4()
+    operation = OperationRecord(
+        operation_id=operation_id, operation_kind="interactive_turn",
+        admission_class=AdmissionClass.INTERACTIVE, owner_scope=OwnerScope.USER,
+        owner_user_id=owner_id, connection_scope_id=None,
+        idempotency_namespace=None, idempotency_key=None,
+        normalized_input_digest=None, chat_id="c1", parent_operation_id=None,
+        connection_generation=None, request_generation=None,
+        state=state or OperationState.RUNNING, phase_code=None, terminal_code=None,
+        safe_summary=None, retry_after_ms=None, execution_generation=1,
+        execution_lease_token=lease_token, state_revision=1, accepted_at=now,
+        updated_at=now, queue_deadline_at=None, started_at=now, terminal_at=None,
+        cancel_requested_at=None, purge_after=None,
+    )
+    owner = OperationOwner(OwnerScope.USER, owner_id, None)
+    fence = ExecutionFence(operation_id, 1, lease_token)
+    token = _CONNECTION_OPERATION_CONTEXT.set({
+        "owner": owner, "operation": operation, "execution_fence": fence,
+    })
+    try:
+        yield operation
+    finally:
+        _CONNECTION_OPERATION_CONTEXT.reset(token)
 
 
 @pytest.fixture(autouse=True)
@@ -58,16 +101,29 @@ SPECS = [
 
 
 async def _run(orch, specs=None, **args):
-    return await subtasks.handle_meta_tool(
-        orch, "delegate_subtasks",
-        {"subtasks": specs if specs is not None else SPECS, **args},
-        user_id="u1", chat_id="c1", websocket=MagicMock())
+    websocket = MagicMock()
+    async with _authenticated_operation(orch, websocket):
+        return await subtasks.handle_meta_tool(
+            orch, "delegate_subtasks",
+            {"subtasks": specs if specs is not None else SPECS, **args},
+            user_id="u1", chat_id="c1", websocket=websocket)
 
 
 @pytest.mark.asyncio
 async def test_spawns_isolated_subtasks_and_returns_digests(orch):
+    owner_ids = []
+
+    async def _turn(vws, message, chat_id, **kw):
+        owner_ids.append(vws.llm_context_user_id)
+        orch.turns.append({"message": message, "chat_id": chat_id, **kw})
+        await vws.send_json({"type": "chat_message",
+                             "payload": {"text": f"result for: {message}",
+                                         "agent_id": "web-research-1"}})
+
+    orch.handle_chat_message = _turn
     resp = await _run(orch)
     results = resp.result["subtasks"]
+    assert owner_ids == ["u1"] * 3
     assert len(results) == 3
     assert all(r["status"] == "ok" for r in results)
     chats = {t["chat_id"] for t in orch.turns}
@@ -112,9 +168,10 @@ async def test_subtask_inherits_parent_session_claims(orch):
         await vws.send_json({"type": "chat_message", "payload": {"text": "ok"}})
 
     orch.handle_chat_message = _turn
-    await subtasks.handle_meta_tool(
-        orch, "delegate_subtasks", {"subtasks": SPECS},
-        user_id="u1", chat_id="c1", websocket=ws)
+    async with _authenticated_operation(orch, ws):
+        await subtasks.handle_meta_tool(
+            orch, "delegate_subtasks", {"subtasks": SPECS},
+            user_id="u1", chat_id="c1", websocket=ws)
     assert all(b.get("sub") == "u1" and b.get("_raw_token") == "session-token"
                for b in bound)
     assert list(orch.ui_sessions) == [ws]
@@ -163,3 +220,32 @@ async def test_budget_slices_debit_the_turn_budget(orch):
                                             max_hops=10, wall_clock_s=999)
     await _run(orch)
     assert orch._chain_budgets["c1"].spent_hops == 3
+
+
+@pytest.mark.asyncio
+async def test_subtask_delegation_rejects_missing_or_cross_owner_admission(orch):
+    websocket = MagicMock()
+    orch.ui_sessions[websocket] = {"sub": "u2"}
+    from orchestrator.orchestrator import Orchestrator
+    orch._llm_context_user_id = types.MethodType(
+        Orchestrator._llm_context_user_id, orch)
+
+    # A session identity without a live admission context is not sufficient.
+    response = await subtasks.handle_meta_tool(
+        orch, "delegate_subtasks", {"subtasks": SPECS},
+        user_id="u1", chat_id="c1", websocket=websocket)
+    assert response.error is not None
+    assert not orch.turns
+
+
+@pytest.mark.asyncio
+async def test_subtask_delegation_rejects_cancelled_parent_operation(orch):
+    from orchestrator.work_admission import OperationState
+    websocket = MagicMock()
+    async with _authenticated_operation(
+            orch, websocket, state=OperationState.CANCELLED):
+        response = await subtasks.handle_meta_tool(
+            orch, "delegate_subtasks", {"subtasks": SPECS},
+            user_id="u1", chat_id="c1", websocket=websocket)
+    assert response.error is not None
+    assert not orch.turns

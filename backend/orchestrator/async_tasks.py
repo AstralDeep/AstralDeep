@@ -108,6 +108,47 @@ class _BackgroundExecution:
     kwargs: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class FencedModelOwner:
+    owner_id: str
+    owner: OperationOwner
+    operation: OperationRecord
+    execution_fence: ExecutionFence
+
+    @classmethod
+    def capture(cls, *, owner_id: str, authenticated_owner_id: str,
+                owner: OperationOwner, operation: OperationRecord,
+                execution_fence: ExecutionFence) -> FencedModelOwner:
+        if (
+            type(owner_id) is not str
+            or not owner_id
+            or type(authenticated_owner_id) is not str
+            or authenticated_owner_id != owner_id
+            or type(owner) is not OperationOwner
+            or owner.owner_scope not in {OwnerScope.USER, OwnerScope.CONNECTION}
+            or (owner.owner_scope is OwnerScope.USER and owner.owner_user_id != owner_id)
+            or type(operation) is not OperationRecord
+            or operation.owner_scope is not owner.owner_scope
+            or operation.owner_user_id != owner.owner_user_id
+            or operation.connection_scope_id != owner.connection_scope_id
+            or (operation.owner_scope is OwnerScope.USER and operation.owner_user_id != owner_id)
+            or operation.state is not OperationState.RUNNING
+            or type(execution_fence) is not ExecutionFence
+        ):
+            raise ValueError("model owner is not backed by an authenticated running operation")
+        _validate_execution_fence(operation, execution_fence)
+        return cls(owner_id, owner, operation, execution_fence)
+
+    def current(self) -> bool:
+        if self.operation.state is not OperationState.RUNNING:
+            return False
+        try:
+            _validate_execution_fence(self.operation, self.execution_fence)
+        except RuntimeError:
+            return False
+        return True
+
+
 def _validate_execution_fence(
     operation: OperationProjection, fence: ExecutionFence | None
 ) -> None:
@@ -271,9 +312,47 @@ class BackgroundTask:
 
 
 class VirtualWebSocket:
-    def __init__(self, task: BackgroundTask):
+    def __init__(self, task: BackgroundTask, *, owner_id: str | None = None,
+                 owner_binding: FencedModelOwner | None = None):
         self.task = task
         self._closed = False
+        self._model_owner_binding = None
+        if owner_binding is not None and owner_id is not None:
+            raise ValueError("model owner binding is ambiguous")
+        if owner_binding is not None:
+            if type(owner_binding) is not FencedModelOwner or not owner_binding.current():
+                raise ValueError("model owner binding is not current")
+            if task.user_id != owner_binding.owner_id:
+                raise ValueError("model owner does not match the virtual task")
+            self._model_owner_binding = owner_binding
+        if owner_id is not None:
+            owner = getattr(task, "_owner", None)
+            operation = getattr(task, "_operation", None)
+            fence = getattr(task, "_execution_fence", None)
+            if type(owner) is not OperationOwner or owner.owner_scope is not OwnerScope.USER:
+                raise ValueError("virtual websocket owner is not a user operation owner")
+            self._model_owner_binding = FencedModelOwner.capture(
+                owner_id=owner_id, authenticated_owner_id=getattr(task, "user_id", None),
+                owner=owner, operation=operation, execution_fence=fence,
+            )
+
+    @property
+    def llm_context_user_id(self) -> str | None:
+        binding = self._model_owner_binding
+        if self._closed or binding is None or not binding.current():
+            return None
+        task_id = getattr(self.task, "task_id", None)
+        if type(task_id) is str and str(binding.operation.operation_id) == task_id:
+            if (
+                getattr(self.task, "_owner", None) is not binding.owner
+                or getattr(self.task, "_operation", None) is not binding.operation
+                or getattr(self.task, "_execution_fence", None) != binding.execution_fence
+                or getattr(self.task, "user_id", None) != binding.owner_id
+            ):
+                return None
+        elif getattr(self.task, "user_id", None) != binding.owner_id:
+            return None
+        return binding.owner_id
 
     def _can_publish(self) -> bool:
         if self._closed:
@@ -310,6 +389,7 @@ class VirtualWebSocket:
 
     async def close(self, code: int = 1000):
         self._closed = True
+        self._model_owner_binding = None
 
     @property
     def client(self):
@@ -936,7 +1016,15 @@ class BackgroundTaskManager:
         bg_task._apply_operation(claim.operation, execution_fence=claim.fence)
         bg_task._lease_loss_reason = None
         self._pending_executions.pop(bg_task.task_id, None)
-        vws = VirtualWebSocket(bg_task)
+        owner = bg_task._owner
+        owner_id = (
+            owner.owner_user_id
+            if type(owner) is OperationOwner
+            and owner.owner_scope is OwnerScope.USER
+            and owner.owner_user_id == bg_task.user_id
+            else None
+        )
+        vws = VirtualWebSocket(bg_task, owner_id=owner_id)
         bg_task._virtual_websocket = vws
         bg_task.asyncio_task = asyncio.create_task(
             self._run_task(

@@ -30,7 +30,46 @@ TOOL = "make_dashboard"
 def _fresh_socket():
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     task = BackgroundTask(task_id=uuid.uuid4().hex, chat_id="", user_id="")
-    return VirtualWebSocket(task)
+
+    class HumanSocket:
+        def __init__(self, virtual_socket):
+            self._virtual_socket = virtual_socket
+            self.task = virtual_socket.task
+
+        async def send_text(self, data):
+            return await self._virtual_socket.send_text(data)
+
+        async def send_json(self, data, mode="text"):
+            return await self._virtual_socket.send_json(data, mode=mode)
+
+        async def receive_text(self):
+            return await self._virtual_socket.receive_text()
+
+        async def receive_json(self, mode="text"):
+            return await self._virtual_socket.receive_json(mode=mode)
+
+        async def close(self, code=1000):
+            return await self._virtual_socket.close(code=code)
+
+        @property
+        def client(self):
+            return self._virtual_socket.client
+
+    return HumanSocket(VirtualWebSocket(task))
+
+
+async def test_unbound_virtual_socket_has_no_model_owner():
+    from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
+
+    socket = VirtualWebSocket(BackgroundTask(
+        task_id=uuid.uuid4().hex, chat_id="chat", user_id="owner",
+    ))
+
+    assert socket.llm_context_user_id is None
+    with pytest.raises(ValueError):
+        VirtualWebSocket(socket.task, owner_id="owner")
+    await socket.close()
+    assert socket.llm_context_user_id is None
 
 
 def _msg(content=None, tool_calls=None):
@@ -70,7 +109,7 @@ def _last_done_index(ws):
 
 
 @pytest.fixture()
-async def env(monkeypatch):
+async def env(monkeypatch, user_skills_disabled):
     monkeypatch.setenv("FF_UI_DESIGNER", "true")
     monkeypatch.setitem(flags._flags, "task_state_machine", False)
     for mod in ("agentic_creation", "scheduling_chat", "memory_chat",
@@ -210,6 +249,15 @@ async def test_async_mode_render_sequences_before_task_completed(env, monkeypatc
 
     async def _coro(vws):
         managed_socket["ws"] = vws
+        assert vws.llm_context_user_id == user_id
+        fence = vws.task._execution_fence
+        vws.task._execution_fence = None
+        assert vws.llm_context_user_id is None
+        vws.task._execution_fence = fence
+        assert vws.llm_context_user_id == user_id
+        from orchestrator.async_tasks import VirtualWebSocket
+        with pytest.raises(ValueError):
+            VirtualWebSocket(vws.task, owner_id="another-owner")
         orch.ui_sessions[vws] = {
             "sub": user_id,
             "preferred_username": user_id,
@@ -228,6 +276,8 @@ async def test_async_mode_render_sequences_before_task_completed(env, monkeypatc
     assert task.asyncio_task is not None
     await asyncio.wait_for(asyncio.shield(task.asyncio_task), timeout=10)
 
+    assert managed_socket["ws"].llm_context_user_id is None, \
+        "the model owner must be cleared when the operation fence ends"
     assert watcher_frames and watcher_frames[0][0]["type"] == "task_completed"
     assert watcher_frames[0][1] == 1, \
         "the designed render must be on the wire before task_completed"

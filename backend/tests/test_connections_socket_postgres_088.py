@@ -70,6 +70,14 @@ async def terminal(state, generation):
         and value.get("terminal") is True and value.get("request_generation") == generation)
 
 
+async def admission_refusal(state, frame):
+    value = await state.arrived(lambda item: item.get("type") == "error"
+        and item.get("submission_id") == str(frame.submission_id))
+    assert value["accepted"] is False
+    assert value["code"] == "harness_owner_invalid"
+    return value
+
+
 def issue_payload(**changes):
     return {"fields": {"name": "Socket-owned key", "scopes": ["operations.read"],
         "expires_in_seconds": 300, "max_admissions": 1, **changes}}
@@ -194,7 +202,10 @@ async def test_original_authority_loss_during_admission_prevents_mutation(
         else:
             state.orch._connection_contexts[id(state.socket)].registered = False
         release.set()
-        assert (await terminal(state, generation))["state"] == "failed"
+        if loss in {"registration", "closed"}:
+            await admission_refusal(state, frame)
+        else:
+            assert (await terminal(state, generation))["state"] == "failed"
         assert credentials.list(owner_id=fixture[1]) == before
         assert views(state, generation) == []
     finally:

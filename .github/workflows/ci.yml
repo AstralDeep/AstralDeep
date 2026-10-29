@@ -280,11 +280,40 @@ jobs:
         run: |
           set -euo pipefail
           export NODE_V8_COVERAGE="$PWD/build/backend-web/node-v8"
+          append_client_coverage_inputs() {
+            local directory="$1" suite="$2" report expected index
+            local -a candidates=("$directory/$suite.json" "$directory/$suite".part-[0-9][0-9][0-9].json)
+            local -a reports=()
+            for report in "${candidates[@]}"; do
+              [[ -f "$report" ]] && reports+=("$report")
+            done
+            if ((${#reports[@]} == 0 || ${#reports[@]} > 32)); then
+              echo "Missing or excessive browser coverage reports for $suite" >&2
+              return 1
+            fi
+            if [[ "${reports[0]}" == "$directory/$suite".part-* ]]; then
+              expected=0
+              for report in "${reports[@]}"; do
+                index="$(printf '%03d' "$expected")"
+                if [[ "$report" != "$directory/$suite.part-$index.json" ]]; then
+                  echo "Incomplete browser coverage parts for $suite" >&2
+                  return 1
+                fi
+                expected=$((expected + 1))
+              done
+            elif ((${#reports[@]} != 1)); then
+              echo "Conflicting browser coverage reports for $suite" >&2
+              return 1
+            fi
+            for report in "${reports[@]}"; do
+              browser_inputs+=(--input "$report")
+            done
+          }
           browser_inputs=()
           for suite in continuity-contract-060 first-task-088 \
               persistent-agents-079 guidance-notes-088 \
               work-reads-088 voice-conversation-065 mesh-enrollment; do
-            browser_inputs+=(--input "build/backend-web/client-v8/$suite.json")
+            append_client_coverage_inputs build/backend-web/client-v8 "$suite"
           done
           browser_inputs+=(--input build/backend-web/selection-browser-v8.json)
           browser_inputs+=(--input build/backend-web/mesh-custody-browser-v8.json)

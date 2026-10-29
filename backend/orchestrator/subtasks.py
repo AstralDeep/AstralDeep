@@ -143,7 +143,7 @@ async def _audit_subtask(orch, *, user_id: str, chat_id: Optional[str],
 async def _run_one(orch, spec: Dict[str, Any], *, user_id: str,
                    parent_chat_id: Optional[str], parent_ws,
                    allowed_tools: Optional[List[str]], budget,
-                   correlation_id: str, guidance_parent=None) -> SubtaskResult:
+                   correlation_id: str, owner_binding, guidance_parent=None) -> SubtaskResult:
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     from orchestrator import user_skills
     from orchestrator.turn_guidance_authority import inherit_turn_guidance, use_turn_guidance
@@ -166,8 +166,7 @@ async def _run_one(orch, spec: Dict[str, Any], *, user_id: str,
     sub_chat = await asyncio.to_thread(orch.history.create_chat, user_id=user_id)
     task = BackgroundTask(task_id=f"sub-{uuid.uuid4().hex[:8]}",
                           chat_id=sub_chat, user_id=user_id)
-    vws = VirtualWebSocket(task)
-    vws.llm_context_user_id = user_id
+    vws = VirtualWebSocket(task, owner_binding=owner_binding)
     parent_claims = orch.ui_sessions.get(parent_ws) if parent_ws is not None else None
     if isinstance(parent_claims, dict):
         orch.ui_sessions[vws] = dict(parent_claims)
@@ -269,6 +268,24 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
         return MCPResponse(error={"message": "Sub-tasks require an authenticated user.",
                                   "retryable": False})
 
+    # Model identity must remain bound to the authenticated parent operation fence.
+    from orchestrator.async_tasks import FencedModelOwner
+    from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
+    operation_context = _CONNECTION_OPERATION_CONTEXT.get()
+    try:
+        owner_binding = FencedModelOwner.capture(
+            owner_id=user_id,
+            authenticated_owner_id=orch._llm_context_user_id(websocket),
+            owner=(operation_context or {}).get("owner"),
+            operation=(operation_context or {}).get("operation"),
+            execution_fence=(operation_context or {}).get("execution_fence"),
+        )
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return MCPResponse(error={
+            "message": "Sub-tasks require a current authenticated operation.",
+            "retryable": False,
+        })
+
     specs = args.get("subtasks")
     if not isinstance(specs, list) or not (MIN_SUBTASKS <= len(specs) <= MAX_SUBTASKS):
         msg = (f"delegate_subtasks needs between {MIN_SUBTASKS} and {MAX_SUBTASKS} "
@@ -302,7 +319,8 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
         asyncio.create_task(_run_one(
             orch, spec, user_id=user_id, parent_chat_id=chat_id,
             parent_ws=websocket, allowed_tools=allowed_tools, budget=sl,
-            correlation_id=correlation_id, guidance_parent=guidance_parent))
+            correlation_id=correlation_id, owner_binding=owner_binding,
+            guidance_parent=guidance_parent))
         for spec, sl in zip(specs, slices)
     ]
     try:

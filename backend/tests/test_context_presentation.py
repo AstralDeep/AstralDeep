@@ -11,6 +11,7 @@ import pytest
 
 from orchestrator.context_presentation import (
     canonical_reference_components, evidence_components, persistent_reference_components, usage_components,
+    is_reference_group_candidate,
 )
 from orchestrator.context_usage import ContextUsage
 from orchestrator.history import ConversationCommitRepository, _content_parts, _rail_parts
@@ -256,7 +257,8 @@ def test_modified_source_metadata_is_not_admitted_as_a_persistent_rail_group(mut
 
 
 @pytest.mark.parametrize("mutation", ["count", "label", "known_usage", "currency", "duplicate_currency",
-    "cost_uncertainty", "extra_item", "missing_item", "all_items", "claimed_complete", "partial_warning"])
+    "cost_uncertainty", "extra_item", "missing_item", "all_items", "claimed_complete", "partial_warning",
+    "extra_components"])
 def test_modified_usage_group_cannot_publish_unvalidated_numbers_or_private_text(mutation):
     group = metadata_group("partial_usage")
     rows = group[1]["items"]
@@ -281,10 +283,31 @@ def test_modified_usage_group_cannot_publish_unvalidated_numbers_or_private_text
     elif mutation == "claimed_complete":
         group[0]["label"] = "Complete accounting"
         group[0]["variant"] = "warning"
+    elif mutation == "extra_components":
+        group.extend([
+            {"type": "alert", "message": SOURCE_TEXT, "variant": "warning"},
+            {"type": "alert", "message": "second extra warning", "variant": "warning"},
+        ])
     else:
         group[-1]["message"] = SOURCE_TEXT
     assert canonical_reference_components(group) is None
+    assert is_reference_group_candidate(group)
     assert not _rail_parts(_content_parts(group, already_decoded=True))
+
+
+def test_reference_group_candidate_uses_reserved_metadata_not_alert_prose():
+    group = metadata_group("partial_usage")
+    assert is_reference_group_candidate(group)
+    group[0]["label"] = SOURCE_TEXT
+    assert is_reference_group_candidate(group)
+    assert not is_reference_group_candidate([{
+        "type": "alert", "message": "Unknown usage or prices", "variant": "warning",
+    }])
+    for marker in ([], {}, None):
+        assert not is_reference_group_candidate([
+            {"type": "badge", "label": marker},
+            {"type": "keyvalue", "title": marker},
+        ])
 
 
 @pytest.mark.parametrize("malformed", [None, {}, [], [{}], [None, None], [{}, {}, {}, {}, {}, {}]])

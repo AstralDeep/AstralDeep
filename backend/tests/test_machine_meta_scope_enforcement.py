@@ -17,6 +17,7 @@ import pytest
 from orchestrator.chain_authority import MachineAuthority, machine_scope_ceiling
 from orchestrator.orchestrator import Orchestrator
 from shared.protocol import MCPResponse
+from tests.helpers.subtask_admission import admitted_parent
 
 
 META_TOOLS = [
@@ -200,12 +201,14 @@ async def test_subtask_keeps_private_ceiling_and_agent_binding(monkeypatch):
     assert await orch._guard_machine_meta_tool(
         socket, "__subtasks__", "delegate_subtasks", {}, "chat", "owner",
     ) is None
-    result = await subtasks._run_one(
-        orch, {"title": "Read", "instruction": "Read approved source"},
-        user_id="owner", parent_chat_id="chat", parent_ws=socket,
-        allowed_tools=["read"], budget=ChainBudget(turn_id="turn", chat_id="chat"),
-        correlation_id="review", guidance_parent=parent,
-    )
+    async with admitted_parent(user_id="owner", chat_id="parent-chat") as parent_ws:
+        result = await subtasks._run_one(
+            orch, {"title": "Read", "instruction": "Read approved source"},
+            user_id="owner", parent_chat_id="chat", parent_ws=socket,
+            allowed_tools=["read"], budget=ChainBudget(turn_id="turn", chat_id="chat"),
+            correlation_id="review", owner_binding=parent_ws._model_owner_binding,
+            guidance_parent=parent,
+        )
     assert result.status == "ok"
     assert len(seen) == 1
     inherit.assert_called_once()

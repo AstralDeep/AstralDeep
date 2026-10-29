@@ -167,7 +167,7 @@ class HarnessSelectionService:
         self._caller(caller)
         return self._public(selection)
 
-    def choice_sync(self, owner_id):
+    def choice_sync(self, owner_id, transaction=None):
         self._current()
         _owner(owner_id)
         if self.repository is None:
@@ -175,8 +175,11 @@ class HarnessSelectionService:
                 raise HarnessSelectionError("harness_component_unavailable")
             return None
         try:
-            with self.runtime.transaction() as tx:
-                selection = self.repository.get(tx, owner_id=owner_id)
+            if transaction is None:
+                with self.runtime.transaction() as tx:
+                    selection = self.repository.get(tx, owner_id=owner_id)
+            else:
+                selection = self.repository.get(transaction, owner_id=owner_id)
             self._current()
             if selection.identity is None:
                 return HarnessChoice(selection)
@@ -192,7 +195,7 @@ class HarnessSelectionService:
         except Exception:
             raise HarnessSelectionError() from None
 
-    def prepare_choice_sync(self, choice):
+    def prepare_choice_sync(self, choice, transaction=None):
         self._current()
         if choice is None:
             if self.repository is not None or self.enabled():
@@ -210,8 +213,9 @@ class HarnessSelectionService:
                 raise HarnessSelectionError("harness_config_unavailable")
             key = private_binding_key()
             fact = choice.deployment
-            config = _selected_config(fact, self.config_store.capture_user_sync(choice.selection.owner_id),
-                                      self.config_store, key)
+            captured_config = self.config_store.capture_user_sync(
+                choice.selection.owner_id, transaction=transaction)
+            config = _selected_config(fact, captured_config, self.config_store, key)
             from astralplane.repositories.harness_capture import HarnessCapture
             captured = HarnessCapture(choice.selection.owner_id, choice.selection.revision,
                 fact.identity, fact.qualification_digest, fact.profile.name, key.key_id, config.revision)
@@ -222,8 +226,9 @@ class HarnessSelectionService:
         except Exception:
             raise HarnessSelectionError() from None
 
-    def prepare_sync(self, owner_id):
-        return self.prepare_choice_sync(self.choice_sync(owner_id))
+    def prepare_sync(self, owner_id, transaction=None):
+        return self.prepare_choice_sync(self.choice_sync(owner_id, transaction=transaction),
+                                        transaction=transaction)
 
     async def choice(self, owner_id):
         return await asyncio.to_thread(self.choice_sync, owner_id)
@@ -270,8 +275,8 @@ class HarnessSelectionService:
         if self.config_store is None:
             raise HarnessSelectionError("harness_config_unavailable")
         key = private_binding_key(captured.config_binding_key_id)
-        config = _selected_config(fact, self.config_store.capture_user_sync(captured.owner_id),
-                                  self.config_store, key)
+        config = _selected_config(fact, self.config_store.capture_user_sync(
+            captured.owner_id, transaction=tx), self.config_store, key)
         if (config.revision != captured.config_revision or not config.matches(
                 self.repositories.encrypted_llm_config.get_user_for_update(tx, owner_id=captured.owner_id))):
             raise HarnessSelectionError("harness_config_changed")

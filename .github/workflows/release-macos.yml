@@ -13,6 +13,10 @@ on:
         description: Build, notarize and stage without publishing
         type: boolean
         default: true
+      emergency_skip_ci:
+        description: Publish from main without the exact-head CI gate (manual emergency release only)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -50,7 +54,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Require green CI before a dispatched publication
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == false }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == false && inputs.emergency_skip_ci != true }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -61,6 +65,9 @@ jobs:
             echo "::error::No successful CI push run on main for $head; dispatch a dry run instead."
             exit 1
           fi
+      - name: Record manual emergency CI override
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == false && inputs.emergency_skip_ci == true }}
+        run: echo "::warning::Publishing from main with the exact-head CI gate waived by the manual dispatcher."
       - name: Decide the next release
         id: decide
         env:

@@ -326,6 +326,7 @@ class _ConnectionOperation:
     lease_lost: bool = False
     auth_principal: str | None = None
     auth_claims: dict[str, Any] = field(default_factory=dict, repr=False)
+    subject_auth_claims: dict[str, Any] = field(default_factory=dict, repr=False)
     runtime_websocket: Any | None = field(default=None, repr=False)
     committed_operation: OperationRecord | None = None
     subscribers: dict[int, tuple[Any, _ConnectionIngressFrame]] = field(
@@ -733,6 +734,8 @@ _NARRATIVE_STREAM_CHAT: contextvars.ContextVar = contextvars.ContextVar(
     "narrative_stream_chat", default=None)
 _NARRATIVE_STREAMED: contextvars.ContextVar = contextvars.ContextVar(
     "narrative_streamed", default=False)
+_GOAL_BUFFERED_RESPONSE: contextvars.ContextVar = contextvars.ContextVar(
+    "goal_buffered_response", default=False)
 
 
 def _static_asset_version(static_dir: str) -> str:
@@ -5968,6 +5971,7 @@ class Orchestrator:
             return None
         if frame_type in {
             "register_ui",
+            "refresh_ui_auth",
             "close",
             "ping",
             "pong",
@@ -7753,6 +7757,8 @@ class Orchestrator:
                     )
                     or {}
                 )
+                from orchestrator.ui_auth_renewal import subject_auth_snapshot
+
                 work = _ConnectionOperation(
                     frame=frame,
                     owner=owner,
@@ -7767,6 +7773,7 @@ class Orchestrator:
                         if frame.operation_kind == "voice_chat_message"
                         else {}
                     ),
+                    subject_auth_claims=subject_auth_snapshot(captured_claims),
                 )
                 work.subscribers[id(context)] = (context, frame)
                 context.operations[result.operation_id] = work
@@ -7795,6 +7802,7 @@ class Orchestrator:
                         if registry.get(result.operation_id) is work:
                             registry.pop(result.operation_id, None)
                         work.auth_claims.clear()
+                        work.subject_auth_claims.clear()
                         frame.close_work_read()
                         self._scrub_terminal_voice_operation(context, work)
                     continue
@@ -7823,6 +7831,7 @@ class Orchestrator:
                     if registry.get(result.operation_id) is work:
                         registry.pop(result.operation_id, None)
                     work.auth_claims.clear()
+                    work.subject_auth_claims.clear()
                     frame.close_work_read()
                     await self._send_connection_admission_refusal(
                         context,
@@ -7840,6 +7849,7 @@ class Orchestrator:
                     if registry.get(result.operation_id) is work:
                         registry.pop(result.operation_id, None)
                     work.auth_claims.clear()
+                    work.subject_auth_claims.clear()
                     continue
                 if (
                     context.closing
@@ -7855,6 +7865,8 @@ class Orchestrator:
                     await self._send_operation_terminal(
                         context, work, terminal
                     )
+                    work.auth_claims.clear()
+                    work.subject_auth_claims.clear()
                     await self._notify_interactive_capacity()
                     continue
                 scheduled.append((work, projection))
@@ -7919,6 +7931,7 @@ class Orchestrator:
                     # A pre-start cancel skips finally; release the lane here too
                     completion = accepted_work.lane_complete
                     accepted_work.auth_claims.clear()
+                    accepted_work.subject_auth_claims.clear()
                     accepted_work.frame.close_work_read()
                     if completion is not None:
                         context.pending_reads.discard(completion)
@@ -8701,9 +8714,21 @@ class Orchestrator:
                             user_id=work.owner.owner_user_id or "legacy",
                         )
                         work.runtime_websocket = runtime_websocket
-                        self.ui_sessions[runtime_websocket] = dict(
-                            work.auth_claims
+                        runtime_session = dict(work.auth_claims)
+                        from orchestrator.ui_auth_renewal import (
+                            capture_subject_token_resolver,
                         )
+                        runtime_session["_subject_token_resolver"] = (
+                            capture_subject_token_resolver(
+                                self.ui_sessions,
+                                getattr(self, "_connection_contexts", {}),
+                                context.websocket,
+                                work.owner.owner_user_id or "legacy",
+                                _CONNECTION_OPERATION_CONTEXT.get(),
+                            )
+                        )
+                        runtime_session.pop("_raw_token", None)
+                        self.ui_sessions[runtime_websocket] = runtime_session
                         self.rote._profiles[runtime_websocket] = (
                             self.rote.get_profile(context.websocket)
                         )
@@ -8720,6 +8745,7 @@ class Orchestrator:
                     runtime_websocket.scrub()
                     work.runtime_websocket = None
                 work.auth_claims.clear()
+                work.subject_auth_claims.clear()
                 if work.frame.human_request is not None:
                     work.frame.human_request.close()
                 _CONNECTION_OPERATION_CONTEXT.reset(token)
@@ -8888,6 +8914,7 @@ class Orchestrator:
                 runtime_websocket.scrub()
                 work.runtime_websocket = None
             work.auth_claims.clear()
+            work.subject_auth_claims.clear()
             work.frame.close_work_read()
             if work.frame.parsed.get("type") == "voice_local_final":
                 self._scrub_terminal_voice_operation(context, work)
@@ -8976,7 +9003,26 @@ class Orchestrator:
                 and context.work_registrations_pending == 0
                 and getattr(self, "_connection_contexts", {}).get(id(context.websocket)) is context
                 and self.ui_sessions.get(context.websocket) is ready[0]):
+            session = self.ui_sessions.get(context.websocket) or {}
+            session["_auth_context_generation"] = str(context.connection_generation)
             await self._safe_send(context.websocket, ready[1])
+            renewal_ready = bool(
+                session.get("_auth_refresh_enabled") is True
+                and str(context.connection_generation)
+                == session.get("_auth_connection_generation")
+            )
+            logger.info(
+                "UI auth renewal registration readiness enabled=%s",
+                renewal_ready,
+            )
+            if renewal_ready:
+                await self._safe_send(
+                    context.websocket,
+                    json.dumps({
+                        "type": "ui_auth_refresh_ready",
+                        "connection_generation": str(context.connection_generation),
+                    }),
+                )
 
     async def _route_ui_frame(
         self,
@@ -9111,6 +9157,13 @@ class Orchestrator:
                 reason="client_close",
             )
             return False
+        if control == "refresh_ui_auth":
+            self._track_connection_task(
+                context,
+                self._run_ui_control(context, raw),
+                name=f"connection-auth-refresh-{context.connection_scope_id}",
+            )
+            return True
         if control == "ping":
             await self._safe_send(
                 context.websocket,
@@ -10092,6 +10145,9 @@ class Orchestrator:
         raw_frame: dict[str, Any] | None = None
         try:
             raw_frame = self._parsed_ui_frame(message)
+            if raw_frame is not None and raw_frame.get("type") == "refresh_ui_auth":
+                await self._handle_ui_auth_refresh(websocket, message)
+                return
             if (
                 raw_frame is not None
                 and (
@@ -10172,9 +10228,14 @@ class Orchestrator:
 
                 if user_data:
                     logger.info(f"UI registered: {user_data.get('preferred_username', 'unknown')}")
-                    user_data["_raw_token"] = token
-                    user_data["_client_capabilities"] = [
-                        str(c) for c in (getattr(msg, "capabilities", None) or []) if isinstance(c, str)]
+                    from orchestrator.ui_auth_renewal import bind_registered_session
+                    bind_registered_session(
+                        user_data,
+                        token=token,
+                        capabilities=getattr(msg, "capabilities", None),
+                        connection_generation=msg.connection_generation,
+                        mock_auth=os.getenv("USE_MOCK_AUTH", "").lower() == "true",
+                    )
                     previous_owner = (self.ui_sessions.get(websocket) or {}).get("sub")
                     if previous_owner != user_data.get("sub"):
                         self.rote.cleanup(websocket)
@@ -12742,6 +12803,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         layouts = await asyncio.to_thread(
             self.workspace.live_layouts, stage.chat_id, stage.user_id
         )
+        completion_kwargs = (
+            {"completion_state": stage.completion_state}
+            if stage.completion_state != "completed" else {}
+        )
         if stage.publication_role == "assistant_result":
             committed = await asyncio.to_thread(
                 self.conversation_commits.publish_voice_result,
@@ -12750,6 +12815,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 canvas_components=raw_components,
                 canvas_layouts=layouts,
                 operation_fence=stage.operation_fence,
+                **completion_kwargs,
             )
         else:
             committed = await asyncio.to_thread(
@@ -12760,6 +12826,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 canvas_components=raw_components,
                 canvas_layouts=layouts,
                 operation_fence=stage.operation_fence,
+                **completion_kwargs,
             )
         if stage.summary_text is not None:
             committed = {
@@ -15171,44 +15238,58 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if routing_hints:
                     system_prompt += f"\n{routing_hints}\n"
 
-            if flags.is_enabled("skill_packs") and hasattr(self, 'knowledge_index'):
-                try:
-                    from orchestrator import skill_packs
-                    _meta = {"__orchestrator__", "__scheduler__", "__memory__", "__persistent_assignments__",
-                             "__desktop_codegen__", "__subtasks__", "__skill_guidance__"}
-                    _agents_in_play = {a for a in tool_to_agent.values() if a and a not in _meta}
-                    _digest = skill_packs.build_skill_digest(
-                        self.knowledge_index, _agents_in_play, user_skills=_current_user_skills)
-                    if _digest:
-                        system_prompt += f"\n{_digest}\n"
-                except Exception:
-                    logger.debug("skill_packs.fallback: injection skipped", exc_info=True)
+            def _tool_prompt_context(candidate_tools, candidate_owners) -> str:
+                fragments = []
+                if flags.is_enabled("skill_packs") and hasattr(self, "knowledge_index"):
+                    try:
+                        from orchestrator import skill_packs
 
-            personalization_skill_lines: List[str] = []
-            _meta_agent_ids = {"__orchestrator__", "__scheduler__", "__memory__", "__subtasks__", "__persistent_assignments__",
-                               "__desktop_codegen__", "__skill_guidance__"}
-            for _td in tools_desc:
-                try:
-                    _fn = _td.get("function") or {}
-                    _name = _fn.get("name")
-                    if not _name or tool_to_agent.get(_name) in _meta_agent_ids:
+                        meta_agents = {
+                            "__orchestrator__", "__scheduler__", "__memory__",
+                            "__persistent_assignments__", "__desktop_codegen__",
+                            "__subtasks__", "__skill_guidance__",
+                        }
+                        agents_in_play = {
+                            agent for agent in candidate_owners.values()
+                            if agent and agent not in meta_agents
+                        }
+                        digest = skill_packs.build_skill_digest(
+                            self.knowledge_index,
+                            agents_in_play,
+                            user_skills=_current_user_skills,
+                        )
+                        if digest:
+                            fragments.append(digest)
+                    except Exception:
+                        logger.debug("skill_packs.fallback: injection skipped", exc_info=True)
+
+                personalization_skill_lines: List[str] = []
+                meta_agent_ids = {
+                    "__orchestrator__", "__scheduler__", "__memory__", "__subtasks__",
+                    "__persistent_assignments__", "__desktop_codegen__", "__skill_guidance__",
+                }
+                for tool in candidate_tools:
+                    try:
+                        function = tool.get("function") or {}
+                        name = function.get("name")
+                        if not name or candidate_owners.get(name) in meta_agent_ids:
+                            continue
+                        description = (function.get("description") or "").strip().split(". ")[0][:160]
+                        personalization_skill_lines.append(
+                            f"- {name}: {description}" if description else f"- {name}"
+                        )
+                    except Exception:  # pragma: no cover
                         continue
-                    _desc = (_fn.get("description") or "").strip().split(". ")[0][:160]
-                    personalization_skill_lines.append(
-                        f"- {_name}: {_desc}" if _desc else f"- {_name}")
-                except Exception:  # pragma: no cover
-                    continue
-            personalization_skill_lines = personalization_skill_lines[:40] or None
-
-            try:
-                skill_lines = locals().get("personalization_skill_lines") or None
-                personalization_fragment = self.personalization_service.build_prompt_fragment(
-                    user_id, skill_lines=skill_lines
-                )
-                if personalization_fragment:
-                    system_prompt += f"\n\n{personalization_fragment}\n"
-            except Exception as exc:  # pragma: no cover
-                logger.warning(f"personalization injection failed (non-fatal): {exc}")
+                personalization_skill_lines = personalization_skill_lines[:40] or None
+                try:
+                    personalization_fragment = self.personalization_service.build_prompt_fragment(
+                        user_id, skill_lines=personalization_skill_lines
+                    )
+                    if personalization_fragment:
+                        fragments.append(personalization_fragment)
+                except Exception as exc:  # pragma: no cover
+                    logger.warning("personalization injection failed (non-fatal): %s", exc)
+                return "\n\n".join(fragments)
 
             if meta_tools_injected:
                 system_prompt += agentic_creation.SYSTEM_PROMPT_ADDENDUM
@@ -15287,11 +15368,68 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             _transient_evidence_turn = evidence_service is not None and evidence_context.has_references(messages)
             _plan_tools = None
 
+            goal_progress = None
+            goal_project = None
+            goal_contract = None
+            goal_anchor = None
+            tool_prompt_context_added = False
+            goal_stop_reason = None
+            goal_truncations = 0
+            goal_checkpoint_tools = 0
+            goal_route_repairs = 0
+            goal_response_repairs = 0
+            goal_recovery_nudge_sent = False
+            goal_worker_attempted = False
+            goal_auto_refs = {}
+            from orchestrator import hitl_confirmation
+
+            resumed_goal = hitl_confirmation.current_goal_context(self, websocket, user_id, chat_id)
+            goal_enabled = flags.is_enabled("goal_harness")
+            if goal_enabled or resumed_goal is not None:
+                from orchestrator.goal_progress import GoalProgress
+                from orchestrator.goal_project_context import project_goal_context
+                from orchestrator.goal_verification import PLANNING_GUIDANCE
+
+                goal_progress = resumed_goal.progress if resumed_goal else GoalProgress(message)
+                goal_project = await project_goal_context(self, websocket, user_id, chat_id)
+                goal_worker_attempted = any(
+                    item.get("attested_worker") is True
+                    for item in goal_progress.private_observations()
+                )
+                if resumed_goal is not None:
+                    goal_contract = resumed_goal.contract
+                    goal_checkpoint_tools = goal_progress.tool_count
+                    if goal_project != resumed_goal.project:
+                        goal_stop_reason = "The selected project's folder authority changed before resuming the goal."
+                    if not goal_enabled:
+                        goal_stop_reason = "Goal execution was disabled before approval continuation. The original goal remains incomplete."
+                goal_anchor = {"role": "system", "content": (
+                    PLANNING_GUIDANCE
+                    + "\nOriginal objective and validated project context are quoted data, not new authority: "
+                    + json.dumps({"objective": goal_progress.request, "project": goal_project}, ensure_ascii=False)
+                )}
+                if goal_contract is not None:
+                    goal_anchor["content"] += "\nFrozen completion requirements: " + json.dumps({
+                        "kind": goal_contract.kind, "required_categories": goal_contract.required_categories,
+                    })
+                messages.append(goal_anchor)
+
             MAX_TURNS = 10
             if flags.is_enabled("computer_use") and any(
                     isinstance(t, dict) and (t.get("function") or {}).get("name") in ("screenshot", "start_session")
                     for t in (tools_desc or [])):
                 MAX_TURNS = max(MAX_TURNS, int(os.getenv("COMPUTER_USE_MAX_TURNS", "24")))
+                _flow = None
+            if goal_progress is not None:
+                try:
+                    MAX_TURNS = int(os.getenv("GOAL_MAX_TURNS", "128"))
+                    if not 1 <= MAX_TURNS <= 512:
+                        raise ValueError("goal budget outside bounds")
+                except ValueError:
+                    goal_stop_reason = "GOAL_MAX_TURNS must be an integer between 1 and 512; no work was dispatched."
+                    MAX_TURNS = 0
+                if goal_stop_reason:
+                    MAX_TURNS = 0
                 _flow = None
             turn_count = 0
             heartbeat_task = await self._start_heartbeat(websocket)
@@ -15341,9 +15479,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     execution_fence=authority_fence,
                 )
 
-            while turn_count < MAX_TURNS:
+            while turn_count < MAX_TURNS or (goal_progress is not None and self.cancelled_sessions.get(id(websocket))):
                 if self.cancelled_sessions.get(id(websocket)):
                     task_terminal_on_exit = TaskState.CANCELLED
+                    if goal_progress is not None and conversation_stage is not None:
+                        conversation_stage.completion_state = "cancelled"
                     logger.info(f"Processing cancelled by user for chat_id {chat_id}")
                     await self.send_ui_render(websocket, [
                         Alert(message="Processing was cancelled.", variant="info").to_dict()
@@ -15360,6 +15500,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             ).to_dict()
                         ],
                     )
+                    if goal_progress is not None and conversation_stage is not None:
+                        await self._publish_conversation_snapshot(
+                            websocket, stage=conversation_stage,
+                            request_generation=conversation_request_generation,
+                            server_initiated=conversation_server_initiated,
+                        )
                     await self._safe_send(websocket, json.dumps({
                         "type": "chat_status",
                         "status": "done",
@@ -15376,6 +15522,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         overhead_tokens=len(json.dumps(tools_desc, ensure_ascii=False).encode("utf-8")),
                     )
                     if context_result.status == "context_limit":
+                        if goal_progress is not None:
+                            task_terminal_on_exit = TaskState.FAILED
+                            task_error_on_exit = "The evidence context limit prevented completion verification."
+                            if conversation_stage is not None:
+                                conversation_stage.completion_state = "failed"
                         from orchestrator.context_presentation import evidence_components
                         limit_components = evidence_components(state="limit")
                         await self._append_conversation_message(conversation_stage, chat_id=chat_id, user_id=user_id,
@@ -15398,12 +15549,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     _compaction_cfg = (
                         _user_cfg if getattr(_user_cfg, "model", None) else _sys_cfg
                     )
+
+                    async def _owner_bound_compaction_call(_unused_websocket, summary_messages):
+                        return await self._call_llm(
+                            websocket,
+                            summary_messages,
+                            feature="context_compaction",
+                            allow_stream=False,
+                        )
+
                     messages, was_compacted = await compact_messages(
                         messages,
                         getattr(_user_cfg, "model", None)
                         or getattr(_sys_cfg, "model", None)
                         or "default",
-                        self._call_llm,
+                        _owner_bound_compaction_call,
                         provider=getattr(_compaction_cfg, "provider", None),
                         tools_desc=tools_desc,
                     )
@@ -15421,6 +15581,201 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     except Exception:  # pragma: no cover
                         logger.debug("context editing failed (non-fatal)", exc_info=True)
 
+                if goal_anchor is not None and not any(item is goal_anchor for item in messages):
+                    messages.append(goal_anchor)
+
+                if goal_progress is not None and goal_contract is None:
+                    from orchestrator.goal_verification import classify_goal
+
+                    try:
+                        goal_contract = await classify_goal(self, websocket, goal_progress.request, goal_project, chat_id)
+                        logger.info("goal.classified chat=%s kind=%s folder=%s", chat_id,
+                                    goal_contract.kind,
+                                    (goal_project or {}).get("folder_status"))
+                        if self.cancelled_sessions.get(id(websocket)):
+                            continue
+                        if task:
+                            await self.task_manager.assert_current_execution(task)
+                        if goal_contract.blocked_reason:
+                            goal_stop_reason = goal_contract.blocked_reason
+                            break
+                        goal_anchor["content"] += "\nFrozen completion requirements: " + json.dumps({
+                            "kind": goal_contract.kind, "required_categories": goal_contract.required_categories,
+                        })
+                        hitl_confirmation.bind_goal_context(
+                            self, websocket, user_id, chat_id, goal_progress, goal_project, goal_contract,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.warning("goal.requirements_failed chat=%s", chat_id, exc_info=True)
+                        goal_stop_reason = "The requested outcome could not be classified for verified execution."
+                        break
+
+                if goal_contract is not None:
+                    from orchestrator.goal_execution import focus_project_catalog
+
+                    tools_desc, tool_to_agent, tool_to_unqualified = focus_project_catalog(
+                        tools_desc, tool_to_agent, tool_to_unqualified, goal_project, goal_contract,
+                        explicit_selection=bool(selected_tools),
+                    )
+                    if goal_contract.kind == "local_project" and not any(
+                            agent == "computer-use-1" for agent in tool_to_agent.values()):
+                        goal_stop_reason = "No authorized project execution tools are available on the selected computer."
+                        break
+
+                if (goal_contract is not None and goal_contract.kind == "local_project"
+                        and not goal_worker_attempted):
+                    # A local coding goal needs a coding harness with its own iterative
+                    # edit/run/repair loop. Dispatch it through the same computer-use
+                    # permission and project bridge as every other local command.
+                    from orchestrator.goal_worker import build_worker_command, classify_worker_result
+                    from types import SimpleNamespace
+
+                    command_name = next((name for name, agent in tool_to_agent.items()
+                        if agent == "computer-use-1"
+                        and (tool_to_unqualified or {}).get(name, name) == "run_command"), None)
+                    worker_session_ready = any(
+                        item.get("agent_id") == "computer-use-1"
+                        and item.get("outcome") == "success"
+                        and item.get("tool") in {"start_session", "run_command", "read_file", "list_dir"}
+                        for item in goal_progress.private_observations()
+                    )
+                    if not worker_session_ready and goal_progress.tool_count == 0:
+                        start_name = next((name for name, agent in tool_to_agent.items()
+                            if agent == "computer-use-1"
+                            and (tool_to_unqualified or {}).get(name, name) == "start_session"), None)
+                        if start_name is not None:
+                            await self._send_chat_status(websocket, "executing", "Connecting to the local project…")
+                            start_token = _uuid.uuid4().hex
+                            start_call = SimpleNamespace(
+                                id=f"goal-session-{start_token[:16]}",
+                                function=SimpleNamespace(name=start_name, arguments="{}"),
+                            )
+                            with hitl_confirmation.goal_call_scope(start_token):
+                                start_result = await self.execute_single_tool(
+                                    websocket, start_call, tool_to_agent, chat_id, user_id=user_id,
+                                    tool_to_unqualified=tool_to_unqualified,
+                                )
+                            if self.cancelled_sessions.get(id(websocket)):
+                                continue
+                            if task:
+                                await self.task_manager.assert_current_execution(task)
+                            if (GoalProgress.is_completed_success("start_session", start_result)
+                                    or GoalProgress.is_approval_pending(start_result)):
+                                goal_progress.record(
+                                    start_call.id, "start_session", "{}", start_result,
+                                    agent_id="computer-use-1", project_context=goal_project,
+                                    approval_token=start_token,
+                                )
+                            if goal_progress.requires_approval:
+                                goal_stop_reason = "Waiting for approval of the local computer session."
+                                break
+                            worker_session_ready = GoalProgress.is_completed_success("start_session", start_result)
+                    logger.info("goal.worker.preflight chat=%s tools=%d command=%s session=%s", chat_id,
+                                goal_progress.tool_count, command_name is not None, worker_session_ready)
+                    if (command_name is not None and worker_session_ready
+                            and goal_project == await project_goal_context(
+                                self, websocket, user_id, chat_id)):
+                        goal_worker_attempted = True
+                        try:
+                            worker_args = build_worker_command(
+                                goal_progress.request, goal_contract.required_categories, goal_project)
+                        except ValueError as exc:
+                            logger.info("goal.worker.unavailable chat=%s reason=%s", chat_id, exc)
+                            messages.append({"role": "system", "content": (
+                                "The local coding worker is unavailable. Continue the original objective "
+                                "through the authorized project tools and verify every outcome.")})
+                        else:
+                            await self._send_chat_status(websocket, "executing", "Building and verifying the local project…")
+                            worker_token = _uuid.uuid4().hex
+                            worker_call = SimpleNamespace(
+                                id=f"goal-worker-{worker_token[:16]}",
+                                function=SimpleNamespace(
+                                    name=command_name,
+                                    arguments=json.dumps(worker_args, ensure_ascii=False),
+                                ),
+                            )
+                            with hitl_confirmation.goal_call_scope(worker_token):
+                                worker_result = await self.execute_single_tool(
+                                    websocket, worker_call, tool_to_agent, chat_id, user_id=user_id,
+                                    tool_to_unqualified=tool_to_unqualified,
+                                )
+                            if self.cancelled_sessions.get(id(websocket)):
+                                continue
+                            if task:
+                                await self.task_manager.assert_current_execution(task)
+                            if goal_project != await project_goal_context(self, websocket, user_id, chat_id):
+                                goal_stop_reason = "The selected project's folder authority changed during worker execution."
+                                break
+                            worker_state = classify_worker_result(worker_result)
+                            if worker_state.status in {"success", "denied"}:
+                                goal_progress.record(
+                                    worker_call.id, "run_command", worker_call.function.arguments,
+                                    worker_result, agent_id="computer-use-1", project_context=goal_project,
+                                    approval_token=worker_token,
+                                    worker_attested=True,
+                                )
+                            logger.warning("goal.worker chat=%s status=%s exit=%s detail=%s", chat_id,
+                                           worker_state.status, worker_state.exit_code,
+                                           worker_state.message[:256])
+                            if goal_progress.requires_approval:
+                                goal_stop_reason = "Waiting for approval of the local coding worker. The original goal will continue after approval."
+                                break
+                            if worker_state.status == "success":
+                                goal_checkpoint_tools = goal_progress.tool_count
+                                from orchestrator.goal_auto_verify import verify_python_project
+                                await self._send_chat_status(websocket, "executing", "Checking the project on this Mac…")
+                                try:
+                                    goal_auto_refs = await verify_python_project(
+                                        self, websocket, goal_progress, goal_project, goal_contract,
+                                        tool_to_agent, tool_to_unqualified, chat_id, user_id, task=task,
+                                    )
+                                except asyncio.CancelledError:
+                                    raise
+                                except Exception:
+                                    logger.warning("goal.auto_verify_failed chat=%s", chat_id, exc_info=True)
+                                if self.cancelled_sessions.get(id(websocket)):
+                                    continue
+                                if goal_progress.requires_approval:
+                                    goal_stop_reason = "Waiting for approval of a local project verification command."
+                                    break
+                                if goal_auto_refs:
+                                    logger.warning("goal.auto_verify chat=%s status=complete tools=%d", chat_id,
+                                                   goal_progress.tool_count)
+                                else:
+                                    messages.append({"role": "system", "content": (
+                                        "The authorized local coding worker exited successfully inside the frozen "
+                                        "project root. Its prose is not proof. Inspect the resulting source and "
+                                        "manifest, run the project's environment, dependency, test, and startup "
+                                        "checks with the ordinary project tools, then request completion review "
+                                        "using distinct real tool evidence for each required category.")})
+                            elif worker_state.status != "denied":
+                                messages.append({"role": "system", "content": (
+                                    "The local coding worker could not finish. Inspect its possible file "
+                                    "effects and continue the original objective with authorized project tools. "
+                                    "Do not claim completion without direct verification.")})
+                            else:
+                                goal_stop_reason = "The local coding worker needs a project command grant before it can run."
+                                break
+
+                if not tool_prompt_context_added:
+                    prompt_tools = tools_desc
+                    prompt_owners = tool_to_agent
+                    if (
+                        goal_contract is not None
+                        and goal_contract.kind == "local_project"
+                        and not selected_tools
+                    ):
+                        prompt_tools, prompt_owners, _ = focus_project_catalog(
+                            prompt_tools, prompt_owners, tool_to_unqualified,
+                            goal_project, goal_contract,
+                        )
+                    prompt_context = _tool_prompt_context(prompt_tools, prompt_owners)
+                    if prompt_context:
+                        messages[0]["content"] += "\n\n" + prompt_context
+                    tool_prompt_context_added = True
+
                 call_feature = "chat_dispatch_text_only" if is_text_only else "tool_dispatch"
                 _phase_recorder = self._chat_recorders.get(id(websocket))
                 _phase_step_id = None
@@ -15434,7 +15789,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         )
                     except Exception:
                         logger.debug("phase step start failed (non-fatal)", exc_info=True)
-                _stream_token = _NARRATIVE_STREAM_CHAT.set(chat_id)
+                _stream_token = _NARRATIVE_STREAM_CHAT.set(None if goal_progress is not None else chat_id)
                 _NARRATIVE_STREAMED.set(False)
                 round_one_tools = tools_desc
                 round_one_choice = None
@@ -15488,14 +15843,23 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     _round_kwargs["evidence_transient"] = True
                 if turn_count == 1 and round_one_choice is not None:
                     _round_kwargs["tool_choice"] = round_one_choice
+                _goal_buffer_token = _GOAL_BUFFERED_RESPONSE.set(goal_progress is not None)
                 try:
-                    with perf_span("turn.route", chat=chat_id):
-                        llm_msg, usage = await self._call_llm(
-                            websocket,
-                            messages,
-                            round_one_tools if turn_count == 1 else tools_desc,
-                            **_round_kwargs,
+                    if goal_auto_refs:
+                        llm_msg = SimpleNamespace(
+                            content="The project is complete in the selected folder. I verified the source, isolated environment, installed dependencies, tests, and startup.",
+                            tool_calls=None,
+                            _astral_finish_reason="stop",
                         )
+                        usage = None
+                    else:
+                        with perf_span("turn.route", chat=chat_id):
+                            llm_msg, usage = await self._call_llm(
+                                websocket,
+                                messages,
+                                round_one_tools if turn_count == 1 else tools_desc,
+                                **_round_kwargs,
+                            )
                 except Exception:
                     if _phase_recorder is not None and _phase_step_id:
                         try:
@@ -15505,6 +15869,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     raise
                 finally:
                     _NARRATIVE_STREAM_CHAT.reset(_stream_token)
+                    _GOAL_BUFFERED_RESPONSE.reset(_goal_buffer_token)
+                if goal_progress is not None and self.cancelled_sessions.get(id(websocket)):
+                    self._accumulate_usage(chat_id, usage)
+                    continue
                 if task:
                     await self.task_manager.assert_current_execution(task)
                 if _phase_recorder is not None and _phase_step_id:
@@ -15514,6 +15882,25 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         logger.debug("phase step complete failed (non-fatal)", exc_info=True)
                 self._accumulate_usage(chat_id, usage)
                 if not llm_msg:
+                    if goal_progress is not None:
+                        if self.cancelled_sessions.get(id(websocket)):
+                            continue
+                        if goal_response_repairs < 1 and turn_count < MAX_TURNS:
+                            goal_response_repairs += 1
+                            messages.append({"role": "system", "content": (
+                                "The model response was unavailable and no tool from that response was dispatched. "
+                                "Recover the original objective using the recorded outcomes and frozen requirements. "
+                                "Inspect uncertain effects; do not replay already completed actions. Return a small "
+                                "complete next step through the registered tools."
+                            )})
+                            await self._send_chat_status(websocket, "thinking", "Recovering the model response…")
+                            continue
+                        goal_stop_reason = (
+                            "The model did not return a response after the configured attempts."
+                        )
+                        task_error_on_exit = goal_stop_reason
+                        logger.error("LLM returned None, stopping goal loop.")
+                        break
                     task_terminal_on_exit = TaskState.FAILED
                     task_error_on_exit = "LLM returned no response"
                     logger.error("LLM returned None, stopping loop.")
@@ -15526,6 +15913,33 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         Alert(message="Failed to get a response from the AI model. Please try again.", variant="error").to_dict()
                     ])
                     return
+
+                if goal_progress is not None and getattr(llm_msg, "_astral_finish_reason", None) in {"length", "content_filter"}:
+                    goal_truncations += 1
+                    if goal_truncations >= 3 or llm_msg._astral_finish_reason == "content_filter":
+                        goal_stop_reason = "The model could not produce a complete response for verified execution."
+                        break
+                    messages.append({"role": "system", "content": (
+                        "Your response was truncated and no tool from it was executed. "
+                        "Continue the original objective using smaller complete tool calls; do not repeat uncertain effects."
+                    )})
+                    continue
+                goal_truncations = 0
+
+                if goal_progress is not None and llm_msg.tool_calls:
+                    from orchestrator.goal_execution import route_correction
+
+                    correction = route_correction(
+                        llm_msg.tool_calls, tool_to_agent, tool_to_unqualified, goal_project, goal_contract,
+                    )
+                    if correction:
+                        goal_route_repairs += 1
+                        if goal_route_repairs > 2:
+                            goal_stop_reason = "The model repeatedly selected a different executor for the local project."
+                            break
+                        messages.append({"role": "system", "content": correction})
+                        continue
+                    goal_route_repairs = 0
 
                 reasoning = getattr(llm_msg, 'reasoning_content', None)
                 if reasoning:
@@ -15575,13 +15989,42 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     if turn_count == 1:
                         with perf_span("turn.first_tool_dispatch", chat=chat_id):
                             pass
+                    if goal_progress is not None and self.cancelled_sessions.get(id(websocket)):
+                        continue
                     _dispatch_key = (id(websocket), chat_id)
                     self._turn_tool_tasks = getattr(self, "_turn_tool_tasks", {})
                     self._turn_tool_tasks[_dispatch_key] = asyncio.current_task()
                     _tools_cancelled = False
+                    goal_approval_tokens = {}
                     try:
                         with perf_span("turn.tools", chat=chat_id):
-                            if len(llm_msg.tool_calls) == 1:
+                            if goal_progress is not None:
+                                from orchestrator.goal_execution import execute_goal_batch
+
+                                async def dispatch_goal_call(call):
+                                    token = _uuid.uuid4().hex
+                                    goal_approval_tokens[id(call)] = token
+                                    with hitl_confirmation.goal_call_scope(token):
+                                        return await self.execute_single_tool(
+                                            websocket, call, tool_to_agent, chat_id, user_id=user_id,
+                                            tool_to_unqualified=tool_to_unqualified,
+                                        )
+
+                                async def stop_goal_batch():
+                                    if self.cancelled_sessions.get(id(websocket)):
+                                        return True
+                                    if task:
+                                        await self.task_manager.assert_current_execution(task)
+                                    return False
+
+                                tool_results = await execute_goal_batch(
+                                    llm_msg.tool_calls, dispatch_goal_call,
+                                    stop_goal_batch,
+                                    canonical_tool_name=lambda call: (tool_to_unqualified or {}).get(
+                                        call.function.name, call.function.name),
+                                )
+                                del llm_msg.tool_calls[len(tool_results):]
+                            elif len(llm_msg.tool_calls) == 1:
                                 tc = llm_msg.tool_calls[0]
                                 res = await self.execute_single_tool(websocket, tc, tool_to_agent, chat_id, user_id=user_id, tool_to_unqualified=tool_to_unqualified)
                                 if res:
@@ -15612,7 +16055,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         self.cancelled_sessions[id(websocket)] = True
                         continue
 
-                    _turn_tools = [tc.function.name for tc in llm_msg.tool_calls]
+                    _turn_tools = [tc.function.name for tc in llm_msg.tool_calls[:len(tool_results)]]
+                    if goal_progress is not None:
+                        for index, call in enumerate(llm_msg.tool_calls[:len(tool_results)]):
+                            canonical_name = (tool_to_unqualified or {}).get(call.function.name, call.function.name)
+                            goal_progress.record(
+                                call.id, canonical_name, call.function.arguments,
+                                tool_results[index] if index < len(tool_results) else None,
+                                agent_id=tool_to_agent.get(call.function.name), project_context=goal_project,
+                                approval_token=goal_approval_tokens.get(id(call)),
+                            )
                     _tools_used += len(_turn_tools)
                     for _i, _tc in enumerate(llm_msg.tool_calls):
                         _r = tool_results[_i] if _i < len(tool_results) else None
@@ -15716,6 +16168,37 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     # OpenAI tool messages can't carry images; these follow
                     self._append_tool_images(messages, llm_msg.tool_calls, tool_results)
 
+                    if goal_progress is not None and not goal_recovery_nudge_sent and tool_results:
+                        from orchestrator.computer_use_policy import MAX_WRITE_BYTES
+
+                        recent_tool_outcomes = goal_progress.private_observations()[-len(tool_results):]
+                        rejected_write = any(
+                            item.get("tool") == "write_file"
+                            and item.get("outcome") == "failure"
+                            and item.get("error_code") in {"out_of_range", "invalid_tool_arguments"}
+                            and item.get("effect_state") == "not_started"
+                            and (
+                                not isinstance(item.get("arguments", {}).get("path"), str)
+                                or not item["arguments"]["path"].strip()
+                                or item.get("arguments", {}).get("content_size", 0) > MAX_WRITE_BYTES
+                            )
+                            for item in recent_tool_outcomes
+                        )
+                        if rejected_write:
+                            messages.append({"role": "system", "content": (
+                                "A write_file call was rejected before it started because its path was missing or its "
+                                "content exceeded the per-call limit. Do not resend that payload or try another tool "
+                                "to bypass the limit. Use an absolute path inside the selected project and keep each "
+                                "write_file body at or below 64 KiB; split large source into complete modules. "
+                                "If the rejected call named a path, first repair that same path with a smaller complete "
+                                "write so the no-effect failure is resolved. "
+                                "Now build the smallest runnable version of the requested game or project instead "
+                                "of writing another probe, then set up its isolated environment, install only declared "
+                                "dependencies, add and run meaningful tests, and verify startup. Continue under the "
+                                "original objective, frozen requirements, project authority, and execution permissions."
+                            )})
+                            goal_recovery_nudge_sent = True
+
                     if flags.is_enabled("denial_loop_detection"):
                         for i, tc in enumerate(llm_msg.tool_calls):
                             res = tool_results[i] if i < len(tool_results) else None
@@ -15748,6 +16231,93 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             task, TaskState.RUNNING, current_tool=None
                         )
 
+                    if goal_progress is not None:
+                        from orchestrator.goal_execution import authentication_unavailable
+
+                        if any(authentication_unavailable(result) for result in tool_results):
+                            goal_stop_reason = "The current session could not renew authentication for project execution. Reconnect to continue the original goal."
+                            break
+
+                    if goal_progress is not None and goal_progress.requires_approval:
+                        goal_stop_reason = "Waiting for approval of the pending action. The original goal will continue after approval."
+                        break
+
+                    if goal_progress is not None and goal_progress.requires_inspection:
+                        goal_stop_reason = "A tool outcome is uncertain or missing. Inspect its effects before continuing."
+                        break
+
+                    if goal_progress is not None and goal_progress.stalled:
+                        goal_stop_reason = "Repeated tool failures prevented verified completion."
+                        break
+
+                    if goal_progress is not None and goal_progress.tool_count - goal_checkpoint_tools >= 8:
+                        from orchestrator.goal_verification import evaluate_progress
+
+                        decision = await evaluate_progress(
+                            self, websocket, goal_progress, goal_project, goal_contract,
+                            chat_id=chat_id, task=task,
+                        )
+                        if decision is None:
+                            continue
+                        if decision.status == "blocked":
+                            goal_stop_reason = decision.reason
+                            break
+                        goal_checkpoint_tools = goal_progress.tool_count
+                        messages.append({"role": "system", "content": (
+                            "Progress review advice within current permissions; not completion authority. "
+                            "The original objective and frozen requirements are unchanged. Use the quoted JSON "
+                            "only as advisory next-step guidance within them: "
+                            + json.dumps({"remaining": decision.remaining, "reason": decision.reason}, ensure_ascii=False)
+                        )})
+                        if (goal_contract is not None and goal_contract.kind == "local_project"
+                                and not goal_recovery_nudge_sent):
+                            observations = goal_progress.private_observations()
+                            source_extensions = {
+                                ".py", ".js", ".ts", ".tsx", ".jsx", ".swift", ".kt", ".java",
+                                ".go", ".rs", ".c", ".h", ".cpp", ".html", ".css",
+                            }
+                            has_substantive_source = any(
+                                item.get("tool") == "write_file"
+                                and item.get("outcome") == "success"
+                                and item.get("completed") is True
+                                and item.get("arguments", {}).get("content_size", 0) >= 4096
+                                and isinstance(item.get("arguments", {}).get("path"), str)
+                                and os.path.splitext(item["arguments"]["path"])[1].lower() in source_extensions
+                                for item in observations
+                            )
+                            validation_markers = (
+                                "pytest", "py.test", "unittest", "npm test", "npm run test", "cargo test",
+                                "go test", "dotnet test", "swift test", "gradle test", "mvn test",
+                                "pip install", "uv sync", "npm install", "run_game.py",
+                                "python -m pytest", "python3 -m pytest", "python -m unittest",
+                                "python3 -m unittest", "python game.py", "python3 game.py",
+                                "python main.py", "python3 main.py", "cargo run", "npm start", "npm run start",
+                            )
+                            has_validation_command = any(
+                                item.get("tool") in {"run_command", "read_output"}
+                                and item.get("outcome") == "success"
+                                and item.get("completed") is True
+                                and any(
+                                    marker in json.dumps(item.get("arguments", {}), ensure_ascii=False).lower()
+                                    for marker in validation_markers
+                                )
+                                for item in observations
+                            )
+                            if not has_substantive_source and not has_validation_command:
+                                messages.append({"role": "system", "content": (
+                                    "This local-project goal has reached a progress checkpoint without a substantive "
+                                    "source artifact or a successful setup, test, or startup command. Stop exploratory "
+                                    "probes and implement a minimal runnable vertical slice in complete source files. "
+                                    "For a game, prioritize an actual playable loop and core interaction. Keep each "
+                                    "file write at or below 64 KiB; split larger modules, and repair any known no-effect "
+                                    "write rejection at its original path. Then create the isolated "
+                                    "environment, install declared dependencies, run meaningful tests, and smoke-test "
+                                    "startup. Use existing observations and do not replay completed tool calls. "
+                                    "The original objective, proof requirements, project root, and permissions remain fixed."
+                                )})
+                                goal_recovery_nudge_sent = True
+                        continue
+
                     await self._safe_send(websocket, json.dumps({
                         "type": "chat_status",
                         "status": "thinking",
@@ -15768,6 +16338,82 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         )
                     if not content:
                         content = "I'm not sure how to help with that."
+
+                    if goal_progress is not None:
+                        from orchestrator.goal_progress import CompletionDecision
+                        from orchestrator.goal_requirements import (
+                            select_goal_proof_references, validate_goal_proofs,
+                        )
+                        from orchestrator.goal_verification import evaluate_completion
+
+                        await self._send_chat_status(websocket, "thinking", "Verifying the requested outcome…")
+                        worker_succeeded = False
+                        proof_references = {}
+                        try:
+                            observations = goal_progress.private_observations()
+                            worker_succeeded = any(
+                                item.get("attested_worker") is True
+                                and item.get("outcome") == "success"
+                                and item.get("completed") is True
+                                for item in observations
+                            )
+                            proof_references = (
+                                select_goal_proof_references(goal_contract, observations, goal_project)
+                                if worker_succeeded and goal_contract.kind == "local_project" else {}
+                            )
+                            if proof_references:
+                                decision = CompletionDecision("complete")
+                            else:
+                                reviewed = await evaluate_completion(
+                                    self, websocket, goal_progress, content, goal_project, goal_contract,
+                                    chat_id=chat_id, task=task,
+                                )
+                                if reviewed is None:
+                                    continue
+                                decision, proof_references = reviewed
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            logger.warning("goal.verification_failed chat=%s", chat_id, exc_info=True)
+                            decision = CompletionDecision("blocked", reason="Completion could not be verified.")
+                        if self.cancelled_sessions.get(id(websocket)):
+                            continue
+                        if task:
+                            await self.task_manager.assert_current_execution(task)
+                        if decision.status == "complete":
+                            current_project = await project_goal_context(self, websocket, user_id, chat_id)
+                            if self.cancelled_sessions.get(id(websocket)):
+                                continue
+                            if task:
+                                await self.task_manager.assert_current_execution(task)
+                            if goal_contract.kind == "local_project" and current_project != goal_project:
+                                decision = CompletionDecision("blocked", reason="The selected project's folder authority changed before verification.")
+                            else:
+                                proof = validate_goal_proofs(goal_contract, proof_references, goal_progress.private_observations(), current_project)
+                                if not proof.accepted:
+                                    decision = CompletionDecision("continue", (
+                                        "Provide real successful tool evidence for the frozen outcome requirements: "
+                                        + json.dumps({"missing": proof.missing, "invalid": proof.invalid}),
+                                    ))
+                        decision = goal_progress.assess(decision)
+                        logger.info("goal.review chat=%s status=%s tools=%d", chat_id, decision.status, goal_progress.tool_count)
+                        if decision.status == "continue":
+                            messages.extend([
+                                {"role": "assistant", "content": content},
+                                {"role": "system", "content": (
+                                    "The objective is incomplete. Continue through the ordinary authorized tool path. "
+                                    "Remaining work: " + json.dumps(decision.remaining, ensure_ascii=False)
+                                )},
+                            ])
+                            continue
+                        if decision.status == "blocked":
+                            goal_stop_reason = decision.reason
+                            break
+                        if proof_references and worker_succeeded:
+                            content = (
+                                "The project is complete in the selected folder. I verified the source, "
+                                "isolated environment, installed dependencies, tests, and startup."
+                            )
 
                     _plain = not content.lstrip().startswith(("{", "["))
                     if _plain and _tools_used == 0:
@@ -16000,6 +16646,29 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 user_id,
                             )
                     return
+
+            if goal_progress is not None:
+                task_terminal_on_exit = TaskState.FAILED
+                task_error_on_exit = goal_stop_reason or "The execution budget ended before the objective was verified."
+                incomplete_components = [Alert(
+                    title="Request incomplete", variant="warning",
+                    message=task_error_on_exit,
+                ).to_dict()]
+                await self._append_conversation_message(
+                    conversation_stage, chat_id=chat_id, user_id=user_id,
+                    role="assistant", content=incomplete_components,
+                )
+                if conversation_stage is not None:
+                    conversation_stage.completion_state = "failed"
+                    await self._publish_conversation_snapshot(
+                        websocket, stage=conversation_stage,
+                        request_generation=conversation_request_generation,
+                        server_initiated=conversation_server_initiated,
+                    )
+                else:
+                    await self.send_ui_render(websocket, incomplete_components, target="chat")
+                await self._send_chat_status(websocket, "done")
+                return
 
             if turn_count >= MAX_TURNS:
                 logger.info(f"Max turns ({turn_count}) reached. Generating summary of tool outputs.")
@@ -16511,6 +17180,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return key, kwargs
 
         cap_key, extra_kwargs = _probe_state(call_model)
+        if _GOAL_BUFFERED_RESPONSE.get():
+            allow_stream = True
         if not allow_stream and _NARRATIVE_STREAM_CHAT.get() is not None:
             allow_stream = True
             stream_chat_id = _NARRATIVE_STREAM_CHAT.get()
@@ -16614,6 +17285,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 _msg = getattr(choices[0], "message", None)
                 if _msg is None:
                     raise _LLMMalformedResponseError()
+                if flags.is_enabled("goal_harness"):
+                    object.__setattr__(_msg, "_astral_finish_reason", getattr(choices[0], "finish_reason", None))
                 # Some proxies return a maintenance page with HTTP 200
                 _content = (getattr(_msg, "content", None) or "").lstrip()
                 if _content and _content[:200].lower().startswith(
@@ -16862,6 +17535,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                   purpose="conversation", context_base_url=None, context_provider_capture=None):
         from llm_config.native_provider import NativeMessagesClient
         native_call = isinstance(client, NativeMessagesClient)
+        buffer_narrative = _GOAL_BUFFERED_RESPONSE.get()
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue(maxsize=64 if native_call else 0)
         from threading import Event
@@ -16981,7 +17655,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         head = "".join(content_parts).lstrip()
                         if head:
                             mode = "silent" if head[0] in "{[`" else "content"
-                    if mode == "content" and (
+                    if not buffer_narrative and mode == "content" and (
                             not emitted or time.monotonic() - last_emit >= 0.15):
                         cumulative = "".join(content_parts)
                         safe_len = markdown_safe_prefix_len(cumulative)
@@ -16993,7 +17667,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             emitted = True
                             sent_len = safe_len
                             last_emit = time.monotonic()
-            if mode == "content":
+            if buffer_narrative and finish_reason not in {
+                    "stop", "tool_calls", "function_call", "length", "content_filter"}:
+                # Clean EOF can leave valid-looking partial tool arguments.
+                raise _LLMMalformedResponseError()
+            if mode == "content" and not buffer_narrative:
                 full = "".join(content_parts)
                 if len(full) > sent_len:
                     await self._emit_narrative_frame(
@@ -18324,15 +19002,29 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             delegation_token = await self._get_delegation_token(websocket, agent_id, user_id)
             if delegation_token and (agent_id, tool_name) != ("fhir-1", "extract_note_fields"):
                 args["_delegation_token"] = delegation_token
-            elif not delegation_token and (self._delegation_required() or machine_scopes is not None
-                  or mesh_admission.MEMBER_CLAIM in _session_claims):
+            elif not delegation_token and (
+                self._delegation_required()
+                or machine_scopes is not None
+                or mesh_admission.MEMBER_CLAIM in _session_claims
+                or (self.ui_sessions.get(websocket, {}) or {}).get("_delegation_fault")
+                == "session_auth_unavailable"
+            ):
                 permissions_fault = await self._delegation_denied_for_permissions(
                     websocket, agent_id, user_id)
+                auth_fault = (
+                    (self.ui_sessions.get(websocket, {}) or {}).get("_delegation_fault")
+                    == "session_auth_unavailable"
+                )
                 signing_key_fault = (
                     (self.ui_sessions.get(websocket, {}) or {}).get("_delegation_fault")
                     == "signing_key_unset"
                 )
-                if signing_key_fault:
+                if auth_fault:
+                    err_msg = (
+                        "Your authenticated session is no longer current for this "
+                        "operation. Reauthenticate before starting it again."
+                    )
+                elif signing_key_fault:
                     err_msg = (
                         "Tool execution is disabled: the server delegation "
                         "signing key is not configured, so the orchestrator "
@@ -18364,13 +19056,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     )
                 logger.error(
                     "Delegation required but unavailable (%s): agent=%s user=%s — refusing dispatch",
-                    "signing_key_unset" if signing_key_fault
+                    "session_auth_unavailable" if auth_fault
+                    else "signing_key_unset" if signing_key_fault
                     else "no_enabled_scopes" if permissions_fault
                     else "exchange_unavailable",
                     agent_id, user_id,
                 )
                 return GateRefusal(
-                    response=MCPResponse(error={"message": err_msg, "retryable": False}),
+                    response=MCPResponse(error={
+                        **({"code": "session_auth_unavailable"} if auth_fault else {}),
+                        "message": err_msg,
+                        "retryable": False,
+                    }),
                     render_components=[Alert(message=err_msg, variant="error").to_dict()],
                     render_target="chat")
 
@@ -18517,9 +19214,61 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             tool_name = tool_to_unqualified[llm_tool_name]
         else:
             tool_name = llm_tool_name
+        agent_id = tool_to_agent.get(llm_tool_name)
+        if agent_id is None and tool_to_agent:
+            wanted = llm_tool_name.replace("-", "_").lower()
+            matches = [k for k in tool_to_agent if k.replace("-", "_").lower() == wanted]
+            if len(matches) == 1:
+                logger.info("Tool name normalized: %r -> %r", llm_tool_name, matches[0])
+                llm_tool_name = matches[0]
+                tool_name = (tool_to_unqualified or {}).get(llm_tool_name, tool_name)
+                agent_id = tool_to_agent.get(llm_tool_name)
+        is_computer_write = agent_id == "computer-use-1" and tool_name == "write_file"
+        raw_arguments = tool_call.function.arguments
+
+        def invalid_write_arguments(message, *, missing_keys=(), limit_bytes=None):
+            error_data = {}
+            if missing_keys:
+                error_data["missing_keys"] = sorted(missing_keys)
+            if limit_bytes is not None:
+                error_data["limit_bytes"] = limit_bytes
+            return MCPResponse(error={
+                "code": "invalid_tool_arguments",
+                "message": message,
+                "retryable": True,
+                "effect_state": "not_started",
+                "data": error_data,
+            })
+
+        if is_computer_write:
+            from orchestrator.computer_use_policy import MAX_WRITE_BYTES
+
+            if not isinstance(raw_arguments, str):
+                return invalid_write_arguments(
+                    "The write_file call was not run because its arguments were not a JSON object. "
+                    "Provide a project path and string content. No file was changed."
+                )
+            try:
+                raw_argument_bytes = len(raw_arguments.encode("utf-8"))
+            except UnicodeError:
+                return invalid_write_arguments(
+                    "The write_file call was not run because its arguments were malformed. "
+                    "Provide valid JSON with a project path and string content. No file was changed."
+                )
+            if raw_argument_bytes > MAX_WRITE_BYTES * 6 + 4096:
+                return invalid_write_arguments(
+                    "The write_file arguments exceed the bounded request size. Split the source into "
+                    "smaller modules and retry; no file was changed.",
+                    limit_bytes=MAX_WRITE_BYTES,
+                )
         try:
-            args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+            args = json.loads(raw_arguments) if raw_arguments else {}
         except json.JSONDecodeError as _json_err:
+            if is_computer_write:
+                return invalid_write_arguments(
+                    "The write_file arguments were not run because they were invalid JSON. "
+                    "Provide a project path and string content. No file was changed."
+                )
             # Refuses bad args outright; never silently dispatches empty
             msg = (f"The arguments for '{tool_name}' were not valid JSON "
                    f"({str(_json_err).splitlines()[0]}). Re-emit the tool "
@@ -18530,19 +19279,54 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             await self.send_ui_render(websocket, [alert.to_dict()])
             return MCPResponse(error={"message": msg, "retryable": True})
 
-        stream_params = dict(args)
+        if is_computer_write:
+            from agents.computer_use.mcp_tools import TOOL_REGISTRY
+            from orchestrator.computer_use_policy import MAX_WRITE_BYTES
+            from jsonschema import Draft202012Validator
 
-        agent_id = tool_to_agent.get(llm_tool_name)
-        if agent_id is None and tool_to_agent:
-            wanted = llm_tool_name.replace("-", "_").lower()
-            matches = [k for k in tool_to_agent
-                       if k.replace("-", "_").lower() == wanted]
-            if len(matches) == 1:
-                logger.info(
-                    "Tool name normalized: %r -> %r", llm_tool_name, matches[0])
-                llm_tool_name = matches[0]
-                tool_name = (tool_to_unqualified or {}).get(llm_tool_name, tool_name)
-                agent_id = tool_to_agent.get(llm_tool_name)
+            if type(args) is not dict:
+                return invalid_write_arguments(
+                    "The write_file call was not run because its arguments must be an object. "
+                    "Provide a project path and string content. No file was changed."
+                )
+            content = args.get("content")
+            if isinstance(content, str):
+                try:
+                    content_bytes = len(content.encode("utf-8"))
+                except UnicodeError:
+                    return invalid_write_arguments(
+                        "The write_file content is not valid UTF-8 text. No file was changed."
+                    )
+                if content_bytes > MAX_WRITE_BYTES:
+                    return invalid_write_arguments(
+                        "The write_file content exceeds 262144 UTF-8 bytes. Keep each write at or below "
+                        "65536 bytes when possible, split larger source into smaller modules, and retry. "
+                        "No file was changed.",
+                        limit_bytes=MAX_WRITE_BYTES,
+                    )
+            schema = TOOL_REGISTRY["write_file"]["input_schema"]
+            errors = sorted(
+                Draft202012Validator(schema).iter_errors(args),
+                key=lambda error: (list(error.path), error.validator or ""),
+            )
+            if errors:
+                missing_keys = ()
+                required_error = next((error for error in errors if error.validator == "required"), None)
+                if required_error is not None and isinstance(required_error.instance, dict):
+                    missing_keys = set(required_error.validator_value) - set(required_error.instance)
+                if missing_keys:
+                    return invalid_write_arguments(
+                        "The write_file call was not run because required fields are missing. "
+                        "Include the path inside the selected project and the file content; no file was changed.",
+                        missing_keys=missing_keys,
+                    )
+                return invalid_write_arguments(
+                    "The write_file arguments do not match the tool schema. Provide a valid project path, "
+                    "string content within the size limit, and a supported if_exists value. No file was changed.",
+                    limit_bytes=MAX_WRITE_BYTES,
+                )
+
+        stream_params = dict(args)
         from persistent_agents.dispatch_context import current_dispatch
         persistent_dispatch = current_dispatch()
         if persistent_dispatch is not None:
@@ -20696,6 +21480,96 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return MCPResponse(request_id=request_id,
                                error={"message": str(e), "retryable": True})
 
+    async def _handle_ui_auth_refresh(self, websocket: Any, raw: str) -> None:
+        from orchestrator.ui_auth_renewal import parse_refresh_message
+
+        frame = parse_refresh_message(raw)
+        if frame is None:
+            return
+        renewal = self._ui_auth_renewal_service()
+        ack = await renewal.handle(websocket, frame)
+        if ack is None:
+            return
+        renewal.signal(websocket)
+        await self._safe_send(websocket, json.dumps(ack, separators=(",", ":")))
+        logger.info(
+            "UI authentication renewal outcome request=%s connection=%s accepted=%s",
+            ack["request_id"], ack["connection_generation"], ack["accepted"],
+        )
+        session = self.ui_sessions.get(websocket) or {}
+        exp = session.get("exp")
+        if (
+            ack.get("accepted") is False
+            and isinstance(exp, (int, float))
+            and not isinstance(exp, bool)
+            and exp <= time.time()
+            and session.get("_auth_refresh_required") is not True
+        ):
+            session["_auth_refresh_required"] = True
+            from shared.protocol import AuthRequired
+            await self._safe_send(websocket, AuthRequired(reason="expired").to_json())
+
+    def _ui_auth_renewal_service(self):
+        from orchestrator.ui_auth_renewal import UIAuthRenewal
+
+        renewal = getattr(self, "_ui_auth_renewal", None)
+        if renewal is None:
+            async def _verify(token: str):
+                if os.getenv("USE_MOCK_AUTH", "").lower() == "true":
+                    return None
+                return await self.validate_token(token)
+
+            renewal = UIAuthRenewal(
+                self.ui_sessions,
+                getattr(self, "_connection_contexts", {}),
+                _verify,
+                mock_auth=os.getenv("USE_MOCK_AUTH", "").lower() == "true",
+            )
+            self._ui_auth_renewal = renewal
+        return renewal
+
+    async def _await_ui_auth_refresh(
+        self,
+        websocket: Any,
+        resolver: Any,
+        *,
+        rejected_token: str | None = None,
+    ) -> str | None:
+        if resolver is None:
+            return None
+        if not resolver.is_current():
+            return None
+        registration = getattr(resolver, "websocket", websocket)
+        session = self.ui_sessions.get(registration)
+        if not isinstance(session, dict):
+            return None
+        current_token = resolver.resolve()
+        if current_token is not None and (
+            rejected_token is None or current_token != rejected_token
+        ):
+            return current_token
+        if rejected_token is None:
+            session["_auth_refresh_required"] = True
+        elif (
+            session.get("_raw_token") == rejected_token
+            and session.get("_auth_refresh_required") is not True
+        ):
+            if not resolver.is_current():
+                return None
+            session["_auth_refresh_required"] = True
+        elif session.get("_auth_refresh_required") is not True:
+            return None
+        from shared.protocol import AuthRequired
+
+        reason = "expired" if (
+            isinstance(session.get("exp"), (int, float))
+            and not isinstance(session.get("exp"), bool)
+            and session["exp"] <= time.time()
+        ) else "invalid"
+        await self._safe_send(registration, AuthRequired(reason=reason).to_json())
+        renewal = self._ui_auth_renewal_service()
+        return await renewal.wait_for_token(resolver, timeout=30.0)
+
     def _delegation_required(self) -> bool:
         override = os.getenv("DELEGATION_REQUIRED", "").strip().lower()
         if override in ("1", "true", "yes"):
@@ -20749,8 +21623,43 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             "is not configured (set DELEGATION_CHILD_SIGNING_KEY); "
                             "logged once")
                     return None
-            raw_token = session.get("_raw_token")
+            raw_token = None
+            resolver = None
+            resolver_capture_reason = None
+            active_operation_context = _CONNECTION_OPERATION_CONTEXT.get()
+            resolver_required = bool(
+                session.get("_auth_refresh_enabled") is True
+                or active_operation_context is not None
+            )
+            if resolver_required:
+                from orchestrator.ui_auth_renewal import (
+                    capture_subject_token_resolver_with_reason,
+                )
+                resolver = session.get("_subject_token_resolver")
+                if resolver is None:
+                    resolver, resolver_capture_reason = capture_subject_token_resolver_with_reason(
+                        self.ui_sessions,
+                        getattr(self, "_connection_contexts", {}),
+                        websocket,
+                        user_id,
+                        active_operation_context,
+                    )
+                if resolver is not None:
+                    raw_token = resolver.resolve()
+                if raw_token is None:
+                    raw_token = await self._await_ui_auth_refresh(websocket, resolver)
+            else:
+                raw_token = session.get("_raw_token")
             if not raw_token:
+                if resolver_required:
+                    session["_delegation_fault"] = "session_auth_unavailable"
+                    reason = resolver_capture_reason
+                    if reason is None and resolver is not None:
+                        reason = resolver.unavailable_reason()
+                    logger.warning(
+                        "Delegation credential unavailable (reason=%s)",
+                        reason or "credential_missing",
+                    )
                 return None
 
             from orchestrator.chain_authority import machine_scope_ceiling
@@ -20787,9 +21696,68 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if machine_scopes is not None and not enabled_scopes:
                 return None
 
+            if resolver is not None:
+                raw_token = resolver.resolve()
+                if raw_token is None:
+                    raw_token = await self._await_ui_auth_refresh(websocket, resolver)
+                if raw_token is None:
+                    session["_delegation_fault"] = "session_auth_unavailable"
+                    return None
+
             result = await self.delegation.exchange_token_for_agent(
                 raw_token, agent_id, allowed_tools, user_id, enabled_scopes
             )
+            error_description = result.get("error_description", "")
+            invalid_subject = (
+                result.get("error") in {"invalid_token", "invalid_grant"}
+                or (
+                    isinstance(error_description, str)
+                    and "invalid token" in error_description.lower()
+                )
+            )
+            if invalid_subject:
+                from orchestrator.ui_auth_renewal import capture_subject_token_resolver
+
+                resolver = session.get("_subject_token_resolver")
+                if resolver is None:
+                    resolver = capture_subject_token_resolver(
+                        self.ui_sessions,
+                        getattr(self, "_connection_contexts", {}),
+                        websocket,
+                        user_id,
+                        _CONNECTION_OPERATION_CONTEXT.get(),
+                    )
+                refreshed = await self._await_ui_auth_refresh(
+                    websocket,
+                    resolver,
+                    rejected_token=raw_token,
+                )
+                if refreshed is not None:
+                    allowed_tools, enabled_scopes = await asyncio.to_thread(_scope_reads)
+                    if enabled_scopes:
+                        result = await self.delegation.exchange_token_for_agent(
+                            refreshed,
+                            agent_id,
+                            allowed_tools,
+                            user_id,
+                            enabled_scopes,
+                        )
+                    else:
+                        result = {
+                            "error": "no_enabled_scopes",
+                            "error_description": "no enabled tool scopes",
+                        }
+                else:
+                    session["_delegation_fault"] = "session_auth_unavailable"
+            result_description = result.get("error_description", "")
+            if "error" in result and (
+                result.get("error") in {"invalid_token", "invalid_grant"}
+                or (
+                    isinstance(result_description, str)
+                    and "invalid token" in result_description.lower()
+                )
+            ):
+                session["_delegation_fault"] = "session_auth_unavailable"
             if "error" in result:
                 if result.get("error") == "no_enabled_scopes":
                     logger.warning(
@@ -20806,7 +21774,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 else:
                     logger.debug(f"Delegation token exchange failed for agent={agent_id}: {result}")
                 return None
-            return result.get("access_token")
+            access_token = result.get("access_token")
+            if access_token and resolver is not None and (
+                not resolver.is_current() or resolver.resolve() is None
+            ):
+                session["_delegation_fault"] = "session_auth_unavailable"
+                return None
+            return access_token
         except Exception as e:
             logger.warning(f"Delegation token generation failed: {e}")
             return None

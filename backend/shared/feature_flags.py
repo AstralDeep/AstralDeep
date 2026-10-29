@@ -13,6 +13,7 @@ class FeatureFlags:
             "denial_loop_detection": self._read("FF_DENIAL_LOOP_DETECTION", True),
             "tool_concurrency_safety": self._read("FF_TOOL_CONCURRENCY_SAFETY", True),
             "message_compaction": self._read("FF_MESSAGE_COMPACTION", False),
+            "goal_harness": self._read("FF_GOAL_HARNESS", False),
             "observation_packing": self._read("FF_OBSERVATION_PACKING", False),
             "safe_compaction": self._read("FF_SAFE_COMPACTION", False),
             "progress_streaming": self._read("FF_PROGRESS_STREAMING", False),

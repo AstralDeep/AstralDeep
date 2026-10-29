@@ -277,6 +277,7 @@ class ConversationPublicationStage:
     execution_base_render_revision: int | None = None
     summary_text: str | None = None
     summary_source: str | None = None
+    completion_state: str = "completed"
     layouts: list[dict[str, Any]] = field(default_factory=list)
     dirty: bool = False
     snapshot_cause: str | None = None
@@ -284,6 +285,8 @@ class ConversationPublicationStage:
     committed: bool = False
 
     def __post_init__(self) -> None:
+        if self.completion_state not in {"completed", "failed", "cancelled"}:
+            raise ValueError("completion_state is invalid")
         if self.history is None:
             raise ValueError("history is required")
         self.commit_id = _uuid4_text(self.commit_id, "commit_id")

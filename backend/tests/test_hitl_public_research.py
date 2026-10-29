@@ -474,11 +474,11 @@ def test_review_preview_is_complete_and_consequential(runtime):
     assert reviewable and json.loads(preview) == args
 
 
-@pytest.mark.parametrize("value", [str(uuid.uuid4()),
+@pytest.mark.parametrize("value", ["a0b1c2d3-e4f5-46a7-8b9c-d0e1f2a3b4c5",
     "44474262c237-9f8e7d6c5b4a3210fedcba9876543210",
     hashlib.sha256(b"binding").hexdigest(), "a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"])
 def test_machine_identifiers_are_reviewable_despite_digit_runs(runtime, value):
-    args = {"runtime_binding": value, "session_id": str(uuid.uuid4()),
+    args = {"runtime_binding": value, "session_id": "b3c4d5e6-f7a8-49b0-8c1d-e2f3a4b5c6d7",
             "command": "printf 'uploaded.txt'"}
     preview, reviewable = hc._review_arguments(args)
     assert reviewable and json.loads(preview) == args
