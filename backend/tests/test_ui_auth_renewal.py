@@ -4,6 +4,7 @@ import asyncio
 import time
 import uuid
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -20,6 +21,7 @@ from orchestrator.ui_auth_renewal import (
     subject_auth_snapshot,
     subject_binding,
     capture_subject_token_resolver,
+    capture_subject_token_resolver_with_reason,
 )
 
 
@@ -58,6 +60,14 @@ def _context(websocket, generation, **changes):
         work_registrations_pending=0,
         operations={},
         **changes,
+    )
+
+
+def _user_owner(user_id="user-1"):
+    return SimpleNamespace(
+        owner_scope=SimpleNamespace(value="user"),
+        owner_user_id=user_id,
+        connection_scope_id=None,
     )
 
 
@@ -332,7 +342,7 @@ def test_operation_binding_capture_uses_baseline_identity_and_fence():
     claims = _claims(_auth_context_generation=generation)
     operation_id = uuid.uuid4()
     operation = SimpleNamespace(
-        owner=SimpleNamespace(owner_user_id="user-1"),
+        owner=_user_owner(),
         fence="fence-1",
         lease_lost=False,
         subject_auth_claims=subject_auth_snapshot(claims),
@@ -359,6 +369,533 @@ def test_operation_binding_capture_uses_baseline_identity_and_fence():
     assert capture_subject_token_resolver(
         {websocket: claims}, {id(websocket): context}, websocket, "user-1", active
     ) is None
+
+
+def test_capture_diagnostic_is_bounded_and_identifies_operation_fence_failure():
+    websocket = object()
+    generation = str(uuid.uuid4())
+    claims = _claims(token="private-sentinel", _auth_context_generation=generation)
+    operation_id = uuid.uuid4()
+    operation = SimpleNamespace(
+        owner=_user_owner(),
+        fence="current-fence",
+        lease_lost=False,
+        subject_auth_claims=subject_auth_snapshot(claims),
+    )
+    context = _context(websocket, generation)
+    context.operations[operation_id] = operation
+    active = {
+        "operation": SimpleNamespace(operation_id=operation_id),
+        "execution_fence": "stale-fence",
+        "owner": operation.owner,
+        "connection_generation": generation,
+    }
+    resolver, reason = capture_subject_token_resolver_with_reason(
+        {websocket: claims}, {id(websocket): context}, websocket, "user-1", active
+    )
+    assert resolver is None
+    assert reason == "operation_fence_mismatch"
+    assert "private-sentinel" not in repr(reason)
+
+    resolver, reason = capture_subject_token_resolver_with_reason(
+        {websocket: claims}, {id(websocket): context}, websocket, "different-user", active
+    )
+    assert resolver is None
+    assert reason == "owner_mismatch"
+
+
+def test_capture_diagnostic_explains_missing_generation_without_claim_values():
+    websocket = object()
+    claims = _claims(token="private-sentinel")
+    claims.pop("_auth_context_generation")
+    resolver, reason = capture_subject_token_resolver_with_reason(
+        {websocket: claims},
+        {id(websocket): _context(websocket, str(uuid.uuid4()))},
+        websocket,
+        "user-1",
+    )
+    assert resolver is None
+    assert reason == "generation_missing"
+    assert "private-sentinel" not in repr(reason)
+
+
+def test_capture_diagnostic_classifies_registration_and_claim_failures():
+    def diagnose(case):
+        websocket = object()
+        generation = str(uuid.uuid4())
+        claims = _claims(_auth_context_generation=generation)
+        context = _context(websocket, generation)
+        sessions = {websocket: claims}
+        contexts = {id(websocket): context}
+        active = None
+        if case == "session_missing":
+            sessions.clear()
+        elif case == "context_missing":
+            contexts.clear()
+        elif case == "socket_mismatch":
+            context.websocket = object()
+        elif case == "not_registered":
+            context.registered = False
+        elif case == "connection_closing":
+            context.closing = True
+        elif case == "owner_mismatch":
+            pass
+        elif case == "generation_missing":
+            claims.pop("_auth_context_generation")
+        elif case == "generation_mismatch":
+            context.connection_generation = uuid.uuid4()
+        elif case == "subject_binding_invalid":
+            claims.pop("azp")
+            claims.pop("client_id", None)
+        elif case == "authorization_claims_invalid":
+            claims["realm_access"] = []
+        else:
+            operation_id = uuid.uuid4()
+            admitted_owner = _user_owner()
+            if case == "operation_connection_scope_missing":
+                admitted_owner = SimpleNamespace(
+                    owner_scope=SimpleNamespace(value="connection"),
+                    owner_user_id=None,
+                    connection_scope_id=uuid.uuid4(),
+                )
+                context.connection_scope_id = None
+            operation = SimpleNamespace(
+                owner=admitted_owner,
+                fence="fence-1",
+                lease_lost=False,
+                subject_auth_claims=subject_auth_snapshot(claims),
+            )
+            context.operations[operation_id] = operation
+            active = {
+                "operation": SimpleNamespace(operation_id=operation_id),
+                "owner": operation.owner,
+                "execution_fence": "fence-1",
+                "connection_generation": generation,
+            }
+            if case == "operation_missing":
+                active["operation"] = SimpleNamespace(operation_id=uuid.uuid4())
+            elif case == "operation_owner_mismatch":
+                operation.owner = _user_owner("different-user")
+                active["owner"] = operation.owner
+            elif case == "operation_lease_lost":
+                operation.lease_lost = True
+            elif case == "operation_fence_missing":
+                operation.fence = None
+                active["execution_fence"] = None
+            elif case == "operation_fence_mismatch":
+                active["execution_fence"] = "stale-fence"
+            elif case == "operation_owner_binding_mismatch":
+                active["owner"] = _user_owner("different-user")
+            elif case == "operation_generation_mismatch":
+                active["connection_generation"] = str(uuid.uuid4())
+            elif case == "operation_subject_claims_missing":
+                operation.subject_auth_claims = None
+            elif case == "operation_subject_binding_mismatch":
+                operation.subject_auth_claims = subject_auth_snapshot(
+                    {**claims, "sub": "different-user"}
+                )
+            elif case == "operation_authorization_claims_invalid":
+                baseline = dict(operation.subject_auth_claims)
+                baseline["realm_access"] = []
+                operation.subject_auth_claims = baseline
+            elif case == "operation_generation_mismatch_baseline":
+                baseline = dict(operation.subject_auth_claims)
+                baseline["_auth_context_generation"] = str(uuid.uuid4())
+                operation.subject_auth_claims = baseline
+        owner_id = "different-user" if case == "owner_mismatch" else "user-1"
+        return capture_subject_token_resolver_with_reason(
+            sessions, contexts, websocket, owner_id, active
+        )[1]
+
+    cases = (
+        "session_missing",
+        "context_missing",
+        "socket_mismatch",
+        "not_registered",
+        "connection_closing",
+        "generation_missing",
+        "generation_mismatch",
+        "subject_binding_invalid",
+        "authorization_claims_invalid",
+        "operation_missing",
+        "operation_owner_mismatch",
+        "operation_connection_scope_missing",
+        "operation_lease_lost",
+        "operation_fence_missing",
+        "operation_fence_mismatch",
+        "operation_owner_binding_mismatch",
+        "operation_generation_mismatch",
+        "operation_subject_claims_missing",
+        "operation_subject_binding_mismatch",
+        "operation_authorization_claims_invalid",
+        "operation_generation_mismatch_baseline",
+    )
+    expected = tuple(
+        "operation_generation_mismatch"
+        if case == "operation_generation_mismatch_baseline"
+        else "operation_owner_mismatch"
+        if case == "operation_connection_scope_missing"
+        else case
+        for case in cases
+    )
+    assert tuple(diagnose(case) for case in cases) == expected
+
+
+def test_resolver_unavailable_reason_is_bounded_and_tracks_token_state():
+    websocket = object()
+    generation = str(uuid.uuid4())
+    claims = _claims(_auth_context_generation=generation)
+    claims["_auth_refresh_enabled"] = True
+    contexts = {id(websocket): _context(websocket, generation)}
+
+    def capture(session):
+        return capture_subject_token_resolver_with_reason(
+            {websocket: session}, contexts, websocket, "user-1"
+        )[0]
+
+    resolver = capture(claims)
+    assert resolver is not None
+    assert resolver.unavailable_reason() == "credential_available"
+    claims["_auth_refresh_required"] = True
+    assert resolver.unavailable_reason() == "refresh_required"
+    claims.pop("_auth_refresh_required")
+    claims["_raw_token"] = ""
+    assert resolver.unavailable_reason() == "credential_unavailable"
+    claims["_raw_token"] = "present"
+    claims["exp"] = "invalid"
+    resolver = capture(claims)
+    assert resolver is not None
+    assert resolver.unavailable_reason() == "expiry_unavailable"
+    claims["exp"] = int(time.time()) - 1
+    resolver = capture(claims)
+    assert resolver is not None
+    assert resolver.unavailable_reason() == "credential_expired"
+    claims["exp"] = int(time.time()) + 30
+    resolver = capture(claims)
+    contexts[id(websocket)].closing = True
+    assert resolver is not None
+    assert resolver.unavailable_reason() == "binding_not_current"
+
+
+def test_postgres_claim_identity_resolves_registered_chat_subject_token():
+    from datetime import UTC, datetime
+
+    from orchestrator.orchestrator import ConnectionContext, _ConnectionIngressFrame, _ConnectionOperation
+    from orchestrator.work_admission import (
+        AdmissionClass,
+        OperationOwner,
+        OperationRequest,
+        OwnerScope,
+        WorkAdmissionCoordinator,
+    )
+    from tests.helpers.voice_plane_runtime import isolated_plane_runtime
+
+    websocket = object()
+    generation = uuid.uuid4()
+    claims = _claims(
+        token="postgres-chat-token",
+        _auth_connection_generation=str(generation),
+        _auth_context_generation=str(generation),
+    )
+    assert bind_registered_session(
+        claims,
+        token="postgres-chat-token",
+        capabilities=["ui_auth_refresh_v1"],
+        connection_generation=str(generation),
+        mock_auth=False,
+    )
+    context = ConnectionContext(
+        websocket=websocket,
+        connection_scope_id=uuid.uuid4(),
+        registration_deadline=time.monotonic() + 30,
+        connection_generation=generation,
+        registered=True,
+    )
+    owner = OperationOwner(
+        OwnerScope.CONNECTION, None, context.connection_scope_id
+    )
+
+    with isolated_plane_runtime("ui_auth_resolver") as plane:
+        coordinator = WorkAdmissionCoordinator.from_plane(
+            plane_runtime=plane,
+            plane_repositories=plane.repositories,
+            clock=lambda: datetime.now(UTC),
+        )
+        request = OperationRequest(
+            operation_kind="chat_message",
+            admission_class=AdmissionClass.INTERACTIVE,
+            owner=owner,
+            submission_id=uuid.uuid4(),
+            idempotency_namespace=None,
+            idempotency_key=None,
+            normalized_input_digest=None,
+            chat_id=str(uuid.uuid4()),
+            parent_operation_id=None,
+            connection_generation=generation,
+            request_generation=uuid.uuid4(),
+        )
+        admitted = coordinator.submit(request)
+        assert admitted.accepted
+        claim = coordinator.claim_operation(AdmissionClass.INTERACTIVE, admitted.operation_id)
+        assert claim is not None
+        frame = _ConnectionIngressFrame(
+            raw="{}",
+            parsed={"type": "ui_event", "action": "chat_message"},
+            action="chat_message",
+            surface=None,
+            chat_id=request.chat_id,
+            submission_id=request.submission_id,
+            request_generation=request.request_generation,
+            normalized_digest="a" * 64,
+            read_only=False,
+            operation_kind="chat_message",
+            deadline_at_monotonic=None,
+            deadline_at_utc=None,
+        )
+        work = _ConnectionOperation(
+            frame=frame,
+            owner=owner,
+            operation_id=admitted.operation_id,
+            subject_auth_claims=subject_auth_snapshot(claims),
+        )
+        work.fence = claim.fence
+        context.operations[work.operation_id] = work
+        active = {
+            "operation": claim.operation,
+            "owner": owner,
+            "execution_fence": claim.fence,
+            "connection_generation": generation,
+        }
+        resolver, reason = capture_subject_token_resolver_with_reason(
+            {websocket: claims},
+            {id(websocket): context},
+            websocket,
+            "user-1",
+            active,
+        )
+        assert reason is None
+        assert resolver is not None
+        assert resolver.operation is work
+        assert resolver.resolve() == "postgres-chat-token"
+
+
+def test_connection_owned_resolver_binds_scope_owner_fence_and_cancellation():
+    async def run():
+        from orchestrator.work_admission import OperationOwner, OwnerScope
+
+        websocket = object()
+        generation = str(uuid.uuid4())
+        claims = _claims(
+            token="connection-chat-token",
+            _auth_connection_generation=generation,
+            _auth_context_generation=generation,
+        )
+        context = _context(websocket, generation)
+        owner = OperationOwner(
+            OwnerScope.CONNECTION, None, uuid.uuid4()
+        )
+        context.connection_scope_id = owner.connection_scope_id
+        operation_id = uuid.uuid4()
+        operation = SimpleNamespace(
+            owner=owner,
+            fence="fence-current",
+            lease_lost=False,
+            subject_auth_claims=subject_auth_snapshot(claims),
+        )
+        context.operations[operation_id] = operation
+        active = {
+            "operation": SimpleNamespace(operation_id=operation_id),
+            "owner": owner,
+            "execution_fence": operation.fence,
+            "connection_generation": generation,
+        }
+        sessions = {websocket: claims}
+        contexts = {id(websocket): context}
+        resolver, reason = capture_subject_token_resolver_with_reason(
+            sessions, contexts, websocket, "user-1", active
+        )
+        assert reason is None
+        assert resolver is not None
+        assert resolver.resolve() == "connection-chat-token"
+
+        operation.owner = OperationOwner(
+            OwnerScope.CONNECTION, None, uuid.uuid4()
+        )
+        assert not resolver.is_current()
+        operation.owner = owner
+        sessions[websocket] = {**claims, "sub": "different-user"}
+        assert not resolver.is_current()
+        sessions[websocket] = claims
+        operation.fence = "replacement-fence"
+        assert not resolver.is_current()
+        operation.fence = "fence-current"
+        context.connection_scope_id = None
+        assert not resolver.is_current()
+        context.connection_scope_id = owner.connection_scope_id
+
+        active["execution_fence"] = "other-fence"
+        resolver, reason = capture_subject_token_resolver_with_reason(
+            sessions, contexts, websocket, "user-1", active
+        )
+        assert resolver is None
+        assert reason == "operation_fence_mismatch"
+        active["execution_fence"] = "fence-current"
+
+        async def cancelled_execution():
+            task = asyncio.current_task()
+            task.cancel()
+            assert not resolver_current.is_current()
+            try:
+                await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                return
+            raise AssertionError("cancelled execution continued")
+
+        resolver_current, reason = capture_subject_token_resolver_with_reason(
+            sessions, contexts, websocket, "user-1", active
+        )
+        assert reason is None
+        await asyncio.create_task(cancelled_execution())
+
+    asyncio.run(run())
+
+
+def test_resolver_rejects_replaced_completed_and_cancelling_parent_tasks():
+    async def run():
+        from orchestrator.work_admission import OperationOwner, OwnerScope
+
+        def capture(parent_task):
+            websocket = object()
+            generation = str(uuid.uuid4())
+            claims = _claims(
+                token="parent-bound-token",
+                _auth_connection_generation=generation,
+                _auth_context_generation=generation,
+            )
+            context = _context(websocket, generation)
+            context.connection_scope_id = uuid.uuid4()
+            owner = OperationOwner(
+                OwnerScope.CONNECTION, None, context.connection_scope_id
+            )
+            operation_id = uuid.uuid4()
+            operation = SimpleNamespace(
+                owner=owner,
+                fence="parent-fence",
+                lease_lost=False,
+                task=parent_task,
+                subject_auth_claims=subject_auth_snapshot(claims),
+            )
+            context.operations[operation_id] = operation
+            active = {
+                "operation": SimpleNamespace(operation_id=operation_id),
+                "owner": owner,
+                "execution_fence": operation.fence,
+                "connection_generation": generation,
+            }
+            resolver, reason = capture_subject_token_resolver_with_reason(
+                {websocket: claims}, {id(websocket): context}, websocket, "user-1", active
+            )
+            assert reason is None
+            assert resolver is not None
+            return resolver, operation
+
+        release_first = asyncio.Event()
+        first_parent = asyncio.create_task(release_first.wait())
+        await asyncio.sleep(0)
+        resolver, operation = capture(first_parent)
+        assert resolver.resolve() == "parent-bound-token"
+        replacement = asyncio.create_task(asyncio.sleep(10))
+        operation.task = replacement
+        assert resolver.resolve() is None
+        operation.task = first_parent
+        release_first.set()
+        await first_parent
+        assert resolver.resolve() is None
+        replacement.cancel()
+        try:
+            await replacement
+        except asyncio.CancelledError:
+            pass
+
+        second_parent = asyncio.create_task(asyncio.Event().wait())
+        await asyncio.sleep(0)
+        cancelling_resolver, _operation = capture(second_parent)
+        second_parent.cancel()
+
+        async def resolve_from_child():
+            return cancelling_resolver.resolve()
+
+        child_result = await asyncio.create_task(resolve_from_child())
+        assert child_result is None
+        try:
+            await second_parent
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(run())
+
+
+def test_missing_legacy_token_does_not_set_typed_refresh_fault(monkeypatch):
+    monkeypatch.setenv("DELEGATION_REQUIRED", "false")
+
+    async def run():
+        from orchestrator.orchestrator import Orchestrator
+
+        websocket = object()
+        session = {"sub": "user-1"}
+        runtime = Orchestrator.__new__(Orchestrator)
+        runtime.ui_sessions = {websocket: session}
+        runtime.agent_cards = {"agent": SimpleNamespace(skills=[])}
+        runtime.security_flags = {}
+
+        class Permissions:
+            @staticmethod
+            def get_enabled_scope_names(*_args):
+                return []
+
+        runtime.tool_permissions = Permissions()
+        assert await Orchestrator._get_delegation_token(
+            runtime, websocket, "agent", "user-1"
+        ) is None
+        assert "_delegation_fault" not in session
+
+    asyncio.run(run())
+
+
+def test_active_chat_auth_refusal_logs_only_bounded_capture_reason(caplog):
+    async def run():
+        from orchestrator.orchestrator import (
+            Orchestrator,
+            _CONNECTION_OPERATION_CONTEXT,
+        )
+
+        websocket = object()
+        session = {"sub": "user-1", "_auth_refresh_enabled": True}
+        runtime = Orchestrator.__new__(Orchestrator)
+        runtime.ui_sessions = {websocket: session}
+        runtime._connection_contexts = {}
+        runtime.agent_cards = {"agent": SimpleNamespace(skills=[])}
+        runtime.security_flags = {}
+
+        class Permissions:
+            @staticmethod
+            def get_enabled_scope_names(*_args):
+                return []
+
+        runtime.tool_permissions = Permissions()
+        token = _CONNECTION_OPERATION_CONTEXT.set({"operation": object()})
+        try:
+            assert await Orchestrator._get_delegation_token(
+                runtime, websocket, "agent", "user-1"
+            ) is None
+        finally:
+            _CONNECTION_OPERATION_CONTEXT.reset(token)
+        assert session["_delegation_fault"] == "session_auth_unavailable"
+
+    caplog.set_level("WARNING", logger="Orchestrator")
+    asyncio.run(run())
+    assert "reason=context_missing" in caplog.text
+    assert "user-1" not in caplog.text
 
 
 def test_refresh_refusal_after_verifier_replacement_does_not_touch_new_session():
@@ -394,7 +931,7 @@ def test_subject_token_resolver_requires_same_socket_identity_and_live_fence():
     operation = SimpleNamespace(
         lease_lost=False,
         fence="fence-1",
-        owner=SimpleNamespace(owner_user_id="user-1"),
+        owner=_user_owner(),
     )
     context = _context(websocket, generation)
     context.operations[operation_id] = operation
@@ -426,7 +963,7 @@ def test_subject_token_resolver_rejects_replaced_socket_generation_and_fence():
     operation = SimpleNamespace(
         lease_lost=False,
         fence="fence-1",
-        owner=SimpleNamespace(owner_user_id="user-1"),
+        owner=_user_owner(),
     )
     context = _context(websocket, generation)
     context.operations[operation_id] = operation
@@ -454,7 +991,8 @@ def test_subject_token_resolver_rejects_replaced_socket_generation_and_fence():
     assert resolver.resolve() is None
 
 
-def test_authenticated_websocket_ingress_renews_expired_token_for_same_running_operation(caplog):
+def test_authenticated_websocket_ingress_renews_expired_token_for_same_running_operation(caplog, monkeypatch):
+    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     caplog.set_level("INFO", logger="Orchestrator")
     async def run():
         from orchestrator.orchestrator import Orchestrator
@@ -472,7 +1010,7 @@ def test_authenticated_websocket_ingress_renews_expired_token_for_same_running_o
         operation_id = uuid.uuid4()
         operation = SimpleNamespace(
             operation_id=operation_id,
-            owner=SimpleNamespace(owner_user_id="user-1"),
+            owner=_user_owner(),
             fence="fence-stable",
             lease_lost=False,
         )
@@ -656,7 +1194,7 @@ def test_legacy_missing_session_id_uses_only_captured_token_until_expiry(monkeyp
     operation = SimpleNamespace(
         lease_lost=False,
         fence="fence-1",
-        owner=SimpleNamespace(owner_user_id="user-1"),
+        owner=_user_owner(),
         subject_auth_claims=claims,
     )
     context = _context(websocket, generation)
@@ -698,7 +1236,7 @@ def test_nonrenewable_stable_session_rejects_same_socket_session_rotation():
     operation = SimpleNamespace(
         lease_lost=False,
         fence="fence-1",
-        owner=SimpleNamespace(owner_user_id="user-1"),
+        owner=_user_owner(),
         subject_auth_claims=claims,
     )
     context = _context(websocket, generation)
@@ -923,6 +1461,168 @@ def test_refresh_handler_ignores_malformed_frame_and_auth_requires_expired_refus
     asyncio.run(run())
 
 
+def test_normal_admitted_chat_claim_resolves_registered_subject_token():
+    async def run():
+        from datetime import UTC, datetime
+        from orchestrator.orchestrator import (
+            ConnectionContext,
+            Orchestrator,
+            _ConnectionOperation,
+            _ConnectionIngressFrame,
+        )
+        from orchestrator.work_admission import (
+            AdmissionClass,
+            AdmissionClassConfig,
+            InMemoryWorkAdmissionRepository,
+            OperationOwner,
+            OperationRequest,
+            OwnerScope,
+            WorkAdmissionCoordinator,
+        )
+
+        websocket = object()
+        generation = uuid.uuid4()
+        claims = _claims(
+            token="normal-chat-token",
+            _auth_connection_generation=str(generation),
+            _auth_context_generation=str(generation),
+        )
+        bind_registered_session(
+            claims,
+            token="normal-chat-token",
+            capabilities=["ui_auth_refresh_v1"],
+            connection_generation=str(generation),
+            mock_auth=False,
+        )
+        context = ConnectionContext(
+            websocket=websocket,
+            connection_scope_id=uuid.uuid4(),
+            registration_deadline=time.monotonic() + 30,
+            connection_generation=generation,
+            registered=True,
+        )
+        owner = OperationOwner(
+            OwnerScope.CONNECTION, None, context.connection_scope_id
+        )
+        coordinator = WorkAdmissionCoordinator(
+            admission_classes=(
+                AdmissionClassConfig(
+                    class_name=AdmissionClass.GLOBAL,
+                    parent_class_name=None,
+                    active_limit=4,
+                    queue_limit=0,
+                    max_wait_ms=0,
+                    config_revision="auth-resolver-normal-chat",
+                ),
+                AdmissionClassConfig(
+                    class_name=AdmissionClass.INTERACTIVE,
+                    parent_class_name=AdmissionClass.GLOBAL,
+                    active_limit=4,
+                    queue_limit=4,
+                    max_wait_ms=1000,
+                    config_revision="auth-resolver-normal-chat",
+                ),
+            ),
+            repository=InMemoryWorkAdmissionRepository(),
+            clock=lambda: datetime.now(UTC),
+        )
+        admitted = coordinator.submit(
+            OperationRequest(
+                operation_kind="chat_message",
+                admission_class=AdmissionClass.INTERACTIVE,
+                owner=owner,
+                submission_id=uuid.uuid4(),
+                idempotency_namespace=None,
+                idempotency_key=None,
+                normalized_input_digest=None,
+                chat_id=str(uuid.uuid4()),
+                parent_operation_id=None,
+                connection_generation=generation,
+                request_generation=uuid.uuid4(),
+            )
+        )
+        accepted_id = admitted.operation_id
+        frame = _ConnectionIngressFrame(
+            raw="{}",
+            parsed={"type": "ui_event", "action": "chat_message"},
+            action="chat_message",
+            surface=None,
+            chat_id=str(uuid.uuid4()),
+            submission_id=uuid.uuid4(),
+            request_generation=uuid.uuid4(),
+            normalized_digest="a" * 64,
+            read_only=False,
+            operation_kind="chat_message",
+            deadline_at_monotonic=None,
+            deadline_at_utc=None,
+        )
+        work = _ConnectionOperation(
+            frame=frame,
+            owner=owner,
+            operation_id=accepted_id,
+            subject_auth_claims=subject_auth_snapshot(claims),
+        )
+        context.operations[accepted_id] = work
+        runtime = Orchestrator.__new__(Orchestrator)
+        runtime.ui_sessions = {websocket: claims}
+        runtime._connection_contexts = {id(websocket): context}
+        runtime.work_admission = coordinator
+        runtime._interactive_capacity_revision = 0
+        runtime.agent_cards = {
+            "agent": SimpleNamespace(skills=[SimpleNamespace(id="read")])
+        }
+        runtime.security_flags = {}
+
+        class Permissions:
+            @staticmethod
+            def is_tool_allowed(*_args):
+                return True
+
+            @staticmethod
+            def get_enabled_scope_names(*_args):
+                return ["tools:read"]
+
+        class Delegation:
+            async def exchange_token_for_agent(self, token, *_args):
+                assert token == "normal-chat-token"
+                return {"access_token": "child-token"}
+
+        runtime.tool_permissions = Permissions()
+        runtime.delegation = Delegation()
+        observed = []
+
+        async def admission_call(method, *args, **kwargs):
+            return method(*args, **kwargs)
+
+        async def renewal(_context, _work, stop, _worker):
+            await stop.wait()
+
+        async def execute(_context, accepted_work, *, websocket):
+            assert websocket is context.websocket
+            observed.append(
+                await Orchestrator._get_delegation_token(
+                    runtime, websocket, "agent", "user-1"
+                )
+            )
+
+        async def complete(_context, _work):
+            return None
+
+        runtime._call_work_admission = admission_call
+        runtime._connection_admission_class = lambda _frame: AdmissionClass.INTERACTIVE
+        runtime._emit_long_running_operation_phase = lambda *_args: asyncio.sleep(0)
+        runtime._renew_connection_lease = renewal
+        runtime._run_connection_ui_operation = execute
+        runtime._complete_connection_operation = complete
+
+        work.task = asyncio.current_task()
+        await Orchestrator._run_connection_operation(runtime, context, work)
+
+        assert observed == ["child-token"]
+
+    asyncio.run(run())
+
+
 def test_wait_for_refresh_is_bounded_and_wakes_only_on_same_socket_renewal():
     async def run():
         websocket = object()
@@ -939,7 +1639,7 @@ def test_wait_for_refresh_is_bounded_and_wakes_only_on_same_socket_renewal():
         operation = SimpleNamespace(
             lease_lost=False,
             fence="fence-1",
-            owner=SimpleNamespace(owner_user_id="user-1"),
+            owner=_user_owner(),
             subject_auth_claims=old,
         )
         context = _context(websocket, generation)
@@ -988,7 +1688,7 @@ def test_wait_for_refresh_stops_when_operation_fence_is_revoked():
         operation = SimpleNamespace(
             lease_lost=False,
             fence="fence-1",
-            owner=SimpleNamespace(owner_user_id="user-1"),
+            owner=_user_owner(),
             subject_auth_claims=claims,
         )
         context = _context(websocket, generation)
@@ -1043,12 +1743,7 @@ def test_wait_for_refresh_times_out_and_rejects_nonrenewable_bindings():
             {websocket: claims}, {id(websocket): context}, lambda _token: None
         )
         assert await renewal.wait_for_token(resolver) is None
-        resolver = RegisteredSubjectTokenResolver(
-            **{
-                **resolver.__dict__,
-                "renewable": True,
-            }
-        )
+        resolver = replace(resolver, renewable=True)
         claims["_auth_refresh_required"] = True
         assert await renewal.wait_for_token(resolver, timeout=0) is None
     asyncio.run(run())

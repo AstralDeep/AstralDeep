@@ -9006,11 +9006,16 @@ class Orchestrator:
             session = self.ui_sessions.get(context.websocket) or {}
             session["_auth_context_generation"] = str(context.connection_generation)
             await self._safe_send(context.websocket, ready[1])
-            if (
+            renewal_ready = bool(
                 session.get("_auth_refresh_enabled") is True
                 and str(context.connection_generation)
                 == session.get("_auth_connection_generation")
-            ):
+            )
+            logger.info(
+                "UI auth renewal registration readiness enabled=%s",
+                renewal_ready,
+            )
+            if renewal_ready:
                 await self._safe_send(
                     context.websocket,
                     json.dumps({
@@ -21238,15 +21243,19 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     return None
             raw_token = None
             resolver = None
+            resolver_capture_reason = None
             active_operation_context = _CONNECTION_OPERATION_CONTEXT.get()
-            if (
+            resolver_required = bool(
                 session.get("_auth_refresh_enabled") is True
                 or active_operation_context is not None
-            ):
-                from orchestrator.ui_auth_renewal import capture_subject_token_resolver
+            )
+            if resolver_required:
+                from orchestrator.ui_auth_renewal import (
+                    capture_subject_token_resolver_with_reason,
+                )
                 resolver = session.get("_subject_token_resolver")
                 if resolver is None:
-                    resolver = capture_subject_token_resolver(
+                    resolver, resolver_capture_reason = capture_subject_token_resolver_with_reason(
                         self.ui_sessions,
                         getattr(self, "_connection_contexts", {}),
                         websocket,
@@ -21260,7 +21269,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             else:
                 raw_token = session.get("_raw_token")
             if not raw_token:
-                session["_delegation_fault"] = "session_auth_unavailable"
+                if resolver_required:
+                    session["_delegation_fault"] = "session_auth_unavailable"
+                    reason = resolver_capture_reason
+                    if reason is None and resolver is not None:
+                        reason = resolver.unavailable_reason()
+                    logger.warning(
+                        "Delegation credential unavailable (reason=%s)",
+                        reason or "credential_missing",
+                    )
                 return None
 
             from orchestrator.chain_authority import machine_scope_ceiling

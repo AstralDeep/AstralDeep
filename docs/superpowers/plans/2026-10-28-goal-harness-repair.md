@@ -40,6 +40,8 @@
 
 ## Initial evidence
 
+The first staged renewal attempt exposed that ordinary chats use connection ownership, while the resolver initially required user ownership. The repair binds connection-owned work to its exact connection UUID and authenticated admission subject, preserves user-owned checks, and retires credentials when the original worker completes or cancellation begins. A fresh root run in the CI development environment passes 1,105 tests without skips, including real PostgreSQL normal-chat admission, terminal, clinical and audit authorization regressions; changed coverage is 97% against the preceding candidate and 92% against the PR base. Native task completion and release remain pending.
+
 The same-session renewal implementation and project tool-catalog restriction pass 904 integrated backend tests, 99 surrounding ingress/delegation/lifecycle tests, and 26 focused renewal boundary tests, all without skips in these root runs. Combined changed-source coverage is above 90% against both the preceding candidate and the pull request base. Native renewal, Minecraft setup/tests/startup, protected merges, release and actual Sparkle update remain pending; these test results do not establish live completion.
 
 `test_turn_hooks.py`: 14 passed. The existing real-loop seam suite could not initialize its PostgreSQL pool using ambient configuration; an isolated task-owned PostgreSQL container is being prepared. No baseline failure is hidden or weakened.
