@@ -619,21 +619,21 @@ def _is_startup_command(segment: list[str]) -> bool:
 def _javascript_http_probe_argv(manager: str, script: str) -> list[str]:
     """Return the single canonical bounded HTTP probe accepted as JS startup proof."""
     launch = {
-        "npm": [manager, "run", script, "--", "--host", "127.0.0.1", "--port", "4173"],
-        "pnpm": [manager, "run", script, "--host", "127.0.0.1", "--port", "4173"],
-        "yarn": [manager, script, "--host", "127.0.0.1", "--port", "4173"],
-        "bun": [manager, "run", script, "--host", "127.0.0.1", "--port", "4173"],
+        "npm": [manager, "run", script, "--", "--host", "localhost", "--port", "4173"],
+        "pnpm": [manager, "run", script, "--host", "localhost", "--port", "4173"],
+        "yarn": [manager, script, "--host", "localhost", "--port", "4173"],
+        "bun": [manager, "run", script, "--host", "localhost", "--port", "4173"],
     }.get(manager)
     if launch is None or script not in {"preview", "start"}:
         raise ValueError("unsupported JavaScript HTTP probe command")
-    node = ("const {spawn}=require('node:child_process');const p=spawn(" + json.dumps(launch[0]) + "," +
-            json.dumps(launch[1:]) + ",{stdio:'ignore',detached:true});let done=false;" +
-            "const stop=()=>{if(!p.pid)return;try{process.kill(-p.pid,'SIGTERM')}catch{p.kill('SIGTERM')}};" +
-            "const end=(c)=>{if(done)return;done=true;stop();process.exit(c)};" +
-            "p.on('error',()=>end(1));p.on('exit',c=>{if(!done)end(c||1)});" +
+    # Keep each argv item inside the Mac review gate's complete 512-character
+    # preview. An oversized argument is refused before the probe can execute.
+    node = ("let p=require('child_process').spawn(" + json.dumps(launch[0]) + "," +
+            json.dumps(launch[1:]) + ",{stdio:'ignore',detached:true}),d=0,n=0;" +
+            "function end(c){if(d)return;d=1;try{process.kill(-p.pid)}catch{}process.exit(c)}" +
+            "p.on('exit',()=>end(1));p.on('error',()=>end(1));" +
             "process.on('SIGTERM',()=>end(1));process.on('SIGINT',()=>end(1));" +
-            "const t=Date.now();(async()=>{while(Date.now()-t<20000){try{const r=await fetch('http://127.0.0.1:4173/');" +
-            "if(r.status>=200&&r.status<400)return end(0)}catch{}await new Promise(r=>setTimeout(r,250))}end(1)})();")
+            "setInterval(async()=>{if(++n>80)return end(1);try{if((await fetch('http://localhost:4173/')).ok)end(0)}catch{}},250)")
     return ["node", "-e", node]
 
 
