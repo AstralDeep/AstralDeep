@@ -190,6 +190,9 @@ async def record_llm_call(
         "base_url": resolved.base_url,
         "model": routed_model or resolved.model,
     }
+    if getattr(resolved, "profile", None) is not None:
+        inputs_meta.update(provider=resolved.provider, profile=resolved.profile,
+                           config_revision=resolved.config_revision, owner_id=resolved.owner_id)
     if routed_model and routed_model != resolved.model:
         inputs_meta["configured_model"] = resolved.model
     outputs_meta: Dict[str, Any] = {}

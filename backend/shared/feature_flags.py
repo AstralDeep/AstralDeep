@@ -9,6 +9,7 @@ import os
 class FeatureFlags:
     def __init__(self):
         self._flags = {
+            "anthropic_native": self._read("FF_ANTHROPIC_NATIVE", False),
             "denial_loop_detection": self._read("FF_DENIAL_LOOP_DETECTION", True),
             "tool_concurrency_safety": self._read("FF_TOOL_CONCURRENCY_SAFETY", True),
             "message_compaction": self._read("FF_MESSAGE_COMPACTION", False),
@@ -70,6 +71,7 @@ class FeatureFlags:
             "rail_caption_variant": self._read("FF_RAIL_CAPTION_VARIANT", False),
             "framework_credentials": self._read("FF_FRAMEWORK_CREDENTIALS", False),
             "harness_profile_selection": self._read("FF_HARNESS_PROFILE_SELECTION", False),
+            "prompt_prefix_cache": self._read("FF_PROMPT_PREFIX_CACHE", False),
         }
 
     @staticmethod

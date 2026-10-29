@@ -85,6 +85,7 @@ class PersistedLLMConfig:
     model: str
     api_key: str
     updated_at: Optional[float] = None
+    _native_binding: Any = field(default=None, repr=False, compare=False)
 
     @property
     def has_key(self) -> bool:
@@ -210,6 +211,9 @@ class UserLLMConfigStore:
         api_key = (api_key or "").strip()
         if not base_url or not model:
             raise ValueError("base_url and model must be non-empty")
+        if provider == "anthropic-native":
+            from .native_provider import validate_native_selection
+            validate_native_selection(base_url, model, api_key)
         with self._repository.transaction() as transaction:
             record = self._repository.repository.upsert_user(
                 transaction,
@@ -226,6 +230,9 @@ class UserLLMConfigStore:
             api_key=api_key,
             updated_at=record.updated_at.timestamp(),
         )
+        if provider == "anthropic-native":
+            from .native_provider import bind_record
+            cfg._native_binding = bind_record(self, record, scope="user", owner_id=user_id, api_key=api_key)
         self._cache_put(user_id, cfg)
         return cfg
 
@@ -248,6 +255,9 @@ class UserLLMConfigStore:
         api_key = (api_key or "").strip()
         if not base_url or not model:
             raise ValueError("base_url and model must be non-empty")
+        if provider == "anthropic-native":
+            from .native_provider import validate_native_selection
+            validate_native_selection(base_url, model, api_key)
         if time.monotonic() >= deadline_at_monotonic:
             raise LLMConfigCommitDeadlineExceeded(
                 "credential save deadline elapsed before persistence"
@@ -321,6 +331,11 @@ class UserLLMConfigStore:
             api_key=api_key,
             updated_at=time.time(),
         )
+        if provider == "anthropic-native":
+            from .native_provider import bind_record
+            with self._repository.transaction() as transaction:
+                native_record = self._repository.repository.get_user(transaction, owner_id=user_id)
+            cfg._native_binding = bind_record(self, native_record, scope="user", owner_id=user_id, api_key=api_key)
         self._cache_put(user_id, cfg)
         return FencedLLMConfigCommit(config=cfg, operation=terminal)
 
@@ -358,6 +373,9 @@ class UserLLMConfigStore:
         api_key = (api_key or "").strip()
         if not base_url or not model:
             raise ValueError("base_url and model must be non-empty")
+        if provider == "anthropic-native":
+            from .native_provider import validate_native_selection
+            validate_native_selection(base_url, model, api_key)
         with self._repository.transaction() as transaction:
             record = self._repository.repository.upsert_system(
                 transaction,
@@ -374,6 +392,9 @@ class UserLLMConfigStore:
             api_key=api_key,
             updated_at=record.updated_at.timestamp(),
         )
+        if provider == "anthropic-native":
+            from .native_provider import bind_record
+            cfg._native_binding = bind_record(self, record, scope="system", owner_id=None, api_key=api_key)
         self._cache_put(_SYSTEM_CACHE_KEY, cfg)
         return cfg
 
@@ -470,13 +491,18 @@ class UserLLMConfigStore:
                 self._pending_discards = []
             self._pending_discards.append((discard_scope, discard_id))
             return None
-        return PersistedLLMConfig(
+        config = PersistedLLMConfig(
             provider=row.provider or "custom",
             base_url=(row.base_url or "").rstrip("/"),
             model=row.model or "",
             api_key=api_key,
             updated_at=row.updated_at.timestamp(),
         )
+        if config.provider == "anthropic-native":
+            from .native_provider import bind_record
+            config._native_binding = bind_record(self, row, scope=discard_scope,
+                owner_id=discard_id if discard_scope == "user" else None, api_key=api_key)
+        return config
 
     def pop_discard_note(self) -> Optional[tuple]:
         pending = getattr(self, "_pending_discards", None)
