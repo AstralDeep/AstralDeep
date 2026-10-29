@@ -129,6 +129,7 @@ class GoalProgress:
         data, error = self._unwrap(result)
         status = self._job_state(data)
         outcome = self._outcome(data, error, status)
+        error_code, effect_state = self._error_metadata(error)
         self._sequence += 1
         provider_call_id = str(tool_call_id)[:128]
         call_id = self._observation_call_id(provider_call_id, self._sequence)
@@ -144,6 +145,11 @@ class GoalProgress:
             "project_id": self._bounded_identity(context.get("project_id")),
         }
         failure_signature = json.dumps([tool_name, self._safe(args), self._safe(data), self._safe(error)], sort_keys=True, separators=(",", ":"))
+        no_effect_malformed_write = (
+            tool_name == "write_file" and outcome == "failure"
+            and error_code == "out_of_range" and effect_state == "not_started"
+            and not (isinstance(args.get("path"), str) and args["path"].strip())
+        )
         if outcome == "failure":
             if failure_signature == self._last_failure:
                 self._repeat_failures += 1
@@ -177,7 +183,7 @@ class GoalProgress:
                 "sequence": self._sequence,
             }
         self._update_jobs(tool_name, args, data, status)
-        if outcome == "failure":
+        if outcome == "failure" and not no_effect_malformed_write:
             if call_id not in self._unresolved_failures:
                 if len(self._unresolved_failures) < _MAX_FAILURES:
                     self._unresolved_failures[call_id] = {
@@ -186,6 +192,8 @@ class GoalProgress:
                         "tool": str(tool_name)[:128],
                         "arguments": observation_args,
                         "result": observation_result,
+                        "error_code": error_code,
+                        "effect_state": effect_state,
                         **identity,
                     }
                 else:
@@ -238,6 +246,8 @@ class GoalProgress:
             "outcome": outcome,
             "completed": completed,
             "sequence": self._sequence,
+            **({"error_code": error_code} if error_code else {}),
+            **({"effect_state": effect_state} if effect_state else {}),
         })
         if len(self._private_observations) > _MAX_CALLS:
             del self._private_observations[:-_MAX_CALLS]
@@ -285,7 +295,12 @@ class GoalProgress:
             "uncertain_jobs": sorted(self._uncertain_jobs)[:_MAX_ITEMS],
             "unresolved_failures": sorted(self._unresolved_failures),
             "unresolved_failure_details": [
-                {"call_id": call_id, "tool": item["tool"], "sequence": item["sequence"], "outcome": "failure", "fingerprint": item["fingerprint"]}
+                {
+                    "call_id": call_id, "tool": item["tool"], "sequence": item["sequence"],
+                    "outcome": "failure", "fingerprint": item["fingerprint"],
+                    "error_code": item.get("error_code"),
+                    "effect_state": item.get("effect_state"),
+                }
                 for call_id, item in self._unresolved_failures.items()
             ],
             "failure_tracking_overflow": self._failure_overflow,
@@ -419,9 +434,26 @@ class GoalProgress:
         if not GoalProgress._same_identity(unresolved, success):
             return False
         file_effect = unresolved["tool"] in {"write_file", "delete_path", "read_file"}
+        tool = unresolved["tool"]
+        if (not unknown and tool == "write_file"
+                and unresolved.get("error_code") == "out_of_range"
+                and unresolved.get("effect_state") == "not_started"):
+            from orchestrator.computer_use_policy import MAX_WRITE_BYTES
+
+            failed_size = unresolved["arguments"].get("content_size")
+            success_size = success["arguments"].get("content_size")
+            return (
+                success["tool"] == "write_file"
+                and type(failed_size) is int and failed_size > MAX_WRITE_BYTES
+                and type(success_size) is int and 0 < success_size < failed_size
+                and success_size <= MAX_WRITE_BYTES
+                and GoalProgress._same_path(
+                    unresolved["arguments"].get("path"), unresolved["arguments"].get("cwd"),
+                    success["arguments"].get("path"), success["arguments"].get("cwd"),
+                )
+            )
         if unresolved["fingerprint"] == success["fingerprint"] and not (unknown and file_effect):
             return True
-        tool = unresolved["tool"]
         if file_effect:
             if (not unknown and tool == "write_file" and success["tool"] == "write_file"
                     and unresolved["arguments"].get("if_exists", "refuse") == "refuse"
@@ -583,6 +615,19 @@ class GoalProgress:
         if isinstance(raw, dict) and {"code", "message", "next_action"} <= raw.keys() and error is None:
             error = {key: raw[key] for key in ("code", "message", "next_action") if key in raw}
         return raw, error
+
+    @staticmethod
+    def _error_metadata(error: Any) -> tuple[str | None, str | None]:
+        if isinstance(error, dict):
+            code = error.get("code")
+            effect_state = error.get("effect_state")
+        else:
+            code = getattr(error, "code", None)
+            effect_state = getattr(error, "effect_state", None)
+        return (
+            code[:64] if isinstance(code, str) else None,
+            effect_state[:64] if isinstance(effect_state, str) else None,
+        )
 
     @staticmethod
     def _outcome(data: Any, error: Any, status: Any) -> str:

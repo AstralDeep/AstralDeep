@@ -517,6 +517,87 @@ def test_failed_file_call_cannot_be_waived_by_inspecting_existing_contents():
     assert progress.assess(decision).status == "continue"
 
 
+def test_out_of_range_write_can_be_resolved_by_smaller_same_path_write():
+    from orchestrator.computer_use_policy import MAX_WRITE_BYTES
+
+    progress = GoalProgress("Create a playable game")
+    context = {
+        "agent_id": "computer-use-1", "computer_id": "computer-1",
+        "computer_name": "workspace", "project_context": {"project_id": "project-1"},
+    }
+    path = "/workspace/game.py"
+    progress.record(
+        "oversized-write", "write_file",
+        {"path": path, "content": "x" * (MAX_WRITE_BYTES + 1), "if_exists": "overwrite"},
+        SimpleNamespace(error=ComputerHostError(
+            "out_of_range", "content exceeds the write limit", effect_state="not_started",
+        ), result={"_data": {}}),
+        **context,
+    )
+    progress.record(
+        "recovered-write", "write_file",
+        {"path": path, "content": "print('play')\n", "if_exists": "overwrite"},
+        SimpleNamespace(error=None, result={"_data": {"path": path, "bytes": 14}}),
+        **context,
+    )
+
+    decision = CompletionDecision("complete", resolutions=(("oversized-write", "recovered-write"),))
+    assert progress.assess(decision).status == "complete"
+
+
+def test_no_effect_write_rejection_without_path_is_not_an_unresolved_failure():
+    from orchestrator.computer_use_policy import MAX_WRITE_BYTES
+
+    progress = GoalProgress("Create a playable game")
+    progress.record(
+        "malformed-write", "write_file", {"content": "x" * (MAX_WRITE_BYTES + 1)},
+        SimpleNamespace(error=ComputerHostError(
+            "out_of_range", "path is required", effect_state="not_started",
+        ), result={"_data": {}}),
+        agent_id="computer-use-1", computer_id="computer-1", computer_name="workspace",
+        project_context={"project_id": "project-1"},
+    )
+
+    assert progress.evidence()["call_outcomes"][-1]["outcome"] == "failure"
+    assert progress.evidence()["unresolved_failures"] == []
+    assert progress.assess(_completion()).status == "complete"
+
+
+@pytest.mark.parametrize(("error_code", "effect_state", "success_path", "success_identity"), [
+    ("permission_denied", "not_started", "/workspace/game.py", {}),
+    ("out_of_range", None, "/workspace/game.py", {}),
+    ("out_of_range", "not_started", "/workspace/other.py", {}),
+    ("out_of_range", "not_started", "/workspace/game.py", {"computer_id": "computer-2"}),
+])
+def test_oversized_write_resolution_requires_exact_no_effect_context(
+    error_code, effect_state, success_path, success_identity,
+):
+    from orchestrator.computer_use_policy import MAX_WRITE_BYTES
+
+    progress = GoalProgress("Create a playable game")
+    context = {
+        "agent_id": "computer-use-1", "computer_id": "computer-1",
+        "computer_name": "workspace", "project_context": {"project_id": "project-1"},
+    }
+    progress.record(
+        "oversized-write", "write_file",
+        {"path": "/workspace/game.py", "content": "x" * (MAX_WRITE_BYTES + 1), "if_exists": "overwrite"},
+        SimpleNamespace(error=ComputerHostError(
+            error_code, "write was rejected", effect_state=effect_state,
+        ), result={"_data": {}}),
+        **context,
+    )
+    progress.record(
+        "recovered-write", "write_file",
+        {"path": success_path, "content": "print('play')\n", "if_exists": "overwrite"},
+        SimpleNamespace(error=None, result={"_data": {"path": success_path, "bytes": 14}}),
+        **{**context, **success_identity},
+    )
+
+    decision = CompletionDecision("complete", resolutions=(("oversized-write", "recovered-write"),))
+    assert progress.assess(decision).status == "continue"
+
+
 def test_unknown_effect_resolution_rejects_different_execution_context():
     progress = GoalProgress("Inspect and verify a result")
     progress.record("unknown-call", "write_file", {"path": "result.py"}, None,

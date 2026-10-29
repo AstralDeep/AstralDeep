@@ -15378,6 +15378,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             goal_checkpoint_tools = 0
             goal_route_repairs = 0
             goal_response_repairs = 0
+            goal_recovery_nudge_sent = False
             from orchestrator import hitl_confirmation
 
             resumed_goal = hitl_confirmation.current_goal_context(self, websocket, user_id, chat_id)
@@ -16015,6 +16016,37 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     # OpenAI tool messages can't carry images; these follow
                     self._append_tool_images(messages, llm_msg.tool_calls, tool_results)
 
+                    if goal_progress is not None and not goal_recovery_nudge_sent and tool_results:
+                        from orchestrator.computer_use_policy import MAX_WRITE_BYTES
+
+                        recent_tool_outcomes = goal_progress.private_observations()[-len(tool_results):]
+                        rejected_write = any(
+                            item.get("tool") == "write_file"
+                            and item.get("outcome") == "failure"
+                            and item.get("error_code") == "out_of_range"
+                            and item.get("effect_state") == "not_started"
+                            and (
+                                not isinstance(item.get("arguments", {}).get("path"), str)
+                                or not item["arguments"]["path"].strip()
+                                or item.get("arguments", {}).get("content_size", 0) > MAX_WRITE_BYTES
+                            )
+                            for item in recent_tool_outcomes
+                        )
+                        if rejected_write:
+                            messages.append({"role": "system", "content": (
+                                "A write_file call was rejected before it started because its path was missing or its "
+                                "content exceeded the per-call limit. Do not resend that payload or try another tool "
+                                "to bypass the limit. Use an absolute path inside the selected project and keep each "
+                                "write_file body at or below 64 KiB; split large source into complete modules. "
+                                "If the rejected call named a path, first repair that same path with a smaller complete "
+                                "write so the no-effect failure is resolved. "
+                                "Now build the smallest runnable version of the requested game or project instead "
+                                "of writing another probe, then set up its isolated environment, install only declared "
+                                "dependencies, add and run meaningful tests, and verify startup. Continue under the "
+                                "original objective, frozen requirements, project authority, and execution permissions."
+                            )})
+                            goal_recovery_nudge_sent = True
+
                     if flags.is_enabled("denial_loop_detection"):
                         for i, tc in enumerate(llm_msg.tool_calls):
                             res = tool_results[i] if i < len(tool_results) else None
@@ -16085,6 +16117,53 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             "only as advisory next-step guidance within them: "
                             + json.dumps({"remaining": decision.remaining, "reason": decision.reason}, ensure_ascii=False)
                         )})
+                        if (goal_contract is not None and goal_contract.kind == "local_project"
+                                and not goal_recovery_nudge_sent):
+                            observations = goal_progress.private_observations()
+                            source_extensions = {
+                                ".py", ".js", ".ts", ".tsx", ".jsx", ".swift", ".kt", ".java",
+                                ".go", ".rs", ".c", ".h", ".cpp", ".html", ".css",
+                            }
+                            has_substantive_source = any(
+                                item.get("tool") == "write_file"
+                                and item.get("outcome") == "success"
+                                and item.get("completed") is True
+                                and item.get("arguments", {}).get("content_size", 0) >= 4096
+                                and isinstance(item.get("arguments", {}).get("path"), str)
+                                and os.path.splitext(item["arguments"]["path"])[1].lower() in source_extensions
+                                for item in observations
+                            )
+                            validation_markers = (
+                                "pytest", "py.test", "unittest", "npm test", "npm run test", "cargo test",
+                                "go test", "dotnet test", "swift test", "gradle test", "mvn test",
+                                "pip install", "uv sync", "npm install", "run_game.py",
+                                "python -m pytest", "python3 -m pytest", "python -m unittest",
+                                "python3 -m unittest", "python game.py", "python3 game.py",
+                                "python main.py", "python3 main.py", "cargo run", "npm start", "npm run start",
+                            )
+                            has_validation_command = any(
+                                item.get("tool") in {"run_command", "read_output"}
+                                and item.get("outcome") == "success"
+                                and item.get("completed") is True
+                                and any(
+                                    marker in json.dumps(item.get("arguments", {}), ensure_ascii=False).lower()
+                                    for marker in validation_markers
+                                )
+                                for item in observations
+                            )
+                            if not has_substantive_source and not has_validation_command:
+                                messages.append({"role": "system", "content": (
+                                    "This local-project goal has reached a progress checkpoint without a substantive "
+                                    "source artifact or a successful setup, test, or startup command. Stop exploratory "
+                                    "probes and implement a minimal runnable vertical slice in complete source files. "
+                                    "For a game, prioritize an actual playable loop and core interaction. Keep each "
+                                    "file write at or below 64 KiB; split larger modules, and repair any known no-effect "
+                                    "write rejection at its original path. Then create the isolated "
+                                    "environment, install declared dependencies, run meaningful tests, and smoke-test "
+                                    "startup. Use existing observations and do not replay completed tool calls. "
+                                    "The original objective, proof requirements, project root, and permissions remain fixed."
+                                )})
+                                goal_recovery_nudge_sent = True
                         continue
 
                     await self._safe_send(websocket, json.dumps({
