@@ -55,10 +55,26 @@ def test_javascript_test_command_and_http_startup_are_bounded_and_local():
     assert _javascript_script_argv("npm", "test") == ["npm", "run", "test"]
     argv = _javascript_http_startup_argv("npm", {"preview": "vite preview"})
     assert argv[:2] == ["node", "-e"]
-    assert "127.0.0.1:4173" in argv[2]
-    assert "20000" in argv[2]
+    assert "localhost:4173" in argv[2]
+    assert len(argv[2]) <= 512
+    assert "n>80" in argv[2]
     assert "SIGTERM" in argv[2]
     assert "detached:true" in argv[2]
     assert "process.kill(-p.pid" in argv[2]
-    assert "r.status>=200&&r.status<400" in argv[2]
+    assert ")).ok)end(0)" in argv[2]
     assert _javascript_http_startup_argv("npm", {"test": "vitest"}) is None
+
+
+def test_javascript_startup_probe_fits_complete_mac_review(monkeypatch):
+    from types import SimpleNamespace
+    from orchestrator.hitl_confirmation import _review_arguments
+
+    monkeypatch.setattr("personalization.phi_gate.get_phi_gate",
+                        lambda: SimpleNamespace(contains_phi=lambda _text: False))
+    root = "/work/personal-website"
+    argv = _javascript_http_startup_argv("npm", {"preview": "vite preview"})
+    preview, reviewable = _review_arguments(
+        {"argv": argv, "cwd": root, "timeout_s": 30, "background": False},
+        project_targets=frozenset({("cwd", root)}),
+    )
+    assert reviewable and "[REDACTED" not in preview
