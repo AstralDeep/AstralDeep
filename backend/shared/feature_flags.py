@@ -53,6 +53,7 @@ class FeatureFlags:
             "remote_compute": self._read("FF_REMOTE_COMPUTE", False),
             "gaiakeep": self._read("FF_GAIAKEEP", False),
             "fhir": self._read("FF_FHIR", False),
+            "clinical_note_extract": self._read("FF_CLINICAL_NOTE_EXTRACT", False),
             "cresco": self._read("FF_CRESCO", False),
             "push_delivery": self._read("FF_PUSH_DELIVERY", False),
             "computer_use": self._read("FF_COMPUTER_USE", False),
