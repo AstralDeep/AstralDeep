@@ -428,13 +428,13 @@ def _session_identity(orch, websocket, roles) -> dict:
         return {}
 
 
-def _settings_nav_html(roles, surface_key: str, identity=None, params=None) -> str:
+def _settings_nav_html(roles, surface_key: str, identity=None, params=None, orch=None) -> str:
     try:
         from webrender.chrome import render_settings_nav
         from webrender.chrome.menu_model import build_menu_model
         from orchestrator.chrome_availability import projection_chrome_availability
 
-        model = build_menu_model(roles, **projection_chrome_availability())
+        model = build_menu_model(roles, **projection_chrome_availability(orch))
         return render_settings_nav(model, surface_key, identity=identity, active_params=params)
     except Exception:
         logger.debug("chrome: settings rail unavailable", exc_info=True)
@@ -467,7 +467,7 @@ async def _render_surface_html(orch, websocket, user_id, roles, surface_key: str
             chrome_error_block("This surface failed to load. Please retry.", surface_key)))
         return
     nav_html = "" if getattr(mod, "NO_NAV", False) else _settings_nav_html(
-        roles, surface_key, _session_identity(orch, websocket, roles), params)
+        roles, surface_key, _session_identity(orch, websocket, roles), params, orch=orch)
     await _push_modal(orch, websocket, render_modal_shell(
         await _surface_title(mod, surface_key, orch, user_id, params), (notice_html or "") + body, surface_key,
         subtitle=getattr(mod, "SUBTITLE", ""),

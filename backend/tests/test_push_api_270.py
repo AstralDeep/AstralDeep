@@ -16,8 +16,9 @@ from audit.repository import AuditRepository
 from orchestrator import push_api
 from orchestrator.auth import verify_user
 from orchestrator.push_delivery import PushDeliveryCoordinator
-from orchestrator.push_destinations import PushDestinationStore
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
+from tests.helpers.push_sessions import SessionBoundPushStore
+from tests.helpers.push_sessions import push_iam_policy as push_iam_policy
 
 from tests.test_push_delivery_270 import FakeAdapter
 
@@ -31,8 +32,14 @@ def plane_runtime():
 
 
 @pytest.fixture(autouse=True)
+def clean_outbox(plane_runtime):
+    plane_runtime.execute("DELETE FROM astralplane_outbox WHERE topic = %s", ("push.notification",))
+
+
+@pytest.fixture(autouse=True)
 def encryption_key(monkeypatch):
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", KEY)
+    monkeypatch.setenv("WEB_SESSION_ENC_KEY", KEY)
 
 
 @pytest.fixture()
@@ -54,7 +61,7 @@ def audit_repository(plane_runtime):
 
 @pytest.fixture()
 def store(plane_runtime, audit_repository):
-    return PushDestinationStore(
+    return SessionBoundPushStore(
         plane_runtime=plane_runtime,
         plane_repositories=plane_runtime.repositories,
         audit_repository=audit_repository,
@@ -68,6 +75,7 @@ def coordinator(plane_runtime, store, audit_repository):
         plane_repositories=plane_runtime.repositories,
         destinations=store,
         adapters={"fcm": FakeAdapter(), "apns": FakeAdapter()},
+        delivery_policy=lambda *_: True,
         audit_repository=audit_repository,
     )
 
@@ -105,6 +113,100 @@ def _enroll_body(**overrides):
     }
     body.update(overrides)
     return body
+
+
+@pytest.mark.parametrize("value", [True, False, -1, 2**53, 1.0, "0", None])
+def test_enroll_revision_is_strict_safe_integer(authed_client, value):
+    result = authed_client.post("/api/push/destinations", json=_enroll_body(expected_destination_revision=value))
+    assert result.status_code == 422
+
+
+def test_lifecycle_revoke_checks_input_revision_before_mutation(authed_client, store, owner):
+    first = store.enroll(owner, device_id="device-revision-api", platform="android", token="token")
+    current = store.enroll(owner, device_id=first["device_id"], platform="android", token="token",
+                          expected_destination_revision=first["updated_at"])
+    endpoint = "/api/push/destinations/" + first["device_id"]
+    stale = authed_client.delete(endpoint, params={"expected_token_generation": first["token_generation"],
+                                                  "expected_destination_revision": first["updated_at"]})
+    assert stale.status_code == 409
+    assert store.get_destination(owner, first["device_id"])["status"] == "active"
+    success = authed_client.delete(endpoint, params={"expected_token_generation": current["token_generation"],
+                                                    "expected_destination_revision": current["updated_at"]})
+    assert success.status_code == 204
+
+
+def _custody(app, store, owner):
+    import time
+    from orchestrator import web_auth
+    from tests.helpers.push_sessions import consent_session
+    sid, selected = consent_session(store.sessions, owner)
+    app.state.orchestrator.web_sessions = store.sessions
+    app.dependency_overrides[verify_user] = lambda: {"sub": owner, "exp": time.time() + 300,
+        "iss": selected.observation.credential.issuing_issuer,
+        "azp": selected.observation.credential.issuing_client_id}
+    return sid, selected, {"Cookie": f"{web_auth.COOKIE_NAME}={web_auth._sign(sid)}"}
+
+
+def test_conditional_enrollment_captures_signed_custody_and_queued_revision(app, authed_client, store, owner,
+                                                                         coordinator):
+    sid, selected, headers = _custody(app, store, owner)
+    body = _enroll_body(expected_destination_revision=0)
+    first = authed_client.post("/api/push/destinations", json=body, headers=headers)
+    assert first.status_code == 200
+    second = authed_client.post("/api/push/destinations",
+        json={**body, "expected_destination_revision": first.json()["updated_at"]}, headers=headers)
+    assert second.status_code == 200 and second.json()["updated_at"] > first.json()["updated_at"]
+    assert second.json()["token_generation"] == first.json()["token_generation"]
+    assert authed_client.post("/api/push/destinations", json=body, headers=headers).status_code == 409
+    from tests.test_push_delivery_270 import _notification
+    asyncio.run(coordinator.enqueue_notification(owner, _notification(notification_id="revision-api-proof")))
+    proof = authed_client.get("/api/push/deliveries/revision-api-proof").json()[0]
+    assert proof["destination_revision"] == second.json()["updated_at"]
+    serialized = str(second.json()) + str(proof)
+    assert sid not in serialized and selected.observation.credential.incarnation_id not in serialized
+    store.sessions.delete(sid, expected_incarnation_id=selected.observation.credential.incarnation_id)
+    assert authed_client.post("/api/push/ack", json={"device_id": body["device_id"],
+        "notification_id": "revision-api-proof"}).status_code == 404
+
+
+@pytest.mark.parametrize("fault", ["missing", "duplicate", "wrong_owner", "replayed", "outage"])
+def test_conditional_custody_denials_do_not_mutate_destination(app, authed_client, store, owner, fault, monkeypatch):
+    sid, selected, headers = _custody(app, store, owner)
+    if fault == "missing":
+        headers = {}
+    elif fault == "duplicate":
+        headers["Cookie"] += "; " + headers["Cookie"]
+    elif fault == "wrong_owner":
+        app.dependency_overrides[verify_user] = lambda: {"sub": "other-owner", "exp": 2**40}
+    elif fault == "replayed":
+        store.sessions.delete(sid, expected_incarnation_id=selected.observation.credential.incarnation_id)
+    else:
+        def unavailable(**kwargs):
+            raise RuntimeError("synthetic store outage")
+        monkeypatch.setattr(store.sessions, "capture_execution_reference", unavailable)
+    result = authed_client.post("/api/push/destinations", json=_enroll_body(expected_destination_revision=0),
+                                headers=headers)
+    assert result.status_code == 503 and result.json()["detail"] == "destination_store_unavailable"
+    assert store.list_destinations(owner) == []
+
+
+@pytest.mark.parametrize("value", ["true", "false", "1.0", "-1", "0", str(2**53)])
+@pytest.mark.parametrize("field", ["expected_token_generation", "expected_destination_revision"])
+def test_delete_revision_rejects_nonpositive_or_nonstrict_values(authed_client, value, field):
+    assert authed_client.delete("/api/push/destinations/device-api-00001",
+        params={field: value}).status_code == 422
+
+
+def test_ack_session_authority_outage_is_unavailable(authed_client, store, owner, coordinator, monkeypatch):
+    from tests.test_push_delivery_270 import _notification
+    device = "device-api-outage"
+    store.enroll(owner, device_id=device, platform="android", token="token")
+    asyncio.run(coordinator.enqueue_notification(owner, _notification(notification_id="ack-session-outage")))
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("synthetic session authority outage")
+    monkeypatch.setattr(store._credentials.plane_runtime.repositories.history.sessions, "get_execution_state", unavailable)
+    result = authed_client.post("/api/push/ack", json={"device_id": device, "notification_id": "ack-session-outage"})
+    assert result.status_code == 503 and result.json()["detail"] == "destination_store_unavailable"
 
 
 def test_enroll_requires_authentication(client):
@@ -246,6 +348,13 @@ def test_delivery_outcomes_introspection(
     delivered = [item for item in outcomes if item["action"] == "push.delivery.delivered"]
     assert delivered[0]["delivery_outcome"] == "provider_accepted"
     assert delivered[0]["device_id"] == "device-outcome-01"
+    queued = [item for item in outcomes if item["action"] == "push.delivery.queued"]
+    assert queued[0]["device_id"] == "device-outcome-01" and queued[0]["token_generation"] == 1
+    rotated = store.enroll(owner, device_id="device-outcome-01", platform="android", token="rotated-token")
+    repeated = authed_client.get("/api/push/deliveries/sched-20260101-a").json()
+    proof = next(item for item in repeated if item["action"] == "push.delivery.queued")
+    assert proof["token_generation"] == 1 and proof["token_generation"] != rotated["token_generation"]
+    assert "token_fingerprint" not in proof and "token" not in proof
     foreign = authed_client.get("/api/push/deliveries/never-seen-notification")
     assert foreign.status_code == 200
     assert foreign.json() == []
@@ -296,3 +405,55 @@ def test_delivery_outcomes_when_audit_query_fails(
     monkeypatch.setattr(audit_repository, "list_for_user", broken)
     response = authed_client.get("/api/push/deliveries/sched-20260101-a")
     assert response.status_code == 503
+
+
+def test_late_logout_cannot_revoke_a_reenrolled_generation(authed_client):
+    enrolled = authed_client.post("/api/push/destinations", json=_enroll_body()).json()
+    rotated = authed_client.post("/api/push/destinations", json=_enroll_body(token="rotation-new")).json()
+    stale = authed_client.delete("/api/push/destinations/device-api-00001",
+                                params={"expected_token_generation": enrolled["token_generation"]})
+    assert stale.status_code == 409 and stale.json()["detail"] == "destination_conflict"
+    assert authed_client.get("/api/push/destinations/device-api-00001").json()["status"] == "active"
+    revoked = authed_client.delete("/api/push/destinations/device-api-00001",
+                                  params={"expected_token_generation": rotated["token_generation"]})
+    assert revoked.status_code == 204
+
+
+def test_actual_foreground_proof_uses_registered_connection_and_current_destination(app, authed_client,
+                                                                                  coordinator, owner,
+                                                                                  store, monkeypatch):
+    from orchestrator.notification_presence import NotificationPresence
+    from orchestrator.notification_routing import NotificationRoutingCoordinator, default_preferences
+    from orchestrator.orchestrator import Orchestrator
+    from shared.feature_flags import flags
+
+    orch = app.state.orchestrator
+    socket = object()
+    orch.ui_sessions = {socket: {"sub": owner, "exp": 4_000_000_000}}
+    orch.push_destinations = store
+    orch.notification_presence = NotificationPresence()
+    orch.notification_presence.register(socket, owner, "device-api-00001", "connection-1")
+    orch._owner_surface_active = lambda user: Orchestrator._owner_surface_active(orch, user)
+    orch.notification_routing = NotificationRoutingCoordinator(
+        plane_runtime=coordinator._runtime, plane_repositories=coordinator._runtime.repositories,
+        audit_repository=coordinator.audit_repository)
+    monkeypatch.setitem(flags._flags, "push_delivery", True)
+    monkeypatch.setitem(flags._flags, "notification_routing", True)
+    assert not orch._owner_surface_active(owner)
+    body = {"device_id": "device-api-00001", "connection_generation": "connection-1",
+            "sequence": 1, "foreground": True}
+    from orchestrator.notification_api import notification_router
+    app.include_router(notification_router)
+    assert authed_client.post("/api/notifications/presence", json=body).status_code == 200
+    assert orch._owner_surface_active(owner)
+    assert not Orchestrator._push_notification_allowed(orch, owner, "completion", "normal")
+    routing = {key: value for key, value in default_preferences().items() if key not in {"revision", "updated_at"}}
+    orch.notification_routing.update_preferences(owner, expected_revision=0, **{**routing, "in_app_completion": False})
+    assert Orchestrator._push_notification_allowed(orch, owner, "completion", "normal")
+    enrolled = authed_client.post("/api/push/destinations", json=_enroll_body()).json()
+    assert not orch._owner_surface_active(owner)
+    assert authed_client.post("/api/notifications/presence", json={**body, "sequence": 2}).status_code == 200
+    assert orch._owner_surface_active(owner)
+    authed_client.delete("/api/push/destinations/device-api-00001",
+                        params={"expected_token_generation": enrolled["token_generation"]})
+    assert not orch._owner_surface_active(owner)

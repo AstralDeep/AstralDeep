@@ -84,6 +84,7 @@ async def active(human, socket_request, isolated, monkeypatch, tmp_path):
     monkeypatch.setitem(flags._flags, "safe_compaction", False)
     monkeypatch.setitem(flags._flags, "tool_streaming", False)
     monkeypatch.setenv("DELEGATION_REQUIRED", "true")
+    monkeypatch.delenv("AGENT_API_KEY", raising=False)
     monkeypatch.setattr(mcp_tools, "_ORCH", None)
     monkeypatch.setattr(TerminalShellAgent, "_init_crypto",
         lambda self: setattr(self, "_public_key_jwk", {}))

@@ -27,7 +27,7 @@ def registered_host(fixture, auth_audit, monkeypatch):
     catalog.history.db.users[fixture[1]] = {"email": "alice@example.com"}
     for name in ("agent_cards", "plane_repository_source", "_is_draft_agent", "user_agent_registry"):
         setattr(host, name, getattr(catalog, name))
-    monkeypatch.setattr(chrome_availability, "projection_chrome_availability", lambda: {
+    monkeypatch.setattr(chrome_availability, "projection_chrome_availability", lambda _orch=None: {
         "work_enabled": True, "notes_enabled": True, "connections_enabled": True,
         "export_enabled": True, "share_enabled": True,
     })

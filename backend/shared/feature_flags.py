@@ -57,6 +57,7 @@ class FeatureFlags:
             "clinical_note_extract": self._read("FF_CLINICAL_NOTE_EXTRACT", False),
             "cresco": self._read("FF_CRESCO", False),
             "push_delivery": self._read("FF_PUSH_DELIVERY", False),
+            "notification_routing": self._read("FF_NOTIFICATION_ROUTING", False),
             "computer_use": self._read("FF_COMPUTER_USE", False),
             "terminal_shell": self._read("FF_TERMINAL_SHELL", False),
             "sandbox_qualification": self._read("FF_SANDBOX_QUALIFICATION", False),

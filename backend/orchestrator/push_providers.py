@@ -6,6 +6,7 @@ or permanent for the delivery pipeline's outcome state machine.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -33,6 +34,9 @@ FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
 APNS_DEFAULT_HOST = "https://api.push.apple.com"
 APNS_TOKEN_LIFETIME_SECONDS = 1800
 FCM_TOKEN_LIFETIME_SECONDS = 3300
+MAX_PUSH_LIFETIME_SECONDS = 300
+GENERIC_PUSH_TITLE = "AstralDeep"
+GENERIC_PUSH_BODY = "You have a new notification."
 _DETAIL_BODY = re.compile(r": (\{.*\})\s*$", re.DOTALL)
 
 
@@ -42,6 +46,13 @@ class PushProviderError(Exception):
         self.transient = transient
         self.code = code
         self.detail = (detail or code)[:200].replace("\n", " ").replace("\r", " ")
+
+
+def _remaining_lifetime(now: float, expires_at: int | None) -> int:
+    remaining = MAX_PUSH_LIFETIME_SECONDS if expires_at is None else int(expires_at - now)
+    if remaining <= 0:
+        raise PushProviderError(transient=False, code="notification_expired")
+    return min(remaining, MAX_PUSH_LIFETIME_SECONDS)
 
 
 def _detail_body(detail: str) -> dict[str, Any]:
@@ -146,6 +157,7 @@ class FcmPushAdapter:
         title: str,
         body: str,
         notification_id: str,
+        expires_at: int | None = None,
     ) -> None:
         if not self.configured:
             raise PushProviderError(
@@ -153,12 +165,13 @@ class FcmPushAdapter:
                 code="provider_unconfigured",
                 detail="fcm sender credentials are not configured",
             )
+        remaining = _remaining_lifetime(self._clock(), expires_at)
         access_token = self._access_token()
         payload = {
             "message": {
                 "token": device_token,
-                "notification": {"title": title, "body": body},
                 "data": {"notification_id": notification_id},
+                "android": {"ttl": f"{remaining}s"},
             }
         }
         try:
@@ -262,6 +275,7 @@ class ApnsPushAdapter:
         title: str,
         body: str,
         notification_id: str,
+        expires_at: int | None = None,
     ) -> None:
         if not self.configured:
             raise PushProviderError(
@@ -269,12 +283,13 @@ class ApnsPushAdapter:
                 code="provider_unconfigured",
                 detail="apns sender credentials are not configured",
             )
+        now = self._clock()
+        remaining = _remaining_lifetime(now, expires_at)
         provider_token = self._provider_token()
         url = f"{self._host}/3/device/{device_token}"
         payload = {
             "aps": {
-                "alert": {"title": title, "body": body},
-                "sound": "default",
+                "alert": {"title": GENERIC_PUSH_TITLE, "body": GENERIC_PUSH_BODY},
             },
             "notification_id": notification_id,
         }
@@ -282,6 +297,8 @@ class ApnsPushAdapter:
             "apns-topic": self._topic,
             "apns-push-type": "alert",
             "apns-priority": "10",
+            "apns-expiration": str(int(now) + remaining),
+            "apns-collapse-id": hashlib.sha256(notification_id.encode()).hexdigest(),
         }
         try:
             self._transport(

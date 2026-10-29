@@ -113,7 +113,6 @@ _SECRET_MARKERS = re.compile(r"(?i)(?:api[_ -]?key|access[_ -]?token|secret|pass
 _EMAIL_DESTINATION = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _PHONE_DESTINATION = re.compile(r"\+?[0-9(). -]{10,24}")
 
-
 def _routing_address(key, value) -> bool:
     if key.lower() not in _DESTINATION_FIELDS or not isinstance(value, str) or len(value) > 320:
         return False
@@ -812,7 +811,7 @@ def _review_summary(args: dict) -> str:
     return description
 
 
-def _review_arguments(args: dict, *, project_targets=frozenset()) -> tuple[str, bool]:
+def _review_arguments(args: dict, *, trusted_identifiers: dict | None = None, project_targets=frozenset()) -> tuple[str, bool]:
     from orchestrator.hitl import _SENSITIVE_INPUT, sensitive_url
     from personalization.phi_gate import get_phi_gate
     from shared.phi_redactor import PHI_FIELD_PATTERNS, redact
@@ -820,7 +819,7 @@ def _review_arguments(args: dict, *, project_targets=frozenset()) -> tuple[str, 
     reviewable = True
     visible_strings = []
 
-    def walk(value, key="", *, top_level=False):
+    def walk(value, key="", trusted=False, *, top_level=False):
         nonlocal reviewable
         destination = (_routing_address(key, value) or
                        top_level and isinstance(value, str) and (key, value) in project_targets)
@@ -831,12 +830,17 @@ def _review_arguments(args: dict, *, project_targets=frozenset()) -> tuple[str, 
             reviewable = False
             return "[REDACTED — review unavailable]"
         if isinstance(value, dict):
-            return {name: walk(child, name, top_level=value is args) for name, child in value.items()}
+            return {name: walk(child, name, value is args and isinstance(child, str)
+                               and (trusted_identifiers or {}).get(name) == child,
+                               top_level=value is args) for name, child in value.items()}
         if isinstance(value, list):
             return [walk(child, key) for child in value]
         if isinstance(value, str):
+            if trusted:
+                return value
             decoded = unquote(unquote(value))
-            if _SECRET_MARKERS.search(decoded) or (not destination and _SENSITIVE_INPUT.search(decoded)):
+            if _SECRET_MARKERS.search(decoded) or (
+                not destination and _SENSITIVE_INPUT.search(decoded)):
                 reviewable = False
                 return "[REDACTED — review unavailable]"
             if key == "url":
@@ -900,6 +904,17 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             return _refused("Review unavailable: action targets could not be resolved. Reissue the action when they are available.")
         shown = {key: value for key, value in args.items()
                  if not (key == "computer" and agent == "computer-use-1") and not (key == "user_id" and value == owner)}
+        trusted_identifiers = {}
+        if agent == "terminal-shell-1" and tool in {"start_terminal", "terminal_write"}:
+            try:
+                await asyncio.to_thread(orch.terminal_sessions.runtime_preview, owner,
+                                        runtime_binding=args.get("runtime_binding"),
+                                        session_id=args.get("session_id") if tool == "terminal_write" else None)
+                trusted_identifiers["runtime_binding"] = args.get("runtime_binding")
+                if tool == "terminal_write":
+                    trusted_identifiers["session_id"] = args.get("session_id")
+            except Exception:
+                return _refused("Review unavailable: terminal authority changed. Reissue the action.")
         project_targets = frozenset()
         if agent == "computer-use-1" and consent_decision(orch, websocket, owner, chat, agent, tool, args, risks)[0] == "standing":
             from orchestrator.project_authority import project_review_targets
@@ -907,7 +922,8 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
 
             host = computer_card_host(orch, owner, chat, args)
             project_targets = project_review_targets(orch, owner, chat, host, tool, args)
-        preview, reviewable = await asyncio.to_thread(_review_arguments, shown, project_targets=project_targets)
+        preview, reviewable = await asyncio.to_thread(
+            _review_arguments, shown, trusted_identifiers=trusted_identifiers, project_targets=project_targets)
         obsolete = review_publication_refusal(orch, websocket, publication)
         if obsolete is not None:
             return _refused(obsolete[0], code="COMPUTER_REVIEW_CHANGED")

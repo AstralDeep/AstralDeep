@@ -1407,7 +1407,18 @@ class Orchestrator:
             adapters=adapters_from_env(),
             audit_repository=self.audit_repo,
             metrics=self._push_delivery_metric,
+            delivery_policy=self._push_notification_allowed,
         )
+
+        from orchestrator.notification_routing import NotificationRoutingCoordinator
+        self.notification_routing = NotificationRoutingCoordinator(
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+            audit_repository=self.audit_repo,
+            metrics=self._notification_metric,
+        )
+        from orchestrator.notification_presence import NotificationPresence
+        self.notification_presence = NotificationPresence()
 
         from orchestrator.human_request_authority import HumanRequestBoundary
         self.human_request_boundary = HumanRequestBoundary(self)
@@ -10123,6 +10134,9 @@ class Orchestrator:
                     if previous_owner != user_data.get("sub"):
                         self.rote.cleanup(websocket)
                     self.ui_sessions[websocket] = user_data
+                    presence = getattr(self, "notification_presence", None)
+                    if presence is not None:
+                        presence.register(websocket, user_data.get("sub"), msg.device_id, msg.connection_generation)
                     _hosts = getattr(self, "_agent_host_sockets", None)
                     if _hosts is not None:
                         if invalid_host_field is not None:
@@ -10237,7 +10251,7 @@ class Orchestrator:
                                 _roles.extend((_c or {}).get("roles") or [])
                             _menu = menu_model_dict(
                                 _roles, include_admin=False, include_tour=False,
-                                **projection_native_chrome_availability(user_data),
+                                **projection_native_chrome_availability(user_data, self),
                             )
                             if _dt == "watch":
                                 _menu = project_watch_menu_model(
@@ -13324,26 +13338,80 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return
         observability.record(name, labels=labels)
 
+    def _notification_metric(self, name: str) -> None:
+        observability = getattr(self, "runtime_observability", None)
+        if observability is None:
+            return
+        observability.record(name)
+
+    def _owner_surface_active(self, user_id: str) -> bool:
+        presence = getattr(self, "notification_presence", None)
+        return bool(presence is not None and presence.active(
+            user_id, self.ui_sessions, self.push_destinations.presence_identity))
+
+    def _push_notification_allowed(self, owner_id: str, kind: str, urgency: str) -> bool:
+        return (flags.is_enabled("push_delivery") and flags.is_enabled("notification_routing")
+                and self.notification_routing.push_allowed(
+                    owner_id, kind, urgency, has_active_surface=self._owner_surface_active(owner_id)))
+
     async def notify_user(self, user_id: str, payload: Dict[str, Any]) -> None:
         try:
             data = json.dumps(payload)
         except Exception:  # pragma: no cover
             logger.debug("notify_user: unserializable payload", exc_info=True)
             return
-        sent = 0
-        for ws in list(self.ui_clients):
+        foreground = True
+        push_enabled = False
+        coordinator = getattr(self, "notification_routing", None)
+        decision = None
+        if flags.is_enabled("notification_routing") and payload.get("type") == "notification":
+            foreground = False
             try:
-                if self._get_user_id(ws) != user_id:
-                    continue
-                if await self._safe_send(ws, data):
-                    sent += 1
-            except Exception:  # pragma: no cover
-                logger.debug("notify_user: send failed for one socket", exc_info=True)
+                decision = await coordinator.route(
+                    owner_id=user_id,
+                    payload=payload,
+                    has_active_surface=self._owner_surface_active(user_id),
+                    push_available=flags.is_enabled("push_delivery"),
+                )
+                if decision is not None:
+                    foreground = decision["foreground"] is True
+                    push_enabled = decision["push"] is True
+            except Exception:
+                foreground = push_enabled = False
+                logger.warning(
+                    "notify_user: owner policy unavailable, notification withheld",
+                    exc_info=True,
+                )
+                decision = None
+            if decision is not None and decision.get("entry_id"):
+                payload = {**payload, "notification_id": decision["entry_id"],
+                           "event_kind": decision["kind"], "urgency": decision["urgency"],
+                           "delivery_expires_at": decision["retention_expires_at"]}
+                data = json.dumps(payload)
+        sent = 0
+        if foreground:
+            for ws in list(self.ui_clients):
+                try:
+                    if self._get_user_id(ws) != user_id:
+                        continue
+                    if await self._safe_send(ws, data):
+                        sent += 1
+                except Exception:  # pragma: no cover
+                    logger.debug(
+                        "notify_user: send failed for one socket", exc_info=True
+                    )
         logger.info(
             "notify_user.delivered",
-            extra={"user_id": user_id, "sockets": sent, "kind": payload.get("type")},
+            extra={
+                "user_id": user_id,
+                "sockets": sent,
+                "kind": payload.get("type"),
+                "routed": decision is not None,
+                "quiet": bool((decision or {}).get("quiet")),
+                "duplicate": bool((decision or {}).get("duplicate")),
+            },
         )
-        if flags.is_enabled("push_delivery"):
+        if push_enabled:
             try:
                 await self.push_delivery.enqueue_notification(user_id, payload)
             except Exception:
@@ -23639,6 +23707,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if websocket in self.ui_clients:
                 self.ui_clients.remove(websocket)
             self._clear_voice_control_binding(websocket)
+            presence = getattr(self, "notification_presence", None)
+            if presence is not None:
+                presence.clear(websocket)
             terminal_sessions = getattr(self, "terminal_sessions", None)
             if terminal_sessions is not None:
                 await asyncio.to_thread(terminal_sessions.close_for_connection, websocket)
@@ -23690,6 +23761,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if websocket in self.ui_clients:
                 self.ui_clients.remove(websocket)
             self._clear_voice_control_binding(websocket)
+            presence = getattr(self, "notification_presence", None)
+            if presence is not None:
+                presence.clear(websocket)
             terminal_sessions = getattr(self, "terminal_sessions", None)
             if terminal_sessions is not None:
                 await asyncio.to_thread(terminal_sessions.close_for_connection, websocket)
@@ -24131,7 +24205,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 from webrender.chrome import render_topbar
                 topbar = render_topbar(
                     roles=await asyncio.to_thread(session_roles, request),
-                    **projection_chrome_availability(),
+                    **projection_chrome_availability(self),
                 )
             except Exception:
                 logger.exception("chrome: topbar render failed — serving bare shell")
@@ -24210,6 +24284,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator.auth import auth_router
         from orchestrator.mesh_api import mesh_router
         from orchestrator.push_api import push_router
+        from orchestrator.notification_api import notification_router
         from orchestrator.web_auth import web_auth_router
         from orchestrator.attachments.router import attachments_router
         from audit.api import audit_router
@@ -24240,6 +24315,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(chrome_router)
         from orchestrator.lets_health_api import lets_router
         app.include_router(lets_router)
+        app.include_router(notification_router)
         from orchestrator.a2a_publication_api import publication_router
         app.include_router(publication_router)
         app.include_router(export_router)
