@@ -306,6 +306,8 @@ def _bind_stream(fake):
 
     fake._tool_security_blocked = types.MethodType(Orchestrator._tool_security_blocked, fake)
     fake._run_gate_stack = types.MethodType(Orchestrator._run_gate_stack, fake)
+    fake._run_project_bound_gate_stack = types.MethodType(
+        Orchestrator._run_project_bound_gate_stack, fake)
     fake._authorize_and_prepare = types.MethodType(
         Orchestrator._authorize_and_prepare, fake)
     fake._handle_push_stream_subscribe = types.MethodType(

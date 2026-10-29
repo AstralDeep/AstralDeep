@@ -44,9 +44,9 @@ VERIFIER = b'''import builtins
 builtins.pilot_events.append("verifier_loaded")
 def runner_node24():
     return "synthetic-node"
-def verify(fixture, invocation, node, *, peer):
+def verify(fixture, invocation, node, *, peer, action_pin):
     builtins.pilot_events.append("verify")
-    return {"fixture": fixture, "invocation": invocation, "loaded_peer": callable(peer.close)}
+    return {"fixture": fixture, "invocation": invocation, "loaded_peer": callable(peer.close), "action_pin": action_pin}
 '''
 
 
@@ -65,7 +65,7 @@ def workflow(helpers=None):
     start = run_step("Start and baseline the immutable reviewed CI peer", pilot.expected_start(helpers),
                      "        id: fence_peer\n")
     fence = """      - name: Install the reviewed Fence egress firewall in block mode
-        uses: openai/fence@abc5790eac3445fe3854eea6b506aa7d31bed67c # v0.10.5
+        uses: openai/fence@f9751ca5d767dc0199e88733c2b286bd4800a008 # v0.12.5
         with:
           mode: block
           invocation_id: astral-lint-${{ github.run_id }}-${{ github.run_attempt }}
@@ -140,7 +140,7 @@ def test_missing_or_invalid_trust_cannot_qualify(field, value):
     ("  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: \"true\"", "  BASH_ENV: /tmp/untrusted"),
     ("timeout-minutes: 10", "timeout-minutes: 30"),
     ("ubuntu-24.04", "self-hosted"),
-    ("abc5790eac3445fe3854eea6b506aa7d31bed67c", "a" * 40),
+    ("f9751ca5d767dc0199e88733c2b286bd4800a008", "a" * 40),
     ("mode: block", "mode: audit"),
     ("mode: block", "mode: block\n          unsafe_preserve: true"),
     ("allow_github_artifacts: true", "allow_github_artifacts: false"),
@@ -438,6 +438,8 @@ def test_loaders_execute_both_verified_buffers_before_fixed_operation(mode, expe
     assert events == expected
     result = json.loads(capsys.readouterr().out)
     assert result["loaded_peer"] is True if mode == "verify" else result["supervisor_exited"] is True
+    if mode == "verify":
+        assert result["action_pin"] == pilot.REVIEWED_BUNDLE_SHA
 
 
 @pytest.mark.parametrize("bad_metadata", ["/run/astral-ci-peer", FIXTURE, pilot.PEER_FILE])
@@ -474,3 +476,16 @@ def test_unknown_loader_mode_has_no_execution_path():
 def test_trusted_run_blocks_parse_as_shell_without_execution(builder):
     result = subprocess.run(["/bin/bash", "-n"], input=builder(trust()), text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
+
+
+def test_active_profile_is_exact_qualified_v2_and_explicitly_selected():
+    assert pilot.REVIEWED_BUNDLE_SHA == 'f9751ca5d767dc0199e88733c2b286bd4800a008'
+    assert pilot.REVIEWED_VERSION == 'v0.12.5'
+    assert pilot.VERIFIER_FILE == 'ci_fence_fixture_verifier_v2.py'
+    assert pilot.REVIEWED_HELPERS.commit == 'a1bfc19ccd9d1cc58c8298ce26718e92b76b3fb2'
+    assert pilot.REVIEWED_HELPERS.verifier_sha256 == '6c16e452bb0be0f877c40067663c6cc3759eab9ebe11fffd0d41952539b90b57'
+    source = pilot.loader_source(trust(), 'verify')
+    assert 'action_pin=' in source
+    assert pilot.REVIEWED_BUNDLE_SHA in source
+    candidate = workflow().replace(pilot.REVIEWED_BUNDLE_SHA, 'abc5790eac3445fe3854eea6b506aa7d31bed67c')
+    assert pilot.evaluate_workflow(candidate, trust()).state == pilot.STATE_NONCONFORMING

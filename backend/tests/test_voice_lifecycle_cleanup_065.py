@@ -6,7 +6,7 @@ revocation or auth expiry.
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -152,6 +152,9 @@ def test_chat_delete_passes_durable_lifecycle_receipt_to_voice_services() -> Non
         voice_services=_VoiceServices(events),
         ui_clients=[],
     )
+    from orchestrator.orchestrator import Orchestrator
+
+    orchestrator._broadcast_user_history = MethodType(Orchestrator._broadcast_user_history, orchestrator)
     request = SimpleNamespace(
         app=SimpleNamespace(state=SimpleNamespace(orchestrator=orchestrator))
     )
