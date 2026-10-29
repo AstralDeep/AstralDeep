@@ -146,8 +146,9 @@ async def test_blocked_or_invalid_checkpoint_stops_ninth_planner_and_publishes_i
     )
 
     assert planner_calls == 8
-    assert review_calls == 1
-    assert len(decisions) == 1
+    attempts = 2 if '"status":"complete"' in review_text else 1
+    assert review_calls == attempts
+    assert len(decisions) == attempts
     assert decisions[0].status == "blocked"
     assert decisions[0].reason == expected_reason
     assert o.execute_single_tool.await_count == 8
@@ -156,7 +157,8 @@ async def test_blocked_or_invalid_checkpoint_stops_ninth_planner_and_publishes_i
     incomplete = [call.kwargs.get("content") for call in o._append_conversation_message.await_args_list
                   if "Request incomplete" in json.dumps(call.kwargs.get("content"))]
     assert len(incomplete) == 1
-    assert incomplete[0][0]["message"] == expected_reason
+    assert incomplete[0][0]["message"] == (expected_reason if attempts == 1 else
+        "The in-progress review could not be completed safely.")
 
 
 @pytest.mark.asyncio
@@ -206,7 +208,7 @@ async def test_cancelled_checkpoint_accumulates_usage_without_advice_or_next_eff
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("checkpoint_kind", "expected_reason"), [
     ("provider_error", "The in-progress review could not be completed safely."),
-    ("truncated", "The in-progress review was incomplete; pause before continuing."),
+    ("truncated", "The in-progress review could not be completed safely."),
 ])
 async def test_checkpoint_provider_errors_and_truncation_publish_explicit_incomplete(
     checkpoint_orch, monkeypatch, user_skills_disabled, checkpoint_kind, expected_reason,
@@ -245,7 +247,7 @@ async def test_checkpoint_provider_errors_and_truncation_publish_explicit_incomp
     )
 
     assert planner_calls == 8
-    assert review_calls == 1
+    assert review_calls == 2
     assert o.execute_single_tool.await_count == 8
     assert stage.completion_state == "failed"
     o._publish_conversation_snapshot.assert_awaited_once()
@@ -314,11 +316,12 @@ async def test_task_currentness_cancellation_after_checkpoint_fence_prevents_adv
     o.task_manager.transition_task = AsyncMock()
     o.task_manager.refresh_task = AsyncMock()
     checks = 0
+    review_returned = False
 
     async def assert_current(_task):
         nonlocal checks
         checks += 1
-        if checks == 10:
+        if review_returned:
             o.cancelled_sessions[id(ws)] = True
         return task
 
@@ -329,10 +332,11 @@ async def test_task_currentness_cancellation_after_checkpoint_fence_prevents_adv
     review_calls = 0
 
     async def provider(websocket, messages, tools_desc=None, **kwargs):
-        nonlocal planner_calls, review_calls
+        nonlocal planner_calls, review_calls, review_returned
         if kwargs.get("feature") == "goal_verification":
             review_calls += 1
             assert json.loads(messages[-1]["content"]).get("review_phase") == "in_progress"
+            review_returned = True
             return _verdict("continue", ["Advice must not be injected after cancellation."])
         planner_calls += 1
         return _msg(tool_calls=[_tc(cid=f"fence-call-{planner_calls}")]), _usage()
@@ -348,7 +352,8 @@ async def test_task_currentness_cancellation_after_checkpoint_fence_prevents_adv
         operation_context={"operation": "chat_message", "owner": "seam-user"},
     )
 
-    assert checks == 10
+    assert review_returned
+    assert o.cancelled_sessions[id(ws)]
     assert planner_calls == 8
     assert review_calls == 1
     assert o.execute_single_tool.await_count == 8

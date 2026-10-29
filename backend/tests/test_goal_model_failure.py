@@ -92,7 +92,7 @@ async def test_missing_model_response_publishes_goal_failure_or_cancellation(
 
     assert appended[0]["role"] == "user"
     assert appended[0]["content"] == "Create and verify a project"
-    assert o._call_llm.await_count == 1
+    assert o._call_llm.await_count == (1 if cancel_during_call else 2)
     assert o._call_llm.await_args.kwargs["feature"] == "tool_dispatch"
     o._publish_conversation_snapshot.assert_awaited_once()
     assert o._publish_conversation_snapshot.await_args.kwargs["stage"] is stage
@@ -145,7 +145,7 @@ async def test_model_failure_publication_error_does_not_claim_completion(
     )
 
     assert stage.completion_state == "failed"
-    assert o._call_llm.await_count == 1
+    assert o._call_llm.await_count == 2
     assert o._call_llm.await_args.kwargs["feature"] == "tool_dispatch"
     o._publish_conversation_snapshot.assert_awaited_once()
     o.task_manager.transition_task.assert_awaited_once_with(

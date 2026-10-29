@@ -55,6 +55,8 @@ class GoalProgress:
     _unresolved_unknown: dict[str, dict[str, Any]] = field(default_factory=dict, init=False, repr=False)
     _unknown_overflow: int = field(default=0, init=False, repr=False)
     _private_observations: list[dict[str, Any]] = field(default_factory=list, init=False, repr=False)
+    _pending_approvals: dict[str, dict[str, Any]] = field(default_factory=dict, init=False, repr=False)
+    _early_approval_results: dict[str, dict[str, Any]] = field(default_factory=dict, init=False, repr=False)
 
     def __init__(self, request: str) -> None:
         if not isinstance(request, str):
@@ -78,6 +80,8 @@ class GoalProgress:
         self._unresolved_unknown = {}
         self._unknown_overflow = 0
         self._private_observations = []
+        self._pending_approvals = {}
+        self._early_approval_results = {}
 
     @property
     def request(self) -> str:
@@ -91,6 +95,21 @@ class GoalProgress:
     def requires_inspection(self) -> bool:
         return bool(self._uncertain_result or self._unresolved_unknown or self._unknown_overflow)
 
+    @property
+    def requires_approval(self) -> bool:
+        return bool(self._pending_approvals)
+
+    @staticmethod
+    def is_approval_pending(result: object) -> bool:
+        data, _error = GoalProgress._unwrap(result)
+        return isinstance(data, dict) and data.get("status") == "confirmation_required"
+
+    @staticmethod
+    def is_completed_success(tool_name: str, result: object) -> bool:
+        data, error = GoalProgress._unwrap(result)
+        outcome = GoalProgress._outcome(data, error, GoalProgress._job_state(data))
+        return outcome == "success" and GoalProgress._completed(tool_name, data, outcome)
+
     def record(
         self,
         tool_call_id: str,
@@ -102,6 +121,7 @@ class GoalProgress:
         computer_id: str | None = None,
         computer_name: str | None = None,
         project_context: dict[str, Any] | None = None,
+        approval_token: str | None = None,
     ) -> None:
         self.tool_count += 1
         self._no_tool_continues = 0
@@ -148,6 +168,14 @@ class GoalProgress:
                     self._uncertain_result = True
             else:
                 self._uncertain_result = True
+        if outcome == "pending_approval":
+            token = approval_token if isinstance(approval_token, str) and approval_token else call_id
+            self._pending_approvals[token[:128]] = {
+                "call_id": call_id,
+                "tool": str(tool_name)[:128],
+                "agent_id": identity["agent_id"],
+                "sequence": self._sequence,
+            }
         self._update_jobs(tool_name, args, data, status)
         if outcome == "failure":
             if call_id not in self._unresolved_failures:
@@ -225,6 +253,14 @@ class GoalProgress:
         self._evidence.append(item)
         if len(self._evidence) > _MAX_EVIDENCE:
             del self._evidence[:-_MAX_EVIDENCE]
+        early = self._early_approval_results.pop(approval_token, None) if outcome == "pending_approval" and approval_token else None
+        if early is not None:
+            self.resolve_approval(
+                approval_token, early["result"], tool_name=early["tool_name"],
+                arguments=early["arguments"], agent_id=early["agent_id"],
+                computer_id=early["computer_id"], computer_name=early["computer_name"],
+                project_context=early["project_context"],
+            )
 
     def _observation_call_id(self, provider_call_id: str, sequence: int) -> str:
         if provider_call_id and provider_call_id not in self._call_ids:
@@ -279,9 +315,47 @@ class GoalProgress:
             for item in self._private_observations
         ]
 
+    def resolve_approval(
+        self,
+        approval_token: str,
+        result: object,
+        *,
+        tool_name: str,
+        arguments: str | dict,
+        agent_id: str | None = None,
+        computer_id: str | None = None,
+        computer_name: str | None = None,
+        project_context: dict[str, Any] | None = None,
+    ) -> bool:
+        pending = self._pending_approvals.get(approval_token)
+        if self.is_approval_pending(result):
+            return False
+        if pending is None:
+            if (not isinstance(approval_token, str) or not approval_token or len(approval_token) > 128
+                    or approval_token in self._early_approval_results
+                    or len(self._early_approval_results) >= 32):
+                return False
+            self._early_approval_results[approval_token] = {
+                "result": result, "tool_name": tool_name, "arguments": arguments,
+                "agent_id": agent_id, "computer_id": computer_id, "computer_name": computer_name,
+                "project_context": project_context,
+            }
+            return True
+        if tool_name != pending["tool"] or agent_id != pending["agent_id"]:
+            return False
+        self._pending_approvals.pop(approval_token)
+        self.record(
+            f"approval-{pending['call_id']}", tool_name, arguments, result,
+            agent_id=agent_id, computer_id=computer_id, computer_name=computer_name,
+            project_context=project_context,
+        )
+        return True
+
     def assess(self, decision: CompletionDecision) -> CompletionDecision:
         if self._stalled:
             return CompletionDecision("blocked", (), "Repeated identical tool failures indicate the request is stalled.")
+        if self._pending_approvals:
+            return CompletionDecision("blocked", (), "A requested action is waiting for owner approval.")
         if self._uncertain_result:
             return CompletionDecision("blocked", (), "Inspect the uncertain tool effect and verify whether it completed before retrying or declaring completion.")
         if self._uncertain_jobs:
@@ -512,6 +586,8 @@ class GoalProgress:
 
     @staticmethod
     def _outcome(data: Any, error: Any, status: Any) -> str:
+        if isinstance(data, dict) and data.get("status") == "confirmation_required":
+            return "pending_approval"
         error_code = error.get("code") if isinstance(error, dict) else getattr(error, "code", None)
         data_code = data.get("code") if isinstance(data, dict) else None
         if (

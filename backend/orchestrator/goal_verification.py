@@ -12,6 +12,8 @@ Use independent tools in parallel only when their effects do not depend on each 
 Create parent directories and write complete files in one call, then read them back; avoid line-by-line file edits.
 Use observable milestones and bounded independent delegation when available, within the same authorized host, project, root, and permissions.
 For runnable project work, use the selected project's granted local folder, inspect its existing state,
+and use that host's computer-use tools for local files and commands. A remote-compute machine is a different
+executor: do not send a local project path to it. Create needed parents with computer-use run_command before writes.
 create an appropriate isolated environment (.venv for Python), declare and install needed dependencies,
 run meaningful tests, repair failures, and verify startup before claiming it works.
 A canvas code artifact or static code review alone is not a runnable local project.
@@ -191,18 +193,10 @@ async def evaluate_progress(orch, websocket, progress, project_context, contract
     from orchestrator.goal_progress import CompletionDecision
 
     try:
-        checkpoint, usage = await orch._call_llm(
-            websocket, progress_review_messages(progress, project_context, contract),
-            tools_desc=None, temperature=0, feature="goal_verification", allow_stream=False,
+        decision = await _review_with_repair(
+            orch, websocket, progress_review_messages(progress, project_context, contract),
+            _validated_progress_review, chat_id=chat_id, task=task,
         )
-        orch._accumulate_usage(chat_id, usage)
-        if orch.cancelled_sessions.get(id(websocket)):
-            return None
-        if getattr(checkpoint, "_astral_finish_reason", None) in {"length", "content_filter"}:
-            decision = CompletionDecision(
-                "blocked", (), "The in-progress review was incomplete; pause before continuing.")
-        else:
-            decision = parse_progress_review(getattr(checkpoint, "content", None))
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -217,3 +211,62 @@ async def evaluate_progress(orch, websocket, progress, project_context, contract
     if orch.cancelled_sessions.get(id(websocket)):
         return None
     return decision
+
+
+def _validated_progress_review(text):
+    decision = parse_progress_review(text)
+    if decision.reason == "The progress review was invalid; pause and inspect before continuing.":
+        raise ValueError("invalid progress review")
+    return decision
+
+
+async def evaluate_completion(orch, websocket, progress, answer, project, contract, *, chat_id, task=None):
+    from orchestrator.goal_progress import CompletionDecision
+
+    try:
+        return await _review_with_repair(
+            orch, websocket, review_messages(progress, answer, project, contract),
+            parse_review, chat_id=chat_id, task=task,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "goal.verification_failed chat=%s exception_class=%s", chat_id, type(exc).__name__)
+        return CompletionDecision("blocked", reason="Completion could not be verified."), {}
+
+
+async def _review_with_repair(orch, websocket, messages, parser, *, chat_id, task=None):
+    for attempt in range(2):
+        reply = None
+        if orch.cancelled_sessions.get(id(websocket)):
+            return None
+        if task:
+            await orch.task_manager.assert_current_execution(task)
+        try:
+            reply, usage = await orch._call_llm(
+                websocket, messages, tools_desc=None, temperature=0,
+                feature="goal_verification", allow_stream=False,
+            )
+            orch._accumulate_usage(chat_id, usage)
+            if orch.cancelled_sessions.get(id(websocket)):
+                return None
+            if task:
+                await orch.task_manager.assert_current_execution(task)
+            finish = getattr(reply, "_astral_finish_reason", None)
+            if finish in {"length", "content_filter"}:
+                raise ValueError("incomplete model review")
+            return parser(getattr(reply, "content", None))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if attempt or getattr(reply, "_astral_finish_reason", None) == "content_filter":
+                raise
+            logging.getLogger(__name__).warning(
+                "goal.review_repair chat=%s exception_class=%s", chat_id, type(exc).__name__)
+            repair = (
+                "The previous review response was unavailable or invalid. Retry the same review once using "
+                "the original objective, frozen requirements, and recorded evidence above. Return only the "
+                "required complete JSON object. Do not invent proof, permissions, or successful tool effects."
+            )
+            messages = [{**messages[0], "content": messages[0]["content"] + "\n" + repair}, *messages[1:]]

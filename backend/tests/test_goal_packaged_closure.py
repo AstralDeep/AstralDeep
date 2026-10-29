@@ -13,6 +13,8 @@ from tests.test_harness_packaged_artifacts import manifest_fact
     "orchestrator/goal_project_context.py",
     "orchestrator/goal_requirements.py",
     "orchestrator/goal_verification.py",
+    "orchestrator/goal_execution.py",
+    "orchestrator/hitl_confirmation.py",
     "orchestrator/conversation_publication.py",
     "orchestrator/history.py",
     "shared/feature_flags.py",
