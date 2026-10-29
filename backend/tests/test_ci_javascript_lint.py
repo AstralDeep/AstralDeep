@@ -221,7 +221,12 @@ def test_web_ci_packages_cannot_enter_product_manifests_or_image() -> None:
         for line in tracked.stdout.splitlines()
         if line and (REPO_ROOT / line).is_file()
     }
-    assert package_manifests == set()
+    assert package_manifests == {"tooling/sandbox-qualification/package.json"}
+    sandbox = _json(REPO_ROOT / "tooling/sandbox-qualification/package.json")
+    assert sandbox["private"] is True
+    assert sandbox["dependencies"] == {"@anthropic-ai/sandbox-runtime": "0.0.78"}
+    assert not sandbox.get("devDependencies")
+    assert not any(name in json.dumps(sandbox) for name in EXPECTED_DEV_DEPENDENCIES)
 
     projection_tracked = subprocess.run(
         ["git", "ls-files", "--", "tooling/web-ci/package.json"],

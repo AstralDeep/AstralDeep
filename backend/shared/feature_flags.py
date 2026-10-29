@@ -58,6 +58,7 @@ class FeatureFlags:
             "push_delivery": self._read("FF_PUSH_DELIVERY", False),
             "computer_use": self._read("FF_COMPUTER_USE", False),
             "terminal_shell": self._read("FF_TERMINAL_SHELL", False),
+            "sandbox_qualification": self._read("FF_SANDBOX_QUALIFICATION", False),
             "mcp_server": self._read("FF_MCP_SERVER", False),
             "a2a_server": self._read("FF_A2A_SERVER", False),
             "conversational_voice": self._read(
