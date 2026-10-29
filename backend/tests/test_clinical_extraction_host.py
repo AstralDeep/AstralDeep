@@ -1657,3 +1657,64 @@ async def test_public_selection_adapter_preserves_owner_isolation_and_empty_deni
             timeout=60,
         )
         assert response.error and calls == []
+
+
+def timing_metadata():
+    return {
+        "cache_n": 19,
+        "prompt_n": 1,
+        "prompt_ms": 2.0,
+        "prompt_per_token_ms": 2.0,
+        "prompt_per_second": 500.0,
+        "predicted_n": 30,
+        "predicted_ms": 3.0,
+        "predicted_per_token_ms": 0.1,
+        "predicted_per_second": 10000.0,
+    }
+
+
+def test_native_provider_timing_metadata_preserves_content_and_usage():
+    from orchestrator.clinical_extraction import parse_response
+
+    parsed = parse_response(
+        wire_response(timings=timing_metadata()),
+        "synthetic-clinical-model",
+        2048,
+        32768,
+    )
+    assert json.loads(parsed.content) == golden_payload(NOTE, NOTE_ID)
+    assert parsed.usage == {
+        "prompt_tokens": 20,
+        "completion_tokens": 30,
+        "total_tokens": 50,
+        "cached_tokens": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "timings",
+    [
+        None,
+        [],
+        {},
+        timing_metadata() | {"unrecognized": 1},
+        timing_metadata() | {"cache_n": True},
+        timing_metadata() | {"prompt_n": 1.0},
+        timing_metadata() | {"prompt_n": -1},
+        timing_metadata() | {"cache_n": 20},
+        timing_metadata() | {"predicted_n": 29},
+        timing_metadata() | {"predicted_ms": "3"},
+        timing_metadata() | {"predicted_ms": float("nan")},
+        timing_metadata() | {"predicted_ms": float("inf")},
+        timing_metadata() | {"predicted_ms": 1e100},
+    ],
+)
+def test_native_provider_timing_metadata_refuses_malformed_or_inconsistent_values(
+    timings,
+):
+    from orchestrator.clinical_extraction import ClinicalUnavailable, parse_response
+
+    with pytest.raises(ClinicalUnavailable, match="EXTRACT_RESPONSE_INVALID"):
+        parse_response(
+            wire_response(timings=timings), "synthetic-clinical-model", 2048, 32768
+        )

@@ -583,6 +583,7 @@ def parse_response(response, model, output_tokens, context_tokens):
             "usage",
             "system_fingerprint",
             "service_tier",
+            "timings",
         }:
             raise ValueError
         reported = value.get("usage")
@@ -641,6 +642,35 @@ def parse_response(response, model, output_tokens, context_tokens):
         usage["cached_tokens"] = (reported.get("prompt_tokens_details") or {}).get(
             "cached_tokens"
         )
+        if "timings" in value:
+            timings = value["timings"]
+            counts = {"cache_n", "prompt_n", "predicted_n"}
+            durations = {
+                "prompt_ms",
+                "prompt_per_token_ms",
+                "prompt_per_second",
+                "predicted_ms",
+                "predicted_per_token_ms",
+                "predicted_per_second",
+            }
+            if (
+                type(timings) is not dict
+                or set(timings) != counts | durations
+                or any(type(timings[name]) is not int for name in counts)
+                or any(
+                    type(item) not in (int, float)
+                    or not math.isfinite(item)
+                    or not 0 <= item <= 2**53 - 1
+                    for item in timings.values()
+                )
+                or timings["cache_n"] + timings["prompt_n"] != usage["prompt_tokens"]
+                or timings["predicted_n"] != usage["completion_tokens"]
+                or (
+                    usage["cached_tokens"] is not None
+                    and timings["cache_n"] != usage["cached_tokens"]
+                )
+            ):
+                raise ValueError
         if (
             usage["completion_tokens"] > output_tokens
             or usage["total_tokens"] > context_tokens
