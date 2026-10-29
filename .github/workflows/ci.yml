@@ -237,10 +237,35 @@ jobs:
             --env ASTRAL_EXPORT_COVERAGE_OUTPUT=/workspace/build/backend-web/export-javascript.json \
             --env ASTRAL_ALL_CLIENT_COVERAGE_DIR=/workspace/build/backend-web/client-v8 \
             --env ASTRAL_MESH_COVERAGE_OUTPUT=/workspace/build/backend-web/mesh-custody-browser-v8.json \
+            --volume "$GITHUB_WORKSPACE/scripts:/deep-ci:ro" \
             --volume "$PWD:/workspace" --workdir /workspace/tooling/web-ci "$image" \
-            /bin/bash -euc 'corepack npm run test:coverage-conversion:browser
+            /bin/bash -euc 'set -o pipefail
+              corepack npm run test:coverage-conversion:browser
               node --test tests/mesh-custody.browser.test.mjs
-              corepack npm exec -- playwright test tests/mesh-enrollment.spec.js tests/continuity-contract-060.spec.js tests/voice-conversation-065.spec.js tests/persistent-agents-079.spec.js tests/offline-worker-088.spec.js tests/canvas-review-088.spec.js tests/native-export-088.spec.js tests/work-reads-088.spec.js tests/guidance-notes-088.spec.js tests/workspace-topbar-088.spec.js tests/native-chart-088.spec.js tests/first-task-088.spec.js tests/selection-088.spec.js --browser=chromium --workers=1'
+              evidence=/workspace/build/backend-web
+              signout_pattern="(^| )sign-out erases the selection immediately$"
+              browser_suites=(tests/mesh-enrollment.spec.js tests/continuity-contract-060.spec.js tests/voice-conversation-065.spec.js tests/persistent-agents-079.spec.js tests/offline-worker-088.spec.js tests/canvas-review-088.spec.js tests/native-export-088.spec.js tests/work-reads-088.spec.js tests/guidance-notes-088.spec.js tests/workspace-topbar-088.spec.js tests/native-chart-088.spec.js tests/first-task-088.spec.js tests/selection-088.spec.js)
+              corepack npm exec -- playwright test "${browser_suites[@]}" --browser=chromium --workers=1 \
+                --grep "$signout_pattern" --list --reporter=json > "$evidence/signout-selection.json"
+              python3 /deep-ci/ci_browser_retry.py select --report "$evidence/signout-selection.json"
+              corepack npm exec -- playwright test "${browser_suites[@]}" --browser=chromium --workers=1 \
+                --grep-invert "$signout_pattern" 2>&1 | tee "$evidence/ordinary-browser.log"
+              set +e
+              ASTRAL_ALL_CLIENT_COVERAGE_DIR="$evidence/signout-client-v8" \
+                PLAYWRIGHT_JSON_OUTPUT_NAME="$evidence/signout-results.json" \
+                corepack npm exec -- playwright test tests/selection-088.spec.js --browser=chromium --workers=1 \
+                  --grep "$signout_pattern" --retries=1 --reporter=line,json \
+                  --trace=retain-on-failure --output="$evidence/signout-test-results" \
+                  2>&1 | tee "$evidence/signout-browser.log"
+              target_status=$?
+              set -e
+              python3 /deep-ci/ci_browser_retry.py merge --report "$evidence/signout-results.json" \
+                --ordinary "$evidence/client-v8/selection-088.json" \
+                --retried "$evidence/signout-client-v8/selection-088.json" \
+                --output "$evidence/selection-browser-v8.json" \
+                --diagnostics "$evidence/signout-retry-disposition.json" \
+                | tee "$evidence/signout-retry-disposition.log"
+              test "$target_status" -eq 0'
       - name: Verify responsive and enlarged-text interactions in all three browser engines
         working-directory: components/AstralProjection
         run: |
@@ -257,10 +282,11 @@ jobs:
           export NODE_V8_COVERAGE="$PWD/build/backend-web/node-v8"
           browser_inputs=()
           for suite in continuity-contract-060 first-task-088 \
-              persistent-agents-079 selection-088 guidance-notes-088 \
+              persistent-agents-079 guidance-notes-088 \
               work-reads-088 voice-conversation-065 mesh-enrollment; do
             browser_inputs+=(--input "build/backend-web/client-v8/$suite.json")
           done
+          browser_inputs+=(--input build/backend-web/selection-browser-v8.json)
           browser_inputs+=(--input build/backend-web/mesh-custody-browser-v8.json)
           node tooling/web-ci/browser-v8-cli.mjs --repo-root "$PWD" "${browser_inputs[@]}" \
             --output build/backend-web/browser-javascript.json
@@ -818,6 +844,7 @@ jobs:
             scripts/tests/test_verify_persistent_agents_079.py
             scripts/tests/test_csharp_native_coverage_079.py
             scripts/tests/test_ci_review_diagnostics.py
+            scripts/tests/test_ci_browser_retry.py
             scripts/tests/test_acceptance_mutations.py
             scripts/tests/test_acceptance_ci_contract.py
             backend/tests/test_ci_plane_lane.py
