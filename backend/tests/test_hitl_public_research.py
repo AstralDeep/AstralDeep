@@ -50,7 +50,8 @@ def runtime(gate_orchestrator, monkeypatch):  # noqa: F811
     monkeypatch.setattr(hooks, "get_recorder", lambda: None)
     monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)
     monkeypatch.setattr("personalization.phi_gate.get_phi_gate",
-                        lambda: SimpleNamespace(contains_phi=lambda _text: False))
+                        lambda: SimpleNamespace(contains_phi=lambda _text: False,
+                                                contains_phi_for_sharing=lambda _text: False))
     orch._active_request = {"chat-a": "Research the public web for this question"}
     orch._ws_active_chat = {id(ws): "chat-a"}
     orch._is_user_agent = lambda _id: False
@@ -472,6 +473,24 @@ def test_review_preview_is_complete_and_consequential(runtime):
             "url": "https://example.org/report", "options": [True, "safe"]}
     preview, reviewable = hc._review_arguments(args)
     assert reviewable and json.loads(preview) == args
+
+
+def test_goal_worker_user_objective_can_be_reviewed_in_full(runtime):
+    objective = "Build a responsive portfolio with tested navigation and startup. " * 18
+    args = {"stdin": objective}
+    assert not hc._review_arguments(args)[1]
+    preview, reviewable = hc._review_arguments(args, extended_fields=frozenset({"stdin"}))
+    assert reviewable and json.loads(preview) == args
+    assert not hc._review_arguments({"stdin": objective * 8},
+                                    extended_fields=frozenset({"stdin"}))[1]
+
+
+def test_goal_worker_long_preview_still_refuses_private_identifiers(runtime):
+    preview, reviewable = hc._review_arguments(
+        {"stdin": "Build a portfolio. " * 40 + "4111111111111111"},
+        extended_fields=frozenset({"stdin"}),
+    )
+    assert not reviewable and "4111111111111111" not in preview
 
 
 @pytest.mark.parametrize("value", ["a0b1c2d3-e4f5-46a7-8b9c-d0e1f2a3b4c5",
