@@ -326,6 +326,7 @@ class _ConnectionOperation:
     lease_lost: bool = False
     auth_principal: str | None = None
     auth_claims: dict[str, Any] = field(default_factory=dict, repr=False)
+    subject_auth_claims: dict[str, Any] = field(default_factory=dict, repr=False)
     runtime_websocket: Any | None = field(default=None, repr=False)
     committed_operation: OperationRecord | None = None
     subscribers: dict[int, tuple[Any, _ConnectionIngressFrame]] = field(
@@ -5970,6 +5971,7 @@ class Orchestrator:
             return None
         if frame_type in {
             "register_ui",
+            "refresh_ui_auth",
             "close",
             "ping",
             "pong",
@@ -7755,6 +7757,8 @@ class Orchestrator:
                     )
                     or {}
                 )
+                from orchestrator.ui_auth_renewal import subject_auth_snapshot
+
                 work = _ConnectionOperation(
                     frame=frame,
                     owner=owner,
@@ -7769,6 +7773,7 @@ class Orchestrator:
                         if frame.operation_kind == "voice_chat_message"
                         else {}
                     ),
+                    subject_auth_claims=subject_auth_snapshot(captured_claims),
                 )
                 work.subscribers[id(context)] = (context, frame)
                 context.operations[result.operation_id] = work
@@ -7797,6 +7802,7 @@ class Orchestrator:
                         if registry.get(result.operation_id) is work:
                             registry.pop(result.operation_id, None)
                         work.auth_claims.clear()
+                        work.subject_auth_claims.clear()
                         frame.close_work_read()
                         self._scrub_terminal_voice_operation(context, work)
                     continue
@@ -7825,6 +7831,7 @@ class Orchestrator:
                     if registry.get(result.operation_id) is work:
                         registry.pop(result.operation_id, None)
                     work.auth_claims.clear()
+                    work.subject_auth_claims.clear()
                     frame.close_work_read()
                     await self._send_connection_admission_refusal(
                         context,
@@ -7842,6 +7849,7 @@ class Orchestrator:
                     if registry.get(result.operation_id) is work:
                         registry.pop(result.operation_id, None)
                     work.auth_claims.clear()
+                    work.subject_auth_claims.clear()
                     continue
                 if (
                     context.closing
@@ -7857,6 +7865,8 @@ class Orchestrator:
                     await self._send_operation_terminal(
                         context, work, terminal
                     )
+                    work.auth_claims.clear()
+                    work.subject_auth_claims.clear()
                     await self._notify_interactive_capacity()
                     continue
                 scheduled.append((work, projection))
@@ -7921,6 +7931,7 @@ class Orchestrator:
                     # A pre-start cancel skips finally; release the lane here too
                     completion = accepted_work.lane_complete
                     accepted_work.auth_claims.clear()
+                    accepted_work.subject_auth_claims.clear()
                     accepted_work.frame.close_work_read()
                     if completion is not None:
                         context.pending_reads.discard(completion)
@@ -8703,9 +8714,21 @@ class Orchestrator:
                             user_id=work.owner.owner_user_id or "legacy",
                         )
                         work.runtime_websocket = runtime_websocket
-                        self.ui_sessions[runtime_websocket] = dict(
-                            work.auth_claims
+                        runtime_session = dict(work.auth_claims)
+                        from orchestrator.ui_auth_renewal import (
+                            capture_subject_token_resolver,
                         )
+                        runtime_session["_subject_token_resolver"] = (
+                            capture_subject_token_resolver(
+                                self.ui_sessions,
+                                getattr(self, "_connection_contexts", {}),
+                                context.websocket,
+                                work.owner.owner_user_id or "legacy",
+                                _CONNECTION_OPERATION_CONTEXT.get(),
+                            )
+                        )
+                        runtime_session.pop("_raw_token", None)
+                        self.ui_sessions[runtime_websocket] = runtime_session
                         self.rote._profiles[runtime_websocket] = (
                             self.rote.get_profile(context.websocket)
                         )
@@ -8722,6 +8745,7 @@ class Orchestrator:
                     runtime_websocket.scrub()
                     work.runtime_websocket = None
                 work.auth_claims.clear()
+                work.subject_auth_claims.clear()
                 if work.frame.human_request is not None:
                     work.frame.human_request.close()
                 _CONNECTION_OPERATION_CONTEXT.reset(token)
@@ -8890,6 +8914,7 @@ class Orchestrator:
                 runtime_websocket.scrub()
                 work.runtime_websocket = None
             work.auth_claims.clear()
+            work.subject_auth_claims.clear()
             work.frame.close_work_read()
             if work.frame.parsed.get("type") == "voice_local_final":
                 self._scrub_terminal_voice_operation(context, work)
@@ -8978,7 +9003,21 @@ class Orchestrator:
                 and context.work_registrations_pending == 0
                 and getattr(self, "_connection_contexts", {}).get(id(context.websocket)) is context
                 and self.ui_sessions.get(context.websocket) is ready[0]):
+            session = self.ui_sessions.get(context.websocket) or {}
+            session["_auth_context_generation"] = str(context.connection_generation)
             await self._safe_send(context.websocket, ready[1])
+            if (
+                session.get("_auth_refresh_enabled") is True
+                and str(context.connection_generation)
+                == session.get("_auth_connection_generation")
+            ):
+                await self._safe_send(
+                    context.websocket,
+                    json.dumps({
+                        "type": "ui_auth_refresh_ready",
+                        "connection_generation": str(context.connection_generation),
+                    }),
+                )
 
     async def _route_ui_frame(
         self,
@@ -9113,6 +9152,13 @@ class Orchestrator:
                 reason="client_close",
             )
             return False
+        if control == "refresh_ui_auth":
+            self._track_connection_task(
+                context,
+                self._run_ui_control(context, raw),
+                name=f"connection-auth-refresh-{context.connection_scope_id}",
+            )
+            return True
         if control == "ping":
             await self._safe_send(
                 context.websocket,
@@ -10094,6 +10140,9 @@ class Orchestrator:
         raw_frame: dict[str, Any] | None = None
         try:
             raw_frame = self._parsed_ui_frame(message)
+            if raw_frame is not None and raw_frame.get("type") == "refresh_ui_auth":
+                await self._handle_ui_auth_refresh(websocket, message)
+                return
             if (
                 raw_frame is not None
                 and (
@@ -10174,9 +10223,14 @@ class Orchestrator:
 
                 if user_data:
                     logger.info(f"UI registered: {user_data.get('preferred_username', 'unknown')}")
-                    user_data["_raw_token"] = token
-                    user_data["_client_capabilities"] = [
-                        str(c) for c in (getattr(msg, "capabilities", None) or []) if isinstance(c, str)]
+                    from orchestrator.ui_auth_renewal import bind_registered_session
+                    bind_registered_session(
+                        user_data,
+                        token=token,
+                        capabilities=getattr(msg, "capabilities", None),
+                        connection_generation=msg.connection_generation,
+                        mock_auth=os.getenv("USE_MOCK_AUTH", "").lower() == "true",
+                    )
                     previous_owner = (self.ui_sessions.get(websocket) or {}).get("sub")
                     if previous_owner != user_data.get("sub"):
                         self.rote.cleanup(websocket)
@@ -15519,6 +15573,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         goal_stop_reason = "The requested outcome could not be classified for verified execution."
                         break
 
+                if goal_contract is not None:
+                    from orchestrator.goal_execution import focus_project_catalog
+
+                    tools_desc, tool_to_agent, tool_to_unqualified = focus_project_catalog(
+                        tools_desc, tool_to_agent, tool_to_unqualified, goal_project, goal_contract,
+                        explicit_selection=bool(selected_tools),
+                    )
+                    if goal_contract.kind == "local_project" and not any(
+                            agent == "computer-use-1" for agent in tool_to_agent.values()):
+                        goal_stop_reason = "No authorized project execution tools are available on the selected computer."
+                        break
+
                 call_feature = "chat_dispatch_text_only" if is_text_only else "tool_dispatch"
                 _phase_recorder = self._chat_recorders.get(id(websocket))
                 _phase_step_id = None
@@ -15934,6 +16000,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         await self.task_manager.transition_task(
                             task, TaskState.RUNNING, current_tool=None
                         )
+
+                    if goal_progress is not None:
+                        from orchestrator.goal_execution import authentication_unavailable
+
+                        if any(authentication_unavailable(result) for result in tool_results):
+                            goal_stop_reason = "The current session could not renew authentication for project execution. Reconnect to continue the original goal."
+                            break
 
                     if goal_progress is not None and goal_progress.requires_approval:
                         goal_stop_reason = "Waiting for approval of the pending action. The original goal will continue after approval."
@@ -18629,15 +18702,29 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             delegation_token = await self._get_delegation_token(websocket, agent_id, user_id)
             if delegation_token and (agent_id, tool_name) != ("fhir-1", "extract_note_fields"):
                 args["_delegation_token"] = delegation_token
-            elif not delegation_token and (self._delegation_required() or machine_scopes is not None
-                  or mesh_admission.MEMBER_CLAIM in _session_claims):
+            elif not delegation_token and (
+                self._delegation_required()
+                or machine_scopes is not None
+                or mesh_admission.MEMBER_CLAIM in _session_claims
+                or (self.ui_sessions.get(websocket, {}) or {}).get("_delegation_fault")
+                == "session_auth_unavailable"
+            ):
                 permissions_fault = await self._delegation_denied_for_permissions(
                     websocket, agent_id, user_id)
+                auth_fault = (
+                    (self.ui_sessions.get(websocket, {}) or {}).get("_delegation_fault")
+                    == "session_auth_unavailable"
+                )
                 signing_key_fault = (
                     (self.ui_sessions.get(websocket, {}) or {}).get("_delegation_fault")
                     == "signing_key_unset"
                 )
-                if signing_key_fault:
+                if auth_fault:
+                    err_msg = (
+                        "Your authenticated session is no longer current for this "
+                        "operation. Reauthenticate before starting it again."
+                    )
+                elif signing_key_fault:
                     err_msg = (
                         "Tool execution is disabled: the server delegation "
                         "signing key is not configured, so the orchestrator "
@@ -18669,13 +18756,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     )
                 logger.error(
                     "Delegation required but unavailable (%s): agent=%s user=%s — refusing dispatch",
-                    "signing_key_unset" if signing_key_fault
+                    "session_auth_unavailable" if auth_fault
+                    else "signing_key_unset" if signing_key_fault
                     else "no_enabled_scopes" if permissions_fault
                     else "exchange_unavailable",
                     agent_id, user_id,
                 )
                 return GateRefusal(
-                    response=MCPResponse(error={"message": err_msg, "retryable": False}),
+                    response=MCPResponse(error={
+                        **({"code": "session_auth_unavailable"} if auth_fault else {}),
+                        "message": err_msg,
+                        "retryable": False,
+                    }),
                     render_components=[Alert(message=err_msg, variant="error").to_dict()],
                     render_target="chat")
 
@@ -21001,6 +21093,92 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return MCPResponse(request_id=request_id,
                                error={"message": str(e), "retryable": True})
 
+    async def _handle_ui_auth_refresh(self, websocket: Any, raw: str) -> None:
+        from orchestrator.ui_auth_renewal import parse_refresh_message
+
+        frame = parse_refresh_message(raw)
+        if frame is None:
+            return
+        renewal = self._ui_auth_renewal_service()
+        ack = await renewal.handle(websocket, frame)
+        if ack is None:
+            return
+        renewal.signal(websocket)
+        await self._safe_send(websocket, json.dumps(ack, separators=(",", ":")))
+        session = self.ui_sessions.get(websocket) or {}
+        exp = session.get("exp")
+        if (
+            ack.get("accepted") is False
+            and isinstance(exp, (int, float))
+            and not isinstance(exp, bool)
+            and exp <= time.time()
+            and session.get("_auth_refresh_required") is not True
+        ):
+            session["_auth_refresh_required"] = True
+            from shared.protocol import AuthRequired
+            await self._safe_send(websocket, AuthRequired(reason="expired").to_json())
+
+    def _ui_auth_renewal_service(self):
+        from orchestrator.ui_auth_renewal import UIAuthRenewal
+
+        renewal = getattr(self, "_ui_auth_renewal", None)
+        if renewal is None:
+            async def _verify(token: str):
+                if os.getenv("USE_MOCK_AUTH", "").lower() == "true":
+                    return None
+                return await self.validate_token(token)
+
+            renewal = UIAuthRenewal(
+                self.ui_sessions,
+                getattr(self, "_connection_contexts", {}),
+                _verify,
+                mock_auth=os.getenv("USE_MOCK_AUTH", "").lower() == "true",
+            )
+            self._ui_auth_renewal = renewal
+        return renewal
+
+    async def _await_ui_auth_refresh(
+        self,
+        websocket: Any,
+        resolver: Any,
+        *,
+        rejected_token: str | None = None,
+    ) -> str | None:
+        if resolver is None:
+            return None
+        if not resolver.is_current():
+            return None
+        registration = getattr(resolver, "websocket", websocket)
+        session = self.ui_sessions.get(registration)
+        if not isinstance(session, dict):
+            return None
+        current_token = resolver.resolve()
+        if current_token is not None and (
+            rejected_token is None or current_token != rejected_token
+        ):
+            return current_token
+        if rejected_token is None:
+            session["_auth_refresh_required"] = True
+        elif (
+            session.get("_raw_token") == rejected_token
+            and session.get("_auth_refresh_required") is not True
+        ):
+            if not resolver.is_current():
+                return None
+            session["_auth_refresh_required"] = True
+        elif session.get("_auth_refresh_required") is not True:
+            return None
+        from shared.protocol import AuthRequired
+
+        reason = "expired" if (
+            isinstance(session.get("exp"), (int, float))
+            and not isinstance(session.get("exp"), bool)
+            and session["exp"] <= time.time()
+        ) else "invalid"
+        await self._safe_send(registration, AuthRequired(reason=reason).to_json())
+        renewal = self._ui_auth_renewal_service()
+        return await renewal.wait_for_token(resolver, timeout=30.0)
+
     def _delegation_required(self) -> bool:
         override = os.getenv("DELEGATION_REQUIRED", "").strip().lower()
         if override in ("1", "true", "yes"):
@@ -21054,8 +21232,31 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             "is not configured (set DELEGATION_CHILD_SIGNING_KEY); "
                             "logged once")
                     return None
-            raw_token = session.get("_raw_token")
+            raw_token = None
+            resolver = None
+            active_operation_context = _CONNECTION_OPERATION_CONTEXT.get()
+            if (
+                session.get("_auth_refresh_enabled") is True
+                or active_operation_context is not None
+            ):
+                from orchestrator.ui_auth_renewal import capture_subject_token_resolver
+                resolver = session.get("_subject_token_resolver")
+                if resolver is None:
+                    resolver = capture_subject_token_resolver(
+                        self.ui_sessions,
+                        getattr(self, "_connection_contexts", {}),
+                        websocket,
+                        user_id,
+                        active_operation_context,
+                    )
+                if resolver is not None:
+                    raw_token = resolver.resolve()
+                if raw_token is None:
+                    raw_token = await self._await_ui_auth_refresh(websocket, resolver)
+            else:
+                raw_token = session.get("_raw_token")
             if not raw_token:
+                session["_delegation_fault"] = "session_auth_unavailable"
                 return None
 
             from orchestrator.chain_authority import machine_scope_ceiling
@@ -21092,9 +21293,68 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if machine_scopes is not None and not enabled_scopes:
                 return None
 
+            if resolver is not None:
+                raw_token = resolver.resolve()
+                if raw_token is None:
+                    raw_token = await self._await_ui_auth_refresh(websocket, resolver)
+                if raw_token is None:
+                    session["_delegation_fault"] = "session_auth_unavailable"
+                    return None
+
             result = await self.delegation.exchange_token_for_agent(
                 raw_token, agent_id, allowed_tools, user_id, enabled_scopes
             )
+            error_description = result.get("error_description", "")
+            invalid_subject = (
+                result.get("error") in {"invalid_token", "invalid_grant"}
+                or (
+                    isinstance(error_description, str)
+                    and "invalid token" in error_description.lower()
+                )
+            )
+            if invalid_subject:
+                from orchestrator.ui_auth_renewal import capture_subject_token_resolver
+
+                resolver = session.get("_subject_token_resolver")
+                if resolver is None:
+                    resolver = capture_subject_token_resolver(
+                        self.ui_sessions,
+                        getattr(self, "_connection_contexts", {}),
+                        websocket,
+                        user_id,
+                        _CONNECTION_OPERATION_CONTEXT.get(),
+                    )
+                refreshed = await self._await_ui_auth_refresh(
+                    websocket,
+                    resolver,
+                    rejected_token=raw_token,
+                )
+                if refreshed is not None:
+                    allowed_tools, enabled_scopes = await asyncio.to_thread(_scope_reads)
+                    if enabled_scopes:
+                        result = await self.delegation.exchange_token_for_agent(
+                            refreshed,
+                            agent_id,
+                            allowed_tools,
+                            user_id,
+                            enabled_scopes,
+                        )
+                    else:
+                        result = {
+                            "error": "no_enabled_scopes",
+                            "error_description": "no enabled tool scopes",
+                        }
+                else:
+                    session["_delegation_fault"] = "session_auth_unavailable"
+            result_description = result.get("error_description", "")
+            if "error" in result and (
+                result.get("error") in {"invalid_token", "invalid_grant"}
+                or (
+                    isinstance(result_description, str)
+                    and "invalid token" in result_description.lower()
+                )
+            ):
+                session["_delegation_fault"] = "session_auth_unavailable"
             if "error" in result:
                 if result.get("error") == "no_enabled_scopes":
                     logger.warning(
@@ -21111,7 +21371,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 else:
                     logger.debug(f"Delegation token exchange failed for agent={agent_id}: {result}")
                 return None
-            return result.get("access_token")
+            access_token = result.get("access_token")
+            if access_token and resolver is not None and (
+                not resolver.is_current() or resolver.resolve() is None
+            ):
+                session["_delegation_fault"] = "session_auth_unavailable"
+                return None
+            return access_token
         except Exception as e:
             logger.warning(f"Delegation token generation failed: {e}")
             return None

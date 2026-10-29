@@ -23,6 +23,14 @@ PROJECT = {
 ORIGINAL = "Create the local game, install dependencies, run tests, and verify startup"
 
 
+def _project_writer(o, monkeypatch):
+    from orchestrator import tool_visibility
+
+    _register(o, "write_file", "computer-use-1")
+    pairs = [("computer-use-1", o.agent_cards["computer-use-1"].skills[0])]
+    monkeypatch.setattr(tool_visibility, "eligible_tool_pairs", lambda *_args, **_kwargs: pairs)
+
+
 def _approval_result():
     return SimpleNamespace(
         result={"_data": {"status": "confirmation_required", "message": "Review this action."}},
@@ -39,11 +47,11 @@ async def test_approved_goal_resumes_original_contract_and_cannot_complete_witho
     monkeypatch.setattr(goal_project_context, "project_goal_context", AsyncMock(return_value=PROJECT))
     monkeypatch.setattr(goal_verification, "classify_goal", AsyncMock(
         return_value=build_goal_contract("local_project", PROJECT)))
-    _register(o, "make_directory", "a-1")
+    _project_writer(o, monkeypatch)
     chat_id, ws = await _chat(o)
     o._ws_active_chat = {id(ws): chat_id}
     hitl_confirmation.begin_task(o, ws, "seam-user", chat_id)
-    mkdir = _tc("make_directory", "mkdir-review")
+    mkdir = _tc("write_file", "write-review")
     mkdir.function.arguments = json.dumps({"path": "/work/project/game"})
     planner_calls = 0
     review_payloads = []
@@ -73,11 +81,11 @@ async def test_approved_goal_resumes_original_contract_and_cannot_complete_witho
         next(iter(binding.progress._pending_approvals)),
         SimpleNamespace(result={"_data": {"computer": "Work Mac", "path": "/work/project/game"}},
                         error=None),
-        tool_name="make_directory", arguments={"path": "/work/project/game"},
-        agent_id="a-1", computer_id="mac", computer_name="Work Mac",
+        tool_name="write_file", arguments={"path": "/work/project/game"},
+        agent_id="computer-use-1", computer_id="mac", computer_name="Work Mac",
         project_context=PROJECT,
     ) is True
-    assert token["tool"] == "make_directory"
+    assert token["tool"] == "write_file"
 
     with hitl_confirmation._goal_continuation_scope(binding):
         await o.handle_chat_message(
@@ -88,7 +96,7 @@ async def test_approved_goal_resumes_original_contract_and_cannot_complete_witho
     assert len(review_payloads) == 1
     assert review_payloads[0]["objective"] == ORIGINAL
     assert tuple(review_payloads[0]["requirements"]["required_categories"]) == PROOF_CATEGORIES
-    assert review_payloads[0]["observed_evidence"]["tools"][-1]["tool"] == "make_directory"
+    assert review_payloads[0]["observed_evidence"]["tools"][-1]["tool"] == "write_file"
     assert "incomplete" in (await goal_loop._last_assistant_text(o, chat_id, "seam-user")).lower()
 
 
@@ -105,11 +113,11 @@ async def test_changed_project_authority_blocks_resumed_goal_before_planning(
     monkeypatch.setattr(goal_project_context, "project_goal_context", AsyncMock(side_effect=[PROJECT, changed]))
     monkeypatch.setattr(goal_verification, "classify_goal", AsyncMock(
         return_value=build_goal_contract("local_project", PROJECT)))
-    _register(o, "make_directory", "a-1")
+    _project_writer(o, monkeypatch)
     chat_id, ws = await _chat(o)
     o._ws_active_chat = {id(ws): chat_id}
     hitl_confirmation.begin_task(o, ws, "seam-user", chat_id)
-    mkdir = _tc("make_directory", "mkdir-review-stale-project")
+    mkdir = _tc("write_file", "write-review-stale-project")
     mkdir.function.arguments = json.dumps({"path": "/work/project/game"})
     o._call_llm = AsyncMock(return_value=(_msg(tool_calls=[mkdir]), _usage()))
     o.execute_single_tool = AsyncMock(return_value=_approval_result())

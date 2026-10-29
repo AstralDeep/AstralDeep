@@ -44,7 +44,8 @@ async def test_remote_project_plan_is_repaired_before_any_effect(goal_orch, monk
         plans += 1
         if plans == 1:
             names = [tool["function"]["name"] for tool in tools_desc]
-            call = _tc(next(name for name in names if name.endswith("make_directory")), "wrong-route")
+            assert not any(name.endswith("make_directory") for name in names)
+            call = _tc("make_directory", "wrong-route")
             call.function.arguments = json.dumps({"path": "/work/project/game"})
         else:
             assert "Do not dispatch this batch" in str(messages)
@@ -116,6 +117,22 @@ async def test_no_response_is_repaired_once_without_replaying_a_tool(goal_orch, 
     assert plans == 3
     o.execute_single_tool.assert_awaited_once()
     assert "check passed" in await _last_assistant_text(o, chat_id, "seam-user")
+
+
+@pytest.mark.asyncio
+async def test_authentication_refusal_stops_planning_without_probing_other_agents(goal_orch, user_skills_disabled):
+    o = goal_orch
+    _register(o, "run_command")
+    chat_id, ws = await _chat(o)
+    o._call_llm = AsyncMock(return_value=(_msg(tool_calls=[_tc("run_command", "auth-refused")]), _usage()))
+    o.execute_single_tool = AsyncMock(return_value=SimpleNamespace(
+        error={"code": "session_auth_unavailable", "message": "Authentication renewal was not confirmed."},
+        result=None, ui_components=[], correlation_id=None,
+    ))
+    await o.handle_chat_message(ws, "Run the requested check", chat_id, user_id="seam-user")
+    o._call_llm.assert_awaited_once()
+    o.execute_single_tool.assert_awaited_once()
+    assert "renew authentication" in await _last_assistant_text(o, chat_id, "seam-user")
 
 
 @pytest.mark.asyncio

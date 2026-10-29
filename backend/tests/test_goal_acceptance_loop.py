@@ -129,9 +129,11 @@ async def test_local_completion_binds_proof_to_actual_computer_agent(acceptance_
     final = await _last_assistant_text(o, chat, "seam-user")
     if foreign:
         assert "incomplete" in final.lower()
+        assert planner_calls == 0
+        o.execute_single_tool.assert_not_awaited()
     else:
         assert "installed, tested and launched" in final
-    o.execute_single_tool.assert_awaited_once()
+        o.execute_single_tool.assert_awaited_once()
 
 
 @pytest.mark.asyncio

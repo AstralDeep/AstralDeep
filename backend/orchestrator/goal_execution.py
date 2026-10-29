@@ -19,6 +19,33 @@ _PATH_KEYS = frozenset({
 })
 _HOST_ID_KEYS = frozenset({"computer_id", "host_id"})
 _HOST_NAME_KEYS = frozenset({"computer_name"})
+_PROJECT_TOOLS = frozenset({
+    "start_session", "stop_session", "resume_session", "wait",
+    "read_file", "list_dir", "write_file", "delete_path", "run_command", "read_output",
+    "interrupt_command",
+})
+
+
+def focus_project_catalog(tools, owners, canonical, project, contract, *, explicit_selection=False):
+    if explicit_selection or not _granted_roots(project, contract):
+        return tools, owners, canonical
+    focused = []
+    for tool in tools:
+        name = (tool.get("function") or {}).get("name") if isinstance(tool, dict) else None
+        agent = owners.get(name)
+        verb = (canonical or {}).get(name, name)
+        if (agent == "__skill_guidance__"
+                or agent == _COMPUTER_USE_AGENT and isinstance(verb, str)
+                and verb in _PROJECT_TOOLS):
+            focused.append(tool)
+    allowed = {tool["function"]["name"] for tool in focused}
+    return (focused, {name: agent for name, agent in owners.items() if name in allowed},
+            {name: verb for name, verb in (canonical or {}).items() if name in allowed})
+
+
+def authentication_unavailable(result) -> bool:
+    error = getattr(result, "error", None)
+    return isinstance(error, Mapping) and error.get("code") == "session_auth_unavailable"
 
 
 def route_correction(
@@ -38,6 +65,9 @@ def route_correction(
         if not isinstance(name, str):
             continue
         agent = tool_to_agent.get(name)
+        if agent is None:
+            rejected.append(name)
+            continue
         canonical = (tool_to_unqualified or {}).get(name, name)
         arguments = _call_arguments(getattr(getattr(call, "function", None), "arguments", None))
         if agent == _REMOTE_COMPUTE_AGENT and _targets_granted_root(arguments, roots):
