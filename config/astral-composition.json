@@ -37,7 +37,7 @@
   "compatibility": {
     "ui_protocol": {
       "version": "1",
-      "sha256": "16ab5f685c861de275654d2a8ed688c409d60c4c740d2f80556682703f781887"
+      "sha256": "698b692281c9a346e6fff935733c9a9ea523397b8a97bd128e2a490dd5480175"
     },
     "data_plane": {
       "contract_version": "astralplane.contract/v1",
