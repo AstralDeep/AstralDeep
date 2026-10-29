@@ -1,0 +1,63 @@
+{
+  "manifest_version": 1,
+  "purpose": "Opt-in Linux sandbox-runtime qualification pilot for one harmless scratch-file effect (backend/orchestrator/sandbox_qualification.py). Qualification only: no production launch path, schema, shared contract, component pin, or release artifact changes.",
+  "artifact": {
+    "package": "@anthropic-ai/sandbox-runtime",
+    "version": "0.0.78",
+    "registry": "https://registry.npmjs.org",
+    "tarball_url": "https://registry.npmjs.org/@anthropic-ai/sandbox-runtime/-/sandbox-runtime-0.0.78.tgz",
+    "sha512": "60021cc9b5d3a7b3199018dab27911d44df2c677fbbba9149325b4bd9aedb0067db7224631aba05844e6aae3d9b3462f5b4b11d159d978c7d2d20b0dff042255",
+    "sha512_sri": "sha512-YAIcybXTp7MZkBjasnkR1E3yxnf7u6kUkyW0vZrtsAZ9tyJGMaugWETmquPZs0YvW0sR0VnZeMfS0gsN/wQiVQ==",
+    "size_bytes": 3948109,
+    "license": "Apache-2.0",
+    "acquisition": "Every exact lockfile tarball is downloaded only with explicit opt-in through shared.external_http, without redirects or environment proxies, bounded and SHA-512 verified before a private npm cache is seeded. Installation uses npm ci --offline --ignore-scripts with the committed package.json/package-lock.json; the real CLI --help must succeed without ambient modules."
+  },
+  "runtime": {
+    "language": "node",
+    "minimum_node_version": "22.12.0",
+    "linux_primitives": [
+      "bubblewrap (bwrap) on PATH or pinned absolute path",
+      "socat on PATH or pinned absolute path",
+      "ripgrep (rg) on PATH",
+      "unprivileged user namespaces (CLONE_NEWUSER)",
+      "network namespaces (CLONE_NEWNET)",
+      "seccomp-BPF via the vendored apply-seccomp helper (vendor/seccomp/x64 and vendor/seccomp/arm64)"
+    ],
+    "architecture_profile": {
+      "documented_profile": "ubuntu-24.04 on linux/amd64 or linux/arm64 with the distribution bubblewrap/socat/ripgrep packages, unprivileged user and network namespaces permitted by the host kernel and container runtime, and the vendor apply-seccomp binary; no host AppArmor or user-namespace policy is weakened for the pilot",
+      "everything_else": "reports unavailable and never launches an effect",
+      "documented_candidates": [
+        "linux/amd64 (SRT arch x64)",
+        "linux/arm64 (SRT arch arm64)"
+      ],
+      "qualification": "Requires retained real full-profile evidence on the exact candidate; declaration alone is not qualification."
+    },
+    "upstream_warnings_treated_as_hard_failures": [
+      "seccomp not available - unix socket access not restricted",
+      "apply-seccomp binary not available - unix socket blocking disabled",
+      "Sandbox dependencies not available"
+    ],
+    "package_lock_sha256": "5b6925032bd3fbda37e7847037a2feb04b485afb7a66a26da57d6c65b7f6664b",
+    "minimum_npm_version": "10.9.0",
+    "installation": "package.json + lockfile v3; npm ci --offline --ignore-scripts --no-audit --no-fund",
+    "private_mount_adapter": {
+      "implementation": "backend/orchestrator/sandbox_bwrap.py",
+      "policy": "Seal each generated private tmpfs and /dev mount read-only after SRT setup; preserve the separately bound scratch directory, existing namespace and seccomp fences.",
+      "configuration": "Exclusive owner-only source and closed binary/scratch configuration, rechecked before every effect; unknown or malformed generated arguments fail closed.",
+      "upstream_package_modified": false
+    }
+  },
+  "boundaries": {
+    "in_scope": "One short-lived, no-network, harmless local scratch-file effect per verified receipt, launched through the existing ProcessSupervisor and the existing generated-executor LETS receipt verifier.",
+    "out_of_scope": [
+      "SRT control-fd config updates",
+      "long-lived draft agents",
+      "interactive terminals and PTYs",
+      "Windows and macOS hosts",
+      "nested weak container mode",
+      "AppleEvents",
+      "provider egress through the SRT proxy",
+      "any production draft-launch change"
+    ]
+  }
+}

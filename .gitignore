@@ -28,6 +28,7 @@ docs/*
 !docs/byo-client-agents.md
 !docs/remote-compute-agents.md
 !docs/mcp-server-endpoint.md
+!docs/mcp-openai-tunnel-qualification.md
 !docs/component-composition.md
 !docs/migration-rollback-074.md
 !docs/lets-external-warden.md

@@ -5,6 +5,7 @@ it streams, and the first-chunk path used when the tool is called without stream
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -254,14 +255,27 @@ async def test_a_resumed_feed_run_polls_only_for_the_remaining_time(connected, f
 
 
 @pytest.mark.parametrize("unusable", ["30", True, -5.0, float("nan"), float("inf")])
-async def test_an_unusable_elapsed_hint_runs_the_feed_for_its_full_time(connected, fast, unusable):
+async def test_an_unusable_elapsed_hint_runs_the_feed_for_its_full_time(connected, fast, unusable, monkeypatch):
+    original = mcp_tools.asyncio
+    elapsed = 0.0
+
+    async def sleep(seconds):
+        nonlocal elapsed
+        elapsed += seconds
+        await original.sleep(0)
+
+    controlled = SimpleNamespace(**vars(original))
+    controlled.sleep = sleep
+    controlled.get_running_loop = lambda: SimpleNamespace(time=lambda: elapsed)
+    monkeypatch.setattr(mcp_tools, "asyncio", controlled)
     hinted = mcp_tools.watch_icu_activity({"minutes": 1, "_stream_elapsed_s": unusable}, {})
     await hinted.__anext__()
     hinted_updates = [chunk async for chunk in hinted if not chunk.terminal]
+    elapsed = 0.0
     plain = mcp_tools.watch_icu_activity({"minutes": 1}, {})
     await plain.__anext__()
     plain_updates = [chunk async for chunk in plain if not chunk.terminal]
-    assert len(hinted_updates) > 1 and abs(len(hinted_updates) - len(plain_updates)) <= 2
+    assert len(hinted_updates) > 1 and len(hinted_updates) == len(plain_updates)
 
 
 async def test_a_resumed_vitals_stream_sends_the_unchanged_closing_card(connected, live):

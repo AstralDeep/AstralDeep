@@ -842,6 +842,7 @@ class _NoCacheStaticFiles(StaticFiles):
         return response
 
 TOOL_TIMEOUT_OVERRIDES = {
+    "sandbox_qualification_scratch_write": 180.0,
     "research_brief": 150.0,
     "fetch_page": 45.0,
     "summarize_url": 60.0,
@@ -1567,6 +1568,17 @@ class Orchestrator:
         owner_hint: Optional[str],
     ):
         from orchestrator.governed_dispatch import DispatchRuntime
+
+        from orchestrator.sandbox_tool_sessions import AGENT_ID, ToolDenied, trusted_service
+        if agent_id == AGENT_ID:
+            service = trusted_service(self)
+            if service is None:
+                raise ToolDenied()
+            runtime = await service.runtime_for_owner(owner_hint)
+            if runtime is not None:
+                return runtime
+            return DispatchRuntime(owner_hint, agent_id, "builtin", None, None, None, False,
+                                   "dispatch_mediated_only")
 
         registered = getattr(self, "_governed_dispatch_runtimes", {}).get(agent_id)
         if registered is not None:
@@ -18046,7 +18058,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             render_target="chat" if pending.error else None)
 
         if chat_id:
-            if agent_id != "terminal-shell-1":
+            if agent_id != "terminal-shell-1" and (agent_id, tool_name) != ("fhir-1", "extract_note_fields"):
                 args = await asyncio.to_thread(
                     self._map_file_paths, chat_id, args, user_id=user_id)
                 if self._tool_accepts_context_arg(agent_id, tool_name, "session_id"):
@@ -18056,26 +18068,27 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             ):
                 args["user_id"] = user_id
 
-        if user_id and agent_id:
-            creds = await asyncio.to_thread(
-                self.credential_manager.get_agent_credentials_encrypted, user_id, agent_id)
-            if creds:
-                args["_credentials"] = creds
-                args["_credentials_encrypted"] = True
+        if (agent_id, tool_name) != ("fhir-1", "extract_note_fields") and agent_id != "sandbox-qualification-runner":
+            if user_id and agent_id:
+                creds = await asyncio.to_thread(
+                    self.credential_manager.get_agent_credentials_encrypted, user_id, agent_id)
+                if creds:
+                    args["_credentials"] = creds
+                    args["_credentials_encrypted"] = True
 
-        # Plaintext creds: only for in-process, trusted agents
-        if agent_id in self.local_agents:
-            _llm_ctx_user = self._llm_context_user_id(websocket)
-            if _llm_ctx_user is None:
-                _llm_cfg = await self._llm_store.get_system()
-            else:
-                _llm_cfg = await self._llm_store.get(_llm_ctx_user)
-            if _llm_cfg is not None:
-                args["_session_llm_credentials"] = {
-                    "OPENAI_API_KEY": _llm_cfg.api_key,
-                    "OPENAI_BASE_URL": _llm_cfg.base_url,
-                    "LLM_MODEL": _llm_cfg.model,
-                }
+            # Plaintext creds: only for in-process, trusted agents
+            if agent_id in self.local_agents:
+                _llm_ctx_user = self._llm_context_user_id(websocket)
+                if _llm_ctx_user is None:
+                    _llm_cfg = await self._llm_store.get_system()
+                else:
+                    _llm_cfg = await self._llm_store.get(_llm_ctx_user)
+                if _llm_cfg is not None:
+                    args["_session_llm_credentials"] = {
+                        "OPENAI_API_KEY": _llm_cfg.api_key,
+                        "OPENAI_BASE_URL": _llm_cfg.base_url,
+                        "LLM_MODEL": _llm_cfg.model,
+                    }
 
         if not agent_id and tool_name:
             owner = self._find_tool_owner(tool_name)
@@ -18116,13 +18129,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if isinstance(minted, GateRefusal):
                 return minted
             delegation_token, hop_correlation_id = minted
-            if not _untrusted_tunnel_agent:
+            if not _untrusted_tunnel_agent and (agent_id, tool_name) != ("fhir-1", "extract_note_fields"):
                 args["_delegation_token"] = delegation_token
         elif user_id and agent_id and not _untrusted_tunnel_agent:
             delegation_token = await self._get_delegation_token(websocket, agent_id, user_id)
-            if delegation_token:
+            if delegation_token and (agent_id, tool_name) != ("fhir-1", "extract_note_fields"):
                 args["_delegation_token"] = delegation_token
-            elif (self._delegation_required() or machine_scopes is not None
+            elif not delegation_token and (self._delegation_required() or machine_scopes is not None
                   or mesh_admission.MEMBER_CLAIM in _session_claims):
                 permissions_fault = await self._delegation_denied_for_permissions(
                     websocket, agent_id, user_id)
@@ -19560,6 +19573,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             # One approval authorizes exactly one physical attempt
             max_retries = 1
 
+        if (agent_id, tool_name) == ("fhir-1", "extract_note_fields"):
+            max_retries = 1
         default_timeout = TOOL_TIMEOUT_OVERRIDES.get(tool_name, 30.0)
         if agent_id == "computer-use-1":
             from orchestrator.computer_use_policy import dispatch_timeout
@@ -19833,6 +19848,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             "retryable": False, "offline": True})
             except Exception:
                 logger.debug("user-agent offline check failed", exc_info=True)
+        if (agent_id, tool_name) == ("fhir-1", "extract_note_fields"):
+            from orchestrator.clinical_extraction import invoke as invoke_clinical
+
+            return await guarded(args, lambda capabilities: invoke_clinical(
+                self, ui_websocket, args, owner=tool_owner,
+                chat=protected_conversation_id, timeout=timeout))
         if agent_id in self.local_agents:
             return await guarded(
                 args,
@@ -20313,6 +20334,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     error={"message": str(exc), "retryable": True}))
 
         try:
+            if agent_id == "sandbox-qualification-runner":
+                from orchestrator.sandbox_tool_sessions import bind_dispatch
+                bind_dispatch(self, request, call_args, ui_websocket)
             agent = self.local_agents[agent_id]
             loopback = LoopbackSocket(self, agent_id)
             task = asyncio.create_task(agent.handle_mcp_request(loopback, request))
@@ -24341,6 +24365,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             raise
 
     async def _close_started_services_once(self) -> None:
+        qualification_agent = getattr(self, "local_agents", {}).get("sandbox-qualification-runner")
+        if qualification_agent is not None:
+            from agents.sandbox_qualification.sandbox_qualification_agent import SandboxQualificationAgent
+            from orchestrator.sandbox_tool_sessions import QualificationToolSessions
+            if (type(qualification_agent) is SandboxQualificationAgent
+                    and type(qualification_agent.sessions) is QualificationToolSessions
+                    and qualification_agent.sessions.orchestrator is self):
+                await qualification_agent.sessions.shutdown()
         terminal_sessions = getattr(self, "terminal_sessions", None)
         if terminal_sessions is not None:
             await asyncio.to_thread(terminal_sessions.shutdown)
