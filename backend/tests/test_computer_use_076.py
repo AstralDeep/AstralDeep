@@ -150,7 +150,7 @@ def test_opening_a_terminal_is_a_command_by_another_route():
     assert rc.is_destructive_unattended("open_app", {"app": "notepad"}, "computer-use-1") is True
 
 
-_COMMAND_VERBS = {"run_command", "read_output", "interrupt_command"}
+_COMMAND_VERBS = {"run_command", "read_output", "interrupt_command", "project_preview"}
 _BROWSER_OBSERVE = {"browser_snapshot", "browser_get_text", "browser_screenshot", "browser_wait"}
 _BROWSER_INPUT = {"browser_navigate", "browser_click", "browser_fill", "browser_press",
                   "browser_scroll", "browser_dialog"}
@@ -158,7 +158,7 @@ _BROWSER_INPUT = {"browser_navigate", "browser_click", "browser_fill", "browser_
 
 def test_command_and_browser_verbs_join_the_closed_protocol_and_policy_sets():
     new = _COMMAND_VERBS | _BROWSER_OBSERVE | _BROWSER_INPUT
-    assert len(new) == 13
+    assert len(new) == 14
     assert new <= COMPUTER_HOST_VERBS
     assert new <= policy.HOST_VERBS
     assert policy.COMMAND_VERBS == _COMMAND_VERBS
@@ -167,6 +167,7 @@ def test_command_and_browser_verbs_join_the_closed_protocol_and_policy_sets():
     assert _BROWSER_OBSERVE | {"read_output"} <= policy.OBSERVE_VERBS
     assert _BROWSER_INPUT | {"interrupt_command"} <= policy.INPUT_VERBS
     assert "run_command" in policy.CONSEQUENTIAL_VERBS
+    assert "project_preview" in policy.CONSEQUENTIAL_VERBS
     assert not new & policy.SESSION_VERBS
     d = ComputerHostDescriptor.from_dict(_descriptor(platform="macos", verbs=sorted(new)))
     assert set(d.verbs) == new
@@ -210,7 +211,7 @@ def test_every_command_and_first_navigation_need_review_and_reads_do_not():
     assert rc.classification_for("run_command", "computer-use-1") == "always"
     assert policy.is_destructive("run_command", {"command": "ls"}) is True
     assert policy.is_destructive("browser_navigate", {"url": "https://example.org"}) is True
-    for verb in (_COMMAND_VERBS - {"run_command"}) | _BROWSER_OBSERVE | (_BROWSER_INPUT - {"browser_navigate"}):
+    for verb in (_COMMAND_VERBS - {"run_command", "project_preview"}) | _BROWSER_OBSERVE | (_BROWSER_INPUT - {"browser_navigate"}):
         assert verb not in policy.DESTRUCTIVE_CLASSIFICATION
         assert policy.is_destructive(verb, {}) is False
 

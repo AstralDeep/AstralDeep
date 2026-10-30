@@ -37,7 +37,7 @@ POINTER_REFUSAL = "Call list_windows and pass hwnd for the target window."
 CONTROL_VERBS = frozenset({"interrupt_command"})
 CONTINUATION_TEXT = ("The exact approved action completed. Continue the remaining original task using current "
                      "observations; any further effects still require their ordinary authorization and review.")
-REMOTE_REVIEWED_VERBS = frozenset({"run_command", "write_file", "delete_path"})
+REMOTE_REVIEWED_VERBS = frozenset({"run_command", "write_file", "delete_path", "project_preview"})
 _BUNDLE_ID = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
 
 

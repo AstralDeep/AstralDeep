@@ -22,7 +22,7 @@ _HOST_NAME_KEYS = frozenset({"computer_name"})
 _PROJECT_TOOLS = frozenset({
     "start_session", "stop_session", "resume_session", "wait",
     "read_file", "list_dir", "write_file", "delete_path", "run_command", "read_output",
-    "interrupt_command",
+    "interrupt_command", "project_preview",
 })
 
 
