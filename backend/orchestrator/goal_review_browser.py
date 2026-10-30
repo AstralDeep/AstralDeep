@@ -91,7 +91,7 @@ def endpoint_probe_script() -> str:
         "fetch(process.argv[1],{signal:AbortSignal.timeout(8000)}).then(async r=>{"
         "const v=await r.json();if(!r.ok||typeof v.Browser!=='string'||!v.Browser.startsWith('Chrome/')||"
         "typeof v.webSocketDebuggerUrl!=='string')process.exitCode=2;else{const ws=new URL(v.webSocketDebuggerUrl);"
-        "const u=new URL(process.argv[1]);if(ws.protocol!=='ws:'||ws.port!==u.port||ws.pathname!==process.argv[2])"
+        "const u=new URL(process.argv[1]);if(ws.protocol!=='ws:'||ws.hostname!==u.hostname||ws.port!==u.port||ws.pathname!==process.argv[2])"
         "process.exitCode=2;else console.log('Chrome DevTools ready')}"
         "}).catch(()=>{process.exitCode=1})"
     )

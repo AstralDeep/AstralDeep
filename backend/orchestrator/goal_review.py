@@ -129,7 +129,7 @@ async def review_local_project(
             raise ValueError("project authority changed during independent review")
         return not getattr(orch, "cancelled_sessions", {}).get(id(websocket))
 
-    async def dispatch(arguments, verb="run_command", *, cleanup=False):
+    async def dispatch(arguments, verb="run_command", *, cleanup=False, worker=False):
         if len(json.dumps(arguments, indent=2, ensure_ascii=False)) > 4096:
             raise ValueError("review command cannot be shown completely")
         if not cleanup and not await current():
@@ -149,7 +149,7 @@ async def review_local_project(
             _ACTIVE_COMMAND.reset(command_token)
         goal_progress.record(call.id, verb, call.function.arguments, result,
                              agent_id="computer-use-1", project_context=goal_project,
-                             approval_token=token, worker_attested=verb == "run_command")
+                             approval_token=token, worker_attested=worker)
         if not cleanup:
             try:
                 still_current = await current()
@@ -179,7 +179,8 @@ async def review_local_project(
             return None
         if not any(isinstance(row, dict) and row.get("name") == "package.json"
                    and row.get("is_dir") is not True for row in entries):
-            return False
+            return any(isinstance(row, dict) and row.get("name") == "index.html"
+                       and row.get("is_dir") is not True for row in entries)
         path = str(PurePosixPath(root) / "package.json")
         manifest_result = await dispatch({"path": path, "max_bytes": 32768}, "read_file")
         manifest = unpack(manifest_result) if manifest_result is not None else None
@@ -209,7 +210,8 @@ async def review_local_project(
                 goal_project["primary_root"], profile_name), "max_bytes": 256}, "read_file")
             active_data = unpack(active) if active is not None else None
             parsed = goal_review_browser.parse_active_port(
-                active_data.get("text") if isinstance(active_data, dict) else None)
+                active_data.get("text") if isinstance(active_data, dict)
+                and active_data.get("truncated") is False else None)
             if parsed is None:
                 return job_id, None, profile_name
             port, browser_path = parsed
@@ -253,7 +255,7 @@ async def review_local_project(
                     goal_progress.request, goal_contract.required_categories, goal_project,
                     browser_endpoint=browser_url,
                 )
-            result = await dispatch(command)
+            result = await dispatch(command, worker=True)
             if result is None:
                 return None, None, "Independent review was cancelled.", True
             state = classify_worker_result(result)
@@ -313,7 +315,7 @@ async def review_local_project(
                 return ReviewResult("blocked", "Independent review still found defects after bounded repairs.", attempt + 1)
             repair = "Repair the independently observed defects below, then run meaningful regression checks. " + json.dumps(
                 {"objective": goal_progress.request, "findings": verdict["findings"]}, ensure_ascii=False)
-            result = await dispatch(build_worker_command(repair, goal_contract.required_categories, goal_project))
+            result = await dispatch(build_worker_command(repair, goal_contract.required_categories, goal_project), worker=True)
             if result is None:
                 return ReviewResult("cancelled", "Project repair was cancelled.", attempt + 1)
             state = classify_worker_result(result)

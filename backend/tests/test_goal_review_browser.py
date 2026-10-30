@@ -1,6 +1,8 @@
 """Checks isolated host Chrome launch arguments, project detection and DevTools validation."""
 
 import json
+import shutil
+import subprocess
 import sys
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -62,6 +64,8 @@ def test_reviewer_hint_uses_localhost_and_probe_requires_chrome_protocol():
     assert "connectOverCDP" in browser.reviewer_browser_hint("http://localhost:42123")
     assert "startsWith('Chrome/')" in browser.endpoint_probe_script()
     assert "ws.pathname!==process.argv[2]" in browser.endpoint_probe_script()
+    assert "ws.hostname!==u.hostname" in browser.endpoint_probe_script()
+    assert len(browser.endpoint_probe_script()) <= 512
     with pytest.raises(ValueError):
         browser.reviewer_browser_hint("http://localhost:99999")
 
@@ -76,14 +80,16 @@ def browser_verdict(ui=True):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("active_file,wait_ready,interrupt_state,expected", [
-    ("42123\n/devtools/browser/0123456789abcdef\n", True, "interrupted", "passed"),
-    ("invalid", True, "interrupted", "blocked"),
-    ("42123\n/devtools/browser/0123456789abcdef\n", False, "interrupted", "blocked"),
-    ("invalid", True, "uncertain", "blocked"),
+@pytest.mark.parametrize("static_site", [False, True])
+@pytest.mark.parametrize("active_file,wait_ready,interrupt_state,expected,active_truncated", [
+    ("42123\n/devtools/browser/0123456789abcdef\n", True, "interrupted", "passed", False),
+    ("invalid", True, "interrupted", "blocked", False),
+    ("42123\n/devtools/browser/0123456789abcdef\n", False, "interrupted", "blocked", False),
+    ("invalid", True, "uncertain", "blocked", False),
+    ("42123\n/devtools/browser/0123456789abcdef\n", True, "interrupted", "blocked", True),
 ])
 async def test_web_review_uses_isolated_host_browser_and_cleans_owned_job(
-    monkeypatch, active_file, wait_ready, interrupt_state, expected,
+    monkeypatch, active_file, wait_ready, interrupt_state, expected, active_truncated, static_site,
 ):
     monkeypatch.setitem(sys.modules, "orchestrator.hitl_confirmation", SimpleNamespace(
         goal_call_scope=lambda _token: nullcontext()))
@@ -97,13 +103,15 @@ async def test_web_review_uses_isolated_host_browser_and_cleans_owned_job(
         args = json.loads(call.function.arguments)
         commands.append((name, args))
         if name == "list_dir":
+            if static_site:
+                return {"entries": [{"name": "index.html", "is_dir": False}]}
             return {"entries": [{"name": "package.json", "is_dir": False},
                                 {"name": "index.html", "is_dir": False}]}
         if name == "read_file" and args["path"].endswith("package.json"):
             return {"text": json.dumps({"scripts": {"dev": "vite --host"},
                                          "devDependencies": {"vite": "^6"}}), "truncated": False}
         if name == "read_file" and args["path"].endswith("DevToolsActivePort"):
-            return {"text": active_file, "truncated": False}
+            return {"text": active_file, "truncated": active_truncated}
         if name == "read_file":
             return {"text": browser_verdict(), "truncated": False}
         if name == "interrupt_command":
@@ -129,6 +137,8 @@ async def test_web_review_uses_isolated_host_browser_and_cleans_owned_job(
         {}, "chat", "user", verify=AsyncMock(return_value={"tests": ["reviewed"]}),
     )
     assert result.status == expected
+    attested = [row for row in progress.private_observations() if row.get("attested_worker")]
+    assert len(attested) == (1 if expected == "passed" else 0)
     launch = next(args for name, args in commands if name == "run_command" and args.get("background"))
     assert launch["timeout_s"] == 660
     assert any(name == "interrupt_command" and args["job_id"] == "chrome-owned-job" for name, args in commands)
@@ -169,3 +179,16 @@ async def test_nonweb_project_does_not_launch_chrome(monkeypatch):
     )
     assert result.status == "passed"
     assert not any(args.get("background") is True for _, args in commands)
+
+
+@pytest.mark.parametrize("hostname,expected", [("localhost", 0), ("remote.invalid", 2)])
+def test_endpoint_probe_rejects_websocket_host_redirect(hostname, expected):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required to execute the host endpoint probe")
+    path = "/devtools/browser/0123456789abcdef"
+    response = {"Browser": "Chrome/123", "webSocketDebuggerUrl": f"ws://{hostname}:42123{path}"}
+    source = "global.fetch=async()=>({ok:true,json:async()=>(" + json.dumps(response) + ")});" + browser.endpoint_probe_script()
+    result = subprocess.run([node, "-e", source, "http://localhost:42123/json/version", path],
+                            capture_output=True, timeout=15, check=False)
+    assert result.returncode == expected
