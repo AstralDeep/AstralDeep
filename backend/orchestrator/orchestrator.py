@@ -899,6 +899,7 @@ class GateRefusal(NamedTuple):
     render_components: Optional[List[Dict[str, Any]]] = None
     render_target: Optional[str] = None
     hop_audited: bool = False
+    dispatch_completed: bool = False
 
 
 def _unbind_orchestrator_process_consumers(orchestrator) -> None:
@@ -18885,7 +18886,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 self, websocket, user_id, chat_id, agent_id, tool_name,
                 args, tuple(set(review_risks)))
             if pending is not None:
-                return GateRefusal(response=pending)
+                data = pending.result.get("_data", {}) if isinstance(pending.result, dict) else {}
+                return GateRefusal(response=pending, dispatch_completed=(
+                    pending.error is None and pending.result is not None
+                    and (not isinstance(data, dict) or data.get("status") != "confirmation_required")))
         elif user_id and agent_id and action.effect is source_bound.Effect.DE_ESCALATION:
             from orchestrator import hitl_confirmation
 
@@ -23746,25 +23750,35 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 auth = await self._authorize_and_prepare(
                     websocket, agent_id, tool_name, dict(params), chat_id, user_id)
                 if isinstance(auth, GateRefusal):
-                    await self._audit_workspace_denial(
-                        user_id, chat_id, component_id,
-                        (str((auth.response.error or {}).get("message"))[:200]
-                         if auth.response and auth.response.error else "gate_refused"))
-                    self._register_ui_operation_refusal("policy_refused")
-                    if auth.render_components:
-                        await self.send_ui_render(
-                            websocket, auth.render_components,
-                            target=auth.render_target or "chat")
-                    return
-                result = await self._execute_with_retry_audited(
-                    websocket,
-                    agent_id,
-                    tool_name,
-                    auth.args,
-                    chat_id,
-                    user_id,
-                    channel="websocket",
-                )
+                    if auth.dispatch_completed:
+                        result = auth.response
+                    else:
+                        response = auth.response
+                        data = response.result.get("_data", {}) if isinstance(
+                            getattr(response, "result", None), dict) else {}
+                        pending = (not response.error and isinstance(data, dict)
+                                   and data.get("status") == "confirmation_required")
+                        if not pending:
+                            await self._audit_workspace_denial(
+                                user_id, chat_id, component_id,
+                                (str((response.error or {}).get("message"))[:200]
+                                 if response.error else "gate_refused"))
+                            self._register_ui_operation_refusal("policy_refused")
+                        components = auth.render_components or (getattr(response, "ui_components", None) if pending else None)
+                        if components:
+                            await self.send_ui_render(
+                                websocket, components, target=auth.render_target or "chat")
+                        return
+                else:
+                    result = await self._execute_with_retry_audited(
+                        websocket,
+                        agent_id,
+                        tool_name,
+                        auth.args,
+                        chat_id,
+                        user_id,
+                        channel="websocket",
+                    )
                 if result and result.ui_components and not result.error:
                     for comp in result.ui_components:
                         if isinstance(comp, dict):
