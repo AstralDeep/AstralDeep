@@ -44,9 +44,10 @@ SESSION_VERBS: FrozenSet[str] = frozenset({
 })
 DE_ESCALATION_VERBS: FrozenSet[str] = frozenset({"end_session"})
 
-HOST_VERBS: FrozenSet[str] = OBSERVE_VERBS | INPUT_VERBS | CONSEQUENTIAL_VERBS
+COMPOSITE_VERBS: FrozenSet[str] = frozenset({"project_preview"})
+HOST_VERBS: FrozenSet[str] = (OBSERVE_VERBS | INPUT_VERBS | CONSEQUENTIAL_VERBS) - COMPOSITE_VERBS
 
-ALL_VERBS: FrozenSet[str] = HOST_VERBS | SESSION_VERBS
+ALL_VERBS: FrozenSet[str] = HOST_VERBS | SESSION_VERBS | COMPOSITE_VERBS
 
 TIERS: Dict[str, str] = {
     **{v: "observe" for v in OBSERVE_VERBS},
@@ -144,7 +145,7 @@ def is_destructive(tool_name: str, args: Mapping[str, Any]) -> bool:
 
 UNATTENDED_ALLOWED: FrozenSet[str] = frozenset({"list_computers"})
 
-SESSION_REQUIRED: FrozenSet[str] = HOST_VERBS
+SESSION_REQUIRED: FrozenSet[str] = HOST_VERBS | COMPOSITE_VERBS
 
 TIMEOUTS: Dict[str, float] = {
     "screenshot": 15.0, "list_windows": 10.0, "get_clipboard": 5.0, "read_file": 10.0,

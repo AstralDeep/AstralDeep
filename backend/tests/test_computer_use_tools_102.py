@@ -646,3 +646,66 @@ async def test_file_effect_does_not_reinterpret_relative_reviewed_arguments(worl
     response = await world.call("write_file", path="notes.md", content="safe")
     assert response["_data"]["code"] == "path_outside_workspace"
     assert response["_data"]["effect_state"] == "not_started" and not world.requests("write_file")
+
+
+@pytest.mark.parametrize("action,verb", [("status", "read_output"), ("stop", "interrupt_command")])
+@pytest.mark.parametrize("code", ["permission_denied", "stale_project_grant", "confirmation_required"])
+def test_preview_lifecycle_preserves_authority_failures(monkeypatch, action, verb, code):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(mcp_tools, "_ctx", lambda _args: (
+        OWNER, CHAT, SimpleNamespace(name="Mac", project_mode=True), SimpleNamespace(session_id="session")))
+    denied = mcp_tools._fail(code, "Authority changed.")
+    monkeypatch.setattr(mcp_tools, verb, lambda **_kwargs: denied)
+    assert mcp_tools.project_preview(action=action, cwd=ROOT, job_id=JOB) == denied
+
+
+@pytest.mark.parametrize("action,verb", [("status", "read_output"), ("stop", "interrupt_command")])
+@pytest.mark.parametrize("data", [{"state": "uncertain", "job_id": JOB},
+                                    {"state": "exited", "job_id": "another-job"}, None])
+def test_preview_lifecycle_never_claims_stop_without_same_job_proof(monkeypatch, action, verb, data):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(mcp_tools, "_ctx", lambda _args: (
+        OWNER, CHAT, SimpleNamespace(name="Mac", project_mode=True), SimpleNamespace(session_id="session")))
+    monkeypatch.setattr(mcp_tools, verb, lambda **_kwargs: {"_data": data})
+    result = mcp_tools.project_preview(action=action, cwd=ROOT, job_id=JOB)
+    assert result["_data"]["code"] == f"preview_{action}_uncertain"
+
+
+@pytest.mark.parametrize("phase", ["manifest", "first_status", "probe", "last_status"])
+@pytest.mark.parametrize("malformed", [False, True])
+def test_preview_start_denied_or_malformed_checks_never_publish_running(monkeypatch, phase, malformed):
+    from types import SimpleNamespace
+
+    host = SimpleNamespace(name="Mac", project_mode=True)
+    session = SimpleNamespace(session_id="session", command_jobs={})
+    monkeypatch.setattr(mcp_tools, "_ctx", lambda _args: (OWNER, CHAT, host, session))
+    monkeypatch.setattr(mcp_tools, "_command_args", lambda args, _host: args)
+    denied = {"_data": None} if malformed else mcp_tools._fail("permission_denied", "Grant changed.")
+    manifest = {"_data": {"text": '{"scripts":{"dev":"vite"}}', "truncated": False}}
+    monkeypatch.setattr(mcp_tools, "read_file", lambda **_kwargs: denied if phase == "manifest" else manifest)
+    status_count = 0
+
+    def status(**kwargs):
+        nonlocal status_count
+        status_count += 1
+        if phase == ("first_status" if status_count == 1 else "last_status"):
+            return denied
+        return {"_data": {"job_id": JOB, "state": "running"}}
+
+    def run(**kwargs):
+        if kwargs.get("background"):
+            return {"_data": {"job_id": JOB}}
+        return denied if phase == "probe" else {"_data": {"exit_code": 0}}
+
+    monkeypatch.setattr(mcp_tools, "read_output", status)
+    monkeypatch.setattr(mcp_tools, "run_command", run)
+    cleanup = []
+    monkeypatch.setattr(mcp_tools, "interrupt_command", lambda **args: cleanup.append(args))
+    result = mcp_tools.project_preview(action="start", cwd=ROOT, package_manager="npm", script="dev")
+    if malformed:
+        assert result["_data"]["code"] == ("preview_unsupported" if phase == "manifest" else "preview_unavailable")
+    else:
+        assert result == denied
+    assert len(cleanup) == (0 if phase == "manifest" else 1)

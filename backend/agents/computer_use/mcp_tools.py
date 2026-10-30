@@ -1171,6 +1171,10 @@ def project_preview(**kwargs) -> Dict[str, Any]:
             "max_bytes": 32768,
         })
         manifest = manifest_result.get("_data", {}) if isinstance(manifest_result, dict) else {}
+        if not isinstance(manifest, dict):
+            return _fail("preview_unsupported", "The project's package manifest could not be verified.")
+        if manifest.get("code"):
+            return manifest_result
         try:
             package = json.loads(manifest.get("text", ""))
         except (ValueError, TypeError):
@@ -1191,20 +1195,28 @@ def project_preview(**kwargs) -> Dict[str, Any]:
         _track(ctx, job_id, _sanitize(result.get("started_at"), 64))
         owner_result = read_output(**{**kwargs, "job_id": job_id, "wait_s": 2, "max_bytes": 4096})
         owner_data = owner_result.get("_data", {}) if isinstance(owner_result, dict) else {}
-        if owner_data.get("state") != "running" or owner_data.get("job_id") != job_id:
+        if (not isinstance(owner_data, dict) or owner_data.get("state") != "running"
+                or owner_data.get("job_id") != job_id):
             interrupt_command(**{**kwargs, "job_id": job_id, "signal": "INT"})
+            if isinstance(owner_data, dict) and owner_data.get("code"):
+                return owner_result
             return _fail("preview_unavailable", "The preview server exited before it could be verified.")
         probe = run_command(**{**kwargs, "argv": ["node", "-e", _preview_probe_script()],
                                "timeout_s": 20, "background": False})
         probe_result = probe.get("_data", {}) if isinstance(probe, dict) else {}
         if not isinstance(probe_result, dict) or probe_result.get("exit_code") != 0:
             interrupt_command(**{**kwargs, "job_id": job_id, "signal": "INT"})
+            if isinstance(probe_result, dict) and probe_result.get("code"):
+                return probe
             return _fail("preview_unavailable", "The preview server did not return a successful local HTTP response.")
         url = "http://localhost:4173/"
         owner_result = read_output(**{**kwargs, "job_id": job_id, "wait_s": 0, "max_bytes": 4096})
         owner_data = owner_result.get("_data", {}) if isinstance(owner_result, dict) else {}
-        if owner_data.get("state") != "running" or owner_data.get("job_id") != job_id:
+        if (not isinstance(owner_data, dict) or owner_data.get("state") != "running"
+                or owner_data.get("job_id") != job_id):
             interrupt_command(**{**kwargs, "job_id": job_id, "signal": "INT"})
+            if isinstance(owner_data, dict) and owner_data.get("code"):
+                return owner_result
             return _fail("preview_unavailable", "The preview server stopped during its HTTP check.")
         component = Card(title="Site preview is running", content=[
             Text(content=f"[Open preview]({url})", variant="markdown"),
@@ -1218,7 +1230,10 @@ def project_preview(**kwargs) -> Dict[str, Any]:
     if action == "status":
         result = read_output(**{**kwargs, "job_id": kwargs.get("job_id"), "wait_s": 0, "max_bytes": 4096})
         data = result.get("_data", {}) if isinstance(result, dict) else {}
-        if not isinstance(data, dict) or data.get("code") or data.get("job_id") != kwargs.get("job_id"):
+        if isinstance(data, dict) and data.get("code"):
+            return result
+        if (not isinstance(data, dict) or data.get("job_id") != kwargs.get("job_id")
+                or data.get("state") not in {"running", "interrupted", "exited", "timed_out"}):
             return _fail("preview_status_uncertain", "The preview status could not be verified for this session job.")
         if data.get("state") != "running":
             return _data({"computer": host.name, "job_id": data.get("job_id"), "state": data.get("state")}, [
@@ -1238,7 +1253,10 @@ def project_preview(**kwargs) -> Dict[str, Any]:
     if action == "stop":
         result = interrupt_command(**{**kwargs, "signal": "INT"})
         data = result.get("_data", {}) if isinstance(result, dict) else {}
-        if data.get("state") not in {"interrupted", "exited", "timed_out"}:
+        if isinstance(data, dict) and data.get("code"):
+            return result
+        if (not isinstance(data, dict) or data.get("job_id") != kwargs.get("job_id")
+                or data.get("state") not in {"interrupted", "exited", "timed_out"}):
             return _fail("preview_stop_uncertain", "The preview server stop could not be confirmed.")
         return _data({"computer": host.name, "job_id": data.get("job_id"), "state": data["state"]}, [
             Card(title="Site preview stopped", content=[Text(content="The local preview server has stopped.")])

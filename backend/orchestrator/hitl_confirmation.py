@@ -1057,7 +1057,7 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
                 or cancellation_witness(orch, websocket, owner, chat) is not witness):
             return _refused("This confirmation is no longer valid for the active session.")
         pending = _pending(orch)
-        from orchestrator.computer_use_policy import HOST_VERBS
+        from orchestrator.computer_use_policy import SESSION_REQUIRED
         from orchestrator.remote_confirmation import capture_computer_approval, source_review_proposal
 
         remote_proposal = source_review_proposal(orch, owner, chat, agent, tool, args)
@@ -1073,7 +1073,7 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             refusal = bypass_refusal(orch, websocket, owner, chat, agent, tool, args, risks)
             if refusal is not None:
                 return _refused(refusal)
-        if agent == "computer-use-1" and tool in HOST_VERBS | {"confirm_action", "resume_session"}:
+        if agent == "computer-use-1" and tool in SESSION_REQUIRED | {"confirm_action", "resume_session"}:
             computer = capture_computer_approval(orch, websocket, owner, chat, args,
                 standing=consent_decision(orch, websocket, owner, chat, agent, tool, args, risks)[0] == "standing")
             if computer is None:

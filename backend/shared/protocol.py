@@ -2708,7 +2708,7 @@ COMPUTER_HOST_VERBS: frozenset = frozenset({
     "click", "double_click", "right_click", "move", "drag", "scroll", "type_text",
     "press_keys", "focus_window", "open_app", "set_clipboard",
     "write_file", "delete_path",
-    "run_command", "read_output", "interrupt_command", "project_preview",
+    "run_command", "read_output", "interrupt_command",
     "browser_snapshot", "browser_get_text", "browser_screenshot", "browser_wait",
     "browser_navigate", "browser_click", "browser_fill", "browser_press", "browser_scroll",
     "browser_dialog",

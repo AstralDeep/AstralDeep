@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from pathlib import PurePosixPath
 from types import SimpleNamespace
 from typing import Any
-from pathlib import PurePosixPath
 
 from orchestrator.goal_auto_verify import _canonical_root, _root_granted
 
@@ -36,6 +36,8 @@ async def start_local_preview(
         return None
 
     async def call(verb: str, arguments: dict[str, Any], *, include_components: bool = False):
+        if getattr(orch, "cancelled_sessions", {}).get(id(websocket)):
+            return None
         if task is not None:
             await orch.task_manager.assert_current_execution(task)
         token = uuid.uuid4().hex
@@ -51,6 +53,10 @@ async def start_local_preview(
                 websocket, tool_call, tool_to_agent, chat_id, user_id=user_id,
                 tool_to_unqualified=tool_to_unqualified,
             )
+        if task is not None:
+            await orch.task_manager.assert_current_execution(task)
+        if getattr(orch, "cancelled_sessions", {}).get(id(websocket)):
+            return None
         goal_progress.record(
             call_id, verb, tool_call.function.arguments, result,
             agent_id="computer-use-1", project_context=goal_project,
@@ -62,7 +68,9 @@ async def start_local_preview(
         if error or not isinstance(data, dict):
             return None
         value = data.get("_data", data)
-        if not include_components or not isinstance(value, dict):
+        if not isinstance(value, dict):
+            return None
+        if not include_components:
             return value
         raw = getattr(result, "result", result)
         components = getattr(result, "ui_components", None)
@@ -88,7 +96,7 @@ async def start_local_preview(
     if "package.json" not in files:
         return {"status": "not_applicable", "reason": "The selected project has no JavaScript package manifest."}
     manifest = await call("read_file", {"path": str(PurePosixPath(root) / "package.json"), "max_bytes": 32768})
-    if manifest is None or manifest.get("truncated") is True or not isinstance(manifest.get("text"), str):
+    if manifest is None or manifest.get("truncated") is not False or not isinstance(manifest.get("text"), str):
         return {"status": "blocked", "reason": "The JavaScript package manifest could not be read in full."}
     try:
         package = json.loads(manifest["text"])
@@ -108,7 +116,8 @@ async def start_local_preview(
     }, include_components=True)
     if started is None:
         return {"status": "blocked", "reason": "The preview start was denied, canceled, or failed."}
-    if started.get("state") != "running" or not isinstance(started.get("url"), str):
+    if (started.get("state") != "running" or started.get("url") != "http://localhost:4173/"
+            or not isinstance(started.get("job_id"), str) or not started["job_id"]):
         return {"status": "unavailable", "reason": "The preview server did not pass its bounded HTTP check."}
     return started
 

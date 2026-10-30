@@ -1,8 +1,9 @@
+"""Checks authorized preview discovery and rejection of malformed or denied evidence."""
+
 import json
 from types import SimpleNamespace
 
 import pytest
-
 from orchestrator.goal_preview import _package_manager, start_local_preview
 from orchestrator.goal_progress import GoalProgress
 
@@ -83,3 +84,36 @@ async def test_non_javascript_project_is_explicitly_not_applicable():
     )
     assert result == {"status": "not_applicable", "reason": "The selected project has no JavaScript package manifest."}
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase,bad", [
+    (0, {"_data": []}),
+    (1, {"_data": {"text": '{"scripts":{"preview":"vite preview"}}'}}),
+    (2, {"_data": {"state": "running", "job_id": "job", "url": "https://remote.invalid/"}}),
+    (2, {"_data": {"state": "running", "url": "http://localhost:4173/"}}),
+    (2, {"_data": {"code": "permission_denied"}}),
+])
+async def test_preview_malformed_or_denied_evidence_never_proves_running(phase, bad):
+    project = {
+        "project_id": "project", "computer_id": "mac", "computer_name": "Mac",
+        "folder_status": "granted", "primary_root": "/workspace/site", "workspace_roots": [{"path": "/workspace"}],
+    }
+    replies = [
+        {"_data": {"entries": [{"name": "package.json"}, {"name": "package-lock.json"}]}},
+        {"_data": {"text": '{"scripts":{"preview":"vite preview"}}', "truncated": False}},
+        {"_data": {"state": "running", "job_id": "job", "url": "http://localhost:4173/"}},
+    ]
+    replies[phase] = bad
+    calls = []
+
+    async def execute(*args, **kwargs):
+        calls.append(args[1].function.name)
+        return SimpleNamespace(error=None, result=replies[len(calls) - 1])
+
+    result = await start_local_preview(
+        SimpleNamespace(cancelled_sessions={}, execute_single_tool=execute), object(), GoalProgress("Preview site"),
+        project, {verb: "computer-use-1" for verb in ("list_dir", "read_file", "project_preview")},
+        {}, "chat", "user")
+    assert result["status"] in {"blocked", "unavailable"}
+    assert len(calls) == phase + 1
