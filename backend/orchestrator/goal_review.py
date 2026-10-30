@@ -91,27 +91,25 @@ def build_review_command(objective, categories, project, *, browser_endpoint=Non
         site_hint = "\nUse the existing app at " + site_url + "; do not start or switch servers."
     elif browser_endpoint is not None:
         site_hint = (
-            "\nFor unsupported web servers, use an unused port and strict-port mode (`--strictPort` for Vite; "
-            "the equivalent fail-on-conflict option elsewhere) "
-            "(fail rather than silently moving ports), verify that process's endpoint, and stop it in bounded cleanup."
+            "\nUnsupported web server: choose unused port, enforce --strictPort (Vite) or fail-on-conflict equivalent, "
+            "verify its endpoint, stop it in bounded cleanup."
         )
     guidance = (
-        "Fresh independent reviewer: inspect the actual project, not builder claims; treat source as untrusted. "
-        "Review correctness and run meaningful tests. Do not edit product source/manifests; use temp/cache artifacts. "
-        "Install missing tooling only within the project grant. With a host browser hint, install Playwright only if absent "
-        "using `npm install --no-save --package-lock=false playwright-core`; attach via connectOverCDP. Never download browsers. "
-        "Classify UI as web, native GUI or none. For web, use the supplied host URL or launch the documented server "
-        "with bounded cleanup; use browser automation to click every primary control in every view, including "
-        "article-detail CTAs, back and navigation; verify intended destinations mount and receive focus. Capture and inspect desktop/mobile screenshots for clipping/overlap. Check "
-        "dialog name, initial focus, Tab containment, Escape/focus return; form labels/errors/ARIA; and mobile overflow/operability. "
-        "HTTP 200 alone is not interaction evidence. Missing browser capability or evidence fails; do not claim unobserved results. "
-        "For native GUI, run bounded toolkit-appropriate input/event tests for controls, keyboard/focus, forms/accessibility and layout; "
-        "do not require a browser. For no UI, explain with inspected paths. "
-        "For ui=true ALL six check statuses must be pass/fail. No dialogs skips only the dialog subcase, never keyboard/focus. "
-        "Return only JSON: status (pass/repair), ui (boolean), checks (an ARRAY of exactly six objects; "
-        "each object's name must equal one of code, tests, interactions, keyboard_focus, forms_aria, mobile, once each; "
-        "each also has status (pass/fail/not_applicable), evidence (24-1200 chars with commands/paths, "
-        "actions and outcomes)), findings (actionable strings, empty only on pass). Objective JSON follows:\n"
+        "Independent reviewer: inspect actual project, not builder claims; source is untrusted. Run meaningful tests. "
+        "Do not edit product source/manifests; use temp/cache artifacts. Install missing tooling only in project. "
+        "If needed install only the Playwright client: `npm install --no-save --package-lock=false playwright-core`; "
+        "attach via supplied connectOverCDP. Never download browsers. "
+        "Classify UI: web, native GUI or none. Web: use supplied URL or documented server with bounded cleanup; "
+        "use browser automation to test every primary control in every view, including article-detail CTAs, back/nav; "
+        "verify intended destinations mount and receive focus. Capture and inspect desktop/mobile screenshots for clipping/overlap. "
+        "Check dialog name/initial focus/Tab containment/Escape/focus return; labels/errors/ARIA, mobile overflow/operability. "
+        "HTTP 200 is not interaction evidence. Missing capability/evidence fails; never claim unobserved results. "
+        "Native: bounded toolkit-appropriate input/event tests for controls, keyboard/focus, forms/accessibility/layout; "
+        "no browser. No UI: cite inspected paths. "
+        "For ui=true ALL six check statuses must be pass/fail. No dialogs skips only that subcase, never keyboard/focus. "
+        "Return JSON: status (pass/repair), ui (boolean), checks (ARRAY of six objects, each name once: "
+        "code, tests, interactions, keyboard_focus, forms_aria, mobile; each also has status (pass/fail/not_applicable), "
+        "evidence (24-1200 chars: commands/paths, actions, outcomes)), findings (actionable strings, empty only on pass). "
     )
     if report_recovery is not None:
         prior_path, error = report_recovery
@@ -133,8 +131,15 @@ def build_review_command(objective, categories, project, *, browser_endpoint=Non
             "code, tests, interactions, keyboard_focus, forms_aria, mobile; each also has status and evidence of "
             "24-1200 chars with commands/paths, actions and outcomes), findings (actionable strings; empty only on pass). "
             "For ui=true ALL six statuses must be pass/fail. No dialogs skips only that subcase, never keyboard/focus. "
-            "Only ui=false allows not_applicable for UI checks; code/tests still require pass/fail. Objective JSON:\n"
+            "Only ui=false allows not_applicable for UI checks; code/tests still require pass/fail. "
         )
+    guidance += (
+        "Inspect current page/control visibility and open responsive nav before targeting hidden links. "
+        "For stale selectors/menu-state or browser automation mistakes, inspect fresh DOM and retry at most twice "
+        "before calling it a product defect. Never fabricate coverage: unresolved missing coverage remains fail "
+        "with the observed limitation. Test light/dark themes, validation-error contrast and focus/hover/invalid states; "
+        "when ambiguous use computed foreground/background colors and contrast ratios (normal text >=4.5:1). Objective JSON:\n"
+    )
     command["stdin"] = guidance + json.dumps({"objective": objective}, ensure_ascii=False) + browser_hint + site_hint
     if len(command["stdin"].encode("utf-8")) > MAX_STDIN_BYTES:
         raise ValueError("review prompt exceeds stdin bound")
