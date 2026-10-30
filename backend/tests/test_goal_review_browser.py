@@ -13,6 +13,7 @@ import pytest
 from orchestrator import goal_review_browser as browser
 from orchestrator.goal_progress import GoalProgress
 from orchestrator.goal_review import review_local_project
+from tests.test_goal_review import WEBSITE_OBJECTIVE
 
 PROJECT = {"project_id": "p", "computer_id": "h", "computer_name": "Mac", "folder_status": "granted",
            "primary_root": "/work/site", "workspace_roots": [{"path": "/work"}]}
@@ -102,6 +103,20 @@ async def test_web_review_uses_isolated_host_browser_and_cleans_owned_job(
         goal_call_scope=lambda _token: nullcontext()))
     monkeypatch.setitem(sys.modules, "orchestrator.goal_project_context", SimpleNamespace(
         project_goal_context=AsyncMock(return_value=PROJECT)))
+    project = {**PROJECT, "primary_root": "/Users/sam/Desktop/Personal_Website_Qualified",
+               "workspace_roots": [{"path": "/Users/sam/Desktop/Personal_Website_Qualified"}]}
+    sys.modules["orchestrator.goal_project_context"].project_goal_context.return_value = project
+    if not static_site:
+        from orchestrator import goal_review
+
+        original_build = goal_review.build_review_command
+
+        def vite_only_build(*args, **kwargs):
+            if kwargs.get("browser_endpoint") is not None:
+                assert kwargs.get("site_url") == "http://localhost:4173/"
+            return original_build(*args, **kwargs)
+
+        monkeypatch.setattr(goal_review, "build_review_command", vite_only_build)
     websocket = object()
     commands = []
 
@@ -151,9 +166,9 @@ async def test_web_review_uses_isolated_host_browser_and_cleans_owned_job(
             assert "Use the existing app at http://localhost:4173/" in args["stdin"]
         return {"exit_code": 0}
 
-    progress = GoalProgress("Build a website")
+    progress = GoalProgress(WEBSITE_OBJECTIVE)
     result = await review_local_project(
-        SimpleNamespace(cancelled_sessions={}, execute_single_tool=execute), websocket, progress, PROJECT,
+        SimpleNamespace(cancelled_sessions={}, execute_single_tool=execute), websocket, progress, project,
         SimpleNamespace(kind="local_project", required_categories=CATEGORIES),
         {name: "computer-use-1" for name in ("run_command", "read_file", "list_dir", "interrupt_command", "project_preview")},
         {}, "chat", "user", verify=AsyncMock(return_value={"tests": ["reviewed"]}),
