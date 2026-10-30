@@ -70,9 +70,14 @@ def approval(orch, ws, authority, request):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["start", "status", "stop"])
-async def test_preview_runs_only_its_children_under_real_approval_and_project_lease(preview_runtime, action):
+@pytest.mark.parametrize("restart", [False, True])
+async def test_preview_runs_only_its_children_under_real_approval_and_project_lease(preview_runtime, action, restart):
     api, orch, ws, host, session, sent = preview_runtime
     request = {"action": action, "cwd": ROOT, "package_manager": "npm", "script": "dev"}
+    if restart and action == "start":
+        old_job = "22222222-2222-4222-8222-222222222222"
+        request["job_id"] = old_job
+        session.command_jobs[old_job] = {"state": "exited"}
     if action != "start":
         request["job_id"] = JOB
         session.command_jobs[JOB] = {"state": "running"}
@@ -85,6 +90,7 @@ async def test_preview_runs_only_its_children_under_real_approval_and_project_le
         finally:
             hc._APPROVAL.reset(token)
     assert "code" not in result["_data"], result
+    assert result["_data"]["job_id"] == JOB
     expected = ["read_file", "run_command", "read_output", "run_command", "read_output"] if action == "start" else ["read_output" if action == "status" else "interrupt_command"]
     assert [frame["verb"] for frame in sent] == expected
     assert all(frame["project_context"] == session.project_origin.context.to_dict() for frame in sent)

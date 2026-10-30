@@ -709,3 +709,29 @@ def test_preview_start_denied_or_malformed_checks_never_publish_running(monkeypa
     else:
         assert result == denied
     assert len(cleanup) == (0 if phase == "manifest" else 1)
+
+
+@pytest.mark.parametrize("action,verb", [("status", "read_output"), ("stop", "interrupt_command")])
+@pytest.mark.parametrize("manager,script", [("npm", "dev"), ("pnpm", "preview"), ("yarn", "start"), ("bun", "dev")])
+def test_confirmed_stopped_preview_can_restart_with_source_bound_launch_arguments(monkeypatch, action, verb, manager, script):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(mcp_tools, "_ctx", lambda _args: (
+        OWNER, CHAT, SimpleNamespace(name="Mac", project_mode=True), SimpleNamespace(session_id="session")))
+    monkeypatch.setattr(mcp_tools, verb, lambda **_kwargs: {"_data": {"job_id": JOB, "state": "interrupted"}})
+    original = {"action": action, "cwd": ROOT, "package_manager": manager, "script": script, "job_id": JOB}
+    result = mcp_tools.project_preview(**original)
+    button = result["_ui_components"][0]["content"][-1]
+    assert button["label"] == "Start preview" and button["action"] == "component_action"
+    assert button["payload"] == {"kind": "invoke", "params_patch": {"action": "start"}}
+    assert {**original, **button["payload"]["params_patch"]} == {
+        "action": "start", "cwd": ROOT, "package_manager": manager, "script": script, "job_id": JOB}
+
+
+@pytest.mark.parametrize("launch", [{}, {"package_manager": "npm"}, {"script": "dev"},
+                                    {"package_manager": "other", "script": "dev"},
+                                    {"package_manager": "npm", "script": "arbitrary"},
+                                    {"package_manager": "npm", "script": "dev", "cwd": "relative"}])
+def test_stopped_arbitrary_job_does_not_invent_preview_launch_arguments(launch):
+    card = mcp_tools._stopped_preview_card("Stopped", {"cwd": ROOT, "job_id": JOB, **launch}).to_dict()
+    assert len(card["content"]) == 1

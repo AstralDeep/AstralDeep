@@ -1252,7 +1252,7 @@ def _project_preview(**kwargs) -> Dict[str, Any]:
             return _fail("preview_status_uncertain", "The preview status could not be verified for this session job.")
         if data.get("state") != "running":
             return _data({"computer": host.name, "job_id": data.get("job_id"), "state": data.get("state")}, [
-                Card(title="Site preview stopped", content=[Text(content="The local preview server is no longer running.")])
+                _stopped_preview_card("The local preview server is no longer running.", kwargs)
             ])
         job_id = data.get("job_id")
         url = "http://localhost:4173/"
@@ -1274,9 +1274,22 @@ def _project_preview(**kwargs) -> Dict[str, Any]:
                 or data.get("state") not in {"interrupted", "exited", "timed_out"}):
             return _fail("preview_stop_uncertain", "The preview server stop could not be confirmed.")
         return _data({"computer": host.name, "job_id": data.get("job_id"), "state": data["state"]}, [
-            Card(title="Site preview stopped", content=[Text(content="The local preview server has stopped.")])
+            _stopped_preview_card("The local preview server has stopped.", kwargs)
         ])
     return _fail("out_of_range", "action must be start, status or stop")
+
+
+def _stopped_preview_card(message: str, arguments: Dict[str, Any]):
+    content = [Text(content=message)]
+    cwd = arguments.get("cwd")
+    if (arguments.get("package_manager") in {"npm", "pnpm", "yarn", "bun"}
+            and arguments.get("script") in {"dev", "preview", "start"}
+            and isinstance(cwd, str) and cwd.startswith("/") and "\x00" not in cwd
+            and ".." not in PurePosixPath(cwd).parts
+            and (cwd == "/" or str(PurePosixPath(cwd)) == cwd.rstrip("/"))):
+        content.append(Button(label="Start preview", action="component_action", variant="primary",
+                              payload={"kind": "invoke", "params_patch": {"action": "start"}}))
+    return Card(title="Site preview stopped", content=content)
 
 
 def _preview_argv(manager: str, script: str) -> list[str]:
