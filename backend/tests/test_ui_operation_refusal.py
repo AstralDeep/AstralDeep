@@ -26,6 +26,7 @@ from orchestrator.orchestrator import (
     _UiOperationRefusal,
 )
 from orchestrator.workspace import WorkspaceManager
+from tests.test_lets_gate_ordering import gate_orchestrator as gate_orchestrator
 from tests.helpers.voice_plane_runtime import (
     history_manager,
     isolated_plane_runtime,
@@ -1082,3 +1083,59 @@ async def test_terminal_replay_rejects_untrusted_retained_summary(summary):
     assert len(socket.frames) == 1
     assert socket.frames[0]["error"]["message"] == (
         "The action could not be completed. Try again.")
+
+
+@pytest.mark.parametrize("action,state", [("status", "running"), ("stop", "interrupted"), ("start", "running")])
+def test_component_action_consumed_preview_dispatch_updates_card_once(chat_env, operation_context, action, state):
+    from shared.protocol import MCPResponse
+
+    history, user_id, chat_id = chat_env
+    card = {"type": "card", "title": f"Preview {state}", "content": []}
+    response = MCPResponse(result={"_data": {"state": state, "job_id": "owned-job"}}, ui_components=[card])
+    fake = _make_fake(history, user_id, authorize=GateRefusal(response=response, dispatch_completed=True))
+    cid = _seed_component(fake.workspace, chat_id, user_id, agent="computer-use-1",
+                          tool="project_preview", params={"cwd": "/tmp/project", "action": "start"})
+    _run(fake._handle_component_action(_FakeWS(), user_id, {
+        "chat_id": chat_id, "component_id": cid, "kind": "invoke",
+        "params_patch": {"action": action, "job_id": "owned-job"},
+    }))
+    assert "ui_refusal" not in operation_context
+    assert not fake._exec_calls
+    row = fake.workspace.get_by_component_id(chat_id, user_id, cid)
+    assert row["component_data"]["title"] == f"Preview {state}"
+    assert row["component_data"]["_source_params"]["action"] == action
+
+
+def test_component_action_pending_confirmation_is_rendered_without_refusal(chat_env, operation_context):
+    from shared.protocol import MCPResponse
+
+    history, user_id, chat_id = chat_env
+    cards = [{"type": "card", "title": "Confirm preview", "content": []}]
+    fake = _make_fake(history, user_id, authorize=GateRefusal(response=MCPResponse(
+        result={"_data": {"status": "confirmation_required"}}, ui_components=cards)))
+    cid = _seed_component(fake.workspace, chat_id, user_id)
+    _run(fake._handle_component_action(_FakeWS(), user_id, {"chat_id": chat_id, "component_id": cid}))
+    assert "ui_refusal" not in operation_context
+    assert not fake._exec_calls
+    assert fake._renders
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome,completed", [("executed", True), ("pending", False), ("denied", False)])
+async def test_hitl_gate_marks_only_completed_dispatch(gate_orchestrator, monkeypatch, outcome, completed):  # noqa: F811
+    from orchestrator import hitl_confirmation, source_bound
+    from shared.protocol import MCPResponse
+
+    orch, ws = gate_orchestrator
+    monkeypatch.setattr(source_bound, "registered_action", lambda *args: source_bound.ActionDeclaration(
+        "agent-a", "preview", "tools:execute", source_bound.Effect.PRIVILEGED))
+    orch._source_ledger = lambda *args: types.SimpleNamespace(origin_of=lambda args: source_bound.Origin.HUMAN)
+    response = (MCPResponse(error={"message": "Denied"}) if outcome == "denied" else MCPResponse(
+        result={"_data": {"status": "confirmation_required"} if outcome == "pending" else {"state": "running"}}))
+    evaluate = AsyncMock(return_value=response)
+    monkeypatch.setattr(hitl_confirmation, "evaluate", evaluate)
+    gate = await orch._run_project_bound_gate_stack(ws, "agent-a", "preview", {}, "chat-a", "owner-a")
+    assert isinstance(gate, GateRefusal)
+    assert gate.response is response
+    assert gate.dispatch_completed is completed
+    evaluate.assert_awaited_once()
