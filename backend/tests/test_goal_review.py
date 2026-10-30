@@ -299,3 +299,26 @@ def test_report_recovery_command_is_bounded_and_retains_exact_context(site_url):
 def test_report_recovery_rejects_unbound_or_missing_validation_context(reference):
     with pytest.raises(ValueError):
         build_review_command("Review", CATEGORIES, PROJECT, report_recovery=reference)
+
+
+@pytest.mark.parametrize("recover", [False, True])
+@pytest.mark.parametrize("site_url", ["http://localhost:4173/", None])
+def test_review_guidance_bounds_browser_state_recovery_and_checks_theme_states(recover, site_url):
+    recovery = (("/work/demo/.goal-review-" + "a" * 32 + ".json", "required review check was skipped")
+                if recover else None)
+    command = build_review_command(
+        "x" * 900, CATEGORIES, PROJECT, browser_endpoint="http://localhost:65535", site_url=site_url,
+        report_recovery=recovery)
+    prompt = command["stdin"]
+    assert "current page/control visibility" in prompt
+    assert "open responsive nav before targeting hidden links" in prompt
+    assert "stale selectors/menu-state or browser automation mistakes" in prompt
+    assert "inspect fresh DOM and retry at most twice" in prompt
+    assert "before calling it a product defect" in prompt
+    assert "Never fabricate coverage: unresolved missing coverage remains fail" in prompt
+    assert "light/dark themes, validation-error contrast" in prompt
+    assert "focus/hover/invalid states" in prompt
+    assert "computed foreground/background colors and contrast ratios" in prompt
+    assert "normal text >=4.5:1" in prompt
+    assert "do not edit product source/manifests" in prompt.lower()
+    assert len(json.dumps(command, indent=2, ensure_ascii=False).encode("utf-8")) <= 4096
