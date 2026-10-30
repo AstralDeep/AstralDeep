@@ -70,7 +70,7 @@ def launch_arguments(root: str, profile_name: str) -> dict[str, Any]:
             "about:blank",
         ],
         "cwd": root,
-        "timeout_s": 660,
+        "timeout_s": 1980,
         "background": True,
     }
 

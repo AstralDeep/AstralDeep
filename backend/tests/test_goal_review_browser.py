@@ -34,7 +34,7 @@ def test_detects_browser_projects_only_from_authorized_manifest_observations():
 def test_launch_is_host_owned_bounded_and_uses_unique_granted_profile():
     args = browser.launch_arguments("/work/site", ".astral-review-browser-abc123")
     assert args["cwd"] == "/work/site"
-    assert args["timeout_s"] == 660 and args["background"] is True
+    assert args["timeout_s"] == 1980 and args["background"] is True
     assert args["argv"][0] == browser.CHROME_PATH
     assert "--headless=new" in args["argv"]
     assert "--remote-debugging-port=0" in args["argv"]
@@ -168,7 +168,7 @@ async def test_web_review_uses_isolated_host_browser_and_cleans_owned_job(
         assert not any(name == "interrupt_command" for name, _ in commands)
         return
     launch = next(args for name, args in commands if name == "run_command" and args.get("background"))
-    assert launch["timeout_s"] == 660
+    assert launch["timeout_s"] == 1980
     assert any(name == "interrupt_command" and args["job_id"] == "chrome-owned-job" for name, args in commands)
     if not static_site:
         assert any(name == "project_preview" and args.get("action") == "start" for name, args in commands)
@@ -224,3 +224,87 @@ def test_endpoint_probe_rejects_websocket_host_redirect(hostname, expected):
     result = subprocess.run([node, "-e", source, "http://localhost:42123/json/version", path],
                             capture_output=True, timeout=15, check=False)
     assert result.returncode == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["recover", "exhaust", "denied", "cancelled"])
+@pytest.mark.parametrize("skipped", ["keyboard_focus", "whole_ui"])
+async def test_invalid_report_recovery_rechecks_before_owned_browser_cleanup(monkeypatch, outcome, caplog, skipped):
+    monkeypatch.setitem(sys.modules, "orchestrator.hitl_confirmation", SimpleNamespace(
+        goal_call_scope=lambda _token: nullcontext()))
+    monkeypatch.setitem(sys.modules, "orchestrator.goal_project_context", SimpleNamespace(
+        project_goal_context=AsyncMock(return_value=PROJECT)))
+    preview = AsyncMock(return_value={"status": "running", "state": "running", "job_id": "preview-job",
+                                      "url": "http://localhost:4173/"})
+    monkeypatch.setattr("orchestrator.goal_preview.start_local_preview", preview)
+    websocket = object()
+    orch = SimpleNamespace(cancelled_sessions={})
+    calls = []
+    report_paths = []
+    invalid = json.loads(browser_verdict())
+    invalid["checks"][3].update(status="not_applicable", evidence=(
+        "The app has no dialogs. Browser testing confirmed ordinary Tab focus and Back focus return."))
+    validation = "required review check was skipped"
+    if skipped == "whole_ui":
+        invalid = json.loads(browser_verdict(ui=False))
+        validation = "detected web project requires UI review checks"
+    verify = AsyncMock(return_value={"tests": ["reviewed-proof"]})
+
+    async def execute(_ws, call, *_args, **_kwargs):
+        name, args = call.function.name, json.loads(call.function.arguments)
+        calls.append((name, args))
+        if name == "list_dir":
+            return {"entries": [{"name": "package.json", "is_dir": False}]}
+        if name == "read_file" and args["path"].endswith("package.json"):
+            return {"text": '{"scripts":{"dev":"vite"}}', "truncated": False}
+        if name == "read_file" and args["path"].endswith("DevToolsActivePort"):
+            return {"text": "42123\n/devtools/browser/0123456789abcdef\n", "truncated": False}
+        if name == "read_file":
+            text = browser_verdict() if outcome == "recover" and len(report_paths) == 2 else json.dumps(invalid)
+            return {"text": text, "truncated": False}
+        if name == "interrupt_command":
+            assert len(report_paths) == (3 if outcome == "exhaust" else 2)
+            return {"job_id": args["job_id"], "state": "interrupted"}
+        if args.get("background") is True:
+            assert args["timeout_s"] >= 3 * 600
+            return {"job_id": "browser-job", "background": True}
+        if "--output-last-message" in args.get("argv", []):
+            path = args["argv"][args["argv"].index("--output-last-message") + 1]
+            if report_paths:
+                assert report_paths[-1] in args["stdin"]
+                assert validation in args["stdin"]
+                assert "Re-run missing/skipped/unsupported checks" in args["stdin"]
+                assert "connectOverCDP(\"http://localhost:42123\")" in args["stdin"]
+                assert "Use the existing app at http://localhost:4173/" in args["stdin"]
+                assert not any(verb == "interrupt_command" for verb, _ in calls)
+            report_paths.append(path)
+            if len(report_paths) == 2 and outcome == "denied":
+                return {"status": "permission_denied"}
+            if len(report_paths) == 2 and outcome == "cancelled":
+                orch.cancelled_sessions[id(websocket)] = True
+            return {"exit_code": 0}
+        assert "Repair the independently observed defects" not in args.get("stdin", "")
+        return {"exit_code": 0}
+
+    orch.execute_single_tool = execute
+    result = await review_local_project(
+        orch, websocket, GoalProgress("Review the completed website"), PROJECT,
+        SimpleNamespace(kind="local_project", required_categories=CATEGORIES),
+        {name: "computer-use-1" for name in ("run_command", "read_file", "list_dir", "interrupt_command", "project_preview")},
+        {}, "chat", "user", verify=verify)
+    assert result.status == {"recover": "passed", "exhaust": "blocked", "denied": "blocked", "cancelled": "cancelled"}[outcome]
+    assert len(report_paths) == len(set(report_paths)) == (3 if outcome == "exhaust" else 2)
+    preview.assert_awaited_once()
+    assert sum(args.get("background") is True for _, args in calls) == 1
+    assert [args["job_id"] for verb, args in calls if verb == "interrupt_command"] == ["browser-job", "preview-job"]
+    assert not any("Repair the independently observed defects" in args.get("stdin", "") for _, args in calls)
+    retry_logs = [record.getMessage() for record in caplog.records if "goal.review_report_retry" in record.getMessage()]
+    assert len(retry_logs) == (2 if outcome == "exhaust" else 1)
+    assert all(validation in entry for entry in retry_logs)
+    if outcome == "recover":
+        verify.assert_awaited_once()
+    else:
+        verify.assert_not_awaited()
+    if outcome == "exhaust":
+        assert "report remained invalid" in result.reason
+        assert validation in result.reason
