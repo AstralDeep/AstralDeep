@@ -197,6 +197,14 @@ async def review_local_project(
         if not isinstance(job_id, str) or not job_id:
             return None, None, profile_name
         try:
+            active_path = goal_review_browser.active_port_path(goal_project["primary_root"], profile_name)
+            wait = await dispatch({
+                "argv": ["node", "-e", goal_review_browser.active_port_wait_script(), active_path],
+                "cwd": goal_project["primary_root"], "timeout_s": 12, "background": False,
+            })
+            wait_data = unpack(wait) if wait is not None else None
+            if not isinstance(wait_data, dict) or wait_data.get("exit_code") != 0:
+                return job_id, None, profile_name
             active = await dispatch({"path": goal_review_browser.active_port_path(
                 goal_project["primary_root"], profile_name), "max_bytes": 256}, "read_file")
             active_data = unpack(active) if active is not None else None

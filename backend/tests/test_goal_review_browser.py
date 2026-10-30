@@ -37,6 +37,8 @@ def test_launch_is_host_owned_bounded_and_uses_unique_granted_profile():
     assert "--no-default-browser-check" in args["argv"]
     assert "--disable-background-networking" in args["argv"]
     assert "--user-data-dir=/work/site/.astral-review-browser-abc123" in args["argv"]
+    assert "Date.now()+8000" in browser.active_port_wait_script()
+    assert "setTimeout(poll,100)" in browser.active_port_wait_script()
 
 
 @pytest.mark.parametrize("text,expected", [
@@ -74,13 +76,14 @@ def browser_verdict(ui=True):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("active_file,interrupt_state,expected", [
-    ("42123\n/devtools/browser/0123456789abcdef\n", "interrupted", "passed"),
-    ("invalid", "interrupted", "blocked"),
-    ("invalid", "uncertain", "blocked"),
+@pytest.mark.parametrize("active_file,wait_ready,interrupt_state,expected", [
+    ("42123\n/devtools/browser/0123456789abcdef\n", True, "interrupted", "passed"),
+    ("invalid", True, "interrupted", "blocked"),
+    ("42123\n/devtools/browser/0123456789abcdef\n", False, "interrupted", "blocked"),
+    ("invalid", True, "uncertain", "blocked"),
 ])
 async def test_web_review_uses_isolated_host_browser_and_cleans_owned_job(
-    monkeypatch, active_file, interrupt_state, expected,
+    monkeypatch, active_file, wait_ready, interrupt_state, expected,
 ):
     monkeypatch.setitem(sys.modules, "orchestrator.hitl_confirmation", SimpleNamespace(
         goal_call_scope=lambda _token: nullcontext()))
@@ -110,6 +113,8 @@ async def test_web_review_uses_isolated_host_browser_and_cleans_owned_job(
         if args["argv"][0] == "node" and "rmSync" in args["argv"][2]:
             return {"exit_code": 0}
         if args["argv"][0] == "node":
+            if "Date.now()+8000" in args["argv"][2]:
+                return {"exit_code": 0 if wait_ready else 1}
             return {"exit_code": 0, "stdout": "Chrome DevTools ready"}
         assert "--output-last-message" in args["argv"]
         assert "connectOverCDP(\"http://localhost:42123\")" in args["stdin"]
@@ -127,6 +132,14 @@ async def test_web_review_uses_isolated_host_browser_and_cleans_owned_job(
     launch = next(args for name, args in commands if name == "run_command" and args.get("background"))
     assert launch["timeout_s"] == 660
     assert any(name == "interrupt_command" and args["job_id"] == "chrome-owned-job" for name, args in commands)
+    wait_index = next(i for i, (name, args) in enumerate(commands)
+                      if name == "run_command" and args.get("argv", [None, None, ""])[0] == "node"
+                      and "Date.now()+8000" in args.get("argv", [None, None, ""])[2])
+    active_read_index = next((i for i, (name, args) in enumerate(commands)
+                              if name == "read_file" and args["path"].endswith("DevToolsActivePort")), None)
+    assert (active_read_index is not None) == wait_ready
+    if active_read_index is not None:
+        assert wait_index < active_read_index
     if interrupt_state == "interrupted":
         assert not progress.pending_jobs
 

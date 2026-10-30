@@ -61,6 +61,15 @@ def active_port_path(root: str, profile_name: str) -> str:
     return str(PurePosixPath(root) / profile_name / "DevToolsActivePort")
 
 
+def active_port_wait_script() -> str:
+    return (
+        "const fs=require('node:fs'),p=process.argv[1],end=Date.now()+8000;"
+        "function poll(){try{const s=fs.statSync(p);if(s.isFile()&&s.size>0&&s.size<=256){"
+        "console.log('DevToolsActivePort ready');return}}catch{}"
+        "if(Date.now()>=end){process.exitCode=1;return}setTimeout(poll,100)}poll()"
+    )
+
+
 def parse_active_port(text: str) -> tuple[int, str] | None:
     if not isinstance(text, str) or len(text) > 256:
         return None
