@@ -15381,6 +15381,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             goal_recovery_nudge_sent = False
             goal_worker_attempted = False
             goal_auto_refs = {}
+            goal_independent_review = None
+            goal_preview = None
             from orchestrator import hitl_confirmation
 
             resumed_goal = hitl_confirmation.current_goal_context(self, websocket, user_id, chat_id)
@@ -15724,32 +15726,27 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 break
                             if worker_state.status == "success":
                                 goal_checkpoint_tools = goal_progress.tool_count
-                                from orchestrator.goal_auto_verify import verify_local_project
-                                await self._send_chat_status(websocket, "executing", "Checking the project on this Mac…")
+                                from orchestrator.goal_review import review_local_project
+                                await self._send_chat_status(websocket, "executing", "Reviewing interactions and repairing defects…")
                                 try:
-                                    goal_auto_refs = await verify_local_project(
+                                    goal_independent_review = await review_local_project(
                                         self, websocket, goal_progress, goal_project, goal_contract,
                                         tool_to_agent, tool_to_unqualified, chat_id, user_id, task=task,
                                     )
                                 except asyncio.CancelledError:
                                     raise
                                 except Exception:
-                                    logger.warning("goal.auto_verify_failed chat=%s", chat_id, exc_info=True)
+                                    logger.warning("goal.independent_review_failed chat=%s", chat_id, exc_info=True)
+                                    goal_stop_reason = "Independent project review could not finish."
+                                    break
                                 if self.cancelled_sessions.get(id(websocket)):
                                     continue
-                                if goal_progress.requires_approval:
-                                    goal_stop_reason = "Waiting for approval of a local project verification command."
+                                if goal_independent_review.status != "passed":
+                                    goal_stop_reason = goal_independent_review.reason
                                     break
-                                if goal_auto_refs:
-                                    logger.warning("goal.auto_verify chat=%s status=complete tools=%d", chat_id,
-                                                   goal_progress.tool_count)
-                                else:
-                                    messages.append({"role": "system", "content": (
-                                        "The authorized local coding worker exited successfully inside the frozen "
-                                        "project root. Its prose is not proof. Inspect the resulting source and "
-                                        "manifest, run the project's environment, dependency, test, and startup "
-                                        "checks with the ordinary project tools, then request completion review "
-                                        "using distinct real tool evidence for each required category.")})
+                                goal_auto_refs = goal_independent_review.references or {}
+                                logger.info("goal.independent_review chat=%s status=passed rounds=%d", chat_id,
+                                            goal_independent_review.rounds)
                             elif worker_state.status != "denied":
                                 messages.append({"role": "system", "content": (
                                     "The local coding worker could not finish. Inspect its possible file "
@@ -15965,6 +15962,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         )
 
                 if llm_msg.tool_calls:
+                    goal_independent_review = None
+                    goal_auto_refs = {}
                     logger.info(f"LLM requested {len(llm_msg.tool_calls)} tool(s)")
                     
                     tool_names = [tc.function.name for tc in llm_msg.tool_calls]
@@ -16380,6 +16379,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             continue
                         if task:
                             await self.task_manager.assert_current_execution(task)
+                        if decision.status == "complete" and goal_contract.kind == "local_project":
+                            if goal_independent_review is None:
+                                from orchestrator.goal_review import review_local_project
+                                await self._send_chat_status(websocket, "executing", "Reviewing interactions and repairing defects…")
+                                goal_independent_review = await review_local_project(
+                                    self, websocket, goal_progress, goal_project, goal_contract,
+                                    tool_to_agent, tool_to_unqualified, chat_id, user_id, task=task,
+                                )
+                            if goal_independent_review.status != "passed":
+                                decision = CompletionDecision("blocked", reason=goal_independent_review.reason)
+                            else:
+                                proof_references = goal_independent_review.references or {}
                         if decision.status == "complete":
                             current_project = await project_goal_context(self, websocket, user_id, chat_id)
                             if self.cancelled_sessions.get(id(websocket)):
@@ -16398,6 +16409,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         decision = goal_progress.assess(decision)
                         logger.info("goal.review chat=%s status=%s tools=%d", chat_id, decision.status, goal_progress.tool_count)
                         if decision.status == "continue":
+                            goal_independent_review = None
+                            goal_auto_refs = {}
                             messages.extend([
                                 {"role": "assistant", "content": content},
                                 {"role": "system", "content": (
@@ -16409,14 +16422,43 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         if decision.status == "blocked":
                             goal_stop_reason = decision.reason
                             break
-                        if proof_references and worker_succeeded:
-                            content = (
-                                "The project is complete in the selected folder. I verified the source, "
-                                "isolated environment, installed dependencies, tests, and startup."
-                            )
+                        if goal_independent_review is not None and goal_independent_review.status == "passed":
+                            content = "The project is complete. Independent review, tests, and startup verification passed."
+                            if goal_independent_review.ui:
+                                from orchestrator.goal_preview import start_local_preview
+                                await self._send_chat_status(websocket, "executing", "Starting the project preview…")
+                                goal_preview = await start_local_preview(
+                                    self, websocket, goal_progress, goal_project,
+                                    tool_to_agent, tool_to_unqualified, chat_id, user_id, task=task,
+                                )
+                                if goal_preview and goal_preview.get("status") == "running":
+                                    preview_components = goal_preview.get("ui_components") or []
+                                    if preview_components:
+                                        preview_result = goal_preview.get("_result")
+                                        for component in preview_components:
+                                            _tag_tool_result_source(
+                                                component, preview_result, "computer-use-1",
+                                                goal_preview.get("_tool_name", "project_preview"),
+                                                goal_preview.get("_tool_arguments", {}),
+                                                getattr(preview_result, "correlation_id", None),
+                                            )
+                                        await self._deliver_round_components(
+                                            websocket, preview_components, chat_id, user_id=user_id,
+                                            user_request=message,
+                                        )
+                                        _turn_canvas_components.extend(preview_components)
+                                        if chat_id:
+                                            await self._append_conversation_message(
+                                                conversation_stage, chat_id=chat_id, user_id=user_id,
+                                                role="assistant", content=preview_components,
+                                            )
+                                    content += " The site is running at " + goal_preview["url"] + ". Use the preview card to open or stop it."
+                                elif not goal_preview or goal_preview.get("status") != "not_applicable":
+                                    goal_stop_reason = "The project passed review, but its running preview could not be verified."
+                                    break
 
                     _plain = not content.lstrip().startswith(("{", "["))
-                    if _plain and _tools_used == 0:
+                    if _plain and _tools_used == 0 and goal_independent_review is None:
                         content = await self._moa_panel(
                             websocket, messages, message, content, chat_id)
 

@@ -67,11 +67,12 @@ def test_review_command_is_fresh_readonly_and_bounded():
     assert "--output-last-message" in command["argv"]
     assert "gpt-6-luna" in command["argv"]
     assert "browser automation" in command["stdin"]
+    assert "toolkit-appropriate input/event tests" in command["stdin"]
     with pytest.raises(ValueError):
         build_review_command("x" * 16300, CATEGORIES, PROJECT)
 
 
-async def run_loop(results, *, cancelled=False, approval=False, verify_result=None):
+async def run_loop(results, *, cancelled=False, approval=False, verify_result=None, objective="Build project"):
     expanded = []
     for result in results:
         if "review_value" in result:
@@ -84,7 +85,7 @@ async def run_loop(results, *, cancelled=False, approval=False, verify_result=No
     orch = SimpleNamespace(cancelled_sessions={id(websocket): cancelled},
                            execute_single_tool=AsyncMock(side_effect=expanded),
                            task_manager=SimpleNamespace(assert_current_execution=AsyncMock()))
-    progress = SimpleNamespace(request="Build project", requires_approval=approval, record=lambda *a, **k: None)
+    progress = SimpleNamespace(request=objective, requires_approval=approval, record=lambda *a, **k: None)
     verify = AsyncMock(return_value={"tests": ["proof"]} if verify_result is None else verify_result)
     result = await review_local_project(
         orch, websocket, progress, PROJECT, SimpleNamespace(kind="local_project", required_categories=CATEGORIES),
@@ -155,8 +156,7 @@ def test_missing_or_invalid_findings(value):
 
 @pytest.mark.asyncio
 async def test_authority_change_blocks_before_dispatch(monkeypatch):
-    import orchestrator.goal_project_context as context
-
+    context = sys.modules["orchestrator.goal_project_context"]
     context.project_goal_context.return_value = {**PROJECT, "folder_status": "ungranted"}
     result, orch, _ = await run_loop([])
     assert result.status == "blocked"
@@ -189,3 +189,10 @@ async def test_default_verifier_and_active_command_scope(monkeypatch):
     assert result.status == "passed"
     verification.assert_awaited_once()
     assert not is_active_review_command(commands[0])
+
+
+@pytest.mark.asyncio
+async def test_oversized_complete_review_preview_blocks_before_launch():
+    result, orch, _ = await run_loop([], objective="x" * 3000)
+    assert result.status == "blocked"
+    orch.execute_single_tool.assert_not_awaited()
