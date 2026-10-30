@@ -18,7 +18,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 AGENT_ID = "computer-use-1"
 
-COMMAND_VERBS: FrozenSet[str] = frozenset({"run_command", "read_output", "interrupt_command"})
+COMMAND_VERBS: FrozenSet[str] = frozenset({"run_command", "read_output", "interrupt_command", "project_preview"})
 BROWSER_VERBS: FrozenSet[str] = frozenset({
     "browser_snapshot", "browser_get_text", "browser_screenshot", "browser_wait",
     "browser_navigate", "browser_click", "browser_fill", "browser_press", "browser_scroll",
@@ -37,16 +37,17 @@ INPUT_VERBS: FrozenSet[str] = frozenset({
     "browser_dialog", "interrupt_command",
 })
 CONSEQUENTIAL_VERBS: FrozenSet[str] = frozenset({
-    "write_file", "delete_path", "run_command",
+    "write_file", "delete_path", "run_command", "project_preview",
 })
 SESSION_VERBS: FrozenSet[str] = frozenset({
     "list_computers", "start_session", "end_session", "resume_session", "confirm_action",
 })
 DE_ESCALATION_VERBS: FrozenSet[str] = frozenset({"end_session"})
 
-HOST_VERBS: FrozenSet[str] = OBSERVE_VERBS | INPUT_VERBS | CONSEQUENTIAL_VERBS
+COMPOSITE_VERBS: FrozenSet[str] = frozenset({"project_preview"})
+HOST_VERBS: FrozenSet[str] = (OBSERVE_VERBS | INPUT_VERBS | CONSEQUENTIAL_VERBS) - COMPOSITE_VERBS
 
-ALL_VERBS: FrozenSet[str] = HOST_VERBS | SESSION_VERBS
+ALL_VERBS: FrozenSet[str] = HOST_VERBS | SESSION_VERBS | COMPOSITE_VERBS
 
 TIERS: Dict[str, str] = {
     **{v: "observe" for v in OBSERVE_VERBS},
@@ -59,6 +60,7 @@ SCOPES: Dict[str, str] = {
     **{v: "tools:read" for v in OBSERVE_VERBS},
     **{v: "tools:write" for v in INPUT_VERBS},
     "run_command": "tools:execute",
+    "project_preview": "tools:execute",
     "write_file": "tools:files",
     "delete_path": "tools:files",
     "list_computers": "tools:read",
@@ -74,6 +76,7 @@ DESTRUCTIVE_CLASSIFICATION: Dict[str, Any] = {
     "confirm_action": "always",
     "open_app": {"by_shell_app": True},
     "run_command": "always",
+    "project_preview": "always",
     "browser_navigate": "always",
 }
 
@@ -142,7 +145,7 @@ def is_destructive(tool_name: str, args: Mapping[str, Any]) -> bool:
 
 UNATTENDED_ALLOWED: FrozenSet[str] = frozenset({"list_computers"})
 
-SESSION_REQUIRED: FrozenSet[str] = HOST_VERBS
+SESSION_REQUIRED: FrozenSet[str] = HOST_VERBS | COMPOSITE_VERBS
 
 TIMEOUTS: Dict[str, float] = {
     "screenshot": 15.0, "list_windows": 10.0, "get_clipboard": 5.0, "read_file": 10.0,
@@ -152,6 +155,7 @@ TIMEOUTS: Dict[str, float] = {
     "open_app": 15.0, "set_clipboard": 5.0,
     "write_file": 10.0, "delete_path": 10.0,
     "run_command": 630.0, "read_output": 30.0, "interrupt_command": 5.0,
+    "project_preview": 630.0,
     "browser_snapshot": 5.0, "browser_get_text": 5.0, "browser_screenshot": 5.0,
     "browser_wait": 15.0, "browser_navigate": 15.0, "browser_click": 5.0, "browser_fill": 5.0,
     "browser_press": 5.0, "browser_scroll": 5.0, "browser_dialog": 5.0,

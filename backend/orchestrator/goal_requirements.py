@@ -224,7 +224,6 @@ def select_goal_proof_references(
         read_path = _inside_roots(read_args.get("path"), roots)
         for write_id in writes:
             write = calls[write_id]
-            write_data = _result_data(write.get("result", write.get("data")))
             if (_inside_roots(write.get("arguments", {}).get("path"), roots) == read_path
                     and write.get("arguments", {}).get("content_sha256") == read_data.get("content_sha256")):
                 file_options.append((write_id, read_id))

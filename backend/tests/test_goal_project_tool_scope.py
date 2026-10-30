@@ -18,6 +18,7 @@ PROJECT = {
 def _catalog():
     agents = {
         "computer__run": "computer-use-1", "computer__write": "computer-use-1",
+        "computer__preview": "computer-use-1",
         "browser__navigate": "computer-use-1", "clipboard": "computer-use-1",
         "devices": "computer-use-1", "screen": "computer-use-1", "windows": "computer-use-1",
         "outlook": "outlook-1", "memory": "__memory__", "scheduler": "__scheduler__",
@@ -26,6 +27,7 @@ def _catalog():
     }
     names = {
         "computer__run": "run_command", "computer__write": "write_file",
+        "computer__preview": "project_preview",
         "browser__navigate": "browser_navigate", "clipboard": "get_clipboard",
         "foreign_write": "write_file",
         "devices": "list_computers", "screen": "screenshot", "windows": "list_windows",
@@ -39,10 +41,10 @@ def test_local_project_catalog_keeps_registered_project_execution_and_guidance_o
     focused, owners, canonical = focus_project_catalog(
         tools, agents, names, PROJECT, build_goal_contract("local_project", PROJECT))
     assert [item["function"]["name"] for item in focused] == [
-        "computer__run", "computer__write", "guidance"]
-    assert set(owners) == {"computer__run", "computer__write", "guidance"}
+        "computer__run", "computer__write", "computer__preview", "guidance"]
+    assert set(owners) == {"computer__run", "computer__write", "computer__preview", "guidance"}
     assert canonical == {name: names[name] for name in names if name in owners}
-    assert len(tools) == 14
+    assert len(tools) == 15
     assert "outlook" in agents
 
 

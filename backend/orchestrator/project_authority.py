@@ -15,7 +15,7 @@ from orchestrator.computer_hosts import ComputerHostError
 from orchestrator.projects import ProjectError, ProjectService
 from shared.project_workspaces import ProjectContext, ProjectManifest
 
-FILE_VERBS = frozenset({"read_file", "list_dir", "write_file", "delete_path", "run_command", "read_output", "interrupt_command"})
+FILE_VERBS = frozenset({"read_file", "list_dir", "write_file", "delete_path", "run_command", "read_output", "interrupt_command", "project_preview"})
 PROJECT_CONSENT_VERBS = FILE_VERBS | {"start_session", "end_session", "resume_session"}
 _CURRENT = contextvars.ContextVar("project_dispatch_origin", default=None)
 _ACTIVE = {}
@@ -329,7 +329,7 @@ def normalize_project_arguments(origin, tool, args):
     try:
         if tool in {"read_file", "list_dir", "write_file", "delete_path"}:
             args["path"] = resolve_workspace_path(args.get("path"), origin.roots, origin.host.name, primary=origin.primary)
-        elif tool == "run_command":
+        elif tool in {"run_command", "project_preview"}:
             args["cwd"] = resolve_cwd(args.get("cwd", origin.primary), origin.roots, origin.host.name)
     except CwdRefusal as exc:
         raise _refusal(exc.code, str(exc)) from None
@@ -337,7 +337,7 @@ def normalize_project_arguments(origin, tool, args):
 
 def project_review_targets(orch, owner, chat, host, tool, args):
     origin = current_origin(orch, owner, chat, host)
-    key = "cwd" if tool == "run_command" else "path" if tool in {"read_file", "list_dir", "write_file", "delete_path"} else None
+    key = "cwd" if tool in {"run_command", "project_preview"} else "path" if tool in {"read_file", "list_dir", "write_file", "delete_path"} else None
     if origin is None or key is None:
         return frozenset()
     normalized = dict(args)

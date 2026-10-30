@@ -37,7 +37,7 @@ POINTER_REFUSAL = "Call list_windows and pass hwnd for the target window."
 CONTROL_VERBS = frozenset({"interrupt_command"})
 CONTINUATION_TEXT = ("The exact approved action completed. Continue the remaining original task using current "
                      "observations; any further effects still require their ordinary authorization and review.")
-REMOTE_REVIEWED_VERBS = frozenset({"run_command", "write_file", "delete_path"})
+REMOTE_REVIEWED_VERBS = frozenset({"run_command", "write_file", "delete_path", "project_preview"})
 _BUNDLE_ID = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
 
 
@@ -1038,7 +1038,9 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
                         binding.progress.request, binding.contract.required_categories, binding.project)
                 except (AttributeError, TypeError, ValueError):
                     expected_worker = None
-                if shown == expected_worker:
+                from orchestrator.goal_review import is_active_review_command
+
+                if shown == expected_worker or is_active_review_command(shown):
                     extended_fields = frozenset({"stdin"})
         preview, reviewable = await asyncio.to_thread(
             _review_arguments, shown, trusted_identifiers=trusted_identifiers,
@@ -1055,7 +1057,7 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
                 or cancellation_witness(orch, websocket, owner, chat) is not witness):
             return _refused("This confirmation is no longer valid for the active session.")
         pending = _pending(orch)
-        from orchestrator.computer_use_policy import HOST_VERBS
+        from orchestrator.computer_use_policy import SESSION_REQUIRED
         from orchestrator.remote_confirmation import capture_computer_approval, source_review_proposal
 
         remote_proposal = source_review_proposal(orch, owner, chat, agent, tool, args)
@@ -1071,7 +1073,7 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             refusal = bypass_refusal(orch, websocket, owner, chat, agent, tool, args, risks)
             if refusal is not None:
                 return _refused(refusal)
-        if agent == "computer-use-1" and tool in HOST_VERBS | {"confirm_action", "resume_session"}:
+        if agent == "computer-use-1" and tool in SESSION_REQUIRED | {"confirm_action", "resume_session"}:
             computer = capture_computer_approval(orch, websocket, owner, chat, args,
                 standing=consent_decision(orch, websocket, owner, chat, agent, tool, args, risks)[0] == "standing")
             if computer is None:

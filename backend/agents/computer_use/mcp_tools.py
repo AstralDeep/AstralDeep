@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import logging
 import re
 import time
+from pathlib import PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 
-from astralprims import Alert, Card, CodeBlock, Image, Table, Text
+from astralprims import Alert, Button, Card, CodeBlock, Image, Table, Text
 
 from orchestrator.computer_hosts import WITHDRAWN, WITHDRAWN_NOTE, ComputerHostError
 from orchestrator.computer_use_policy import (
@@ -1143,6 +1145,141 @@ def interrupt_command(**kwargs) -> Dict[str, Any]:
     return _data({"computer": host.name, "job_id": job, "state": state, "exit_code": _exit_code(result.get("exit_code"))})
 
 
+def project_preview(**kwargs) -> Dict[str, Any]:
+    _user_id, _chat_id, host, ctx = _ctx(kwargs)
+    if not hasattr(ctx, "session_id"):
+        return ctx
+    if getattr(host, "project_mode", False) is not True:
+        return _fail("permission_denied", "project previews require a granted local-project session")
+    action = kwargs.get("action")
+    if action == "start":
+        manager, script = kwargs.get("package_manager"), kwargs.get("script")
+        if manager not in {"npm", "pnpm", "yarn", "bun"} or script not in {"dev", "preview", "start"}:
+            return _fail("out_of_range", "package_manager and script must identify a supported local web server")
+        try:
+            command = _command_args({
+                **kwargs,
+                "argv": _preview_argv(manager, script),
+                "timeout_s": MAX_BACKGROUND_TIMEOUT_S,
+                "background": True,
+            }, host)
+        except _Refusal as exc:
+            return _fail(exc.code, str(exc))
+        manifest_result = read_file(**{
+            **kwargs,
+            "path": str(PurePosixPath(command["cwd"]) / "package.json"),
+            "max_bytes": 32768,
+        })
+        manifest = manifest_result.get("_data", {}) if isinstance(manifest_result, dict) else {}
+        if not isinstance(manifest, dict):
+            return _fail("preview_unsupported", "The project's package manifest could not be verified.")
+        if manifest.get("code"):
+            return manifest_result
+        try:
+            package = json.loads(manifest.get("text", ""))
+        except (ValueError, TypeError):
+            return _fail("preview_unsupported", "The project's package manifest could not be verified.")
+        scripts = package.get("scripts") if isinstance(package, dict) else None
+        script_source = scripts.get(script) if isinstance(scripts, dict) else None
+        if (manifest.get("truncated") is True or not isinstance(script_source, str)
+                or re.search(r"(?:^|[\s;&|])vite(?:\s|$)", script_source) is None):
+            return _fail("preview_unsupported", "Only a declared Vite preview/dev/start script is supported.")
+        started = run_command(**{**kwargs, "argv": _preview_argv(manager, script),
+                                 "timeout_s": MAX_BACKGROUND_TIMEOUT_S, "background": True})
+        result = started.get("_data", {}) if isinstance(started, dict) else {}
+        if not isinstance(result, dict) or result.get("code"):
+            return started
+        job_id = str(result.get("job_id") or "").lower()
+        if _JOB_ID.fullmatch(job_id) is None:
+            return _fail("failed", f"{host.name} returned no valid preview job id")
+        _track(ctx, job_id, _sanitize(result.get("started_at"), 64))
+        owner_result = read_output(**{**kwargs, "job_id": job_id, "wait_s": 2, "max_bytes": 4096})
+        owner_data = owner_result.get("_data", {}) if isinstance(owner_result, dict) else {}
+        if (not isinstance(owner_data, dict) or owner_data.get("state") != "running"
+                or owner_data.get("job_id") != job_id):
+            interrupt_command(**{**kwargs, "job_id": job_id, "signal": "INT"})
+            if isinstance(owner_data, dict) and owner_data.get("code"):
+                return owner_result
+            return _fail("preview_unavailable", "The preview server exited before it could be verified.")
+        probe = run_command(**{**kwargs, "argv": ["node", "-e", _preview_probe_script()],
+                               "timeout_s": 20, "background": False})
+        probe_result = probe.get("_data", {}) if isinstance(probe, dict) else {}
+        if not isinstance(probe_result, dict) or probe_result.get("exit_code") != 0:
+            interrupt_command(**{**kwargs, "job_id": job_id, "signal": "INT"})
+            if isinstance(probe_result, dict) and probe_result.get("code"):
+                return probe
+            return _fail("preview_unavailable", "The preview server did not return a successful local HTTP response.")
+        url = "http://localhost:4173/"
+        owner_result = read_output(**{**kwargs, "job_id": job_id, "wait_s": 0, "max_bytes": 4096})
+        owner_data = owner_result.get("_data", {}) if isinstance(owner_result, dict) else {}
+        if (not isinstance(owner_data, dict) or owner_data.get("state") != "running"
+                or owner_data.get("job_id") != job_id):
+            interrupt_command(**{**kwargs, "job_id": job_id, "signal": "INT"})
+            if isinstance(owner_data, dict) and owner_data.get("code"):
+                return owner_result
+            return _fail("preview_unavailable", "The preview server stopped during its HTTP check.")
+        component = Card(title="Site preview is running", content=[
+            Text(content=f"[Open preview]({url})", variant="markdown"),
+            Button(label="Check status", action="component_action", variant="ghost",
+                   payload={"kind": "invoke", "params_patch": {"action": "status", "job_id": job_id}}),
+            Button(label="Stop preview", action="component_action", variant="secondary",
+                   payload={"kind": "invoke", "params_patch": {"action": "stop", "job_id": job_id}}),
+        ])
+        return _data({"computer": host.name, "job_id": job_id, "background": True, "url": url,
+                      "cwd": result.get("cwd", kwargs.get("cwd")), "state": "running"}, [component])
+    if action == "status":
+        result = read_output(**{**kwargs, "job_id": kwargs.get("job_id"), "wait_s": 0, "max_bytes": 4096})
+        data = result.get("_data", {}) if isinstance(result, dict) else {}
+        if isinstance(data, dict) and data.get("code"):
+            return result
+        if (not isinstance(data, dict) or data.get("job_id") != kwargs.get("job_id")
+                or data.get("state") not in {"running", "interrupted", "exited", "timed_out"}):
+            return _fail("preview_status_uncertain", "The preview status could not be verified for this session job.")
+        if data.get("state") != "running":
+            return _data({"computer": host.name, "job_id": data.get("job_id"), "state": data.get("state")}, [
+                Card(title="Site preview stopped", content=[Text(content="The local preview server is no longer running.")])
+            ])
+        job_id = data.get("job_id")
+        url = "http://localhost:4173/"
+        return _data({"computer": host.name, "job_id": job_id, "state": "running", "url": url}, [
+            Card(title="Site preview is running", content=[
+                Text(content=f"[Open preview]({url})", variant="markdown"),
+                Button(label="Check status", action="component_action", variant="ghost",
+                       payload={"kind": "invoke", "params_patch": {"action": "status", "job_id": job_id}}),
+                Button(label="Stop preview", action="component_action", variant="secondary",
+                       payload={"kind": "invoke", "params_patch": {"action": "stop", "job_id": job_id}}),
+            ])
+        ])
+    if action == "stop":
+        result = interrupt_command(**{**kwargs, "signal": "INT"})
+        data = result.get("_data", {}) if isinstance(result, dict) else {}
+        if isinstance(data, dict) and data.get("code"):
+            return result
+        if (not isinstance(data, dict) or data.get("job_id") != kwargs.get("job_id")
+                or data.get("state") not in {"interrupted", "exited", "timed_out"}):
+            return _fail("preview_stop_uncertain", "The preview server stop could not be confirmed.")
+        return _data({"computer": host.name, "job_id": data.get("job_id"), "state": data["state"]}, [
+            Card(title="Site preview stopped", content=[Text(content="The local preview server has stopped.")])
+        ])
+    return _fail("out_of_range", "action must be start, status or stop")
+
+
+def _preview_argv(manager: str, script: str) -> list[str]:
+    if manager == "npm":
+        return [manager, "run", script, "--", "--host", "localhost", "--port", "4173", "--strictPort"]
+    if manager == "pnpm":
+        return [manager, "run", script, "--host", "localhost", "--port", "4173", "--strictPort"]
+    if manager == "yarn":
+        return [manager, script, "--host", "localhost", "--port", "4173", "--strictPort"]
+    return [manager, "run", script, "--host", "localhost", "--port", "4173", "--strictPort"]
+
+
+def _preview_probe_script() -> str:
+    return ("let n=0,b=0;const t=setInterval(async()=>{if(b)return;if(++n>80){clearInterval(t);process.exit(1)}"
+            "b=1;try{if((await fetch('http://localhost:4173/',{signal:AbortSignal.timeout(1000)})).ok){"
+            "clearInterval(t);process.exit(0)}}catch{}b=0},250)")
+
+
 _COMPUTER = {"computer": {"type": "string",
                           "description": "Which computer (name or id from list_computers). Optional "
                                          "when a session is active or only one computer is online."}}
@@ -1298,6 +1435,16 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         interrupt_command, "Send INT, TERM or KILL to a background job started in this session.",
         {"job_id": {"type": "string"}, "signal": {"type": "string", "enum": ["INT", "TERM", "KILL"]}},
         ["job_id", "signal"]),
+    "project_preview": _entry(
+        project_preview,
+        "Start, inspect, or stop a local web preview inside the granted project folder. Start supports only a "
+        "package manager and script name; the server binds to localhost on port 4173. Stop applies only to a "
+        "background job owned by this computer session. Starting and stopping use the consequential command policy.",
+        {"action": {"type": "string", "enum": ["start", "status", "stop"]},
+         "cwd": {"type": "string", "description": "Granted project folder containing the package manifest."},
+         "package_manager": {"type": "string", "enum": ["npm", "pnpm", "yarn", "bun"]},
+         "script": {"type": "string", "enum": ["dev", "preview", "start"]},
+         "job_id": {"type": "string"}}, ["action"]),
 }
 
 
