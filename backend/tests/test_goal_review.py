@@ -68,6 +68,10 @@ def test_review_command_is_fresh_readonly_and_bounded():
     assert "gpt-6-luna" in command["argv"]
     assert "browser automation" in command["stdin"]
     assert "inspect desktop/mobile screenshots" in command["stdin"]
+    assert "every primary control in every view" in command["stdin"]
+    assert "article-detail CTAs" in command["stdin"]
+    assert "ALL six check statuses must be pass/fail" in command["stdin"]
+    assert "never keyboard/focus" in command["stdin"]
     assert "toolkit-appropriate input/event tests" in command["stdin"]
     attached = build_review_command("Build a project", CATEGORIES, PROJECT,
                                     browser_endpoint="http://localhost:42123",
@@ -138,7 +142,7 @@ async def test_defect_repair_fresh_review_and_verify():
 async def test_invalid_missing_denied_outputs_block(result):
     outcome, orch, verify = await run_loop([result, {}] if result == {"exit_code": 0} else [result])
     assert outcome.status == "blocked"
-    assert orch.execute_single_tool.await_count in {2, 3}
+    assert orch.execute_single_tool.await_count in {2, 3, 4}
     verify.assert_not_awaited()
 
 
@@ -275,3 +279,23 @@ def test_category_mapping_also_accepts_matching_canonical_names():
     value = verdict()
     value["checks"] = {row["name"]: row for row in value["checks"]}
     assert parse_verdict(json.dumps(value))["checks"] == list(value["checks"].values())
+
+
+@pytest.mark.parametrize("site_url", ["http://localhost:4173/", None])
+def test_report_recovery_command_is_bounded_and_retains_exact_context(site_url):
+    prior = "/work/demo/.goal-review-" + "a" * 32 + ".json"
+    command = build_review_command(
+        "x" * 900, CATEGORIES, PROJECT, browser_endpoint="http://localhost:65535", site_url=site_url,
+        report_recovery=(prior, "required review check was skipped"))
+    assert len(json.dumps(command, indent=2, ensure_ascii=False)) <= 4096
+    assert prior in command["stdin"] and "required review check was skipped" in command["stdin"]
+    assert "Re-run missing/skipped/unsupported checks" in command["stdin"]
+    assert "do not merely reformat" in command["stdin"]
+    assert prior != command["argv"][command["argv"].index("--output-last-message") + 1]
+
+
+@pytest.mark.parametrize("reference", [("/other/.goal-review-" + "a" * 32 + ".json", "bad report"),
+                                        ("/work/demo/.goal-review-" + "a" * 32 + ".json", "")])
+def test_report_recovery_rejects_unbound_or_missing_validation_context(reference):
+    with pytest.raises(ValueError):
+        build_review_command("Review", CATEGORIES, PROJECT, report_recovery=reference)
