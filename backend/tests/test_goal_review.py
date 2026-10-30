@@ -68,6 +68,10 @@ def test_review_command_is_fresh_readonly_and_bounded():
     assert "gpt-6-luna" in command["argv"]
     assert "browser automation" in command["stdin"]
     assert "toolkit-appropriate input/event tests" in command["stdin"]
+    attached = build_review_command("Build a project", CATEGORIES, PROJECT,
+                                    browser_endpoint="http://localhost:42123")
+    assert "connectOverCDP(\"http://localhost:42123\")" in attached["stdin"]
+    assert "chromium.launch" in attached["stdin"]
     with pytest.raises(ValueError):
         build_review_command("x" * 16300, CATEGORIES, PROJECT)
 
@@ -81,6 +85,7 @@ async def run_loop(results, *, cancelled=False, approval=False, verify_result=No
             expanded.extend([{"exit_code": 0}, {"text": result["stdout"], "truncated": result.get("truncated", False)}])
         else:
             expanded.append(result)
+    expanded.insert(0, {"entries": [{"name": "pyproject.toml", "is_dir": False}]})
     websocket = object()
     orch = SimpleNamespace(cancelled_sessions={id(websocket): cancelled},
                            execute_single_tool=AsyncMock(side_effect=expanded),
@@ -89,7 +94,10 @@ async def run_loop(results, *, cancelled=False, approval=False, verify_result=No
     verify = AsyncMock(return_value={"tests": ["proof"]} if verify_result is None else verify_result)
     result = await review_local_project(
         orch, websocket, progress, PROJECT, SimpleNamespace(kind="local_project", required_categories=CATEGORIES),
-        {"host_run": "computer-use-1", "host_read": "computer-use-1"}, {"host_run": "run_command", "host_read": "read_file"}, "chat", "user", task="task", verify=verify)
+        {"host_run": "computer-use-1", "host_read": "computer-use-1", "host_list": "computer-use-1",
+         "host_interrupt": "computer-use-1"},
+        {"host_run": "run_command", "host_read": "read_file", "host_list": "list_dir",
+         "host_interrupt": "interrupt_command"}, "chat", "user", task="task", verify=verify)
     return result, orch, verify
 
 
@@ -99,12 +107,12 @@ async def test_defect_repair_fresh_review_and_verify():
         command_result(verdict("repair")), {"exit_code": 0}, command_result(verdict())])
     assert result.status == "passed"
     assert result.rounds == 2
-    assert orch.execute_single_tool.await_count == 5
+    assert orch.execute_single_tool.await_count == 6
     assert verify.await_count == 2
     calls = orch.execute_single_tool.await_args_list
-    assert "workspace-write" in json.loads(calls[0].args[1].function.arguments)["argv"]
-    assert "workspace-write" in json.loads(calls[2].args[1].function.arguments)["argv"]
+    assert "workspace-write" in json.loads(calls[1].args[1].function.arguments)["argv"]
     assert "workspace-write" in json.loads(calls[3].args[1].function.arguments)["argv"]
+    assert "workspace-write" in json.loads(calls[4].args[1].function.arguments)["argv"]
 
 
 @pytest.mark.asyncio
@@ -116,7 +124,7 @@ async def test_defect_repair_fresh_review_and_verify():
 async def test_invalid_missing_denied_outputs_block(result):
     outcome, orch, verify = await run_loop([result, {}] if result == {"exit_code": 0} else [result])
     assert outcome.status == "blocked"
-    assert orch.execute_single_tool.await_count in {1, 2}
+    assert orch.execute_single_tool.await_count in {2, 3}
     verify.assert_not_awaited()
 
 
@@ -126,7 +134,7 @@ async def test_exhaustion_is_bounded():
         command_result(verdict("repair")), {"exit_code": 0},
         command_result(verdict("repair")), {"exit_code": 0}, command_result(verdict("repair"))])
     assert result.status == "blocked"
-    assert orch.execute_single_tool.await_count == 8
+    assert orch.execute_single_tool.await_count == 9
 
 
 @pytest.mark.asyncio
@@ -140,7 +148,7 @@ async def test_cancel_before_dispatch():
 async def test_repair_denial_and_failed_verification():
     result, orch, _ = await run_loop([command_result(verdict("repair")), {"status": "permission_denied"}])
     assert result.status == "blocked"
-    assert orch.execute_single_tool.await_count == 3
+    assert orch.execute_single_tool.await_count == 4
     result, _, _ = await run_loop([command_result(verdict())], verify_result={})
     assert result.status == "blocked"
     result, _, _ = await run_loop([command_result(verdict("repair")), {"exit_code": 0}], verify_result={})
@@ -175,6 +183,8 @@ async def test_default_verifier_and_active_command_scope(monkeypatch):
     async def execute(ws, call, *args, **kwargs):
         arguments = json.loads(call.function.arguments)
         commands.append(arguments)
+        if call.function.name == "list_dir":
+            return {"entries": [{"name": "pyproject.toml", "is_dir": False}]}
         if call.function.name == "run_command":
             assert is_active_review_command(arguments)
             return {"exit_code": 0}
@@ -185,10 +195,11 @@ async def test_default_verifier_and_active_command_scope(monkeypatch):
         SimpleNamespace(cancelled_sessions={}, execute_single_tool=execute), websocket,
         SimpleNamespace(request="Build project", requires_approval=False, record=lambda *a, **k: None),
         PROJECT, SimpleNamespace(kind="local_project", required_categories=CATEGORIES),
-        {"run_command": "computer-use-1", "read_file": "computer-use-1"}, {}, "chat", "user")
+        {"run_command": "computer-use-1", "read_file": "computer-use-1", "list_dir": "computer-use-1",
+         "interrupt_command": "computer-use-1"}, {}, "chat", "user")
     assert result.status == "passed"
     verification.assert_awaited_once()
-    assert not is_active_review_command(commands[0])
+    assert not is_active_review_command(commands[1])
 
 
 @pytest.mark.asyncio
