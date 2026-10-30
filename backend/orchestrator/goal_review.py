@@ -40,8 +40,19 @@ def parse_verdict(text):
     value = json.loads(text)
     if (type(value) is not dict or set(value) != {"status", "ui", "checks", "findings"}
             or value["status"] not in {"pass", "repair"} or type(value["ui"]) is not bool
-            or type(value["checks"]) is not list or type(value["findings"]) is not list):
+            or type(value["checks"]) not in {list, dict} or type(value["findings"]) is not list):
         raise ValueError("invalid review verdict")
+    if type(value["checks"]) is dict:
+        if set(value["checks"]) != _CHECKS:
+            raise ValueError("review categories are incomplete or unknown")
+        normalized = []
+        for category, row in value["checks"].items():
+            if (type(row) is not dict or set(row) != {"name", "status", "evidence"}
+                    or type(row["name"]) is not str or not row["name"].strip()
+                    or row["name"].strip().lower() in _CHECKS and row["name"].strip().lower() != category):
+                raise ValueError("invalid or contradictory review category")
+            normalized.append({**row, "name": category})
+        value["checks"] = normalized
     if len(value["checks"]) != len(_CHECKS) or len(value["findings"]) > 16:
         raise ValueError("review checks are incomplete")
     seen = set()
@@ -94,8 +105,9 @@ def build_review_command(objective, categories, project, *, browser_endpoint=Non
         "HTTP 200 alone is not interaction evidence. Missing browser capability or evidence fails; do not claim unobserved results. "
         "For native GUI, run bounded toolkit-appropriate input/event tests for controls, keyboard/focus, forms/accessibility and layout; "
         "do not require a browser. For no UI, explain with inspected paths. "
-        "Return only JSON: status (pass/repair), ui (boolean), checks (exactly code, tests, interactions, keyboard_focus, "
-        "forms_aria, mobile; each has name, status (pass/fail/not_applicable), evidence (24-1200 chars with commands/paths, "
+        "Return only JSON: status (pass/repair), ui (boolean), checks (an ARRAY of exactly six objects; "
+        "each object's name must equal one of code, tests, interactions, keyboard_focus, forms_aria, mobile, once each; "
+        "each also has status (pass/fail/not_applicable), evidence (24-1200 chars with commands/paths, "
         "actions and outcomes)), findings (actionable strings, empty only on pass). Objective JSON follows:\n"
         + json.dumps({"objective": objective}, ensure_ascii=False)
         + browser_hint

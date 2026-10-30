@@ -221,3 +221,57 @@ async def test_oversized_complete_review_preview_blocks_before_launch():
     result, orch, _ = await run_loop([], objective="x" * 3000)
     assert result.status == "blocked"
     orch.execute_single_tool.assert_not_awaited()
+
+
+def mapped_verdict(status="pass"):
+    value = verdict(status)
+    labels = (
+        "Project source and configuration review", "Automated tests and production build",
+        "Attached-browser navigation and primary controls", "Keyboard focus and dialog behavior",
+        "Form labels, validation, and accessible state", "Mobile layout, overflow, and operability",
+    )
+    value["checks"] = {row["name"]: {**row, "name": label} for row, label in zip(value["checks"], labels)}
+    return value
+
+
+@pytest.mark.parametrize("status", ["pass", "repair"])
+def test_category_mapping_with_live_descriptive_names_normalizes_to_canonical_array(status):
+    value = mapped_verdict(status)
+    result = parse_verdict(json.dumps(value))
+    assert type(result["checks"]) is list
+    assert result["status"] == status
+    assert result["findings"] == value["findings"]
+    assert {row["name"] for row in result["checks"]} == set(value["checks"])
+    for row in result["checks"]:
+        original = value["checks"][row["name"]]
+        assert row == {**original, "name": row["name"]}
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda v: v["checks"].pop("code"),
+    lambda v: v["checks"].update(unknown=v["checks"]["code"]),
+    lambda v: v["checks"]["code"].update(name="tests"),
+    lambda v: v["checks"]["code"].update(name=" Tests "),
+    lambda v: v["checks"]["code"].update(name=42),
+    lambda v: v["checks"]["code"].update(name=[]),
+    lambda v: v["checks"]["code"].update(name=""),
+    lambda v: v["checks"]["code"].pop("name"),
+    lambda v: v["checks"]["code"].update(extra="ignored"),
+    lambda v: v["checks"].update(code=[]),
+    lambda v: v["checks"]["code"].update(status="unknown"),
+    lambda v: v["checks"]["code"].update(status="fail"),
+    lambda v: v["checks"]["code"].update(evidence="missing"),
+    lambda v: v["checks"]["mobile"].update(status="not_applicable"),
+    lambda v: v.update(findings=["A real defect remains in the UI"]),
+])
+def test_category_mapping_cannot_relax_required_categories_or_evidence(mutate):
+    value = mapped_verdict()
+    mutate(value)
+    with pytest.raises(ValueError):
+        parse_verdict(json.dumps(value))
+
+
+def test_category_mapping_also_accepts_matching_canonical_names():
+    value = verdict()
+    value["checks"] = {row["name"]: row for row in value["checks"]}
+    assert parse_verdict(json.dumps(value))["checks"] == list(value["checks"].values())
