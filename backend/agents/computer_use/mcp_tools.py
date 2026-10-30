@@ -240,7 +240,7 @@ def _run(host, session, verb: str, args: Dict[str, Any], loop=None, *, timeout: 
                                     f"session is {session.state}")
         if session.authority_generation != generation:
             raise ComputerHostError("no_session", "Computer authority changed while this action was queued")
-        if not computer_effect_current(_ORCH, session, verb):
+        if not computer_effect_current(_ORCH, session, verb, args):
             raise ComputerHostError("confirmation_required", "Reviewed authority changed while this action was queued")
         if host.platform == "macos" and verb in {"read_file", "list_dir", "write_file", "delete_path"}:
             from orchestrator.computer_use_policy import CwdRefusal, resolve_workspace_path
@@ -265,6 +265,10 @@ def _run(host, session, verb: str, args: Dict[str, Any], loop=None, *, timeout: 
                 project_lease.verify(_ORCH)
             except ComputerHostError:
                 raise ComputerHostError("outcome_uncertain", "The original project call ended after delivery.") from None
+        from orchestrator.hitl_confirmation import _APPROVAL
+        from orchestrator.preview_authority import record_preview_effect
+
+        record_preview_effect(_APPROVAL.get(), session, verb, args, result)
         session.verbs_run += 1
         sessions.touch(session)
         return result
@@ -1146,6 +1150,17 @@ def interrupt_command(**kwargs) -> Dict[str, Any]:
 
 
 def project_preview(**kwargs) -> Dict[str, Any]:
+    from orchestrator.hitl_confirmation import _APPROVAL
+    from orchestrator.preview_authority import preview_authority_scope
+
+    _user, _chat, _host, session = _ctx(kwargs)
+    if not hasattr(session, "session_id"):
+        return session
+    with preview_authority_scope(_APPROVAL.get(), session):
+        return _project_preview(**kwargs)
+
+
+def _project_preview(**kwargs) -> Dict[str, Any]:
     _user_id, _chat_id, host, ctx = _ctx(kwargs)
     if not hasattr(ctx, "session_id"):
         return ctx
@@ -1237,7 +1252,7 @@ def project_preview(**kwargs) -> Dict[str, Any]:
             return _fail("preview_status_uncertain", "The preview status could not be verified for this session job.")
         if data.get("state") != "running":
             return _data({"computer": host.name, "job_id": data.get("job_id"), "state": data.get("state")}, [
-                Card(title="Site preview stopped", content=[Text(content="The local preview server is no longer running.")])
+                _stopped_preview_card("The local preview server is no longer running.", kwargs)
             ])
         job_id = data.get("job_id")
         url = "http://localhost:4173/"
@@ -1259,9 +1274,22 @@ def project_preview(**kwargs) -> Dict[str, Any]:
                 or data.get("state") not in {"interrupted", "exited", "timed_out"}):
             return _fail("preview_stop_uncertain", "The preview server stop could not be confirmed.")
         return _data({"computer": host.name, "job_id": data.get("job_id"), "state": data["state"]}, [
-            Card(title="Site preview stopped", content=[Text(content="The local preview server has stopped.")])
+            _stopped_preview_card("The local preview server has stopped.", kwargs)
         ])
     return _fail("out_of_range", "action must be start, status or stop")
+
+
+def _stopped_preview_card(message: str, arguments: Dict[str, Any]):
+    content = [Text(content=message)]
+    cwd = arguments.get("cwd")
+    if (arguments.get("package_manager") in {"npm", "pnpm", "yarn", "bun"}
+            and arguments.get("script") in {"dev", "preview", "start"}
+            and isinstance(cwd, str) and cwd.startswith("/") and "\x00" not in cwd
+            and ".." not in PurePosixPath(cwd).parts
+            and (cwd == "/" or str(PurePosixPath(cwd)) == cwd.rstrip("/"))):
+        content.append(Button(label="Start preview", action="component_action", variant="primary",
+                              payload={"kind": "invoke", "params_patch": {"action": "start"}}))
+    return Card(title="Site preview stopped", content=content)
 
 
 def _preview_argv(manager: str, script: str) -> list[str]:
@@ -1444,7 +1472,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
          "cwd": {"type": "string", "description": "Granted project folder containing the package manifest."},
          "package_manager": {"type": "string", "enum": ["npm", "pnpm", "yarn", "bun"]},
          "script": {"type": "string", "enum": ["dev", "preview", "start"]},
-         "job_id": {"type": "string"}}, ["action"]),
+         "job_id": {"type": "string"}}, ["action", "cwd"]),
 }
 
 
