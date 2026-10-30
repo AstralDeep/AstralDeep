@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from orchestrator.goal_review import (
+    ReviewCommandBoundError,
     build_review_command,
     parse_verdict,
     review_local_project,
@@ -15,6 +16,17 @@ from orchestrator.goal_review import (
 
 PROJECT = {"folder_status": "granted", "primary_root": "/work/demo", "workspace_roots": [{"path": "/work"}]}
 CATEGORIES = ("files", "environment", "dependencies", "tests", "startup")
+
+WEBSITE_OBJECTIVE = (
+    "Create a complete, polished personal portfolio website in this project folder as a one-shot implementation. "
+    "Use React, TypeScript, and Vite. Make it responsive and accessible, with a distinctive visual design, an animated "
+    "landing section, About and skills sections, at least six realistic sample projects with category filters and search, "
+    "a writing section with three article detail views, a working light/dark theme toggle persisted locally, and a contact "
+    "form with client-side validation and clear success feedback. Use clearly editable sample content and no paid service "
+    "or external API. Include a README with setup and customization instructions. Install the dependencies, add meaningful "
+    "Vitest/Testing Library tests for navigation, filtering, theme persistence, and form validation, run the tests and "
+    "production build, then start the site and verify it actually responds. Fix any errors before stopping."
+)
 
 
 @pytest.fixture(autouse=True)
@@ -94,7 +106,7 @@ def test_full_browser_review_dispatch_stays_inside_command_preview_limit(site_ur
     assert len(json.dumps(command, indent=2, ensure_ascii=False).encode("utf-8")) <= 4096
 
 
-async def run_loop(results, *, cancelled=False, approval=False, verify_result=None, objective="Build project"):
+async def run_loop(results, *, cancelled=False, approval=False, verify_result=None, objective="Build project", dispatch_error=None):
     expanded = []
     for result in results:
         if "review_value" in result:
@@ -108,6 +120,8 @@ async def run_loop(results, *, cancelled=False, approval=False, verify_result=No
     orch = SimpleNamespace(cancelled_sessions={id(websocket): cancelled},
                            execute_single_tool=AsyncMock(side_effect=expanded),
                            task_manager=SimpleNamespace(assert_current_execution=AsyncMock()))
+    if dispatch_error is not None:
+        orch.execute_single_tool.side_effect = dispatch_error
     progress = SimpleNamespace(request=objective, requires_approval=approval, record=lambda *a, **k: None)
     verify = AsyncMock(return_value={"tests": ["proof"]} if verify_result is None else verify_result)
     result = await review_local_project(
@@ -322,3 +336,64 @@ def test_review_guidance_bounds_browser_state_recovery_and_checks_theme_states(r
     assert "normal text >=4.5:1" in prompt
     assert "do not edit product source/manifests" in prompt.lower()
     assert len(json.dumps(command, indent=2, ensure_ascii=False).encode("utf-8")) <= 4096
+
+
+@pytest.mark.parametrize("root", ["/Users/sam/Desktop/Personal_Website_Qualified",
+                                  "/Users/sam/Desktop/Personal_Website_Acceptance"])
+@pytest.mark.parametrize("site_url", ["http://localhost:4173/", None])
+@pytest.mark.parametrize("recovery", [False, True])
+@pytest.mark.parametrize("objective", [WEBSITE_OBJECTIVE, WEBSITE_OBJECTIVE + ' 多言語🙂 \"quoted\"\\path' * 4])
+def test_actual_long_project_paths_preserve_full_objectives_with_bounded_review_guidance(root, site_url, recovery, objective):
+    project = {**PROJECT, "primary_root": root, "workspace_roots": [{"path": root}]}
+    prior = root + "/.goal-review-" + "a" * 32 + ".json"
+    command = build_review_command(
+        objective, CATEGORIES, project, browser_endpoint="http://localhost:65535", site_url=site_url,
+        report_recovery=(prior, "required review check was skipped") if recovery else None)
+    assert json.dumps({"objective": objective}, ensure_ascii=False) in command["stdin"]
+    assert len(json.dumps(command, indent=2, ensure_ascii=False).encode("utf-8")) <= 4096
+    for required in ("code", "tests", "interactions", "keyboard_focus", "forms_aria", "mobile", "ARRAY",
+                     "light/dark", "contrast ratios", "article-detail CTAs", "never", "pass/fail"):
+        assert required in command["stdin"]
+    if recovery:
+        assert prior in command["stdin"]
+
+
+def test_unavoidable_unicode_preview_overflow_is_explicit_without_truncation():
+    with pytest.raises(ReviewCommandBoundError) as error:
+        build_review_command("漢" * 1800, CATEGORIES, PROJECT)
+    assert error.value.size > 4096
+    assert "limit is 4096" in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_bounded_failure_diagnostics_include_only_stage_and_size(caplog):
+    result, orch, _ = await run_loop([], objective="漢" * 1800)
+    assert result.status == "blocked" and "approved preview limit" in result.reason
+    orch.execute_single_tool.assert_not_awaited()
+    assert "goal.review_command_bound" in caplog.text and "command preflight" in caplog.text
+    assert "漢" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_unexpected_failure_diagnostics_do_not_expose_exception_payload(caplog):
+    result, _, _ = await run_loop([], dispatch_error=RuntimeError("PRIVATE_REPORT_SENTINEL"))
+    assert "project inspection (RuntimeError)" in result.reason
+    assert "exception_class=RuntimeError" in caplog.text
+    assert "PRIVATE_REPORT_SENTINEL" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_large_validated_findings_are_repaired_from_full_report_file():
+    report = verdict("repair")
+    report["findings"] = [f"Observed defect {index}: " + "Inspect the control and its actual destination. " * 10 for index in range(12)]
+    result, orch, _ = await run_loop([command_result(report), {"exit_code": 0}, command_result(verdict())],
+                                   objective=WEBSITE_OBJECTIVE)
+    assert result.status == "passed"
+    calls = orch.execute_single_tool.await_args_list
+    report_path = json.loads(calls[2].args[1].function.arguments)["path"]
+    repair = json.loads(calls[3].args[1].function.arguments)
+    assert report_path in repair["stdin"]
+    assert WEBSITE_OBJECTIVE in repair["stdin"]
+    assert "Read all findings" in repair["stdin"]
+    assert "Do not truncate or skip findings" in repair["stdin"]
+    assert len(json.dumps(repair, indent=2, ensure_ascii=False).encode("utf-8")) <= 4096
