@@ -1038,7 +1038,9 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
                         binding.progress.request, binding.contract.required_categories, binding.project)
                 except (AttributeError, TypeError, ValueError):
                     expected_worker = None
-                if shown == expected_worker:
+                from orchestrator.goal_review import is_active_review_command
+
+                if shown == expected_worker or is_active_review_command(shown):
                     extended_fields = frozenset({"stdin"})
         preview, reviewable = await asyncio.to_thread(
             _review_arguments, shown, trusted_identifiers=trusted_identifiers,

@@ -736,3 +736,16 @@ async def test_terminal_identifier_exemptions_require_current_server_authority(r
     else:
         assert response.error and "Review unavailable" in response.error["message"]
         assert not getattr(orch, "_hitl_pending_calls", {})
+
+
+def test_independent_review_command_retains_complete_private_data_gate(runtime):
+    from orchestrator.goal_review import build_review_command
+
+    command = build_review_command(
+        "Build a responsive project app", ("files", "tests"),
+        {"folder_status": "granted", "primary_root": "/work/demo", "workspace_roots": [{"path": "/work"}]})
+    preview, reviewable = hc._review_arguments(command, extended_fields=frozenset({"stdin"}))
+    assert reviewable and json.loads(preview) == command
+    command["stdin"] += " 4111111111111111"
+    preview, reviewable = hc._review_arguments(command, extended_fields=frozenset({"stdin"}))
+    assert not reviewable and "4111111111111111" not in preview
