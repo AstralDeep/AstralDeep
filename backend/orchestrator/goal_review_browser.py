@@ -10,6 +10,7 @@ from typing import Any
 CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 _BROWSER_MARKERS = re.compile(r"(?:^|[/@])(?:vite|next|react|react-dom|vue|svelte|astro|nuxt|angular|solid-js|preact|qwik)(?:$|[/@])", re.I)
 _SCRIPT_MARKERS = re.compile(r"(?:^|[\s;&|])(?:vite|next|astro|nuxt|react-scripts|ng|parcel|webpack)(?:\s|$)", re.I)
+_NATIVE_MARKERS = frozenset({"react-native", "expo", "electron"})
 _PORT = re.compile(r"^[1-9][0-9]{0,4}$")
 _BROWSER_PATH = re.compile(r"^/devtools/browser/[A-Fa-f0-9-]{16,64}$")
 
@@ -33,9 +34,26 @@ def is_web_project(entries: list[Any], manifest_text: str) -> bool:
         value = manifest.get(section)
         if type(value) is dict:
             dependencies.update(value)
-    return (any(_SCRIPT_MARKERS.search(value) for value in scripts.values() if isinstance(value, str))
+    web_script = any(_SCRIPT_MARKERS.search(value) for value in scripts.values() if isinstance(value, str))
+    native_app = bool(_NATIVE_MARKERS.intersection(dependencies))
+    if native_app and not web_script:
+        return False
+    return (web_script
             or any(_BROWSER_MARKERS.search(name) for name in dependencies)
             or "index.html" in names)
+
+
+def vite_script(manifest_text: str) -> str | None:
+    try:
+        package = json.loads(manifest_text)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    scripts = package.get("scripts") if type(package) is dict else None
+    if type(scripts) is not dict:
+        return None
+    return next((name for name in ("preview", "dev", "start")
+                 if isinstance(scripts.get(name), str)
+                 and re.search(r"(?:^|[\s;&|])vite(?:\s|$)", scripts[name])), None)
 
 
 def launch_arguments(root: str, profile_name: str) -> dict[str, Any]:

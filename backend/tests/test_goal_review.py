@@ -67,13 +67,27 @@ def test_review_command_is_fresh_readonly_and_bounded():
     assert "--output-last-message" in command["argv"]
     assert "gpt-6-luna" in command["argv"]
     assert "browser automation" in command["stdin"]
+    assert "inspect desktop/mobile screenshots" in command["stdin"]
     assert "toolkit-appropriate input/event tests" in command["stdin"]
     attached = build_review_command("Build a project", CATEGORIES, PROJECT,
-                                    browser_endpoint="http://localhost:42123")
+                                    browser_endpoint="http://localhost:42123",
+                                    site_url="http://localhost:4173/")
     assert "connectOverCDP(\"http://localhost:42123\")" in attached["stdin"]
     assert "chromium.launch" in attached["stdin"]
+    assert "Use the existing app at http://localhost:4173/" in attached["stdin"]
+    fallback = build_review_command("Build a project", CATEGORIES, PROJECT,
+                                    browser_endpoint="http://localhost:42123")
+    assert "--strictPort" in fallback["stdin"]
     with pytest.raises(ValueError):
         build_review_command("x" * 16300, CATEGORIES, PROJECT)
+
+
+@pytest.mark.parametrize("site_url", ["http://localhost:4173/", None])
+def test_full_browser_review_dispatch_stays_inside_command_preview_limit(site_url):
+    command = build_review_command(
+        "x" * 900, CATEGORIES, PROJECT, browser_endpoint="http://localhost:65535", site_url=site_url,
+    )
+    assert len(json.dumps(command, indent=2, ensure_ascii=False).encode("utf-8")) <= 4096
 
 
 async def run_loop(results, *, cancelled=False, approval=False, verify_result=None, objective="Build project"):
@@ -95,9 +109,9 @@ async def run_loop(results, *, cancelled=False, approval=False, verify_result=No
     result = await review_local_project(
         orch, websocket, progress, PROJECT, SimpleNamespace(kind="local_project", required_categories=CATEGORIES),
         {"host_run": "computer-use-1", "host_read": "computer-use-1", "host_list": "computer-use-1",
-         "host_interrupt": "computer-use-1"},
+         "host_interrupt": "computer-use-1", "host_preview": "computer-use-1"},
         {"host_run": "run_command", "host_read": "read_file", "host_list": "list_dir",
-         "host_interrupt": "interrupt_command"}, "chat", "user", task="task", verify=verify)
+         "host_interrupt": "interrupt_command", "host_preview": "project_preview"}, "chat", "user", task="task", verify=verify)
     return result, orch, verify
 
 
@@ -196,7 +210,7 @@ async def test_default_verifier_and_active_command_scope(monkeypatch):
         SimpleNamespace(request="Build project", requires_approval=False, record=lambda *a, **k: None),
         PROJECT, SimpleNamespace(kind="local_project", required_categories=CATEGORIES),
         {"run_command": "computer-use-1", "read_file": "computer-use-1", "list_dir": "computer-use-1",
-         "interrupt_command": "computer-use-1"}, {}, "chat", "user")
+         "interrupt_command": "computer-use-1", "project_preview": "computer-use-1"}, {}, "chat", "user")
     assert result.status == "passed"
     verification.assert_awaited_once()
     assert not is_active_review_command(commands[1])
