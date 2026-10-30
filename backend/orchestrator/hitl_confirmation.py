@@ -402,7 +402,7 @@ def computer_effect_generation(orch, session):
     return authority.generation if authority is not None and authority.session is session else -1
 
 
-def computer_effect_current(orch, session, tool) -> bool:
+def computer_effect_current(orch, session, tool, arguments=None) -> bool:
     approval = _APPROVAL.get()
     if approval is None:
         return True
@@ -410,7 +410,11 @@ def computer_effect_current(orch, session, tool) -> bool:
         return False
     call = approval.call
     authority = call.computer_authority
-    return (call.agent == "computer-use-1" and call.tool == tool and approval.consumed
+    from orchestrator.preview_authority import preview_effect_matches
+
+    same_effect = call.tool == tool or (
+        call.tool == "project_preview" and preview_effect_matches(approval, session, tool, arguments))
+    return (call.agent == "computer-use-1" and same_effect and approval.consumed
             and approval.effect_started and authority is not None and authority.session is session
             and _current_session(orch, authority.websocket, call))
 

@@ -240,7 +240,7 @@ def _run(host, session, verb: str, args: Dict[str, Any], loop=None, *, timeout: 
                                     f"session is {session.state}")
         if session.authority_generation != generation:
             raise ComputerHostError("no_session", "Computer authority changed while this action was queued")
-        if not computer_effect_current(_ORCH, session, verb):
+        if not computer_effect_current(_ORCH, session, verb, args):
             raise ComputerHostError("confirmation_required", "Reviewed authority changed while this action was queued")
         if host.platform == "macos" and verb in {"read_file", "list_dir", "write_file", "delete_path"}:
             from orchestrator.computer_use_policy import CwdRefusal, resolve_workspace_path
@@ -265,6 +265,10 @@ def _run(host, session, verb: str, args: Dict[str, Any], loop=None, *, timeout: 
                 project_lease.verify(_ORCH)
             except ComputerHostError:
                 raise ComputerHostError("outcome_uncertain", "The original project call ended after delivery.") from None
+        from orchestrator.hitl_confirmation import _APPROVAL
+        from orchestrator.preview_authority import record_preview_effect
+
+        record_preview_effect(_APPROVAL.get(), session, verb, args, result)
         session.verbs_run += 1
         sessions.touch(session)
         return result
@@ -1146,6 +1150,17 @@ def interrupt_command(**kwargs) -> Dict[str, Any]:
 
 
 def project_preview(**kwargs) -> Dict[str, Any]:
+    from orchestrator.hitl_confirmation import _APPROVAL
+    from orchestrator.preview_authority import preview_authority_scope
+
+    _user, _chat, _host, session = _ctx(kwargs)
+    if not hasattr(session, "session_id"):
+        return session
+    with preview_authority_scope(_APPROVAL.get(), session):
+        return _project_preview(**kwargs)
+
+
+def _project_preview(**kwargs) -> Dict[str, Any]:
     _user_id, _chat_id, host, ctx = _ctx(kwargs)
     if not hasattr(ctx, "session_id"):
         return ctx
@@ -1444,7 +1459,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
          "cwd": {"type": "string", "description": "Granted project folder containing the package manifest."},
          "package_manager": {"type": "string", "enum": ["npm", "pnpm", "yarn", "bun"]},
          "script": {"type": "string", "enum": ["dev", "preview", "start"]},
-         "job_id": {"type": "string"}}, ["action"]),
+         "job_id": {"type": "string"}}, ["action", "cwd"]),
 }
 
 
