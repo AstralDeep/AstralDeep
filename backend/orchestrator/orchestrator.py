@@ -17451,6 +17451,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     continue
 
                 error = self._safe_llm_error_metadata(e)
+                if error.status_code == 400:
+                    from llm_config.log_scrub import _redact_text
+                    logger.warning("LLM 400 detail: %s", _redact_text(str(getattr(e, "body", None) or e))[:400])
                 logger.warning(
                     "LLM call failed attempt=%d/%d exception_class=%s "
                     "status_code=%s upstream_error_class=%s retryable=%s",
