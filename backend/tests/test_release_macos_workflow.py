@@ -180,8 +180,17 @@ def test_decide_invokes_the_version_script_with_its_real_arguments(flow, monkeyp
 def test_dispatch_publication_requires_a_green_ci_run_for_the_head(flow):
     decide = flow["jobs"]["decide"]
     gate = step(decide, "Require green CI before a dispatched publication")
-    assert gate["if"] == "${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == false }}"
+    assert gate["if"] == (
+        "${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == false"
+        " && inputs.emergency_skip_ci != true }}"
+    )
     assert "actions/workflows/ci.yml/runs?head_sha=$head&event=push&branch=main&status=success" in gate["run"]
+    override = step(decide, "Record manual emergency CI override")
+    assert override["if"] == (
+        "${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == false"
+        " && inputs.emergency_skip_ci == true }}"
+    )
+    assert "::warning::" in override["run"]
     assert decide["steps"].index(gate) < decide["steps"].index(step(decide, "Decide the next release"))
 
 
