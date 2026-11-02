@@ -15804,12 +15804,19 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                     break
                                 if self.cancelled_sessions.get(id(websocket)):
                                     continue
-                                if goal_independent_review.status != "passed":
+                                if goal_independent_review.status == "unavailable":
+                                    logger.info("goal.review_skipped chat=%s reason=%s", chat_id, goal_independent_review.reason)
+                                    messages.append({"role": "system", "content": (
+                                        "The independent review is unavailable because no local coding worker is "
+                                        "configured. Verify the outcome yourself through the authorized project tools, "
+                                        "then report what was built and how it was verified.")})
+                                elif goal_independent_review.status != "passed":
                                     goal_stop_reason = goal_independent_review.reason
                                     break
-                                goal_auto_refs = goal_independent_review.references or {}
-                                logger.info("goal.independent_review chat=%s status=passed rounds=%d", chat_id,
-                                            goal_independent_review.rounds)
+                                else:
+                                    goal_auto_refs = goal_independent_review.references or {}
+                                    logger.info("goal.independent_review chat=%s status=passed rounds=%d", chat_id,
+                                                goal_independent_review.rounds)
                             elif worker_state.status != "denied":
                                 messages.append({"role": "system", "content": (
                                     "The local coding worker could not finish. Inspect its possible file "
@@ -16454,7 +16461,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                     self, websocket, goal_progress, goal_project, goal_contract,
                                     tool_to_agent, tool_to_unqualified, chat_id, user_id, task=task,
                                 )
-                            if goal_independent_review.status != "passed":
+                            if goal_independent_review.status == "unavailable":
+                                logger.info("goal.review_skipped chat=%s reason=%s", chat_id, goal_independent_review.reason)
+                            elif goal_independent_review.status != "passed":
                                 decision = CompletionDecision("blocked", reason=goal_independent_review.reason)
                             else:
                                 proof_references = goal_independent_review.references or {}
@@ -16489,6 +16498,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         if decision.status == "blocked":
                             goal_stop_reason = decision.reason
                             break
+                        if goal_independent_review is not None and goal_independent_review.status == "unavailable":
+                            content = (content or "").rstrip() + "\n\nIndependent review skipped: " + goal_independent_review.reason
                         if goal_independent_review is not None and goal_independent_review.status == "passed":
                             content = "The project is complete. Independent review, tests, and startup verification passed."
                             if goal_independent_review.ui:

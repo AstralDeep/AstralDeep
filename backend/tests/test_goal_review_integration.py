@@ -121,3 +121,32 @@ async def test_completion_requires_review_in_worker_and_fallback_paths(
         assert "incomplete" in final.lower()
         assert "Builder claims complete" not in final
         assert "The project is complete" not in final
+
+
+@pytest.mark.asyncio
+async def test_unavailable_review_completes_on_the_builders_own_verification(reviewed_orch, monkeypatch, user_skills_disabled):
+    from orchestrator import goal_preview
+    o = reviewed_orch
+    chat_id, ws = await _chat(o)
+
+    async def execute(*args, **kwargs):
+        return SimpleNamespace(result={"_data": {"exit_code": 0, "stdout": "verified"}}, error=None, ui_components=[], correlation_id=None)
+
+    async def provider(*args, **kwargs):
+        return _msg(content="Builder claims complete."), _usage()
+
+    reviewer = AsyncMock(return_value=ReviewResult(
+        "unavailable", "No local coding worker is configured on this computer, so the independent review was skipped."))
+    previewer = AsyncMock()
+    o._moa_panel = AsyncMock(side_effect=AssertionError("reviewed completion must not be rewritten"))
+    o._call_llm = provider
+    o.execute_single_tool = AsyncMock(side_effect=execute)
+    monkeypatch.setattr(goal_review, "review_local_project", reviewer)
+    monkeypatch.setattr(goal_preview, "start_local_preview", previewer)
+    await o.handle_chat_message(ws, "Build and test the app", chat_id, user_id="seam-user")
+    final = await _last_assistant_text(o, chat_id, "seam-user")
+    reviewer.assert_awaited_once()
+    previewer.assert_not_awaited()
+    assert "Builder claims complete" in final
+    assert "Independent review skipped" in final
+    assert "incomplete" not in final.lower()

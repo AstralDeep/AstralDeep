@@ -148,6 +148,16 @@ async def test_defect_repair_fresh_review_and_verify():
 
 
 @pytest.mark.asyncio
+async def test_review_is_unavailable_without_a_configured_worker(monkeypatch):
+    monkeypatch.setenv("GOAL_CODEX_WORKER_PATH", "")
+    result, orch, verify = await run_loop([])
+    assert result.status == "unavailable"
+    assert "independent review was skipped" in result.reason
+    assert orch.execute_single_tool.await_count == 0
+    assert verify.await_count == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("result", [
     {"exit_code": 0, "stdout": "not JSON"},
     {"exit_code": 0}, {"exit_code": 0, "stdout": "{}", "truncated": True},
