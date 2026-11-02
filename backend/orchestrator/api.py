@@ -2833,6 +2833,64 @@ async def export_component_csv(
     )
 
 
+_HTML_ARTIFACT_HEADERS = {
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": "sandbox; default-src 'none'",
+}
+
+
+@export_router.get(
+    "/component/{component_id}.html",
+    summary="Download an HTML artifact as a file",
+    description=(
+        "Downloads the validated page of an html_artifact component as an attachment. "
+        "The response is sandboxed and never rendered on the application origin."
+    ),
+    responses={404: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+)
+async def export_component_html(
+    request: Request,
+    component_id: str,
+    chat_id: str,
+    user_id: str = Depends(require_user_id_or_web_session),
+):
+    _flag_404("artifact_export")
+    from orchestrator.artifact_html import HTML_TYPE, validate_html
+    orch = _get_orchestrator(request)
+    row = await orch.workspace.aget_by_component_id(chat_id, user_id, component_id)
+    if row is None or not isinstance(row.get("component_data"), dict):
+        raise HTTPException(status_code=404, detail="Component not found")
+    cd = row["component_data"]
+    if cd.get("type") != HTML_TYPE:
+        return JSONResponse(status_code=422, content={
+            "error": "not_an_html_artifact",
+            "detail": "Only html_artifact components can be downloaded as HTML",
+        })
+    page, errors = await asyncio.to_thread(
+        validate_html, cd.get("html"), title=cd.get("title"), kind=cd.get("kind"))
+    if errors:
+        return JSONResponse(status_code=422, content={
+            "error": "artifact_invalid", "detail": "The stored page no longer validates"})
+    try:
+        from audit.hooks import record_workspace_event
+        await record_workspace_event(
+            user_id=user_id, action="component_exported", chat_id=chat_id,
+            component_id=component_id,
+            detail={"format": "html", "version": cd.get("version")},
+        )
+    except Exception:
+        logger.debug("export audit failed", exc_info=True)
+    return Response(
+        content=page.encode("utf-8"),
+        media_type="text/html; charset=utf-8",
+        headers={**_HTML_ARTIFACT_HEADERS,
+                 "Content-Disposition":
+                 f'attachment; filename="{_export_filename(cd.get("title") or component_id, "html")}"'},
+    )
+
+
 def _export_canvas_revision(orch, chat_id: str, user_id: str) -> int:
     runtime, repositories = _plane_boundary(orch)
     with runtime.transaction() as transaction:
@@ -2861,7 +2919,9 @@ async def export_canvas_html(
         current = await asyncio.to_thread(_export_canvas_revision, orch, chat_id, user_id)
         if current != render_revision:
             raise HTTPException(status_code=409, detail="Canvas changed; reload before exporting")
-    components = await asyncio.to_thread(orch._canvas_components, chat_id, user_id)
+    from orchestrator.artifact_frame import flatten_for_export
+    components = flatten_for_export(
+        await asyncio.to_thread(orch._canvas_components, chat_id, user_id))
     if not components:
         raise HTTPException(status_code=404, detail="Nothing to export for this chat")
     html = await asyncio.to_thread(_render_export_html, components, "AstralDeep workspace")
@@ -2945,6 +3005,8 @@ async def create_share(
         if not snapshot:
             raise HTTPException(status_code=404, detail="Nothing to share for this chat")
         title = "AstralDeep workspace"
+    from orchestrator.artifact_frame import flatten_for_export
+    snapshot = flatten_for_export(snapshot)
     snapshot_html = await asyncio.to_thread(_render_export_html, snapshot, title)
 
     from orchestrator.artifact_share import (

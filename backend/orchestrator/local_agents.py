@@ -59,6 +59,7 @@ FIRST_PARTY_PUBLIC_AGENT_IDS = (
     "evidence-1",
     "cresco-1",
     "sandbox-qualification-runner",
+    "artifacts-1",
 )
 
 
@@ -201,6 +202,12 @@ async def register_built_ins(orch) -> List[str]:
             dirs.append("sandbox_qualification")
     except Exception:
         logger.debug("Sandbox qualification flag check failed; agent remains disabled", exc_info=True)
+    try:
+        from shared.feature_flags import flags
+        if flags.is_enabled("artifact_frame") and flags.is_enabled("inprocess_agents"):
+            dirs.append("artifacts")
+    except Exception:
+        logger.debug("Artifact flag check failed; agent remains disabled", exc_info=True)
     for dir_name in dirs:
         try:
             cls = _load_agent_class(dir_name)
