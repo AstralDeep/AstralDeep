@@ -188,7 +188,7 @@ class PHIGate:
             return True
         return False
 
-    def redact_for_storage(self, text: str) -> tuple[str, bool]:
+    def redact_for_storage(self, text: str, *, passes: int = 1) -> tuple[str, bool]:
         from shared.phi_redactor import PHI_VALUE_PATTERNS
 
         if not isinstance(text, str) or len(text.encode("utf-8")) > 65536 or self._analyzer is None:
@@ -222,6 +222,9 @@ class PHIGate:
         for start, end in reversed(merged):
             text = text[:start] + "[REDACTED:phi]" + text[end:]
         if self.contains_phi(text):
+            if passes > 1:
+                again, _ = self.redact_for_storage(text, passes=passes - 1)
+                return again, True
             raise ValueError("phi_redaction_refused")
         return text, text != original
 

@@ -1318,8 +1318,12 @@ def _private(text: str) -> Tuple[str, Optional[str]]:
         return "", None
     from personalization.phi_gate import get_phi_gate
 
+    gate = get_phi_gate()
     try:
-        cleaned, changed = get_phi_gate().redact_for_storage(text)
+        try:
+            cleaned, changed = gate.redact_for_storage(text, passes=3)
+        except TypeError:
+            cleaned, changed = gate.redact_for_storage(text)
     except Exception:  # noqa: BLE001
         logger.warning("102: command output withheld because privacy review was unavailable", exc_info=True)
         return "", "withheld"
