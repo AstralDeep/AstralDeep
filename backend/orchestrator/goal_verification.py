@@ -77,6 +77,16 @@ Do not change or remove the frozen requirements. Missing proof must produce cont
 """
 
 
+def _contract_for(kind: str, project_context, chat_id):
+    from orchestrator.goal_worker import worker_configured
+
+    if kind == "local_project" and not worker_configured():
+        logging.getLogger(__name__).info(
+            "goal.contract_downgraded chat=%s kind=local_project->action reason=no_local_coding_worker", chat_id)
+        kind = "action"
+    return build_goal_contract(kind, project_context)
+
+
 async def classify_goal(orch, websocket, request, project_context, chat_id):
     # Unambiguous local software delivery requests should not depend on a
     # separate model call before a coding worker can begin. Keep less clear
@@ -85,7 +95,7 @@ async def classify_goal(orch, websocket, request, project_context, chat_id):
             and re.search(r"\b(create|build|implement|develop|make)\b", request, re.I)
             and re.search(r"\b(game|app|application|program|software|clone|website|service)\b", request, re.I)
             and re.search(r"\b(test|tests|verify|run|working|install)\b", request, re.I)):
-        return build_goal_contract("local_project", project_context)
+        return _contract_for("local_project", project_context, chat_id)
     reply, usage = await orch._call_llm(
         websocket, [
             {"role": "system", "content": GOAL_CLASSIFIER_GUIDANCE},
@@ -95,7 +105,7 @@ async def classify_goal(orch, websocket, request, project_context, chat_id):
     orch._accumulate_usage(chat_id, usage)
     if getattr(reply, "_astral_finish_reason", None) in {"length", "content_filter"}:
         raise ValueError("goal classification was incomplete")
-    return build_goal_contract(parse_goal_contract(getattr(reply, "content", None)).kind, project_context)
+    return _contract_for(parse_goal_contract(getattr(reply, "content", None)).kind, project_context, chat_id)
 
 
 def parse_review(text):
