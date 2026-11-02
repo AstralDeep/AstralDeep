@@ -18,6 +18,7 @@ import posixpath
 import sys
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -54,6 +55,10 @@ SCREENSHOT_CACHE_BYTES = 3 * 1024 * 1024
 CROP_PIXELS = 512
 _CROP_PIXEL_LIMIT = 40_000_000
 _MARKER_RGB = (255, 32, 160)
+MAX_AX_SNAPSHOTS = 8
+MAX_AX_CONSEQUENTIAL = 64
+MAX_AX_HELD = 32
+MAX_APPS = 200
 
 
 @dataclass
@@ -76,6 +81,9 @@ class ComputerSession:
     last_screenshot: Optional[Dict[str, Any]] = None
     window_labels: Dict[int, str] = field(default_factory=dict)
     window_cache: Dict[int, Dict[str, Any]] = field(default_factory=dict)
+    ax_snapshots: "OrderedDict[str, Dict[str, Any]]" = field(default_factory=OrderedDict)
+    ax_held: "OrderedDict[Tuple[str, str], str]" = field(default_factory=OrderedDict)
+    app_cache: Dict[int, Dict[str, str]] = field(default_factory=dict)
     screenshot_cache: Optional[Dict[str, Any]] = None
     command_jobs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     terminal_ok_until: float = 0.0
@@ -101,6 +109,53 @@ class ComputerSession:
         self.window_labels.clear()
         self.window_cache.clear()
         self.screenshot_cache = None
+        self.ax_snapshots.clear()
+        self.ax_held.clear()
+        self.app_cache.clear()
+
+    def note_window(self, hwnd: Any, bundle_id: str, title: str) -> None:
+        if type(hwnd) is not int or not 1 <= hwnd <= 2**53 or not bundle_id:
+            return
+        entry = self.window_cache.get(hwnd)
+        if entry is None or entry["bundle_id"] != bundle_id:
+            entry = self.window_cache[hwnd] = {"bundle_id": bundle_id, "title": title, "rect": None, "focused": False}
+        elif title:
+            entry["title"] = title
+        self.window_labels[hwnd] = " · ".join(part for part in (entry["bundle_id"], entry["title"]) if part)
+
+    def remember_apps(self, apps: Sequence[Dict[str, Any]]) -> None:
+        self.app_cache = {app["pid"]: {"bundle_id": app["bundle_id"], "name": app["name"]}
+                          for app in list(apps)[:MAX_APPS]}
+
+    def remember_ax_snapshot(self, snapshot_id: str, target: Dict[str, Any], consequential: Dict[str, str]) -> None:
+        self.ax_snapshots[snapshot_id] = {**target, "consequential": dict(list(consequential.items())[:MAX_AX_CONSEQUENTIAL])}
+        self.ax_snapshots.move_to_end(snapshot_id)
+        while len(self.ax_snapshots) > MAX_AX_SNAPSHOTS:
+            self.ax_snapshots.popitem(last=False)
+        self.note_window(target.get("hwnd"), target.get("bundle_id") or "", target.get("title") or "")
+        if type(target.get("pid")) is int and target.get("bundle_id"):
+            self.app_cache[target["pid"]] = {"bundle_id": target["bundle_id"], "name": target.get("app") or ""}
+
+    def ax_target(self, tool: str, args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if tool != "menu":
+            return self.ax_snapshots.get(args.get("snapshot_id")) if isinstance(args.get("snapshot_id"), str) else None
+        pid = args.get("pid")
+        found = next((entry for entry in reversed(self.ax_snapshots.values()) if entry.get("pid") == pid), None)
+        app = self.app_cache.get(pid) if type(pid) is int else None
+        if found is None and app is not None:
+            return {"pid": pid, "hwnd": None, "bundle_id": app["bundle_id"], "app": app["name"], "title": ""}
+        return found
+
+    def bind_ax(self, tool: str, args: Dict[str, Any]):
+        from orchestrator.computer_use_policy import bind_ax_target
+
+        return bind_ax_target(tool, args, self.ax_target(tool, args))
+
+    def hold_ax(self, key: Tuple[str, str], line: str) -> None:
+        self.ax_held[key] = line
+        self.ax_held.move_to_end(key)
+        while len(self.ax_held) > MAX_AX_HELD:
+            self.ax_held.popitem(last=False)
 
     def remember_windows(self, windows: Sequence[Dict[str, Any]]) -> None:
         self.window_cache = {w["hwnd"]: {"bundle_id": w.get("bundle_id") or w.get("process") or "",
@@ -202,8 +257,17 @@ class ComputerSessionManager:
         if was != bool(enabled):
             await self._bypass_changed(host.owner_sub, host.host_id, host.name, bool(enabled), reason)
 
-    async def clear_bypass(self, owner_sub: str, host_id: str, reason: str) -> bool:
-        host = self._bypass.pop((owner_sub, host_id), None)
+    async def clear_bypass(self, owner_sub: str, host_id: str, reason: str,
+                           replacement: Optional[ComputerHost] = None) -> bool:
+        key = (owner_sub, host_id)
+        host = self._bypass.get(key)
+        if (host is not None and replacement is not None and replacement.websocket is host.websocket
+                and (replacement.owner_sub, replacement.host_id, replacement.platform)
+                == (host.owner_sub, host.host_id, host.platform)
+                and self._registry.get(owner_sub, host_id) is replacement):
+            self._bypass[key] = replacement
+            return False
+        host = self._bypass.pop(key, None)
         if host is None:
             return False
         await self._bypass_changed(owner_sub, host_id, host.name, False, reason)
