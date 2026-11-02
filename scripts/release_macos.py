@@ -100,13 +100,21 @@ class Runner:
             return Result(0, preview)
         result = self._execute(command, cwd)
         if check and result.returncode:
-            tail = (result.stderr or result.stdout)[-1500:].strip()
-            raise ReleaseError(f"{command[0]} failed with status {result.returncode}: {tail}")
+            raise ReleaseError(f"{command[0]} failed with status {result.returncode}: {failure_detail(result)}")
         return result
 
     def _execute(self, command: list[str], cwd: Path | None) -> Result:
         done = subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False)
         return Result(done.returncode, done.stdout, done.stderr)
+
+
+def failure_detail(result: Result) -> str:
+    combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    errors = [line.strip() for line in combined.splitlines() if " error: " in line or line.startswith("error: ")]
+    unique = list(dict.fromkeys(errors))
+    if unique:
+        return "\n".join(unique)[:6000]
+    return (result.stderr or result.stdout)[-1500:].strip()
 
 
 def sha256_file(path: Path) -> str:
