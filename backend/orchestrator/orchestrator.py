@@ -864,6 +864,14 @@ def remap_merged_source(agent_id: str, tool_name: str):
     return new_agent, tool_name
 
 
+def _configured_context_window() -> Optional[int]:
+    raw = os.getenv("LLM_CONTEXT_WINDOW", "").strip()
+    if not raw.isdigit():
+        return None
+    value = int(raw)
+    return value if 1024 <= value <= 10_000_000 else None
+
+
 def _is_native_device(profile) -> bool:
     from rote.capabilities import DeviceType
     return profile is not None and profile.device_type in (
@@ -15576,6 +15584,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         _owner_bound_compaction_call,
                         provider=getattr(_compaction_cfg, "provider", None),
                         tools_desc=tools_desc,
+                        context_window=_configured_context_window(),
                     )
                     if was_compacted:
                         logger.info("Context compacted before LLM call")

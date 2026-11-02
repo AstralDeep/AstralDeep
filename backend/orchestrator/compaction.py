@@ -190,7 +190,8 @@ async def compact_messages(
             reserved_output_tokens=reserved_output_tokens,
             assets_dir=assets_dir,
         )
-    except TokenAccountingError:
+    except TokenAccountingError as exc:
+        logger.warning("Compaction unavailable for %s: %s", model_name, exc)
         return messages, False
     context_window = accountant.profile.context_window
     reserved_output = (
@@ -201,7 +202,7 @@ async def compact_messages(
     accounted_overhead = max(0, overhead_tokens) + accountant.count_tools(tools_desc)
     fixed_overhead = accounted_overhead + reserved_output
     if fixed_overhead >= context_window:
-        logger.info(
+        logger.warning(
             "Compaction cannot fit fixed request overhead of %d tokens in a %d-token window",
             fixed_overhead,
             context_window,
