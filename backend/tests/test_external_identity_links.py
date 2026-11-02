@@ -329,3 +329,22 @@ def test_api_start_and_callback_complete_the_direct_orcid_link(monkeypatch):
     assert orch.ui_sessions[websocket]["_verified_external_identities"]["orcid"][
         "subject"
     ] == ORCID
+
+
+def test_public_preferences_turn_read_only_mappings_into_json_safe_values():
+    from types import MappingProxyType
+
+    stored = MappingProxyType({
+        "theme": MappingProxyType({"preset": "graphite", "colors": MappingProxyType({"bg": "#121214"})}),
+        "verified_external_identities": MappingProxyType({"orcid": MappingProxyType({"subject": "0000"})}),
+        "tags": ("a", "b"),
+    })
+    public = public_user_preferences(stored)
+    assert "verified_external_identities" not in public
+    assert json.loads(json.dumps(public)) == {
+        "theme": {"preset": "graphite", "colors": {"bg": "#121214"}},
+        "tags": ["a", "b"],
+    }
+    assert claims_with_identity_preferences(stored, {"sub": "u"})["_verified_external_identities"] == {
+        "orcid": {"subject": "0000"}
+    }
