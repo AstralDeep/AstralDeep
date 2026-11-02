@@ -15430,6 +15430,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             goal_anchor = None
             tool_prompt_context_added = False
             goal_stop_reason = None
+            goal_steering_plan = None
+            goal_final_note = None
             goal_truncations = 0
             goal_checkpoint_tools = 0
             goal_route_repairs = 0
@@ -15470,6 +15472,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     goal_anchor["content"] += "\nFrozen completion requirements: " + json.dumps({
                         "kind": goal_contract.kind, "required_categories": goal_contract.required_categories,
                     })
+                if flags.is_enabled("goal_steering"):
+                    from orchestrator.goal_steering import GUIDANCE as _STEERING_GUIDANCE, plan_for
+
+                    goal_steering_plan = plan_for(goal_progress)
+                    goal_anchor["content"] += "\n" + _STEERING_GUIDANCE
                 messages.append(goal_anchor)
 
             MAX_TURNS = 10
@@ -15648,6 +15655,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                 if goal_anchor is not None and not any(item is goal_anchor for item in messages):
                     messages.append(goal_anchor)
+                if (goal_steering_plan is not None and goal_contract is not None
+                        and goal_contract.kind != "informational"):
+                    from orchestrator.goal_steering import strip_pins, turn_context
+
+                    messages[:] = strip_pins(messages)
+                    _pinned_plan = turn_context(goal_steering_plan, tool_count=goal_progress.tool_count)
+                    if _pinned_plan:
+                        messages.append({"role": "system", "content": _pinned_plan})
 
                 if goal_progress is not None and goal_contract is None:
                     from orchestrator.goal_verification import classify_goal
@@ -15684,6 +15699,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         tools_desc, tool_to_agent, tool_to_unqualified, goal_project, goal_contract,
                         explicit_selection=bool(selected_tools),
                     )
+                    if goal_steering_plan is not None and goal_contract.kind != "informational":
+                        from orchestrator.goal_steering import tool_definitions as _steering_tools
+
+                        _present = {(t.get("function") or {}).get("name") for t in tools_desc if isinstance(t, dict)}
+                        tools_desc = list(tools_desc) + [
+                            t for t in _steering_tools() if t["function"]["name"] not in _present]
                     if goal_contract.kind == "local_project" and not any(
                             agent == "computer-use-1" for agent in tool_to_agent.values()):
                         goal_stop_reason = "No authorized project execution tools are available on the selected computer."
@@ -15993,6 +16014,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     continue
                 goal_truncations = 0
 
+                if goal_steering_plan is not None and llm_msg.tool_calls:
+                    from orchestrator.goal_steering import HARNESS_TOOLS as _GOAL_HARNESS_TOOLS
+
+                    if any(tc.function.name in _GOAL_HARNESS_TOOLS for tc in llm_msg.tool_calls):
+                        llm_msg = await self._answer_goal_harness_calls(
+                            websocket, chat_id, user_id, llm_msg, messages, goal_steering_plan, goal_progress)
+                        goal_steering_plan.idle_turns = 0
+                        if llm_msg is None:
+                            continue
+
                 if goal_progress is not None and llm_msg.tool_calls:
                     from orchestrator.goal_execution import route_correction
 
@@ -16034,6 +16065,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if llm_msg.tool_calls:
                     goal_independent_review = None
                     goal_auto_refs = {}
+                    if goal_steering_plan is not None:
+                        goal_steering_plan.idle_turns = 0
                     logger.info(f"LLM requested {len(llm_msg.tool_calls)} tool(s)")
                     
                     tool_names = [tc.function.name for tc in llm_msg.tool_calls]
@@ -16323,7 +16356,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         goal_stop_reason = REPEATED_FAILURES_REASON
                         break
 
-                    if goal_progress is not None and goal_progress.tool_count - goal_checkpoint_tools >= 8:
+                    if (goal_progress is not None and goal_steering_plan is None
+                            and goal_progress.tool_count - goal_checkpoint_tools >= 8):
                         from orchestrator.goal_verification import evaluate_progress
 
                         decision = await evaluate_progress(
@@ -16419,6 +16453,32 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         )
                         from orchestrator.goal_verification import evaluate_completion
 
+                        _steering_open = (goal_steering_plan is not None and goal_contract is not None
+                                          and goal_contract.kind != "informational")
+                        if _steering_open and goal_steering_plan.claim == "blocked":
+                            goal_stop_reason = goal_steering_plan.claim_reason
+                            _note_ok, _ = turn_hooks.review_answer(content)
+                            goal_final_note = content[:4000] if _note_ok else None
+                            break
+                        if _steering_open and goal_steering_plan.claim is None:
+                            from orchestrator.goal_steering import (
+                                IDLE_TURNS_BEFORE_REVIEW as _STEERING_IDLE_TURNS,
+                                continuation_prompt as _steering_continuation,
+                            )
+
+                            if goal_steering_plan.idle_turns < _STEERING_IDLE_TURNS and turn_count < MAX_TURNS:
+                                goal_steering_plan.idle_turns += 1
+                                messages.extend([
+                                    {"role": "assistant", "content": content},
+                                    {"role": "system", "content": _steering_continuation(
+                                        goal_progress.request, goal_steering_plan,
+                                        turn=turn_count, max_turns=MAX_TURNS)},
+                                ])
+                                logger.info("goal.steer chat=%s idle=%d", chat_id, goal_steering_plan.idle_turns)
+                                await self._send_chat_status(websocket, "thinking", "Continuing toward the goal…")
+                                continue
+                        _steering_claimed = _steering_open and goal_steering_plan.claim == "complete"
+
                         await self._send_chat_status(websocket, "thinking", "Verifying the requested outcome…")
                         worker_succeeded = False
                         proof_references = {}
@@ -16435,6 +16495,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 if worker_succeeded and goal_contract.kind == "local_project" else {}
                             )
                             if proof_references:
+                                decision = CompletionDecision("complete")
+                            elif _steering_claimed and goal_contract.kind == "action":
                                 decision = CompletionDecision("complete")
                             else:
                                 reviewed = await evaluate_completion(
@@ -16497,6 +16559,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         if decision.status == "continue":
                             goal_independent_review = None
                             goal_auto_refs = {}
+                            if goal_steering_plan is not None:
+                                goal_steering_plan.claim = None
+                                goal_steering_plan.idle_turns = 0
                             messages.extend([
                                 {"role": "assistant", "content": content},
                                 {"role": "system", "content": (
@@ -16784,7 +16849,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 incomplete_components: List[Dict[str, Any]] = []
                 from orchestrator.goal_execution import summary_worthy
 
-                if summary_worthy(goal_stop_reason, goal_progress.tool_count):
+                if goal_final_note:
+                    incomplete_components.append(Text(content=goal_final_note).to_dict())
+                elif summary_worthy(goal_stop_reason, goal_progress.tool_count):
                     summary = await self._goal_budget_summary(websocket, messages, MAX_TURNS, chat_id, goal_stop_reason)
                     if summary:
                         incomplete_components.append(Text(content=summary).to_dict())
@@ -23395,6 +23462,38 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         except Exception:
             logger.debug("TypeSafe outcome scheduling failed", exc_info=True)
 
+
+    async def _answer_goal_harness_calls(self, websocket, chat_id, user_id, llm_msg, messages, plan, progress):
+        from types import SimpleNamespace
+
+        from orchestrator.goal_steering import HARNESS_TOOLS, answer
+
+        calls = list(getattr(llm_msg, "tool_calls", None) or [])
+        harness = [call for call in calls if call.function.name in HARNESS_TOOLS]
+        others = [call for call in calls if call.function.name not in HARNESS_TOOLS]
+        messages.append(_history_assistant_message(
+            SimpleNamespace(content=getattr(llm_msg, "content", None), tool_calls=harness)))
+        successes = sum(1 for item in progress.private_observations()
+                        if item.get("outcome") == "success" and item.get("completed") is True)
+        changed = False
+        for call in harness:
+            text, updated = answer(plan, call.function.name, call.function.arguments,
+                                   tool_count=progress.tool_count, successes=successes, other_calls=len(others))
+            changed = changed or updated
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
+        logger.info("goal.harness chat=%s calls=%s steps=%d unfinished=%d claim=%s", chat_id,
+                    [call.function.name for call in harness], len(plan.steps), len(plan.unfinished()), plan.claim)
+        if changed and chat_id:
+            try:
+                component = plan.stepper()
+                await self._send_or_replace_components(
+                    websocket, [component], chat_id, user_id, force_component_id=component["id"])
+            except Exception:
+                logger.warning("goal.plan_render_failed chat=%s", chat_id, exc_info=True)
+        if not others:
+            return None
+        return SimpleNamespace(content=None, tool_calls=others,
+                               _astral_finish_reason=getattr(llm_msg, "_astral_finish_reason", None))
 
     async def _goal_budget_summary(
         self, websocket, messages, max_turns: int, chat_id: Optional[str], stop_reason: Optional[str] = None,
