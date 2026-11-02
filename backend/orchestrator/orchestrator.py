@@ -19054,7 +19054,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if _hitl.hitl_enabled():
                 from orchestrator import taint as _taint
                 trust = (_taint.trust_name(self._taint_tracker(chat_id).effective_trust_of_args(
-                    args, user_text=self._current_request_text(chat_id))) if _taint.taint_enabled() else "trusted")
+                    _taint.flow_args(agent_id, args), user_text=self._current_request_text(chat_id)))
+                    if _taint.taint_enabled() else "trusted")
                 review_risks.extend(_hitl.assess_risk(tool_name, args, actor_principal=user_id,
                     trust=trust, agent_id=agent_id,
                     public_reader=_hitl.registered_public_reader(self, agent_id, tool_name)))
@@ -19076,7 +19077,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if _taint.taint_enabled() and _taint.is_sink(agent_id, tool_name):
                 tracker = self._taint_tracker(chat_id)
                 trust = tracker.effective_trust_of_args(
-                    args, user_text=self._current_request_text(chat_id))
+                    _taint.flow_args(agent_id, args), user_text=self._current_request_text(chat_id))
                 approved_source_use = (action.needs_review
                     and hitl_confirmation.current_approval(
                         self, user_id, chat_id, agent_id, tool_name, args) is not None)
@@ -19122,7 +19123,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     if _tnt.taint_enabled():
                         trust = _tnt.trust_name(
                             self._taint_tracker(chat_id).effective_trust_of_args(
-                                args, user_text=self._current_request_text(chat_id)))
+                                _tnt.flow_args(agent_id, args), user_text=self._current_request_text(chat_id)))
                 except Exception:
                     trust = "trusted"
                 risks = _hitl.assess_risk(

@@ -647,7 +647,8 @@ def _tainted_sink(orch, chat, agent, tool, args) -> bool:
     if not taint.taint_enabled() or not taint.is_sink(agent, tool):
         return False
     try:
-        trust = orch._taint_tracker(chat).effective_trust_of_args(args, user_text=orch._current_request_text(chat))
+        trust = orch._taint_tracker(chat).effective_trust_of_args(
+            taint.flow_args(agent, args), user_text=orch._current_request_text(chat))
     except Exception:
         logger.warning("Taint state unavailable; the grant does not apply", exc_info=True)
         return True

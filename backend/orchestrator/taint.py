@@ -29,6 +29,7 @@ _SINK_TOOLS = {
     "http_*", "wire_*", "transfer_*",
 }
 _COMPUTER_SINKS = frozenset({"run_command", "browser_click", "browser_fill", "browser_press"})
+_ROUTING_ARGS = {"computer-use-1": frozenset({"computer", "cwd", "path", "session_id", "user_id"})}
 
 
 def taint_enabled() -> bool:
@@ -62,6 +63,14 @@ def is_sink(agent: Optional[str], tool: Optional[str]) -> bool:
         return True
     name = tool or ""
     return any(fnmatch.fnmatchcase(name, pat) for pat in _SINK_TOOLS)
+
+
+def flow_args(agent: Optional[str], args: Any) -> Any:
+    # Host, workspace and session selectors are bound and contained by the computer gates, and tool output echoes them.
+    keys = _ROUTING_ARGS.get(agent or "")
+    if not keys or not isinstance(args, dict):
+        return args
+    return {key: value for key, value in args.items() if key not in keys}
 
 
 def check_flow(trust: int) -> str:

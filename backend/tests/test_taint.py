@@ -158,3 +158,12 @@ def test_clean_call_into_sink_is_allowed():
     t = TaintTracker()
     t.mark("leak-xyz", UNTRUSTED)
     assert check_flow(t.effective_trust_of_args({"body": "hello there"})) == "allow"
+
+
+def test_flow_args_drops_only_computer_routing_keys():
+    args = {"computer": "Mac", "cwd": "/w", "path": "/w/a", "session_id": "s", "user_id": "u",
+            "argv": ["ls"], "content": "x"}
+    assert taint.flow_args("computer-use-1", args) == {"argv": ["ls"], "content": "x"}
+    assert taint.flow_args("web-research-1", args) is args
+    assert taint.flow_args("computer-use-1", ["not", "a", "dict"]) == ["not", "a", "dict"]
+    assert taint.flow_args(None, args) is args
