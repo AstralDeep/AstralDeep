@@ -607,3 +607,15 @@ def test_share_snapshot_flattens_artifacts(monkeypatch):
     assert response.status_code == 201
     assert minted["snapshot_json"][0]["type"] == "text"
     assert "secret-page" not in minted["snapshot_html"]
+
+
+def test_policy_precedes_markup_that_appears_before_head():
+    html = ('<!doctype html><html><script>window.x = 1</script><head><meta charset="utf-8">'
+            '<title>T</title></head><body>hi</body></html>')
+    document, errors = validate_html(html, title="Early Script", kind="page")
+    assert errors == []
+    assert document.index(CSP_META) < document.index("<script>") < document.index("<head>")
+    again, again_errors = validate_html(document, title="Early Script", kind="page")
+    assert again_errors == [] and again.count(CSP_META) == 1
+    headless, _ = validate_html("<html><p>a</p><body><p>b</p></body></html>", title="No Head", kind="page")
+    assert headless.index("<head>" + CSP_META) < headless.index("<p>a</p>")
