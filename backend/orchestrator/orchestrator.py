@@ -18103,7 +18103,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 "content": "Based on the tool results above, provide a brief summary and analysis."
             })
 
-            summary_request = {"model": resolved.model, "messages": summary_messages, "max_tokens": 300}
+            summary_request = {"model": resolved.model, "messages": summary_messages, "max_tokens": 1500}
             response = await self._context_model_call(
                 websocket, chat_id, feature, resolved.model,
                 lambda: create_completion(client, **summary_request),
@@ -18129,7 +18129,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     usage=usage, outcome="success",
                 )
 
-            raw_summary = strip_reasoning_markup(response.choices[0].message.content or "").strip()
+            summary_message = response.choices[0].message
+            raw_summary = strip_reasoning_markup(summary_message.content or "").strip()
+            if not raw_summary:
+                raw_summary = strip_reasoning_markup(getattr(summary_message, "reasoning_content", None) or "").strip()
             summary_text = _strip_toolcall_leakage(raw_summary)
             if raw_summary and not summary_text:
                 _log_stripped_empty("tool_summary", chat_id, raw_summary)

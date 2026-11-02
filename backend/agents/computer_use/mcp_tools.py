@@ -1833,7 +1833,9 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
          "hwnd": {"type": "integer", "description": "Optional window handle from list_windows to capture."}},
         ["x", "y", "w", "h"]),
     "read_file": _entry(read_file, "Read a bounded text file inside workspace_roots from list_computers or start_session. "
-                                   "Paths matching excluded are refused by the host; do not request them.",
+                                   "Paths matching excluded are refused by the host; do not request them. The content "
+                                   "stays in your context: read each file once unless you changed it, then move on to "
+                                   "writing files and running commands.",
                         {"path": {"type": "string", "description": "Path inside workspace_roots; relative paths use the primary folder."},
                          "max_bytes": {"type": "integer", "description": "Default 65536, max 262144."}},
                         ["path"]),
