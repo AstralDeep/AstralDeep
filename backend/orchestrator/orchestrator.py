@@ -879,6 +879,28 @@ def _safe_provider_error_summary(exc: BaseException) -> str:
     return json.dumps(fields, sort_keys=True) if fields else "<no structured detail>"
 
 
+def _history_assistant_message(llm_msg: Any) -> Any:
+    tool_calls = getattr(llm_msg, "tool_calls", None)
+    if not tool_calls:
+        return llm_msg
+    calls = []
+    for call in tool_calls:
+        function = getattr(call, "function", None)
+        arguments = getattr(function, "arguments", None)
+        if not isinstance(arguments, str) or not arguments.strip():
+            arguments = "{}"
+        else:
+            try:
+                json.loads(arguments)
+            except ValueError:
+                logger.warning("Tool call %s carried non-JSON arguments; history keeps an empty object",
+                               getattr(function, "name", "?"))
+                arguments = "{}"
+        calls.append({"id": getattr(call, "id", None), "type": "function",
+                      "function": {"name": getattr(function, "name", ""), "arguments": arguments}})
+    return {"role": "assistant", "content": getattr(llm_msg, "content", None), "tool_calls": calls}
+
+
 def _configured_context_window() -> Optional[int]:
     raw = os.getenv("LLM_CONTEXT_WINDOW", "").strip()
     if not raw.isdigit():
@@ -16014,7 +16036,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         "message": f"Running: {', '.join(tool_names)}..."
                     }))
 
-                    messages.append(llm_msg)
+                    messages.append(_history_assistant_message(llm_msg))
 
                     tool_results = []
                     if turn_count == 1:
