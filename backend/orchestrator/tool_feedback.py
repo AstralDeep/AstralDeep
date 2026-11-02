@@ -70,6 +70,35 @@ def tool_failure_message(tool_name: object, error: object) -> str:
     return message
 
 
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def _bounded(value: object, limit: int) -> str | None:
+    return _CONTROL.sub("", value)[:limit] if isinstance(value, str) and value.strip() else None
+
+
+def first_party_error_content(error: object) -> str | None:
+    if not isinstance(error, Mapping):
+        return None
+    code, message = _bounded(error.get("code"), 64), _bounded(error.get("message"), 600)
+    if code is None or message is None or code in PUBLIC_ERRORS:
+        return None
+    detail: dict[str, object] = {"status": "error", "code": code, "message": message,
+                                 "retryable": error.get("retryable") is True}
+    for key in ("next_action", "effect_state"):
+        text = _bounded(error.get(key), 300)
+        if text is not None:
+            detail[key] = text
+    data = error.get("data")
+    if isinstance(data, Mapping):
+        hints = {str(key)[:64]: value for key, value in list(data.items())[:8]
+                 if isinstance(value, (int, bool)) or _bounded(value, 120) is not None}
+        if hints:
+            detail["data"] = {key: (_bounded(value, 120) if isinstance(value, str) else value)
+                              for key, value in hints.items()}
+    return json.dumps(detail, ensure_ascii=False)
+
+
 def tool_failure_content(tool_name: object, error: object) -> str:
     error = error if isinstance(error, Mapping) else {}
     code = error.get("code")
