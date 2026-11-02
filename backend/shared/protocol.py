@@ -2741,6 +2741,15 @@ class ComputerHostDescriptor:
     protocol: int = COMPUTER_HOST_PROTOCOL
     workspace_roots: tuple = ()
     project_manifest: Optional[dict] = None
+    excluded: tuple = ()
+
+    def _validate_excluded(self) -> None:
+        patterns = self.excluded
+        if (not isinstance(patterns, tuple) or len(patterns) > 32
+                or any(not _printable(item, 128) or item.strip("/") == "" for item in patterns)
+                or len(set(patterns)) != len(patterns)):
+            raise ProtocolValidationError(
+                "computer_host.excluded must list at most 32 unique printable path patterns")
 
     def _validate_roots(self) -> None:
         roots = self.workspace_roots
@@ -2749,14 +2758,8 @@ class ComputerHostDescriptor:
                 f"computer_host.workspace_roots must list at most {_COMPUTER_HOST_MAX_ROOTS} folders")
         paths = set()
         for root in roots:
-            if (not isinstance(root, Mapping) or not {"name", "path"} <= set(root)
-                    or not set(root) <= {"name", "path", "excluded"}):
+            if not isinstance(root, Mapping) or set(root) != {"name", "path"}:
                 raise ProtocolValidationError("computer_host.workspace_roots entries must contain exactly name, path")
-            excluded = root.get("excluded", ())
-            if (not isinstance(excluded, (list, tuple)) or len(excluded) > 32
-                    or any(not _printable(item, 128) or item.strip("/") == "" for item in excluded)):
-                raise ProtocolValidationError(
-                    "computer_host.workspace_roots excluded must list at most 32 printable patterns")
             path = root["path"]
             if (not _printable(root["name"], _COMPUTER_HOST_ROOT_NAME_MAX)
                     or not _printable(path, _COMPUTER_HOST_ROOT_PATH_MAX) or not path.startswith("/")
@@ -2813,6 +2816,7 @@ class ComputerHostDescriptor:
         if unknown:
             raise ProtocolValidationError(f"computer_host.verbs contains unknown verbs: {unknown}")
         self._validate_roots()
+        self._validate_excluded()
         if self.project_manifest is not None:
             from shared.project_workspaces import ProjectManifest, ProjectWorkspaceError
             try:
@@ -2838,6 +2842,8 @@ class ComputerHostDescriptor:
         if self.project_manifest is not None:
             from shared.project_workspaces import ProjectManifest
             data["project_manifest"] = ProjectManifest.from_dict(self.project_manifest).to_dict()
+        if self.excluded:
+            data["excluded"] = list(self.excluded)
         return data
 
     @classmethod
@@ -2845,17 +2851,19 @@ class ComputerHostDescriptor:
         if not isinstance(data, Mapping):
             raise ProtocolValidationError("computer_host must be an object")
         expected = {item.name for item in fields(cls)}
-        if not expected - {"workspace_roots", "project_manifest"} <= set(data) <= expected:
+        if not expected - {"workspace_roots", "project_manifest", "excluded"} <= set(data) <= expected:
             raise ProtocolValidationError(
                 "computer_host must contain exactly host_id, name, platform, client_version, "
-                "screens, verbs, protocol and optionally workspace_roots")
+                "screens, verbs, protocol and optionally workspace_roots, project_manifest, excluded")
         screens = data.get("screens")
         verbs = data.get("verbs")
         roots = data.get("workspace_roots", ())
+        excluded = data.get("excluded", ())
         if (not isinstance(screens, (list, tuple)) or not isinstance(verbs, (list, tuple))
-                or not isinstance(roots, (list, tuple))):
+                or not isinstance(roots, (list, tuple)) or not isinstance(excluded, (list, tuple))):
             raise ProtocolValidationError(
-                "computer_host.screens, computer_host.verbs and computer_host.workspace_roots must be arrays")
+                "computer_host.screens, computer_host.verbs, computer_host.workspace_roots "
+                "and computer_host.excluded must be arrays")
         descriptor = cls(
             host_id=data["host_id"],
             name=data["name"],
@@ -2866,6 +2874,7 @@ class ComputerHostDescriptor:
             protocol=data["protocol"],
             workspace_roots=tuple(dict(r) if isinstance(r, Mapping) else r for r in roots),
             project_manifest=data.get("project_manifest"),
+            excluded=tuple(excluded),
         )
         descriptor.validate()
         return descriptor
