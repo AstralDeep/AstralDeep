@@ -100,3 +100,13 @@ def test_prompt_and_timeout_limits_fail_closed():
             "Make a small game", CATEGORIES, PROJECT,
             environ={"GOAL_CODEX_WORKER_PATH": "/opt/codex"}, timeout_s=601,
         )
+
+
+def test_worker_configured_treats_an_empty_path_as_disabled():
+    from orchestrator.goal_worker import worker_configured
+
+    assert worker_configured(environ={}) is True
+    assert worker_configured(environ={"GOAL_CODEX_WORKER_PATH": "/opt/codex/bin/codex"}) is True
+    assert worker_configured(environ={"GOAL_CODEX_WORKER_PATH": ""}) is False
+    assert worker_configured(environ={"GOAL_CODEX_WORKER_PATH": "codex"}) is False
+    assert worker_configured(environ={"GOAL_CODEX_WORKER_PATH": "/opt/codex\x00"}) is False

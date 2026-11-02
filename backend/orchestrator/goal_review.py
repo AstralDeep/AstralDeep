@@ -424,6 +424,13 @@ async def review_local_project(
             if not cleanup_ok:
                 raise RuntimeError("independent review preview cleanup failed")
 
+    from orchestrator.goal_worker import worker_configured
+
+    if not worker_configured():
+        logging.getLogger(__name__).warning("goal.independent_review_unavailable chat=%s", chat_id)
+        return ReviewResult(
+            "unavailable",
+            "No local coding worker is configured on this computer, so the independent review was skipped.")
     stage = "command preflight"
     try:
         build_review_command(goal_progress.request, goal_contract.required_categories, goal_project)

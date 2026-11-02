@@ -64,6 +64,12 @@ def build_worker_prompt(
     return prompt
 
 
+def worker_configured(environ: Mapping[str, str] | None = None) -> bool:
+    env = os.environ if environ is None else environ
+    path = env.get("GOAL_CODEX_WORKER_PATH")
+    return path is None or (isinstance(path, str) and os.path.isabs(path) and "\x00" not in path)
+
+
 def build_worker_command(
     objective: str,
     required_categories: Sequence[str],
