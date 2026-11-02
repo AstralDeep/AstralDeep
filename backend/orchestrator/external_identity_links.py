@@ -193,16 +193,24 @@ def verify_link_handoff(
     }
 
 
+def _plain(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_plain(item) for item in value]
+    return value
+
+
 def _preferences_dict(raw: Any) -> dict[str, Any]:
-    if isinstance(raw, dict):
-        return dict(raw)
+    if isinstance(raw, Mapping):
+        return _plain(raw)
     if not isinstance(raw, str):
         return {}
     try:
         decoded = json.loads(raw)
     except (TypeError, ValueError):
         return {}
-    return dict(decoded) if isinstance(decoded, dict) else {}
+    return _plain(decoded) if isinstance(decoded, dict) else {}
 
 
 def linked_identity_from_preferences(

@@ -15570,6 +15570,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                 turn_count += 1
                 logger.info(f"--- Turn {turn_count}/{MAX_TURNS} ---")
+                if goal_progress is not None:
+                    from orchestrator.goal_execution import budget_notice
+
+                    budget_message = budget_notice(turn_count, MAX_TURNS)
+                    if budget_message:
+                        messages.append({"role": "system", "content": budget_message})
 
                 if evidence_context.enabled():
                     context_result = await evidence_service.prepare(
@@ -16749,10 +16755,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if goal_progress is not None:
                 task_terminal_on_exit = TaskState.FAILED
                 task_error_on_exit = goal_stop_reason or "The execution budget ended before the objective was verified."
-                incomplete_components = [Alert(
+                incomplete_components: List[Dict[str, Any]] = []
+                if goal_stop_reason is None:
+                    summary = await self._goal_budget_summary(websocket, messages, MAX_TURNS, chat_id)
+                    if summary:
+                        incomplete_components.append(Text(content=summary).to_dict())
+                incomplete_components.append(Alert(
                     title="Request incomplete", variant="warning",
                     message=task_error_on_exit,
-                ).to_dict()]
+                ).to_dict())
                 await self._append_conversation_message(
                     conversation_stage, chat_id=chat_id, user_id=user_id,
                     role="assistant", content=incomplete_components,
@@ -23356,6 +23367,26 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         except Exception:
             logger.debug("TypeSafe outcome scheduling failed", exc_info=True)
 
+
+    async def _goal_budget_summary(self, websocket, messages, max_turns: int, chat_id: Optional[str]) -> str:
+        from orchestrator import turn_hooks
+        from orchestrator.goal_execution import budget_summary_prompt
+
+        prompt = {"role": "system", "content": budget_summary_prompt(max_turns)}
+        try:
+            llm_msg, usage = await self._call_llm(websocket, list(messages) + [prompt], None)
+        except Exception:
+            logger.warning("goal.budget_summary_failed chat=%s", chat_id, exc_info=True)
+            return ""
+        self._accumulate_usage(chat_id, usage)
+        content = strip_reasoning_markup(str(getattr(llm_msg, "content", "") or "")).strip() if llm_msg else ""
+        if not content:
+            return ""
+        allowed, reason = turn_hooks.review_answer(content)
+        if not allowed:
+            logger.warning("supervisor.block chat=%s reason=%s", chat_id, reason)
+            return ""
+        return content[:4000]
 
     async def _send_chat_status(self, websocket, status: str, message: str = ""):
         data = json.dumps({"type": "chat_status", "status": status, "message": message})

@@ -26,6 +26,27 @@ _PROJECT_TOOLS = frozenset({
 })
 
 
+def budget_notice(turn_count: int, max_turns: int) -> str | None:
+    if max_turns < 8:
+        return None
+    remaining = max_turns - turn_count
+    if remaining not in (max(4, max_turns // 4), 2):
+        return None
+    return (
+        f"Execution budget: {remaining} of {max_turns} turns remain. Stop surveying the project. "
+        "Implement the remaining objective with the fewest complete file writes, run the one verification "
+        "command you planned, then report what was built and how it was verified."
+    )
+
+
+def budget_summary_prompt(max_turns: int) -> str:
+    return (
+        f"The execution budget of {max_turns} turns is exhausted and no further tools will run. Reply in plain "
+        "text under 200 words: what was created or changed (with paths), which commands ran and their results, "
+        "what remains, and the single next step. Do not call tools."
+    )
+
+
 def focus_project_catalog(tools, owners, canonical, project, contract, *, explicit_selection=False):
     if explicit_selection or not _granted_roots(project, contract):
         return tools, owners, canonical

@@ -286,3 +286,37 @@ async def test_goal_budget_allows_more_than_24_tool_rounds(goal_orch, monkeypatc
     assert planner == 26
     assert checkpoints == 3
     assert o.execute_single_tool.await_count == 25
+
+
+@pytest.mark.asyncio
+async def test_budget_exhaustion_steers_the_model_then_summarizes_the_work(goal_orch, monkeypatch, user_skills_disabled):
+    o = goal_orch
+    monkeypatch.setenv("GOAL_MAX_TURNS", "8")
+    _register(o, "search_tool")
+    chat_id, ws = await _chat(o)
+    notices: list[str] = []
+    summary_calls: list[int] = []
+
+    async def provider(websocket, messages, tools_desc=None, **kwargs):
+        if kwargs.get("feature") == "goal_verification":
+            return _verdict("continue", ["Continue the remaining research actions."])
+        system_texts = [m.get("content", "") for m in messages if m.get("role") == "system"]
+        if tools_desc is None and any("budget of 8 turns is exhausted" in text for text in system_texts):
+            summary_calls.append(len(messages))
+            return _msg(content="Wrote notes.md and ran the tests; the loop file is still missing."), _usage()
+        for text in system_texts:
+            if text.startswith("Execution budget:") and text not in notices:
+                notices.append(text)
+        return _msg(tool_calls=[_tc(cid=f"round-{uuid.uuid4().hex[:6]}")]), _usage()
+
+    o._call_llm = provider
+    o.execute_single_tool = AsyncMock(return_value=SimpleNamespace(
+        result={"_data": {"items": ["result"]}}, error=None, ui_components=[], correlation_id=None,
+    ))
+    await o.handle_chat_message(ws, "Complete the requested research and verify it", chat_id, user_id="seam-user")
+    final = (await _last_assistant_text(o, chat_id, "seam-user")).lower()
+    assert "wrote notes.md" in final
+    assert "incomplete" in final
+    assert [text.split(":")[1].split(" of ")[0].strip() for text in notices] == ["4", "2"]
+    assert summary_calls == [summary_calls[0]] and len(summary_calls) == 1
+    assert o.execute_single_tool.await_count == 8
