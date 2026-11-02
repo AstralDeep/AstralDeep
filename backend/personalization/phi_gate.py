@@ -188,7 +188,7 @@ class PHIGate:
             return True
         return False
 
-    def redact_for_storage(self, text: str, *, passes: int = 1) -> tuple[str, bool]:
+    def redact_for_storage(self, text: str, *, passes: int = 1, best_effort: bool = False) -> tuple[str, bool]:
         from shared.phi_redactor import PHI_VALUE_PATTERNS
 
         if not isinstance(text, str) or len(text.encode("utf-8")) > 65536 or self._analyzer is None:
@@ -196,6 +196,17 @@ class PHIGate:
         original = text
         for pattern, replacement in PHI_VALUE_PATTERNS:
             text = pattern.sub(replacement, text)
+        text = self._mask_detected(text)
+        if self.contains_phi(text):
+            if passes > 1:
+                again, _ = self.redact_for_storage(text, passes=passes - 1, best_effort=best_effort)
+                return again, True
+            if best_effort:
+                return self._mask_detected(text), True
+            raise ValueError("phi_redaction_refused")
+        return text, text != original
+
+    def _mask_detected(self, text: str) -> str:
         try:
             findings = self._analyzer.analyze(
                 text=text, language="en", entities=PHI_ENTITIES,
@@ -221,12 +232,7 @@ class PHIGate:
                 merged.append((start, end))
         for start, end in reversed(merged):
             text = text[:start] + "[REDACTED:phi]" + text[end:]
-        if self.contains_phi(text):
-            if passes > 1:
-                again, _ = self.redact_for_storage(text, passes=passes - 1)
-                return again, True
-            raise ValueError("phi_redaction_refused")
-        return text, text != original
+        return text
 
     def detect_for_notice(self, text: Optional[str]) -> bool:
         if text is None:
