@@ -37,7 +37,8 @@ POINTER_REFUSAL = "Call list_windows and pass hwnd for the target window."
 CONTROL_VERBS = frozenset({"interrupt_command"})
 CONTINUATION_TEXT = ("The exact approved action completed. Continue the remaining original task using current "
                      "observations; any further effects still require their ordinary authorization and review.")
-REMOTE_REVIEWED_VERBS = frozenset({"run_command", "write_file", "delete_path", "project_preview"})
+REMOTE_REVIEWED_VERBS = frozenset({"run_command", "write_file", "delete_path", "project_preview", "browser_evaluate",
+                                   "browser_tabs"})
 _BUNDLE_ID = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
 
 
@@ -410,10 +411,12 @@ def computer_effect_current(orch, session, tool, arguments=None) -> bool:
         return False
     call = approval.call
     authority = call.computer_authority
+    from agents.computer_use.browser_tools import batch_effect_matches
     from orchestrator.preview_authority import preview_effect_matches
 
     same_effect = call.tool == tool or (
-        call.tool == "project_preview" and preview_effect_matches(approval, session, tool, arguments))
+        call.tool == "project_preview" and preview_effect_matches(approval, session, tool, arguments)) or (
+        call.tool == "browser_batch" and batch_effect_matches(approval, session, tool))
     return (call.agent == "computer-use-1" and same_effect and approval.consumed
             and approval.effect_started and authority is not None and authority.session is session
             and _current_session(orch, authority.websocket, call))
@@ -570,6 +573,8 @@ def _input_request(authority, tool, args) -> GrantRequest | None:
         if entry is None or not entry["bundle_id"]:
             return None
         bundle = entry["bundle_id"]
+        if policy.is_consequential_input(tool, args):
+            return GrantRequest({"bundle_id": bundle, "hwnd": hwnd, "destructive": True})
         if not is_grantable_application(bundle, "window"):
             return None
         target = {"bundle_id": bundle, "hwnd": hwnd}
@@ -600,7 +605,8 @@ def _browser_request(authority, tool, args) -> GrantRequest:
     from agents.computer_use import browser_tools
 
     target = dict(browser_tools.browser_target(tool, args, browser_tools.page_url(authority.session.session_id, args)))
-    origin = browser_tools.origin_of(args.get("url")) if tool == "browser_navigate" else None
+    opens = tool == "browser_navigate" or tool == "browser_tabs" and args.get("action") == "create"
+    origin = browser_tools.origin_of(args.get("url")) if opens else None
     if origin is None or target.get("destructive") or target.get("origin") != origin:
         return GrantRequest(target)
     return GrantRequest(target, (GrantOffer(None, {"kind": "origin", "origin": origin}, ("browser",),

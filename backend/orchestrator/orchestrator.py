@@ -1868,7 +1868,7 @@ class Orchestrator:
             if previous is None or (previous.owner_sub, previous.host_id) in ended:
                 continue
             ended.add((previous.owner_sub, previous.host_id))
-            await self.computer_sessions.clear_bypass(previous.owner_sub, previous.host_id, "host_replaced")
+            await self.computer_sessions.clear_bypass(previous.owner_sub, previous.host_id, "host_replaced", host)
             await self.computer_sessions.end_all_for_host(
                 previous.owner_sub, previous.host_id, "host_superseded")
         await self.computer_hosts.push_presence(host, "online")

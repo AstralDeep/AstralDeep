@@ -240,10 +240,10 @@ def test_page_state_is_bounded():
     assert len(browser_tools._PAGES["one"].held) == browser_tools._MAX_HELD
 
 
-def test_register_adds_the_ten_tools_with_policy_scopes_tiers_and_timeouts():
+def test_register_adds_the_browser_tools_and_the_batch_with_policy_scopes_tiers_and_timeouts():
     registry = {}
     browser_tools.register(registry)
-    assert sorted(registry) == BROWSER_TOOLS and len(registry) == 10
+    assert sorted(registry) == sorted([*BROWSER_TOOLS, "browser_batch"]) and len(registry) == 19
     for name, entry in registry.items():
         assert entry["scope"] == policy.SCOPES[name]
         assert entry["tier"] == policy.TIERS[name]
@@ -790,6 +790,10 @@ _VALID_CALLS = {
     "browser_navigate": {"url": PAGE}, "browser_click": {"ref": "e3", "snapshot_id": "s9"},
     "browser_fill": {"fields": [{"ref": "e2", "value": "a"}], "snapshot_id": "s9"},
     "browser_press": {"keys": "Enter"}, "browser_scroll": {}, "browser_dialog": {"action": "accept"},
+    "browser_find": {"query": "Submit"}, "browser_hover": {"ref": "e3", "snapshot_id": "s9"},
+    "browser_zoom": {"x0": 0, "y0": 0, "x1": 100, "y1": 80}, "browser_console": {}, "browser_network": {},
+    "browser_evaluate": {"script": "document.title"}, "browser_resize": {"preset": "mobile"},
+    "browser_tabs": {"action": "list"},
 }
 
 

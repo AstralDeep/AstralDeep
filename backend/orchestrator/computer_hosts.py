@@ -24,15 +24,23 @@ MAX_FRAME_BYTES = int(os.getenv("COMPUTER_HOST_MAX_FRAME_BYTES", str(4 * 1024 * 
 WITHDRAWN = "consent_revoked"
 WITHDRAWN_NOTE = "access withdrawn on that Mac; re-enable it in Computer controls there"
 LAST_SEEN_TTL_S = int(os.getenv("COMPUTER_HOST_LAST_SEEN_TTL_S", str(24 * 3600)))
+ELEMENT_LINE_CHARS = 200
 
 
 class ComputerHostError(Exception):
-    def __init__(self, code: str, message: str, *, candidates: Optional[List[str]] = None, effect_state: Optional[str] = None):
+    def __init__(self, code: str, message: str, *, candidates: Optional[List[str]] = None, effect_state: Optional[str] = None,
+                 element_line: Optional[str] = None):
         super().__init__(message)
         self.code = code
         self.message = message
         self.candidates = candidates or []
         self.effect_state = "not_started" if effect_state == "not_started" else None
+        self.element_line = _one_line(element_line) if isinstance(element_line, str) else None
+
+
+def _one_line(value: str) -> Optional[str]:
+    text = " ".join("".join(ch for ch in value if ch.isprintable() or ch.isspace()).split())[:ELEMENT_LINE_CHARS]
+    return text or None
 
 
 @dataclass
@@ -76,6 +84,10 @@ class ComputerHost:
     def workspace_roots(self) -> List[Dict[str, str]]:
         return [dict(root) for root in self.descriptor.get("workspace_roots") or []]
 
+    @property
+    def excluded(self) -> List[str]:
+        return [str(pattern) for pattern in self.descriptor.get("excluded") or []]
+
     def public(self, online: bool = True) -> Dict[str, Any]:
         return {
             "host_id": self.host_id,
@@ -85,6 +97,7 @@ class ComputerHost:
             "screens": self.screens,
             "verbs": list(self.verbs),
             "workspace_roots": self.workspace_roots,
+            "excluded": self.excluded,
             "online": online,
             "offline_reason": None if online else self.offline_reason,
             "last_seen": int(self.last_seen),
@@ -317,7 +330,8 @@ class ComputerHostRegistry:
         error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
         code = str(error.get("code") or "failed")
         message = str(error.get("message") or f"{verb} failed on {host.name}")[:500]
-        raise ComputerHostError(code, message, effect_state=error.get("effect_state"))
+        raise ComputerHostError(code, message, effect_state=error.get("effect_state"),
+                                element_line=error.get("element_line"))
 
     def handle_response(self, websocket, owner_sub: str, payload: Dict[str, Any]) -> bool:
         request_id = str(payload.get("request_id") or "")
