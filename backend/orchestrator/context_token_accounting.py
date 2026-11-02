@@ -118,6 +118,8 @@ _QUALIFIED_PROFILES: tuple[ModelProfile, ...] = (
     ModelProfile("openai", "gpt-4-32k", 32_768, 4_096, "cl100k_base"),
     ModelProfile("openai", "gpt-4", 8_192, 4_096, "cl100k_base"),
     ModelProfile("openai", "gpt-3.5-turbo", 16_385, 4_096, "cl100k_base"),
+    ModelProfile("custom", "zai-org/glm-5.3-flash", 131_072, 8_192, "o200k_base"),
+    ModelProfile("custom", "zai-org/glm-5.2-fp8", 131_072, 8_192, "o200k_base"),
 )
 
 

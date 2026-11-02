@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
 
 from shared.feature_flags import flags
+
+logger = logging.getLogger(__name__)
 
 FRAME_TYPE = "artifact"
 HTML_TYPE = "html_artifact"
@@ -67,7 +70,11 @@ def socket_accepted_types(orch: Any, websocket: Any) -> frozenset:
     sessions = getattr(orch, "ui_sessions", None)
     claims = sessions.get(websocket) if isinstance(sessions, dict) else None
     capabilities = claims.get("_client_capabilities") if isinstance(claims, dict) else None
-    return accepted_types(profile, capabilities)
+    accepted = accepted_types(profile, capabilities)
+    logger.info("artifact.gate accepted=%s supported=%s capability=%s",
+                sorted(accepted), getattr(profile, "supported_types", None) is not None,
+                CAPABILITY in (capabilities or ()))
+    return accepted
 
 
 def artifact_capable(orch: Any, websocket: Any) -> bool:
@@ -176,14 +183,19 @@ def fallback_title(nodes: Sequence[Any], user_request: str) -> str:
     for pick in (
         lambda n: _within(n.get("title"), MAX_TITLE_CHARS) if n.get("type") == "hero" else "",
         _heading_of,
-        _short_text_of,
     ):
         for node in flat:
             title = pick(node)
             if title:
                 return title
     request = _one_line(user_request)[:FALLBACK_TITLE_CHARS].strip()
-    return request or "Response"
+    if request:
+        return request
+    for node in flat:
+        title = _short_text_of(node)
+        if title:
+            return title
+    return "Response"
 
 
 def default_actions() -> List[Dict[str, str]]:

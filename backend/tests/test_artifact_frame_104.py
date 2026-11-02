@@ -184,7 +184,8 @@ def test_title_fallback_chain_prefers_hero_then_heading_then_short_text():
     assert artifact_frame.fallback_title(
         [{"type": "text", "content": "Section", "variant": "h2"}], "req") == "Section"
     short = [{"type": "text", "content": "x" * 80}, {"type": "text", "content": "Quick facts"}]
-    assert artifact_frame.fallback_title(short, "req") == "Quick facts"
+    assert artifact_frame.fallback_title(short, "req") == "req"
+    assert artifact_frame.fallback_title(short, "") == "Quick facts"
     assert artifact_frame.fallback_title([], "  " + "w" * 90) == "w" * 60
     assert artifact_frame.fallback_title([], "") == "Response"
 

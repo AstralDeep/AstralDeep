@@ -86,6 +86,7 @@ class ComputerSession:
     app_cache: Dict[int, Dict[str, str]] = field(default_factory=dict)
     screenshot_cache: Optional[Dict[str, Any]] = None
     command_jobs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    read_digests: Dict[str, Tuple[str, int, int]] = field(default_factory=dict)
     terminal_ok_until: float = 0.0
     authority_generation: int = 0
     approval_pause_authority: Any = field(default=None, repr=False, compare=False)
