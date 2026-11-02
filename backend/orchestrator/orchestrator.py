@@ -19624,6 +19624,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         agent_id, outcome="failure")
             except Exception:
                 logger.debug("058: denial audit skipped", exc_info=True)
+            if agent_id == "computer-use-1":
+                refusal = getattr(auth.response, "error", None)
+                if isinstance(refusal, dict):
+                    logger.warning("tool.gate_refused chat=%s tool=%s code=%s message=%s", chat_id, tool_name,
+                                   refusal.get("code"), str(refusal.get("message") or "")[:160])
+                    if not isinstance(refusal.get("code"), str) and isinstance(refusal.get("message"), str):
+                        auth.response.error = {**refusal, "code": "refused"}
             return auth.response
         args = auth.args
         stream_params = auth.stream_params
