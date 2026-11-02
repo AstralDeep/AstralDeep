@@ -684,3 +684,30 @@ async def test_owner_revoke_from_the_session_frame_ends_later_effects_and_refuse
     _key, _params, unknown = await my_computers.HANDLERS["chrome_computer_grant_revoke"](
         orch, ws, OWNER, ["user"], payload)
     assert "not active" in unknown
+
+
+async def test_a_large_command_under_bypass_runs_instead_of_failing_the_unshown_review(task_runtime):
+    orch, ws, effects, *_ = task_runtime
+    session, host = await _mac(task_runtime, remote=True)
+    script = "const rows = [" + ",".join(f"'row {i} on 2026-10-21'" for i in range(40)) + "]; console.log(rows.length);"
+    assert len(script) > 512
+    held = await _call(task_runtime, "run_command", argv=["node", "-e", script], cwd=ROOT)
+    assert held.result["_data"]["status"] == "confirmation_required" and not effects
+    rc._PENDING_CARDS.clear()
+    await orch.computer_sessions.set_bypass(host, True)
+    ran = await _call(task_runtime, "run_command", argv=["node", "-e", script], cwd=ROOT)
+    assert ran.error is None and [name for name, _args in effects] == ["run_command"]
+    assert not rc._PENDING_CARDS
+    secret = await _call(task_runtime, "run_command", argv=["node", "-e", script + " // password: hunter2"], cwd=ROOT)
+    assert secret.error["message"].startswith("Review unavailable") and len(effects) == 1
+
+
+def test_the_preview_skips_phi_screening_when_the_user_has_phi_protection_off():
+    from orchestrator.hitl_confirmation import _review_arguments
+
+    args = {"path": ROOT + "/notes.md", "content": "Reviewed by Jane Doe on 2026-10-21"}
+    assert _review_arguments(args)[1] is False
+    preview, reviewable = _review_arguments(args, phi=False)
+    assert reviewable is True and "Jane Doe on 2026-10-21" in preview
+    assert _review_arguments({"content": "x" * 600}, phi=False)[1] is False
+    assert _review_arguments({"content": "Call 555-123-4567"}, phi=False)[1] is False

@@ -914,7 +914,8 @@ def _review_summary(args: dict) -> str:
 
 
 def _review_arguments(args: dict, *, trusted_identifiers: dict | None = None,
-                      project_targets=frozenset(), extended_fields=frozenset()) -> tuple[str, bool]:
+                      project_targets=frozenset(), extended_fields=frozenset(), phi: bool = True,
+                      bounded: bool = True) -> tuple[str, bool]:
     from orchestrator.hitl import _SENSITIVE_INPUT, sensitive_url
     from personalization.phi_gate import get_phi_gate
     from shared.phi_redactor import PHI_FIELD_PATTERNS, redact
@@ -960,7 +961,8 @@ def _review_arguments(args: dict, *, trusted_identifiers: dict | None = None,
             # bounded review preview only when the active goal produced this exact
             # worker command; the complete preview still has a 4096-char ceiling.
             cleaned, truncated = ((value, False) if destination else
-                                  redact(value, max_length=4096 if top_level and key in extended_fields else 512))
+                                  redact(value, max_length=(4096 if top_level and key in extended_fields else 512)
+                                         if bounded else len(value) + 1, phi=phi))
             if truncated or cleaned != value:
                 reviewable = False
             if not destination:
@@ -969,9 +971,9 @@ def _review_arguments(args: dict, *, trusted_identifiers: dict | None = None,
         return value
 
     preview = json.dumps(walk(args), indent=2, ensure_ascii=False)
-    if len(preview) > 4096:
+    if bounded and len(preview) > 4096:
         return "[Arguments exceed the complete review limit. Use a smaller action.]", False
-    if reviewable and visible_strings:
+    if phi and reviewable and visible_strings:
         try:
             # A coding objective may legitimately name tools such as Vite, which
             # the strict memory PHI profile identifies as a person. The sharing
@@ -1052,15 +1054,25 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
 
                 if shown == expected_worker or is_active_review_command(shown):
                     extended_fields = frozenset({"stdin"})
+        from personalization.phi_policy import protection_enabled
+
+        phi = await asyncio.to_thread(protection_enabled, owner, orch)
         preview, reviewable = await asyncio.to_thread(
             _review_arguments, shown, trusted_identifiers=trusted_identifiers,
-            project_targets=project_targets, extended_fields=extended_fields)
+            project_targets=project_targets, extended_fields=extended_fields, phi=phi)
         obsolete = review_publication_refusal(orch, websocket, publication)
         if obsolete is not None:
             return _refused(obsolete[0], code="COMPUTER_REVIEW_CHANGED")
-        if not reviewable:
-            return _refused("Review unavailable: this action includes sensitive or oversized arguments that cannot be "
-                            "shown completely. Remove private identifiers or credentials, or use a smaller action.")
+        unreviewable = _refused(
+            "Review unavailable: this action includes sensitive or oversized arguments that cannot be shown "
+            "completely. Remove private identifiers or credentials, or use a smaller action.") if not reviewable else None
+        if unreviewable is not None and not (
+                agent == "computer-use-1"
+                and consent_decision(orch, websocket, owner, chat, agent, tool, args, risks)[0] == "standing"
+                and (await asyncio.to_thread(
+                    _review_arguments, shown, trusted_identifiers=trusted_identifiers,
+                    project_targets=project_targets, extended_fields=extended_fields, phi=phi, bounded=False))[1]):
+            return unreviewable
         if (not _attended(orch, websocket, owner)
                 or (getattr(orch, "_ws_active_chat", {}).get(id(websocket)) != chat
                     and consent_decision(orch, websocket, owner, chat, agent, tool, args, risks)[0] != "standing")
@@ -1103,6 +1115,8 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
                                              authority=computer)
             if bypassed is not None:
                 return bypassed
+        if unreviewable is not None:
+            return unreviewable
         goal_token = current_goal_call_token()
         goal_context = None
         if isinstance(goal_token, str) and goal_token:

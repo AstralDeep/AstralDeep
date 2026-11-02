@@ -544,6 +544,7 @@ async def test_named_phi_and_unavailable_analyzer_refuse_blind_approval(runtime,
     else:
         detector.contains_phi.return_value = True
     monkeypatch.setattr("personalization.phi_gate.get_phi_gate", lambda: detector)
+    monkeypatch.setattr("personalization.phi_policy.protection_enabled", lambda *_a, **_k: True)
     response = await _dispatch(runtime, args={"body": "Example Person has a diagnosis"})
     assert "Review unavailable" in response.error["message"]
     assert not getattr(orch, "_hitl_pending_calls", {})
