@@ -107,3 +107,18 @@ async def test_malformed_write_json_is_rejected_before_authorization(orch):
     assert response.error["code"] == "invalid_tool_arguments"
     assert response.error["effect_state"] == "not_started"
     orch._authorize_and_prepare.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_raw_newlines_in_write_content_are_accepted_and_bad_json_names_the_position(orch):
+    websocket = object()
+    orch._authorize_and_prepare = AsyncMock(side_effect=AssertionError("authorization gate must not run"))
+    call = SimpleNamespace(function=SimpleNamespace(name="computer__write", arguments='{"path": "/a", "content": "x'))
+    response = await orch.execute_single_tool(
+        websocket, call, {"computer__write": "computer-use-1"}, "chat-a", "owner-a",
+        tool_to_unqualified={"computer__write": "write_file"},
+    )
+    assert response.error["code"] == "invalid_tool_arguments"
+    assert "line 1, column" in response.error["message"] and "16 KiB" in response.error["message"]
+    lenient = json.loads('{"path": "/a", "content": "one' + "\n" + 'two"}', strict=False)
+    assert lenient["content"] == "one\ntwo"

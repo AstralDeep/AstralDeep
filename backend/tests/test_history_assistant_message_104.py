@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 from orchestrator.orchestrator import _history_assistant_message
@@ -28,3 +29,11 @@ def test_non_json_tool_call_arguments_become_an_empty_object():
     history = _history_assistant_message(message)
     assert [call["function"]["arguments"] for call in history["tool_calls"]] == ["{}", "{}", "{}"]
     assert [call["id"] for call in history["tool_calls"]] == ["call_1", "call_2", "call_3"]
+
+
+def test_raw_control_characters_inside_strings_are_kept_and_re_escaped():
+    raw = '{"path": "/a.mjs", "content": "line one' + "\n" + 'line' + "\t" + 'two"}'
+    message = SimpleNamespace(content=None, tool_calls=[_call("write_file", raw)])
+    arguments = _history_assistant_message(message)["tool_calls"][0]["function"]["arguments"]
+    assert json.loads(arguments) == {"path": "/a.mjs", "content": "line one\nline\ttwo"}
+    assert "\n" not in arguments
