@@ -698,8 +698,13 @@ async def test_a_large_command_under_bypass_runs_instead_of_failing_the_unshown_
     ran = await _call(task_runtime, "run_command", argv=["node", "-e", script], cwd=ROOT)
     assert ran.error is None and [name for name, _args in effects] == ["run_command"]
     assert not rc._PENDING_CARDS
-    secret = await _call(task_runtime, "run_command", argv=["node", "-e", script + " // password: hunter2"], cwd=ROOT)
-    assert secret.error["message"].startswith("Review unavailable") and len(effects) == 1
+    words = await _call(task_runtime, "run_command", cwd=ROOT,
+                        argv=["node", "-e", script + " // const password = process.env.API_KEY; // token secret"])
+    assert words.error is None and len(effects) == 2
+    secret = await _call(task_runtime, "run_command", argv=["node", "-e", script + " // sk-" + "a1" * 12], cwd=ROOT)
+    assert secret.error["message"].startswith("Review unavailable") and len(effects) == 2
+    typed = await _call(task_runtime, "type_text", text="password: hunter2", hwnd=42)
+    assert typed.error and len(effects) == 2
 
 
 def test_the_preview_skips_phi_screening_when_the_user_has_phi_protection_off():

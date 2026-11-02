@@ -130,6 +130,9 @@ _DESTINATION_FIELDS = frozenset({"to", "cc", "bcc", "recipient", "recipients", "
                                  "phone", "destination"})
 _SECRET_MARKERS = re.compile(r"(?i)(?:api[_ -]?key|access[_ -]?token|secret|password|authorization|"
                              r"bearer |credential|-----BEGIN|\bsk-[\w-]{12,}|\beyJ[\w-]+\.[\w-]+\.[\w-]+)")
+_KEY_MATERIAL = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----\s*[A-Za-z0-9+/=]{16}|\bsk-[\w-]{20,}|"
+                           r"\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}|\b(?:ghp|gho|ghs|ghu)_[A-Za-z0-9]{30,}|"
+                           r"\bgithub_pat_\w{30,}|\bAKIA[0-9A-Z]{16}\b")
 _EMAIL_DESTINATION = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _PHONE_DESTINATION = re.compile(r"\+?[0-9(). -]{10,24}")
 
@@ -916,7 +919,7 @@ def _review_summary(args: dict) -> str:
 
 def _review_arguments(args: dict, *, trusted_identifiers: dict | None = None,
                       project_targets=frozenset(), extended_fields=frozenset(), phi: bool = True,
-                      bounded: bool = True) -> tuple[str, bool]:
+                      bounded: bool = True, code: bool = False) -> tuple[str, bool]:
     from orchestrator.hitl import _SENSITIVE_INPUT, sensitive_url
     from personalization.phi_gate import get_phi_gate
     from shared.phi_redactor import PHI_FIELD_PATTERNS, redact
@@ -944,8 +947,8 @@ def _review_arguments(args: dict, *, trusted_identifiers: dict | None = None,
             if trusted:
                 return value
             decoded = unquote(unquote(value))
-            if _SECRET_MARKERS.search(decoded) or (
-                not destination and _SENSITIVE_INPUT.search(decoded)):
+            if (_KEY_MATERIAL if code else _SECRET_MARKERS).search(decoded) or (
+                    not code and not destination and _SENSITIVE_INPUT.search(decoded)):
                 reviewable = False
                 return "[REDACTED — review unavailable]"
             if key == "url":
@@ -1072,7 +1075,8 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
                 and consent_decision(orch, websocket, owner, chat, agent, tool, args, risks)[0] == "standing"
                 and (await asyncio.to_thread(
                     _review_arguments, shown, trusted_identifiers=trusted_identifiers,
-                    project_targets=project_targets, extended_fields=extended_fields, phi=phi, bounded=False))[1]):
+                    project_targets=project_targets, extended_fields=extended_fields, phi=phi, bounded=False,
+                    code=tool in {"write_file", "run_command"}))[1]):
             return unreviewable
         if (not _attended(orch, websocket, owner)
                 or (getattr(orch, "_ws_active_chat", {}).get(id(websocket)) != chat
