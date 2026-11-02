@@ -5,6 +5,7 @@ project requests on outcome evidence instead of waiting for proofs only the work
 
 import pytest
 
+from orchestrator.goal_requirements import select_outcome_references
 from orchestrator.goal_verification import classify_goal
 
 PROJECT = {"project_id": "project", "computer_id": "mac", "computer_name": "Mac",
@@ -27,3 +28,18 @@ async def test_local_project_contract_becomes_an_action_contract_without_a_worke
     assert contract.kind == "action"
     assert contract.required_categories == ("outcome",)
     assert contract.blocked_reason is None
+
+
+
+def test_outcome_references_name_recent_completed_successes_only():
+    observations = [
+        {"call_id": "a", "tool": "run_command", "agent_id": "computer-use-1", "sequence": 1, "outcome": "success",
+         "completed": True, "arguments": {}, "result": {}},
+        {"call_id": "b", "tool": "run_command", "agent_id": "computer-use-1", "sequence": 2, "outcome": "failure",
+         "completed": True, "arguments": {}, "result": {}},
+        {"call_id": "c", "tool": "read_file", "agent_id": "computer-use-1", "sequence": 3, "outcome": "success",
+         "completed": True, "arguments": {}, "result": {}},
+    ]
+    assert select_outcome_references(observations) == {"outcome": ["c", "a"]}
+    assert select_outcome_references([]) == {}
+    assert select_outcome_references("not observations") == {}

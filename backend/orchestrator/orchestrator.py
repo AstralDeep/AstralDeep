@@ -16477,7 +16477,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 decision = CompletionDecision("blocked", reason="The selected project's folder authority changed before verification.")
                             else:
                                 proof = validate_goal_proofs(goal_contract, proof_references, goal_progress.private_observations(), current_project)
+                                if not proof.accepted and goal_contract.kind == "action":
+                                    from orchestrator.goal_requirements import select_outcome_references
+
+                                    fallback = select_outcome_references(goal_progress.private_observations())
+                                    retried = validate_goal_proofs(goal_contract, fallback, goal_progress.private_observations(), current_project) if fallback else None
+                                    if retried is not None and retried.accepted:
+                                        logger.info("goal.proof_autoselected chat=%s outcome=%d", chat_id, len(fallback["outcome"]))
+                                        proof, proof_references = retried, fallback
                                 if not proof.accepted:
+                                    logger.warning("goal.proof_rejected chat=%s kind=%s missing=%s invalid=%s", chat_id,
+                                                   goal_contract.kind, list(proof.missing), list(proof.invalid))
                                     decision = CompletionDecision("continue", (
                                         "Provide real successful tool evidence for the frozen outcome requirements: "
                                         + json.dumps({"missing": proof.missing, "invalid": proof.invalid}),

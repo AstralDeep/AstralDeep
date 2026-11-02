@@ -320,3 +320,34 @@ async def test_budget_exhaustion_steers_the_model_then_summarizes_the_work(goal_
     assert [text.split(":")[1].split(" of ")[0].strip() for text in notices] == ["4", "2"]
     assert summary_calls == [summary_calls[0]] and len(summary_calls) == 1
     assert o.execute_single_tool.await_count == 8
+
+
+@pytest.mark.asyncio
+async def test_action_goal_completes_on_autoselected_outcome_evidence(goal_orch, monkeypatch, user_skills_disabled):
+    from orchestrator import goal_verification
+    from orchestrator.goal_requirements import build_goal_contract
+
+    o = goal_orch
+    monkeypatch.setattr(goal_verification, "classify_goal", AsyncMock(return_value=build_goal_contract("action")))
+    _register(o, "run_command")
+    chat_id, ws = await _chat(o)
+    plans = 0
+
+    async def provider(websocket, messages, tools_desc=None, **kwargs):
+        nonlocal plans
+        if kwargs.get("feature") == "goal_verification":
+            return _verdict("complete")
+        plans += 1
+        if plans == 1:
+            return _msg(tool_calls=[_tc("run_command")]), _usage()
+        return _msg(content="Listed the project root."), _usage()
+
+    o._call_llm = provider
+    o.execute_single_tool = AsyncMock(return_value=SimpleNamespace(
+        result={"_data": {"exit_code": 0, "stdout": "total 4"}}, error=None, ui_components=[], correlation_id=None,
+    ))
+    await o.handle_chat_message(ws, "List the project root", chat_id, user_id="seam-user")
+    final = (await _last_assistant_text(o, chat_id, "seam-user")).lower()
+    assert "listed the project root" in final
+    assert "incomplete" not in final
+    assert plans == 2

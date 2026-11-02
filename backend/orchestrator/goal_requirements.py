@@ -160,6 +160,30 @@ def validate_goal_proofs(
     return ProofAssessment(not missing and not invalid, tuple(missing), tuple(invalid))
 
 
+def select_outcome_references(observations: Iterable[dict[str, Any]]) -> dict[str, list[str]]:
+    """Name the completed successful calls as outcome evidence when a model's own references fail."""
+    if isinstance(observations, (str, bytes, dict)):
+        return {}
+    rows: list[dict[str, Any]] = []
+    try:
+        for row in observations:
+            rows.append(row)
+            if len(rows) > _MAX_OBSERVATIONS:
+                return {}
+    except TypeError:
+        return {}
+    calls, errors = _index_observations(rows)
+    if errors:
+        return {}
+    ordered = sorted(
+        (call_id for call_id in calls if _completed_success(calls[call_id])),
+        key=lambda call_id: (
+            -(calls[call_id].get("sequence") if type(calls[call_id].get("sequence")) is int else -1), call_id),
+    )
+    ids = ordered[:_MAX_PROOF_REFS]
+    return {"outcome": ids} if ids else {}
+
+
 def select_goal_proof_references(
     contract: GoalContract,
     observations: Iterable[dict[str, Any]],
