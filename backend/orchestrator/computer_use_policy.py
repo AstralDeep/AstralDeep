@@ -22,22 +22,27 @@ COMMAND_VERBS: FrozenSet[str] = frozenset({"run_command", "read_output", "interr
 BROWSER_VERBS: FrozenSet[str] = frozenset({
     "browser_snapshot", "browser_get_text", "browser_screenshot", "browser_wait",
     "browser_navigate", "browser_click", "browser_fill", "browser_press", "browser_scroll",
-    "browser_dialog",
+    "browser_dialog", "browser_find", "browser_hover", "browser_zoom", "browser_console",
+    "browser_network", "browser_evaluate", "browser_resize", "browser_tabs",
 })
+ACCESSIBILITY_VERBS: FrozenSet[str] = frozenset({"list_apps", "ax_tree", "ax_find", "ax_action", "menu", "zoom"})
 
 OBSERVE_VERBS: FrozenSet[str] = frozenset({
     "screenshot", "list_windows", "get_clipboard", "read_file", "list_dir", "wait",
     "browser_snapshot", "browser_get_text", "browser_screenshot", "browser_wait",
     "read_output",
+    "list_apps", "ax_tree", "ax_find", "zoom",
+    "browser_find", "browser_zoom", "browser_console", "browser_network",
 })
 INPUT_VERBS: FrozenSet[str] = frozenset({
     "click", "double_click", "right_click", "move", "drag", "scroll", "type_text",
     "press_keys", "focus_window", "open_app", "set_clipboard",
     "browser_navigate", "browser_click", "browser_fill", "browser_press", "browser_scroll",
     "browser_dialog", "interrupt_command",
+    "ax_action", "menu", "browser_hover", "browser_resize", "browser_tabs",
 })
 CONSEQUENTIAL_VERBS: FrozenSet[str] = frozenset({
-    "write_file", "delete_path", "run_command", "project_preview",
+    "write_file", "delete_path", "run_command", "project_preview", "browser_evaluate",
 })
 SESSION_VERBS: FrozenSet[str] = frozenset({
     "list_computers", "start_session", "end_session", "resume_session", "confirm_action",
@@ -63,6 +68,7 @@ SCOPES: Dict[str, str] = {
     "project_preview": "tools:execute",
     "write_file": "tools:files",
     "delete_path": "tools:files",
+    "browser_evaluate": "tools:write",
     "list_computers": "tools:read",
     "start_session": "tools:write",
     "end_session": "tools:write",
@@ -159,6 +165,9 @@ TIMEOUTS: Dict[str, float] = {
     "browser_snapshot": 5.0, "browser_get_text": 5.0, "browser_screenshot": 5.0,
     "browser_wait": 15.0, "browser_navigate": 15.0, "browser_click": 5.0, "browser_fill": 5.0,
     "browser_press": 5.0, "browser_scroll": 5.0, "browser_dialog": 5.0,
+    "list_apps": 5.0, "ax_tree": 8.0, "ax_find": 8.0, "ax_action": 10.0, "menu": 10.0, "zoom": 15.0,
+    "browser_find": 5.0, "browser_hover": 5.0, "browser_zoom": 5.0, "browser_console": 5.0,
+    "browser_network": 5.0, "browser_evaluate": 15.0, "browser_resize": 5.0, "browser_tabs": 15.0,
     "list_computers": 5.0, "start_session": 10.0, "end_session": 5.0,
     "resume_session": 5.0, "confirm_action": 5.0,
 }

@@ -2712,6 +2712,9 @@ COMPUTER_HOST_VERBS: frozenset = frozenset({
     "browser_snapshot", "browser_get_text", "browser_screenshot", "browser_wait",
     "browser_navigate", "browser_click", "browser_fill", "browser_press", "browser_scroll",
     "browser_dialog",
+    "list_apps", "ax_tree", "ax_find", "ax_action", "menu", "zoom",
+    "browser_find", "browser_hover", "browser_zoom", "browser_console", "browser_network",
+    "browser_evaluate", "browser_resize", "browser_tabs",
 })
 COMPUTER_HOST_PLATFORMS: frozenset = frozenset({"windows", "macos", "linux"})
 COMPUTER_HOST_PROTOCOL = 1
@@ -2746,8 +2749,14 @@ class ComputerHostDescriptor:
                 f"computer_host.workspace_roots must list at most {_COMPUTER_HOST_MAX_ROOTS} folders")
         paths = set()
         for root in roots:
-            if not isinstance(root, Mapping) or set(root) != {"name", "path"}:
+            if (not isinstance(root, Mapping) or not {"name", "path"} <= set(root)
+                    or not set(root) <= {"name", "path", "excluded"}):
                 raise ProtocolValidationError("computer_host.workspace_roots entries must contain exactly name, path")
+            excluded = root.get("excluded", ())
+            if (not isinstance(excluded, (list, tuple)) or len(excluded) > 32
+                    or any(not _printable(item, 128) or item.strip("/") == "" for item in excluded)):
+                raise ProtocolValidationError(
+                    "computer_host.workspace_roots excluded must list at most 32 printable patterns")
             path = root["path"]
             if (not _printable(root["name"], _COMPUTER_HOST_ROOT_NAME_MAX)
                     or not _printable(path, _COMPUTER_HOST_ROOT_PATH_MAX) or not path.startswith("/")
