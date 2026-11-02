@@ -27,10 +27,10 @@ UNCHANGED_TEXT = "No changes to the current file."
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
-def _masked(text: str) -> str:
+def _masked(text: str, phi: bool = True) -> str:
     from shared.phi_redactor import PHI_VALUE_PATTERNS, SECRET_VALUE_PATTERNS
 
-    for pattern, replacement in SECRET_VALUE_PATTERNS + PHI_VALUE_PATTERNS:
+    for pattern, replacement in SECRET_VALUE_PATTERNS + (PHI_VALUE_PATTERNS if phi else ()):
         text = pattern.sub(replacement, text)
     return text
 
@@ -44,11 +44,11 @@ def _shown(line: str) -> str:
     return line
 
 
-def unified_diff(path: str, current: Optional[str], proposed: str) -> Tuple[str, bool]:
+def unified_diff(path: str, current: Optional[str], proposed: str, phi: bool = True) -> Tuple[str, bool]:
     budget = DIFF_LIMIT_BYTES - len(TRUNCATED_MARKER.encode("utf-8"))
     lines: List[str] = []
     used = 0
-    for line in difflib.unified_diff(_masked(current or "").splitlines(), _masked(proposed).splitlines(),
+    for line in difflib.unified_diff(_masked(current or "", phi).splitlines(), _masked(proposed, phi).splitlines(),
                                      fromfile="/dev/null" if current is None else path, tofile=path,
                                      lineterm=""):
         shown = _shown(line)
@@ -131,7 +131,10 @@ async def diff_components(orch, websocket, owner: str, chat: Optional[str], args
     state, current = snapshot if snapshot is not None else await _current_text(orch, websocket, owner, chat, args)
     if state == "unavailable" or state == "missing" and args.get("if_exists") == "overwrite":
         return [Text(id=component_id, content=UNAVAILABLE_TEXT, variant="caption").to_dict()]
-    diff, _truncated = await asyncio.to_thread(unified_diff, path, current, proposed)
+    from personalization.phi_policy import protection_enabled
+
+    phi = await asyncio.to_thread(protection_enabled, owner, orch)
+    diff, _truncated = await asyncio.to_thread(unified_diff, path, current, proposed, phi)
     if not diff:
         return [Text(id=component_id, content="Create an empty file." if state == "missing" else UNCHANGED_TEXT,
                      variant="caption").to_dict()]

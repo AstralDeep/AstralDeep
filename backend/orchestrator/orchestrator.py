@@ -1093,6 +1093,9 @@ class Orchestrator:
         from orchestrator.computer_sessions import ComputerSessionManager
         self.computer_hosts = ComputerHostRegistry(self)
         self.computer_sessions = ComputerSessionManager(self, self.computer_hosts)
+        from personalization.phi_policy import bind as bind_phi_policy
+
+        bind_phi_policy(self)
         from orchestrator.terminal_sessions import TerminalSessionManager
         self.terminal_sessions = TerminalSessionManager(orchestrator=self)
         self._job_context: Dict[str, Dict[str, Any]] = {}

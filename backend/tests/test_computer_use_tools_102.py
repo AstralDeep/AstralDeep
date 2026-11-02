@@ -346,7 +346,10 @@ async def test_wait_uses_the_host_verb_while_active(world):
     assert refused["_data"]["code"] == "paused"
 
 
-async def test_foreground_command_returns_shaped_privacy_gated_untrusted_output(world, gate):
+async def test_foreground_command_returns_shaped_privacy_gated_untrusted_output(world, gate, monkeypatch):
+    from personalization import phi_policy
+
+    monkeypatch.setattr(phi_policy, "protection_enabled", lambda *args, **kwargs: True)
     world.replies["run_command"] = {"ok": True, "result": {
         "exit_code": 0, "signal": None, "timed_out": False, "duration_ms": 42,
         "stdout": "3 notes.md\nSSN 123-45-6789\n", "stderr": "warn\x07ing", "stdout_bytes": 30, "stderr_bytes": 8,
@@ -363,7 +366,20 @@ async def test_foreground_command_returns_shaped_privacy_gated_untrusted_output(
     assert 10000 < request["deadline_ms"] <= 15000
 
 
-async def test_command_output_is_withheld_when_the_privacy_gate_is_unavailable(world, gate):
+async def test_command_output_passes_through_unredacted_while_phi_protection_is_off(world, gate):
+    world.replies["run_command"] = {"ok": True, "result": {
+        "exit_code": 0, "signal": None, "timed_out": False, "duration_ms": 4,
+        "stdout": "drwx------  9 sam staff 288 Oct 30 notes\nSSN 123-45-6789\n", "stderr": "",
+        "stdout_bytes": 54, "stderr_bytes": 0, "truncated": False, "cwd": ROOT}}
+    data = (await world.call("run_command", command="ls -la", cwd=ROOT))["_data"]
+    assert data["stdout"] == "drwx------  9 sam staff 288 Oct 30 notes\nSSN 123-45-6789\n"
+    assert data.get("privacy") is None and data["untrusted_output"] is True
+
+
+async def test_command_output_is_withheld_when_the_privacy_gate_is_unavailable(world, gate, monkeypatch):
+    from personalization import phi_policy
+
+    monkeypatch.setattr(phi_policy, "protection_enabled", lambda *args, **kwargs: True)
     gate.fail = True
     world.replies["run_command"] = {"ok": True, "result": {"exit_code": 1, "stdout": "x", "stderr": "",
                                                             "duration_ms": 1}}
@@ -511,7 +527,10 @@ async def test_a_host_send_that_never_completes_is_bounded_by_the_request_deadli
     assert not world.orch.computer_hosts._pending
 
 
-async def test_background_jobs_are_tracked_read_and_interrupted(world, gate):
+async def test_background_jobs_are_tracked_read_and_interrupted(world, gate, monkeypatch):
+    from personalization import phi_policy
+
+    monkeypatch.setattr(phi_policy, "protection_enabled", lambda *args, **kwargs: True)
     world.replies["run_command"] = {"ok": True, "result": {"job_id": JOB.upper(), "started_at": "2026-10-26T00:00:00Z"}}
     started = await world.call("run_command", argv=["tail", "-f", "log.txt"], cwd=ROOT, background=True,
                                timeout_s=3600, env={"LANG": "C"}, stdin="in")

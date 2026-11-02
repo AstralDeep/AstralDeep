@@ -94,9 +94,14 @@ class ChatStepRecorder:
             legacy_database=db,
         )
 
+    def _phi(self) -> bool:
+        from personalization.phi_policy import protection_enabled
+
+        return protection_enabled(self.user_id)
+
     async def start(self, kind: str, name: str, args: Any = None) -> str:
         step_id = uuid.uuid4().hex
-        args_text, args_trunc = redact(args, kind="args")
+        args_text, args_trunc = redact(args, kind="args", phi=self._phi())
         started = _now_ms()
         record = None
         try:
@@ -154,7 +159,7 @@ class ChatStepRecorder:
                 extra={"step_id": step_id, "chat_id": self.chat_id},
             )
             return
-        result_text, result_trunc = redact(result, kind="result")
+        result_text, result_trunc = redact(result, kind="result", phi=self._phi())
         await self._terminate(
             step_id,
             status=STATUS_COMPLETED,
@@ -171,7 +176,7 @@ class ChatStepRecorder:
             )
             return
         msg = str(exc) if exc is not None else "Unknown error"
-        err_text, _ = redact(msg, kind="error")
+        err_text, _ = redact(msg, kind="error", phi=self._phi())
         await self._terminate(
             step_id,
             status=STATUS_ERRORED,

@@ -276,13 +276,15 @@ def _chat_notice_state(orch, user_id):
 def _render_chat_notice_preference(orch, user_id):
     enabled = _chat_notice_state(orch, user_id)
     if enabled is None:
-        return _unavailable("Chat PHI reminder settings are temporarily unavailable.")
+        return _unavailable("PHI protection settings are temporarily unavailable.")
     toggle = _btn(
-        "Turn off PHI reminders" if enabled else "Turn on PHI reminders",
-        "chrome_profile_save", {"chat_phi_notice_enabled": not enabled},
+        "Turn off PHI protection" if enabled else "Turn on PHI protection",
+        "chrome_profile_save", {"phi_protection_enabled": not enabled},
     )
-    return (f'<div class="{_CARD_CLS} space-y-2"><h3>Chat PHI reminders</h3>'
-            f'<p class="text-sm">Currently {"on" if enabled else "off"}</p>{toggle}</div>')
+    return (f'<div class="{_CARD_CLS} space-y-2"><h3>PHI protection</h3>'
+            f'<p class="text-sm">Currently {"on" if enabled else "off"}. When on, protected health '
+            f'information is redacted from command output and chat steps and you get a reminder '
+            f'before it enters a chat.</p>{toggle}</div>')
 
 
 async def _render_memory(orch, user_id: str) -> str:
@@ -606,10 +608,10 @@ def _components_soul(orch, user_id, params):
         goals_text = "\n".join(str(g) for g in (profile.get("goals") or []))
         notes = str((profile.get("personality") or {}).get("notes") or "")
     enabled = _chat_notice_state(orch, user_id)
-    reminder = (_sdui.alert("Chat PHI reminder settings are temporarily unavailable.", "warning")
-                if enabled is None else _sdui.card("Chat PHI reminders", [
-                    _sdui.button("Turn off PHI reminders" if enabled else "Turn on PHI reminders",
-                                 "chrome_profile_save", {"chat_phi_notice_enabled": not enabled}),
+    reminder = (_sdui.alert("PHI protection settings are temporarily unavailable.", "warning")
+                if enabled is None else _sdui.card("PHI protection", [
+                    _sdui.button("Turn off PHI protection" if enabled else "Turn on PHI protection",
+                                 "chrome_profile_save", {"phi_protection_enabled": not enabled}),
                 ]))
     return [
         _sdui.form(
@@ -792,7 +794,7 @@ def _components_dreaming(orch, user_id):
 
 
 async def _handle_profile_save(orch, websocket, user_id, roles, payload):
-    if "chat_phi_notice_enabled" in payload:
+    if "phi_protection_enabled" in payload:
         return await _handle_chat_notice_preference(orch, websocket, user_id, payload)
     svc = _svc(orch)
     if svc is None:
@@ -857,21 +859,21 @@ async def _handle_profile_save(orch, websocket, user_id, roles, payload):
 
 
 async def _handle_chat_notice_preference(orch, websocket, user_id, payload):
-    enabled = payload.get("chat_phi_notice_enabled")
+    enabled = payload.get("phi_protection_enabled")
     if type(enabled) is not bool or not user_id:
-        return SURFACE_KEY, _params("soul"), notice_block("error", "Invalid PHI reminder preference.")
+        return SURFACE_KEY, _params("soul"), notice_block("error", "Invalid PHI protection preference.")
     try:
         await asyncio.to_thread(set_notices_enabled, orch, user_id, enabled)
     except Exception:
         logger.debug("chat notice preference save failed", exc_info=True)
-        return SURFACE_KEY, _params("soul"), notice_block("error", "PHI reminder preference was not saved. Try again.")
+        return SURFACE_KEY, _params("soul"), notice_block("error", "PHI protection preference was not saved. Try again.")
     await record_generic(
         claims=_claims(orch, websocket, user_id), event_class="settings",
-        action_type="settings.chat_phi_notice", description="Updated chat PHI reminder preference",
+        action_type="settings.phi_protection", description="Updated PHI protection preference",
         outputs_meta={"enabled": enabled},
     )
     return SURFACE_KEY, _params("soul"), notice_block(
-        "success", f"PHI reminders {'on' if enabled else 'off'}. Privacy and memory protections stay active.",
+        "success", f"PHI protection {'on' if enabled else 'off'}. Memory and sharing screens stay active.",
     )
 
 
