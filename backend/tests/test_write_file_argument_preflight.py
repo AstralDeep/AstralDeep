@@ -122,3 +122,21 @@ async def test_raw_newlines_in_write_content_are_accepted_and_bad_json_names_the
     assert "line 1, column" in response.error["message"] and "16 KiB" in response.error["message"]
     lenient = json.loads('{"path": "/a", "content": "one' + "\n" + 'two"}', strict=False)
     assert lenient["content"] == "one\ntwo"
+
+
+@pytest.mark.asyncio
+async def test_a_computer_gate_refusal_without_a_code_reaches_the_model_with_its_reason(orch):
+    from orchestrator.orchestrator import GateRefusal, Orchestrator
+    from shared.protocol import MCPResponse
+
+    orch._authorize_and_prepare = AsyncMock(return_value=GateRefusal(
+        response=MCPResponse(error={"message": "The computer session is busy with another command.",
+                                    "retryable": True})))
+    call = SimpleNamespace(function=SimpleNamespace(name="computer__run", arguments='{"command": "echo ok"}'))
+    response = await orch.execute_single_tool(
+        object(), call, {"computer__run": "computer-use-1"}, "chat-a", "owner-a",
+        tool_to_unqualified={"computer__run": "run_command"},
+    )
+    assert response.error["code"] == "refused"
+    content = json.loads(Orchestrator._tool_result_to_llm_content(response, "computer__run", agent_id="computer-use-1"))
+    assert content["code"] == "refused" and "busy with another command" in content["message"]
