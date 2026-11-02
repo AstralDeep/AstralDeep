@@ -157,3 +157,19 @@ def test_continuation_prompt_quotes_the_objective_and_states_the_budget():
     assert "Write the loop" in prompt
     assert "update_goal with status complete" in prompt
     assert "none yet" in continuation_prompt("x", GoalPlan(), turn=50, max_turns=40)
+
+
+def test_a_claim_with_failed_calls_needs_an_explicit_audit():
+    plan = GoalPlan()
+    failures = ["run_command call c1 (failed)"]
+    text, _ = answer(plan, GOAL_TOOL, json.dumps({"status": "complete"}), tool_count=2, successes=1,
+                     other_calls=0, failures=failures)
+    assert text.startswith("update_goal needs your audit first") and "run_command call c1" in text
+    assert plan.claim is None and plan.failures_confirmed is False
+    text, _ = answer(plan, GOAL_TOOL, json.dumps({"status": "complete", "confirm_failures": True}), tool_count=2,
+                     successes=1, other_calls=0, failures=failures)
+    assert text.startswith("Goal marked complete")
+    assert plan.claim == "complete" and plan.failures_confirmed is True
+    clean = GoalPlan()
+    answer(clean, GOAL_TOOL, json.dumps({"status": "complete"}), tool_count=1, successes=1, other_calls=0, failures=[])
+    assert clean.claim == "complete" and clean.failures_confirmed is False

@@ -58,6 +58,7 @@ class GoalProgress:
     _private_observations: list[dict[str, Any]] = field(default_factory=list, init=False, repr=False)
     _pending_approvals: dict[str, dict[str, Any]] = field(default_factory=dict, init=False, repr=False)
     _early_approval_results: dict[str, dict[str, Any]] = field(default_factory=dict, init=False, repr=False)
+    _acknowledged_failures: list[str] = field(default_factory=list, init=False, repr=False)
 
     def __init__(self, request: str) -> None:
         if not isinstance(request, str):
@@ -83,6 +84,7 @@ class GoalProgress:
         self._private_observations = []
         self._pending_approvals = {}
         self._early_approval_results = {}
+        self._acknowledged_failures = []
 
     @property
     def request(self) -> str:
@@ -314,12 +316,35 @@ class GoalProgress:
                 for call_id, item in self._unresolved_unknown.items()
             ],
             "unknown_tracking_overflow": self._unknown_overflow,
+            "acknowledged_failures": list(self._acknowledged_failures),
             "call_outcomes": [dict(item) for item in self._call_outcomes],
             "completed_successes": [
                 {"call_id": call_id, **item, "outcome": "success", "completed": True}
                 for call_id, item in self._successful_calls.items()
             ],
         }
+
+    def failure_summaries(self) -> list[str]:
+        rows = ([(call_id, item, "failed") for call_id, item in self._unresolved_failures.items()]
+                + [(call_id, item, "no known result") for call_id, item in self._unresolved_unknown.items()])
+        rows.sort(key=lambda row: row[1].get("sequence", 0))
+        summaries = [f"{item.get('tool', 'tool')} call {call_id} ({item.get('error_code') or label})"
+                     for call_id, item, label in rows[:_MAX_ITEMS]]
+        untracked = self._failure_overflow + self._unknown_overflow + max(0, len(rows) - _MAX_ITEMS)
+        if untracked:
+            summaries.append(f"{untracked} more")
+        return summaries
+
+    def acknowledge_failures(self) -> int:
+        count = (len(self._unresolved_failures) + len(self._unresolved_unknown)
+                 + self._failure_overflow + self._unknown_overflow)
+        self._acknowledged_failures.extend(sorted(self._unresolved_failures) + sorted(self._unresolved_unknown))
+        self._acknowledged_failures = self._acknowledged_failures[-_MAX_ITEMS:]
+        self._unresolved_failures = {}
+        self._unresolved_unknown = {}
+        self._failure_overflow = 0
+        self._unknown_overflow = 0
+        return count
 
     def private_observations(self) -> list[dict[str, Any]]:
         return [

@@ -16474,7 +16474,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                         goal_progress.request, goal_steering_plan,
                                         turn=turn_count, max_turns=MAX_TURNS)},
                                 ])
-                                logger.info("goal.steer chat=%s idle=%d", chat_id, goal_steering_plan.idle_turns)
+                                logger.warning("goal.steer chat=%s idle=%d", chat_id, goal_steering_plan.idle_turns)
                                 await self._send_chat_status(websocket, "thinking", "Continuing toward the goal…")
                                 continue
                         _steering_claimed = _steering_open and goal_steering_plan.claim == "complete"
@@ -16545,7 +16545,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                     fallback = select_outcome_references(goal_progress.private_observations())
                                     retried = validate_goal_proofs(goal_contract, fallback, goal_progress.private_observations(), current_project) if fallback else None
                                     if retried is not None and retried.accepted:
-                                        logger.info("goal.proof_autoselected chat=%s outcome=%d", chat_id, len(fallback["outcome"]))
+                                        logger.warning("goal.proof_autoselected chat=%s outcome=%d", chat_id, len(fallback["outcome"]))
                                         proof, proof_references = retried, fallback
                                 if not proof.accepted:
                                     logger.warning("goal.proof_rejected chat=%s kind=%s missing=%s invalid=%s", chat_id,
@@ -23478,10 +23478,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         changed = False
         for call in harness:
             text, updated = answer(plan, call.function.name, call.function.arguments,
-                                   tool_count=progress.tool_count, successes=successes, other_calls=len(others))
+                                   tool_count=progress.tool_count, successes=successes, other_calls=len(others),
+                                   failures=progress.failure_summaries())
             changed = changed or updated
+            if plan.claim == "complete" and plan.failures_confirmed:
+                plan.failures_confirmed = False
+                logger.warning("goal.failures_acknowledged chat=%s count=%d", chat_id, progress.acknowledge_failures())
             messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
-        logger.info("goal.harness chat=%s calls=%s steps=%d unfinished=%d claim=%s", chat_id,
+        logger.warning("goal.harness chat=%s calls=%s steps=%d unfinished=%d claim=%s", chat_id,
                     [call.function.name for call in harness], len(plan.steps), len(plan.unfinished()), plan.claim)
         if changed and chat_id:
             try:
