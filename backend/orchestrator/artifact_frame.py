@@ -340,6 +340,7 @@ def assemble(
     frame: Dict[str, Any] = {
         "type": FRAME_TYPE,
         "id": artifact_id,
+        "component_id": artifact_id,
         "title": (_within(meta.get("title"), MAX_TITLE_CHARS)
                   or fallback_title(list(layout) + list(round_components), user_request)),
         "kind": kind if kind in KINDS else DEFAULT_KIND,

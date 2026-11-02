@@ -124,8 +124,9 @@ def test_llm_frame_is_validated_and_emitted():
     })
     llm, calls = _scripted([reply])
     frame = _frame(_drive(llm))
-    assert frame["id"] == artifact_frame.frame_id("chat-1", "ly_test")
+    assert frame["id"] == frame["component_id"] == artifact_frame.frame_id("chat-1", "ly_test")
     assert frame["id"].startswith("art_") and len(frame["id"]) == 20
+    assert list(iter_layout_refs([frame])) == ["wc_0", "wc_1"]
     assert frame["title"] == "Quarter Comparison"
     assert frame["kind"] == "dashboard"
     assert frame["subtitle"] == "Q1 against Q2"
