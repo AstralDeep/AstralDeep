@@ -50,6 +50,7 @@ class FeatureFlags:
             "component_refine": self._read("FF_COMPONENT_REFINE", True),
             "artifact_export": self._read("FF_ARTIFACT_EXPORT", True),
             "artifact_sharing": self._read("FF_ARTIFACT_SHARING", False),
+            "artifact_frame": self._read("FF_ARTIFACT_FRAME", False),
             "bg_continuity": self._read("FF_BG_CONTINUITY", True),
             "byo_agents": self._read("FF_BYO_AGENTS", False),
             "remote_compute": self._read("FF_REMOTE_COMPUTE", False),

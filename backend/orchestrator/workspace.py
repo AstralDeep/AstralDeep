@@ -141,6 +141,11 @@ def iter_layout_refs(node: Any):
         for tab in tabs:
             if isinstance(tab, dict):
                 yield from iter_layout_refs(tab.get("content"))
+    sections = node.get("sections")
+    if isinstance(sections, list):
+        for section in sections:
+            if isinstance(section, dict):
+                yield from iter_layout_refs(section.get("children"))
 
 
 def prune_layout_refs(node: Any, drop: set) -> Any:
@@ -169,6 +174,13 @@ def prune_layout_refs(node: Any, drop: set) -> Any:
                 tab["content"] = prune_layout_refs(tab.get("content") or [], drop)
             new_tabs.append(tab)
         result["tabs"] = new_tabs
+    sections = node.get("sections")
+    if isinstance(sections, list):
+        result["sections"] = [
+            {**section, "children": prune_layout_refs(section.get("children") or [], drop)}
+            if isinstance(section, dict) else section
+            for section in sections
+        ]
     return result
 
 

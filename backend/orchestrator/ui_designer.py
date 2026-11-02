@@ -1,6 +1,7 @@
 """Runs a bounded, fail-open LLM conversation that arranges a chat round's rich
-components into a ref-based layout tree (never rewriting tool output);
-orchestrator.py invokes design_round() when 2+ components render.
+components into a ref-based layout tree, optionally wrapped in an artifact_frame.py
+frame (never rewriting tool output); orchestrator.py invokes design_round() when 2+
+components render.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ import os
 import re
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Set, Tuple
+
+from orchestrator import artifact_frame
 
 logger = logging.getLogger("orchestrator.ui_designer")
 
@@ -96,12 +99,30 @@ def adopt_margin() -> float:
         return 0.5
 
 
-def should_design(round_components: Sequence[Dict[str, Any]], *, timeline_mode: bool = False) -> bool:
-    if timeline_mode or not designer_enabled():
+def should_design(round_components: Sequence[Dict[str, Any]], *, timeline_mode: bool = False,
+                  frame: bool = False) -> bool:
+    if timeline_mode or not (designer_enabled() or frame):
         return False
-    rich = [c for c in round_components if isinstance(c, dict) and c.get("type")]
+    rich = [c for c in artifact_frame.designable(round_components)
+            if isinstance(c, dict) and c.get("type")]
     return len(rich) >= MIN_DESIGN_COMPONENTS
 
+
+_LAYOUT_OUTPUT_RULE = '7. Output ONLY JSON: {"layout": [ ...nodes... ]}. No markdown fences, no commentary.'
+
+_FRAME_OUTPUT_RULE = (
+    '7. Output ONLY JSON in the ARTIFACT FRAME shape: {"title": "...", "kind": '
+    '"report|dashboard|document|app|analysis", "subtitle": "...", "summary": "...", '
+    '"sections": [{"heading": "...", "layout": "stack|grid-2|grid-3", "children": [ ...nodes... ]}]}. '
+    "No markdown fences, no commentary."
+)
+
+_FRAME_GUIDANCE = """ARTIFACT FRAME (this round renders as ONE designed artifact):
+- "title": a 2-6 word name for the whole round, at most 120 characters. "kind": report, dashboard, document, app or analysis.
+- "subtitle" (at most 200 characters) and "summary" (one or two sentences, at most 400 characters) are optional and must be grounded only in the digests.
+- "sections": at most 12, each with a short "heading" (at most 80 characters), a "layout" ("stack" for a column, "grid-2"/"grid-3" only for comparable side-by-side items) and "children" built from the node vocabulary above.
+- Every round component appears exactly once across all sections; at most 60 nodes in total and at most 3 levels of nesting inside a section.
+- The title, subtitle and summary are the masthead, so a hero is optional."""
 
 _LAYOUT_GUIDANCE ="""LAYOUT VOCABULARY (compose freely from these astralprims types):
 - {"type": "ref", "component_id": "<id>"} — places one of the round's components. THE ONLY way to include tool output.
@@ -142,6 +163,21 @@ RESPONSE FORMAT:
 - If the arrangement is already well-designed, reply exactly: DONE"""
 
 
+def _layout_guidance(frame: bool) -> str:
+    if not frame:
+        return _LAYOUT_GUIDANCE
+    return _LAYOUT_GUIDANCE.replace(_LAYOUT_OUTPUT_RULE, _FRAME_OUTPUT_RULE) + "\n\n" + _FRAME_GUIDANCE
+
+
+def _refine_guidance(frame: bool) -> str:
+    if not frame:
+        return _REFINE_GUIDANCE
+    return _REFINE_GUIDANCE.replace(
+        'the complete improved JSON {"layout": [ ...nodes... ]}',
+        "the complete improved JSON object in the ARTIFACT FRAME shape",
+    )
+
+
 def _component_digest(comp: Dict[str, Any]) -> str:
     cid = comp.get("component_id", "?")
     public = {k: v for k, v in comp.items() if not str(k).startswith("_")}
@@ -162,6 +198,7 @@ def build_design_messages(
     allowed_types: Set[str],
     archetype: Optional[str] = None,
     task_prior: str = "",
+    frame: bool = False,
 ) -> List[Dict[str, str]]:
     request = (user_request or "").strip()
     if len(request) > _MAX_REQUEST_CHARS:
@@ -195,7 +232,7 @@ THIS ROUND'S COMPONENTS (place each exactly once via a ref node):
 {canvas_block}
 FULL ALLOWED TYPE PALETTE: {palette}
 {prior_block}{task_block}
-{_LAYOUT_GUIDANCE}"""
+{_layout_guidance(frame)}"""
 
     return [
         {
@@ -247,6 +284,15 @@ def _layout_sketch(
                     content = tab.get("content")
                     if isinstance(content, list):
                         lines.extend(_layout_sketch(content, labels_by_id, indent + 2))
+        sections = node.get("sections")
+        if isinstance(sections, list):
+            for section in sections:
+                if isinstance(section, dict):
+                    lines.append(f'{pad}  - section "{str(section.get("heading", ""))[:60]}" '
+                                 f'layout={section.get("layout", "stack")}')
+                    children = section.get("children")
+                    if isinstance(children, list):
+                        lines.extend(_layout_sketch(children, labels_by_id, indent + 2))
     return lines
 
 
@@ -258,12 +304,14 @@ def build_refine_messages(
     allowed_types: Set[str],
     archetype: Optional[str] = None,
     task_prior: str = "",
+    frame: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, str]]:
     request = (user_request or "").strip()
     if len(request) > _MAX_REQUEST_CHARS:
         request = request[:_MAX_REQUEST_CHARS] + "…"
 
     digests = "\n".join(_component_digest(c) for c in round_components if isinstance(c, dict))
+    shown = [frame] if frame is not None else list(current_layout)
 
     labels_by_id = {
         str(r.get("component_id")): f"{r.get('component_type', '?')} — {r.get('title') or 'untitled'} (canvas)"
@@ -275,10 +323,10 @@ def build_refine_messages(
         for c in round_components
         if isinstance(c, dict) and c.get("component_id")
     })
-    sketch_lines = _layout_sketch(current_layout, labels_by_id)
+    sketch_lines = _layout_sketch(shown, labels_by_id)
     if len(sketch_lines) > _MAX_SKETCH_LINES:
         sketch_lines = sketch_lines[:_MAX_SKETCH_LINES] + ["  …(truncated)"]
-    layout_json = json.dumps(list(current_layout), default=str)
+    layout_json = json.dumps(frame if frame is not None else list(current_layout), default=str)
     if len(layout_json) > _MAX_LAYOUT_JSON_CHARS:
         layout_json = layout_json[:_MAX_LAYOUT_JSON_CHARS] + "…(truncated)"
 
@@ -300,9 +348,9 @@ CURRENT ARRANGEMENT (JSON):
 
 FULL ALLOWED TYPE PALETTE: {palette}
 {prior_block}{task_block}
-{_LAYOUT_GUIDANCE}
+{_layout_guidance(frame is not None)}
 
-{_REFINE_GUIDANCE}"""
+{_refine_guidance(frame is not None)}"""
 
     return [
         {
@@ -332,7 +380,7 @@ class DesignRejected(Exception):
         self.reason = reason
 
 
-def parse_design_response(content: str) -> List[Any]:
+def _decode_design_json(content: str) -> Any:
     text = (content or "").strip()
     if not text:
         raise DesignRejected("empty")
@@ -354,6 +402,11 @@ def parse_design_response(content: str) -> List[Any]:
             data = json.loads(match.group())
         except json.JSONDecodeError as e:
             raise DesignRejected("parse", str(e))
+    return data
+
+
+def parse_design_response(content: str) -> List[Any]:
+    data = _decode_design_json(content)
     if isinstance(data, dict):
         layout = data.get("layout")
     else:
@@ -361,6 +414,13 @@ def parse_design_response(content: str) -> List[Any]:
     if not isinstance(layout, list) or not layout:
         raise DesignRejected("invalid", "missing or empty 'layout' array")
     return layout
+
+
+def parse_frame_response(content: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    split = artifact_frame.split_sections(_decode_design_json(content))
+    if split is None:
+        raise DesignRejected("invalid", "missing or empty 'sections' array")
+    return split
 
 
 def _coerce_node(node: Any) -> Optional[Dict[str, Any]]:
@@ -400,7 +460,7 @@ def validate_layout(
             return {"type": REF_TYPE, "component_id": cid}
         if ntype == "chart":
             node["type"] = ntype = "plotly_chart"
-        if ntype and ntype not in allowed_types:
+        if ntype in artifact_frame.ARTIFACT_TYPES or (ntype and ntype not in allowed_types):
             logger.info("ui_designer: rewriting unknown type %r -> container", ntype)
             node["type"] = ntype = "container"
         structural = ntype in _STRUCTURAL_TYPES or not ntype
@@ -850,9 +910,32 @@ def materialize(
                         tab["content"] = [w for w in (walk(c, depth + 1) for c in content) if w is not None]
                 new_tabs.append(tab)
             node["tabs"] = new_tabs
+        sections = node.get("sections")
+        if isinstance(sections, list):
+            new_sections = []
+            for section in sections:
+                if isinstance(section, dict) and isinstance(section.get("children"), list):
+                    section = {**section, "children": [
+                        w for w in (walk(c, depth + 1) for c in section["children"]) if w is not None]}
+                new_sections.append(section)
+            node["sections"] = new_sections
         return node
 
     return [w for w in (walk(n, 0) for n in (layout or [])) if w is not None]
+
+
+def _lint_frame_meta(meta: Dict[str, Any], spans: List[Dict[str, Any]]
+                     ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, str]]]:
+    probe = [{"type": "text", "title": meta.get("title"), "subtitle": meta.get("subtitle"),
+              "description": meta.get("summary")}]
+    probe += [{"type": "text", "title": span.get("heading")} for span in spans]
+    linted, flags = lint_arrangement(probe)
+    if not flags:
+        return meta, spans, flags
+    meta = {**meta, "title": linted[0].get("title"), "subtitle": linted[0].get("subtitle"),
+            "summary": linted[0].get("description")}
+    spans = [{**span, "heading": node.get("title") or ""} for span, node in zip(spans, linted[1:])]
+    return meta, spans, flags
 
 
 async def design_round(
@@ -868,7 +951,11 @@ async def design_round(
     timeout_s: Optional[float] = None,
     max_rounds: Optional[int] = None,
     device: Optional[Dict[str, Any]] = None,
+    frame: bool = False,
 ) -> Optional[List[Dict[str, Any]]]:
+    round_components = artifact_frame.designable(round_components)
+    canvas_rows = [r for r in (canvas_rows or [])
+                   if str(r.get("component_type") or "") not in artifact_frame.ARTIFACT_TYPES]
     budget = timeout_s if timeout_s is not None else designer_timeout_seconds()
     rounds = max_rounds if max_rounds is not None else designer_max_rounds()
     rounds = max(1, rounds)
@@ -876,15 +963,24 @@ async def design_round(
                  if isinstance(c, dict) and c.get("component_id")]
     canvas_ids = {r.get("component_id") for r in (canvas_rows or []) if r.get("component_id")}
     allowed_refs = set(round_ids) | canvas_ids
+    if frame and not MIN_DESIGN_COMPONENTS <= len(set(round_ids)) <= artifact_frame.MAX_NODES:
+        frame = False
 
-    logger.info("ui_designer.invoked chat=%s components=%d budget_s=%.1f max_rounds=%d",
-                chat_id, len(round_ids), budget, rounds)
+    logger.info("ui_designer.invoked chat=%s components=%d budget_s=%.1f max_rounds=%d frame=%s",
+                chat_id, len(round_ids), budget, rounds, frame)
     started = time.monotonic()
 
-    def _fallback(reason: str, detail: str = "") -> None:
+    def _fallback(reason: str, detail: str = "") -> Optional[List[Dict[str, Any]]]:
         latency_ms = int((time.monotonic() - started) * 1000)
         logger.warning("ui_designer.fallback chat=%s reason=%s latency_ms=%d %s",
                        chat_id, reason, latency_ms, detail)
+        if not frame:
+            return None
+        return artifact_frame.fallback_frame(round_components, chat_id=chat_id,
+                                             layout_key=layout_key, user_request=user_request)
+
+    if frame and not designer_enabled():
+        return _fallback("designer_off")
 
     use_scorer = scorer_enabled()
     use_objectives = False
@@ -925,9 +1021,11 @@ async def design_round(
             ref_types.setdefault(str(_r["component_id"]), str(_r.get("component_type") or ""))
     best_layout: Optional[List[Dict[str, Any]]] = None
     best_score: Optional[float] = None
+    best_frame: Optional[Tuple[Dict[str, Any], List[Dict[str, Any]]]] = None
 
-    def _consider(candidate: List[Dict[str, Any]]) -> None:
-        nonlocal best_layout, best_score
+    def _consider(candidate: List[Dict[str, Any]],
+                  frame_state: Optional[Tuple[Dict[str, Any], List[Dict[str, Any]]]]) -> None:
+        nonlocal best_layout, best_score, best_frame
         if not (use_scorer or use_objectives):
             return
         s = 0.0
@@ -949,12 +1047,16 @@ async def design_round(
         if not scored:
             return
         if best_score is None or s > best_score:
-            best_layout, best_score = candidate, s
+            best_layout, best_score, best_frame = candidate, s, frame_state
 
     current: Optional[List[Dict[str, Any]]] = None
+    current_frame: Optional[Tuple[Dict[str, Any], List[Dict[str, Any]]]] = None
     passes_used = 0
     messages = build_design_messages(user_request, round_components, canvas_rows,
-                                     allowed_types, archetype=archetype, task_prior=task_prior)
+                                     allowed_types, archetype=archetype, task_prior=task_prior,
+                                     frame=frame)
+    reply_shape = ("the ARTIFACT FRAME JSON object" if frame
+                   else 'the JSON object {"layout": [ ...nodes... ]}')
 
     for attempt in range(1, rounds + 1):
         passes_used = attempt
@@ -962,23 +1064,20 @@ async def design_round(
             content = await asyncio.wait_for(llm_call(messages), timeout=budget)
         except asyncio.TimeoutError:
             if current is None:
-                _fallback("timeout", f"budget_s={budget}")
-                return None
+                return _fallback("timeout", f"budget_s={budget}")
             logger.info("ui_designer.refine chat=%s round=%d outcome=timeout — keeping best",
                         chat_id, attempt)
             break
         except Exception as e:
             if current is None:
-                _fallback("llm_error", str(e))
-                return None
+                return _fallback("llm_error", str(e))
             logger.info("ui_designer.refine chat=%s round=%d outcome=llm_error — keeping best",
                         chat_id, attempt)
             break
 
         if not content:
             if current is None:
-                _fallback("llm_error", "empty response")
-                return None
+                return _fallback("llm_error", "empty response")
             logger.info("ui_designer.refine chat=%s round=%d outcome=empty — keeping best",
                         chat_id, attempt)
             break
@@ -989,22 +1088,46 @@ async def design_round(
 
         rejection: Optional[Tuple[str, str]] = None
         layout: Optional[List[Dict[str, Any]]] = None
+        frame_state: Optional[Tuple[Dict[str, Any], List[Dict[str, Any]]]] = None
         try:
-            parsed = parse_design_response(content)
+            if frame:
+                meta, sections = parse_frame_response(content)
+            else:
+                parsed = parse_design_response(content)
         except DesignRejected as e:
             rejection = (e.reason, str(e))
         else:
-            clean, referenced = validate_layout(parsed, allowed_refs, allowed_types)
-            if current is None:
-                layout = repair_layout(clean, referenced, round_ids) or None
-                if layout is None:
-                    rejection = ("invalid", "layout empty after validation")
-            else:
-                placed = set(iter_refs(current))
-                if clean and placed <= set(referenced):
-                    layout = clean
-                else:
+            if frame:
+                clean_sections, referenced = artifact_frame.validate_sections(
+                    sections, allowed_refs,
+                    lambda nodes, refs: validate_layout(nodes, refs, allowed_types))
+                if current is None:
+                    clean_sections = artifact_frame.repair_sections(
+                        clean_sections, referenced, round_ids)
+                    referenced = list(artifact_frame.iter_refs(
+                        [n for sec in clean_sections for n in sec["children"]]))
+                clean, spans = artifact_frame.flatten_sections(clean_sections)
+                placed = set(iter_refs(current)) if current is not None else set()
+                if not clean:
+                    rejection = ("invalid", "artifact frame empty after validation")
+                elif artifact_frame.count_nodes(clean) > artifact_frame.MAX_NODES:
+                    rejection = ("bounds", f"more than {artifact_frame.MAX_NODES} nodes")
+                elif current is not None and not placed <= set(referenced):
                     rejection = ("incomplete", "refinement lost placed components")
+                else:
+                    layout, frame_state = clean, (meta, spans)
+            else:
+                clean, referenced = validate_layout(parsed, allowed_refs, allowed_types)
+                if current is None:
+                    layout = repair_layout(clean, referenced, round_ids) or None
+                    if layout is None:
+                        rejection = ("invalid", "layout empty after validation")
+                else:
+                    placed = set(iter_refs(current))
+                    if clean and placed <= set(referenced):
+                        layout = clean
+                    else:
+                        rejection = ("incomplete", "refinement lost placed components")
 
         if layout is None:
             reason, detail = rejection
@@ -1013,41 +1136,47 @@ async def design_round(
                             chat_id, attempt, reason)
                 break
             if reason == "refusal" or attempt >= rounds:
-                _fallback(reason, detail)
-                return None
+                return _fallback(reason, detail)
             messages = messages + [
                 {"role": "assistant", "content": str(content)[:2000]},
                 {"role": "user", "content": (
                     f"Your previous response could not be used ({reason}: "
-                    f"{detail or 'no detail'}). Reply with ONLY the JSON object "
-                    '{"layout": [ ...nodes... ]} following the rules above — no markdown '
-                    "fences, no commentary."
+                    f"{detail or 'no detail'}). Reply with ONLY {reply_shape} "
+                    "following the rules above — no markdown fences, no commentary."
                 )},
             ]
             continue
 
-        if current is not None and layout == current:
+        if current is not None and layout == current and frame_state == current_frame:
             logger.info("ui_designer.refine chat=%s round=%d outcome=stable", chat_id, attempt)
             break
         improved = current is not None
-        current = layout
-        _consider(current)
+        current, current_frame = layout, frame_state
+        _consider(current, current_frame)
         if improved:
             logger.info("ui_designer.refine chat=%s round=%d outcome=improved", chat_id, attempt)
         if attempt < rounds:
+            frame_view = (artifact_frame.section_view(current_frame[0], current_frame[1], current)
+                          if current_frame is not None else None)
             messages = build_refine_messages(user_request, current, round_components,
                                              canvas_rows, allowed_types,
-                                             archetype=archetype, task_prior=task_prior)
+                                             archetype=archetype, task_prior=task_prior,
+                                             frame=frame_view)
 
     if current is None:
-        _fallback("invalid", "no usable arrangement produced")
-        return None
+        return _fallback("invalid", "no usable arrangement produced")
 
-    final = best_layout if ((use_scorer or use_objectives) and best_layout is not None) else current
+    use_best = (use_scorer or use_objectives) and best_layout is not None
+    final = best_layout if use_best else current
+    final_frame = best_frame if use_best else current_frame
 
     if lint_enabled():
         try:
             linted, dp_flags = lint_arrangement(final)
+            if final_frame is not None:
+                meta, spans, meta_flags = _lint_frame_meta(*final_frame)
+                final_frame = (meta, spans)
+                dp_flags = dp_flags + meta_flags
             if dp_flags:
                 logger.warning("ui_designer.dark_pattern_blocked chat=%s rules=%s",
                                chat_id, sorted({f["rule"] for f in dp_flags}))
@@ -1071,10 +1200,13 @@ async def design_round(
 
     if conservative_enabled() and current_layout:
         try:
-            if not should_adopt(final, current_layout, ref_types=ref_types):
+            if not should_adopt(final, artifact_frame.inner_layout(current_layout),
+                                ref_types=ref_types):
                 logger.info("ui_designer.conservative chat=%s layout_key=%s — kept existing "
                             "(re-design not worth the disruption)", chat_id, layout_key)
-                final = list(current_layout)
+                if artifact_frame.is_frame_layout(current_layout):
+                    return list(current_layout)
+                final, final_frame = list(current_layout), None
         except Exception:
             logger.debug("ui_designer: conservative check failed — adopting new", exc_info=True)
 
@@ -1084,13 +1216,19 @@ async def design_round(
     latency_ms = int((time.monotonic() - started) * 1000)
     logger.info(
         "ui_designer.designed chat=%s layout_key=%s refs=%d garnish=%d rounds=%d "
-        "score=%s archetype=%s a11y=%s latency_ms=%d",
+        "score=%s archetype=%s a11y=%s frame=%s latency_ms=%d",
         chat_id, layout_key, len(set(iter_refs(layout))), garnish_count, passes_used,
         ("%.3f" % best_score) if best_score is not None else "off",
         archetype or "none",
         len(a11y_findings) if a11y_audit_enabled() else "off",
+        final_frame is not None,
         latency_ms,
     )
+    if final_frame is not None:
+        return [artifact_frame.assemble(
+            final_frame[0], final_frame[1], layout,
+            artifact_id=artifact_frame.frame_id(chat_id, layout_key),
+            user_request=user_request, round_components=round_components)]
     return layout
 
 
