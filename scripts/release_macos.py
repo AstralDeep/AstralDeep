@@ -73,6 +73,9 @@ def _load_packager():
 packager = _load_packager()
 
 
+FAILURE_OUTPUT_LIMIT = 400_000
+
+
 @dataclass(frozen=True)
 class Result:
     returncode: int
@@ -100,12 +103,18 @@ class Runner:
             return Result(0, preview)
         result = self._execute(command, cwd)
         if check and result.returncode:
+            self.out(f"{command[0]} output before the failure:\n{failure_output(result)}")
             raise ReleaseError(f"{command[0]} failed with status {result.returncode}: {failure_detail(result)}")
         return result
 
     def _execute(self, command: list[str], cwd: Path | None) -> Result:
         done = subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False)
         return Result(done.returncode, done.stdout, done.stderr)
+
+
+def failure_output(result: Result) -> str:
+    combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    return combined[-FAILURE_OUTPUT_LIMIT:]
 
 
 def failure_detail(result: Result) -> str:
