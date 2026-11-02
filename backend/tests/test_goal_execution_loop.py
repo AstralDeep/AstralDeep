@@ -41,6 +41,9 @@ async def test_remote_project_plan_is_repaired_before_any_effect(goal_orch, monk
 
     async def provider(_socket, messages, tools_desc=None, **kwargs):
         nonlocal plans
+        if tools_desc is None:
+            assert "budget of 2 turns is exhausted" in messages[-1]["content"]
+            return _msg(content="Ran the local check; the game folder was not created."), _usage()
         plans += 1
         if plans == 1:
             names = [tool["function"]["name"] for tool in tools_desc]

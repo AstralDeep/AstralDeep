@@ -39,11 +39,22 @@ def budget_notice(turn_count: int, max_turns: int) -> str | None:
     )
 
 
-def budget_summary_prompt(max_turns: int) -> str:
+REPEATED_FAILURES_REASON = "Repeated tool failures prevented verified completion."
+
+
+def summary_worthy(stop_reason: str | None, tool_count: int) -> bool:
+    return tool_count > 0 and stop_reason in (None, REPEATED_FAILURES_REASON)
+
+
+def budget_summary_prompt(max_turns: int, stop_reason: str | None = None) -> str:
+    ending = (
+        f"The run stopped early: {stop_reason}" if stop_reason
+        else f"The execution budget of {max_turns} turns is exhausted"
+    )
     return (
-        f"The execution budget of {max_turns} turns is exhausted and no further tools will run. Reply in plain "
-        "text under 200 words: what was created or changed (with paths), which commands ran and their results, "
-        "what remains, and the single next step. Do not call tools."
+        f"{ending} and no further tools will run. Reply in plain text under 200 words: what was created or "
+        "changed (with paths), which commands ran and their results, what remains, and the single next step. "
+        "Do not call tools."
     )
 
 
