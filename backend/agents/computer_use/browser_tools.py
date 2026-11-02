@@ -759,9 +759,10 @@ def browser_console(**kwargs) -> Dict[str, Any]:
     if reply is not None:
         return reply
     entries, cut = _entries(result.get("entries"), args["limit"], lambda item: {
-        "level": _bounded(item.get("level"), 16), "message": _bounded(item.get("message"), _LINE_CHARS),
-        "source": _redact(_bounded(item.get("source"), _URL_CHARS)), "line": _number(item.get("line")),
-        "time": _bounded(item.get("time"), 40)})
+        "level": _bounded(item.get("level"), 16),
+        "message": _bounded(item.get("message", item.get("text")), _LINE_CHARS),
+        "source": _redact(_bounded(item.get("source") or item.get("url"), _URL_CHARS)),
+        "line": _number(item.get("line")), "time": _bounded(item.get("time", item.get("at")), 40)})
     return mt._data(_page_data(host, session, result, entries=entries, count=len(entries),
                                truncated=cut or result.get("truncated") is True, trust=_UNTRUSTED))
 
@@ -785,7 +786,7 @@ def browser_network(**kwargs) -> Dict[str, Any]:
     result, reply = _send(host, session, "browser_network", args, kwargs)
     if reply is not None:
         return reply
-    requests, cut = _entries(result.get("requests"), args["limit"], lambda item: {
+    requests, cut = _entries(result.get("requests", result.get("entries")), args["limit"], lambda item: {
         "url": _redact(_bounded(item.get("url"), _URL_CHARS)), "type": _bounded(item.get("type"), 32),
         "method": _bounded(item.get("method"), 16), "status": _number(item.get("status")),
         "duration_ms": _number(item.get("duration_ms")), "transfer_size": _number(item.get("transfer_size"))})
@@ -819,7 +820,7 @@ def browser_evaluate(**kwargs) -> Dict[str, Any]:
     result, reply = _send(host, session, "browser_evaluate", {"script": script}, kwargs)
     if reply is not None:
         return reply
-    value = _clean(result.get("value"))
+    value = _clean(result.get("value", result.get("result")))
     encoded = json.dumps(value, ensure_ascii=False)
     truncated = result.get("truncated") is True or len(encoded) > _MAX_RESULT_CHARS
     if len(encoded) > _MAX_RESULT_CHARS:
@@ -888,11 +889,12 @@ def browser_tabs(**kwargs) -> Dict[str, Any]:
     result, reply = _send(host, session, "browser_tabs", args, kwargs)
     if reply is not None:
         return reply
+    listed = [{**tab, "tab_id": tab.get("tab_id", tab.get("id"))}
+              for tab in (result.get("tabs") or [])[:_MAX_TABS] if isinstance(tab, Mapping)]
     tabs = [{"tab_id": tab["tab_id"], "url": _url(tab.get("url")), "title": _bounded(tab.get("title"), _TITLE_CHARS),
              "active": tab.get("active") is True}
-            for tab in (result.get("tabs") or [])[:_MAX_TABS]
-            if isinstance(tab, Mapping) and isinstance(tab.get("tab_id"), str) and _TOKEN.fullmatch(tab["tab_id"])]
-    active = result.get("active_tab_id")
+            for tab in listed if isinstance(tab.get("tab_id"), str) and _TOKEN.fullmatch(tab["tab_id"])]
+    active = result.get("active_tab_id", result.get("active"))
     if not isinstance(active, str) or _TOKEN.fullmatch(active) is None:
         active = next((tab["tab_id"] for tab in tabs if tab["active"]), None)
     current = next((tab for tab in tabs if tab["tab_id"] == active), {})
