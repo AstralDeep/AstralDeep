@@ -31,13 +31,15 @@ def _context(orch):
 
 
 def notices_enabled(orch, user_id: str) -> bool:
-    context = _context(orch)
-    return context.call(context.repository.get_chat_phi_notice_enabled, owner_id=user_id)
+    from personalization.phi_policy import protection_enabled
+
+    return protection_enabled(user_id, orch)
 
 
 def set_notices_enabled(orch, user_id: str, enabled: bool) -> None:
-    context = _context(orch)
-    context.call(context.repository.set_chat_phi_notice_enabled, owner_id=user_id, enabled=enabled)
+    from personalization.phi_policy import set_protection_enabled
+
+    set_protection_enabled(user_id, enabled, orch)
 
 
 async def notify_if_detected(orch, websocket, chat_id: str, user_id: str, message: str) -> None:

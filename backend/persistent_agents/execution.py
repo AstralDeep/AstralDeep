@@ -21,6 +21,7 @@ from astralplane.repositories.assignments import (
 from orchestrator.chain_authority import AuthoritySkip
 from orchestrator.tool_permissions import turn_permission_memo
 from personalization.phi_gate import get_phi_gate
+from personalization.phi_policy import redaction_gate
 from shared.llm_text import strip_reasoning_markup
 
 from persistent_agents.cost_bounds import quoted_amount
@@ -489,7 +490,8 @@ class ActionExecutor:
                             raise DispatchDenied("assignment_result_quarantined")
                         if page is not None:
                             protected, redacted = await asyncio.to_thread(redact_observation,
-                                {"text": page["text"], "title": page["title"]}, get_phi_gate())
+                                {"text": page["text"], "title": page["title"]},
+                                redaction_gate(self.record.owner_id))
                             protected = {**page, **protected}
                             await safe_text(canonical({key: protected[key] for key in
                                 ("requested_url", "final_url", "title", "text")}),
@@ -498,7 +500,7 @@ class ActionExecutor:
                                 source_action_id=action.action_id, redacted=redacted)
                         else:
                             protected, redacted = await asyncio.to_thread(
-                                redact_observation, normalized, get_phi_gate())
+                                redact_observation, normalized, redaction_gate(self.record.owner_id))
                             await safe_text(canonical(protected), reviewed_urls(self.record.definition.source))
                             text = protected["text"] or canonical(protected["data"])
                             result = {"text": text[:4096], "revision_digest": digest(protected),

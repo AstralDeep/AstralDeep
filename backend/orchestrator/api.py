@@ -793,6 +793,7 @@ async def get_chat_steps(
     response.headers["Cache-Control"] = "no-store"
 
     try:
+        from personalization.phi_policy import protection_enabled
         from shared.phi_redactor import redact
 
         records = await asyncio.to_thread(
@@ -800,6 +801,7 @@ async def get_chat_steps(
             chat_id,
             user_id,
         )
+        phi = await asyncio.to_thread(protection_enabled, user_id, orch)
 
         import time as _time
         now_ms = int(_time.time() * 1000)
@@ -814,9 +816,9 @@ async def get_chat_steps(
                 and now_ms - record.started_at > 30_000
             ):
                 status_value = "interrupted"
-            args_text, _ = redact(record.args_truncated, kind="args")
-            result_text, _ = redact(record.result_summary, kind="result")
-            error_text, _ = redact(record.error_message, kind="error")
+            args_text, _ = redact(record.args_truncated, kind="args", phi=phi)
+            result_text, _ = redact(record.result_summary, kind="result", phi=phi)
+            error_text, _ = redact(record.error_message, kind="error", phi=phi)
             steps.append({
                 "id": record.step_id,
                 "chat_id": record.conversation_id,

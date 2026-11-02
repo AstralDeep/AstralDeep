@@ -1313,11 +1313,14 @@ class _Refusal(ValueError):
         self.code = code
 
 
-def _private(text: str) -> Tuple[str, Optional[str]]:
+def _private(text: str, user_id: Optional[str] = None) -> Tuple[str, Optional[str]]:
     if not text:
         return "", None
     from personalization.phi_gate import get_phi_gate
+    from personalization.phi_policy import protection_enabled
 
+    if not protection_enabled(user_id):
+        return text, None
     gate = get_phi_gate()
     try:
         try:
@@ -1330,12 +1333,12 @@ def _private(text: str) -> Tuple[str, Optional[str]]:
     return cleaned, ("redacted" if changed else None)
 
 
-def _tail(value: Any, limit: int) -> Tuple[str, Optional[str]]:
+def _tail(value: Any, limit: int, user_id: Optional[str] = None) -> Tuple[str, Optional[str]]:
     text = _CTRL.sub("", value) if isinstance(value, str) else ""
     raw = text.encode("utf-8")
     if len(raw) > limit:
         text = raw[-limit:].decode("utf-8", "ignore")
-    return _private(text)
+    return _private(text, user_id)
 
 
 def _current_root_stdout(result, cwd, lease) -> bool:
@@ -1493,10 +1496,10 @@ def run_command(**kwargs) -> Dict[str, Any]:
         return _data({"computer": host.name, "job_id": job, "started_at": started_at, "background": True,
                       "note": "read its output with read_output; stop it with interrupt_command"})
     known_stdout = _current_root_stdout(result, args["cwd"], output_lease)
-    stdout, out_state = (result["stdout"], None) if known_stdout else _tail(result.get("stdout"), _TAIL_BYTES)
-    stderr, err_state = _tail(result.get("stderr"), _TAIL_BYTES)
+    stdout, out_state = (result["stdout"], None) if known_stdout else _tail(result.get("stdout"), _TAIL_BYTES, _u)
+    stderr, err_state = _tail(result.get("stderr"), _TAIL_BYTES, _u)
     if known_stdout and not _current_root_stdout(result, args["cwd"], output_lease):
-        stdout, out_state = _tail(result.get("stdout"), _TAIL_BYTES)
+        stdout, out_state = _tail(result.get("stdout"), _TAIL_BYTES, _u)
     data = _privacy({
         "computer": host.name, "exit_code": _exit_code(result.get("exit_code")),
         "signal": _sanitize(result.get("signal"), 16) or None, "timed_out": result.get("timed_out") is True,
@@ -1536,7 +1539,7 @@ def read_output(**kwargs) -> Dict[str, Any]:
     chunks, states = [], []
     for chunk in (result.get("chunks") or [])[:_MAX_CHUNKS]:
         if isinstance(chunk, dict) and chunk.get("stream") in _STREAMS:
-            text, privacy = _tail(chunk.get("data"), _CHUNK_BYTES)
+            text, privacy = _tail(chunk.get("data"), _CHUNK_BYTES, kwargs.get("user_id"))
             states.append(privacy)
             chunks.append({"stream": chunk["stream"], "offset": _count(chunk.get("offset")), "data": text})
     return _data(_privacy({"computer": host.name, "job_id": job, "state": state,

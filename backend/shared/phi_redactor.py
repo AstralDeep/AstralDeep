@@ -139,9 +139,9 @@ def _matches_secret_field_key(key: str) -> bool:
     return bool(SECRET_FIELD_REGEX.search(lowered))
 
 
-def _redact_string(s: str) -> Tuple[str, bool]:
+def _redact_string(s: str, phi: bool = True) -> Tuple[str, bool]:
     changed = False
-    for pattern, replacement in PHI_VALUE_PATTERNS + SECRET_VALUE_PATTERNS:
+    for pattern, replacement in (PHI_VALUE_PATTERNS if phi else ()) + SECRET_VALUE_PATTERNS:
         new_s = pattern.sub(replacement, s)
         if new_s != s:
             changed = True
@@ -159,23 +159,23 @@ def _mask_value(value: Any, marker: str = "[REDACTED:phi]") -> Any:
     return marker
 
 
-def _redact_walk(value: Any, redacted: list) -> Any:
+def _redact_walk(value: Any, redacted: list, phi: bool = True) -> Any:
     if isinstance(value, dict):
         result = {}
         for k, v in value.items():
-            if _matches_phi_field_key(k):
+            if phi and _matches_phi_field_key(k):
                 result[k] = _mask_value(v, "[REDACTED:phi]")
                 redacted[0] = True
             elif _matches_secret_field_key(k):
                 result[k] = _mask_value(v, "[REDACTED:secret]")
                 redacted[0] = True
             else:
-                result[k] = _redact_walk(v, redacted)
+                result[k] = _redact_walk(v, redacted, phi)
         return result
     if isinstance(value, list):
-        return [_redact_walk(item, redacted) for item in value]
+        return [_redact_walk(item, redacted, phi) for item in value]
     if isinstance(value, str):
-        new, changed = _redact_string(value)
+        new, changed = _redact_string(value, phi)
         if changed:
             redacted[0] = True
         return new
@@ -189,12 +189,14 @@ def _truncate(s: str, limit: int = TRUNCATION_LIMIT) -> Tuple[str, bool]:
     return s[:cutoff] + TRUNCATION_MARKER, True
 
 
-def redact(value: Any, *, kind: str = "args", max_length: int = TRUNCATION_LIMIT) -> Tuple[Optional[str], bool]:
+def redact(
+    value: Any, *, kind: str = "args", max_length: int = TRUNCATION_LIMIT, phi: bool = True,
+) -> Tuple[Optional[str], bool]:
     if value is None:
         return None, False
     try:
         flag = [False]
-        scrubbed = _redact_walk(value, flag)
+        scrubbed = _redact_walk(value, flag, phi)
         if isinstance(scrubbed, str):
             serialised = scrubbed
         else:

@@ -67,6 +67,8 @@ def content_text(value, depth=0) -> str:
 
 def redact_observation(value, gate):
     changed = False
+    if gate is None:
+        return value, False
 
     def walk(node, depth=0):
         nonlocal changed

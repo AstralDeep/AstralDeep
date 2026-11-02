@@ -110,7 +110,8 @@ class TestStart:
         after = db.fetch_one("SELECT step_count FROM messages WHERE id = ?", (msg_id,))
         assert after["step_count"] == before["step_count"] + 3
 
-    def test_phi_in_args_is_redacted(self, db, recorder):
+    def test_phi_in_args_is_redacted(self, db, recorder, monkeypatch):
+        monkeypatch.setattr(recorder, "_phi", lambda: True)
         step_id = asyncio.run(recorder.start(
             "tool_call",
             "lookup_patient",
@@ -144,7 +145,8 @@ class TestComplete:
         assert events[0]["step"]["status"] == "completed"
         assert events[0]["step"]["ended_at"] is not None
 
-    def test_phi_in_result_is_redacted(self, db, recorder):
+    def test_phi_in_result_is_redacted(self, db, recorder, monkeypatch):
+        monkeypatch.setattr(recorder, "_phi", lambda: True)
         step_id = asyncio.run(recorder.start("tool_call", "x", {}))
         asyncio.run(recorder.complete(step_id, {"patient_name": "Jane Doe"}))
         row = db.fetch_one(
@@ -163,7 +165,8 @@ class TestError:
         assert row["ended_at"] is not None
         assert "boom" in row["error_message"]
 
-    def test_phi_in_error_is_redacted(self, db, recorder):
+    def test_phi_in_error_is_redacted(self, db, recorder, monkeypatch):
+        monkeypatch.setattr(recorder, "_phi", lambda: True)
         step_id = asyncio.run(recorder.start("tool_call", "x", {}))
         asyncio.run(recorder.error(
             step_id,

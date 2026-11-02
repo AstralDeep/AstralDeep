@@ -483,10 +483,10 @@ def test_phi_notice_control_has_same_saved_choice_on_web_and_native(monkeypatch,
     monkeypatch.setattr(surf, "notices_enabled", lambda *_: enabled)
     html = render(orch)
     components = surf._components_soul(orch, "u1", {})
-    label = "Turn off PHI reminders" if enabled else "Turn on PHI reminders"
+    label = "Turn off PHI protection" if enabled else "Turn on PHI protection"
     assert label in html and label in str(components)
-    assert {"chat_phi_notice_enabled": not enabled} in _html_action_payloads(html, "chrome_profile_save")
-    assert {"chat_phi_notice_enabled": not enabled} in _sdui_action_payloads(components, "chrome_profile_save")
+    assert {"phi_protection_enabled": not enabled} in _html_action_payloads(html, "chrome_profile_save")
+    assert {"phi_protection_enabled": not enabled} in _sdui_action_payloads(components, "chrome_profile_save")
 
 
 def test_phi_preference_save_is_owner_scoped_audited_and_leaves_profile_untouched(monkeypatch):
@@ -495,9 +495,9 @@ def test_phi_preference_save_is_owner_scoped_audited_and_leaves_profile_untouche
     audit = AsyncMock()
     monkeypatch.setattr(surf, "record_generic", audit)
     monkeypatch.setattr(surf, "set_notices_enabled", lambda _orch, uid, value: writes.append((uid, value)))
-    _, _, notice = call(surf._handle_profile_save, orch, {"chat_phi_notice_enabled": False, "user_id": "other"})
+    _, _, notice = call(surf._handle_profile_save, orch, {"phi_protection_enabled": False, "user_id": "other"})
     assert writes == [("u1", False)]
-    assert "PHI reminders off" in notice
+    assert "PHI protection off" in notice
     assert not orch.personalization_service.repo.upsert_calls
     assert audit.await_args.kwargs["claims"]["sub"] == "u1"
     assert audit.await_args.kwargs["outputs_meta"] == {"enabled": False}
@@ -508,15 +508,15 @@ def test_phi_preference_requires_boolean(monkeypatch, value):
     def unexpected(*_):
         raise AssertionError("invalid preference must not persist")
     monkeypatch.setattr(surf, "set_notices_enabled", unexpected)
-    _, _, notice = call(surf._handle_profile_save, make_orch(), {"chat_phi_notice_enabled": value})
-    assert "Invalid PHI reminder preference" in notice
+    _, _, notice = call(surf._handle_profile_save, make_orch(), {"phi_protection_enabled": value})
+    assert "Invalid PHI protection preference" in notice
 
 
 def test_phi_preference_storage_failure_is_not_success(monkeypatch):
     def unavailable(*_):
         raise RuntimeError("unavailable")
     monkeypatch.setattr(surf, "set_notices_enabled", unavailable)
-    _, _, notice = call(surf._handle_profile_save, make_orch(), {"chat_phi_notice_enabled": True})
+    _, _, notice = call(surf._handle_profile_save, make_orch(), {"phi_protection_enabled": True})
     assert "was not saved" in notice
 
 
