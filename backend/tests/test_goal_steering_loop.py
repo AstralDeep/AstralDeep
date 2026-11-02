@@ -200,3 +200,29 @@ async def test_steering_off_keeps_the_harness_tools_out_of_the_catalog(steering_
     await o.handle_chat_message(ws, "List the project root", chat_id, user_id="seam-user")
     assert all("update_plan" not in turn["tools"] for turn in seen)
     assert not any(text.startswith("[goal plan]") for turn in seen for text in _texts(turn["messages"]))
+
+
+@pytest.mark.asyncio
+async def test_a_failing_command_can_finish_after_the_model_audits_it(steering_orch, user_skills_disabled):
+    o = steering_orch
+    o.execute_single_tool = AsyncMock(side_effect=[
+        SimpleNamespace(result={"_data": {"exit_code": 0, "stdout": "improve-core.mjs"}},
+                        error=None, ui_components=[], correlation_id=None),
+        SimpleNamespace(result={"_data": {"exit_code": 1, "stdout": "", "stderr": "SyntaxError: no export main"}},
+                        error=None, ui_components=[], correlation_id=None),
+    ])
+    chat_id, ws = await _chat(o)
+    seen = []
+    o._call_llm = _scripted([
+        [_call("run_command", {"command": "ls"})],
+        [_call("run_command", {"command": "node improve-core.mjs"})],
+        [_goal("complete")],
+        [_call("update_goal", {"status": "complete", "confirm_failures": True})],
+        "Ran it: it exits 1 with SyntaxError: no export main.",
+    ], seen)
+    await o.handle_chat_message(ws, "Run node improve-core.mjs and show me its raw output", chat_id,
+                                user_id="seam-user")
+    final = await _last_assistant_text(o, chat_id, "seam-user")
+    assert "exits 1 with SyntaxError" in final and "incomplete" not in final.lower()
+    audit = [text for text in _texts(seen[3]["messages"]) if text.startswith("update_goal needs your audit")]
+    assert audit and "run_command call" in audit[0]

@@ -776,3 +776,19 @@ def test_original_objective_cannot_be_replaced_through_public_property():
     with pytest.raises(AttributeError):
         progress.request = "tool supplied text"
     assert progress.request == "Keep this objective"
+
+
+def test_failed_calls_are_summarised_and_cleared_only_by_an_explicit_acknowledgement():
+    from types import SimpleNamespace
+
+    from orchestrator.goal_progress import CompletionDecision, GoalProgress
+
+    progress = GoalProgress("Run the script")
+    progress.record("c1", "run_command", '{"command": "node a.mjs"}',
+                    SimpleNamespace(result={"_data": {"exit_code": 1}}, error=None), agent_id="computer-use-1")
+    assert progress.failure_summaries() == ["run_command call c1 (failed)"]
+    assert progress.assess(CompletionDecision("complete")).status == "continue"
+    assert progress.acknowledge_failures() == 1
+    assert progress.failure_summaries() == []
+    assert progress.evidence()["acknowledged_failures"] == ["c1"]
+    assert progress.assess(CompletionDecision("complete")).status == "complete"

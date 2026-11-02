@@ -78,6 +78,10 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "properties": {
                     "status": {"type": "string", "enum": ["complete", "blocked"]},
                     "reason": {"type": "string", "description": "Required for blocked: what is blocking and what is needed."},
+                    "confirm_failures": {"type": "boolean", "description": (
+                        "Set true only after update_goal listed failed calls and you checked that each one is "
+                        "expected (for example a command whose failing output is the answer) or irrelevant "
+                        "to the objective.")},
                 },
                 "required": ["status"],
                 "additionalProperties": False,
@@ -97,6 +101,7 @@ class GoalPlan:
     claim_reason: str = ""
     idle_turns: int = 0
     component_id: str = ""
+    failures_confirmed: bool = False
 
     def unfinished(self) -> list[str]:
         return [step for step, status in self.steps if status != "completed"]
@@ -162,7 +167,7 @@ def _apply_plan(plan: GoalPlan, raw: Any, tool_count: int) -> tuple[str, bool]:
     return "Plan updated", True
 
 
-def _claim(plan: GoalPlan, raw: Any, *, successes: int, other_calls: int) -> str:
+def _claim(plan: GoalPlan, raw: Any, *, successes: int, other_calls: int, failures: list[str]) -> str:
     args = _arguments(raw)
     status = args.get("status") if args else None
     if status not in ("complete", "blocked"):
@@ -183,17 +188,22 @@ def _claim(plan: GoalPlan, raw: Any, *, successes: int, other_calls: int) -> str
     if unfinished:
         return ("update_goal was not applied: these plan steps are not completed: " + json.dumps(unfinished)
                 + ". Finish them, or update the plan if they are no longer needed, then call update_goal.")
+    if failures and args.get("confirm_failures") is not True:
+        return ("update_goal needs your audit first. These tool calls failed or returned no result: "
+                + json.dumps(failures) + ". Fix any that matter to the objective. If each one is expected or "
+                "irrelevant, call update_goal with status complete and confirm_failures true.")
     plan.claim, plan.claim_reason = "complete", ""
+    plan.failures_confirmed = bool(failures)
     return ("Goal marked complete. Reply to the user now with the final answer: what was done and the evidence "
             "from tool results. Do not call more tools.")
 
 
 def answer(plan: GoalPlan, name: str, raw: Any, *, tool_count: int, successes: int,
-           other_calls: int) -> tuple[str, bool]:
+           other_calls: int, failures: Optional[list[str]] = None) -> tuple[str, bool]:
     if name == PLAN_TOOL:
         return _apply_plan(plan, raw, tool_count)
     if name == GOAL_TOOL:
-        return _claim(plan, raw, successes=successes, other_calls=other_calls), False
+        return _claim(plan, raw, successes=successes, other_calls=other_calls, failures=failures or []), False
     return f"{name} is not a goal harness tool.", False
 
 
