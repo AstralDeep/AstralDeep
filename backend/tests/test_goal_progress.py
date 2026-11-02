@@ -792,3 +792,19 @@ def test_failed_calls_are_summarised_and_cleared_only_by_an_explicit_acknowledge
     assert progress.failure_summaries() == []
     assert progress.evidence()["acknowledged_failures"] == ["c1"]
     assert progress.assess(CompletionDecision("complete")).status == "complete"
+
+
+def test_the_stall_summary_names_the_repeated_failure_and_clears_on_success():
+    from types import SimpleNamespace
+
+    from orchestrator.goal_progress import GoalProgress
+
+    progress = GoalProgress("Run the script")
+    failing = SimpleNamespace(result={"_data": {"exit_code": 2}}, error=None)
+    for index in range(3):
+        progress.record(f"f{index}", "run_command", '{"command": "make"}', failing, agent_id="computer-use-1")
+    assert progress.stalled
+    assert progress.last_failure_summary == "run_command exit=2 code=None"
+    progress.record("ok", "run_command", '{"command": "ls"}',
+                    SimpleNamespace(result={"_data": {"exit_code": 0}}, error=None), agent_id="computer-use-1")
+    assert not progress.stalled and progress.last_failure_summary == "none"

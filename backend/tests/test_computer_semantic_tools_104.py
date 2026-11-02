@@ -707,3 +707,17 @@ async def test_a_host_that_acts_on_a_consequential_element_without_a_permit_is_l
         world.replies["ax_action"] = _ok(element="Save", bundle_id="com.apple.Terminal")
         await world.call("ax_action", ref="a8", snapshot_id="x3", action="press")
     assert sum("without a review permit" in record.message for record in caplog.records) == 2
+
+
+async def test_repeated_reads_keep_returning_the_content_with_a_nudge(world):
+    world.replies["read_file"] = {"ok": True, "result": {"text": "export const a = 1;\n", "size": 20, "truncated": False}}
+    first = (await world.call("read_file", path=ROOT + "/src/a.mjs"))["_data"]
+    second = (await world.call("read_file", path=ROOT + "/src/a.mjs"))["_data"]
+    third = (await world.call("read_file", path=ROOT + "/src/a.mjs"))["_data"]
+    assert first["text"] == second["text"] == third["text"] == "export const a = 1;\n"
+    assert "unchanged" not in first and "unchanged" not in second
+    assert third["unchanged"] is True and third["repeats"] == 3 and "next step of your plan" in third["note"]
+    world.replies["list_dir"] = {"ok": True, "result": {"entries": [{"name": "a.mjs", "is_dir": False, "size": 20}]}}
+    for _ in range(3):
+        listed = (await world.call("list_dir", path=ROOT + "/src"))["_data"]
+    assert listed["entries"][0]["name"] == "a.mjs" and listed["unchanged"] is True

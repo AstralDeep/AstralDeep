@@ -15642,7 +15642,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     if was_compacted:
                         logger.info("Context compacted before LLM call")
 
-                if flags.is_enabled("context_engineering") and not evidence_context.enabled():
+                if (flags.is_enabled("context_engineering") and not evidence_context.enabled()
+                        and goal_steering_plan is None):
                     try:
                         messages, _n_edited = context_engineering.edit_context(messages)
                         if _n_edited:
@@ -16353,6 +16354,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     if goal_progress is not None and goal_progress.stalled:
                         from orchestrator.goal_execution import REPEATED_FAILURES_REASON
 
+                        logger.warning("goal.stalled chat=%s repeated=%s", chat_id, goal_progress.last_failure_summary)
                         goal_stop_reason = REPEATED_FAILURES_REASON
                         break
 

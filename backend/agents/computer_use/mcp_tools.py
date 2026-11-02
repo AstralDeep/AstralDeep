@@ -682,37 +682,34 @@ def read_file(**kwargs) -> Dict[str, Any]:
     if err:
         return err
     text = _sanitize(result.get("text"), max_bytes)
-    repeated = _repeated_read(ctx, host, "file", path, text)
-    if repeated is not None:
-        return repeated
     return _data({"computer": host.name, "path": path, "text": text,
-                  "truncated": bool(result.get("truncated")), "size": int(result.get("size") or 0)})
+                  "truncated": bool(result.get("truncated")), "size": int(result.get("size") or 0),
+                  **_repeated_read(ctx, "file", text_key=path, content=text)})
 
 
 _READ_REPEAT_WINDOW = 40
 _READ_REPEAT_LIMIT = 3
 
 
-def _repeated_read(session, host, kind: str, path: str, content: str) -> Optional[Dict[str, Any]]:
+def _repeated_read(session, kind: str, *, text_key: str, content: str) -> Dict[str, Any]:
     digests = getattr(session, "read_digests", None)
     if digests is None:
-        return None
+        return {}
     digest = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
     verbs = int(getattr(session, "verbs_run", 0) or 0)
-    key = f"{kind}:{path}"
+    key = f"{kind}:{text_key}"
     previous = digests.get(key)
     if previous is None or previous[0] != digest or verbs - previous[2] > _READ_REPEAT_WINDOW:
         digests[key] = (digest, 1, verbs)
-        return None
+        return {}
     count = previous[1] + 1
     digests[key] = (digest, count, verbs)
     if count < _READ_REPEAT_LIMIT:
-        return None
+        return {}
     noun = "directory" if kind == "dir" else "file"
-    return _data({"computer": host.name, "path": path, "unchanged": True, "repeats": count,
-                  "note": f"This {noun} has not changed since you read it {count} times in this session; its "
-                          "content is already in your context. Stop re-reading and make progress: write files "
-                          "and run commands."})
+    return {"unchanged": True, "repeats": count,
+            "note": f"This {noun} is unchanged across your {count} reads in this session. Use this content and "
+                    "move to the next step of your plan instead of reading it again."}
 
 
 def list_dir(**kwargs) -> Dict[str, Any]:
@@ -730,10 +727,9 @@ def list_dir(**kwargs) -> Dict[str, Any]:
         if isinstance(e, dict):
             entries.append({"name": _sanitize(e.get("name"), 255), "is_dir": bool(e.get("is_dir")),
                             "size": int(e.get("size") or 0), "modified": e.get("modified")})
-    repeated = _repeated_read(ctx, host, "dir", path, json.dumps(entries, sort_keys=True, default=str))
-    if repeated is not None:
-        return repeated
-    return _data({"computer": host.name, "path": path, "entries": entries, "count": len(entries)})
+    return _data({"computer": host.name, "path": path, "entries": entries, "count": len(entries),
+                  **_repeated_read(ctx, "dir", text_key=path,
+                                   content=json.dumps(entries, sort_keys=True, default=str))})
 
 
 def wait(**kwargs) -> Dict[str, Any]:
