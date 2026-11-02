@@ -71,7 +71,7 @@ def test_document_head_gets_csp_as_first_child_and_keeps_viewport():
             '<meta name="viewport" content="width=device-width"></head><body>&copy; &#169; '
             '<!-- note --><p>x</p></body></html>')
     document, _ = _ok(html)
-    assert document.startswith('<!DOCTYPE html><html lang="en"><head>' + CSP_META + "<title>T</title>")
+    assert document.startswith('<!doctype html>\n<html lang="en"><head>' + CSP_META + "<title>T</title>")
     assert VIEWPORT_META not in document
     assert "&copy; &#169; <!-- note -->" in document
 
@@ -80,7 +80,7 @@ def test_documents_without_head_or_doctype_are_completed():
     document, _ = _ok("<html><body><p>a</p></body></html>")
     assert document.startswith("<!doctype html>\n<html><head>" + CSP_META + VIEWPORT_META + "</head><body>")
     body_only, _ = _ok("<body><p>b</p></body>")
-    assert body_only.startswith("<!doctype html>\n<head>" + CSP_META)
+    assert body_only.startswith("<!doctype html>\n<html><head>" + CSP_META)
     assert body_only.index("<head>") < body_only.index("<body>")
 
 
@@ -607,3 +607,17 @@ def test_share_snapshot_flattens_artifacts(monkeypatch):
     assert response.status_code == 201
     assert minted["snapshot_json"][0]["type"] == "text"
     assert "secret-page" not in minted["snapshot_html"]
+
+
+def test_policy_precedes_markup_that_appears_before_head():
+    html = ('<!doctype html><html><script>window.x = 1</script><head><meta charset="utf-8">'
+            '<title>T</title></head><body>hi</body></html>')
+    document, errors = validate_html(html, title="Early Script", kind="page")
+    assert errors == []
+    assert document.index("<head>" + CSP_META) < document.index("<script>") and document.count("<head>") == 1
+    again, again_errors = validate_html(document, title="Early Script", kind="page")
+    assert again_errors == [] and again.count(CSP_META) == 1
+    headless, _ = validate_html("<html><p>a</p><body><p>b</p></body></html>", title="No Head", kind="page")
+    assert headless.index("<head>" + CSP_META) < headless.index("<p>a</p>")
+    texty, _ = validate_html("<html>stray text<head><title>T</title></head><body></body></html>", title="Stray", kind="page")
+    assert texty.index("<head>" + CSP_META) < texty.index("stray text") and texty.count("<head>") == 1

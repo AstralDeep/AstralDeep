@@ -75,7 +75,6 @@ _RESOURCE_ATTRS = {
 _TAG_HOSTS = {"script": CDN_HOSTS, "font": _FONT_HOSTS}
 _CSS_URL = re.compile(r"""url\(\s*(['"]?)(.*?)\1\s*\)""", re.I | re.S)
 _CSS_IMPORT = re.compile(r"""@import\s+(['"])(.*?)\1""", re.I | re.S)
-_SLOT = object()
 
 SYSTEM_PROMPT_ADDENDUM = (
     "\n\n## Artifacts\n"
@@ -161,8 +160,8 @@ class _Sanitizer(HTMLParser):
         self.raw_tag: Optional[str] = None
         self.has_doctype = self.has_viewport = False
         self.head_seen = False
-        self.html_index: Optional[int] = None
-        self.body_index: Optional[int] = None
+        self.body_seen = False
+        self.html_tag: Optional[str] = None
 
     def _error(self, message: Optional[str]) -> None:
         if message and message not in self.errors:
@@ -227,16 +226,17 @@ class _Sanitizer(HTMLParser):
             self._check_resources(tag, attrs)
         if "style" in attrs:
             self._check_css(attrs["style"], f"<{tag} style>")
-        if tag == "html" and self.html_index is None:
-            self.out.append(raw)
-            self.html_index = len(self.out)
+        if tag == "html":
+            if self.html_tag is None:
+                self.html_tag = raw
             return
-        if tag == "body" and self.body_index is None:
-            self.body_index = len(self.out)
+        if tag == "head":
+            if not self.head_seen:
+                self.head_seen = True
+                return
+        if tag == "body":
+            self.body_seen = True
         self.out.append(raw)
-        if tag == "head" and not self.head_seen:
-            self.head_seen = True
-            self.out.append(_SLOT)
         if tag in ("script", "style") and not closed:
             self.raw_tag = tag
 
@@ -260,7 +260,7 @@ class _Sanitizer(HTMLParser):
         self.out.append(f"</{tag}>")
 
     def handle_data(self, data):
-        if self.skip:
+        if self.skip or (not self.out and not data.strip()):
             return
         if self.raw_tag == "style":
             self._check_css(data, "<style>")
@@ -283,6 +283,7 @@ class _Sanitizer(HTMLParser):
             return
         if decl.strip().lower().startswith("doctype"):
             self.has_doctype = True
+            return
         self.out.append(f"<!{decl}>")
 
     def handle_pi(self, data):
@@ -317,20 +318,14 @@ def sanitize_html(html: Any, *, title: Any, kind: Any) -> Tuple[str, List[str], 
     errors.extend(parser.errors)
     inject = CSP_META + ("" if parser.has_viewport else VIEWPORT_META)
     parts = list(parser.out)
-    if parser.head_seen:
-        parts = [inject if part is _SLOT else part for part in parts]
-    elif parser.html_index is not None:
-        parts.insert(parser.html_index, f"<head>{inject}</head>")
-    elif parser.body_index is not None:
-        parts.insert(parser.body_index, f"<head>{inject}</head>")
+    if parser.html_tag is not None or parser.head_seen or parser.body_seen:
+        head = "<head>" + inject + ("" if parser.head_seen else "</head>")
+        parts = ["<!doctype html>\n", parser.html_tag or "<html>", head, *parts]
     else:
         heading = html_lib.escape(clean_title or "Artifact")
         parts = ['<!doctype html>\n<html lang="en"><head>', inject, '<meta charset="utf-8">',
                  f"<title>{heading}</title></head><body>", *parts, "</body></html>"]
     document = "".join(parts)
-    if (parser.head_seen or parser.html_index is not None or parser.body_index is not None) \
-            and not parser.has_doctype:
-        document = "<!doctype html>\n" + document
     wire = len(json.dumps(document))
     if wire > MAX_WIRE_BYTES:
         errors.append(

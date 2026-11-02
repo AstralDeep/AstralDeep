@@ -193,6 +193,9 @@ def main(process_supervisor=None):
                     continue
                 if inprocess_enabled:
                     continue
+            if item in ("artifacts", "sandbox_qualification") and inprocess_enabled:
+                print(f"Running {item} in-process when its feature flag is on (no port)")
+                continue
             print(f"Starting {item} agent on port {next_port}...")
             process_supervisor.spawn(
                 process_id=uuid.uuid4(),
