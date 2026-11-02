@@ -735,7 +735,7 @@ class GoalProgress:
             return arguments
         if isinstance(arguments, str):
             try:
-                parsed = json.loads(arguments)
+                parsed = json.loads(arguments, strict=False)
             except (json.JSONDecodeError, TypeError):
                 return {"text": arguments}
             return parsed if isinstance(parsed, dict) else {"text": arguments}

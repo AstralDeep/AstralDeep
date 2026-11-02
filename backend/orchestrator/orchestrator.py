@@ -891,11 +891,13 @@ def _history_assistant_message(llm_msg: Any) -> Any:
             arguments = "{}"
         else:
             try:
-                json.loads(arguments)
+                parsed = json.loads(arguments, strict=False)
             except ValueError:
                 logger.warning("Tool call %s carried non-JSON arguments; history keeps an empty object",
                                getattr(function, "name", "?"))
                 arguments = "{}"
+            else:
+                arguments = json.dumps(parsed, ensure_ascii=False)
         calls.append({"id": getattr(call, "id", None), "type": "function",
                       "function": {"name": getattr(function, "name", ""), "arguments": arguments}})
     return {"role": "assistant", "content": getattr(llm_msg, "content", None), "tool_calls": calls}
@@ -19477,12 +19479,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     limit_bytes=MAX_WRITE_BYTES,
                 )
         try:
-            args = json.loads(raw_arguments) if raw_arguments else {}
+            args = json.loads(raw_arguments, strict=False) if raw_arguments else {}
         except json.JSONDecodeError as _json_err:
             if is_computer_write:
                 return invalid_write_arguments(
-                    "The write_file arguments were not run because they were invalid JSON. "
-                    "Provide a project path and string content. No file was changed."
+                    "The write_file arguments were not run because they were invalid JSON "
+                    f"({_json_err.msg} at line {_json_err.lineno}, column {_json_err.colno}). Escape double "
+                    "quotes and backslashes inside content, or write the file in smaller parts of about "
+                    "16 KiB each. No file was changed."
                 )
             # Refuses bad args outright; never silently dispatches empty
             msg = (f"The arguments for '{tool_name}' were not valid JSON "
