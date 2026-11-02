@@ -16308,7 +16308,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         break
 
                     if goal_progress is not None and goal_progress.stalled:
-                        goal_stop_reason = "Repeated tool failures prevented verified completion."
+                        from orchestrator.goal_execution import REPEATED_FAILURES_REASON
+
+                        goal_stop_reason = REPEATED_FAILURES_REASON
                         break
 
                     if goal_progress is not None and goal_progress.tool_count - goal_checkpoint_tools >= 8:
@@ -16756,8 +16758,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 task_terminal_on_exit = TaskState.FAILED
                 task_error_on_exit = goal_stop_reason or "The execution budget ended before the objective was verified."
                 incomplete_components: List[Dict[str, Any]] = []
-                if goal_stop_reason is None:
-                    summary = await self._goal_budget_summary(websocket, messages, MAX_TURNS, chat_id)
+                from orchestrator.goal_execution import summary_worthy
+
+                if summary_worthy(goal_stop_reason, goal_progress.tool_count):
+                    summary = await self._goal_budget_summary(websocket, messages, MAX_TURNS, chat_id, goal_stop_reason)
                     if summary:
                         incomplete_components.append(Text(content=summary).to_dict())
                 incomplete_components.append(Alert(
@@ -23368,11 +23372,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.debug("TypeSafe outcome scheduling failed", exc_info=True)
 
 
-    async def _goal_budget_summary(self, websocket, messages, max_turns: int, chat_id: Optional[str]) -> str:
+    async def _goal_budget_summary(
+        self, websocket, messages, max_turns: int, chat_id: Optional[str], stop_reason: Optional[str] = None,
+    ) -> str:
         from orchestrator import turn_hooks
         from orchestrator.goal_execution import budget_summary_prompt
 
-        prompt = {"role": "system", "content": budget_summary_prompt(max_turns)}
+        prompt = {"role": "system", "content": budget_summary_prompt(max_turns, stop_reason)}
         try:
             llm_msg, usage = await self._call_llm(websocket, list(messages) + [prompt], None)
         except Exception:
