@@ -59,6 +59,7 @@ class GoalProgress:
     _pending_approvals: dict[str, dict[str, Any]] = field(default_factory=dict, init=False, repr=False)
     _early_approval_results: dict[str, dict[str, Any]] = field(default_factory=dict, init=False, repr=False)
     _acknowledged_failures: list[str] = field(default_factory=list, init=False, repr=False)
+    _stall_signature: str | None = field(default=None, init=False, repr=False)
 
     def __init__(self, request: str) -> None:
         if not isinstance(request, str):
@@ -85,6 +86,7 @@ class GoalProgress:
         self._pending_approvals = {}
         self._early_approval_results = {}
         self._acknowledged_failures = []
+        self._stall_signature = None
 
     @property
     def request(self) -> str:
@@ -93,6 +95,19 @@ class GoalProgress:
     @property
     def stalled(self) -> bool:
         return self._stalled
+
+    @property
+    def last_failure_summary(self) -> str:
+        signature = self._stall_signature or self._last_failure
+        if not signature:
+            return "none"
+        try:
+            tool, _args, data, error = json.loads(signature)
+        except (TypeError, ValueError):
+            return "unknown"
+        exit_code = data.get("exit_code") if isinstance(data, dict) else None
+        code = error.get("code") if isinstance(error, dict) else None
+        return f"{str(tool)[:64]} exit={exit_code} code={code}"
 
     @property
     def requires_inspection(self) -> bool:
@@ -161,10 +176,13 @@ class GoalProgress:
                 self._last_failure = failure_signature
                 self._repeat_failures = 1
             self._stalled = self._repeat_failures >= 3
+            if self._stalled and self._stall_signature is None:
+                self._stall_signature = failure_signature
         else:
             self._last_failure = None
             self._repeat_failures = 0
             self._stalled = False
+            self._stall_signature = None
         if outcome == "uncertain":
             job_id = data.get("job_id") if isinstance(data, dict) else None
             if tool_name == "run_command" and isinstance(job_id, str) and job_id:
