@@ -156,3 +156,31 @@ async def test_parallel_exception_never_reaches_chat_as_raw_text(orch, monkeypat
     calls = orch.send_ui_render.await_args_list
     assert calls[-1].kwargs["target"] == "chat"
     assert "private traceback" not in str(calls)
+
+
+def test_first_party_computer_errors_reach_the_model_with_their_next_action():
+    from orchestrator.orchestrator import Orchestrator
+
+    error = {"code": "already_exists", "message": "File exists; retry with if_exists=overwrite to replace it",
+             "retryable": True, "effect_state": "not_started", "data": {"limit_bytes": 65536, "path": "/a\x07b"}}
+    content = json.loads(Orchestrator._tool_result_to_llm_content(
+        SimpleNamespace(error=error, result=None), "write_file", agent_id="computer-use-1"))
+    assert content == {"status": "error", "code": "already_exists",
+                       "message": "File exists; retry with if_exists=overwrite to replace it", "retryable": True,
+                       "effect_state": "not_started", "data": {"limit_bytes": 65536, "path": "/ab"}}
+    generic = json.loads(Orchestrator._tool_result_to_llm_content(
+        SimpleNamespace(error=error, result=None), "write_file", agent_id="research-1"))
+    assert generic["code"] == "TOOL_FAILED" and "overwrite" not in json.dumps(generic)
+
+
+@pytest.mark.parametrize("error", [
+    "plain string", {"code": "x"}, {"message": "only a message"}, {"code": 3, "message": "m"},
+    {"code": "SEARCH_BLOCKED", "message": "private-key"},
+])
+def test_unstructured_or_curated_errors_keep_the_generic_path_even_for_computer_use(error):
+    from orchestrator.orchestrator import Orchestrator
+
+    content = Orchestrator._tool_result_to_llm_content(SimpleNamespace(error=error, result=None), "write_file",
+                                                       agent_id="computer-use-1")
+    assert "private-key" not in content and "only a message" not in content
+    assert json.loads(content)["status"] == "error"

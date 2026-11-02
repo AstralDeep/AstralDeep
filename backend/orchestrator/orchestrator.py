@@ -16259,7 +16259,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                     for i, tc in enumerate(llm_msg.tool_calls):
                         res = tool_results[i] if i < len(tool_results) else None
-                        tool_content = self._tool_result_to_llm_content(res, tc.function.name)
+                        tool_content = self._tool_result_to_llm_content(
+                            res, tc.function.name, agent_id=tool_to_agent.get(tc.function.name))
                         # Only wraps raw output; _model_digest is already trusted
                         if datamark_on and not self._result_has_model_digest(res):
                             tool_content = datamarking.spotlight(
@@ -18161,11 +18162,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return any(sig in text for sig in signals)
 
     @staticmethod
-    def _tool_result_to_llm_content(res, tool_name=None) -> str:
+    def _tool_result_to_llm_content(res, tool_name=None, agent_id=None) -> str:
         if res is None:
             return "No output"
         if getattr(res, "error", None):
-            from orchestrator.tool_feedback import tool_failure_content
+            from orchestrator.tool_feedback import first_party_error_content, tool_failure_content
+            if agent_id == "computer-use-1":
+                detailed = first_party_error_content(res.error)
+                if detailed is not None:
+                    return detailed
             return tool_failure_content(tool_name, res.error)
         result = getattr(res, "result", None)
         if not result:
