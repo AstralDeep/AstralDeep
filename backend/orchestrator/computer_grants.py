@@ -29,10 +29,11 @@ MAX_GRANTS_PER_SESSION = 32
 
 INPUT_GRANT_VERBS: FrozenSet[str] = frozenset({
     "click", "double_click", "right_click", "move", "drag", "scroll", "type_text",
-    "press_keys", "focus_window", "open_app",
+    "press_keys", "focus_window", "open_app", "ax_action", "menu",
 })
 ORIGIN_GRANT_VERBS: FrozenSet[str] = frozenset({
     "browser_navigate", "browser_click", "browser_fill", "browser_press", "browser_scroll", "browser_dialog",
+    "browser_hover", "browser_resize", "browser_tabs", "browser_batch",
 })
 VERB_CLASSES: FrozenSet[str] = frozenset({"input", "command", "browser"})
 REVOCATION_REASONS: FrozenSet[str] = frozenset({

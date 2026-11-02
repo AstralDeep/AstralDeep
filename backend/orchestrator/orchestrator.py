@@ -1868,7 +1868,7 @@ class Orchestrator:
             if previous is None or (previous.owner_sub, previous.host_id) in ended:
                 continue
             ended.add((previous.owner_sub, previous.host_id))
-            await self.computer_sessions.clear_bypass(previous.owner_sub, previous.host_id, "host_replaced")
+            await self.computer_sessions.clear_bypass(previous.owner_sub, previous.host_id, "host_replaced", host)
             await self.computer_sessions.end_all_for_host(
                 previous.owner_sub, previous.host_id, "host_superseded")
         await self.computer_hosts.push_presence(host, "online")
@@ -11076,6 +11076,9 @@ class Orchestrator:
                                 )
                                 for m in chat.get("messages", []):
                                     if not isinstance(m.get("content"), str) and isinstance(m.get("content"), list):
+                                        m["content"] = Orchestrator._gate_artifacts(
+                                            self, websocket, m["content"], chat_id=chat_id,
+                                            history=True)
                                         _t_html = self._transcript_html(
                                             m["content"], canvas_component_ids=canvas_ids)
                                         if _t_html:
@@ -15306,6 +15309,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if desktop_codegen_injected:
                 system_prompt += desktop_codegen.SYSTEM_PROMPT_ADDENDUM
 
+            from orchestrator import artifact_html
+            if artifact_html.AGENT_ID in tool_to_agent.values():
+                system_prompt += artifact_html.SYSTEM_PROMPT_ADDENDUM
+
             datamark_on = flags.is_enabled("datamarking") or evidence_context.enabled()
             turn_sentinel = datamarking.make_turn_sentinel() if datamark_on else None
 
@@ -16119,6 +16126,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                         t_params = raw_args
                                 except (ValueError, TypeError):
                                     t_params = {}
+                            from orchestrator.artifact_html import source_params
+                            t_params = source_params(a_id, t_params)
                             corr_id = getattr(res, "correlation_id", None)
                             for comp in res.ui_components:
                                 _tag_tool_result_source(comp, res, a_id, t_name, t_params, corr_id)
@@ -16586,9 +16595,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             await self.send_ui_render(websocket, response_components, target="chat")
                         else:
                             _tools_ran = bool(task.tool_calls_made) if task else False
-                            if chat_id and self._narrative_is_long(content):
-                                parsed_components = list(parsed_components) + [
-                                    self._narrative_doc_card(chat_id, content)]
+                            narrative_doc = Orchestrator._narrative_canvas_doc(
+                                self, websocket, chat_id, content, message)
+                            if narrative_doc is not None:
+                                parsed_components = list(parsed_components) + [narrative_doc]
                                 chat_core = [
                                     Text(content=self._concise_lead(content)).to_dict(),
                                     Text(content="The full write-up is on the canvas.",
@@ -16604,9 +16614,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             response_components = list(chat_summary)
                     else:
                         _tools_ran = bool(task.tool_calls_made) if task else False
-                        narrative_doc = None
-                        if chat_id and self._narrative_is_long(content):
-                            narrative_doc = self._narrative_doc_card(chat_id, content)
+                        narrative_doc = Orchestrator._narrative_canvas_doc(
+                            self, websocket, chat_id, content, message)
+                        if narrative_doc is not None:
                             final_ops = await self._send_or_replace_components(
                                 websocket, [narrative_doc], chat_id, user_id=user_id) or []
                             _turn_canvas_components.append(narrative_doc)
@@ -23478,6 +23488,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 llm_call=_designer_llm,
                 current_layout=_current_layout,
                 device=_designer_device(getattr(self, "rote", None), websocket),
+                frame=Orchestrator._artifact_frame_wanted(self, websocket),
             )
 
     async def _deliver_round_components(self, websocket, components: List[Dict], chat_id: str,
@@ -23488,7 +23499,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         _prof = self.rote.get_profile(websocket) if websocket is not None else None
         if _is_native_device(_prof):
             return await self._send_or_replace_components(websocket, components, chat_id, user_id)
-        if not chat_id or not ui_designer.should_design(components, timeline_mode=timeline):
+        if not chat_id or not ui_designer.should_design(
+                components, timeline_mode=timeline,
+                frame=Orchestrator._artifact_frame_wanted(self, websocket)):
             return await self._send_or_replace_components(websocket, components, chat_id, user_id)
         try:
             ops = await asyncio.to_thread(self.workspace.upsert, chat_id, user_id, components)
@@ -23571,7 +23584,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator.workspace import layout_key_for
         timeline = self._ws_timeline_mode.get(id(websocket), False)
         components = _native_canvas_components(turn_components)
-        if not ui_designer.should_design(components, timeline_mode=timeline):
+        if not ui_designer.should_design(components, timeline_mode=timeline,
+                                         frame=Orchestrator._artifact_frame_wanted(self, websocket)):
             return None
         try:
             marker = str(
@@ -24040,8 +24054,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     async def _refine_component_llm(self, websocket, component: Dict[str, Any],
                                     instruction: str) -> Optional[Dict[str, Any]]:
+        from orchestrator.artifact_frame import ARTIFACT_TYPES
         from webrender import allowed_primitive_types
-        valid_types = set(allowed_primitive_types()) | {"chart"}
+        valid_types = (set(allowed_primitive_types()) | {"chart"}) - ARTIFACT_TYPES
         orig_type = str(component.get("type") or "").strip().lower()
         if orig_type not in valid_types:
             return None
@@ -24200,6 +24215,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     continue
                 comp = op.get("component")
                 cid = op.get("component_id")
+                gated = Orchestrator._gate_artifacts(self, ws, [comp], chat_id=chat_id)
+                comp = (gated[0] if len(gated) == 1
+                        else {"type": "container", "content": gated, "component_id": cid})
                 if profile.device_type == DeviceType.BROWSER:
                     adapted = comp
                 else:
@@ -24458,6 +24476,25 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 except Exception:
                     pass
 
+    def _artifact_frame_wanted(self, websocket) -> bool:
+        from orchestrator import artifact_frame
+        return artifact_frame.enabled() and artifact_frame.artifact_capable(self, websocket)
+
+    def _gate_artifacts(self, websocket, components, *, chat_id: Optional[str] = None,
+                        history: bool = False):
+        from orchestrator import artifact_frame, artifact_html
+        if not artifact_frame.has_artifacts(components):
+            return components
+        accepted = artifact_frame.socket_accepted_types(self, websocket)
+        chat = chat_id or (getattr(self, "_ws_active_chat", None) or {}).get(id(websocket))
+        download = artifact_html.download_link(chat)
+        if history:
+            return artifact_frame.gate_history(components, accepted, download=download)
+        return artifact_frame.gate_components(
+            components, accepted, download=download,
+            adapt=((lambda children: self.rote.adapt(websocket, children))
+                   if artifact_frame.FRAME_TYPE in accepted else None))
+
     async def send_ui_render(self, websocket, components: List, target: str = "canvas",
                              speak: bool = True) -> bool:
         from persistent_agents.dispatch_context import current_dispatch
@@ -24468,18 +24505,19 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             for c in components
         ):
             target = "chat"
-        adapted = self.rote.adapt(websocket, components)
+        delivered = Orchestrator._gate_artifacts(self, websocket, components)
+        adapted = self.rote.adapt(websocket, delivered)
         profile = self.rote.get_profile(websocket)
         if target == "canvas":
             from webrender.chrome.component_model import stamp_canvas_component_chrome
             adapted = stamp_canvas_component_chrome(
-                components, adapted, profile, enabled=flags.is_enabled,
+                delivered, adapted, profile, enabled=flags.is_enabled,
             )
         html = None
         try:
             if target == "canvas":
                 from webrender import render_workspace
-                html = render_workspace(adapted, profile, canonical_components=components)
+                html = render_workspace(adapted, profile, canonical_components=delivered)
             else:
                 from webrender import render_for_target, target_for_profile
                 html = render_for_target(target_for_profile(profile), adapted, profile)
@@ -24676,6 +24714,19 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if idx > 80:
                 return cut[:idx + 1]
         return cut.rsplit(" ", 1)[0] + "…"
+
+    def _narrative_canvas_doc(self, websocket, chat_id: Optional[str], content: str,
+                              user_request: str = "") -> Optional[Dict[str, Any]]:
+        if not chat_id:
+            return None
+        if Orchestrator._artifact_frame_wanted(self, websocket):
+            from orchestrator import artifact_frame
+            text = _strip_toolcall_leakage(content)
+            if text and artifact_frame.substantial_text(text):
+                return artifact_frame.document_frame(chat_id, text, user_request=user_request)
+        if self._narrative_is_long(content):
+            return self._narrative_doc_card(chat_id, content)
+        return None
 
     @staticmethod
     def _narrative_doc_card(chat_id: str, content: str) -> Dict[str, Any]:
@@ -25037,6 +25088,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     seed_ids = tuple(a for a in seed_ids if a != "terminal-shell-1")
                 if not flags.is_enabled("fhir"):
                     seed_ids = tuple(a for a in seed_ids if a != "fhir-1")
+                if not flags.is_enabled("artifact_frame"):
+                    seed_ids = tuple(a for a in seed_ids if a != "artifacts-1")
                 await agent_trust.seed_safe(self.user_agent_registry, seed_ids)
         except Exception:
             logger.debug("Feature 040 safe seed failed (non-fatal)", exc_info=True)

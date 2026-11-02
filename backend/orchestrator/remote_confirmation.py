@@ -209,6 +209,22 @@ def _resolve_file_folder(orch, user_id, chat_id, tool_name, args):
     return None
 
 
+def _bind_ax_target(orch, user_id, chat_id, tool_name, args):
+    from astralprims import Alert
+
+    if tool_name not in _computer_policy().AX_REF_POINTER_VERBS | _computer_policy().AX_INPUT_VERBS:
+        return None
+    try:
+        host = computer_card_host(orch, user_id, chat_id, args)
+    except ComputerHostError:
+        return None
+    session = orch.computer_sessions.live_for_host(user_id, host.host_id)
+    refusal = session.bind_ax(tool_name, args) if session is not None and host.platform == "macos" else None
+    if refusal is None:
+        return None
+    return Refusal((f"{refusal.code}: {refusal} Nothing was run.", [Alert(message=str(refusal), variant="error").to_dict()]))
+
+
 def computer_card_host(orch, owner, chat, args):
     sessions = getattr(orch, "computer_sessions", None)
     if sessions is None:
@@ -954,6 +970,9 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
             refusal = _resolve_file_folder(orch, user_id, chat_id, tool_name, args)
             if refusal is not None:
                 return refusal
+        refusal = _bind_ax_target(orch, user_id, chat_id, tool_name, args)
+        if refusal is not None:
+            return refusal
         refusal = bypass_refusal(orch, websocket, user_id, chat_id, agent_id, tool_name, args, ())
         if refusal is not None:
             return Refusal((refusal, [Alert(message=refusal, variant="error").to_dict()]))
@@ -981,9 +1000,10 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
         if refusal is not None:
             return refusal
 
-    if (agent_id == "computer-use-1" and tool_name == "browser_navigate" and "url" in args
-            and _computer_policy().canonical_browser_url(args["url"]) is None):
-        _audit_sync(user_id, "remote_op.refused_url", "refused browser_navigate to a rejected address",
+    opens = (tool_name == "browser_navigate" and "url" in args
+             or tool_name == "browser_tabs" and args.get("url") is not None)
+    if agent_id == "computer-use-1" and opens and _computer_policy().canonical_browser_url(args["url"]) is None:
+        _audit_sync(user_id, "remote_op.refused_url", f"refused {tool_name} to a rejected address",
                     machine_id=machine_ref, verb=tool_name, outcome="failure", chat_id=chat_id)
         return Refusal(("url_rejected: the browser pane only opens http and https addresses with a plain host name.",
                         [Alert(message="That address cannot be opened in the browser pane.", variant="error").to_dict()]))
@@ -1047,7 +1067,8 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
                 and computer_resume_target(websocket, authority, tool_name, args) is None):
             message = "The computer session cannot authorize this action. Resume it on the Mac and re-request it."
             return Refusal((message, [Alert(message=message, variant="error").to_dict()]))
-    if agent_id == "computer-use-1" and card_host.platform == "macos" and tool_name in {"write_file", "delete_path"}:
+    if (agent_id == "computer-use-1" and card_host.platform == "macos"
+            and tool_name in {"write_file", "delete_path", "browser_evaluate"}):
         from astralprims import CodeBlock, Text
         from orchestrator import hitl, source_bound
         from orchestrator.hitl_confirmation import _review_arguments

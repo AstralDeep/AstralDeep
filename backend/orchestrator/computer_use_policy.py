@@ -22,29 +22,35 @@ COMMAND_VERBS: FrozenSet[str] = frozenset({"run_command", "read_output", "interr
 BROWSER_VERBS: FrozenSet[str] = frozenset({
     "browser_snapshot", "browser_get_text", "browser_screenshot", "browser_wait",
     "browser_navigate", "browser_click", "browser_fill", "browser_press", "browser_scroll",
-    "browser_dialog",
+    "browser_dialog", "browser_find", "browser_hover", "browser_zoom", "browser_console",
+    "browser_network", "browser_evaluate", "browser_resize", "browser_tabs",
 })
+ACCESSIBILITY_VERBS: FrozenSet[str] = frozenset({"list_apps", "ax_tree", "ax_find", "ax_action", "menu", "zoom"})
 
 OBSERVE_VERBS: FrozenSet[str] = frozenset({
     "screenshot", "list_windows", "get_clipboard", "read_file", "list_dir", "wait",
     "browser_snapshot", "browser_get_text", "browser_screenshot", "browser_wait",
     "read_output",
+    "list_apps", "ax_tree", "ax_find", "zoom",
+    "browser_find", "browser_zoom", "browser_console", "browser_network",
 })
 INPUT_VERBS: FrozenSet[str] = frozenset({
     "click", "double_click", "right_click", "move", "drag", "scroll", "type_text",
     "press_keys", "focus_window", "open_app", "set_clipboard",
     "browser_navigate", "browser_click", "browser_fill", "browser_press", "browser_scroll",
     "browser_dialog", "interrupt_command",
+    "ax_action", "menu", "browser_hover", "browser_resize", "browser_tabs", "browser_batch",
 })
 CONSEQUENTIAL_VERBS: FrozenSet[str] = frozenset({
-    "write_file", "delete_path", "run_command", "project_preview",
+    "write_file", "delete_path", "run_command", "project_preview", "browser_evaluate",
 })
 SESSION_VERBS: FrozenSet[str] = frozenset({
     "list_computers", "start_session", "end_session", "resume_session", "confirm_action",
 })
 DE_ESCALATION_VERBS: FrozenSet[str] = frozenset({"end_session"})
 
-COMPOSITE_VERBS: FrozenSet[str] = frozenset({"project_preview"})
+COMPOSITE_VERBS: FrozenSet[str] = frozenset({"project_preview", "browser_batch"})
+BROWSER_COMPOSITE_VERBS: FrozenSet[str] = frozenset({"browser_batch"})
 HOST_VERBS: FrozenSet[str] = (OBSERVE_VERBS | INPUT_VERBS | CONSEQUENTIAL_VERBS) - COMPOSITE_VERBS
 
 ALL_VERBS: FrozenSet[str] = HOST_VERBS | SESSION_VERBS | COMPOSITE_VERBS
@@ -63,6 +69,7 @@ SCOPES: Dict[str, str] = {
     "project_preview": "tools:execute",
     "write_file": "tools:files",
     "delete_path": "tools:files",
+    "browser_evaluate": "tools:write",
     "list_computers": "tools:read",
     "start_session": "tools:write",
     "end_session": "tools:write",
@@ -78,6 +85,8 @@ DESTRUCTIVE_CLASSIFICATION: Dict[str, Any] = {
     "run_command": "always",
     "project_preview": "always",
     "browser_navigate": "always",
+    "browser_evaluate": "always",
+    "browser_tabs": "always",
 }
 
 SHELL_APPS: FrozenSet[str] = frozenset({
@@ -143,6 +152,113 @@ def is_destructive(tool_name: str, args: Mapping[str, Any]) -> bool:
         return is_shell_app(args.get("app"))
     return True
 
+AX_REF_POINTER_VERBS: FrozenSet[str] = frozenset({"click", "double_click", "right_click", "move", "drag"})
+AX_INPUT_VERBS: FrozenSet[str] = frozenset({"ax_action", "menu"})
+AX_ACTIONS = ("press", "focus", "raise", "show_menu", "confirm", "cancel", "increment", "decrement", "set_value",
+              "pick")
+AX_ACTING = frozenset({"press", "confirm", "pick", "set_value"})
+AX_REF = re.compile(r"a[0-9]{1,9}")
+AX_SNAPSHOT = re.compile(r"x[0-9]{1,9}")
+MAX_CONFIRM_ELEMENT_CHARS = 200
+MAX_BATCH_STEPS = 20
+BATCH_REVIEWED_STEPS: FrozenSet[str] = frozenset({"browser_navigate", "browser_evaluate"})
+_CAMEL = re.compile(r"([a-z0-9])([A-Z])")
+_CONSEQUENTIAL_WORDS = re.compile(
+    r"(?:^|[^a-z0-9])(?:buy|pay|purchase|order|checkout|delete|remove|send|transfer|confirm\s+payment|quit|"
+    r"force\s+quit|erase|empty\s+trash|shut\s+down|restart|log\s+out|sign\s+out|revert|discard)(?=$|[^a-z0-9])")
+
+
+def consequential_label(text: Any) -> bool:
+    folded = _CAMEL.sub(r"\1 \2", _one_line(text, 400)).lower()
+    return bool(_CONSEQUENTIAL_WORDS.search(folded))
+
+
+def confirm_element(args: Mapping[str, Any]) -> str:
+    value = args.get("confirm_element")
+    return _one_line(value, MAX_CONFIRM_ELEMENT_CHARS) if isinstance(value, str) else ""
+
+
+def menu_path(value: Any) -> Optional[List[str]]:
+    if (not isinstance(value, list) or not 1 <= len(value) <= 6
+            or not all(isinstance(item, str) and item.strip() and len(item) <= 100 and "\x00" not in item
+                       for item in value)):
+        return None
+    return list(value)
+
+
+def is_consequential_input(tool: str, args: Mapping[str, Any]) -> bool:
+    if tool not in AX_INPUT_VERBS:
+        return False
+    if confirm_element(args):
+        return True
+    if tool == "ax_action":
+        value = args.get("value")
+        return args.get("action") in AX_ACTING and isinstance(value, str) and consequential_label(value)
+    path = menu_path(args.get("path"))
+    return args.get("list") is not True and path is not None and consequential_label(path[-1])
+
+
+def is_terminal_bundle(bundle: Any) -> bool:
+    folded = str(bundle or "").casefold()
+    return bool(folded) and (is_shell_app(bundle) or any(item.casefold() == folded for item in MAC_TERMINAL_BUNDLES))
+
+
+def ax_addressed(tool: str, args: Mapping[str, Any]) -> bool:
+    if tool in AX_REF_POINTER_VERBS:
+        return args.get("ref") is not None
+    return tool == "ax_action" or tool == "menu" and args.get("pid") is not None
+
+
+def bind_ax_target(tool: str, args: Dict[str, Any], target: Optional[Mapping[str, Any]]) -> Optional[CwdRefusal]:
+    if not ax_addressed(tool, args):
+        return None
+    if target is None:
+        if tool == "menu":
+            return None
+        return CwdRefusal("stale_ref", "That accessibility reference belongs to a snapshot that is no longer "
+                                       "current. Call ax_find or ax_tree again and use its snapshot_id.")
+    bundle = target.get("bundle_id")
+    if is_astral_app(bundle):
+        return CwdRefusal("out_of_range", "Astral's own windows cannot be operated by computer tools.")
+    if tool in AX_INPUT_VERBS and is_terminal_bundle(bundle):
+        return CwdRefusal("terminal_target", "Terminal windows are not driven by accessibility actions. "
+                                             "Run programs with run_command instead.")
+    hwnd = target.get("hwnd")
+    if type(hwnd) is not int:
+        return None
+    if "hwnd" in args and args["hwnd"] != hwnd:
+        return CwdRefusal("out_of_range", "hwnd does not match the window of that accessibility snapshot; "
+                                          "omit hwnd for reference actions.")
+    args["hwnd"] = hwnd
+    return None
+
+
+def batch_steps(value: Any) -> Optional[List[Dict[str, Any]]]:
+    if not isinstance(value, list) or not 1 <= len(value) <= MAX_BATCH_STEPS:
+        return None
+    steps = []
+    for step in value:
+        if not isinstance(step, Mapping) or not set(step) <= {"tool", "args"} or not isinstance(step.get("tool"), str):
+            return None
+        args = step.get("args", {})
+        if not isinstance(args, Mapping):
+            return None
+        steps.append({"tool": step["tool"], "args": dict(args)})
+    return steps
+
+
+def batch_needs_review(steps: Any) -> bool:
+    checked = batch_steps(steps)
+    if checked is None:
+        return True
+    for step in checked:
+        tool, args = step["tool"], step["args"]
+        if (tool in BATCH_REVIEWED_STEPS or tool not in BROWSER_VERBS or confirm_element(args)
+                or tool == "browser_tabs" and args.get("url") is not None):
+            return True
+    return False
+
+
 UNATTENDED_ALLOWED: FrozenSet[str] = frozenset({"list_computers"})
 
 SESSION_REQUIRED: FrozenSet[str] = HOST_VERBS | COMPOSITE_VERBS
@@ -159,6 +275,10 @@ TIMEOUTS: Dict[str, float] = {
     "browser_snapshot": 5.0, "browser_get_text": 5.0, "browser_screenshot": 5.0,
     "browser_wait": 15.0, "browser_navigate": 15.0, "browser_click": 5.0, "browser_fill": 5.0,
     "browser_press": 5.0, "browser_scroll": 5.0, "browser_dialog": 5.0,
+    "list_apps": 5.0, "ax_tree": 8.0, "ax_find": 8.0, "ax_action": 10.0, "menu": 10.0, "zoom": 15.0,
+    "browser_find": 5.0, "browser_hover": 5.0, "browser_zoom": 5.0, "browser_console": 5.0,
+    "browser_network": 5.0, "browser_evaluate": 15.0, "browser_resize": 5.0, "browser_tabs": 15.0,
+    "browser_batch": 120.0,
     "list_computers": 5.0, "start_session": 10.0, "end_session": 5.0,
     "resume_session": 5.0, "confirm_action": 5.0,
 }
@@ -599,6 +719,11 @@ def bypass_floor(tool: str, args: Mapping[str, Any], window_bundle: Optional[str
         return bool(_ASTRAL_TEXT.search(str(args.get("path") or "")))
     if tool == "open_app":
         return is_astral_app(args.get("app"))
+    if tool in AX_INPUT_VERBS:
+        if is_astral_app(window_bundle) or is_terminal_bundle(window_bundle):
+            return True
+        return (tool == "ax_action" and args.get("action") == "set_value"
+                and (not window_bundle or is_secure_input_app(window_bundle)))
     if tool in WINDOW_INPUT_VERBS:
         if not window_bundle or is_astral_app(window_bundle):
             return True
@@ -741,6 +866,19 @@ def summary_for(tool_name: str, args: Mapping[str, Any], host_label: str) -> str
         verb = "Click" if tool_name == "browser_click" else "Fill in"
         return (f"{verb} {element} in the Astral browser pane on {h}. This looks like a purchase, payment, "
                 "deletion or message, and I can't undo it.")
+    if tool_name == "browser_evaluate":
+        size = len(args["script"]) if isinstance(args.get("script"), str) else 0
+        return (f"Run the {size}-character script shown below in the current page of the Astral browser pane on "
+                f"{h}. It can read and change that page; its result is page data.")
+    if tool_name == "browser_tabs":
+        action = args.get("action") if args.get("action") in ("list", "create", "close", "select") else "manage"
+        if action == "create" and args.get("url") is not None:
+            canonical = canonical_browser_url(args.get("url"))
+            if canonical is None:
+                return f"Open a new tab in the Astral browser pane on {h} at an address that will be refused."
+            return (f"Open a new tab at {_origin_label(canonical)}{_one_line(urlsplit(canonical).path, 120)} in the "
+                    f"Astral browser pane on {h}. Approving this site lets the pane load its pages.")
+        return f"{action.capitalize()} tabs in the Astral browser pane on {h}"
     if tool_name == "write_file":
         mode = "overwrite" if args.get("if_exists") == "overwrite" else "create"
         return f"Write file on {h} ({mode}): {str(args.get('path') or '')[:200]}"
