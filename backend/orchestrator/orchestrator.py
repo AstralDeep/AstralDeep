@@ -864,6 +864,21 @@ def remap_merged_source(agent_id: str, tool_name: str):
     return new_agent, tool_name
 
 
+def _safe_provider_error_summary(exc: BaseException) -> str:
+    body = getattr(exc, "body", None)
+    detail = body.get("error", body) if isinstance(body, dict) else {}
+    fields = {key: str(detail.get(key))[:80] for key in ("type", "code", "param") if isinstance(detail, dict) and detail.get(key)}
+    message = detail.get("message") if isinstance(detail, dict) else None
+    if isinstance(message, str) and message:
+        try:
+            from personalization.phi_gate import get_phi_gate
+            cleaned, _changed = get_phi_gate().redact_for_storage(message[:2000])
+            fields["message"] = cleaned[:200]
+        except Exception:  # noqa: BLE001
+            fields["message"] = "<withheld>"
+    return json.dumps(fields, sort_keys=True) if fields else "<no structured detail>"
+
+
 def _configured_context_window() -> Optional[int]:
     raw = os.getenv("LLM_CONTEXT_WINDOW", "").strip()
     if not raw.isdigit():
@@ -17452,8 +17467,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                 error = self._safe_llm_error_metadata(e)
                 if error.status_code == 400:
-                    from llm_config.log_scrub import _redact_text
-                    logger.warning("LLM 400 detail: %s", _redact_text(str(getattr(e, "body", None) or e))[:400])
+                    logger.warning("LLM 400 detail: %s", _safe_provider_error_summary(e))
                 logger.warning(
                     "LLM call failed attempt=%d/%d exception_class=%s "
                     "status_code=%s upstream_error_class=%s retryable=%s",
