@@ -36,12 +36,13 @@ def _masked(text: str, phi: bool = True) -> str:
 
 
 def _shown(line: str) -> str:
+    from orchestrator.computer_use_policy import display_text
     from orchestrator.hitl_confirmation import _SECRET_MARKERS
 
     line = _CONTROL.sub("", line)
     if not line.startswith(("--- ", "+++ ", "@@ ")) and _SECRET_MARKERS.search(line):
         return line[:1] + "[REDACTED:secret]"
-    return line
+    return display_text(line, block=True)
 
 
 def unified_diff(path: str, current: Optional[str], proposed: str, phi: bool = True) -> Tuple[str, bool]:
@@ -163,4 +164,15 @@ async def attach_write_diff(orch, websocket, owner: str, chat: Optional[str], ar
     if summary and any(part.get("code", "").startswith("--- /dev/null\n")
                        or part.get("content") == "Create an empty file." for part in parts):
         summary = [{**summary[0], "content": summary[0].get("content", "").replace("(overwrite)", "(create)", 1)}]
-    return [{**card, "content": [*summary, *parts, *card["content"][1:]]}]
+    updated = {**card, "content": [*summary, *parts, *card["content"][1:]]}
+    if any(isinstance(item.get("payload"), dict) and "display_digest" in item["payload"]
+           for item in card["content"] if isinstance(item, dict)):
+        from orchestrator import remote_confirmation
+
+        digest = remote_confirmation.bind_display(orch, updated)
+        proposal = next(item["payload"].get("proposal_id") for item in updated["content"]
+                        if isinstance(item, dict) and isinstance(item.get("payload"), dict))
+        await remote_confirmation._audit_async(owner, "remote_op.review_updated", "review card gained its file diff",
+                                               proposal_id=proposal, verb="write_file", outcome="in_progress",
+                                               chat_id=chat, display_digest=digest)
+    return [updated]

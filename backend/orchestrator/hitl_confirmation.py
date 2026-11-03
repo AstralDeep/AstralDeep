@@ -1164,6 +1164,8 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
         if not _current_session(orch, websocket, call, allow_local_pause=True):
             getattr(orch, "_hitl_pending_calls", {}).pop(call.request_id, None)
             return _refused("This confirmation is no longer valid for the active conversation.")
+        from orchestrator import computer_use_policy
+
         summary = confirmation_request(tool, list(call.risks)).summary
         context = await _computer_context(call.computer_authority, tool, args) if call.computer_authority else []
         if pending.get(call.request_id) is not call or not _current_session(orch, websocket, call, allow_local_pause=True):
@@ -1180,7 +1182,8 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             Text(content=summary, variant="body"),
             Text(content=_review_summary(shown), variant="body"),
             *context,
-            CodeBlock(code=preview, language="json"),
+            CodeBlock(code=computer_use_policy.display_text(preview, block=True) if agent == "computer-use-1"
+                      else preview, language="json"),
             Text(content="Approve this exact action once, or decline. This request expires in 15 minutes. "
                          "Privacy rules and current permissions still apply.", variant="caption"),
             Button(label="Approve", action="authorize_action",
@@ -1191,6 +1194,8 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
         ]).to_dict()
         if agent == "computer-use-1" and card_host is not None:
             card["computer_host_id"] = card_host.host_id
+        if agent == "computer-use-1" and computer_use_policy.hidden_characters(args):
+            card["review_flags"] = ["hidden_characters"]
         if agent == "computer-use-1" and tool == "write_file":
             from orchestrator.write_review import review_components
 

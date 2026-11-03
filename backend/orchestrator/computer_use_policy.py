@@ -357,6 +357,36 @@ def _one_line(value: Any, limit: int) -> str:
     return " ".join(text.split())[:limit]
 
 
+HIDDEN_CHARACTERS_NOTE = "Contains hidden, control or direction-changing characters, shown as \\u{…} escapes."
+_HIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp", "Zs"})
+_INVISIBLE_LETTERS = frozenset({0x034F, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x180B, 0x180C, 0x180D, 0x180E, 0x2800,
+                                0x3164, 0xFFA0})
+_BODY_FIELDS = frozenset({"content", "script", "stdin", "text"})
+
+
+def _hidden(ch: str, block: bool) -> bool:
+    if ch == " " or (block and ch in "\n\t"):
+        return False
+    code = ord(ch)
+    return (unicodedata.category(ch) in _HIDDEN_CATEGORIES or 0xFE00 <= code <= 0xFE0F
+            or 0xE0100 <= code <= 0xE01EF or code in _INVISIBLE_LETTERS)
+
+
+def display_text(value: Any, *, block: bool = False) -> str:
+    return "".join(f"\\u{{{ord(ch):X}}}" if _hidden(ch, block) else ch for ch in str(value))
+
+
+def hidden_characters(value: Any, *, block: bool = False) -> bool:
+    if isinstance(value, str):
+        return any(_hidden(ch, block) for ch in value)
+    if isinstance(value, Mapping):
+        return any(hidden_characters(key) or hidden_characters(item, block=block or key in _BODY_FIELDS)
+                   for key, item in value.items() if not str(key).startswith("_"))
+    if isinstance(value, (list, tuple)):
+        return any(hidden_characters(item, block=block) for item in value)
+    return False
+
+
 DEFAULT_COMMAND_TIMEOUT_S = 60
 MAX_FOREGROUND_TIMEOUT_S = 600
 MAX_BACKGROUND_TIMEOUT_S = 3600
@@ -802,7 +832,7 @@ def command_grant(args: Mapping[str, Any], roots: Any = ()) -> Optional[Dict[str
 
 
 def _label_text(value: Any) -> str:
-    text = " ".join(_CTRL_TEXT.sub("", str(value or "")).split())
+    text = display_text(" ".join(_CTRL_TEXT.sub("", str(value or "")).split()))
     return text if len(text) <= _LABEL_TEXT else text[:_LABEL_TEXT - 1] + "…"
 
 
@@ -830,12 +860,13 @@ def command_grant_label(argv0: str, folder: str) -> str:
 
 def _command_summary(args: Mapping[str, Any], host: str) -> str:
     argv = args.get("argv")
-    shown = (f"Arguments: {json.dumps(argv, ensure_ascii=False)}" if isinstance(argv, list)
-             else f"Command: {args.get('command')}")
-    timeout = args.get("timeout_s", DEFAULT_COMMAND_TIMEOUT_S)
+    shown = (f"Arguments: {display_text(json.dumps(argv, ensure_ascii=False))}" if isinstance(argv, list)
+             else f"Command: {display_text(args.get('command'))}")
+    timeout = display_text(args.get("timeout_s", DEFAULT_COMMAND_TIMEOUT_S))
     env = args.get("env") if isinstance(args.get("env"), Mapping) else {}
-    lines = [f"Run a command on {host}", shown, f"Folder: {args.get('cwd')}", f"Timeout: {timeout} s",
-             "Environment: " + (", ".join(f"{key}={value}" for key, value in env.items()) if env else "none"),
+    lines = [f"Run a command on {host}", shown, f"Folder: {display_text(args.get('cwd'))}", f"Timeout: {timeout} s",
+             "Environment: " + (", ".join(f"{display_text(key)}={display_text(value)}" for key, value in env.items())
+                                if env else "none"),
              "Background: " + ("yes" if args.get("background") else "no")]
     if isinstance(args.get("stdin"), str):
         lines.append(f"Standard input: {len(args['stdin'])} characters")
@@ -843,7 +874,11 @@ def _command_summary(args: Mapping[str, Any], host: str) -> str:
 
 
 def summary_for(tool_name: str, args: Mapping[str, Any], host_label: str) -> str:
-    h = host_label or "your computer"
+    text = _summary_text(tool_name, args, display_text(host_label) if host_label else "your computer")
+    return f"{HIDDEN_CHARACTERS_NOTE}\n{text}" if hidden_characters(args) else text
+
+
+def _summary_text(tool_name: str, args: Mapping[str, Any], h: str) -> str:
     if tool_name == "run_command":
         return _command_summary(args, h)
     if tool_name == "browser_navigate":
@@ -857,12 +892,12 @@ def summary_for(tool_name: str, args: Mapping[str, Any], host_label: str) -> str
             return (f"Navigate the Astral browser pane on {h} to an address that will be refused; "
                     "nothing will load.")
         parts = urlsplit(canonical)
-        rest = _one_line(parts.path, 120) + ("?…" if parts.query else "")
+        rest = _one_line(display_text(parts.path), 120) + ("?…" if parts.query else "")
         return (f"Open {_origin_label(canonical)}{rest} in the Astral browser pane on {h}. Approving this site "
                 "lets the pane load its pages; passwords and payment fields are never filled.")
     if (tool_name in ("browser_click", "browser_fill") and isinstance(args.get("confirm_element"), str)
             and _one_line(args["confirm_element"], 1)):
-        element = _one_line(args["confirm_element"], 200)
+        element = _one_line(display_text(args["confirm_element"]), 200)
         verb = "Click" if tool_name == "browser_click" else "Fill in"
         return (f"{verb} {element} in the Astral browser pane on {h}. This looks like a purchase, payment, "
                 "deletion or message, and I can't undo it.")
@@ -876,18 +911,19 @@ def summary_for(tool_name: str, args: Mapping[str, Any], host_label: str) -> str
             canonical = canonical_browser_url(args.get("url"))
             if canonical is None:
                 return f"Open a new tab in the Astral browser pane on {h} at an address that will be refused."
-            return (f"Open a new tab at {_origin_label(canonical)}{_one_line(urlsplit(canonical).path, 120)} in the "
+            path = _one_line(display_text(urlsplit(canonical).path), 120)
+            return (f"Open a new tab at {_origin_label(canonical)}{path} in the "
                     f"Astral browser pane on {h}. Approving this site lets the pane load its pages.")
         return f"{action.capitalize()} tabs in the Astral browser pane on {h}"
     if tool_name == "write_file":
         mode = "overwrite" if args.get("if_exists") == "overwrite" else "create"
-        return f"Write file on {h} ({mode}): {str(args.get('path') or '')[:200]}"
+        return f"Write file on {h} ({mode}): {display_text(args.get('path') or '')[:200]}"
     if tool_name == "delete_path":
-        return f"Delete on {h}: {str(args.get('path') or '')[:200]}"
+        return f"Delete on {h}: {display_text(args.get('path') or '')[:200]}"
     if tool_name == "confirm_action":
-        return f"On {h}: {str(args.get('summary') or 'the next step')[:MAX_SUMMARY_CHARS]}"
+        return f"On {h}: {display_text(args.get('summary') or 'the next step')[:MAX_SUMMARY_CHARS]}"
     if tool_name == "open_app":
-        return f"Open a terminal on {h}: {str(args.get('app') or '')[:120]}"
+        return f"Open a terminal on {h}: {display_text(args.get('app') or '')[:120]}"
     return f"{tool_name} on {h}"
 
 

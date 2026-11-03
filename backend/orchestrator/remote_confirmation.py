@@ -566,7 +566,7 @@ def policy_for(agent_id: Optional[str]) -> Optional[AgentConfirmationPolicy]:
 def _audit_event(user_id: Optional[str], action_type: str, description: str, *,
                  proposal_id: Optional[str] = None, machine_id: Optional[str] = None,
                  verb: Optional[str] = None, outcome: str = "success",
-                 chat_id: Optional[str] = None):
+                 chat_id: Optional[str] = None, display_digest: Optional[str] = None):
     from datetime import datetime, timezone
 
     from audit.schemas import AuditEventCreate
@@ -577,6 +577,8 @@ def _audit_event(user_id: Optional[str], action_type: str, description: str, *,
         meta["verb"] = str(verb)
     if proposal_id:
         meta["proposal_id"] = str(proposal_id)
+    if display_digest:
+        meta["display_digest"] = str(display_digest)
     return AuditEventCreate(
         actor_user_id=user_id or "unknown",
         auth_principal=user_id or "unknown",
@@ -620,6 +622,32 @@ def _canonical_args(args: Dict[str, Any]) -> str:
 
 def _fingerprint(args: Dict[str, Any]) -> str:
     return hashlib.sha256(_canonical_args(args).encode("utf-8")).hexdigest()
+
+
+_APPROVING = frozenset({"approve", "approve_and_resume", "grant_task"})
+
+
+def display_digest(content: Any) -> str:
+    shown = [str(item.get("content", item.get("code", ""))) for item in content or ()
+             if isinstance(item, dict) and item.get("type") in ("text", "code")]
+    return hashlib.sha256(json.dumps(shown, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def bind_display(orch, card: Dict[str, Any]) -> Optional[str]:
+    content = card.get("content") if isinstance(card.get("content"), list) else []
+    approving = [item for item in content if isinstance(item, dict) and item.get("type") == "button"
+                 and isinstance(item.get("payload"), dict) and item["payload"].get("decision") in _APPROVING]
+    if not approving:
+        return None
+    digest = display_digest(content)
+    for item in approving:
+        item["payload"]["display_digest"] = digest
+    authorities = getattr(orch, "_computer_approval_authorities", {})
+    proposal_id = approving[0]["payload"].get("proposal_id")
+    entry = authorities.get(proposal_id)
+    if entry is not None:
+        authorities[proposal_id] = (*entry[:3], digest)
+    return digest
 
 
 def _machine_label(orch, user_id: str, machine_id: Optional[str]) -> str:
@@ -833,9 +861,6 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
         if authority is not None and len(authorities) < 128:
             authorities[proposal_id] = (authority, time.monotonic() + PROPOSAL_TTL_S, offer)
         orch._computer_approval_authorities = authorities
-    _audit_sync(user_id, "remote_op.proposed", f"proposed {tool_name}: {summary}",
-                proposal_id=proposal_id, machine_id=machine_ref, verb=tool_name,
-                outcome="in_progress", chat_id=chat_id)
     title = policy.card_title
     if "{host}" in title:
         title = title.replace("{host}", card_host.name if card_host is not None
@@ -865,6 +890,14 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
                 "limited to the reviewed target. The exact action still passes permission, privacy and source review.",
                 variant="caption").to_dict())
     card["content"][2:2] = review_parts
+    digest = None
+    if agent_id == "computer-use-1":
+        if _computer_policy().hidden_characters(args):
+            card["review_flags"] = ["hidden_characters"]
+        digest = bind_display(orch, card)
+    _audit_sync(user_id, "remote_op.proposed", f"proposed {tool_name}: {summary}",
+                proposal_id=proposal_id, machine_id=machine_ref, verb=tool_name,
+                outcome="in_progress", chat_id=chat_id, display_digest=digest)
     return proposal_id, card
 
 
@@ -1083,7 +1116,8 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
                                                                     agent_id=agent_id)}
         origin = orch._source_ledger(user_id, chat_id).origin_of(args).value
         review_parts = [Text(content=f"Risks: {', '.join(sorted(risks))}. Source: {origin}.",
-                             variant="body").to_dict(), CodeBlock(code=preview, language="json").to_dict()]
+                             variant="body").to_dict(),
+                        CodeBlock(code=_computer_policy().display_text(preview, block=True), language="json").to_dict()]
     pending_key = (user_id, agent_id, tool_name, _fingerprint(args))
     if policy.retry_grace_s > 0:
         grace = _RETRY_GRACE.pop(pending_key, None)
@@ -1164,6 +1198,15 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
                                outcome="failure", chat_id=row.conversation_id)
             await _replace_card(orch, row, "Expired", "The computer session changed. Re-request this action.")
             await _say("This computer session changed. Re-request the action in its current conversation.")
+            return
+        expected = entry[3] if entry is not None and len(entry) > 3 else None
+        if decision in _APPROVING and expected is not None and payload.get("display_digest") != expected:
+            await _audit_async(user_id, "remote_op.decision_refused",
+                               "display_mismatch: the decision did not carry the reviewed card's display digest",
+                               proposal_id=proposal_id, machine_id=row.machine_id, verb=row.tool_name,
+                               outcome="failure", chat_id=row.conversation_id)
+            await _say("This approval does not match the review card on screen. Review the current card and "
+                       "decide again.")
             return
     elif resume_requested:
         await _say("This action cannot resume a local computer session.")
@@ -1258,7 +1301,8 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
         await _say("This request was already handled.")
         return
     await _audit_async(user_id, "remote_op.approved", f"approved {_verb}",
-                       proposal_id=proposal_id, machine_id=_mid, verb=_verb, chat_id=_cid)
+                       proposal_id=proposal_id, machine_id=_mid, verb=_verb, chat_id=_cid,
+                       display_digest=payload.get("display_digest") if row.agent_id == "computer-use-1" else None)
     if offer is not None and (grant_requested or offer.on_approve):
         if not computer_approval_current(orch, websocket, computer_authority):
             await _say("The computer authority changed during review. No new action was dispatched.")

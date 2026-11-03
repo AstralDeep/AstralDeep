@@ -598,6 +598,11 @@ def test_attended_input_verbs_pass_and_consequential_verbs_get_a_card():
     assert r1[1][0]["type"] == "card" and r2[1][0]["type"] == "card"
 
 
+def _approve_payload(reviewed):
+    return next(item["payload"] for item in reviewed[1][0]["content"]
+                if item.get("type") == "button" and item["payload"]["decision"] == "approve")
+
+
 async def test_approval_runs_the_verb_without_a_second_unfenced_continuation():
     db = _FakeDB()
     orch = _gate_orch(db)
@@ -639,14 +644,16 @@ async def test_approval_runs_the_verb_without_a_second_unfenced_continuation():
     orch._connection_contexts = {id(ws): _registered_context(ws)}
     orch._ws_active_chat = {id(ws): "chat-1"}
     assert grant_session.terminal_ok is False
-    assert rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "powershell", "computer": "RyzenRoll"},
-                       "chat-1", OWNER) is not None
+    reviewed = rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "powershell", "computer": "RyzenRoll"},
+                           "chat-1", OWNER)
+    assert reviewed is not None
     proposal_id = next(iter(db.rows))
+    approve = _approve_payload(reviewed)
     click_operation = {"operation": "the approval click's connection operation"}
     token = _CONNECTION_OPERATION_CONTEXT.set(click_operation)
     token_main = _CONNECTION_OPERATION_CONTEXT_MAIN.set(click_operation)
     try:
-        await rc.handle_decision(orch, ws, OWNER, {"proposal_id": proposal_id, "decision": "approve"})
+        await rc.handle_decision(orch, ws, OWNER, approve)
         await asyncio.sleep(0.05)
     finally:
         _CONNECTION_OPERATION_CONTEXT.reset(token)
@@ -692,9 +699,9 @@ async def test_failed_computer_action_requires_fresh_review_and_never_auto_conti
     orch._connection_contexts = {id(ws): _registered_context(ws)}
     orch._ws_active_chat = {id(ws): "chat-1"}
     args = {"app": "powershell", "computer": "RyzenRoll"}
-    assert rc.evaluate(orch, ws, "computer-use-1", "open_app", dict(args), "chat-1", OWNER) is not None
-    proposal_id = next(iter(db.rows))
-    await rc.handle_decision(orch, ws, OWNER, {"proposal_id": proposal_id, "decision": "approve"})
+    reviewed = rc.evaluate(orch, ws, "computer-use-1", "open_app", dict(args), "chat-1", OWNER)
+    assert reviewed is not None
+    await rc.handle_decision(orch, ws, OWNER, _approve_payload(reviewed))
     await asyncio.sleep(0.05)
     assert not renders and not session.terminal_ok
     assert rc.evaluate(orch, ws, "computer-use-1", "open_app", dict(args), "chat-1", OWNER) is not None
