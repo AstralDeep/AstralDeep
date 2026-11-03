@@ -366,11 +366,17 @@ class WorkSubmitService:
             stored = await store.get_key(owner_id)
             if stored is None:
                 return
+            client = None
+            if getattr(stored, "provider", "typesafe") == "custom":
+                from orchestrator.typesafe_routing.custom import CustomDecisionClient
+
+                client = CustomDecisionClient(stored.base_url, stored.model)
             verdict = await screen_instruction(
                 user_id=owner_id,
                 text=instructions,
                 api_key=stored.api_key,
                 fingerprint=stored.fingerprint,
+                client=client,
             )
         except AssignmentError:
             raise

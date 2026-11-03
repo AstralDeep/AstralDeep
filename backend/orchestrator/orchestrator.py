@@ -23305,6 +23305,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 api_key=stored.api_key,
                 fingerprint=stored.fingerprint,
                 notifier=self._typesafe_notifier(websocket),
+                client=self._decisions_client(stored),
             )
             with perf_span("turn.typesafe_start", chat=chat_id):
                 pass
@@ -23312,6 +23313,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         except Exception:
             logger.debug("TypeSafe routing could not start (non-fatal)", exc_info=True)
             return None, None
+
+    @staticmethod
+    def _decisions_client(stored):
+        if getattr(stored, "provider", "typesafe") == "custom":
+            from orchestrator.typesafe_routing.custom import CustomDecisionClient
+
+            return CustomDecisionClient(stored.base_url, stored.model)
+        return None
 
     def _typesafe_turn_requires_confirmation(self, chat_id) -> bool:
         if not chat_id:

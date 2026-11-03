@@ -219,7 +219,7 @@ def _components(orch, params=None):
 
 def test_the_section_renders_with_a_write_only_field(typesafe_store) -> None:
     html = _render(_orch(typesafe_store))
-    assert "TypeSafe routing (optional)" in html
+    assert "Decisions model (optional)" in html
     assert 'type="password"' in html and 'name="typesafe_api_key"' in html
     assert 'value=""' in html
     assert 'data-ui-action="chrome_typesafe_save"' in html
@@ -227,7 +227,7 @@ def test_the_section_renders_with_a_write_only_field(typesafe_store) -> None:
 
 def test_the_section_is_hidden_during_first_run(typesafe_store) -> None:
     html = _render(_orch(typesafe_store), {"first_run": True})
-    assert "TypeSafe routing (optional)" not in html
+    assert "Decisions model (optional)" not in html
     assert "chrome_typesafe_save" not in html
 
 
@@ -328,7 +328,7 @@ def test_the_save_is_not_routed_to_an_executor_that_cannot_perform_it() -> None:
     from orchestrator.orchestrator import _LLM_CREDENTIAL_SAVE_ACTIONS
 
     assert "chrome_typesafe_save" not in _LLM_CREDENTIAL_SAVE_ACTIONS
-    assert "save_key" in _handler_source("_handle_typesafe_save")
+    assert "save_decisions" in _handler_source("_handle_typesafe_save")
 
 
 def test_the_probe_budget_is_generous_compared_with_the_turn_budget() -> None:

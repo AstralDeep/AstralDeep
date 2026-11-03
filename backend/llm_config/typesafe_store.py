@@ -1,6 +1,6 @@
-"""Owner-scoped TypeSafe credential store: one opaque key plus its last-use outcome,
-Fernet-encrypted under the same key user_store.py uses so one rotation covers both.
-Backs typesafe_handlers.py's save/clear/probe flow.
+"""Stores owner-scoped decisions-provider credentials and their last-use outcome.
+Legacy TypeSafe keys and versioned custom configurations use user_store.py's Fernet key.
+Backs typesafe_handlers.py's save, clear, and probe flow.
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import hashlib
+import json
 import logging
 import time
 from typing import Any, Literal, Optional
@@ -19,6 +20,7 @@ from astralplane.repositories import (
 )
 from cryptography.fernet import InvalidToken
 from orchestrator.plane_repository_context import PlaneRepositoryContext, repository_from
+from orchestrator.typesafe_routing.client import TYPESAFE_API_BASE, TYPESAFE_MODEL
 
 from .user_store import _resolve_fernet
 
@@ -27,6 +29,7 @@ logger = logging.getLogger("LLMConfig.TypeSafeStore")
 _CACHE_TTL_SECONDS = 30.0
 
 MAX_KEY_CHARS = 512
+_CONFIG_PREFIX = "decisions:v1:"
 
 Outcome = Literal["valid", "rejected", "unavailable"]
 StatusName = Literal["not_set", "active", "rejected", "unavailable"]
@@ -41,6 +44,10 @@ class TypeSafeKeyStatus:
     name: StatusName = "not_set"
     at: Optional[datetime] = None
     last_verified_at: Optional[datetime] = None
+    provider: str = "typesafe"
+    base_url: str = TYPESAFE_API_BASE
+    model: str = TYPESAFE_MODEL
+    has_key: bool = False
 
     @property
     def is_set(self) -> bool:
@@ -55,6 +62,9 @@ class TypeSafeKeyStatus:
 class StoredTypeSafeKey:
     api_key: str = field(repr=False)
     fingerprint: str
+    provider: str = "typesafe"
+    base_url: str = TYPESAFE_API_BASE
+    model: str = TYPESAFE_MODEL
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"StoredTypeSafeKey(fingerprint={self.fingerprint!r})"
@@ -129,7 +139,16 @@ class TypeSafeCredentialStore:
         if row is None:
             return None
         try:
+            if row.api_key_ciphertext.startswith(_CONFIG_PREFIX):
+                config = json.loads(self._decrypt(row.api_key_ciphertext[len(_CONFIG_PREFIX):]))
+                if (not isinstance(config, dict) or set(config) != {"provider", "base_url", "model", "api_key"}
+                        or config["provider"] != "custom"):
+                    raise ValueError("invalid decision configuration")
+                self._validate_config(**config)
+                return StoredTypeSafeKey(fingerprint=row.key_fingerprint, **config)
             api_key = self._decrypt(row.api_key_ciphertext)
+            if api_key.startswith("{") or len(api_key) > MAX_KEY_CHARS:
+                raise ValueError("invalid legacy credential")
         except (InvalidToken, ValueError, TypeError, UnicodeError):
             self._discard_undecryptable(user_id)
             return None
@@ -144,6 +163,9 @@ class TypeSafeCredentialStore:
         row = self._row_sync(user_id)
         if row is None:
             return TypeSafeKeyStatus()
+        stored = self.get_key_sync(user_id)
+        if stored is None:
+            return TypeSafeKeyStatus()
         outcome = row.last_verification_outcome
         name: StatusName = "active"
         if outcome == "rejected":
@@ -154,6 +176,8 @@ class TypeSafeCredentialStore:
             name=name,
             at=row.last_outcome_at,
             last_verified_at=row.last_verified_at,
+            provider=stored.provider, base_url=stored.base_url, model=stored.model,
+            has_key=bool(stored.api_key),
         )
 
     async def status(self, user_id: str) -> TypeSafeKeyStatus:
@@ -176,11 +200,43 @@ class TypeSafeCredentialStore:
         )
         self.invalidate(user_id)
         return TypeSafeKeyStatus(
-            name="active", at=verified_at, last_verified_at=verified_at
+            name="active", at=verified_at, last_verified_at=verified_at, has_key=True
         )
 
     async def save(self, user_id: str, api_key: str) -> TypeSafeKeyStatus:
         return await asyncio.to_thread(self.save_sync, user_id, api_key)
+
+    @staticmethod
+    def _validate_config(*, provider: str, base_url: str, model: str, api_key: str) -> None:
+        from orchestrator.typesafe_routing.custom import CustomDecisionClient
+
+        if provider != "custom" or not isinstance(api_key, str) or len(api_key) > MAX_KEY_CHARS:
+            raise ValueError("invalid decisions provider or key")
+        if any(character.isspace() for character in api_key):
+            raise ValueError("invalid decisions key")
+        CustomDecisionClient(base_url, model)
+
+    def save_config_sync(self, user_id: str, *, provider: str, base_url: str,
+                         model: str, api_key: str) -> tuple[TypeSafeKeyStatus, str]:
+        self._validate_config(provider=provider, base_url=base_url, model=model, api_key=api_key)
+        config = {"provider": provider, "base_url": base_url.rstrip("/"),
+                  "model": model, "api_key": api_key}
+        encoded = json.dumps(config, sort_keys=True, separators=(",", ":"))
+        fingerprint = key_fingerprint(encoded)
+        verified_at = datetime.now(UTC)
+        self._repository.call(
+            self._repository.repository.upsert_user, owner_id=user_id,
+            api_key_ciphertext=_CONFIG_PREFIX + self._encrypt(encoded),
+            key_fingerprint=fingerprint, verified_at=verified_at,
+        )
+        self.invalidate(user_id)
+        return TypeSafeKeyStatus(
+            name="active", at=verified_at, last_verified_at=verified_at,
+            provider=provider, base_url=config["base_url"], model=model, has_key=bool(api_key),
+        ), fingerprint
+
+    async def save_config(self, user_id: str, **config: Any) -> tuple[TypeSafeKeyStatus, str]:
+        return await asyncio.to_thread(self.save_config_sync, user_id, **config)
 
     def clear_sync(self, user_id: str) -> bool:
         try:
