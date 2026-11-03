@@ -36,11 +36,21 @@ def test_native_decision_fields_follow_provider_and_never_echo_keys(typesafe_sto
     for name in ("decisions_base_url", "decisions_model"):
         assert fields[name]["visible_when"] == {"decisions_provider": "custom"}
     assert fields["decisions_api_key"]["kind"] == "password"
+    assert fields["decisions_api_key"].get("help") == "A key is saved."
+    assert not fields["typesafe_api_key"].get("help")
     assert KEY not in repr(components)
     web = asyncio.run(llm.render(orch(typesafe_store), USER, [], {}))
     assert 'name="decisions_provider"' in web
     assert 'data-chrome-visible-when=' in web
     assert KEY not in web
+
+
+def test_hosted_key_hint_does_not_claim_a_custom_key_is_saved(typesafe_store):
+    typesafe_store.save_sync(USER, KEY)
+    components = asyncio.run(llm.components(orch(typesafe_store), USER, [], {}))
+    fields = {f["name"]: f for c in components if c["type"] == "param_picker" for f in c["fields"]}
+    assert fields["typesafe_api_key"].get("help") == "A key is saved."
+    assert not fields["decisions_api_key"].get("help")
 
 
 def test_custom_save_probes_before_persisting_and_preserves_on_failure(typesafe_store, monkeypatch):

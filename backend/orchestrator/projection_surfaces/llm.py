@@ -322,9 +322,11 @@ def _typesafe_block(status: Any) -> str:
         f'<span class="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 '
         f'rounded-full border {badge_styles[variant]}">{esc(line)}</span>'
     )
-    placeholder = "Saved key hidden" if getattr(status, "is_set", False) else ""
     provider = getattr(status, "provider", "typesafe")
     custom = provider == "custom"
+    has_key = getattr(status, "has_key", False)
+    placeholder = "Saved key hidden" if has_key and not custom else ""
+    custom_placeholder = "Saved key hidden" if has_key and custom else ""
     def condition(value):
         return esc(json.dumps({"decisions_provider": value}))
     options = "".join(
@@ -360,7 +362,7 @@ def _typesafe_block(status: Any) -> str:
         f'<input name="decisions_model" value="{esc(model)}" class="{_INPUT_CLS}" '
         'placeholder="bespokelabs/Bespoke-Nimble-9B"></label>'
         f'<label class="{_LABEL_CLS}"><span class="{_LABEL_TEXT_CLS}">API key (optional)</span>'
-        f'<input type="password" name="decisions_api_key" value="" placeholder="{esc(placeholder)}" '
+        f'<input type="password" name="decisions_api_key" value="" placeholder="{esc(custom_placeholder)}" '
         f'autocomplete="off" class="{_INPUT_CLS}"></label></div>'
         '<div class="flex flex-wrap gap-2">'
         f'{_button("chrome_typesafe_save", "Save decisions model")}'
@@ -556,13 +558,13 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
                         default=getattr(typesafe_status, "model", "") if decision_provider == "custom" else "",
                         visible_when={"decisions_provider": "custom"}),
             _sdui.field("decisions_api_key", "API key (optional)", "password",
-                        help="A key is saved." if getattr(typesafe_status, "has_key", False) else None,
+                        help="A key is saved." if decision_provider == "custom" and getattr(typesafe_status, "has_key", False) else None,
                         visible_when={"decisions_provider": "custom"}),
             _sdui.field(
                 "typesafe_api_key",
                 "TypeSafe API key",
                 "password",
-                help="A key is saved." if getattr(typesafe_status, "has_key", False) else None,
+                help="A key is saved." if decision_provider == "typesafe" and getattr(typesafe_status, "has_key", False) else None,
                 visible_when={"decisions_provider": "typesafe"},
             ),
         ])

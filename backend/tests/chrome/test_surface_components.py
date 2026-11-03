@@ -189,9 +189,9 @@ def test_llm_components_drop_captions_and_field_help_but_keep_data_sharing_conse
         assert not [c for c in captions if "Local runtimes" in c]
         form, = [c for c in flat if c.get("type") == "param_picker"]
         helps = {f["name"]: f.get("help") for f in form["fields"] if f.get("help")}
-        assert set(helps) <= {ds.FIELD_NAME, "typesafe_api_key"}
+        assert set(helps) <= {ds.FIELD_NAME, "decisions_provider"}
         assert helps[ds.FIELD_NAME] == ds.NOTICE_BODY
-        assert helps.get("typesafe_api_key", "Status: ").startswith("Status: ")
+        assert helps.get("decisions_provider", "Status: ").startswith("Status: ")
         assert any(c.get("type") == "alert" and c.get("message") == ds.NOTICE_BODY for c in flat)
     assert not hasattr(llm, "SUBTITLE")
 
