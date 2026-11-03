@@ -1,6 +1,6 @@
 """Checks that Mac review cards show hidden, control and direction-changing characters as visible escapes and
-flag them. Also checks that computer-use approvals carry and must return a digest of exactly what the card
-displayed, through the real dispatch and decision paths.
+flag them. Also checks that each computer-use card carries a digest of exactly what it displays, that an
+approval echoing a different digest is refused, and that the audit records whether the client echoed it.
 """
 
 from unittest.mock import AsyncMock
@@ -104,8 +104,8 @@ async def test_flagged_command_card_carries_the_flag_and_a_digest_of_what_it_sho
     assert shown and not any("\u202e" in str(item.get("content", item.get("code"))) for item in shown)
     digest = rc.display_digest(card["content"])
     assert len(digest) == 64
-    assert {_payload(response, d)["display_digest"] for d in ("approve", "grant_task")} == {digest}
-    assert "display_digest" not in _payload(response, "decline")
+    assert card["display_digest"] == digest
+    assert not any("display_digest" in _payload(response, d) for d in ("approve", "grant_task", "decline"))
 
 
 async def test_plain_command_card_has_no_flag_and_its_digest_tracks_the_text(task_runtime):
@@ -113,11 +113,18 @@ async def test_plain_command_card_has_no_flag_and_its_digest_tracks_the_text(tas
     first = await _call(task_runtime, "run_command", argv=["wc", "-l", "a.md"], cwd=ROOT)
     second = await _call(task_runtime, "run_command", argv=["wc", "-l", "b.md"], cwd=ROOT)
     assert "review_flags" not in first.ui_components[0]
-    assert _payload(first, "approve")["display_digest"] != _payload(second, "approve")["display_digest"]
+    assert first.ui_components[0]["display_digest"] != second.ui_components[0]["display_digest"]
 
 
-async def test_a_decision_without_the_displayed_digest_is_refused_and_the_card_stays_pending(task_runtime,
-                                                                                           monkeypatch):
+async def test_approve_payloads_hold_only_the_keys_released_apple_clients_forward(task_runtime):
+    await _mac(task_runtime, remote=True)
+    response = await _call(task_runtime, "run_command", argv=["wc", "-l", "no\u202etes.md"], cwd=ROOT)
+    buttons = [item for item in response.ui_components[0]["content"] if item.get("type") == "button"]
+    assert buttons and all(set(item["payload"]) <= {"proposal_id", "decision"} for item in buttons)
+
+
+async def test_an_echoed_digest_must_match_and_the_audit_records_whether_it_was_echoed(task_runtime,
+                                                                                     monkeypatch):
     orch, ws, effects, *_ = task_runtime
     await _mac(task_runtime, remote=True)
     audits = []
@@ -128,18 +135,20 @@ async def test_a_decision_without_the_displayed_digest_is_refused_and_the_card_s
         await real_audit(user_id, action_type, description, **kw)
 
     monkeypatch.setattr(rc, "_audit_async", record)
-    response = await _call(task_runtime, "run_command", argv=["wc", "-l", "notes.md"], cwd=ROOT)
-    payload = _payload(response, "approve")
-    for forged in ({key: value for key, value in payload.items() if key != "display_digest"},
-                   {**payload, "display_digest": "0" * 64}):
-        await rc.handle_decision(orch, ws, OWNER, forged)
-        assert effects == []
+    first = await _call(task_runtime, "run_command", argv=["wc", "-l", "notes.md"], cwd=ROOT)
+    second = await _call(task_runtime, "run_command", argv=["wc", "-l", "todo.md"], cwd=ROOT)
+    digests = [response.ui_components[0]["display_digest"] for response in (first, second)]
+    for forged in ("0" * 64, digests[1], ""):
+        await rc.handle_decision(orch, ws, OWNER, {**_payload(first, "approve"), "display_digest": forged})
+    assert effects == []
     refused = [entry for entry in audits if entry[0] == "remote_op.decision_refused"]
-    assert len(refused) == 2 and all("display_mismatch" in entry[1] for entry in refused)
-    await rc.handle_decision(orch, ws, OWNER, payload)
-    assert len(effects) == 1
-    approved, = [entry for entry in audits if entry[0] == "remote_op.approved"]
-    assert approved[2]["display_digest"] == payload["display_digest"]
+    assert len(refused) == 3 and all("display_mismatch" in entry[1] for entry in refused)
+    await rc.handle_decision(orch, ws, OWNER, {**_payload(first, "approve"), "display_digest": digests[0]})
+    await rc.handle_decision(orch, ws, OWNER, _payload(second, "approve"))
+    assert len(effects) == 2
+    approved = [entry[2] for entry in audits if entry[0] == "remote_op.approved"]
+    assert [(meta["display_digest"], meta["display_echo"]) for meta in approved] == [
+        (digests[0], "matched"), (digests[1], "absent")]
 
 
 async def test_decline_needs_no_digest(task_runtime):
@@ -162,7 +171,7 @@ async def test_file_card_previews_show_hidden_characters_as_escapes(task_runtime
     assert codes and not any("\u202e" in code for code in codes)
     assert any("\\u{202E}" in code for code in codes) and any("\\u{2066}" in code for code in codes)
     assert card["review_flags"] == ["hidden_characters"]
-    assert _payload(response, "approve")["display_digest"] == rc.display_digest(card["content"])
+    assert card["display_digest"] == rc.display_digest(card["content"])
 
 
 async def test_input_card_preview_shows_hidden_characters_as_escapes(task_runtime):
@@ -178,6 +187,6 @@ def test_clean_new_tab_summary_and_audit_metadata_carry_the_reviewed_values():
     tab = policy.summary_for("browser_tabs", {"action": "create", "url": "https://example.com/docs"}, "Mac")
     assert tab.startswith("Open a new tab at https://example.com/docs in the Astral browser pane on Mac.")
     event = rc._audit_event("owner-a", "remote_op.approved", "approved run_command", proposal_id="p" * 32,
-                            display_digest="d" * 64)
-    assert event.inputs_meta["display_digest"] == "d" * 64
+                            display_digest="d" * 64, display_echo="absent")
+    assert (event.inputs_meta["display_digest"], event.inputs_meta["display_echo"]) == ("d" * 64, "absent")
     assert "display_digest" not in rc._audit_event("owner-a", "remote_op.declined", "declined").inputs_meta

@@ -165,8 +165,7 @@ async def attach_write_diff(orch, websocket, owner: str, chat: Optional[str], ar
                        or part.get("content") == "Create an empty file." for part in parts):
         summary = [{**summary[0], "content": summary[0].get("content", "").replace("(overwrite)", "(create)", 1)}]
     updated = {**card, "content": [*summary, *parts, *card["content"][1:]]}
-    if any(isinstance(item.get("payload"), dict) and "display_digest" in item["payload"]
-           for item in card["content"] if isinstance(item, dict)):
+    if isinstance(card.get("display_digest"), str):
         from orchestrator import remote_confirmation
 
         digest = remote_confirmation.bind_display(orch, updated)

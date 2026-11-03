@@ -566,7 +566,8 @@ def policy_for(agent_id: Optional[str]) -> Optional[AgentConfirmationPolicy]:
 def _audit_event(user_id: Optional[str], action_type: str, description: str, *,
                  proposal_id: Optional[str] = None, machine_id: Optional[str] = None,
                  verb: Optional[str] = None, outcome: str = "success",
-                 chat_id: Optional[str] = None, display_digest: Optional[str] = None):
+                 chat_id: Optional[str] = None, display_digest: Optional[str] = None,
+                 display_echo: Optional[str] = None):
     from datetime import datetime, timezone
 
     from audit.schemas import AuditEventCreate
@@ -579,6 +580,8 @@ def _audit_event(user_id: Optional[str], action_type: str, description: str, *,
         meta["proposal_id"] = str(proposal_id)
     if display_digest:
         meta["display_digest"] = str(display_digest)
+    if display_echo:
+        meta["display_echo"] = str(display_echo)
     return AuditEventCreate(
         actor_user_id=user_id or "unknown",
         auth_principal=user_id or "unknown",
@@ -640,8 +643,7 @@ def bind_display(orch, card: Dict[str, Any]) -> Optional[str]:
     if not approving:
         return None
     digest = display_digest(content)
-    for item in approving:
-        item["payload"]["display_digest"] = digest
+    card["display_digest"] = digest
     authorities = getattr(orch, "_computer_approval_authorities", {})
     proposal_id = approving[0]["payload"].get("proposal_id")
     entry = authorities.get(proposal_id)
@@ -1179,7 +1181,8 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
         return
     from orchestrator.approval_receipts import bind_origin
     bind_origin(orch, proposal_id, row.conversation_id)
-    computer_authority = offer = None
+    computer_authority = offer = expected = None
+    echoed = payload.get("display_digest")
     if row.agent_id == "computer-use-1":
         entry = getattr(orch, "_computer_approval_authorities", {}).get(str(proposal_id))
         computer_authority = entry[0] if entry is not None and entry[1] > time.monotonic() else None
@@ -1200,9 +1203,9 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
             await _say("This computer session changed. Re-request the action in its current conversation.")
             return
         expected = entry[3] if entry is not None and len(entry) > 3 else None
-        if decision in _APPROVING and expected is not None and payload.get("display_digest") != expected:
+        if decision in _APPROVING and expected is not None and echoed is not None and echoed != expected:
             await _audit_async(user_id, "remote_op.decision_refused",
-                               "display_mismatch: the decision did not carry the reviewed card's display digest",
+                               "display_mismatch: the decision carried a different card's display digest",
                                proposal_id=proposal_id, machine_id=row.machine_id, verb=row.tool_name,
                                outcome="failure", chat_id=row.conversation_id)
             await _say("This approval does not match the review card on screen. Review the current card and "
@@ -1302,7 +1305,8 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
         return
     await _audit_async(user_id, "remote_op.approved", f"approved {_verb}",
                        proposal_id=proposal_id, machine_id=_mid, verb=_verb, chat_id=_cid,
-                       display_digest=payload.get("display_digest") if row.agent_id == "computer-use-1" else None)
+                       display_digest=expected,
+                       display_echo=None if expected is None else "matched" if echoed == expected else "absent")
     if offer is not None and (grant_requested or offer.on_approve):
         if not computer_approval_current(orch, websocket, computer_authority):
             await _say("The computer authority changed during review. No new action was dispatched.")
