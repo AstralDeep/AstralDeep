@@ -315,7 +315,8 @@ def test_summary_for_navigation_actions_and_refused_addresses():
         assert action in policy.summary_for("browser_navigate", {"action": action}, "Mac").lower()
     assert "Navigate" in policy.summary_for("browser_navigate", {"action": ["x"]}, "Mac")
     bad = policy.summary_for("browser_navigate", {"url": "javascript:alert(1)\n\x00"}, "Mac")
-    assert "refused" in bad and "\n" not in bad and "\x00" not in bad
+    note, shown = bad.split("\n")
+    assert note == policy.HIDDEN_CHARACTERS_NOTE and "refused" in shown and "\x00" not in bad
     assert "browser pane on your computer" in policy.summary_for("browser_navigate", {}, "")
     assert "your computer" in policy.summary_for("browser_navigate", {"url": ORIGIN}, "")
 
@@ -330,8 +331,10 @@ def test_summary_for_the_consequential_browser_card():
     long = policy.summary_for("browser_click", {"confirm_element": "x" * 900}, "Mac")
     assert len(long) < 500
     spoofed = policy.summary_for("browser_click", {"confirm_element": f'[e3] button "{_BIDI}Pay\x07 now"\n'}, "Mac")
-    assert '[e3] button "Pay now"' in spoofed
-    assert not any(ch in spoofed for ch in _BIDI) and "\x07" not in spoofed and "\n" not in spoofed
+    note, shown = spoofed.split("\n")
+    assert note == policy.HIDDEN_CHARACTERS_NOTE and '[e3] button "' in shown and "Pay\\u{7} now" in shown
+    assert not any(ch in spoofed for ch in _BIDI) and "\x07" not in spoofed
+    assert all(f"\\u{{{ord(ch):X}}}" in shown for ch in _BIDI)
 
 
 async def test_snapshot_forwards_the_bounded_request_and_returns_untrusted_lines_without_a_digest(world):
