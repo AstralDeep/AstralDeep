@@ -717,7 +717,6 @@ jobs:
         run: python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
       - name: Lint Deep-owned Python
         run: ruff check .
-
   ui-v2-contracts:
     name: Backend UI v2 contracts
     runs-on: ubuntu-24.04
@@ -732,6 +731,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           submodules: recursive
+          fetch-depth: 0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
@@ -755,6 +755,17 @@ jobs:
             backend/tests/chrome/test_topbar.py \
             backend/tests/test_chrome_events.py \
             backend/tests/test_voice_deployment_topology_065.py
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24.21.0"
+      - name: Qualify credential fixtures through the Pi publication scanner
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          node --test scripts/tests/publication-fixtures.test.mjs
+          node scripts/check_publication_fixtures.mjs --base "$BASE_SHA" --head "$HEAD_SHA"
+
 
   sdk:
     name: Astral SDK (built and tested outside the product image)

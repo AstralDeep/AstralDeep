@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import sys
 import uuid
 from types import SimpleNamespace
@@ -19,7 +20,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from orchestrator import chrome_events  # noqa: E402
 
-SECRET = "sk-supersecret-system-key-1234567890123456"
+SECRET = ""
+
+
+@pytest.fixture(autouse=True)
+def _credential_values(monkeypatch):
+    monkeypatch.setitem(globals(), "SECRET", secrets.token_urlsafe(32))
 class FakeRecorder:
     def __init__(self):
         self.events = []

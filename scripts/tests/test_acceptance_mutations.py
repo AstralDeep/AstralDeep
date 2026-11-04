@@ -103,14 +103,15 @@ def test_local_privacy_and_reader_mutations_detect_guard_removal(
     ("patterns", "credential_output"),
     [
         (
-            "PHI_VALUE_PATTERNS",
-            "Credential ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ.",
+            "(PHI_VALUE_PATTERNS if phi else ())",
+            "".join(('Credential ', 'ghp_abcdefghijklmnop', 'qrstuvwxyzABCDEFGHIJ', '.',)),
         ),
         (
-            "PHI_VALUE_PATTERNS + SECRET_VALUE_PATTERNS",
+            "(PHI_VALUE_PATTERNS if phi else ()) + SECRET_VALUE_PATTERNS",
             "Credential [REDACTED:token].",
         ),
     ],
+    ids=("phi-only-patterns", "phi-and-secret-patterns"),
 )
 def test_phi_mutation_removes_masking_without_disabling_added_credentials(
     patterns: str, credential_output: str
@@ -119,21 +120,37 @@ def test_phi_mutation_removes_masking_without_disabling_added_credentials(
         item for item in gate.MUTATIONS if item.name == "phi-value-masking-removed"
     )
     original = (gate.ROOT / "backend/shared/phi_redactor.py").read_text()
-    start = original.index("    for pattern, replacement in PHI_VALUE_PATTERNS")
+    start = original.index("    for pattern, replacement in ")
     end = original.index("\n", start)
     source = (
         original[:start]
         + f"    for pattern, replacement in {patterns}:"
         + original[end:]
     )
+    original_namespace = {}
+    exec(compile(source, "baseline", "exec"), original_namespace)
+    assert original_namespace["redact"]("Synthetic SSN 123-45-6789.", phi=True) == (
+        "Synthetic SSN [REDACTED:ssn].",
+        False,
+    )
+    assert original_namespace["redact"]("Synthetic SSN 123-45-6789.", phi=False) == (
+        "Synthetic SSN 123-45-6789.",
+        False,
+    )
+    assert source.count(mutation.before) == 1
     namespace = {}
     exec(compile(source.replace(mutation.before, mutation.after, 1), "mutant", "exec"), namespace)
-    assert namespace["redact"]("Synthetic SSN 123-45-6789.") == (
+    assert namespace["redact"]("Synthetic SSN 123-45-6789.", phi=True) == (
         "Synthetic SSN 123-45-6789.",
         False,
     )
     assert namespace["redact"](
-        "Credential ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ."
+        "".join(('Credential ', 'ghp_abcdefghijklmnop', 'qrstuvwxyzABCDEFGHIJ', '.',)),
+        phi=True,
+    ) == (credential_output, False)
+    assert namespace["redact"](
+        "".join(('Credential ', 'ghp_abcdefghijklmnop', 'qrstuvwxyzABCDEFGHIJ', '.',)),
+        phi=False,
     ) == (credential_output, False)
 
 

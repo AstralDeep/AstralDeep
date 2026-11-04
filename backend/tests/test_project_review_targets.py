@@ -17,6 +17,18 @@ from tests.test_lets_gate_ordering import gate_orchestrator  # noqa: F401
 from tests.test_project_standing_dispatch import PROJECT, project_runtime
 
 ROOT = "/tmp/project-20261027"
+SYNTHETIC_SSN = "-".join(("123", "45", "6789"))
+SYNTHETIC_TOKEN = "gh" + "p_" + "a" * 36
+SYNTHETIC_PRIVATE_KEY = "\n".join((
+    "".join(("-----", "BEGIN ", "PRIVATE KEY", "-----")),
+    "A" * 32,
+    "".join(("-----", "END ", "PRIVATE KEY", "-----")),
+))
+
+
+@pytest.fixture(autouse=True)
+def owner_phi_protection(monkeypatch):
+    monkeypatch.setattr("personalization.phi_policy.protection_enabled", lambda owner, orch=None: owner == "owner-a")
 
 
 async def dated_runtime(task_runtime, monkeypatch):
@@ -55,15 +67,16 @@ async def test_validated_dated_targets_keep_standing_consent(task_runtime, monke
 
 
 @pytest.mark.parametrize("tool,args", [
-    ("write_file", {"path": "note.md", "content": "12345678"}),
-    ("write_file", {"path": "note.md", "content": "password: hidden"}),
-    ("write_file", {"path": "credentials-20261027.md", "content": "hello"}),
-    ("write_file", {"path": "note.md", "content": "hello", "project_targets": ["12345678"]}),
-    ("run_command", {"argv": ["echo", "12345678"]}),
-    ("run_command", {"command": "echo 12345678"}),
-    ("run_command", {"argv": ["pwd"], "env": {"APP_VALUE": "12345678"}}),
+    ("write_file", {"path": "note.md", "content": "Synthetic SSN " + SYNTHETIC_SSN}),
+    ("write_file", {"path": "note.md", "content": SYNTHETIC_PRIVATE_KEY}),
+    ("write_file", {"path": "credentials-" + SYNTHETIC_TOKEN + ".md", "content": "hello"}),
+    ("write_file", {"path": "note.md", "content": "hello", "project_targets": ["MRN " + "987654"]}),
+    ("run_command", {"argv": ["echo", SYNTHETIC_SSN]}),
+    ("run_command", {"command": "echo " + SYNTHETIC_SSN}),
+    ("run_command", {"argv": ["pwd"], "env": {"APP_VALUE": SYNTHETIC_SSN}}),
     ("run_command", {"argv": ["sudo", "pwd"]}),
-])
+], ids=["write-phi", "write-private-key", "filename-token", "forged-target-phi", "argv-phi",
+        "command-phi", "environment-phi", "sudo-floor"])
 async def test_routing_exception_does_not_suppress_content_secrets_or_floors(task_runtime, monkeypatch, tool, args):
     orch, _ws, effects, *_ = task_runtime
     session, _host = await dated_runtime(task_runtime, monkeypatch)

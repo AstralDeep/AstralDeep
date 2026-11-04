@@ -5,6 +5,7 @@ turns resolve the system record, and neither ever falls back to the other.
 
 from __future__ import annotations
 
+import secrets
 import types
 
 import pytest
@@ -21,8 +22,14 @@ from llm_config.audit_events import record_llm_call
 from llm_config.ws_handlers import handle_llm_config_set
 
 ALICE = "alice-sub"
-ALICE_KEY = "sk-alice-1234567890abcdefgh"
-SYSTEM_KEY = "sk-system-1234567890abcdefg"
+ALICE_KEY = ""
+SYSTEM_KEY = ""
+
+
+@pytest.fixture(autouse=True)
+def _credential_values(monkeypatch):
+    monkeypatch.setitem(globals(), "ALICE_KEY", secrets.token_urlsafe(32))
+    monkeypatch.setitem(globals(), "SYSTEM_KEY", secrets.token_urlsafe(32))
 
 
 class _FakeWS:

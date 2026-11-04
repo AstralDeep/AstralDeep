@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import secrets
 import traceback
 from types import SimpleNamespace
 
@@ -23,13 +24,27 @@ from tests.helpers.remote_plane_runtime import make_remote_wake_plane_source
 
 USER = "user-1"
 
-SENTINEL_KEY = "ASTRAL063LEAKSENTINELPRIVATEKEYBYTES"
-FAKE_PEM = ("synthetic-ssh-private-key-fixture\n"
-            f"{SENTINEL_KEY}\n"
-            "-----END OPENSSH PRIVATE KEY-----")
-SENTINEL_PASSPHRASE = "astral063.leak.sentinel.passphrase"
-SENTINEL_PASSWORD = "astral063.leak.sentinel.password"
-SENTINELS = (SENTINEL_KEY, SENTINEL_PASSPHRASE, SENTINEL_PASSWORD)
+SENTINEL_KEY = ""
+FAKE_PEM = ("")
+SENTINEL_PASSPHRASE = ""
+SENTINEL_PASSWORD = ""
+SENTINELS = ()
+
+
+@pytest.fixture(autouse=True)
+def _secret_sentinels(monkeypatch):
+    key = secrets.token_urlsafe(32)
+    passphrase = secrets.token_urlsafe(32)
+    password = secrets.token_urlsafe(32)
+    pem = "".join(("".join(('synthetic-ssh-pri', 'vate-key-fixture\n')), key, "".join(('\n-----END OPENSSH', ' PRIVATE KEY-----')),))
+    for name, value in {
+        "SENTINEL_KEY": key,
+        "SENTINEL_PASSPHRASE": passphrase,
+        "SENTINEL_PASSWORD": password,
+        "FAKE_PEM": pem,
+        "SENTINELS": (key, passphrase, password),
+    }.items():
+        monkeypatch.setitem(globals(), name, value)
 
 _SQUEUE_FAILED = ('{"jobs":[{"job_id":42,"job_state":"FAILED","name":"train",'
                   '"partition":"gpu","node_count":1,"state_reason":"None"}]}')

@@ -4,7 +4,9 @@ scenarios, so the doctor never contradicts the documented exit-78 posture."""
 
 from __future__ import annotations
 
+import base64
 import importlib.util
+import secrets
 import sys
 from pathlib import Path
 
@@ -46,14 +48,29 @@ POSTURE_VARIABLES = (
 PRODUCTION_BASE = {
     "ASTRAL_ENV": "production",
     "USE_MOCK_AUTH": "false",
-    "WEB_SESSION_ENC_KEY": "x" * 44,
-    "CREDENTIAL_ENCRYPTION_KEY": "y" * 44,
-    "AUDIT_HMAC_SECRET": "high-entropy-audit-secret-value",
-    "AGENT_API_KEY": "high-entropy-agent-key-value",
+    "WEB_SESSION_ENC_KEY": "",
+    "CREDENTIAL_ENCRYPTION_KEY": "",
+    "AUDIT_HMAC_SECRET": "",
+    "AGENT_API_KEY": "",
     "KEYCLOAK_AUTHORITY": "https://idp.example/realms/r",
     "KEYCLOAK_CLIENT_ID": "astral-frontend",
-    "KEYCLOAK_CLIENT_SECRET": "high-entropy-client-secret-value",
+    "KEYCLOAK_CLIENT_SECRET": "",
 }
+
+
+@pytest.fixture(autouse=True)
+def _authentication_values(monkeypatch):
+    for name in ('PRODUCTION_BASE',):
+        values = dict(globals()[name])
+        for field in ('AGENT_API_KEY', 'AUDIT_HMAC_SECRET', 'CREDENTIAL_ENCRYPTION_KEY', 'DB_PASSWORD', 'KEYCLOAK_CLIENT_SECRET', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET', 'OPENAI_API_KEY', 'VOICE_CONTROL_SECRET', 'WEB_SESSION_ENC_KEY'):
+            if field not in values:
+                continue
+            values[field] = (
+                base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii")
+                if field in {"WEB_SESSION_ENC_KEY", "CREDENTIAL_ENCRYPTION_KEY"}
+                else secrets.token_urlsafe(32)
+            )
+        monkeypatch.setitem(globals(), name, values)
 
 
 def _apply(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
