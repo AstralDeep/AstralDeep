@@ -148,3 +148,27 @@ def test_sdk_isolation_guard_rejects_contamination_in_actual_shell(
     )
     assert result.returncode == exit_code, "SDK isolation guard lost a failure"
     assert ("::error::SDK isolation violation" in result.stdout) is (exit_code == 1)
+
+
+def test_publication_fixture_regressions_run_in_the_required_contract_job():
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    contracts = job(workflow, "ui-v2-contracts")
+    assert "fetch-depth: 0" in contracts
+    assert 'node-version: "24.21.0"' in contracts
+    assert "node --test scripts/tests/publication-fixtures.test.mjs" in contracts
+    assert (
+        'node scripts/check_publication_fixtures.mjs --base "$BASE_SHA" --head "$HEAD_SHA"'
+        in contracts
+    )
+    assert (
+        "BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}"
+        in contracts
+    )
+    assert "HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}" in contracts
+    aggregate = job(workflow, "gates")
+    assert "- ui-v2-contracts" in aggregate
+    assert "needs.ui-v2-contracts.result" in aggregate
+    secrets = job(workflow, "secret-scan")
+    assert "gitleaks git --redact" in secrets
+    assert '--config "$GITHUB_WORKSPACE/.gitleaks.toml"' in secrets
+    assert '--gitleaks-ignore-path "$GITHUB_WORKSPACE/.gitleaksignore"' in secrets

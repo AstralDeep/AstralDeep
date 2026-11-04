@@ -1,0 +1,19 @@
+{
+  "version": "astral-publication-fixtures/v1",
+  "scanner": {
+    "path": "scripts/lib/publication-secrets.mjs",
+    "contract": "astral-publication-secrets/v1",
+    "sha256": "b77d3d57f685a384410e04dec20b2c69e2f505f1a70cb4f965b6cd4aea686896"
+  },
+  "fixtures": [
+    "backend/llm_config/tests/test_call_llm_credential_resolution.py",
+    "backend/tests/test_install_doctor.py",
+    "backend/tests/test_llm_credential_operation_close.py",
+    "backend/tests/test_phi_redactor.py",
+    "backend/tests/test_project_review_targets.py",
+    "backend/tests/test_remote_no_secret_leak_063.py",
+    "backend/tests/test_system_llm_credential.py",
+    "scripts/tests/test_acceptance_mutations.py",
+    "scripts/tests/test_install_doctor.py"
+  ]
+}

@@ -4,9 +4,11 @@ failure class it diagnoses."""
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import itertools
 import json
+import secrets
 import socket
 import sys
 import threading
@@ -57,35 +59,50 @@ services:
 DEV_ENV = {
     "ASTRAL_ENV": "development",
     "USE_MOCK_AUTH": "true",
-    "DB_PASSWORD": "astral_dev",
+    "DB_PASSWORD": "",
     "DB_USER": "astral",
     "DB_NAME": "astraldeep",
-    "LIVEKIT_API_KEY": "devlivekitkey",
-    "LIVEKIT_API_SECRET": "devlivekitsecret-value",
+    "LIVEKIT_API_KEY": "",
+    "LIVEKIT_API_SECRET": "",
     "LIVEKIT_NODE_IP": "192.168.1.50",
-    "VOICE_CONTROL_SECRET": "dev-voice-control-secret",
+    "VOICE_CONTROL_SECRET": "",
     "OPENAI_BASE_URL": "http://127.0.0.1:9999/v1",
-    "OPENAI_API_KEY": "sk-test-doctor-0000000",
+    "OPENAI_API_KEY": "",
 }
 
 PRODUCTION_ENV = {
     "ASTRAL_ENV": "production",
     "USE_MOCK_AUTH": "false",
-    "DB_PASSWORD": "pg-password-value",
-    "WEB_SESSION_ENC_KEY": "x" * 44,
-    "CREDENTIAL_ENCRYPTION_KEY": "y" * 44,
-    "AUDIT_HMAC_SECRET": "high-entropy-audit-secret-value",
-    "AGENT_API_KEY": "high-entropy-agent-key-value",
+    "DB_PASSWORD": "",
+    "WEB_SESSION_ENC_KEY": "",
+    "CREDENTIAL_ENCRYPTION_KEY": "",
+    "AUDIT_HMAC_SECRET": "",
+    "AGENT_API_KEY": "",
     "KEYCLOAK_AUTHORITY": "http://127.0.0.1:8080/realms/Astral",
     "KEYCLOAK_CLIENT_ID": "astral-frontend",
-    "KEYCLOAK_CLIENT_SECRET": "high-entropy-client-secret-value",
-    "LIVEKIT_API_KEY": "prodlivekitkey",
-    "LIVEKIT_API_SECRET": "prodlivekitsecret-value",
+    "KEYCLOAK_CLIENT_SECRET": "",
+    "LIVEKIT_API_KEY": "",
+    "LIVEKIT_API_SECRET": "",
     "LIVEKIT_NODE_IP": "192.168.1.50",
-    "VOICE_CONTROL_SECRET": "prod-voice-control-secret",
+    "VOICE_CONTROL_SECRET": "",
     "OPENAI_BASE_URL": "https://speech.example/v1",
-    "OPENAI_API_KEY": "sk-prod-doctor-0000000",
+    "OPENAI_API_KEY": "",
 }
+
+
+@pytest.fixture(autouse=True)
+def _authentication_values(monkeypatch):
+    for name in ('DEV_ENV', 'PRODUCTION_ENV'):
+        values = dict(globals()[name])
+        for field in ('AGENT_API_KEY', 'AUDIT_HMAC_SECRET', 'CREDENTIAL_ENCRYPTION_KEY', 'DB_PASSWORD', 'KEYCLOAK_CLIENT_SECRET', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET', 'OPENAI_API_KEY', 'VOICE_CONTROL_SECRET', 'WEB_SESSION_ENC_KEY'):
+            if field not in values:
+                continue
+            values[field] = (
+                base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii")
+                if field in {"WEB_SESSION_ENC_KEY", "CREDENTIAL_ENCRYPTION_KEY"}
+                else secrets.token_urlsafe(32)
+            )
+        monkeypatch.setitem(globals(), name, values)
 
 ALLOWED_COMMAND_PREFIXES = (
     ("docker", "--version"),
@@ -634,12 +651,12 @@ def test_compose_failure_stderr_is_redacted(tmp_path):
     runner.responses[("docker", "compose", "ps", "--all", "--format", "json")] = (
         1,
         "",
-        "cannot connect: prodlivekitsecret-value was here",
+        f"cannot connect: {env['LIVEKIT_API_SECRET']} was here",
     )
     report = collect(root, env=env, runner=runner)
     finding = next(f for f in report.findings if f.code == "services.compose-state-failed")
     assert "[redacted]" in finding.message
-    assert "prodlivekitsecret-value" not in doctor.render_text(report)
+    assert env["LIVEKIT_API_SECRET"] not in doctor.render_text(report)
 
 
 def test_exited_service_is_repair(tmp_path):
@@ -732,7 +749,7 @@ def test_compose_config_failure_is_redacted_and_repair(tmp_path):
     runner.responses[("docker", "compose", "config", "--services")] = (
         1,
         "",
-        "validation error near prod-voice-control-secret",
+        f"validation error near {env['VOICE_CONTROL_SECRET']}",
     )
     report = collect(root, env=env, runner=runner)
     finding = next(f for f in report.findings if f.code == "services.compose-config-failed")
@@ -991,15 +1008,15 @@ def test_parse_compose_ps_accepts_array_lines_and_rejects_garbage():
 
 def test_redaction_covers_sensitive_values_only():
     values = {
-        "LIVEKIT_API_SECRET": "sentinel-secret-value-1",
+        "LIVEKIT_API_SECRET": secrets.token_urlsafe(32),
         "DB_USER": "short",
-        "DB_PASSWORD": "sentinel-password-value",
+        "DB_PASSWORD": secrets.token_urlsafe(32),
         "NOTE": "sentinel-not-sensitive-value",
     }
-    text = "leak sentinel-secret-value-1 and sentinel-password-value and sentinel-not-sensitive-value"
+    text = 'leak ' + values['LIVEKIT_API_SECRET'] + ' and ' + values['DB_PASSWORD'] + ' and sentinel-not-sensitive-value'
     redacted = doctor._redact(text, values)
-    assert "sentinel-secret-value-1" not in redacted
-    assert "sentinel-password-value" not in redacted
+    assert values['LIVEKIT_API_SECRET'] not in redacted
+    assert values['DB_PASSWORD'] not in redacted
     assert "sentinel-not-sensitive-value" in redacted
     assert redacted.count("[redacted]") == 2
 
