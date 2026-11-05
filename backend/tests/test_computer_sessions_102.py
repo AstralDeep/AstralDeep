@@ -508,7 +508,7 @@ async def test_outcome_ack_requires_current_announced_incarnation_and_is_single_
     await send("discard")
     assert len(recorder.events) == 1
     assert recorder.events[0].action_type == "computer_host.outcome_acknowledged"
-    assert recorder.events[0].conversation_id == "chat-ack"
+    assert recorder.events[0].conversation_id is None
     assert recorder.events[0].inputs_meta == {
         "host_id": host_id, "incarnation_id": incarnation,
         "decision": "acknowledge", "retained_job_count": 1,

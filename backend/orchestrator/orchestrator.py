@@ -2002,8 +2002,7 @@ class Orchestrator:
                 return
             recorded = await self._record_computer_outcome_ack(
                 owner_sub, host.host_id, incarnation_id, decision,
-                len(host.descriptor.get("retained_jobs") or ()),
-                self._ws_active_chat.get(id(websocket)))
+                len(host.descriptor.get("retained_jobs") or ()), None)
             if not recorded:
                 host.outcome_acknowledged = False
             return
