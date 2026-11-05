@@ -103,6 +103,10 @@ _HOST_HINTS = {
     "terminal_target": "Terminal windows are not driven by accessibility actions. Run programs with run_command.",
     "stale_ref": "The element changed or the reference belongs to an older snapshot. Call ax_find or ax_tree "
                  "again and use the new snapshot_id and references.",
+    "chat_blocked_for_acknowledgment": "End your turn now and tell the owner to resolve the outcome-unknown card "
+                                       "on the computer; do not retry any effect until they have.",
+    "effect_intent_failed": "The action was not sent. End your turn and report this failure; do not retry it "
+                            "until the owner has checked the computer.",
 }
 
 
@@ -1449,6 +1453,26 @@ def _job(kwargs: Dict[str, Any], session) -> str:
     return job.lower()
 
 
+def _reconcile_job(host, kwargs: Dict[str, Any]) -> Optional[str]:
+    job = str(kwargs.get("job_id") or "").lower()
+    for record in getattr(host, "descriptor", {}).get("retained_jobs") or ():
+        if isinstance(record, dict) and str(record.get("job_id") or "").lower() == job:
+            return job
+    return None
+
+
+def _read_args(kwargs: Dict[str, Any], job: str) -> Dict[str, Any]:
+    stream = kwargs.get("stream", "both")
+    if stream not in _STREAMS | {"both"}:
+        raise _Refusal("out_of_range", "stream must be stdout, stderr or both")
+    wait_s = kwargs.get("wait_s", 0)
+    if isinstance(wait_s, bool) or not isinstance(wait_s, (int, float)) or not 0 <= wait_s <= 25:
+        raise _Refusal("out_of_range", "wait_s must be between 0 and 25")
+    return {"job_id": job, "stream": stream, "offset": _whole(kwargs.get("offset", 0), "offset", 0, 2**53 - 1),
+            "max_bytes": _whole(kwargs.get("max_bytes", _CHUNK_BYTES), "max_bytes", 1, _CHUNK_BYTES),
+            "wait_s": wait_s}
+
+
 def _command_card(host, data: Dict[str, Any]) -> List[Any]:
     status = "timed out" if data["timed_out"] else f"exit {data['exit_code']}"
     content = [Text(content=f"{status} · {data['duration_ms']} ms", variant="caption")]
@@ -1514,19 +1538,19 @@ def read_output(**kwargs) -> Dict[str, Any]:
     _u, _c, host, ctx = _ctx(kwargs)
     if not hasattr(ctx, "session_id"):
         return ctx
+    reconciled = False
     try:
         job = _job(kwargs, ctx)
-        stream = kwargs.get("stream", "both")
-        if stream not in _STREAMS | {"both"}:
-            raise _Refusal("out_of_range", "stream must be stdout, stderr or both")
-        wait_s = kwargs.get("wait_s", 0)
-        if isinstance(wait_s, bool) or not isinstance(wait_s, (int, float)) or not 0 <= wait_s <= 25:
-            raise _Refusal("out_of_range", "wait_s must be between 0 and 25")
-        args = {"job_id": job, "stream": stream, "offset": _whole(kwargs.get("offset", 0), "offset", 0, 2**53 - 1),
-                "max_bytes": _whole(kwargs.get("max_bytes", _CHUNK_BYTES), "max_bytes", 1, _CHUNK_BYTES),
-                "wait_s": wait_s}
+        args = _read_args(kwargs, job)
     except _Refusal as exc:
-        return _fail(exc.code, str(exc))
+        job = _reconcile_job(host, kwargs) if exc.code == "unknown_job" else None
+        if job is None:
+            return _fail(exc.code, str(exc))
+        try:
+            args = _read_args(kwargs, job)
+        except _Refusal as range_exc:
+            return _fail(range_exc.code, str(range_exc))
+        reconciled = True
     result, err = _run(host, ctx, "read_output", args, _loop(kwargs), serialize=False)
     if err:
         return err
@@ -1538,30 +1562,44 @@ def read_output(**kwargs) -> Dict[str, Any]:
             text, privacy = _tail(chunk.get("data"), _CHUNK_BYTES, kwargs.get("user_id"))
             states.append(privacy)
             chunks.append({"stream": chunk["stream"], "offset": _count(chunk.get("offset")), "data": text})
-    return _data(_privacy({"computer": host.name, "job_id": job, "state": state,
-                           "exit_code": _exit_code(result.get("exit_code")), "chunks": chunks,
-                           "next_offset": _count(result.get("next_offset")),
-                           "truncated": result.get("truncated") is True, "untrusted_output": True}, states))
+    data = _privacy({"computer": host.name, "job_id": job, "state": state,
+                     "exit_code": _exit_code(result.get("exit_code")), "chunks": chunks,
+                     "next_offset": _count(result.get("next_offset")),
+                     "truncated": result.get("truncated") is True, "untrusted_output": True}, states)
+    if reconciled:
+        data["reconciled"] = True
+    return _data(data)
 
 
 def interrupt_command(**kwargs) -> Dict[str, Any]:
     _u, _c, host, ctx = _ctx(kwargs)
     if not hasattr(ctx, "session_id"):
         return ctx
+    reconciled = False
     try:
         job = _job(kwargs, ctx)
         signal = kwargs.get("signal", "INT")
         if signal not in _SIGNALS:
             raise _Refusal("out_of_range", "signal must be INT, TERM or KILL")
     except _Refusal as exc:
-        return _fail(exc.code, str(exc))
+        job = _reconcile_job(host, kwargs) if exc.code == "unknown_job" else None
+        if job is None:
+            return _fail(exc.code, str(exc))
+        signal = kwargs.get("signal", "INT")
+        if signal not in _SIGNALS:
+            return _fail("out_of_range", "signal must be INT, TERM or KILL")
+        reconciled = True
     result, err = _run(host, ctx, "interrupt_command", {"job_id": job, "signal": signal}, _loop(kwargs),
                        serialize=False)
     if err:
         return err
     state = result.get("state") if result.get("state") in _JOB_STATES else "uncertain"
     _settle(ctx, job, state)
-    return _data({"computer": host.name, "job_id": job, "state": state, "exit_code": _exit_code(result.get("exit_code"))})
+    data = {"computer": host.name, "job_id": job, "state": state,
+            "exit_code": _exit_code(result.get("exit_code"))}
+    if reconciled:
+        data["reconciled"] = True
+    return _data(data)
 
 
 def project_preview(**kwargs) -> Dict[str, Any]:
