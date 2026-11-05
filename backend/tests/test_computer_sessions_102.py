@@ -411,6 +411,24 @@ def test_descriptor_round_trips_host_incarnation_and_retained_jobs():
         retained_jobs=[floating_integer])).retained_jobs == (floating_integer,)
 
 
+@pytest.mark.parametrize("platform", ["windows", "linux"])
+def test_non_macos_descriptor_cannot_announce_retained_jobs(platform):
+    from shared.protocol import ProtocolValidationError
+
+    with pytest.raises(ProtocolValidationError, match="supported only by macOS"):
+        ComputerHostDescriptor.from_dict(_descriptor(
+            platform=platform, incarnation_id=str(uuid.uuid4()), retained_jobs=[{
+                "job_id": str(uuid.uuid4()), "state": "uncertain", "exit_code": None,
+                "signal": None, "output_bytes": 0,
+            }]))
+
+
+def test_non_macos_incarnation_id_remains_compatible():
+    descriptor = ComputerHostDescriptor.from_dict(_descriptor(
+        platform="windows", incarnation_id=str(uuid.uuid4())))
+    assert descriptor.incarnation_id is not None and descriptor.retained_jobs == ()
+
+
 def test_descriptor_accepts_projection_outcome_fixture():
     fixture_path = Path(__file__).resolve().parents[2] / "components/AstralProjection/contracts/fixtures/computer_outcome/announce_and_ack.json"
     fixture = json.loads(fixture_path.read_text())
@@ -625,6 +643,30 @@ async def test_outcome_ack_requires_current_announced_incarnation_and_is_single_
     await Orchestrator._handle_computer_event(orch, failed_ws, SimpleNamespace(payload=conflict))
     assert len(recorder.events) == event_count
     assert failed_ws.frames("computer_host")[-1]["outcome_ack"]["decision"] == "discard"
+
+
+async def test_outcome_ack_is_refused_for_non_macos_host(monkeypatch, recorder):
+    from orchestrator.orchestrator import Orchestrator
+    from shared.feature_flags import flags
+
+    orch = _FakeOrch()
+    monkeypatch.setitem(flags._flags, "computer_use", True)
+    monkeypatch.setattr(orch, "_tunnel_ingress_over_cap", lambda _owner: False, raising=False)
+    host_ws = orch.add(_WS())
+    incarnation = str(uuid.uuid4())
+    job = {"job_id": str(uuid.uuid4()), "state": "uncertain", "exit_code": None,
+           "signal": None, "output_bytes": 0}
+    descriptor = _descriptor(platform="windows", incarnation_id=incarnation, retained_jobs=[job])
+    host, _ = orch.computer_hosts.register(OWNER, host_ws, descriptor)
+
+    await Orchestrator._handle_computer_event(orch, host_ws, SimpleNamespace(payload={
+        "host_id": host.host_id, "event": "outcome_ack", "decision": "acknowledge",
+        "incarnation_id": incarnation,
+    }))
+
+    assert not recorder.events
+    assert not host.outcome_acknowledged
+    assert not host_ws.frames("computer_host")
 
 
 @pytest.mark.parametrize("roots", [

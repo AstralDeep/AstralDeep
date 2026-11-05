@@ -1996,6 +1996,7 @@ class Orchestrator:
             decision = payload.get("decision")
             incarnation_id = payload.get("incarnation_id")
             if (set(payload) != {"host_id", "event", "decision", "incarnation_id"}
+                    or host.platform != "macos"
                     or not isinstance(decision, str) or decision not in {"acknowledge", "discard"}
                     or not isinstance(incarnation_id, str)):
                 return

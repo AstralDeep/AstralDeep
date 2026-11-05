@@ -2832,6 +2832,8 @@ class ComputerHostDescriptor:
         if not isinstance(jobs, tuple) or len(jobs) > _COMPUTER_HOST_MAX_RETAINED_JOBS:
             raise ProtocolValidationError(
                 f"computer_host.retained_jobs must list at most {_COMPUTER_HOST_MAX_RETAINED_JOBS} jobs")
+        if jobs and self.platform != "macos":
+            raise ProtocolValidationError("computer_host.retained_jobs is supported only by macOS hosts")
         if jobs and self.incarnation_id is None:
             raise ProtocolValidationError("computer_host.retained_jobs requires incarnation_id")
         seen_jobs = set()
