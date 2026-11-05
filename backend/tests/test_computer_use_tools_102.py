@@ -172,6 +172,10 @@ def test_descriptions_are_written_for_the_mac_and_steer_commands_and_the_browser
     run = reg["run_command"]["description"]
     assert "argv" in run and "workspace_roots" in run and "screenshot" in run and "Terminal" in run
     assert reg["run_command"]["input_schema"]["required"] == ["cwd"]
+    schema = reg["run_command"]["input_schema"]["properties"]
+    assert schema["command"]["maxLength"] == policy.MAX_COMMAND_CHARS == 4096
+    assert schema["argv"]["maxItems"] == policy.MAX_ARGV_ITEMS == 256
+    assert schema["argv"]["items"]["maxLength"] == policy.MAX_ARG_CHARS == 4096
 
 
 def test_only_run_command_matches_a_scanner_pattern():
@@ -395,6 +399,13 @@ async def test_timed_out_command_reports_it_without_retrying(world, gate):
     assert "not retried" in data["note"]
 
 
+async def test_command_at_character_limit_is_forwarded(world):
+    command = ":" + " " * (policy.MAX_COMMAND_CHARS - 1)
+    result = await world.call("run_command", command=command, cwd=ROOT)
+    assert result["_data"]["untrusted_output"] is True
+    assert world.requests("run_command")[-1]["args"]["command"] == command
+
+
 @pytest.mark.parametrize("args,code", [
     ({"cwd": ROOT}, "out_of_range"), ({"command": "ls", "argv": ["ls"], "cwd": ROOT}, "out_of_range"),
     ({"command": "", "cwd": ROOT}, "out_of_range"), ({"command": "x" * 4097, "cwd": ROOT}, "out_of_range"),
@@ -423,6 +434,16 @@ async def test_timed_out_command_reports_it_without_retrying(world, gate):
 async def test_invalid_commands_are_refused_before_launch(world, args, code):
     result = await world.call("run_command", **args)
     assert result["_data"]["code"] == code and not world.requests("run_command")
+
+
+async def test_overlong_command_refusal_has_safe_recovery_hint(world):
+    result = await world.call("run_command", command="x" * 4097, cwd=ROOT)
+    data = result["_data"]
+    assert data["code"] == "out_of_range"
+    assert data["message"] == "command must be 1-4096 characters"
+    assert "Shorten the command to 4096 characters" in data["next_action"]
+    assert "use argv" in data["next_action"] and "workspace file" in data["next_action"]
+    assert not world.requests("run_command")
 
 
 SHARED = [{"name": "x", "path": ROOT}, {"name": "AstralTest", "path": "/Users/sam/AstralTest"}]
