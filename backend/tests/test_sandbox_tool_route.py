@@ -555,7 +555,11 @@ def local_effect(monkeypatch, tmp_path):
             candidate = (
                 __import__("pathlib").Path(path) / f"astral-srt-{state.identity}.txt"
             )
-            candidate.unlink(missing_ok=True)
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError:
+                # Cleanup stays best-effort: hardened containers mount these roots read-only.
+                pass
 
 
 def test_fixed_actuator_claims_standard_receipt_before_real_golden_scratch_effect(
