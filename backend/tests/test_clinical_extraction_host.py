@@ -1399,7 +1399,7 @@ async def test_current_safe_baseline_uses_public_store_truth_inside_an_active_tu
         prior_safe = registry.get_agent_is_safe("fhir-1")
         prior_ownership = registry.get_agent_ownership("fhir-1")
         registry.upsert_agent_safe("fhir-1", True, marked_by="synthetic-admin")
-        if prior_ownership is not None:
+        if prior_ownership is None:
             registry.set_agent_ownership(
                 "fhir-1", "synthetic-owner@example.invalid", True
             )

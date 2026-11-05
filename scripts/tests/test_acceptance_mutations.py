@@ -103,11 +103,11 @@ def test_local_privacy_and_reader_mutations_detect_guard_removal(
     ("patterns", "credential_output"),
     [
         (
-            "PHI_VALUE_PATTERNS",
+            "()",
             "Credential ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ.",
         ),
         (
-            "PHI_VALUE_PATTERNS + SECRET_VALUE_PATTERNS",
+            "(PHI_VALUE_PATTERNS if phi else ()) + SECRET_VALUE_PATTERNS",
             "Credential [REDACTED:token].",
         ),
     ],
@@ -119,7 +119,8 @@ def test_phi_mutation_removes_masking_without_disabling_added_credentials(
         item for item in gate.MUTATIONS if item.name == "phi-value-masking-removed"
     )
     original = (gate.ROOT / "backend/shared/phi_redactor.py").read_text()
-    start = original.index("    for pattern, replacement in PHI_VALUE_PATTERNS")
+    anchor = "    for pattern, replacement in (PHI_VALUE_PATTERNS if phi else ()) + SECRET_VALUE_PATTERNS:"
+    start = original.index(anchor)
     end = original.index("\n", start)
     source = (
         original[:start]

@@ -151,6 +151,7 @@ async def test_full_redaction_precedes_canonical_utf8_excerpt(operation, monkeyp
         redact_for_storage=redact, contains_phi=lambda value: "private-marker" in value
     )
     monkeypatch.setattr("persistent_agents.execution.get_phi_gate", lambda: gate)
+    monkeypatch.setattr("persistent_agents.execution.redaction_gate", lambda _owner: gate)
     install_response(op, monkeypatch, text=text)
     result = await op.executor.action("page", REQUEST)
     assert text in seen and result["redacted"] is True

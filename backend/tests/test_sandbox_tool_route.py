@@ -502,6 +502,14 @@ def local_effect(monkeypatch, tmp_path):
     from tests import test_sandbox_runtime_qualification as fixtures
     from orchestrator import sandbox_qualification as sq
 
+    for root in sq.OUTSIDE_WRITE_ROOTS:
+        probe = __import__("pathlib").Path(root) / "astral-srt-write-probe"
+        try:
+            probe.write_bytes(b"")
+            probe.unlink()
+        except OSError:
+            pytest.skip(f"sandbox escape probes need a writable {root}", allow_module_level=False)
+
     authority_root = tmp_path / "authority-fixture"
     authority_root.mkdir()
     values = fixtures.lets_values.__wrapped__(authority_root)

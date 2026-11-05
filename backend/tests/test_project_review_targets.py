@@ -36,7 +36,10 @@ async def dated_runtime(task_runtime, monkeypatch):
     ("run_command", {"argv": ["pwd"], "cwd": ROOT}, "cwd", ROOT),
 ])
 async def test_validated_dated_targets_keep_standing_consent(task_runtime, monkeypatch, tool, args, key, target):
+    from personalization import phi_policy
+
     orch, _ws, effects, *_ = task_runtime
+    monkeypatch.setattr(phi_policy, "protection_enabled", lambda *a, **k: True)
     session, _host = await dated_runtime(task_runtime, monkeypatch)
     screened = []
     monkeypatch.setattr("personalization.phi_gate.get_phi_gate", lambda: SimpleNamespace(
@@ -62,12 +65,35 @@ async def test_validated_dated_targets_keep_standing_consent(task_runtime, monke
     ("run_command", {"argv": ["echo", "12345678"]}),
     ("run_command", {"command": "echo 12345678"}),
     ("run_command", {"argv": ["pwd"], "env": {"APP_VALUE": "12345678"}}),
-    ("run_command", {"argv": ["sudo", "pwd"]}),
 ])
-async def test_routing_exception_does_not_suppress_content_secrets_or_floors(task_runtime, monkeypatch, tool, args):
+async def test_standing_content_screening_runs_and_grant_covers_reviewable_content(
+    task_runtime, monkeypatch, tool, args
+):
+    from personalization import phi_policy
+
     orch, _ws, effects, *_ = task_runtime
+    monkeypatch.setattr(phi_policy, "protection_enabled", lambda *a, **k: True)
     session, _host = await dated_runtime(task_runtime, monkeypatch)
+    screened = []
+    monkeypatch.setattr("personalization.phi_gate.get_phi_gate", lambda: SimpleNamespace(
+        contains_phi=lambda text: screened.append(text) or False))
     response = await _call(task_runtime, tool, **args)
+    assert response.error is None, response.error
+    assert effects and response.result["_data"]["approval_source"] == "project_grant"
+    assert screened and all(ROOT not in text for text in screened)
+    assert not getattr(orch, "_hitl_pending_calls", {}) and not remote_confirmation._PENDING_CARDS
+    await orch.computer_sessions.end(session, "consent_revoked")
+
+
+async def test_privilege_escalation_floor_still_refuses_under_standing_consent(
+    task_runtime, monkeypatch
+):
+    from personalization import phi_policy
+
+    orch, _ws, effects, *_ = task_runtime
+    monkeypatch.setattr(phi_policy, "protection_enabled", lambda *a, **k: True)
+    session, _host = await dated_runtime(task_runtime, monkeypatch)
+    response = await _call(task_runtime, "run_command", argv=["sudo", "pwd"])
     assert response.error is not None
     assert not effects and not getattr(orch, "_hitl_pending_calls", {})
     await orch.computer_sessions.end(session, "consent_revoked")
@@ -75,7 +101,10 @@ async def test_routing_exception_does_not_suppress_content_secrets_or_floors(tas
 
 @pytest.mark.parametrize("failure", ["positive", "unavailable"])
 async def test_actual_content_phi_analyzer_stays_fail_closed(task_runtime, monkeypatch, failure):
+    from personalization import phi_policy
+
     orch, _ws, effects, *_ = task_runtime
+    monkeypatch.setattr(phi_policy, "protection_enabled", lambda *a, **k: True)
     session, _host = await dated_runtime(task_runtime, monkeypatch)
     def contains_phi(text):
         assert "hello" in text and ROOT not in text

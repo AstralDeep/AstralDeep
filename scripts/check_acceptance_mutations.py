@@ -60,8 +60,8 @@ MUTATIONS = (
     Mutation(
         "phi-value-masking-removed",
         "shared/phi_redactor.py",
-        "    for pattern, replacement in PHI_VALUE_PATTERNS",
-        "    for pattern, replacement in ()",
+        "    for pattern, replacement in (PHI_VALUE_PATTERNS if phi else ()) + SECRET_VALUE_PATTERNS:",
+        "    for pattern, replacement in SECRET_VALUE_PATTERNS:",
         (
             "backend/tests/test_phi_clinical_acceptance.py::test_synthetic_phi_controls_are_masked[synthetic-ssn]",
         ),
@@ -69,8 +69,8 @@ MUTATIONS = (
     Mutation(
         "clinical-fields-overmasked",
         "shared/phi_redactor.py",
-        "            if _matches_phi_field_key(k):\n",
-        '            if _matches_phi_field_key(k) or "secret" in k.lower() or "token" in k.lower():\n',
+        "            if phi and _matches_phi_field_key(k):\n",
+        '            if phi and (_matches_phi_field_key(k) or "secret" in k.lower() or "token" in k.lower()):\n',
         (
             "backend/tests/test_phi_clinical_acceptance.py::test_benign_clinical_and_accounting_content_preserves_bytes[tracheal-secretions]",
             "backend/tests/test_phi_clinical_acceptance.py::test_benign_clinical_and_accounting_content_preserves_bytes[prompt-token-count]",

@@ -26,7 +26,7 @@ def build_gallery() -> List[Dict[str, Any]]:
         {"type": "hero", "title": "Component gallery",
          "eyebrow": "Feature 044 · cross-client parity",
          "subtitle": "Every renderable primitive, one canvas.",
-         "icon": "✨", "badges": ["35 types", "interactive", "edge cases"],
+         "icon": "✨", "badges": ["37 types", "interactive", "edge cases"],
          "variant": "gradient"},
         {"type": "text", "content": "Heading (h2)", "variant": "h2"},
         {"type": "text", "content": "Body copy renders as a paragraph.", "variant": "body"},
@@ -135,6 +135,25 @@ def build_gallery() -> List[Dict[str, Any]]:
         {"type": "generative", "spec": {"kind": "callout",
                                         "title": "Generative widget",
                                         "body": "Composed from the constrained grammar."}},
+
+        {"type": "artifact", "title": "Quarterly research artifact", "kind": "report",
+         "subtitle": "Structured sections composed from existing primitives.",
+         "sections": [
+             {"heading": "Findings", "layout": "two_column", "children": [
+                 {"type": "metric", "title": "Suite coverage", "value": "100%",
+                  "subtitle": "changed lines", "variant": "success"},
+                 {"type": "text",
+                  "content": "Artifact sections render headings, layouts and child primitives.",
+                  "variant": "body"},
+             ]},
+             {"heading": "Method", "layout": "stacked", "children": [
+                 {"type": "code", "code": "build_gallery(artifacts=True)", "language": "python"},
+             ]},
+         ]},
+        {"type": "html_artifact", "title": "Sandboxed HTML artifact",
+         "html": "<h3 style=\"font-family:sans-serif\">Inside the iframe sandbox</h3>"
+                 "<p style=\"font-family:sans-serif\">Scripts are confined to this frame; "
+                 "the host page stays isolated.</p>"},
 
         {"type": "stat_group", "title": "Current conditions", "columns": 4, "items": [
             {"label": "Temperature", "value": "68\u00b0F", "hint": "Feels like 66\u00b0F"},

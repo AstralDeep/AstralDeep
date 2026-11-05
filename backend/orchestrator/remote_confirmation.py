@@ -209,6 +209,23 @@ def _resolve_file_folder(orch, user_id, chat_id, tool_name, args):
     return None
 
 
+def _restore_checkpoint_refusal(orch, user_id, chat_id, args):
+    from astralprims import Alert
+
+    from orchestrator import computer_checkpoints
+
+    try:
+        host = computer_card_host(orch, user_id, chat_id, args)
+        computer_checkpoints.restore_check(orch, user_id, chat_id, host, args.get("checkpoint_id"))
+    except ComputerHostError as exc:
+        return Refusal((f"{exc.code}: {exc.message}", [Alert(message=exc.message, variant="error").to_dict()]))
+    except computer_checkpoints.CheckpointRefusal as exc:
+        _audit_sync(user_id, "remote_op.refused_checkpoint", f"refused restore_checkpoint: {exc.code}",
+                    machine_id=host.host_id, verb="restore_checkpoint", outcome="failure", chat_id=chat_id)
+        return Refusal((f"{exc.code}: {exc.message}", [Alert(message=exc.message, variant="error").to_dict()]))
+    return None
+
+
 def _bind_ax_target(orch, user_id, chat_id, tool_name, args):
     from astralprims import Alert
 
@@ -1003,6 +1020,10 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
 
         if tool_name in {"read_file", "list_dir", "write_file", "delete_path"}:
             refusal = _resolve_file_folder(orch, user_id, chat_id, tool_name, args)
+            if refusal is not None:
+                return refusal
+        if tool_name == "restore_checkpoint":
+            refusal = _restore_checkpoint_refusal(orch, user_id, chat_id, args)
             if refusal is not None:
                 return refusal
         refusal = _bind_ax_target(orch, user_id, chat_id, tool_name, args)

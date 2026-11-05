@@ -145,9 +145,9 @@ def test_speech_field_present_for_watch_payloads():
 
 
 def test_manifest_lists_expected_vocabulary():
-    assert len(MANIFEST["component_types"]) == 41
+    assert len(MANIFEST["component_types"]) == 43
     names = {item["name"] for item in MANIFEST["push_types"]}
-    assert len(MANIFEST["push_types"]) == len(names) == 72
+    assert len(MANIFEST["push_types"]) == len(names) == 74
     assert {"voice_local_turn_bound", "voice_local_announcement",
             "voice_local_session_ready"} <= names
 

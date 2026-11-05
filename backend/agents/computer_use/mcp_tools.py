@@ -86,6 +86,7 @@ _TAIL_BYTES = 32 * 1024
 _CHUNK_BYTES = 64 * 1024
 _MAX_CHUNKS = 64
 _MAX_JOBS = 64
+_MAX_CHECKPOINTS = 64
 _BRIDGE_MARGIN_S = 2.0
 _LOCAL_PAUSES = frozenset({"local_input", "local_pause"})
 _LOCAL_RESUME_HINT = ("ask the user to press Resume on {host}; do not call resume_session, wait or any other computer "
@@ -1271,6 +1272,25 @@ def zoom(**kwargs) -> Dict[str, Any]:
                         if ctx.images_supported else [])}
 
 
+def _turn_id(kwargs: Dict[str, Any]) -> Optional[str]:
+    from orchestrator import computer_checkpoints
+
+    return computer_checkpoints.current_turn_id(_ORCH, kwargs.get("session_id"))
+
+
+def _checkpoint_note(user_id: Optional[str], chat_id: Optional[str], host, verb: str,
+                     result: Any, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    from orchestrator import computer_checkpoints
+
+    if _ORCH is None or not user_id:
+        return {}
+    note = computer_checkpoints.note_host_checkpoint(_ORCH, user_id, chat_id, host, verb, result,
+                                                     _turn_id(kwargs))
+    if note is None:
+        return {}
+    return {"checkpoint_none": note["reason"]} if "reason" in note else {"checkpoint": note}
+
+
 def write_file(**kwargs) -> Dict[str, Any]:
     _u, _c, host, ctx = _ctx(kwargs)
     if not hasattr(ctx, "session_id"):
@@ -1287,7 +1307,9 @@ def write_file(**kwargs) -> Dict[str, Any]:
     result, err = _run(host, ctx, "write_file", {"path": path, "content": content, "if_exists": if_exists}, _loop(kwargs))
     if err:
         return err
-    return _data({"computer": host.name, "path": path, "bytes": int(result.get("bytes") or 0)})
+    data = {"computer": host.name, "path": path, "bytes": int(result.get("bytes") or 0)}
+    data.update(_checkpoint_note(_u, _c, host, "write_file", result, kwargs))
+    return _data(data)
 
 
 def delete_path(**kwargs) -> Dict[str, Any]:
@@ -1300,7 +1322,77 @@ def delete_path(**kwargs) -> Dict[str, Any]:
     result, err = _run(host, ctx, "delete_path", {"path": path}, _loop(kwargs))
     if err:
         return err
-    return _data({"computer": host.name, "path": path, "deleted": bool(result.get("deleted"))})
+    data = {"computer": host.name, "path": path, "deleted": bool(result.get("deleted"))}
+    data.update(_checkpoint_note(_u, _c, host, "delete_path", result, kwargs))
+    return _data(data)
+
+
+def list_checkpoints(**kwargs) -> Dict[str, Any]:
+    from orchestrator import computer_checkpoints
+
+    _u, _c, host, ctx = _ctx(kwargs)
+    if not hasattr(ctx, "session_id"):
+        return ctx
+    result, err = _run(host, ctx, "list_checkpoints", {}, _loop(kwargs))
+    if err:
+        return err
+    items = result.get("checkpoints") if isinstance(result.get("checkpoints"), list) else []
+    clean = []
+    for item in items:
+        if not isinstance(item, dict) or not computer_checkpoints.valid_id(item.get("id")):
+            continue
+        clean.append({"id": item["id"], "root": _sanitize(item.get("root"), 128) or None,
+                      "tree_hash": item.get("tree_hash")
+                      if computer_checkpoints.valid_digest(item.get("tree_hash")) else None,
+                      "file_count": _count(item.get("file_count"))})
+        if len(clean) >= _MAX_CHECKPOINTS:
+            break
+    return _data({"computer": host.name, "checkpoints": clean})
+
+
+def diff_checkpoint(**kwargs) -> Dict[str, Any]:
+    from orchestrator import computer_checkpoints
+
+    _u, _c, host, ctx = _ctx(kwargs)
+    if not hasattr(ctx, "session_id"):
+        return ctx
+    checkpoint_id = str(kwargs.get("checkpoint_id") or "").strip()
+    if not computer_checkpoints.valid_id(checkpoint_id):
+        return _fail("out_of_range", "checkpoint_id must be the id list_checkpoints or a file tool reported")
+    result, err = _run(host, ctx, "diff_checkpoint", {"checkpoint_id": checkpoint_id}, _loop(kwargs))
+    if err:
+        return err
+    return _data({"computer": host.name, "checkpoint_id": checkpoint_id,
+                  "root": _sanitize(result.get("root"), 128) or None,
+                  "tree_hash": result.get("tree_hash")
+                  if computer_checkpoints.valid_digest(result.get("tree_hash")) else None,
+                  "file_count": _count(result.get("file_count")),
+                  "would_overwrite": _count(result.get("would_overwrite")),
+                  "would_delete": _count(result.get("would_delete"))})
+
+
+def restore_checkpoint(**kwargs) -> Dict[str, Any]:
+    from orchestrator import computer_checkpoints
+
+    _u, _c, host, ctx = _ctx(kwargs)
+    if not hasattr(ctx, "session_id"):
+        return ctx
+    checkpoint_id = str(kwargs.get("checkpoint_id") or "").strip()
+    try:
+        record = computer_checkpoints.restore_check(_ORCH, _u, _c, host, checkpoint_id)
+    except computer_checkpoints.CheckpointRefusal as exc:
+        return _fail(exc.code, exc.message)
+    result, err = _run(host, ctx, "restore_checkpoint", {"checkpoint_id": checkpoint_id}, _loop(kwargs))
+    if err:
+        return err
+    computer_checkpoints.note_restored(_ORCH, _u, _c, host, record, result)
+    restored, skipped = _count(result.get("restored")), _count(result.get("skipped"))
+    if result.get("complete") is False:
+        return _fail("outcome_uncertain",
+                     f"the restore finished only partially ({restored} restored, {skipped} skipped) and the Mac "
+                     "kept the checkpoint. Stop and tell the owner what happened; do not retry it automatically.")
+    return _data({"computer": host.name, "checkpoint_id": checkpoint_id, "root": record.root,
+                  "restored": restored, "skipped": skipped})
 
 
 class _Refusal(ValueError):
@@ -1489,8 +1581,10 @@ def run_command(**kwargs) -> Dict[str, Any]:
                          next_action="inspect the folder before starting the job again")
         started_at = _sanitize(result.get("started_at"), 64)
         _track(ctx, job, started_at)
-        return _data({"computer": host.name, "job_id": job, "started_at": started_at, "background": True,
-                      "note": "read its output with read_output; stop it with interrupt_command"})
+        data = {"computer": host.name, "job_id": job, "started_at": started_at, "background": True,
+                "note": "read its output with read_output; stop it with interrupt_command"}
+        data.update(_checkpoint_note(_u, _c, host, "run_command", result, kwargs))
+        return _data(data)
     known_stdout = _current_root_stdout(result, args["cwd"], output_lease)
     stdout, out_state = (result["stdout"], None) if known_stdout else _tail(result.get("stdout"), _TAIL_BYTES, _u)
     stderr, err_state = _tail(result.get("stderr"), _TAIL_BYTES, _u)
@@ -1504,6 +1598,7 @@ def run_command(**kwargs) -> Dict[str, Any]:
         "truncated": result.get("truncated") is True, "cwd": _sanitize(result.get("cwd") or args["cwd"], 1024),
         "started_at": _sanitize(result.get("started_at"), 64), "untrusted_output": True,
     }, (out_state, err_state))
+    data.update(_checkpoint_note(_u, _c, host, "run_command", result, kwargs))
     if data["timed_out"]:
         data["note"] = ("the command reached timeout_s and its process group was stopped; it was not retried. "
                         "Inspect the folder before running it again")
@@ -1928,6 +2023,28 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     "delete_path": _entry(
         delete_path, "Delete a file or empty directory inside workspace_roots from list_computers or start_session. Paths matching excluded are refused by the host; do not request them. Uses standing consent when available; otherwise reviews the exact path once.",
         {"path": {"type": "string", "description": "Path inside workspace_roots; relative paths use the primary folder."}}, ["path"]),
+    "list_checkpoints": _entry(
+        list_checkpoints,
+        "List the file checkpoints this Mac took before its file changes and commands in the shared folders: id, "
+        "folder, tree hash and file count. The Mac keeps one per recent change and drops the oldest beyond its "
+        "cap. Pass an id to diff_checkpoint to preview what a restore would change, or to restore_checkpoint to "
+        "roll the files back.", {}),
+    "diff_checkpoint": _entry(
+        diff_checkpoint,
+        "Compare one checkpoint with the folders' current state without changing anything: it reports how many "
+        "files a restore would overwrite and how many it would delete. Call it before restore_checkpoint so the "
+        "owner's review card can show the effect.",
+        {"checkpoint_id": {"type": "string", "description": "Checkpoint id from list_checkpoints or a mutating "
+                                                            "tool result."}}, ["checkpoint_id"]),
+    "restore_checkpoint": _entry(
+        restore_checkpoint,
+        "Roll the shared folders' files back to a checkpoint taken before an earlier file change or command: files "
+        "changed since the checkpoint are restored, files created after it are deleted. This always needs the "
+        "owner's exact approval; the review card names the folder, the turn and the affected counts. If it returns "
+        "outcome_uncertain the restore partially ran — inspect the folder and tell the owner; never retry it "
+        "automatically.",
+        {"checkpoint_id": {"type": "string", "description": "Checkpoint id from list_checkpoints or a mutating "
+                                                            "tool result."}}, ["checkpoint_id"]),
     "run_command": _entry(
         run_command,
         "Run a program on the user's Mac in one of its shared folders and get back the exit code, stdout and stderr. "

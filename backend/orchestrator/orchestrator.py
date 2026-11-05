@@ -15015,6 +15015,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     turn_message_id=turn_message_id,
                 )
                 self._chat_recorders[id(websocket)] = recorder
+                from orchestrator.computer_checkpoints import note_turn
+
+                note_turn(self, chat_id, turn_message_id)
             except Exception:  # pragma: no cover
                 logger.warning("Failed to create ChatStepRecorder", exc_info=True)
 
@@ -16129,6 +16132,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                         call.function.name, call.function.name),
                                 )
                                 del llm_msg.tool_calls[len(tool_results):]
+                                # The history snapshot was taken before the batch; keep it
+                                # aligned with the trimmed calls so every id keeps its result.
+                                if messages and isinstance(messages[-1], dict) and "tool_calls" in messages[-1]:
+                                    messages[-1] = _history_assistant_message(llm_msg)
                             elif len(llm_msg.tool_calls) == 1:
                                 tc = llm_msg.tool_calls[0]
                                 res = await self.execute_single_tool(websocket, tc, tool_to_agent, chat_id, user_id=user_id, tool_to_unqualified=tool_to_unqualified)
@@ -18935,10 +18942,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             _review_publication = remote_confirmation.capture_manual_review(
                 self, websocket, user_id, chat_id, agent_id, tool_name, args)
             _write_snapshot = None
+            _restore_snapshot = None
             if agent_id == "computer-use-1" and tool_name == "write_file":
                 from orchestrator.write_review import prepare_write_review
 
                 _write_snapshot = await prepare_write_review(self, websocket, user_id, chat_id, args)
+            if agent_id == "computer-use-1" and tool_name == "restore_checkpoint":
+                from orchestrator.restore_review import prepare_restore_review
+
+                _restore_snapshot = await prepare_restore_review(self, websocket, user_id, chat_id, args)
             try:
                 _conf = remote_confirmation.review_publication_refusal(self, websocket, _review_publication)
                 if _conf is None:
@@ -18968,6 +18980,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     from orchestrator.write_review import attach_write_diff
                     _comps = await attach_write_diff(self, websocket, user_id, chat_id, args, _comps,
                                                      snapshot=_write_snapshot)
+                if agent_id == "computer-use-1" and tool_name == "restore_checkpoint":
+                    from orchestrator.restore_review import attach_restore_review
+                    _comps = await attach_restore_review(self, websocket, user_id, chat_id, args, _comps,
+                                                         snapshot=_restore_snapshot)
                 _obsolete = remote_confirmation.review_publication_refusal(
                     self, websocket, _review_publication, _conf)
                 if _obsolete is not None:

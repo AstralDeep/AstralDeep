@@ -191,9 +191,14 @@ async def test_failed_first_batch_call_retains_only_executed_calls_in_provider_h
         if plans == 1:
             return _msg(tool_calls=[_tc("run_command", "parent"), _tc("run_command", "undispatched-child")]), _usage()
         if plans == 2:
-            requests = [item for item in messages if getattr(item, "tool_calls", None)]
+            requests = [item for item in messages
+                        if (item.get("tool_calls") if isinstance(item, dict)
+                            else getattr(item, "tool_calls", None))]
             assert len(requests) == 1
-            assert [call.id for call in requests[0].tool_calls] == ["parent"]
+            plan_calls = (requests[0].get("tool_calls") if isinstance(requests[0], dict)
+                          else requests[0].tool_calls)
+            assert [call["id"] if isinstance(call, dict) else call.id
+                    for call in plan_calls] == ["parent"]
             results = [item for item in messages if isinstance(item, dict) and item.get("role") == "tool"]
             assert [item["tool_call_id"] for item in results] == ["parent"]
             return _msg(tool_calls=[_tc("run_command", "retry-parent")]), _usage()

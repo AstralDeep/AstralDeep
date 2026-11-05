@@ -33,6 +33,7 @@ OBSERVE_VERBS: FrozenSet[str] = frozenset({
     "read_output",
     "list_apps", "ax_tree", "ax_find", "zoom",
     "browser_find", "browser_zoom", "browser_console", "browser_network",
+    "list_checkpoints", "diff_checkpoint",
 })
 INPUT_VERBS: FrozenSet[str] = frozenset({
     "click", "double_click", "right_click", "move", "drag", "scroll", "type_text",
@@ -43,6 +44,7 @@ INPUT_VERBS: FrozenSet[str] = frozenset({
 })
 CONSEQUENTIAL_VERBS: FrozenSet[str] = frozenset({
     "write_file", "delete_path", "run_command", "project_preview", "browser_evaluate",
+    "restore_checkpoint",
 })
 SESSION_VERBS: FrozenSet[str] = frozenset({
     "list_computers", "start_session", "end_session", "resume_session", "confirm_action",
@@ -69,6 +71,7 @@ SCOPES: Dict[str, str] = {
     "project_preview": "tools:execute",
     "write_file": "tools:files",
     "delete_path": "tools:files",
+    "restore_checkpoint": "tools:files",
     "browser_evaluate": "tools:write",
     "list_computers": "tools:read",
     "start_session": "tools:write",
@@ -80,6 +83,7 @@ SCOPES: Dict[str, str] = {
 DESTRUCTIVE_CLASSIFICATION: Dict[str, Any] = {
     "write_file": "always",
     "delete_path": "always",
+    "restore_checkpoint": "always",
     "confirm_action": "always",
     "open_app": {"by_shell_app": True},
     "run_command": "always",
@@ -270,6 +274,7 @@ TIMEOUTS: Dict[str, float] = {
     "scroll": 5.0, "type_text": 30.0, "press_keys": 5.0, "focus_window": 5.0,
     "open_app": 15.0, "set_clipboard": 5.0,
     "write_file": 10.0, "delete_path": 10.0,
+    "list_checkpoints": 5.0, "diff_checkpoint": 10.0, "restore_checkpoint": 30.0,
     "run_command": 630.0, "read_output": 30.0, "interrupt_command": 5.0,
     "project_preview": 630.0,
     "browser_snapshot": 5.0, "browser_get_text": 5.0, "browser_screenshot": 5.0,
@@ -747,6 +752,8 @@ def bypass_floor(tool: str, args: Mapping[str, Any], window_bundle: Optional[str
         return is_privilege_escalation(args) or bool(_ASTRAL_TEXT.search(text))
     if tool in {"write_file", "delete_path"}:
         return bool(_ASTRAL_TEXT.search(str(args.get("path") or "")))
+    if tool == "restore_checkpoint":
+        return True
     if tool == "open_app":
         return is_astral_app(args.get("app"))
     if tool in AX_INPUT_VERBS:
@@ -920,6 +927,8 @@ def _summary_text(tool_name: str, args: Mapping[str, Any], h: str) -> str:
         return f"Write file on {h} ({mode}): {display_text(args.get('path') or '')[:200]}"
     if tool_name == "delete_path":
         return f"Delete on {h}: {display_text(args.get('path') or '')[:200]}"
+    if tool_name == "restore_checkpoint":
+        return f"Restore files on {h} to checkpoint {display_text(args.get('checkpoint_id') or '')[:36]}"
     if tool_name == "confirm_action":
         return f"On {h}: {display_text(args.get('summary') or 'the next step')[:MAX_SUMMARY_CHARS]}"
     if tool_name == "open_app":
