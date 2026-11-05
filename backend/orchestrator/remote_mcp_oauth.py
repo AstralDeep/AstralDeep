@@ -14,7 +14,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import quote_plus, urlencode, urlsplit, urlunsplit
 
 Request = Callable[[str, str, bytes | None, Mapping[str, str] | None, int],
                    Awaitable[tuple[int, Mapping[str, str], bytes]]]
@@ -27,6 +27,7 @@ _CHALLENGE_METADATA = re.compile(r'\bresource_metadata="([^"\r\n]+)"', re.IGNORE
 _CHALLENGE_SCOPE = re.compile(r'(?:^|[\s,])scope=(?:"([^"\r\n]*)"|([^,\s]+))', re.IGNORECASE)
 _PENDING_AGENT = "__remote_mcp_oauth_pending__"
 _PENDING_PREFIX = "_pending_"
+_TOKEN_AUTH_METHODS = {"none", "client_secret_basic", "client_secret_post"}
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class _Pending:
     client_id: str
     client_secret: str
     token_endpoint: str
+    token_endpoint_auth_method: str
     redirect_uri: str
     resource: str
     verifier: str
@@ -183,6 +185,44 @@ def _string(value: Any, name: str, maximum: int = 2048) -> str:
     return value
 
 
+def _token_auth_methods(metadata: dict[str, Any]) -> tuple[str, ...]:
+    if "token_endpoint_auth_methods_supported" not in metadata:
+        return ("client_secret_basic",)
+    methods = metadata.get("token_endpoint_auth_methods_supported")
+    if (type(methods) is not list or not methods or len(methods) > 16
+            or any(type(method) is not str or not 1 <= len(method) <= 64 for method in methods)):
+        raise RemoteMCPOAuthError("The authorization server's token authentication metadata is invalid.")
+    supported = tuple(dict.fromkeys(method for method in methods if method in _TOKEN_AUTH_METHODS))
+    if not supported:
+        raise RemoteMCPOAuthError("The authorization server supports no safe token authentication method.")
+    return supported
+
+
+def _token_auth_method(method: Any, client_secret: str) -> str:
+    if type(method) is not str or method not in _TOKEN_AUTH_METHODS:
+        raise RemoteMCPOAuthError("The OAuth client uses an unsupported token authentication method.")
+    if method in {"client_secret_basic", "client_secret_post"} and not client_secret:
+        raise RemoteMCPOAuthError("The authorization server requires a client secret for token requests.")
+    return method
+
+
+def _token_request_auth(method: str, client_id: str, client_secret: str,
+                        fields: dict[str, str]) -> tuple[dict[str, str], bytes]:
+    headers = {"content-type": "application/x-www-form-urlencoded"}
+    if method == "client_secret_basic":
+        credentials = f"{quote_plus(client_id, safe='')}:{quote_plus(client_secret, safe='')}"
+        encoded = base64.b64encode(credentials.encode("ascii")).decode("ascii")
+        headers["authorization"] = "Basic " + encoded
+        fields.pop("client_secret", None)
+        fields.pop("client_id", None)
+    elif method == "client_secret_post":
+        fields.update({"client_id": client_id, "client_secret": client_secret})
+    else:
+        fields["client_id"] = client_id
+        fields.pop("client_secret", None)
+    return headers, urlencode(fields).encode("ascii")
+
+
 def _pending_put(orch: Any, pending: _Pending) -> str:
     manager = orch.credential_manager
     existing = [key for key in manager.list_credential_keys(pending.owner_id, _PENDING_AGENT)
@@ -222,6 +262,7 @@ def _pending_take(orch: Any, state: str) -> _Pending:
             raise ValueError
         raw = manager.take_credential(owner_id, _PENDING_AGENT, _PENDING_PREFIX + nonce)
         payload = json.loads(raw or "")
+        payload.setdefault("token_endpoint_auth_method", "")
         pending = _Pending(**payload)
     except (AttributeError, KeyError, TypeError, ValueError):
         raise RemoteMCPOAuthError("The OAuth sign-in expired. Start it again.") from None
@@ -268,6 +309,33 @@ async def begin_authorization(orch: Any, owner_id: str, connector_id: str,
     token_endpoint = _url(_string(metadata.get("token_endpoint"), "token endpoint"), allow_query=True)
     client_id = connector.get("oauth_client_id") or ""
     client_secret = connector.get("oauth_client_secret") or ""
+    methods = _token_auth_methods(metadata)
+    if client_id:
+        method = connector.get("oauth_token_endpoint_auth_method")
+        if method:
+            method = _token_auth_method(method, client_secret)
+            if ("token_endpoint_auth_methods_supported" in metadata
+                    and method not in methods):
+                raise RemoteMCPOAuthError("The authorization server does not support the saved token authentication method.")
+        elif "token_endpoint_auth_methods_supported" in metadata:
+            method = next((candidate for candidate in ("client_secret_basic", "client_secret_post")
+                           if candidate in methods and client_secret), None)
+            if method is None and "none" in methods and not client_secret:
+                method = "none"
+            if method is None:
+                raise RemoteMCPOAuthError("The authorization server's token authentication methods do not match the saved client credentials.")
+        else:
+            method = "client_secret_basic" if client_secret else "none"
+        method = _token_auth_method(method, client_secret)
+        if connector.get("oauth_token_endpoint_auth_method") != method:
+            connector = await asyncio.to_thread(
+                update_oauth_credentials, orch, owner_id, connector,
+                {"oauth_token_endpoint_auth_method": method},
+            )
+    else:
+        if "token_endpoint_auth_methods_supported" in metadata and "none" not in methods:
+            raise RemoteMCPOAuthError("Dynamic registration requires a supported public-client token authentication method.")
+        method = "none"
     if not client_id:
         registration_endpoint = _url(_string(metadata.get("registration_endpoint"), "registration endpoint"),
                                      allow_query=True)
@@ -284,12 +352,21 @@ async def begin_authorization(orch: Any, owner_id: str, connector_id: str,
             raise RemoteMCPOAuthError("OAuth client registration failed.")
         registered = _json_body(body, _MAX_METADATA)
         client_id = _string(registered.get("client_id"), "client ID", 512)
-        client_secret = registered.get("client_secret") or ""
+        client_secret = registered.get("client_secret", "")
+        if client_secret is None:
+            client_secret = ""
         if type(client_secret) is not str or len(client_secret) > _MAX_TOKEN:
             raise RemoteMCPOAuthError("OAuth client registration returned an invalid secret.")
+        registered_method = registered.get("token_endpoint_auth_method", method)
+        if registered_method != method:
+            raise RemoteMCPOAuthError("OAuth client registration selected an unexpected token authentication method.")
+        method = _token_auth_method(registered_method, client_secret)
+        if method == "none":
+            client_secret = ""
         connector = await asyncio.to_thread(
             update_oauth_credentials, orch, owner_id, connector,
-            {"oauth_client_id": client_id, "oauth_client_secret": client_secret},
+            {"oauth_client_id": client_id, "oauth_client_secret": client_secret,
+             "oauth_token_endpoint_auth_method": method},
         )
     scopes = resource_metadata.get("scopes_supported")
     if "scopes_supported" in resource_metadata and type(scopes) is not list:
@@ -309,7 +386,7 @@ async def begin_authorization(orch: Any, owner_id: str, connector_id: str,
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
     state = await asyncio.to_thread(
         _pending_put, orch, _Pending(owner_id, connector_id, endpoint, client_id, client_secret,
-                                    token_endpoint, redirect_uri, resource, verifier, scope,
+                                    token_endpoint, method, redirect_uri, resource, verifier, scope,
                                     time.time() + _STATE_TTL))
     query = {"response_type": "code", "client_id": client_id, "redirect_uri": redirect_uri,
              "state": state, "code_challenge": challenge, "code_challenge_method": "S256",
@@ -333,16 +410,17 @@ async def complete_authorization(orch: Any, code: str, state: str,
     connector = await asyncio.to_thread(get_connector, orch, pending.owner_id, pending.connector_id)
     if (connector.get("url") != pending.endpoint or connector.get("auth_type") != "oauth"
             or connector.get("oauth_client_id") != pending.client_id
-            or (connector.get("oauth_client_secret") or "") != pending.client_secret):
+            or (connector.get("oauth_client_secret") or "") != pending.client_secret
+            or (connector.get("oauth_token_endpoint_auth_method") or "") != pending.token_endpoint_auth_method):
         raise RemoteMCPOAuthError("The connector changed during OAuth sign-in. Start again.")
     fields = {"grant_type": "authorization_code", "code": code,
               "redirect_uri": pending.redirect_uri, "client_id": pending.client_id,
               "code_verifier": pending.verifier, "resource": pending.resource}
-    if pending.client_secret:
-        fields["client_secret"] = pending.client_secret
+    headers, body = _token_request_auth(
+        pending.token_endpoint_auth_method or ("client_secret_post" if pending.client_secret else "none"),
+        pending.client_id, pending.client_secret, fields)
     status, _headers, body = await _request(requester, pending.token_endpoint, "POST",
-                                            urlencode(fields).encode("ascii"),
-                                            {"content-type": "application/x-www-form-urlencoded"}, _MAX_METADATA)
+                                            body, headers, _MAX_METADATA)
     if status != 200:
         raise RemoteMCPOAuthError("The authorization server rejected the code exchange.")
     token = _json_body(body, _MAX_METADATA)
@@ -358,7 +436,8 @@ async def complete_authorization(orch: Any, code: str, state: str,
         update_oauth_credentials, orch, pending.owner_id, connector,
         {"access_token": access_token, "refresh_token": refresh_token,
          "token_endpoint": pending.token_endpoint, "token_expires_at": expires_at,
-         "scope": pending.scope},
+         "scope": pending.scope,
+         "oauth_token_endpoint_auth_method": pending.token_endpoint_auth_method},
     )
     return pending.connector_id
 
@@ -375,12 +454,15 @@ async def refresh_authorization(orch: Any, owner_id: str, connector_id: str,
         return False
     endpoint = _url(_string(connector.get("token_endpoint"), "token endpoint"), allow_query=True)
     fields = {"grant_type": "refresh_token", "refresh_token": connector["refresh_token"],
-              "client_id": _string(connector.get("oauth_client_id"), "client ID", 512),
               "resource": _url(connector["url"])}
-    if connector.get("oauth_client_secret"):
-        fields["client_secret"] = connector["oauth_client_secret"]
-    status, _headers, body = await _request(requester, endpoint, "POST", urlencode(fields).encode("ascii"),
-                                            {"content-type": "application/x-www-form-urlencoded"}, _MAX_METADATA)
+    client_id = _string(connector.get("oauth_client_id"), "client ID", 512)
+    client_secret = connector.get("oauth_client_secret") or ""
+    method = connector.get("oauth_token_endpoint_auth_method")
+    if not method:
+        method = "client_secret_post" if client_secret else "none"
+    method = _token_auth_method(method, client_secret)
+    headers, body = _token_request_auth(method, client_id, client_secret, fields)
+    status, _headers, body = await _request(requester, endpoint, "POST", body, headers, _MAX_METADATA)
     async def concurrent_refresh_succeeded() -> bool:
         from orchestrator.remote_mcp_connectors import _same_oauth_authority
 

@@ -33,6 +33,20 @@ requires one. OAuth scope comes from the server's authorization challenge when s
 otherwise AstralDeep uses the provider's published supported scopes. There is no scope field in
 the connection form.
 
+For token requests, AstralDeep supports public-client `none`, `client_secret_basic`, and
+`client_secret_post`. It selects an advertised client-secret method when a secret is configured;
+malformed or unsupported method metadata fails authorization. When metadata omits
+`token_endpoint_auth_methods_supported`, RFC 8414 defines
+`client_secret_basic` as the default for confidential clients. New authorization honors a saved
+method when present and otherwise selects an advertised method or that RFC default. Existing
+confidential tokens on older connections continue using their legacy form-post method during
+refresh until the connection is authorized again. Dynamic registration requests the public-client `none` method and
+verifies that the registration response agrees; if explicit server metadata does not advertise
+`none`, public dynamic registration stops instead of silently switching methods. These rules
+follow [RFC 8414 §2](https://www.rfc-editor.org/rfc/rfc8414.html#section-2)
+and [RFC 6749 §2.3.1](https://www.rfc-editor.org/rfc/rfc6749.html#section-2.3.1) (accessed
+2026-11-05).
+
 Save the connection. For OAuth, choose **Authorize** and complete the provider's sign-in in
 the page that opens. Sign in with your own provider account; AstralDeep does not set up or
 select that account for you. After authorization, choose **Test and refresh tools**.

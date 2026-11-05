@@ -5,6 +5,7 @@ Network requests use a deterministic fake while the connector store uses its rea
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -20,6 +21,7 @@ from orchestrator.projection_surfaces import remote_mcp as remote_mcp_surface
 RESOURCE = "https://mcp.example/mcp"
 ISSUER = "https://id.example"
 CALLBACK = "https://astral.example/api/remote-mcp/oauth/callback"
+_UNSET = object()
 
 
 class _Credentials:
@@ -69,7 +71,8 @@ class _Orch:
 class _Requester:
     def __init__(self, *, resource=RESOURCE, challenge_origin=RESOURCE, token_status=200,
                  authorization_query="", challenge_header=None, authorization_servers=(ISSUER,),
-                 scopes_supported=("user",), resource_documents=None, authorization_documents=None):
+                 scopes_supported=("user",), resource_documents=None, authorization_documents=None,
+                 token_auth_methods=_UNSET, registered_method=None, registered_secret=_UNSET):
         self.resource = resource
         self.challenge_origin = challenge_origin
         self.token_status = token_status
@@ -79,10 +82,15 @@ class _Requester:
         self.scopes_supported = scopes_supported
         self.resource_documents = resource_documents or {}
         self.authorization_documents = authorization_documents or {}
+        self.token_auth_methods = token_auth_methods
+        self.registered_method = registered_method
+        self.registered_secret = registered_secret
         self.calls = []
+        self.request_details = []
 
     async def __call__(self, url, method, body, headers, maximum):
         self.calls.append((url, method, body))
+        self.request_details.append((url, method, body, dict(headers or {})))
         if url == RESOURCE and method == "POST":
             if self.challenge_header is not None:
                 return 401, {"WWW-Authenticate": self.challenge_header}, b""
@@ -100,29 +108,41 @@ class _Requester:
                                          "authorization_servers": list(self.authorization_servers),
                                          "scopes_supported": list(self.scopes_supported)}).encode()
         if url == "https://id.example/.well-known/oauth-authorization-server":
-            return 200, {}, json.dumps({
+            metadata = {
                 "issuer": ISSUER,
                 "authorization_endpoint": ISSUER + "/authorize" + self.authorization_query,
                 "token_endpoint": ISSUER + "/token",
                 "registration_endpoint": ISSUER + "/register",
                 "code_challenge_methods_supported": ["S256"],
-            }).encode()
+            }
+            if self.token_auth_methods is not _UNSET:
+                metadata["token_endpoint_auth_methods_supported"] = self.token_auth_methods
+            return 200, {}, json.dumps(metadata).encode()
         if url == ISSUER + "/register":
             assert method == "POST" and b"AstralDeep Remote MCP" in body
-            return 201, {}, b'{"client_id":"registered-client"}'
+            result = {"client_id": "registered-client"}
+            if self.registered_method is not None:
+                result["token_endpoint_auth_method"] = self.registered_method
+            if self.registered_secret is not _UNSET:
+                result["client_secret"] = self.registered_secret
+            return 201, {}, json.dumps(result).encode()
         if url == ISSUER + "/token":
             if self.token_status != 200:
                 return self.token_status, {}, b'{"error":"invalid_grant"}'
-            assert method == "POST" and b"client_id=" in body
+            assert method == "POST"
             return 200, {}, b'{"access_token":"access-1","refresh_token":"refresh-1","token_type":"Bearer","expires_in":3600}'
         raise AssertionError((url, method))
 
 
-def _connector(orch, *, client_id="client-1"):
-    return connectors.save_connector(orch, "owner-1", {
+def _connector(orch, *, client_id="client-1", client_secret="", auth_method=""):
+    values = {
         "name": "Example MCP", "url": RESOURCE, "transport": "streamable_http",
-        "auth_type": "oauth", "oauth_client_id": client_id, "enabled": True, "tools": {},
-    })
+        "auth_type": "oauth", "oauth_client_id": client_id,
+        "oauth_client_secret": client_secret, "enabled": True, "tools": {},
+    }
+    if auth_method:
+        values["oauth_token_endpoint_auth_method"] = auth_method
+    return connectors.save_connector(orch, "owner-1", values)
 
 
 def test_saving_connector_clears_oauth_client_and_authorization_state_only_when_requested():
@@ -131,6 +151,7 @@ def test_saving_connector_clears_oauth_client_and_authorization_state_only_when_
     connector = connectors.get_connector(orch, "owner-1", saved["id"])
     connector.update({"oauth_client_secret": "client-secret", "access_token": "access",
                       "refresh_token": "refresh", "token_endpoint": ISSUER + "/token",
+                      "oauth_token_endpoint_auth_method": "client_secret_post",
                       "authorization_endpoint": ISSUER + "/authorize", "token_expires_at": 1000,
                       "scope": "read"})
     connectors.save_connector(orch, "owner-1", connector)
@@ -148,7 +169,29 @@ def test_saving_connector_clears_oauth_client_and_authorization_state_only_when_
     assert not cleared.get("oauth_client_id")
     assert not cleared.get("oauth_client_secret")
     assert not any(cleared.get(field) for field in (
-        "access_token", "refresh_token", "token_endpoint", "authorization_endpoint", "token_expires_at", "scope"))
+        "oauth_token_endpoint_auth_method", "access_token", "refresh_token", "token_endpoint",
+        "authorization_endpoint", "token_expires_at", "scope"))
+
+
+@pytest.mark.parametrize("field,value", [
+    ("url", "https://changed.example/mcp"),
+    ("oauth_client_id", "replacement-client"),
+    ("oauth_client_secret", "replacement-secret"),
+])
+def test_oauth_authority_or_client_changes_clear_method_and_tokens(field, value):
+    orch = _Orch()
+    saved = _connector(orch, client_secret="client-secret", auth_method="client_secret_basic")
+    connector = connectors.get_connector(orch, "owner-1", saved["id"])
+    connector.update({"access_token": "access", "refresh_token": "refresh",
+                      "token_endpoint": ISSUER + "/token", "token_expires_at": 1234})
+    connectors.save_connector(orch, "owner-1", connector)
+
+    changed = connectors.save_connector(orch, "owner-1", {**connector, field: value})
+
+    assert not changed.get("oauth_token_endpoint_auth_method")
+    assert not changed.get("access_token")
+    assert not changed.get("refresh_token")
+    assert not changed.get("token_endpoint")
 
 
 def test_clear_oauth_client_credentials_requires_boolean():
@@ -158,6 +201,20 @@ def test_clear_oauth_client_credentials_requires_boolean():
             "name": "Example MCP", "url": RESOURCE, "transport": "streamable_http",
             "auth_type": "oauth", "oauth_client_id": "client-1",
         }, clear_oauth_client_credentials="true")
+
+
+def test_connector_auth_method_validation_and_no_auth_cleanup():
+    with pytest.raises(connectors.RemoteMCPError, match="token authentication method is invalid"):
+        connectors._validate_config({
+            "name": "Example", "url": RESOURCE, "transport": "streamable_http",
+            "auth_type": "oauth", "oauth_token_endpoint_auth_method": [],
+        })
+
+    saved = connectors.save_connector(_Orch(), "owner-1", {
+        "name": "Example", "url": RESOURCE, "transport": "streamable_http",
+        "auth_type": "none", "oauth_token_endpoint_auth_method": "client_secret_post",
+    })
+    assert not saved.get("oauth_token_endpoint_auth_method")
 
 
 def test_remote_mcp_edit_surfaces_expose_explicit_oauth_client_clear(monkeypatch):
@@ -228,7 +285,7 @@ async def test_pkce_exchange_stores_owner_token_and_consumes_state():
 async def test_dynamic_registration_and_refresh():
     orch = _Orch()
     saved = _connector(orch, client_id="")
-    requester = _Requester()
+    requester = _Requester(registered_secret="unused-for-public-client")
 
     authorization_url = await oauth.begin_authorization(
         orch, "owner-1", saved["id"], CALLBACK, requester=requester)
@@ -239,6 +296,172 @@ async def test_dynamic_registration_and_refresh():
     assert await oauth.refresh_authorization(orch, "owner-1", saved["id"], requester=requester) is True
     assert [url for url, method, _ in requester.calls if url == ISSUER + "/token" and method == "POST"] == [
         ISSUER + "/token", ISSUER + "/token"]
+    assert connectors.get_connector(orch, "owner-1", saved["id"])["oauth_token_endpoint_auth_method"] == "none"
+    assert connectors.get_connector(orch, "owner-1", saved["id"]).get("oauth_client_secret", "") == ""
+    registration = next(body for url, method, body in requester.calls if url == ISSUER + "/register")
+    assert json.loads(registration)["token_endpoint_auth_method"] == "none"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("auth_method,client_secret", [
+    ("none", ""),
+    ("client_secret_basic", "sëcret: value+"),
+    ("client_secret_post", "sëcret: value+"),
+])
+async def test_token_auth_methods_are_used_for_exchange_and_refresh(auth_method, client_secret):
+    orch = _Orch()
+    client_id = "client:π name+"
+    saved = _connector(orch, client_id=client_id, client_secret=client_secret)
+    requester = _Requester(token_auth_methods=[auth_method])
+    authorization_url = await oauth.begin_authorization(
+        orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    state = parse_qs(urlsplit(authorization_url).query)["state"][0]
+    assert connectors.get_connector(orch, "owner-1", saved["id"])["oauth_token_endpoint_auth_method"] == auth_method
+
+    await oauth.complete_authorization(orch, "code-1", state, requester=requester)
+    assert await oauth.refresh_authorization(orch, "owner-1", saved["id"], requester=requester)
+    token_calls = [detail for detail in requester.request_details
+                   if detail[0] == ISSUER + "/token"]
+    assert len(token_calls) == 2
+    for _url, _method, body, headers in token_calls:
+        fields = parse_qs(body.decode())
+        if auth_method == "client_secret_basic":
+            encoded_credentials = base64.b64encode(
+                f"client%3A%CF%80+name%2B:{'s%C3%ABcret%3A+value%2B'}".encode("ascii")
+            ).decode("ascii")
+            assert headers["authorization"] == "Basic " + encoded_credentials
+            assert "client_id" not in fields and "client_secret" not in fields
+        elif auth_method == "client_secret_post":
+            assert fields["client_id"] == [client_id]
+            assert fields["client_secret"] == [client_secret]
+            assert "authorization" not in headers
+        else:
+            assert fields["client_id"] == [client_id]
+            assert "client_secret" not in fields
+            assert "authorization" not in headers
+
+
+@pytest.mark.asyncio
+async def test_missing_method_metadata_defaults_confidential_authorization_to_basic():
+    orch = _Orch()
+    saved = _connector(orch, client_secret="confidential-secret")
+    requester = _Requester()
+    authorization_url = await oauth.begin_authorization(
+        orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    state = parse_qs(urlsplit(authorization_url).query)["state"][0]
+
+    assert connectors.get_connector(orch, "owner-1", saved["id"])["oauth_token_endpoint_auth_method"] == "client_secret_basic"
+    await oauth.complete_authorization(orch, "code-1", state, requester=requester)
+    assert await oauth.refresh_authorization(orch, "owner-1", saved["id"], requester=requester)
+    token_calls = [detail for detail in requester.request_details if detail[0] == ISSUER + "/token"]
+    assert len(token_calls) == 2
+    assert all(headers.get("authorization", "").startswith("Basic ") for _, _, _, headers in token_calls)
+    assert all(b"client_secret=" not in body for _, _, body, _ in token_calls)
+
+
+@pytest.mark.asyncio
+async def test_legacy_refresh_keeps_form_post_until_reauthorization():
+    orch = _Orch()
+    saved = _connector(orch, client_secret="legacy-secret")
+    connector = connectors.get_connector(orch, "owner-1", saved["id"])
+    connector.update({"refresh_token": "refresh-old", "token_endpoint": ISSUER + "/token"})
+    connectors.save_connector(orch, "owner-1", connector)
+    requester = _Requester()
+
+    assert await oauth.refresh_authorization(orch, "owner-1", saved["id"], requester=requester)
+
+    _url, _method, body, headers = next(
+        detail for detail in requester.request_details if detail[0] == ISSUER + "/token")
+    assert parse_qs(body.decode())["client_secret"] == ["legacy-secret"]
+    assert "authorization" not in headers
+
+
+@pytest.mark.asyncio
+async def test_dcr_rejects_server_selected_auth_method_mismatch():
+    orch = _Orch()
+    saved = _connector(orch, client_id="")
+    requester = _Requester(registered_method="client_secret_post", registered_secret="issued")
+
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="unexpected token authentication method"):
+        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+
+    assert not connectors.get_connector(orch, "owner-1", saved["id"]).get("access_token")
+
+
+@pytest.mark.asyncio
+async def test_dcr_treats_explicit_null_secret_as_absent_for_public_client():
+    orch = _Orch()
+    saved = _connector(orch, client_id="")
+    requester = _Requester(registered_secret=None)
+
+    await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+
+    stored = connectors.get_connector(orch, "owner-1", saved["id"])
+    assert stored["oauth_token_endpoint_auth_method"] == "none"
+    assert not stored.get("oauth_client_secret")
+
+
+@pytest.mark.asyncio
+async def test_pending_callback_rejects_changed_token_auth_method():
+    orch = _Orch()
+    saved = _connector(orch, client_secret="client-secret")
+    requester = _Requester(token_auth_methods=["client_secret_basic", "client_secret_post"])
+    authorization_url = await oauth.begin_authorization(
+        orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    state = parse_qs(urlsplit(authorization_url).query)["state"][0]
+    connector = connectors.get_connector(orch, "owner-1", saved["id"])
+    connectors.update_oauth_credentials(
+        orch, "owner-1", connector, {"oauth_token_endpoint_auth_method": "client_secret_post"})
+
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="connector changed"):
+        await oauth.complete_authorization(orch, "code-1", state, requester=requester)
+
+
+@pytest.mark.asyncio
+async def test_saved_token_method_must_remain_supported_by_server_metadata():
+    orch = _Orch()
+    saved = _connector(orch, client_secret="secret", auth_method="client_secret_post")
+    requester = _Requester(token_auth_methods=["client_secret_basic"])
+
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="does not support the saved token"):
+        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+
+
+@pytest.mark.parametrize("method,secret", [
+    ([], "secret"),
+    ("client_secret_basic", ""),
+])
+def test_token_auth_method_rejects_invalid_method_and_missing_secret(method, secret):
+    with pytest.raises(oauth.RemoteMCPOAuthError):
+        oauth._token_auth_method(method, secret)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("methods,secret,reason", [
+    (None, "secret", "metadata is invalid"),
+    ("none", "secret", "metadata is invalid"),
+    (["private_key_jwt"], "secret", "no safe token authentication method"),
+    (["client_secret_basic"], "", "do not match the saved client credentials"),
+])
+async def test_rejects_malformed_unsupported_or_unusable_token_auth_metadata(methods, secret, reason):
+    orch = _Orch()
+    saved = _connector(orch, client_secret=secret)
+    requester = _Requester(token_auth_methods=methods)
+
+    with pytest.raises(oauth.RemoteMCPOAuthError, match=reason):
+        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+
+
+@pytest.mark.asyncio
+async def test_dynamic_registration_requires_public_client_method_when_metadata_is_explicit():
+    orch = _Orch()
+    saved = _connector(orch, client_id="")
+    requester = _Requester(token_auth_methods=["client_secret_basic"])
+
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="requires a supported public-client"):
+        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+
+    assert not any(url == ISSUER + "/register" for url, _method, _body in requester.calls)
 
 
 @pytest.mark.asyncio
@@ -724,10 +947,13 @@ async def test_oauth_response_preserves_settings_changed_during_provider_request
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["callback", "refresh", "registration"])
-@pytest.mark.parametrize("mutation", ["delete", "url", "oauth_client_id", "oauth_client_secret"])
+@pytest.mark.parametrize("mutation", [
+    "delete", "url", "oauth_client_id", "oauth_client_secret", "oauth_token_endpoint_auth_method",
+])
 async def test_oauth_response_cannot_recreate_or_restore_changed_connector(operation, mutation):
     orch = _Orch()
-    saved = _connector(orch, client_id="" if operation == "registration" else "client-1")
+    saved = _connector(orch, client_id="" if operation == "registration" else "client-1",
+                       client_secret="secret")
     if operation == "refresh":
         current = connectors.get_connector(orch, "owner-1", saved["id"])
         current.update({"refresh_token": "refresh-old", "token_endpoint": ISSUER + "/token"})
@@ -744,7 +970,11 @@ async def test_oauth_response_cannot_recreate_or_restore_changed_connector(opera
                 connectors.delete_connector(orch, "owner-1", saved["id"])
             else:
                 current = connectors.get_connector(orch, "owner-1", saved["id"])
-                current[mutation] = "https://new.example/mcp" if mutation == "url" else "replacement"
+                if mutation == "oauth_token_endpoint_auth_method":
+                    current[mutation] = ("client_secret_post" if operation == "callback"
+                                         else "client_secret_basic")
+                else:
+                    current[mutation] = "https://new.example/mcp" if mutation == "url" else "replacement"
                 connectors.save_connector(orch, "owner-1", current)
         return await base_requester(url, method, body, headers, maximum)
 
@@ -759,7 +989,10 @@ async def test_oauth_response_cannot_recreate_or_restore_changed_connector(opera
         assert connectors.list_connectors(orch, "owner-1") == []
     else:
         current = connectors.get_connector(orch, "owner-1", saved["id"])
-        assert current[mutation] == ("https://new.example/mcp" if mutation == "url" else "replacement")
+        expected = ("https://new.example/mcp" if mutation == "url" else
+                    "client_secret_post" if mutation == "oauth_token_endpoint_auth_method" and operation == "callback" else
+                    "client_secret_basic" if mutation == "oauth_token_endpoint_auth_method" else "replacement")
+        assert current[mutation] == expected
         assert not current.get("access_token")
 
 

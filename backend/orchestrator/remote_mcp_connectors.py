@@ -67,7 +67,7 @@ def _validate_oauth_endpoint(value: Any) -> str:
 def _validate_config(value: Any) -> dict[str, Any]:
     if type(value) is not dict or set(value) - {
         "id", "name", "url", "transport", "auth_type", "token", "oauth_client_id",
-        "oauth_client_secret", "access_token", "refresh_token", "token_endpoint",
+        "oauth_client_secret", "oauth_token_endpoint_auth_method", "access_token", "refresh_token", "token_endpoint",
         "authorization_endpoint", "token_expires_at", "scope", "tools", "enabled",
         "tools_catalog", "last_error",
     }:
@@ -89,6 +89,10 @@ def _validate_config(value: Any) -> dict[str, Any]:
         identifier = value.get(key, "")
         if type(identifier) is not str or len(identifier) > 512:
             raise RemoteMCPError("The OAuth client ID is invalid or too large.")
+    method = value.get("oauth_token_endpoint_auth_method", "")
+    if (type(method) is not str
+            or method not in {"", "none", "client_secret_basic", "client_secret_post"}):
+        raise RemoteMCPError("The OAuth token authentication method is invalid.")
     for key in ("token_endpoint", "authorization_endpoint"):
         endpoint = value.get(key)
         if endpoint:
@@ -208,7 +212,7 @@ def save_connector(orch: Any, owner_id: str, values: dict[str, Any], *,
     if clear_oauth_client_credentials:
         candidate.pop("oauth_client_id", None)
         candidate.pop("oauth_client_secret", None)
-        for field in ("access_token", "refresh_token", "token_endpoint", "authorization_endpoint",
+        for field in ("oauth_token_endpoint_auth_method", "access_token", "refresh_token", "token_endpoint", "authorization_endpoint",
                       "token_expires_at", "scope"):
             candidate.pop(field, None)
     if existing:
@@ -225,7 +229,7 @@ def save_connector(orch: Any, owner_id: str, values: dict[str, Any], *,
                 for key in ("oauth_client_id", "oauth_client_secret")))
         )
         credential_fields = (
-            "token", "oauth_client_id", "oauth_client_secret", "access_token", "refresh_token",
+            "token", "oauth_client_id", "oauth_client_secret", "oauth_token_endpoint_auth_method", "access_token", "refresh_token",
             "token_endpoint", "authorization_endpoint", "token_expires_at", "scope",
         )
         if same_authority and not changed_oauth_client:
@@ -250,7 +254,7 @@ def save_connector(orch: Any, owner_id: str, values: dict[str, Any], *,
     if connector.get("token_expires_at") is None:
         connector.pop("token_expires_at", None)
     if connector["auth_type"] == "none":
-        for secret in ("token", "oauth_client_id", "oauth_client_secret", "access_token", "refresh_token",
+        for secret in ("token", "oauth_client_id", "oauth_client_secret", "oauth_token_endpoint_auth_method", "access_token", "refresh_token",
                        "token_endpoint", "authorization_endpoint", "token_expires_at", "scope"):
             connector.pop(secret, None)
     if existing:
@@ -272,13 +276,14 @@ def delete_connector(orch: Any, owner_id: str, connector_id: str) -> None:
 
 def _same_oauth_authority(current: dict[str, Any], expected: dict[str, Any]) -> bool:
     return all((current.get(field) or "") == (expected.get(field) or "") for field in (
-        "url", "transport", "auth_type", "oauth_client_id", "oauth_client_secret", "token_endpoint",
+        "url", "transport", "auth_type", "oauth_client_id", "oauth_client_secret",
+        "oauth_token_endpoint_auth_method", "token_endpoint",
     ))
 
 
 def update_oauth_credentials(orch: Any, owner_id: str, expected: dict[str, Any],
                              updates: dict[str, Any]) -> dict[str, Any]:
-    fields = {"oauth_client_id", "oauth_client_secret", "access_token", "refresh_token",
+    fields = {"oauth_client_id", "oauth_client_secret", "oauth_token_endpoint_auth_method", "access_token", "refresh_token",
               "token_endpoint", "authorization_endpoint", "token_expires_at", "scope"}
     if set(updates) - fields:
         raise RemoteMCPError("The OAuth credential update is invalid.")
