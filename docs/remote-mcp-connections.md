@@ -34,17 +34,22 @@ otherwise AstralDeep uses the provider's published supported scopes. There is no
 the connection form.
 
 For token requests, AstralDeep supports public-client `none`, `client_secret_basic`, and
-`client_secret_post`. It selects an advertised client-secret method when a secret is configured;
-malformed or unsupported method metadata fails authorization. When metadata omits
-`token_endpoint_auth_methods_supported`, RFC 8414 defines
-`client_secret_basic` as the default for confidential clients. New authorization honors a saved
-method when present and otherwise selects an advertised method or that RFC default. Existing
-confidential tokens on older connections continue using their legacy form-post method during
-refresh until the connection is authorized again. Dynamic registration requests the public-client `none` method and
-verifies that the registration response agrees; if explicit server metadata does not advertise
-`none`, public dynamic registration stops instead of silently switching methods. These rules
-follow [RFC 8414 §2](https://www.rfc-editor.org/rfc/rfc8414.html#section-2)
-and [RFC 6749 §2.3.1](https://www.rfc-editor.org/rfc/rfc6749.html#section-2.3.1) (accessed
+`client_secret_post`. New authorization honors a saved method when present; otherwise it selects
+an advertised method. When authorization-server metadata omits
+`token_endpoint_auth_methods_supported`, RFC 8414 §2 defaults to `client_secret_basic`.
+Confidential methods require a configured or dynamically issued secret. Older saved confidential
+connections without a method keep their legacy form-post behavior during refresh until they are
+authorized again. Older public-client connections continue using `none`.
+
+Dynamic registration prefers `none` when advertised, then chooses `client_secret_basic` or
+`client_secret_post` from the server's supported methods, using the RFC 8414 default when the
+metadata omits the list. The registration response must agree with the requested method; an
+omitted response method defaults to `client_secret_basic` under RFC 7591 §2. Therefore, a public
+client registration must explicitly return `none`, while confidential registration must provide a
+nonempty client secret. AstralDeep does not fall back to another method after a mismatch. These
+rules follow [RFC 8414 §2](https://www.rfc-editor.org/rfc/rfc8414.html#section-2),
+[RFC 7591 §2](https://www.rfc-editor.org/rfc/rfc7591.html#section-2), and
+[RFC 6749 §2.3.1](https://www.rfc-editor.org/rfc/rfc6749.html#section-2.3.1) (accessed
 2026-11-05).
 
 Save the connection. For OAuth, choose **Authorize** and complete the provider's sign-in in

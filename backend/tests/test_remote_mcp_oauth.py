@@ -72,7 +72,7 @@ class _Requester:
     def __init__(self, *, resource=RESOURCE, challenge_origin=RESOURCE, token_status=200,
                  authorization_query="", challenge_header=None, authorization_servers=(ISSUER,),
                  scopes_supported=("user",), resource_documents=None, authorization_documents=None,
-                 token_auth_methods=_UNSET, registered_method=None, registered_secret=_UNSET):
+                 token_auth_methods=("none",), registered_method="none", registered_secret=_UNSET):
         self.resource = resource
         self.challenge_origin = challenge_origin
         self.token_status = token_status
@@ -121,7 +121,7 @@ class _Requester:
         if url == ISSUER + "/register":
             assert method == "POST" and b"AstralDeep Remote MCP" in body
             result = {"client_id": "registered-client"}
-            if self.registered_method is not None:
+            if self.registered_method is not _UNSET:
                 result["token_endpoint_auth_method"] = self.registered_method
             if self.registered_secret is not _UNSET:
                 result["client_secret"] = self.registered_secret
@@ -345,7 +345,7 @@ async def test_token_auth_methods_are_used_for_exchange_and_refresh(auth_method,
 async def test_missing_method_metadata_defaults_confidential_authorization_to_basic():
     orch = _Orch()
     saved = _connector(orch, client_secret="confidential-secret")
-    requester = _Requester()
+    requester = _Requester(token_auth_methods=_UNSET)
     authorization_url = await oauth.begin_authorization(
         orch, "owner-1", saved["id"], CALLBACK, requester=requester)
     state = parse_qs(urlsplit(authorization_url).query)["state"][0]
@@ -357,6 +357,16 @@ async def test_missing_method_metadata_defaults_confidential_authorization_to_ba
     assert len(token_calls) == 2
     assert all(headers.get("authorization", "").startswith("Basic ") for _, _, _, headers in token_calls)
     assert all(b"client_secret=" not in body for _, _, body, _ in token_calls)
+
+
+@pytest.mark.asyncio
+async def test_missing_method_metadata_requires_secret_for_fresh_confidential_client():
+    orch = _Orch()
+    saved = _connector(orch)
+    requester = _Requester(token_auth_methods=_UNSET)
+
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="do not match the saved client credentials"):
+        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
 
 
 @pytest.mark.asyncio
@@ -389,16 +399,77 @@ async def test_dcr_rejects_server_selected_auth_method_mismatch():
 
 
 @pytest.mark.asyncio
+async def test_dcr_defaults_to_basic_when_methods_and_registration_method_are_omitted():
+    orch = _Orch()
+    saved = _connector(orch, client_id="")
+    requester = _Requester(token_auth_methods=_UNSET, registered_method=_UNSET,
+                           registered_secret="issued-secret")
+
+    authorization_url = await oauth.begin_authorization(
+        orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    registration = next(body for url, method, body in requester.calls if url == ISSUER + "/register")
+    assert json.loads(registration)["token_endpoint_auth_method"] == "client_secret_basic"
+    assert connectors.get_connector(orch, "owner-1", saved["id"])["oauth_token_endpoint_auth_method"] == "client_secret_basic"
+    state = parse_qs(urlsplit(authorization_url).query)["state"][0]
+
+    await oauth.complete_authorization(orch, "code-1", state, requester=requester)
+    assert await oauth.refresh_authorization(orch, "owner-1", saved["id"], requester=requester)
+    token_calls = [detail for detail in requester.request_details if detail[0] == ISSUER + "/token"]
+    assert len(token_calls) == 2
+    assert all(headers.get("authorization", "").startswith("Basic ") for _, _, _, headers in token_calls)
+    assert all(b"client_secret=" not in body for _, _, body, _ in token_calls)
+
+
+@pytest.mark.asyncio
+async def test_dcr_selects_confidential_post_when_it_is_the_only_advertised_method():
+    orch = _Orch()
+    saved = _connector(orch, client_id="")
+    requester = _Requester(token_auth_methods=["client_secret_post"],
+                           registered_method="client_secret_post", registered_secret="issued-secret")
+
+    await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+
+    registration = next(body for url, method, body in requester.calls if url == ISSUER + "/register")
+    assert json.loads(registration)["token_endpoint_auth_method"] == "client_secret_post"
+    stored = connectors.get_connector(orch, "owner-1", saved["id"])
+    assert stored["oauth_token_endpoint_auth_method"] == "client_secret_post"
+    assert stored["oauth_client_secret"] == "issued-secret"
+
+
+@pytest.mark.asyncio
+async def test_dcr_confidential_method_requires_server_issued_secret():
+    orch = _Orch()
+    saved = _connector(orch, client_id="")
+    requester = _Requester(token_auth_methods=["client_secret_basic"],
+                           registered_method="client_secret_basic")
+
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="requires a client secret"):
+        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+
+
+@pytest.mark.asyncio
+async def test_dcr_requires_explicit_none_response_when_none_was_requested():
+    orch = _Orch()
+    saved = _connector(orch, client_id="")
+    requester = _Requester(token_auth_methods=["none"], registered_method=_UNSET)
+
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="unexpected token authentication method"):
+        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+
+
+@pytest.mark.asyncio
 async def test_dcr_treats_explicit_null_secret_as_absent_for_public_client():
     orch = _Orch()
     saved = _connector(orch, client_id="")
-    requester = _Requester(registered_secret=None)
+    requester = _Requester(token_auth_methods=["client_secret_basic", "none"], registered_secret=None)
 
     await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
 
     stored = connectors.get_connector(orch, "owner-1", saved["id"])
     assert stored["oauth_token_endpoint_auth_method"] == "none"
     assert not stored.get("oauth_client_secret")
+    registration = next(body for url, method, body in requester.calls if url == ISSUER + "/register")
+    assert json.loads(registration)["token_endpoint_auth_method"] == "none"
 
 
 @pytest.mark.asyncio
@@ -450,18 +521,6 @@ async def test_rejects_malformed_unsupported_or_unusable_token_auth_metadata(met
 
     with pytest.raises(oauth.RemoteMCPOAuthError, match=reason):
         await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
-
-
-@pytest.mark.asyncio
-async def test_dynamic_registration_requires_public_client_method_when_metadata_is_explicit():
-    orch = _Orch()
-    saved = _connector(orch, client_id="")
-    requester = _Requester(token_auth_methods=["client_secret_basic"])
-
-    with pytest.raises(oauth.RemoteMCPOAuthError, match="requires a supported public-client"):
-        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
-
-    assert not any(url == ISSUER + "/register" for url, _method, _body in requester.calls)
 
 
 @pytest.mark.asyncio
@@ -529,6 +588,7 @@ async def test_issuer_path_discovery_uses_ordered_oauth_and_oidc_locations():
         "authorization_endpoint": issuer + "/authorize",
         "token_endpoint": issuer + "/token",
         "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
     }
     requester = _Requester(
         authorization_servers=(issuer,),
@@ -553,6 +613,7 @@ async def test_root_issuer_discovery_falls_back_to_oidc_and_requires_pkce_metada
         "authorization_endpoint": ISSUER + "/authorize",
         "token_endpoint": ISSUER + "/token",
         "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
     }
     requester = _Requester(authorization_documents={oauth_url: (404, None), oidc_url: (200, metadata)})
 
@@ -590,6 +651,7 @@ async def test_authorization_server_selection_skips_invalid_candidates_and_is_bo
             "authorization_endpoint": issuer + "/authorize",
             "token_endpoint": issuer + "/token",
             "code_challenge_methods_supported": methods,
+            "token_endpoint_auth_methods_supported": ["none"],
         }
 
     requester = _Requester(
@@ -776,7 +838,7 @@ async def test_complete_authorization_rejects_client_secret_rotation_during_sign
     saved = _connector(orch)
     saved["oauth_client_secret"] = "secret-old"
     connectors.save_connector(orch, "owner-1", saved)
-    requester = _Requester()
+    requester = _Requester(token_auth_methods=["client_secret_basic"])
     url = await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
     state = parse_qs(urlsplit(url).query)["state"][0]
     changed = connectors.get_connector(orch, "owner-1", saved["id"])
@@ -958,7 +1020,8 @@ async def test_oauth_response_cannot_recreate_or_restore_changed_connector(opera
         current = connectors.get_connector(orch, "owner-1", saved["id"])
         current.update({"refresh_token": "refresh-old", "token_endpoint": ISSUER + "/token"})
         connectors.save_connector(orch, "owner-1", current)
-    base_requester = _Requester()
+    base_requester = _Requester(token_auth_methods=["client_secret_basic", "client_secret_post"],
+                                registered_method="client_secret_basic", registered_secret="issued-secret")
     state = ""
     if operation == "callback":
         url = await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=base_requester)

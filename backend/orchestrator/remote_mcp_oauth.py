@@ -317,15 +317,13 @@ async def begin_authorization(orch: Any, owner_id: str, connector_id: str,
             if ("token_endpoint_auth_methods_supported" in metadata
                     and method not in methods):
                 raise RemoteMCPOAuthError("The authorization server does not support the saved token authentication method.")
-        elif "token_endpoint_auth_methods_supported" in metadata:
+        else:
             method = next((candidate for candidate in ("client_secret_basic", "client_secret_post")
                            if candidate in methods and client_secret), None)
-            if method is None and "none" in methods and not client_secret:
+            if method is None and not client_secret and "none" in methods:
                 method = "none"
             if method is None:
                 raise RemoteMCPOAuthError("The authorization server's token authentication methods do not match the saved client credentials.")
-        else:
-            method = "client_secret_basic" if client_secret else "none"
         method = _token_auth_method(method, client_secret)
         if connector.get("oauth_token_endpoint_auth_method") != method:
             connector = await asyncio.to_thread(
@@ -333,9 +331,8 @@ async def begin_authorization(orch: Any, owner_id: str, connector_id: str,
                 {"oauth_token_endpoint_auth_method": method},
             )
     else:
-        if "token_endpoint_auth_methods_supported" in metadata and "none" not in methods:
-            raise RemoteMCPOAuthError("Dynamic registration requires a supported public-client token authentication method.")
-        method = "none"
+        method = next((candidate for candidate in ("none", "client_secret_basic", "client_secret_post")
+                       if candidate in methods), None)
     if not client_id:
         registration_endpoint = _url(_string(metadata.get("registration_endpoint"), "registration endpoint"),
                                      allow_query=True)
@@ -344,7 +341,7 @@ async def begin_authorization(orch: Any, owner_id: str, connector_id: str,
             "redirect_uris": [redirect_uri],
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
-            "token_endpoint_auth_method": "none",
+            "token_endpoint_auth_method": method,
         }, separators=(",", ":")).encode("utf-8")
         status, _headers, body = await _request(requester, registration_endpoint, "POST", registration,
                                                 {"content-type": "application/json"}, _MAX_METADATA)
@@ -357,7 +354,7 @@ async def begin_authorization(orch: Any, owner_id: str, connector_id: str,
             client_secret = ""
         if type(client_secret) is not str or len(client_secret) > _MAX_TOKEN:
             raise RemoteMCPOAuthError("OAuth client registration returned an invalid secret.")
-        registered_method = registered.get("token_endpoint_auth_method", method)
+        registered_method = registered.get("token_endpoint_auth_method", "client_secret_basic")
         if registered_method != method:
             raise RemoteMCPOAuthError("OAuth client registration selected an unexpected token authentication method.")
         method = _token_auth_method(registered_method, client_secret)
