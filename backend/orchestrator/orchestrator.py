@@ -16151,7 +16151,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         "message": f"Running: {', '.join(tool_names)}..."
                     }))
 
-                    messages.append(_history_assistant_message(llm_msg))
+                    history_assistant_message = _history_assistant_message(llm_msg)
+                    messages.append(history_assistant_message)
 
                     tool_results = []
                     if turn_count == 1:
@@ -16192,6 +16193,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                         call.function.name, call.function.name),
                                 )
                                 del llm_msg.tool_calls[len(tool_results):]
+                                history_assistant_message["tool_calls"] = history_assistant_message["tool_calls"][
+                                    :len(tool_results)
+                                ]
                             elif len(llm_msg.tool_calls) == 1:
                                 tc = llm_msg.tool_calls[0]
                                 res = await self.execute_single_tool(websocket, tc, tool_to_agent, chat_id, user_id=user_id, tool_to_unqualified=tool_to_unqualified)
