@@ -7,11 +7,9 @@ import json
 from types import SimpleNamespace
 
 import pytest
-
 from orchestrator.typesafe_routing import custom
 from orchestrator.typesafe_routing.client import load_sdk
 from shared import external_http
-
 
 MODEL = "bespokelabs/Bespoke-Nimble-9B"
 BASE = "https://factory.example/v1"

@@ -132,7 +132,7 @@ class CustomDecisionClient:
                 "POST", url, api_key=api_key, json_body=body, timeout=timeout,
                 max_response_bytes=MAX_RESPONSE_BYTES, allow_redirects=False,
                 trust_environment=False), timeout=timeout)
-        except (asyncio.TimeoutError, TimeoutError):
+        except TimeoutError:
             raise CustomDecisionError("The decisions provider did not respond in time.", status_code=408) from None
         except external_http.AuthFailedError:
             raise CustomDecisionError("The decisions provider rejected the API key.", status_code=401) from None

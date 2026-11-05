@@ -7,16 +7,19 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-
 from orchestrator.typesafe_routing import runner
 from orchestrator.typesafe_routing.budget import Outcome, UserCircuit
 from orchestrator.typesafe_routing.custom import CustomDecisionClient
 from orchestrator.typesafe_routing.decision import Tier
-from orchestrator.typesafe_routing.questions import AgentOption, RoutingRequest, ToolOption
+from orchestrator.typesafe_routing.questions import (
+    AgentOption,
+    RoutingRequest,
+    ToolOption,
+)
 from orchestrator.work_submit import WorkSubmitService
 from shared import external_http
-from tests.fakes.typesafe_fake import AnswerSet, FakeTypeSafeClient
 
+from tests.fakes.typesafe_fake import AnswerSet, FakeTypeSafeClient
 
 MODEL = "bespokelabs/Bespoke-Nimble-9B"
 BASE = "https://factory.example/v1"

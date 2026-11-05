@@ -6,9 +6,9 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from orchestrator.projection_surfaces import llm
 
 from llm_config import typesafe_handlers as handlers
-from orchestrator.projection_surfaces import llm
 
 USER = "decision-settings-owner"
 KEY = "decision-CANARY-key"
