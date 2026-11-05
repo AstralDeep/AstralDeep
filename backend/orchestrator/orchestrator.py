@@ -18996,6 +18996,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from agents.terminal_shell.mcp_server import bind_owner_context
             bind_owner_context(args, user_id)
 
+        if agent_id == "remote-mcp-1":
+            args["user_id"] = user_id
+
         if agent_id in ("remote-compute-1", "computer-use-1", "gaiakeep-1", "cresco-1", "terminal-shell-1"):
             from orchestrator import remote_confirmation
             from orchestrator.terminal_security import TerminalError
@@ -25835,6 +25838,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(lets_router)
         from orchestrator.connection_guide import connection_router
         app.include_router(connection_router)
+        if flags.is_enabled("remote_mcp"):
+            from orchestrator.remote_mcp_api import remote_mcp_router
+            app.include_router(remote_mcp_router)
         app.include_router(notification_router)
         from orchestrator.a2a_publication_api import publication_router
         app.include_router(publication_router)

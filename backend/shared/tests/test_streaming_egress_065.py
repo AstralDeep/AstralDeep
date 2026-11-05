@@ -24,7 +24,6 @@ from shared.streaming_egress import (
     FixedOriginHttpTransport,
 )
 
-
 PUBLIC_IP = "203.0.113.10"
 SECOND_IP = "203.0.113.11"
 
@@ -232,6 +231,36 @@ async def test_post_pins_ip_preserves_host_sni_and_ignores_proxy_environment(
 
 
 @pytest.mark.asyncio
+async def test_status_request_returns_bounded_oauth_challenge_without_following_redirects() -> None:
+    challenge = b'{"error":"unauthorized"}'
+    response = _response(challenge, status=401, headers=[
+        ("Content-Length", str(len(challenge))),
+        ("WWW-Authenticate", 'Bearer resource_metadata="https://auth.example/.well-known/resource"'),
+    ])
+    transport, _, _, writer = _transport(response)
+
+    request = Request(path="/resource", headers={"accept": "application/json"}, body=b"")
+    result = await transport.request_status("GET", request)
+
+    assert result.status == 401
+    assert result.headers["www-authenticate"].startswith("Bearer resource_metadata=")
+    assert result.body == challenge
+    assert writer.closed
+
+    redirect_transport, _, _, _ = _transport(_response(b"", status=302))
+    with pytest.raises(EgressProtocolError, match="redirect_refused"):
+        await redirect_transport.request_status("GET", request)
+
+    oversized_transport, _, _, _ = _transport(_response(
+        challenge, status=401,
+        headers=[("Content-Length", str(len(challenge)))],
+    ), limits=EgressLimits(max_response_bytes=4))
+    with pytest.raises(EgressLimitError, match="response_too_large"):
+        await oversized_transport.request_status("GET", Request(
+            path="/resource", headers={"accept": "application/json"}, body=b"",
+            max_response_bytes=4,
+        ))
+@pytest.mark.asyncio
 async def test_get_is_body_free_and_uses_the_same_fixed_origin_policy() -> None:
     payload = b'{"object":"list","data":[]}'
     transport, resolver, connector, writer = _transport(
@@ -268,6 +297,36 @@ async def test_get_rejects_a_body_before_dns_or_io() -> None:
     assert caught.value.reason == "invalid_request_method"
     assert resolver.calls == []
     assert connector.calls == []
+
+
+@pytest.mark.asyncio
+async def test_get_stream_yields_bounded_sse_chunks_with_fixed_origin() -> None:
+    response = (
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+        b"Transfer-Encoding: chunked\r\n\r\n"
+        b"9\r\ndata: 1\n\n\r\n0\r\n\r\n"
+    )
+    transport, resolver, connector, writer = _transport(response)
+    request = Request(path="/sse", headers={"accept": "text/event-stream"}, body=b"")
+
+    chunks = [chunk async for chunk in transport.get_stream(request)]
+
+    assert chunks[0].headers["content-type"] == "text/event-stream"
+    assert chunks[0].body == b""
+    assert b"".join(chunk.body for chunk in chunks[1:]) == b"data: 1\n\n"
+    assert resolver.calls == [("speech.example", 8443)]
+    assert b"GET /v1/sse HTTP/1.1\r\n" in b"".join(writer.writes)
+    assert len(connector.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_streaming_target_preserves_server_issued_trailing_slash_and_query() -> None:
+    transport, _, _, writer = _transport(_response(b"accepted"))
+    request = Request(path="/messages/?session_id=abc%2Fdef", body=b"")
+
+    await transport.get(request)
+
+    assert b"GET /v1/messages/?session_id=abc%2Fdef HTTP/1.1\r\n" in b"".join(writer.writes)
 
 
 @pytest.mark.asyncio
@@ -692,14 +751,14 @@ async def test_cancellation_propagates_and_is_not_relabelled() -> None:
         (
             _response(b"", headers=[("Transfer-Encoding", "chunked")]),
             EgressProtocolError,
-            "unsupported_framing",
+            "truncated_response",
         ),
         (
             _response(
                 b"", headers=[("Content-Length", "0"), ("Transfer-Encoding", "chunked")]
             ),
             EgressProtocolError,
-            "unsupported_framing",
+            "ambiguous_framing",
         ),
         (
             b"HTTP/1.1 200 OK\r\nX-Test: value\r\n\r\n",

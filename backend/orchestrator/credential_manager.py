@@ -8,7 +8,7 @@ import time
 import logging
 from typing import Dict, List, Optional
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 
 from shared.crypto import (
     encrypt_for_agent, ec_public_key_from_jwk, is_e2e_encrypted,
@@ -174,6 +174,32 @@ class CredentialManager:
             credential_key=key,
         )
         logger.info(f"Credential deleted: user={user_id} agent={agent_id} key={key}")
+
+    def take_credential(self, user_id: str, agent_id: str, key: str) -> Optional[str]:
+        repository = self._credentials.repository
+        with self._credentials.transaction() as transaction:
+            row = repository.get_credential(
+                transaction, owner_id=user_id, agent_id=agent_id, credential_key=key,
+            )
+            if row is None or not repository.delete_credential(
+                transaction, owner_id=user_id, agent_id=agent_id, credential_key=key,
+            ):
+                return None
+        if is_e2e_encrypted(row.encrypted_value):
+            raise CredentialUndecryptable("Transient credential has unsupported encryption.")
+        try:
+            return self._fernet.decrypt(row.encrypted_value.encode()).decode()
+        except (InvalidToken, UnicodeDecodeError):
+            raise CredentialUndecryptable("Transient credential could not be decrypted.") from None
+
+    def seal_transient_state(self, value: str) -> str:
+        return self._fernet.encrypt(value.encode()).decode()
+
+    def open_transient_state(self, value: str, *, ttl_seconds: int) -> Optional[str]:
+        try:
+            return self._fernet.decrypt(value.encode(), ttl=ttl_seconds).decode()
+        except (InvalidToken, UnicodeDecodeError, ValueError):
+            return None
 
     def list_credential_keys(self, user_id: str, agent_id: str) -> List[str]:
         rows = self._credentials.call(
