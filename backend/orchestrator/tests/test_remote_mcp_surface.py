@@ -126,10 +126,11 @@ def test_a2a_security_notice_remains_readable_when_mcp_controls_are_disabled(mon
 def test_connector_cards_open_server_owned_security_notice(monkeypatch):
     orch = _orch()
     monkeypatch.setattr(remote_mcp, "_enabled", lambda: True)
-    remote_mcp_connectors.save_connector(orch, "owner", {
+    saved = remote_mcp_connectors.save_connector(orch, "owner", {
         "name": "Example", "url": "https://mcp.example/mcp", "transport": "streamable_http",
         "auth_type": "none",
     })
+    remote_mcp_connectors._update_tool_catalog(orch, "owner", saved, [], 2)
 
     html = asyncio.run(remote_mcp.render(orch, "owner", [], {}))
     details = asyncio.run(remote_mcp.render(
@@ -141,8 +142,12 @@ def test_connector_cards_open_server_owned_security_notice(monkeypatch):
     card = next(component for component in components if component["type"] == "card")
     header = card["content"][0]
     warning = header["children"][1]
+    card_text = json.dumps(card)
 
     assert 'data-ui-action="chrome_open"' in html
+    assert "2 tools were skipped" in html
+    assert "Skipped tools" in card_text
+    assert "unsupported or exceed safety limits" in card_text
     assert "external_mcp_security" in html
     assert "Standard MCP connection" in details
     assert "provider controls its data handling" in details
@@ -239,7 +244,7 @@ def test_surface_test_toggle_and_unknown_error_paths(monkeypatch):
 
     monkeypatch.setattr(remote_mcp_connectors, "discover_tools", discover)
     refreshed = asyncio.run(remote_mcp._test(orch, None, "owner", [], {"connector_id": saved["id"]}))
-    assert "Found 1 tools" in refreshed[2]
+    assert "Found 1 supported tools" in refreshed[2]
     assert remote_mcp_connectors.get_connector(orch, "owner", saved["id"])["tools"]["echo"] is False
     toggled = asyncio.run(remote_mcp._toggle(orch, None, "owner", [], {
         "connector_id": saved["id"], "tool_name": "echo", "enabled": True,

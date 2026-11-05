@@ -7,12 +7,15 @@ from __future__ import annotations
 import asyncio
 import codecs
 import json
+import math
 import re
 import time
 import uuid
 from typing import Any
 from urllib.parse import urlsplit
 
+from jsonschema import Draft202012Validator
+from jsonschema import exceptions as jsonschema_exceptions
 from shared import external_http
 from shared.streaming_egress import EgressLimits
 
@@ -22,12 +25,19 @@ _MAX_TOOLS = 128
 _MAX_CONNECTORS = 32
 _MAX_RESULT_BYTES = 64 * 1024
 _MAX_SCHEMA_BYTES = 32 * 1024
+_MAX_SCHEMA_NODES = 512
+_MAX_SCHEMA_DEPTH = 8
+_MAX_SCHEMA_BRANCHES = 16
+_MAX_ARGUMENT_NODES = 1024
 _SUPPORTED_PROTOCOLS = frozenset({"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"})
+_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+_UNSUPPORTED_TOOL_REASON = "Some tool names or input schemas are unsupported or exceed safety limits."
 _ID = re.compile(r"[0-9a-f]{32}\Z")
 _TOOL = re.compile(r"[A-Za-z0-9_.-]{1,128}\Z")
 _SCHEMA_KEYS = frozenset({"type", "properties", "required", "additionalProperties", "items", "enum",
                           "minLength", "maxLength", "minItems", "maxItems", "minimum", "maximum",
-                          "description", "title", "default", "examples", "$schema"})
+                          "description", "title", "default", "examples", "$schema",
+                          "anyOf", "oneOf", "allOf"})
 
 
 class RemoteMCPError(ValueError):
@@ -69,7 +79,7 @@ def _validate_config(value: Any) -> dict[str, Any]:
         "id", "name", "url", "transport", "auth_type", "token", "oauth_client_id",
         "oauth_client_secret", "oauth_token_endpoint_auth_method", "access_token", "refresh_token", "token_endpoint",
         "authorization_endpoint", "token_expires_at", "scope", "tools", "enabled",
-        "tools_catalog", "last_error",
+        "tools_catalog", "last_error", "unsupported_tool_count", "unsupported_tool_reason",
     }:
         raise RemoteMCPError("Connector configuration is invalid.")
     name = value.get("name")
@@ -122,6 +132,11 @@ def _validate_config(value: Any) -> dict[str, Any]:
         raise RemoteMCPError("The saved tool catalogue is invalid.")
     result["tools_catalog"] = catalog
     result["last_error"] = str(value.get("last_error", ""))[:300]
+    skipped = value.get("unsupported_tool_count", 0)
+    if type(skipped) is not int or not 0 <= skipped <= _MAX_TOOLS:
+        raise RemoteMCPError("The saved unsupported-tool count is invalid.")
+    result["unsupported_tool_count"] = skipped
+    result["unsupported_tool_reason"] = _UNSUPPORTED_TOOL_REASON if skipped else ""
     return result
 
 
@@ -209,6 +224,8 @@ def save_connector(orch: Any, owner_id: str, values: dict[str, Any], *,
         raise RemoteMCPError("Connector was not found.")
     candidate = dict(values)
     candidate["id"] = connector_id
+    candidate.pop("unsupported_tool_count", None)
+    candidate.pop("unsupported_tool_reason", None)
     if clear_oauth_client_credentials:
         candidate.pop("oauth_client_id", None)
         candidate.pop("oauth_client_secret", None)
@@ -222,11 +239,19 @@ def save_connector(orch: Any, owner_id: str, values: dict[str, Any], *,
             candidate["tools"] = old.get("tools", {})
             candidate["tools_catalog"] = old.get("tools_catalog", [])
         same_authority = old.get("url") == candidate.get("url") and old.get("auth_type") == candidate.get("auth_type")
+        if same_authority:
+            candidate["unsupported_tool_count"] = old.get("unsupported_tool_count", 0)
+        else:
+            candidate["unsupported_tool_count"] = 0
         changed_oauth_client = (
             same_authority and candidate.get("auth_type") == "oauth"
             and (clear_oauth_client_credentials or any(
                 candidate.get(key) and candidate.get(key) != old.get(key)
                 for key in ("oauth_client_id", "oauth_client_secret")))
+        )
+        changed_bearer_token = (
+            same_authority and candidate.get("auth_type") == "bearer"
+            and candidate.get("token") and candidate.get("token") != old.get("token")
         )
         credential_fields = (
             "token", "oauth_client_id", "oauth_client_secret", "oauth_token_endpoint_auth_method", "access_token", "refresh_token",
@@ -245,9 +270,11 @@ def save_connector(orch: Any, owner_id: str, values: dict[str, Any], *,
             for secret in invalidated:
                 if candidate.get(secret) == old.get(secret):
                     candidate.pop(secret, None)
-            if not same_authority and old.get("url") != candidate.get("url"):
-                candidate["tools"] = {}
-                candidate["tools_catalog"] = []
+        if not same_authority or changed_oauth_client or changed_bearer_token:
+            candidate["tools"] = {}
+            candidate["tools_catalog"] = []
+            candidate["unsupported_tool_count"] = 0
+            candidate["unsupported_tool_reason"] = ""
     elif len(list_connectors(orch, owner_id)) >= _MAX_CONNECTORS:
         raise RemoteMCPError("This account has reached the connector limit.")
     connector = _validate_config(candidate)
@@ -306,7 +333,7 @@ def update_oauth_credentials(orch: Any, owner_id: str, expected: dict[str, Any],
 
 
 def _update_tool_catalog(orch: Any, owner_id: str, expected: dict[str, Any],
-                         tools: list[dict[str, Any]]) -> None:
+                         tools: list[dict[str, Any]], unsupported_tool_count: int = 0) -> None:
     manager = _repository(orch)
     key = _KEY_PREFIX + expected["id"]
     for _ in range(5):
@@ -319,6 +346,8 @@ def _update_tool_catalog(orch: Any, owner_id: str, expected: dict[str, Any],
         current["tools_catalog"] = tools
         current["tools"] = {item["name"]: current.get("tools", {}).get(item["name"], False)
                             for item in tools}
+        current["unsupported_tool_count"] = max(0, min(_MAX_TOOLS, unsupported_tool_count))
+        current["unsupported_tool_reason"] = _UNSUPPORTED_TOOL_REASON if current["unsupported_tool_count"] else ""
         current["last_error"] = ""
         current = _validate_config(current)
         if manager.compare_and_set_credential(owner_id, _AGENT_ID, key, raw, json.dumps(current)):
@@ -527,42 +556,63 @@ def _sse_message(body: bytes) -> dict[str, Any]:
     raise RemoteMCPError("The MCP server sent no JSON-RPC response.")
 
 
-def _sanitize_schema(schema: Any, depth: int = 0) -> dict[str, Any] | None:
-    if (depth > 8 or type(schema) is not dict or set(schema) - _SCHEMA_KEYS
-            or len(json.dumps(schema)) > _MAX_SCHEMA_BYTES):
+def _sanitize_schema(schema: Any, depth: int = 0, budget: list[int] | None = None) -> dict[str, Any] | None:
+    budget = budget if budget is not None else [0]
+    budget[0] += 1
+    try:
+        encoded_size = len(json.dumps(schema, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+    except (TypeError, ValueError, OverflowError, RecursionError):
         return None
+    if (depth > _MAX_SCHEMA_DEPTH or budget[0] > _MAX_SCHEMA_NODES or type(schema) is not dict
+            or set(schema) - _SCHEMA_KEYS or encoded_size > _MAX_SCHEMA_BYTES):
+        return None
+    if "$schema" in schema and schema["$schema"] != _SCHEMA_DIALECT:
+        return None
+    type_names = {"object", "array", "string", "integer", "number", "boolean", "null"}
     kind = schema.get("type")
-    if kind not in {None, "object", "array", "string", "integer", "number", "boolean", "null"}:
+    if type(kind) is list:
+        if (not 1 <= len(kind) <= len(type_names) or any(type(value) is not str for value in kind)
+                or len(set(kind)) != len(kind) or not set(kind) <= type_names):
+            return None
+    elif kind is not None and (type(kind) is not str or kind not in type_names):
         return None
     result: dict[str, Any] = {}
     if kind is not None:
-        result["type"] = kind
+        result["type"] = kind[:]
     for key in ("minLength", "maxLength", "minItems", "maxItems"):
         if key in schema:
             value = schema[key]
-            if type(value) is not int or value < 0 or value > 4096:
+            bound = 256 if key in {"minItems", "maxItems"} else 4096
+            if type(value) is not int or value < 0 or value > bound:
                 return None
             result[key] = value
     for key in ("minimum", "maximum"):
         if key in schema:
             value = schema[key]
-            if type(value) not in (int, float):
+            if (type(value) not in (int, float)
+                    or type(value) is float and not math.isfinite(value)):
                 return None
             result[key] = value
     if "description" in schema:
         description = re.sub(r"<[^>]*>", " ", str(schema["description"]))
-        description = " ".join("".join(c for c in description if ord(c) >= 32).split())[:400]
-        result["description"] = "Untrusted remote metadata: " + description
+        description = " ".join("".join(c for c in description if ord(c) >= 32).split())
+        if description.startswith("Untrusted remote metadata: "):
+            description = description.removeprefix("Untrusted remote metadata: ")
+        result["description"] = "Untrusted remote metadata: " + description[:400]
     if "required" in schema:
         required = schema["required"]
-        if type(required) is not list or len(required) > 64 or any(type(item) is not str for item in required):
+        if (type(required) is not list or len(required) > 64
+                or any(type(item) is not str or len(item) > 128 for item in required)):
             return None
         result["required"] = required[:]
     if "enum" in schema:
         choices = schema["enum"]
-        if type(choices) is not list or len(choices) > 128 or len(json.dumps(choices)) > 4096:
+        try:
+            enum_size = len(json.dumps(choices, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+        except (TypeError, ValueError, OverflowError):
             return None
-        if any(type(item) not in (str, int, float, bool, type(None)) for item in choices):
+        if (type(choices) is not list or len(choices) > 128 or enum_size > 4096
+                or any(not _bounded_json_value(item) for item in choices)):
             return None
         result["enum"] = choices[:]
     if "properties" in schema:
@@ -573,13 +623,13 @@ def _sanitize_schema(schema: Any, depth: int = 0) -> dict[str, Any] | None:
         for name, child in properties.items():
             if type(name) is not str or len(name) > 128:
                 return None
-            safe_child = _sanitize_schema(child, depth + 1)
+            safe_child = _sanitize_schema(child, depth + 1, budget)
             if safe_child is None:
                 return None
             safe_properties[name] = safe_child
         result["properties"] = safe_properties
     if "items" in schema:
-        item_schema = _sanitize_schema(schema["items"], depth + 1)
+        item_schema = _sanitize_schema(schema["items"], depth + 1, budget)
         if item_schema is None:
             return None
         result["items"] = item_schema
@@ -588,11 +638,38 @@ def _sanitize_schema(schema: Any, depth: int = 0) -> dict[str, Any] | None:
         if type(value) is bool:
             result["additionalProperties"] = value
         else:
-            additional = _sanitize_schema(value, depth + 1)
+            additional = _sanitize_schema(value, depth + 1, budget)
             if additional is None:
                 return None
             result["additionalProperties"] = additional
+    for key in ("anyOf", "oneOf", "allOf"):
+        if key in schema:
+            branches = schema[key]
+            if type(branches) is not list or not 1 <= len(branches) <= _MAX_SCHEMA_BRANCHES:
+                return None
+            sanitized = [_sanitize_schema(branch, depth + 1, budget) for branch in branches]
+            if any(branch is None for branch in sanitized):
+                return None
+            result[key] = sanitized
+    try:
+        Draft202012Validator.check_schema(result)
+    except (jsonschema_exceptions.SchemaError, RecursionError):
+        return None
     return result
+
+
+def _schema_allows_object(schema: dict[str, Any]) -> bool:
+    if "enum" in schema and not any(type(choice) is dict for choice in schema["enum"]):
+        return False
+    kind = schema.get("type")
+    if kind is not None and "object" not in (kind if type(kind) is list else [kind]):
+        return False
+    if any(not _schema_allows_object(branch) for branch in schema.get("allOf", [])):
+        return False
+    for key in ("anyOf", "oneOf"):
+        if key in schema and not any(_schema_allows_object(branch) for branch in schema[key]):
+            return False
+    return True
 
 
 async def _first_sse_response(source, request_id: Any) -> dict[str, Any]:
@@ -618,54 +695,37 @@ async def _first_sse_response(source, request_id: Any) -> dict[str, Any]:
     raise RemoteMCPError("The MCP event response exceeded the allowed size.")
 
 
-def _validate_schema(schema: Any, arguments: Any, depth: int = 0) -> bool:
-    if depth > 8 or type(schema) is not dict or any(
-        key in schema for key in ("$ref", "$dynamicRef", "if", "then", "else", "not", "patternProperties")
-    ):
+def _bounded_json_value(value: Any, depth: int = 0, budget: list[int] | None = None) -> bool:
+    budget = budget if budget is not None else [0]
+    budget[0] += 1
+    if depth > _MAX_SCHEMA_DEPTH or budget[0] > _MAX_ARGUMENT_NODES:
         return False
-    if "enum" in schema and (type(schema["enum"]) is not list or arguments not in schema["enum"]):
-        return False
-    kind = schema.get("type")
-    if kind == "object":
-        if type(arguments) is not dict:
-            return False
-        props = schema.get("properties", {})
-        required = schema.get("required", [])
-        if (type(props) is not dict or len(props) > 64 or type(required) is not list
-                or any(key not in arguments for key in required)):
-            return False
-        if schema.get("additionalProperties", False) is not False and not isinstance(schema.get("additionalProperties", False), dict):
-            return False
-        if schema.get("additionalProperties", False) is False and any(key not in props for key in arguments):
-            return False
-        additional = schema.get("additionalProperties", False)
-        return all(
-            _validate_schema(props[key], value, depth + 1) if key in props
-            else isinstance(additional, dict) and _validate_schema(additional, value, depth + 1)
-            for key, value in arguments.items()
+    if type(value) in (type(None), bool, int):
+        return True
+    if type(value) is float:
+        return math.isfinite(value)
+    if type(value) is str:
+        return len(value) <= 4096
+    if type(value) is list:
+        return len(value) <= 256 and all(_bounded_json_value(item, depth + 1, budget) for item in value)
+    if type(value) is dict:
+        return len(value) <= 256 and all(
+            type(key) is str and len(key) <= 128 and _bounded_json_value(item, depth + 1, budget)
+            for key, item in value.items()
         )
-    if kind == "array":
-        return (type(arguments) is list and len(arguments) <= min(256, int(schema.get("maxItems", 256)))
-                and all(_validate_schema(schema.get("items", {}), item, depth + 1)
-                        for item in arguments))
-    if kind == "string":
-        return (type(arguments) is str and len(arguments) <= min(4096, int(schema.get("maxLength", 4096)))
-                and len(arguments) >= int(schema.get("minLength", 0))
-                and ("enum" not in schema or arguments in schema["enum"]))
-    if kind == "integer":
-        return (type(arguments) is int and arguments >= schema.get("minimum", arguments)
-                and arguments <= schema.get("maximum", arguments))
-    if kind == "number":
-        return (type(arguments) in (int, float) and arguments >= schema.get("minimum", arguments)
-                and arguments <= schema.get("maximum", arguments))
-    if kind == "boolean":
-        return type(arguments) is bool
-    if kind == "null":
-        return arguments is None
-    if kind is None:
-        return (type(arguments) in (dict, list, str, int, float, bool, type(None))
-                and ("enum" not in schema or arguments in schema["enum"]))
     return False
+
+
+def _validate_schema(schema: Any, arguments: Any, depth: int = 0) -> bool:
+    if depth > _MAX_SCHEMA_DEPTH or type(schema) is not dict or not _bounded_json_value(arguments):
+        return False
+    try:
+        encoded_size = len(json.dumps(arguments, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+        safe_schema = _sanitize_schema(schema)
+        return (encoded_size <= _MAX_SCHEMA_BYTES and safe_schema is not None
+                and Draft202012Validator(safe_schema).is_valid(arguments))
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        return False
 
 
 async def _initialize(connector: dict[str, Any], *, transport_factory=None):
@@ -699,16 +759,20 @@ async def _initialize(connector: dict[str, Any], *, transport_factory=None):
         if not isinstance(tools, list) or len(tools) > _MAX_TOOLS:
             raise RemoteMCPError("The MCP server returned an invalid tool list.")
         safe = []
+        unsupported = 0
         for item in tools:
             if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not _TOOL.fullmatch(item["name"]):
+                unsupported += 1
                 continue
             schema = _sanitize_schema(item.get("inputSchema", {"type": "object", "properties": {}}))
-            if not isinstance(schema, dict) or schema.get("type", "object") != "object":
+            if not isinstance(schema, dict) or not _schema_allows_object(schema):
+                unsupported += 1
                 continue
             description = re.sub(r"<[^>]*>", " ", str(item.get("description", "")))
             description = " ".join("".join(c for c in description if ord(c) >= 32).split())[:500]
             safe.append({"name": item["name"], "description": "Untrusted remote metadata: " + description,
                          "inputSchema": schema})
+        connector["_unsupported_tool_count"] = unsupported
         return safe, session
     except Exception:
         if isinstance(session, _SSESession):
@@ -764,7 +828,8 @@ def refresh_tools(orch: Any, owner_id: str, connector_id: str, *, transport_fact
         raise RemoteMCPError("Enable the connector before loading its tools.")
     connector = _ensure_oauth(orch, owner_id, connector)
     tools = _run(discover_tools(connector, transport_factory=transport_factory))
-    _update_tool_catalog(orch, owner_id, connector, tools)
+    _update_tool_catalog(orch, owner_id, connector, tools,
+                         connector.get("_unsupported_tool_count", 0))
     return tools
 
 

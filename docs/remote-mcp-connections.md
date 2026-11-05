@@ -65,6 +65,16 @@ records. The **Standard MCP connection** warning beside a connector explains tha
 carry Astral's agent identity and delegation protocol, local records do not prove what the remote
 server executed, and the provider controls its data handling.
 
+Tool input schemas use the MCP server-tools Draft 2020-12 default and a bounded Draft 2020-12
+subset ([MCP tools specification](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)). Nullable type lists and `anyOf`, `oneOf`,
+and `allOf` are supported, as are the bounded property, array, string, numeric, enum, and
+`additionalProperties` constraints. An omitted or true `additionalProperties` accepts extra keys
+only when their values are finite JSON within the same argument size, depth, node, string, and
+array limits. References, patterns, remote resolution, unknown keywords, unsupported dialects,
+and schemas over those limits cause the affected tool to be skipped. The settings card and refresh
+result report the count and a fixed reason for skipped tools; the connector does not imply every
+remote tool was loaded.
+
 An agent registered through the server's standard A2A-only discovery path may show a separate
 **Standard A2A connection** warning. It explains that the native Astral handshake and the remote
 enforcement of delegated permissions have not been verified for that connection. AstralDeep still

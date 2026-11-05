@@ -112,6 +112,11 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
     cards = []
     for connector in rows:
         cid = esc(connector["id"])
+        skipped_notice = ""
+        if connector.get("unsupported_tool_count"):
+            skipped_notice = notice_block(
+                "warning", f'{connector["unsupported_tool_count"]} tools were skipped. '
+                f'{esc(connector["unsupported_tool_reason"])}')
         auth_button = (
             f'<button data-ui-action="chrome_remote_mcp_oauth_start" '
             f'data-ui-payload="{{&quot;connector_id&quot;:&quot;{cid}&quot;}}">Authorize</button>'
@@ -138,6 +143,7 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
             f'{esc(_TRANSPORT_LABELS.get(connector["transport"], connector["transport"]))} · '
             f'{esc(_AUTH_LABELS.get(connector["auth_type"], connector["auth_type"]))}</div>'
             f'<div>{"Saved credential present" if connector.get("has_credential") else "No credential"}</div>'
+            f'{skipped_notice}'
             f'{notice_block("error", esc(connector.get("last_error", ""))) if connector.get("last_error") else ""}'
             f'<div>{"".join(tools) or "No tools loaded. Test the connection to load available tools."}</div>'
             f'<button data-ui-action="chrome_remote_mcp_test" data-ui-payload="{{&quot;connector_id&quot;:&quot;{cid}&quot;}}">Test and refresh tools</button>'
@@ -192,6 +198,9 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
                    {"label": "Transport", "value": _TRANSPORT_LABELS.get(connector["transport"], connector["transport"])},
                    {"label": "Authentication", "value": _AUTH_LABELS.get(connector["auth_type"], connector["auth_type"])},
                    {"label": "Credential", "value": "Saved" if connector.get("has_credential") else "None"}]
+        if connector.get("unsupported_tool_count"):
+            entries.append({"label": "Skipped tools",
+                            "value": f'{connector["unsupported_tool_count"]}: {connector["unsupported_tool_reason"]}'})
         buttons = [
             _sdui.button("Test and refresh tools", "chrome_remote_mcp_test", {"connector_id": connector["id"]}),
             _sdui.button("Edit", "chrome_remote_mcp_edit", {"connector_id": connector["id"]}),
@@ -289,7 +298,10 @@ async def _test(orch, websocket, user_id, roles, payload):
     connector_id = payload.get("connector_id") if isinstance(payload, dict) else None
     try:
         discovered = await asyncio.to_thread(connectors.refresh_tools, orch, user_id, connector_id)
-        return (SURFACE_KEY, {}, notice_block("success", f"Connected. Found {len(discovered)} tools; tools start disabled."))
+        connector = await asyncio.to_thread(connectors.get_connector, orch, user_id, connector_id)
+        skipped = connector.get("unsupported_tool_count", 0)
+        detail = f" {skipped} tools were skipped because their names or input schemas were unsupported or exceeded safety limits." if skipped else ""
+        return (SURFACE_KEY, {}, notice_block("success", f"Connected. Found {len(discovered)} supported tools; new tools start disabled.{detail}"))
     except Exception as error:  # noqa: BLE001
         return (SURFACE_KEY, {}, _notice_for_error(error))
 

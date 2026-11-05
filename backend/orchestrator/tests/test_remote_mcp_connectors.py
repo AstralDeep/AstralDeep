@@ -291,12 +291,14 @@ def test_connector_limit_and_url_change_clear_tool_catalog(world):
     original.update({"tools_catalog": [{"name": "echo", "description": "safe",
                                         "inputSchema": {"type": "object"}}],
                      "tools": {"echo": True}})
-    service.save_connector(orch, "owner-a", original)
+    original = service.save_connector(orch, "owner-a", original)
+    service._update_tool_catalog(orch, "owner-a", original, original["tools_catalog"], 1)
     changed = dict(original, url="https://other.example/mcp")
     saved = service.save_connector(orch, "owner-a", changed)
     current = service.get_connector(orch, "owner-a", connector_id)
     assert saved["tools_catalog"] == []
     assert current["tools"] == {}
+    assert current["unsupported_tool_count"] == 0
     for index in range(31):
         service.save_connector(orch, "owner-a", {
             "name": f"Connector {index}", "url": f"https://server{index}.example/mcp",
@@ -307,6 +309,45 @@ def test_connector_limit_and_url_change_clear_tool_catalog(world):
             "name": "One too many", "url": "https://last.example/mcp",
             "transport": "streamable_http", "auth_type": "none",
         })
+
+
+def test_oauth_client_reset_clears_catalog_and_unsupported_count(world):
+    orch, connector_id = world
+    service.save_connector(orch, "owner-a", {
+        "id": connector_id, "name": "Fixture", "url": "https://mcp.example/mcp",
+        "transport": "streamable_http", "auth_type": "oauth",
+        "oauth_client_id": "client-a", "oauth_client_secret": "secret-a",
+    }, require_existing=True)
+    expected = service.get_connector(orch, "owner-a", connector_id)
+    service._update_tool_catalog(orch, "owner-a", expected, [{
+        "name": "echo", "description": "safe", "inputSchema": {"type": "object"},
+    }], 1)
+    existing = service.get_connector(orch, "owner-a", connector_id)
+    reset = service.save_connector(orch, "owner-a", existing,
+                                   clear_oauth_client_credentials=True, require_existing=True)
+    assert reset["tools_catalog"] == []
+    assert reset["tools"] == {}
+    assert reset["unsupported_tool_count"] == 0
+    assert reset.get("oauth_client_id", "") == ""
+    assert reset.get("oauth_client_secret", "") == ""
+
+
+def test_bearer_token_rotation_clears_cached_tool_authority(world):
+    orch, connector_id = world
+    service.save_connector(orch, "owner-a", {
+        "id": connector_id, "name": "Fixture", "url": "https://mcp.example/mcp",
+        "transport": "streamable_http", "auth_type": "bearer", "token": "token-a",
+    }, require_existing=True)
+    expected = service.get_connector(orch, "owner-a", connector_id)
+    service._update_tool_catalog(orch, "owner-a", expected, [{
+        "name": "echo", "description": "safe", "inputSchema": {"type": "object"},
+    }], 1)
+    updated = service.get_connector(orch, "owner-a", connector_id)
+    updated["token"] = "token-b"
+    rotated = service.save_connector(orch, "owner-a", updated, require_existing=True)
+    assert rotated["tools_catalog"] == []
+    assert rotated["tools"] == {}
+    assert rotated["unsupported_tool_count"] == 0
 
 
 def test_catalog_selection_and_schema_validation_bounds(world):
@@ -327,8 +368,92 @@ def test_catalog_selection_and_schema_validation_bounds(world):
     assert service._validate_schema({}, "primitive")
     assert not service._validate_schema({"type": "object", "required": ["x"]}, {})
     assert service._sanitize_schema({"type": "object", "required": [1]}) is None
-    assert service._sanitize_schema({"type": "object", "enum": [["nested"]]}) is None
+    assert service._sanitize_schema({"type": "object", "enum": [["nested"]]}) is not None
     assert service._sanitize_schema({"type": "array", "items": {"$ref": "#"}}) is None
+
+
+def test_bounded_draft_2020_nullable_composition_dictionaries_and_minimums():
+    nullable = {"type": "object", "properties": {
+        "query": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "limit": {"type": ["integer", "null"]},
+    }, "required": ["query"], "additionalProperties": False}
+    assert service._sanitize_schema(nullable) is not None
+    assert service._validate_schema(nullable, {"query": None, "limit": None})
+    assert service._validate_schema({"type": "object", "properties": {
+        "value": {"oneOf": [{"type": "string"}, {"type": "integer"}]},
+        "label": {"allOf": [{"type": "string"}, {"minLength": 2}]},
+    }}, {"value": 3, "label": "ok"})
+    assert service._validate_schema({"type": "object", "additionalProperties": True},
+                                    {"dictionary": {"nested": [1, None, True]}})
+    assert service._validate_schema({"enum": [{"query": "x"}]}, {"query": "x"})
+    assert not service._validate_schema({"type": "object", "additionalProperties": True},
+                                        {"dictionary": {"nested": [float("inf")]}})
+    assert not service._validate_schema({"type": "array", "minItems": 2, "items": {"type": "string"}},
+                                        ["one"])
+    assert service._validate_schema({"type": "array", "minItems": 2, "items": {"type": "string"}},
+                                    ["one", "two"])
+    assert not service._validate_schema({"type": "string", "minLength": 3}, "no")
+    assert service._sanitize_schema({"type": "string", "minLength": 4097}) is None
+    deep_value = None
+    for _ in range(10):
+        deep_value = [deep_value]
+    assert not service._validate_schema({"type": "object", "additionalProperties": True},
+                                        {"deep": deep_value})
+    too_many_nodes = {str(index): [1, 2, 3] for index in range(256)}
+    assert not service._validate_schema({"type": "object", "additionalProperties": True}, too_many_nodes)
+    oversized_value = {str(index): "x" * 4096 for index in range(8)}
+    assert not service._validate_schema({"type": "object", "additionalProperties": True}, oversized_value)
+    assert service._sanitize_schema({"$schema": service._SCHEMA_DIALECT,
+                                     "type": ["object", "null"]}) is not None
+    assert service._sanitize_schema({"$schema": "https://json-schema.org/draft-07/schema",
+                                     "type": "object"}) is None
+
+
+def test_schema_sanitization_bounds_and_unsupported_keywords():
+    nested = {"type": "string"}
+    for _ in range(10):
+        nested = {"type": "object", "properties": {"x": nested}}
+    assert service._sanitize_schema(nested) is None
+    assert service._sanitize_schema({"type": "object", "anyOf": [
+        {"type": "object", "properties": {"x": {"type": "string"}}} for _ in range(17)
+    ]}) is None
+    assert service._sanitize_schema({"type": "object", "properties": {"x": {"type": "string", "pattern": "x"}}}) is None
+    assert service._sanitize_schema({"type": "object", "properties": {
+        "x": {"type": "string", "minLength": 1}}, "$ref": "https://example.test/schema"}) is None
+    assert service._sanitize_schema({"type": "array", "minItems": 257}) is None
+    cyclic = {"type": "object"}
+    cyclic["properties"] = {"self": cyclic}
+    assert service._sanitize_schema(cyclic) is None
+    node_limited = {"type": "object", "properties": {
+        str(index): {"type": "object", "properties": {
+            str(child): {"type": "string"} for child in range(15)
+        }} for index in range(32)
+    }}
+    assert service._sanitize_schema(node_limited) is None
+    assert service._sanitize_schema({"type": "object", "description": "x" * 40_000}) is None
+
+
+def test_refresh_persists_server_computed_unsupported_tool_count_and_reason(world, monkeypatch):
+    orch, connector_id = world
+    async def request(_connector, payload, _session="", **_kwargs):
+        if payload["method"] == "initialize":
+            return {"result": {"protocolVersion": "2025-11-25"}}, ""
+        return {"result": {"tools": [
+            {"name": "nullable", "inputSchema": {"type": "object", "properties": {
+                "value": {"type": ["string", "null"]}}}},
+            {"name": "patterned", "inputSchema": {"type": "object", "properties": {
+                "value": {"type": "string", "pattern": "x"}}}},
+            {"name": "bad name", "inputSchema": {"type": "object"}},
+        ]}}, ""
+
+    monkeypatch.setattr(service, "_mcp_request", request)
+    monkeypatch.setattr(service, "_mcp_notify", _noop)
+    discovered = service.refresh_tools(orch, "owner-a", connector_id)
+    saved = service.get_connector(orch, "owner-a", connector_id)
+    assert [tool["name"] for tool in discovered] == ["nullable"]
+    assert saved["unsupported_tool_count"] == 2
+    assert saved["unsupported_tool_reason"] == service._UNSUPPORTED_TOOL_REASON
+    assert service.list_enabled_tools(orch, "owner-a") == []
 
 
 class FakeSSETransport:
@@ -498,6 +623,7 @@ def test_sanitize_schema_rejects_remote_executable_or_oversized_metadata():
         assert service._sanitize_schema(schema) is None
     safe = service._sanitize_schema({"type": "string", "description": "<b>useful</b>\n text"})
     assert safe["description"] == "Untrusted remote metadata: useful text"
+    assert service._sanitize_schema(safe) == safe
 
 
 @pytest.mark.parametrize("response,match", [
@@ -800,6 +926,7 @@ def test_tool_refresh_does_not_store_discovery_for_changed_authority(world, monk
     orch, connector_id = world
 
     async def discover(connector, **kwargs):
+        connector["_unsupported_tool_count"] = 2
         if mutation == "deleted":
             service.delete_connector(orch, "owner-a", connector_id)
         else:
@@ -817,11 +944,14 @@ def test_tool_refresh_does_not_store_discovery_for_changed_authority(world, monk
         current = service.get_connector(orch, "owner-a", connector_id)
         assert current["enabled"] is False
         assert current["tools"] == {"new": False}
+        assert current["unsupported_tool_count"] == 2
     else:
         with pytest.raises(service.RemoteMCPError):
             service.refresh_tools(orch, "owner-a", connector_id)
         if mutation == "endpoint":
-            assert service.get_connector(orch, "owner-a", connector_id)["tools_catalog"] == []
+            current = service.get_connector(orch, "owner-a", connector_id)
+            assert current["tools_catalog"] == []
+            assert current["unsupported_tool_count"] == 0
         else:
             assert service.list_connectors(orch, "owner-a") == []
 
