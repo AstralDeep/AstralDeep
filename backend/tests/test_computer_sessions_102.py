@@ -435,7 +435,44 @@ def test_registry_keeps_recovery_metadata_off_the_public_host_listing():
     assert "incarnation_id" not in public and "retained_jobs" not in public
 
 
-@pytest.mark.parametrize("incarnation", [None, "not-a-uuid", str(uuid.uuid1()), str(uuid.uuid4()).upper()])
+def test_outcome_ack_replay_survives_socket_reconnect_only_for_exact_inventory():
+    orch = _FakeOrch()
+    host_id = str(uuid.uuid4())
+    incarnation = str(uuid.uuid4())
+    job = {"job_id": str(uuid.uuid4()), "state": "uncertain", "exit_code": None,
+           "signal": None, "output_bytes": 12}
+    descriptor = ComputerHostDescriptor.from_dict(_descriptor(
+        platform="macos", host_id=host_id, incarnation_id=incarnation, retained_jobs=[job]))
+    first_ws = orch.add(_WS())
+    first, _ = orch.computer_hosts.register(OWNER, first_ws, descriptor)
+    first.outcome_acknowledged = True
+    first.outcome_decision = "acknowledge"
+
+    same_ws = orch.add(_WS())
+    same, _ = orch.computer_hosts.register(OWNER, same_ws, descriptor)
+    assert same.outcome_acknowledged and same.outcome_decision == "acknowledge"
+    assert orch.computer_hosts.begin_outcome_ack(same, incarnation, "acknowledge") == "acknowledged"
+    assert orch.computer_hosts.begin_outcome_ack(same, incarnation, "discard") == "invalid"
+
+    first.outcome_acknowledged = False
+    first.outcome_ack_pending = True
+    first.outcome_decision = "discard"
+    changed_job = {**job, "job_id": str(uuid.uuid4())}
+    changed = ComputerHostDescriptor.from_dict(_descriptor(
+        platform="macos", host_id=host_id, incarnation_id=incarnation, retained_jobs=[changed_job]))
+    changed_ws = orch.add(_WS())
+    replacement, _ = orch.computer_hosts.register(OWNER, changed_ws, changed)
+    assert not replacement.outcome_ack_pending and not replacement.outcome_acknowledged
+    assert not orch.computer_hosts.finish_outcome_ack(first, "discard", recorded=True)
+    assert orch.computer_hosts.begin_outcome_ack(replacement, incarnation, "discard") == "record"
+
+
+@pytest.mark.parametrize("incarnation", [
+    None,
+    "not-a-uuid",
+    "aaaaaaaa-aaaa-1aaa-8aaa-aaaaaaaaaaaa",
+    "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+])
 def test_descriptor_rejects_invalid_incarnation_id(incarnation):
     with pytest.raises(ProtocolValidationError):
         ComputerHostDescriptor.from_dict(_descriptor(platform="macos", incarnation_id=incarnation))
@@ -444,15 +481,15 @@ def test_descriptor_rejects_invalid_incarnation_id(incarnation):
 @pytest.mark.parametrize("job", [
     "not-an-object",
     {},
-    {"job_id": str(uuid.uuid4()), "state": "unknown", "exit_code": None, "signal": None, "output_bytes": 0},
-    {"job_id": str(uuid.uuid4()), "state": "running", "exit_code": 1, "signal": None, "output_bytes": 0},
-    {"job_id": str(uuid.uuid4()), "state": "running", "exit_code": None, "signal": "TERM", "output_bytes": 0},
-    {"job_id": str(uuid.uuid4()), "state": "exited", "exit_code": -1, "signal": None, "output_bytes": 0},
-    {"job_id": str(uuid.uuid4()), "state": "exited", "exit_code": 1.5, "signal": None, "output_bytes": 0},
-    {"job_id": str(uuid.uuid4()), "state": "exited", "exit_code": None, "signal": "bad signal", "output_bytes": 0},
-    {"job_id": str(uuid.uuid4()), "state": "exited", "exit_code": None, "signal": None, "output_bytes": True},
-    {"job_id": str(uuid.uuid4()), "state": "exited", "exit_code": None, "signal": None, "output_bytes": 0.5},
-    {"job_id": str(uuid.uuid4()), "state": "exited", "exit_code": None, "signal": None, "output_bytes": 0, "extra": 1},
+    {"job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "state": "unknown", "exit_code": None, "signal": None, "output_bytes": 0},
+    {"job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "state": "running", "exit_code": 1, "signal": None, "output_bytes": 0},
+    {"job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "state": "running", "exit_code": None, "signal": "TERM", "output_bytes": 0},
+    {"job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "state": "exited", "exit_code": -1, "signal": None, "output_bytes": 0},
+    {"job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "state": "exited", "exit_code": 1.5, "signal": None, "output_bytes": 0},
+    {"job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "state": "exited", "exit_code": None, "signal": "bad signal", "output_bytes": 0},
+    {"job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "state": "exited", "exit_code": None, "signal": None, "output_bytes": True},
+    {"job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "state": "exited", "exit_code": None, "signal": None, "output_bytes": 0.5},
+    {"job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "state": "exited", "exit_code": None, "signal": None, "output_bytes": 0, "extra": 1},
 ])
 def test_descriptor_rejects_invalid_retained_jobs(job):
     with pytest.raises(ProtocolValidationError):
@@ -513,6 +550,14 @@ async def test_outcome_ack_requires_current_announced_incarnation_and_is_single_
         "host_id": host_id, "incarnation_id": incarnation,
         "decision": "acknowledge", "retained_job_count": 1,
     }
+    assert recorder.events[0].correlation_id == incarnation
+    assert jobs[0]["job_id"] not in json.dumps(recorder.events[0].inputs_meta)
+    assert host_ws.frames("computer_host")[-1]["outcome_ack"] == {
+        "decision": "acknowledge", "incarnation_id": incarnation,
+        "connection_generation": str(orch._connection_contexts[id(host_ws)].connection_generation),
+    }
+    assert len([event for event in recorder.events
+                if event.action_type == "computer_host.outcome_acknowledged"]) == 1
     assert not cancelled and host.outcome_acknowledged
 
     second_ws = orch.add(_WS(chat="chat-discard"))
@@ -527,6 +572,12 @@ async def test_outcome_ack_requires_current_announced_incarnation_and_is_single_
     await Orchestrator._handle_computer_event(orch, second_ws, SimpleNamespace(payload=second_payload))
     assert len(recorder.events) == 2 and second_host.outcome_acknowledged
     assert recorder.events[1].inputs_meta["decision"] == "discard"
+    assert second_ws.frames("computer_host")[-1]["outcome_ack"] == {
+        "decision": "discard", "incarnation_id": second_incarnation,
+        "connection_generation": str(orch._connection_contexts[id(second_ws)].connection_generation),
+    }
+    assert len([event for event in recorder.events
+                if event.action_type == "computer_host.outcome_acknowledged"]) == 2
     assert not cancelled
 
     no_inventory_ws = orch.add(_WS(chat="chat-no-inventory"))
@@ -553,6 +604,27 @@ async def test_outcome_ack_requires_current_announced_incarnation_and_is_single_
         "host_id": failed_id, "event": "outcome_ack", "decision": "discard",
         "incarnation_id": failed_incarnation}))
     assert not failed_host.outcome_acknowledged and not cancelled
+    assert not failed_ws.frames("computer_host")
+    monkeypatch.setattr(orch, "_record_computer_outcome_ack", record_ack)
+    retry = {"host_id": failed_id, "event": "outcome_ack", "decision": "discard",
+             "incarnation_id": failed_incarnation}
+    await Orchestrator._handle_computer_event(orch, failed_ws, SimpleNamespace(payload=retry))
+    assert failed_host.outcome_acknowledged
+    assert failed_ws.frames("computer_host")[-1]["outcome_ack"] == {
+        "decision": "discard", "incarnation_id": failed_incarnation,
+        "connection_generation": str(orch._connection_contexts[id(failed_ws)].connection_generation),
+    }
+    event_count = len(recorder.events)
+    await Orchestrator._handle_computer_event(orch, failed_ws, SimpleNamespace(payload=retry))
+    assert len(recorder.events) == event_count
+    assert failed_ws.frames("computer_host")[-1]["outcome_ack"] == {
+        "decision": "discard", "incarnation_id": failed_incarnation,
+        "connection_generation": str(orch._connection_contexts[id(failed_ws)].connection_generation),
+    }
+    conflict = {**retry, "decision": "acknowledge"}
+    await Orchestrator._handle_computer_event(orch, failed_ws, SimpleNamespace(payload=conflict))
+    assert len(recorder.events) == event_count
+    assert failed_ws.frames("computer_host")[-1]["outcome_ack"]["decision"] == "discard"
 
 
 @pytest.mark.parametrize("roots", [

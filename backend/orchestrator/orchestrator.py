@@ -1997,14 +1997,32 @@ class Orchestrator:
             incarnation_id = payload.get("incarnation_id")
             if (set(payload) != {"host_id", "event", "decision", "incarnation_id"}
                     or not isinstance(decision, str) or decision not in {"acknowledge", "discard"}
-                    or not isinstance(incarnation_id, str)
-                    or not self.computer_hosts.acknowledge_outcome(host, incarnation_id)):
+                    or not isinstance(incarnation_id, str)):
                 return
-            recorded = await self._record_computer_outcome_ack(
-                owner_sub, host.host_id, incarnation_id, decision,
-                len(host.descriptor.get("retained_jobs") or ()), None)
-            if not recorded:
-                host.outcome_acknowledged = False
+            contexts = getattr(self, "_connection_contexts", {})
+            connection = contexts.get(id(websocket))
+            generation = getattr(connection, "connection_generation", None)
+            if connection is None or not connection.registered or connection.closing or generation is None:
+                return
+            status = self.computer_hosts.begin_outcome_ack(host, incarnation_id, decision)
+            if status == "record":
+                recorded = await self._record_computer_outcome_ack(
+                    owner_sub, host.host_id, incarnation_id, decision,
+                    len(host.descriptor.get("retained_jobs") or ()), None)
+                if not self.computer_hosts.finish_outcome_ack(host, decision, recorded=recorded) or not recorded:
+                    return
+            elif status != "acknowledged":
+                return
+            if (self.computer_hosts.get(owner_sub, host.host_id) is not host
+                    or self.computer_hosts.host_for_socket(websocket) is not host
+                    or contexts.get(id(websocket)) is not connection or connection.closing
+                    or connection.connection_generation != generation):
+                return
+            await self._safe_send(websocket, json.dumps({
+                "type": "computer_host", "host_id": host.host_id,
+                "outcome_ack": {"decision": decision, "incarnation_id": incarnation_id,
+                                 "connection_generation": str(generation)},
+            }))
             return
         if event in ("heartbeat", "paused", "resumed", "stopped", "approval_activity"):
             await self.computer_sessions.on_host_event(

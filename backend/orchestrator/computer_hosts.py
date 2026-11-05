@@ -57,6 +57,8 @@ class ComputerHost:
     project_manifest_highwater: int = 0
     project_retirements: Dict[str, int] = field(default_factory=dict)
     outcome_acknowledged: bool = False
+    outcome_ack_pending: bool = False
+    outcome_decision: Optional[str] = None
 
     def unavailable(self) -> "ComputerHostError":
         if self.offline_reason == WITHDRAWN:
@@ -126,13 +128,23 @@ class ComputerHostRegistry:
         previous = self._hosts.get(key)
         if previous is not None:
             superseded = previous
+            if (previous.descriptor.get("incarnation_id") == desc.get("incarnation_id")
+                    and previous.descriptor.get("retained_jobs") == desc.get("retained_jobs")
+                    and desc.get("retained_jobs")):
+                host_state = (previous.outcome_acknowledged, previous.outcome_ack_pending,
+                              previous.outcome_decision)
+            else:
+                host_state = (False, False, None)
             self._by_ws.pop(id(previous.websocket), None)
             self._fail_pending(key)
+        else:
+            host_state = (False, False, None)
         stale_key = self._by_ws.get(id(websocket))
         if stale_key is not None and stale_key != key:
             superseded = self._hosts.pop(stale_key, None) or superseded
             self._fail_pending(stale_key)
         host = ComputerHost(owner_sub=owner_sub, host_id=key[1], websocket=websocket, descriptor=desc)
+        host.outcome_acknowledged, host.outcome_ack_pending, host.outcome_decision = host_state
         self._hosts[key] = host
         self._by_ws[id(websocket)] = key
         self._offline.pop(key, None)
@@ -171,13 +183,31 @@ class ComputerHostRegistry:
     def forget(self, owner_sub: str, host_id: str) -> bool:
         return self._offline.pop((owner_sub, host_id), None) is not None
 
-    def acknowledge_outcome(self, host: ComputerHost, incarnation_id: str) -> bool:
+    def begin_outcome_ack(self, host: ComputerHost, incarnation_id: str, decision: str) -> str:
         key = (host.owner_sub, host.host_id)
-        if (self._hosts.get(key) is not host or host.outcome_acknowledged
-                or host.descriptor.get("incarnation_id") != incarnation_id
+        if (self._hosts.get(key) is not host or host.descriptor.get("incarnation_id") != incarnation_id
                 or not host.descriptor.get("retained_jobs")):
+            return "invalid"
+        if host.outcome_acknowledged:
+            return "acknowledged" if host.outcome_decision == decision else "invalid"
+        if host.outcome_ack_pending:
+            return "pending" if host.outcome_decision == decision else "invalid"
+        host.outcome_ack_pending = True
+        host.outcome_decision = decision
+        return "record"
+
+    def finish_outcome_ack(self, host: ComputerHost, decision: str, *, recorded: bool) -> bool:
+        key = (host.owner_sub, host.host_id)
+        current = self._hosts.get(key)
+        if (current is None or current.descriptor.get("incarnation_id") != host.descriptor.get("incarnation_id")
+                or current.descriptor.get("incarnation_id") is None
+                or current.descriptor.get("retained_jobs") != host.descriptor.get("retained_jobs")
+                or not current.outcome_ack_pending or current.outcome_decision != decision):
             return False
-        host.outcome_acknowledged = True
+        current.outcome_ack_pending = False
+        current.outcome_acknowledged = recorded
+        if not recorded:
+            current.outcome_decision = None
         return True
 
     def on_socket_closed(self, websocket) -> Optional[ComputerHost]:
