@@ -911,6 +911,75 @@ async def test_duplicate_access_control_expose_headers_are_combined() -> None:
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("directives", "combined"),
+    (
+        (("no-store", "no-store"), "no-store, no-store"),
+        (("no-store", "private"), "no-store, private"),
+    ),
+)
+async def test_duplicate_cache_control_directives_are_combined(directives, combined) -> None:
+    response = _response(
+        b"",
+        headers=[
+            ("Content-Length", "0"),
+            ("Cache-Control", directives[0]),
+            ("Cache-Control", directives[1]),
+        ],
+    )
+    transport, _, _, _ = _transport(response)
+
+    received = await transport.post(Request())
+
+    assert received.headers["cache-control"] == combined
+
+
+@pytest.mark.asyncio
+async def test_duplicate_cache_control_headers_remain_within_header_count_limit() -> None:
+    response = _response(
+        b"",
+        headers=[
+            ("Content-Length", "0"),
+            ("Cache-Control", "no-store"),
+            ("Cache-Control", "private"),
+        ],
+    )
+    transport, _, _, _ = _transport(response, limits=EgressLimits(max_headers=2))
+
+    with pytest.raises(EgressLimitError) as caught:
+        await transport.post(Request())
+
+    assert caught.value.reason == "response_header_count"
+
+
+@pytest.mark.asyncio
+async def test_unauthenticated_mcp_401_surfaces_challenge_and_combined_cache_control() -> None:
+    challenge = (
+        'Bearer resource_metadata="https://panatlas.net/.well-known/oauth-protected-resource/mcp/private" '
+        'scope="panatlas:read"'
+    )
+    response = _response(
+        b"",
+        status=401,
+        headers=[
+            ("Content-Length", "0"),
+            ("Cache-Control", "no-store"),
+            ("Cache-Control", "no-store"),
+            ("WWW-Authenticate", challenge),
+        ],
+    )
+    transport, _, _, _ = _transport(response)
+
+    received = await transport.request_status(
+        "POST", Request(path="/mcp/private", headers={"content-type": "application/json"}, body=b"{}")
+    )
+
+    assert received.status == 401
+    assert received.headers["www-authenticate"] == challenge
+    assert received.headers["cache-control"] == "no-store, no-store"
+
+
 def test_limits_and_tls_context_fail_closed() -> None:
     with pytest.raises(EgressConfigurationError, match="invalid_limits"):
         EgressLimits(connect_timeout=0)

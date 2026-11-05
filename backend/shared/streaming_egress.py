@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 _HEADER_NAME = re.compile(rb"[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
 _STATUS_LINE = re.compile(rb"HTTP/1\.[01] ([0-9]{3})(?: [\x20-\x7e]*)?\Z")
+_COMBINABLE_HEADERS = frozenset({"access-control-expose-headers", "cache-control"})
 _FORBIDDEN_REQUEST_HEADERS = frozenset(
     {
         "accept-encoding",
@@ -780,7 +781,7 @@ def _parse_headers(data: bytes, *, max_headers: int) -> tuple[int, dict[str, str
             raise EgressProtocolError("malformed_response")
         name = raw_name.decode("ascii").lower()
         if name in headers:
-            if name != "access-control-expose-headers":
+            if name not in _COMBINABLE_HEADERS:
                 raise EgressProtocolError("ambiguous_framing")
             headers[name] += ", " + value.decode("latin-1")
         else:
