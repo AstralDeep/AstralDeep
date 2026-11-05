@@ -125,7 +125,7 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
         security_button = (
             '<button type="button" aria-label="Standard MCP connection security notice" '
             'title="Standard MCP connection security notice" data-ui-action="chrome_open" '
-            'data-ui-payload="{&quot;surface&quot;:&quot;remote_mcp&quot;,&quot;params&quot;:{&quot;notice&quot;:&quot;external_mcp_security&quot;}}">⚠</button>'
+            'data-ui-payload="{&quot;surface&quot;:&quot;remote_mcp&quot;,&quot;params&quot;:{&quot;notice&quot;:&quot;external_mcp_security&quot;}}">Security notice</button>'
         )
         tools = []
         for tool in connector.get("tools_catalog", []):
@@ -221,7 +221,7 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
                               {"connector_id": connector["id"], "tool_name": tool["name"],
                                "enabled": not connector.get("tools", {}).get(tool["name"])})], direction="row"))
         warning = _sdui.Button(
-            label="⚠",
+            label="Security notice",
             action="chrome_open",
             payload={"surface": SURFACE_KEY, "params": {"notice": "external_mcp_security"}},
             variant="ghost",

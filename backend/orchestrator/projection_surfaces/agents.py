@@ -221,7 +221,7 @@ def _render_agent_row(agent: dict, tab: str, user_email: str) -> str:
         security_button = (
             f'<button type="button" aria-label="{security_title}" title="{security_title}" '
             f'id="agent-security-warning-{esc(agent_id)}" data-ui-action="chrome_open" '
-            f'data-ui-payload=\'{{"surface":"remote_mcp","params":{{"notice":"{notice}"}}}}\'>⚠</button>'
+            f'data-ui-payload=\'{{"surface":"remote_mcp","params":{{"notice":"{notice}"}}}}\'>Security notice</button>'
         )
     status = (
         '<span class="flex items-center gap-1.5 text-xs text-astral-muted">'

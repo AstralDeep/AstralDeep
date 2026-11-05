@@ -153,7 +153,7 @@ def test_connector_cards_open_server_owned_security_notice(monkeypatch):
     assert "provider controls its data handling" in details
     assert card["title"] == ""
     assert header["children"][0]["content"] == "Example"
-    assert warning["label"] == "⚠"
+    assert warning["label"] == "Security notice"
     assert warning["action"] == "chrome_open"
     assert warning["payload"] == {
         "surface": "remote_mcp", "params": {"notice": "external_mcp_security"},
