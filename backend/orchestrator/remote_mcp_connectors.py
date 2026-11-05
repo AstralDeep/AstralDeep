@@ -5,6 +5,7 @@ to discover and invoke server tools from the remote_mcp bundled agent.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import re
 import time
@@ -184,17 +185,24 @@ def get_connector(orch: Any, owner_id: str, connector_id: str) -> dict[str, Any]
 
 
 def save_connector(orch: Any, owner_id: str, values: dict[str, Any], *,
-                   clear_oauth_client_credentials: bool = False) -> dict[str, Any]:
+                   clear_oauth_client_credentials: bool = False,
+                   require_existing: bool = False) -> dict[str, Any]:
     if type(values) is not dict:
         raise RemoteMCPError("Connector configuration is invalid.")
     if type(clear_oauth_client_credentials) is not bool:
         raise RemoteMCPError("OAuth client credential clearing must be a boolean.")
+    if type(require_existing) is not bool:
+        raise RemoteMCPError("Existing connector selection must be a boolean.")
     connector_id = values.get("id")
+    if require_existing and not connector_id:
+        raise RemoteMCPError("Connector was not found.")
     if connector_id is not None and (not isinstance(connector_id, str) or not _ID.fullmatch(connector_id)):
         raise RemoteMCPError("Connector ID is invalid.")
     connector_id = connector_id or uuid.uuid4().hex
     key = _KEY_PREFIX + connector_id
     existing = _repository(orch).get_credential(owner_id, _AGENT_ID, key)
+    if require_existing and not existing:
+        raise RemoteMCPError("Connector was not found.")
     candidate = dict(values)
     candidate["id"] = connector_id
     if clear_oauth_client_credentials:
@@ -205,6 +213,10 @@ def save_connector(orch: Any, owner_id: str, values: dict[str, Any], *,
             candidate.pop(field, None)
     if existing:
         old = json.loads(existing)
+        if require_existing:
+            candidate["enabled"] = old.get("enabled", True)
+            candidate["tools"] = old.get("tools", {})
+            candidate["tools_catalog"] = old.get("tools_catalog", [])
         same_authority = old.get("url") == candidate.get("url") and old.get("auth_type") == candidate.get("auth_type")
         changed_oauth_client = (
             same_authority and candidate.get("auth_type") == "oauth"
@@ -241,7 +253,13 @@ def save_connector(orch: Any, owner_id: str, values: dict[str, Any], *,
         for secret in ("token", "oauth_client_id", "oauth_client_secret", "access_token", "refresh_token",
                        "token_endpoint", "authorization_endpoint", "token_expires_at", "scope"):
             connector.pop(secret, None)
-    _repository(orch).set_credential(owner_id, _AGENT_ID, key, json.dumps(connector), e2e=False)
+    if existing:
+        if not _repository(orch).compare_and_set_credential(
+            owner_id, _AGENT_ID, key, existing, json.dumps(connector),
+        ):
+            raise RemoteMCPError("The connector changed. Reload its settings and try again.")
+    else:
+        _repository(orch).set_credential(owner_id, _AGENT_ID, key, json.dumps(connector), e2e=False)
     return {key: value for key, value in connector.items()
             if key not in {"token", "oauth_client_secret", "access_token", "refresh_token"}}
 
@@ -250,6 +268,67 @@ def delete_connector(orch: Any, owner_id: str, connector_id: str) -> None:
     if not isinstance(connector_id, str) or not _ID.fullmatch(connector_id):
         raise RemoteMCPError("Connector was not found.")
     _repository(orch).delete_credential(owner_id, _AGENT_ID, _KEY_PREFIX + connector_id)
+
+
+def _same_oauth_authority(current: dict[str, Any], expected: dict[str, Any]) -> bool:
+    return all((current.get(field) or "") == (expected.get(field) or "") for field in (
+        "url", "transport", "auth_type", "oauth_client_id", "oauth_client_secret", "token_endpoint",
+    ))
+
+
+def update_oauth_credentials(orch: Any, owner_id: str, expected: dict[str, Any],
+                             updates: dict[str, Any]) -> dict[str, Any]:
+    fields = {"oauth_client_id", "oauth_client_secret", "access_token", "refresh_token",
+              "token_endpoint", "authorization_endpoint", "token_expires_at", "scope"}
+    if set(updates) - fields:
+        raise RemoteMCPError("The OAuth credential update is invalid.")
+    manager = _repository(orch)
+    key = _KEY_PREFIX + expected["id"]
+    for _ in range(5):
+        raw = manager.get_credential(owner_id, _AGENT_ID, key)
+        if not raw:
+            raise RemoteMCPError("Connector was not found.")
+        current = _validate_config(json.loads(raw))
+        if (not _same_oauth_authority(current, expected)
+                or any((current.get(field) or "") != (expected.get(field) or "")
+                       for field in fields)):
+            raise RemoteMCPError("The connector changed during OAuth authorization. Start again.")
+        current.update(updates)
+        current = _validate_config(current)
+        if manager.compare_and_set_credential(owner_id, _AGENT_ID, key, raw, json.dumps(current)):
+            return current
+    raise RemoteMCPError("The connector changed. Reload its settings and try again.")
+
+
+def _update_tool_catalog(orch: Any, owner_id: str, expected: dict[str, Any],
+                         tools: list[dict[str, Any]]) -> None:
+    manager = _repository(orch)
+    key = _KEY_PREFIX + expected["id"]
+    for _ in range(5):
+        raw = manager.get_credential(owner_id, _AGENT_ID, key)
+        if not raw:
+            raise RemoteMCPError("Connector was not found.")
+        current = _validate_config(json.loads(raw))
+        if not _same_oauth_authority(current, expected):
+            raise RemoteMCPError("The connector changed while loading its tools. Try again.")
+        current["tools_catalog"] = tools
+        current["tools"] = {item["name"]: current.get("tools", {}).get(item["name"], False)
+                            for item in tools}
+        current["last_error"] = ""
+        current = _validate_config(current)
+        if manager.compare_and_set_credential(owner_id, _AGENT_ID, key, raw, json.dumps(current)):
+            return
+    raise RemoteMCPError("The connector changed. Reload its settings and try again.")
+
+
+def _check_tool_authority(current: dict[str, Any], expected: dict[str, Any], tool_name: str) -> None:
+    if not current.get("enabled"):
+        raise RemoteMCPError("This connector is disabled.")
+    if current.get("tools", {}).get(tool_name) is not True:
+        raise RemoteMCPError("This server tool is not enabled.")
+    if (not _same_oauth_authority(current, expected)
+            or any(current.get(field) != expected.get(field) for field in ("access_token", "token"))):
+        raise RemoteMCPError("The connector changed before the tool call. Try again.")
 
 
 def _transport(connector: dict[str, Any], *, transport_factory=None):
@@ -341,6 +420,7 @@ class _SSESession:
         self.events = None
         self.endpoint = ""
         self.buffer = ""
+        self.decoder = codecs.getincrementaldecoder("utf-8")("strict")
 
     async def open(self):
         request = type("Request", (), {
@@ -378,8 +458,12 @@ class _SSESession:
 
     async def _next_event(self) -> dict[str, str]:
         while "\n\n" not in self.buffer:
-            chunk = await anext(self.events)
-            self.buffer = (self.buffer + chunk.body.decode("utf-8", errors="strict")).replace("\r\n", "\n")
+            try:
+                chunk = await anext(self.events)
+            except StopAsyncIteration:
+                self.decoder.decode(b"", final=True)
+                raise
+            self.buffer = (self.buffer + self.decoder.decode(chunk.body)).replace("\r\n", "\n")
             if len(self.buffer) > 65536:
                 raise RemoteMCPError("The SSE event exceeded the allowed size.")
         raw, self.buffer = self.buffer.split("\n\n", 1)
@@ -509,10 +593,15 @@ def _sanitize_schema(schema: Any, depth: int = 0) -> dict[str, Any] | None:
 async def _first_sse_response(source, request_id: Any) -> dict[str, Any]:
     buffer = ""
     size = 0
+    decoder = codecs.getincrementaldecoder("utf-8")("strict")
     while size <= 1024 * 1024:
-        chunk = await anext(source)
+        try:
+            chunk = await anext(source)
+        except StopAsyncIteration:
+            decoder.decode(b"", final=True)
+            raise
         size += len(chunk.body)
-        buffer = (buffer + chunk.body.decode("utf-8", errors="strict")).replace("\r\n", "\n")
+        buffer = (buffer + decoder.decode(chunk.body)).replace("\r\n", "\n")
         while "\n\n" in buffer:
             raw, buffer = buffer.split("\n\n", 1)
             data = "\n".join(line[5:].lstrip() for line in raw.splitlines() if line.startswith("data:"))
@@ -669,7 +758,9 @@ def refresh_tools(orch: Any, owner_id: str, connector_id: str, *, transport_fact
     if not connector.get("enabled"):
         raise RemoteMCPError("Enable the connector before loading its tools.")
     connector = _ensure_oauth(orch, owner_id, connector)
-    return _run(discover_tools(connector, transport_factory=transport_factory))
+    tools = _run(discover_tools(connector, transport_factory=transport_factory))
+    _update_tool_catalog(orch, owner_id, connector, tools)
+    return tools
 
 
 def _ensure_oauth(orch: Any, owner_id: str, connector: dict[str, Any]) -> dict[str, Any]:
@@ -685,21 +776,40 @@ def _ensure_oauth(orch: Any, owner_id: str, connector: dict[str, Any]) -> dict[s
     return connector
 
 
+def _update_connector_control(orch: Any, owner_id: str, connector_id: str,
+                               enabled: bool, tool_name: str | None = None) -> dict[str, Any]:
+    if not isinstance(connector_id, str) or not _ID.fullmatch(connector_id):
+        raise RemoteMCPError("Connector was not found.")
+    manager = _repository(orch)
+    key = _KEY_PREFIX + connector_id
+    for _ in range(5):
+        raw = manager.get_credential(owner_id, _AGENT_ID, key)
+        if not raw:
+            raise RemoteMCPError("Connector was not found.")
+        connector = _validate_config(json.loads(raw))
+        if tool_name is None:
+            connector["enabled"] = enabled is True
+        else:
+            if not any(item.get("name") == tool_name for item in connector.get("tools_catalog", [])):
+                raise RemoteMCPError("Refresh the server tool list before changing this tool.")
+            connector.setdefault("tools", {})[tool_name] = enabled is True
+        if manager.compare_and_set_credential(owner_id, _AGENT_ID, key, raw, json.dumps(connector)):
+            return {key: value for key, value in connector.items()
+                    if key not in {"token", "oauth_client_secret", "access_token", "refresh_token"}}
+    raise RemoteMCPError("The connector changed. Reload its settings and try again.")
+
+
 def set_tool_selection(orch: Any, owner_id: str, connector_id: str, tool_name: str,
                        enabled: bool) -> dict[str, Any]:
-    connector = get_connector(orch, owner_id, connector_id)
+    if not isinstance(connector_id, str) or not _ID.fullmatch(connector_id):
+        raise RemoteMCPError("Connector was not found.")
     if not isinstance(tool_name, str) or not _TOOL.fullmatch(tool_name):
         raise RemoteMCPError("Choose a valid server tool.")
-    if not any(item.get("name") == tool_name for item in connector.get("tools_catalog", [])):
-        raise RemoteMCPError("Refresh the server tool list before changing this tool.")
-    connector.setdefault("tools", {})[tool_name] = enabled is True
-    return save_connector(orch, owner_id, connector)
+    return _update_connector_control(orch, owner_id, connector_id, enabled, tool_name)
 
 
 def set_connector_enabled(orch: Any, owner_id: str, connector_id: str, enabled: bool) -> dict[str, Any]:
-    connector = get_connector(orch, owner_id, connector_id)
-    connector["enabled"] = enabled is True
-    return save_connector(orch, owner_id, connector)
+    return _update_connector_control(orch, owner_id, connector_id, enabled)
 
 
 async def _audit_remote_tool(owner_id: str, connector_id: str, tool_name: str,
@@ -729,6 +839,7 @@ def call_tool(orch: Any, owner_id: str, connector_id: str, tool_name: str,
         if connector.get("tools", {}).get(tool_name) is not True:
             raise RemoteMCPError("This server tool is not enabled.")
         connector = _ensure_oauth(orch, owner_id, connector)
+        _check_tool_authority(connector, connector, tool_name)
 
         async def invoke():
             tools, session = await _initialize(connector, transport_factory=transport_factory)
@@ -740,6 +851,8 @@ def call_tool(orch: Any, owner_id: str, connector_id: str, tool_name: str,
                     raise RemoteMCPError("Tool arguments are invalid or too large.")
                 if not _validate_schema(match.get("inputSchema", {"type": "object", "properties": {}}), arguments):
                     raise RemoteMCPError("Tool arguments do not match the current server schema.")
+                current = await asyncio.to_thread(get_connector, orch, owner_id, connector_id)
+                _check_tool_authority(current, connector, tool_name)
                 return await _mcp_request(connector, {
                     "jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": "tools/call",
                     "params": {"name": tool_name, "arguments": arguments},

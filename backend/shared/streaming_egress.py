@@ -780,8 +780,11 @@ def _parse_headers(data: bytes, *, max_headers: int) -> tuple[int, dict[str, str
             raise EgressProtocolError("malformed_response")
         name = raw_name.decode("ascii").lower()
         if name in headers:
-            raise EgressProtocolError("ambiguous_framing")
-        headers[name] = value.decode("latin-1")
+            if name != "access-control-expose-headers":
+                raise EgressProtocolError("ambiguous_framing")
+            headers[name] += ", " + value.decode("latin-1")
+        else:
+            headers[name] = value.decode("latin-1")
     return status, headers
 
 

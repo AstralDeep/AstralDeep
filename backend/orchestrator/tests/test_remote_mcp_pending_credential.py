@@ -84,3 +84,53 @@ def test_transient_state_is_authenticated_and_opaque():
     assert manager.open_transient_state(sealed, ttl_seconds=600) == '{"owner_id":"owner"}'
     altered = sealed[:20] + ("A" if sealed[20] != "A" else "B") + sealed[21:]
     assert manager.open_transient_state(altered, ttl_seconds=600) is None
+
+
+def test_credential_compare_and_set_preserves_concurrent_or_missing_records():
+    manager, repository = _manager()
+    identity = ("owner", "connector", "config")
+    repository.rows[identity] = manager._fernet.encrypt(b"old").decode()
+    repository.revision = 7
+
+    def compare_and_set(_tx, **fields):
+        from astralplane.repositories import RepositoryConflictError
+        if repository.revision != fields["expected_updated_at"]:
+            raise RepositoryConflictError("stale")
+        repository.rows[identity] = fields["encrypted_value"]
+        repository.revision = fields["updated_at"]
+        return object()
+
+    original_get = repository.get_credential
+
+    def get(*args, **kwargs):
+        row = original_get(*args, **kwargs)
+        if row:
+            row.updated_at = repository.revision
+        return row
+
+    repository.get_credential = get
+    repository.compare_and_set_ciphertext = compare_and_set
+    assert manager.compare_and_set_credential("other", "connector", "config", "old", "wrong") is False
+    assert manager.compare_and_set_credential("owner", "connector", "config", "stale", "wrong") is False
+    assert manager.compare_and_set_credential("owner", "connector", "config", "old", "new") is True
+    assert manager._fernet.decrypt(repository.rows[identity].encode()) == b"new"
+    assert repository.revision > 7
+
+    def conflict(_tx, **fields):
+        from astralplane.repositories import RepositoryConflictError
+        repository.rows[identity] = manager._fernet.encrypt(b"concurrent").decode()
+        raise RepositoryConflictError("stale")
+
+    repository.compare_and_set_ciphertext = conflict
+    assert manager.compare_and_set_credential("owner", "connector", "config", "new", "late") is False
+    assert manager._fernet.decrypt(repository.rows[identity].encode()) == b"concurrent"
+    repository.rows.pop(identity)
+    assert manager.compare_and_set_credential("owner", "connector", "config", "old", "late") is False
+
+
+@pytest.mark.parametrize("value", ["e2e:abc", "corrupt"])
+def test_credential_compare_and_set_refuses_unreadable_records(value):
+    manager, repository = _manager()
+    repository.rows[("owner", "connector", "config")] = value
+    with pytest.raises(CredentialUndecryptable):
+        manager.compare_and_set_credential("owner", "connector", "config", "old", "new")

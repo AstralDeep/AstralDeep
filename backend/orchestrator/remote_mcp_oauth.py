@@ -232,7 +232,10 @@ def _pending_take(orch: Any, state: str) -> _Pending:
 
 async def begin_authorization(orch: Any, owner_id: str, connector_id: str,
                               redirect_uri: str, *, requester: Request | None = None) -> str:
-    from orchestrator.remote_mcp_connectors import get_connector, save_connector
+    from orchestrator.remote_mcp_connectors import (
+        get_connector,
+        update_oauth_credentials,
+    )
 
     redirect_uri = _url(redirect_uri)
     connector = await asyncio.to_thread(get_connector, orch, owner_id, connector_id)
@@ -284,9 +287,10 @@ async def begin_authorization(orch: Any, owner_id: str, connector_id: str,
         client_secret = registered.get("client_secret") or ""
         if type(client_secret) is not str or len(client_secret) > _MAX_TOKEN:
             raise RemoteMCPOAuthError("OAuth client registration returned an invalid secret.")
-        connector["oauth_client_id"] = client_id
-        connector["oauth_client_secret"] = client_secret
-        await asyncio.to_thread(save_connector, orch, owner_id, connector)
+        connector = await asyncio.to_thread(
+            update_oauth_credentials, orch, owner_id, connector,
+            {"oauth_client_id": client_id, "oauth_client_secret": client_secret},
+        )
     scopes = resource_metadata.get("scopes_supported")
     if "scopes_supported" in resource_metadata and type(scopes) is not list:
         raise RemoteMCPOAuthError("The OAuth scopes are invalid.")
@@ -318,7 +322,10 @@ async def begin_authorization(orch: Any, owner_id: str, connector_id: str,
 
 async def complete_authorization(orch: Any, code: str, state: str,
                                  *, requester: Request | None = None) -> str:
-    from orchestrator.remote_mcp_connectors import get_connector, save_connector
+    from orchestrator.remote_mcp_connectors import (
+        get_connector,
+        update_oauth_credentials,
+    )
 
     pending = await asyncio.to_thread(_pending_take, orch, state)
     if type(code) is not str or not 1 <= len(code) <= 2048 or any(ord(c) < 33 for c in code):
@@ -347,16 +354,21 @@ async def complete_authorization(orch: Any, code: str, state: str,
         raise RemoteMCPOAuthError("The authorization server returned an invalid refresh token.")
     expires_in = token.get("expires_in")
     expires_at = time.time() + expires_in if type(expires_in) is int and 0 < expires_in <= 86400 * 365 else 0
-    connector.update({"access_token": access_token, "refresh_token": refresh_token,
-                      "token_endpoint": pending.token_endpoint, "token_expires_at": expires_at,
-                      "scope": pending.scope})
-    await asyncio.to_thread(save_connector, orch, pending.owner_id, connector)
+    await asyncio.to_thread(
+        update_oauth_credentials, orch, pending.owner_id, connector,
+        {"access_token": access_token, "refresh_token": refresh_token,
+         "token_endpoint": pending.token_endpoint, "token_expires_at": expires_at,
+         "scope": pending.scope},
+    )
     return pending.connector_id
 
 
 async def refresh_authorization(orch: Any, owner_id: str, connector_id: str,
                                 *, requester: Request | None = None) -> bool:
-    from orchestrator.remote_mcp_connectors import get_connector, save_connector
+    from orchestrator.remote_mcp_connectors import (
+        get_connector,
+        update_oauth_credentials,
+    )
 
     connector = await asyncio.to_thread(get_connector, orch, owner_id, connector_id)
     if connector.get("auth_type") != "oauth" or not connector.get("refresh_token"):
@@ -369,20 +381,33 @@ async def refresh_authorization(orch: Any, owner_id: str, connector_id: str,
         fields["client_secret"] = connector["oauth_client_secret"]
     status, _headers, body = await _request(requester, endpoint, "POST", urlencode(fields).encode("ascii"),
                                             {"content-type": "application/x-www-form-urlencoded"}, _MAX_METADATA)
-    if status != 200:
+    async def concurrent_refresh_succeeded() -> bool:
+        from orchestrator.remote_mcp_connectors import _same_oauth_authority
+
         current = await asyncio.to_thread(get_connector, orch, owner_id, connector_id)
         current_expiry = current.get("token_expires_at")
-        if (current.get("refresh_token") != connector["refresh_token"]
-                and type(current.get("access_token")) is str and current["access_token"]
-                and type(current_expiry) in (int, float) and current_expiry > time.time()):
+        return (
+            _same_oauth_authority(current, connector)
+            and (current.get("refresh_token") != connector.get("refresh_token")
+                 or current.get("access_token") != connector.get("access_token"))
+            and type(current.get("access_token")) is str and bool(current["access_token"])
+            and type(current_expiry) in (int, float) and current_expiry > time.time()
+        )
+
+    if status != 200:
+        if await concurrent_refresh_succeeded():
             return True
         raise RemoteMCPOAuthError("The authorization server rejected token refresh.")
     token = _json_body(body, _MAX_METADATA)
-    connector["access_token"] = _string(token.get("access_token"), "access token", _MAX_TOKEN)
+    updates = {"access_token": _string(token.get("access_token"), "access token", _MAX_TOKEN)}
     if token.get("refresh_token"):
-        connector["refresh_token"] = _string(token["refresh_token"], "refresh token", _MAX_TOKEN)
+        updates["refresh_token"] = _string(token["refresh_token"], "refresh token", _MAX_TOKEN)
     expires_in = token.get("expires_in")
-    connector["token_expires_at"] = (time.time() + expires_in
-                                     if type(expires_in) is int and 0 < expires_in <= 86400 * 365 else 0)
-    await asyncio.to_thread(save_connector, orch, owner_id, connector)
+    updates["token_expires_at"] = (time.time() + expires_in
+                                    if type(expires_in) is int and 0 < expires_in <= 86400 * 365 else 0)
+    try:
+        await asyncio.to_thread(update_oauth_credentials, orch, owner_id, connector, updates)
+    except ValueError:
+        if not await concurrent_refresh_succeeded():
+            raise
     return True

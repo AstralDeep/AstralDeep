@@ -130,6 +130,39 @@ class CredentialManager:
             logger.error(f"Failed to decrypt credential: user={user_id} agent={agent_id} key={key}: {e}")
             return None
 
+    def compare_and_set_credential(self, user_id: str, agent_id: str, key: str,
+                                   expected: str, value: str) -> bool:
+        from astralplane.repositories import RepositoryConflictError
+
+        repository = self._credentials.repository
+        try:
+            with self._credentials.transaction() as transaction:
+                row = repository.get_credential(
+                    transaction, owner_id=user_id, agent_id=agent_id, credential_key=key,
+                )
+                if row is None:
+                    return False
+                if is_e2e_encrypted(row.encrypted_value):
+                    raise CredentialUndecryptable("Credential has unsupported encryption.")
+                try:
+                    current = self._fernet.decrypt(row.encrypted_value.encode()).decode()
+                except (InvalidToken, UnicodeDecodeError):
+                    raise CredentialUndecryptable("Credential could not be decrypted.") from None
+                if current != expected:
+                    return False
+                updated_at = int(time.time() * 1000)
+                if row.updated_at is not None:
+                    updated_at = max(updated_at, row.updated_at + 1)
+                repository.compare_and_set_ciphertext(
+                    transaction, owner_id=user_id, agent_id=agent_id, credential_key=key,
+                    expected_updated_at=row.updated_at,
+                    encrypted_value=self._fernet.encrypt(value.encode()).decode(),
+                    updated_at=updated_at,
+                )
+            return True
+        except RepositoryConflictError:
+            return False
+
     def get_agent_credentials(self, user_id: str, agent_id: str) -> Dict[str, str]:
         rows = self._credentials.call(
             self._credentials.repository.list_credentials,

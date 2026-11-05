@@ -34,6 +34,13 @@ class _Credentials:
         assert e2e is False
         self.rows[(owner, agent, key)] = value
 
+    def compare_and_set_credential(self, owner, agent, key, expected, value):
+        identity = (owner, agent, key)
+        if self.rows.get(identity) != expected:
+            return False
+        self.rows[identity] = value
+        return True
+
     def list_credential_keys(self, owner, agent):
         return [key for current_owner, current_agent, key in self.rows
                 if current_owner == owner and current_agent == agent]
@@ -175,8 +182,9 @@ def test_remote_mcp_save_action_forwards_explicit_oauth_clear(monkeypatch):
     monkeypatch.setattr(remote_mcp_surface, "_enabled", lambda: True)
     monkeypatch.setattr(connectors, "get_connector", lambda *_args: {"tools": {}, "tools_catalog": [], "enabled": True})
 
-    def save(_orch, _owner, _config, *, clear_oauth_client_credentials=False):
+    def save(_orch, _owner, _config, *, clear_oauth_client_credentials=False, require_existing=False):
         saved["clear"] = clear_oauth_client_credentials
+        saved["require_existing"] = require_existing
 
     monkeypatch.setattr(connectors, "save_connector", save)
     asyncio.run(remote_mcp_surface._save(None, None, "owner-1", [], {
@@ -185,6 +193,7 @@ def test_remote_mcp_save_action_forwards_explicit_oauth_clear(monkeypatch):
                    "auth_type": "oauth", "clear_oauth_client_credentials": "true"},
     }))
     assert saved["clear"] is True
+    assert saved["require_existing"] is True
 
 
 @pytest.mark.asyncio
@@ -677,3 +686,129 @@ def test_plane_pending_credential_take_is_atomic_across_workers(plane_template, 
 
     assert sorted(result is None for result in results) == [False, True]
     assert "pkce-verifier" in results
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["callback", "refresh", "registration"])
+async def test_oauth_response_preserves_settings_changed_during_provider_request(operation):
+    orch = _Orch()
+    saved = _connector(orch, client_id="" if operation == "registration" else "client-1")
+    if operation == "refresh":
+        current = connectors.get_connector(orch, "owner-1", saved["id"])
+        current.update({"refresh_token": "refresh-old", "token_endpoint": ISSUER + "/token"})
+        connectors.save_connector(orch, "owner-1", current)
+    base_requester = _Requester()
+    state = ""
+    if operation == "callback":
+        url = await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=base_requester)
+        state = parse_qs(urlsplit(url).query)["state"][0]
+
+    async def requester(url, method, body, headers, maximum):
+        if url == ISSUER + ("/register" if operation == "registration" else "/token"):
+            current = connectors.get_connector(orch, "owner-1", saved["id"])
+            current.update({"enabled": False, "name": "User edited", "tools": {"echo": False}})
+            connectors.save_connector(orch, "owner-1", current)
+        return await base_requester(url, method, body, headers, maximum)
+
+    if operation == "callback":
+        await oauth.complete_authorization(orch, "code", state, requester=requester)
+    elif operation == "refresh":
+        await oauth.refresh_authorization(orch, "owner-1", saved["id"], requester=requester)
+    else:
+        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    current = connectors.get_connector(orch, "owner-1", saved["id"])
+    assert current["enabled"] is False
+    assert current["name"] == "User edited"
+    assert current["tools"] == {"echo": False}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["callback", "refresh", "registration"])
+@pytest.mark.parametrize("mutation", ["delete", "url", "oauth_client_id", "oauth_client_secret"])
+async def test_oauth_response_cannot_recreate_or_restore_changed_connector(operation, mutation):
+    orch = _Orch()
+    saved = _connector(orch, client_id="" if operation == "registration" else "client-1")
+    if operation == "refresh":
+        current = connectors.get_connector(orch, "owner-1", saved["id"])
+        current.update({"refresh_token": "refresh-old", "token_endpoint": ISSUER + "/token"})
+        connectors.save_connector(orch, "owner-1", current)
+    base_requester = _Requester()
+    state = ""
+    if operation == "callback":
+        url = await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=base_requester)
+        state = parse_qs(urlsplit(url).query)["state"][0]
+
+    async def requester(url, method, body, headers, maximum):
+        if url == ISSUER + ("/register" if operation == "registration" else "/token"):
+            if mutation == "delete":
+                connectors.delete_connector(orch, "owner-1", saved["id"])
+            else:
+                current = connectors.get_connector(orch, "owner-1", saved["id"])
+                current[mutation] = "https://new.example/mcp" if mutation == "url" else "replacement"
+                connectors.save_connector(orch, "owner-1", current)
+        return await base_requester(url, method, body, headers, maximum)
+
+    with pytest.raises((oauth.RemoteMCPOAuthError, connectors.RemoteMCPError)):
+        if operation == "callback":
+            await oauth.complete_authorization(orch, "code", state, requester=requester)
+        elif operation == "refresh":
+            await oauth.refresh_authorization(orch, "owner-1", saved["id"], requester=requester)
+        else:
+            await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    if mutation == "delete":
+        assert connectors.list_connectors(orch, "owner-1") == []
+    else:
+        current = connectors.get_connector(orch, "owner-1", saved["id"])
+        assert current[mutation] == ("https://new.example/mcp" if mutation == "url" else "replacement")
+        assert not current.get("access_token")
+
+
+@pytest.mark.asyncio
+async def test_refresh_success_cannot_overwrite_a_concurrently_rotated_token():
+    orch = _Orch()
+    saved = _connector(orch)
+    saved.update({"refresh_token": "refresh-old", "token_endpoint": ISSUER + "/token"})
+    connectors.save_connector(orch, "owner-1", saved)
+
+    async def requester(url, method, body, headers, maximum):
+        current = connectors.get_connector(orch, "owner-1", saved["id"])
+        current.update({"access_token": "concurrent-access", "refresh_token": "concurrent-refresh",
+                        "token_expires_at": oauth.time.time() + 3600})
+        connectors.save_connector(orch, "owner-1", current)
+        return 200, {}, b'{"access_token":"late-access","refresh_token":"late-refresh","expires_in":3600}'
+
+    assert await oauth.refresh_authorization(orch, "owner-1", saved["id"], requester=requester)
+    current = connectors.get_connector(orch, "owner-1", saved["id"])
+    assert current["access_token"] == "concurrent-access"
+    assert current["refresh_token"] == "concurrent-refresh"
+
+
+def test_oauth_credential_update_retries_settings_only_conflict_and_bounds_contention(monkeypatch):
+    orch = _Orch()
+    saved = _connector(orch)
+    expected = connectors.get_connector(orch, "owner-1", saved["id"])
+    manager = orch.credential_manager
+    compare_and_set = manager.compare_and_set_credential
+    raced = False
+
+    def race(owner, agent, key, raw, value):
+        nonlocal raced
+        if not raced:
+            raced = True
+            current = connectors.get_connector(orch, "owner-1", saved["id"])
+            current["enabled"] = False
+            manager.set_credential(owner, agent, key, json.dumps(current), e2e=False)
+            return False
+        return compare_and_set(owner, agent, key, raw, value)
+
+    monkeypatch.setattr(manager, "compare_and_set_credential", race)
+    current = connectors.update_oauth_credentials(orch, "owner-1", expected, {"access_token": "new"})
+    assert current["enabled"] is False
+    assert current["access_token"] == "new"
+    expected = current
+    monkeypatch.setattr(manager, "compare_and_set_credential", lambda *_args: False)
+    with pytest.raises(connectors.RemoteMCPError, match="changed"):
+        connectors.update_oauth_credentials(orch, "owner-1", expected, {"access_token": "late"})
+    assert connectors.get_connector(orch, "owner-1", saved["id"])["access_token"] == "new"
+    with pytest.raises(connectors.RemoteMCPError, match="invalid"):
+        connectors.update_oauth_credentials(orch, "owner-1", expected, {"enabled": True})

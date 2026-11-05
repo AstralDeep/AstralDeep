@@ -20,6 +20,13 @@ class CredentialManager:
     def set_credential(self, owner, agent, key, value, e2e=False):
         self.records[(owner, agent, key)] = value
 
+    def compare_and_set_credential(self, owner, agent, key, expected, value):
+        identity = (owner, agent, key)
+        if self.records.get(identity) != expected:
+            return False
+        self.records[identity] = value
+        return True
+
     def list_credential_keys(self, owner, agent):
         return [key for current_owner, current_agent, key in self.records
                 if (owner, agent) == (current_owner, current_agent)]
@@ -171,9 +178,10 @@ def test_surface_test_toggle_and_unknown_error_paths(monkeypatch):
         "name": "Example", "url": "https://mcp.example/mcp", "transport": "streamable_http",
         "auth_type": "none",
     })
-    monkeypatch.setattr(remote_mcp_connectors, "refresh_tools", lambda *_args: [
-        {"name": "echo", "description": "Echo", "inputSchema": {"type": "object"}},
-    ])
+    async def discover(*_args, **_kwargs):
+        return [{"name": "echo", "description": "Echo", "inputSchema": {"type": "object"}}]
+
+    monkeypatch.setattr(remote_mcp_connectors, "discover_tools", discover)
     refreshed = asyncio.run(remote_mcp._test(orch, None, "owner", [], {"connector_id": saved["id"]}))
     assert "Found 1 tools" in refreshed[2]
     assert remote_mcp_connectors.get_connector(orch, "owner", saved["id"])["tools"]["echo"] is False
@@ -241,3 +249,31 @@ def test_feature_flag_reads_remote_mcp_flag(monkeypatch):
     assert remote_mcp._enabled() is True
     monkeypatch.setattr(flags, "is_enabled", lambda _key: False)
     assert remote_mcp._enabled() is False
+
+
+def test_edit_submission_cannot_recreate_connector_deleted_during_save(monkeypatch):
+    orch = _orch()
+    monkeypatch.setattr(remote_mcp, "_enabled", lambda: True)
+    saved = remote_mcp_connectors.save_connector(orch, "owner", {
+        "name": "Old", "url": "https://mcp.example/mcp", "transport": "streamable_http", "auth_type": "none",
+    })
+    manager = orch.credential_manager
+    get_credential = manager.get_credential
+    raced = False
+
+    def race(owner, agent, key):
+        nonlocal raced
+        raw = get_credential(owner, agent, key)
+        if not raced:
+            raced = True
+            manager.delete_credential(owner, agent, key)
+        return raw
+
+    monkeypatch.setattr(manager, "get_credential", race)
+    result = asyncio.run(remote_mcp._save(orch, None, "owner", [], {
+        "connector_id": saved["id"], "fields": {
+            "name": "Updated", "url": "https://mcp.example/mcp", "transport": "streamable_http", "auth_type": "none",
+        },
+    }))
+    assert "saved" not in result[2].lower()
+    assert remote_mcp_connectors.list_connectors(orch, "owner") == []

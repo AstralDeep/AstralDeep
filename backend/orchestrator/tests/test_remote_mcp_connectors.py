@@ -23,6 +23,12 @@ class CredentialManager:
         value = self.values.get((owner, agent, key))
         return base64.b64decode(value).decode() if value else value
 
+    def compare_and_set_credential(self, owner, agent, key, expected, value):
+        if self.get_credential(owner, agent, key) != expected:
+            return False
+        self.set_credential(owner, agent, key, value, e2e=False)
+        return True
+
     def list_credential_keys(self, owner, agent):
         return [key for current_owner, current_agent, key in self.values
                 if (owner, agent) == (current_owner, current_agent)]
@@ -753,3 +759,214 @@ async def _empty_tools(*_args, **_kwargs):
 @pytest.mark.asyncio
 async def test_run_uses_worker_when_called_inside_event_loop():
     assert service._run(asyncio.sleep(0, result="completed")) == "completed"
+
+
+@pytest.mark.parametrize("mutation", ["disabled", "tool_disabled", "endpoint", "deleted"])
+def test_tool_call_rechecks_settings_after_remote_discovery(world, monkeypatch, mutation):
+    orch, connector_id = world
+    requests = []
+
+    async def initialize(connector, **kwargs):
+        if mutation == "deleted":
+            service.delete_connector(orch, "owner-a", connector_id)
+        else:
+            current = service.get_connector(orch, "owner-a", connector_id)
+            if mutation == "disabled":
+                current["enabled"] = False
+            elif mutation == "tool_disabled":
+                current["tools"]["echo"] = False
+            else:
+                current["url"] = "https://changed.example/mcp"
+            service.save_connector(orch, "owner-a", current)
+        return [{"name": "echo", "inputSchema": {"type": "object", "properties": {}}}], ""
+
+    async def request(*args, **kwargs):
+        requests.append(args)
+        return {"result": {}}, ""
+
+    async def audit(*args, **kwargs):
+        pass
+
+    monkeypatch.setattr(service, "_initialize", initialize)
+    monkeypatch.setattr(service, "_mcp_request", request)
+    monkeypatch.setattr(service, "_audit_remote_tool", audit)
+    with pytest.raises(service.RemoteMCPError):
+        service.call_tool(orch, "owner-a", connector_id, "echo", {})
+    assert requests == []
+
+
+@pytest.mark.parametrize("mutation", ["disabled", "endpoint", "deleted"])
+def test_tool_refresh_does_not_store_discovery_for_changed_authority(world, monkeypatch, mutation):
+    orch, connector_id = world
+
+    async def discover(connector, **kwargs):
+        if mutation == "deleted":
+            service.delete_connector(orch, "owner-a", connector_id)
+        else:
+            current = service.get_connector(orch, "owner-a", connector_id)
+            if mutation == "disabled":
+                current["enabled"] = False
+            else:
+                current["url"] = "https://changed.example/mcp"
+            service.save_connector(orch, "owner-a", current)
+        return [{"name": "new", "description": "Remote tool", "inputSchema": {"type": "object"}}]
+
+    monkeypatch.setattr(service, "discover_tools", discover)
+    if mutation == "disabled":
+        assert service.refresh_tools(orch, "owner-a", connector_id)[0]["name"] == "new"
+        current = service.get_connector(orch, "owner-a", connector_id)
+        assert current["enabled"] is False
+        assert current["tools"] == {"new": False}
+    else:
+        with pytest.raises(service.RemoteMCPError):
+            service.refresh_tools(orch, "owner-a", connector_id)
+        if mutation == "endpoint":
+            assert service.get_connector(orch, "owner-a", connector_id)["tools_catalog"] == []
+        else:
+            assert service.list_connectors(orch, "owner-a") == []
+
+
+def test_connector_save_refuses_a_concurrent_settings_write(world, monkeypatch):
+    orch, connector_id = world
+    current = service.get_connector(orch, "owner-a", connector_id)
+    monkeypatch.setattr(orch.credential_manager, "compare_and_set_credential", lambda *_args: False)
+    current["name"] = "Unstored"
+    with pytest.raises(service.RemoteMCPError, match="changed"):
+        service.save_connector(orch, "owner-a", current)
+    assert service.get_connector(orch, "owner-a", connector_id)["name"] == "Fixture"
+
+
+def test_catalog_update_retries_a_concurrent_tool_disable_and_bounds_contention(world, monkeypatch):
+    orch, connector_id = world
+    expected = service.get_connector(orch, "owner-a", connector_id)
+    manager = orch.credential_manager
+    compare_and_set = manager.compare_and_set_credential
+    raced = False
+
+    def race(owner, agent, key, raw, value):
+        nonlocal raced
+        if not raced:
+            raced = True
+            current = service.get_connector(orch, "owner-a", connector_id)
+            current["tools"]["echo"] = False
+            manager.set_credential(owner, agent, key, json.dumps(current), e2e=False)
+            return False
+        return compare_and_set(owner, agent, key, raw, value)
+
+    tools = [{"name": "echo", "description": "Echo", "inputSchema": {"type": "object"}}]
+    monkeypatch.setattr(manager, "compare_and_set_credential", race)
+    service._update_tool_catalog(orch, "owner-a", expected, tools)
+    assert service.get_connector(orch, "owner-a", connector_id)["tools"] == {"echo": False}
+    monkeypatch.setattr(manager, "compare_and_set_credential", lambda *_args: False)
+    with pytest.raises(service.RemoteMCPError, match="changed"):
+        service._update_tool_catalog(orch, "owner-a", expected, tools)
+
+
+@pytest.mark.parametrize("operation", ["tool", "connector"])
+@pytest.mark.parametrize("mutation", ["sibling", "deleted"])
+def test_connector_controls_preserve_concurrent_siblings_and_do_not_recreate(world, monkeypatch, operation, mutation):
+    orch, connector_id = world
+    connector = service.get_connector(orch, "owner-a", connector_id)
+    connector.update({"tools": {"echo": False, "other": False}, "tools_catalog": [
+        {"name": "echo", "description": "Echo", "inputSchema": {"type": "object"}},
+        {"name": "other", "description": "Other", "inputSchema": {"type": "object"}},
+    ]})
+    service.save_connector(orch, "owner-a", connector)
+    manager = orch.credential_manager
+    get_credential = manager.get_credential
+    raced = False
+
+    def race(owner, agent, key):
+        nonlocal raced
+        raw = get_credential(owner, agent, key)
+        if not raced:
+            raced = True
+            if mutation == "deleted":
+                manager.delete_credential(owner, agent, key)
+            else:
+                current = json.loads(raw)
+                current.update({"name": "Concurrent edit", "enabled": False})
+                current["tools"]["other"] = True
+                manager.set_credential(owner, agent, key, json.dumps(current), e2e=False)
+        return raw
+
+    monkeypatch.setattr(manager, "get_credential", race)
+    def apply():
+        if operation == "tool":
+            return service.set_tool_selection(orch, "owner-a", connector_id, "echo", True)
+        return service.set_connector_enabled(orch, "owner-a", connector_id, False)
+
+    if mutation == "deleted":
+        with pytest.raises(service.RemoteMCPError, match="not found"):
+            apply()
+        assert service.list_connectors(orch, "owner-a") == []
+    else:
+        apply()
+        current = service.get_connector(orch, "owner-a", connector_id)
+        assert current["enabled"] is False
+        assert current["tools"] == {"echo": operation == "tool", "other": True}
+        assert current["name"] == "Concurrent edit"
+
+
+def test_edit_only_save_preserves_current_controls_and_rejects_deleted_id(world):
+    orch, connector_id = world
+    old_form = service.get_connector(orch, "owner-a", connector_id)
+    current = dict(old_form)
+    current.update({"enabled": False, "tools": {"echo": False}, "tools_catalog": []})
+    service.save_connector(orch, "owner-a", current)
+    old_form["name"] = "Edited name"
+    service.save_connector(orch, "owner-a", old_form, require_existing=True)
+    current = service.get_connector(orch, "owner-a", connector_id)
+    assert current["enabled"] is False
+    assert current["tools"] == {"echo": False}
+    assert current["name"] == "Edited name"
+    service.delete_connector(orch, "owner-a", connector_id)
+    with pytest.raises(service.RemoteMCPError, match="not found"):
+        service.save_connector(orch, "owner-a", old_form, require_existing=True)
+    assert service.list_connectors(orch, "owner-a") == []
+
+
+@pytest.mark.parametrize("operation", ["tool", "connector"])
+def test_connector_controls_fail_closed_when_contention_continues(world, monkeypatch, operation):
+    orch, connector_id = world
+    current = service.get_connector(orch, "owner-a", connector_id)
+    current["tools_catalog"] = [{"name": "echo", "description": "Echo", "inputSchema": {"type": "object"}}]
+    service.save_connector(orch, "owner-a", current)
+    monkeypatch.setattr(orch.credential_manager, "compare_and_set_credential", lambda *_args: False)
+    with pytest.raises(service.RemoteMCPError, match="changed"):
+        if operation == "tool":
+            service.set_tool_selection(orch, "owner-a", connector_id, "echo", False)
+        else:
+            service.set_connector_enabled(orch, "owner-a", connector_id, False)
+    assert service.get_connector(orch, "owner-a", connector_id)["enabled"] is True
+    assert service.get_connector(orch, "owner-a", connector_id)["tools"] == {"echo": True}
+
+
+def test_tool_toggle_rechecks_current_catalog_after_conflict(world, monkeypatch):
+    orch, connector_id = world
+    current = service.get_connector(orch, "owner-a", connector_id)
+    current["tools_catalog"] = [{"name": "echo", "description": "Echo", "inputSchema": {"type": "object"}}]
+    service.save_connector(orch, "owner-a", current)
+    manager = orch.credential_manager
+
+    def conflict(owner, agent, key, raw, _new):
+        latest = json.loads(raw)
+        latest["tools_catalog"] = []
+        latest["tools"] = {}
+        manager.set_credential(owner, agent, key, json.dumps(latest), e2e=False)
+        return False
+
+    monkeypatch.setattr(manager, "compare_and_set_credential", conflict)
+    with pytest.raises(service.RemoteMCPError, match="Refresh"):
+        service.set_tool_selection(orch, "owner-a", connector_id, "echo", True)
+    assert service.get_connector(orch, "owner-a", connector_id)["tools"] == {}
+
+
+def test_edit_only_selection_requires_boolean_and_existing_identity(world):
+    orch, connector_id = world
+    current = service.get_connector(orch, "owner-a", connector_id)
+    with pytest.raises(service.RemoteMCPError, match="boolean"):
+        service.save_connector(orch, "owner-a", current, require_existing="true")
+    current.pop("id")
+    with pytest.raises(service.RemoteMCPError, match="not found"):
+        service.save_connector(orch, "owner-a", current, require_existing=True)

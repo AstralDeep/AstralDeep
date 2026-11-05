@@ -215,13 +215,10 @@ async def _save(orch, websocket, user_id, roles, payload):
     clear_oauth_client_credentials = fields.get("clear_oauth_client_credentials", "").casefold() == "true"
     if connector_id:
         config["id"] = connector_id
-        old = await asyncio.to_thread(connectors.get_connector, orch, user_id, config["id"])
-        config["tools"] = old.get("tools", {})
-        config["tools_catalog"] = old.get("tools_catalog", [])
-        config["enabled"] = old.get("enabled", True)
     try:
         await asyncio.to_thread(connectors.save_connector, orch, user_id, config,
-                                 clear_oauth_client_credentials=clear_oauth_client_credentials)
+                                 clear_oauth_client_credentials=clear_oauth_client_credentials,
+                                 require_existing=bool(connector_id))
     except Exception as error:  # noqa: BLE001
         return (SURFACE_KEY, {}, _notice_for_error(error))
     return (SURFACE_KEY, {}, notice_block("success", "Remote MCP server saved."))
@@ -233,12 +230,6 @@ async def _test(orch, websocket, user_id, roles, payload):
     connector_id = payload.get("connector_id") if isinstance(payload, dict) else None
     try:
         discovered = await asyncio.to_thread(connectors.refresh_tools, orch, user_id, connector_id)
-        connector = connectors.get_connector(orch, user_id, connector_id)
-        connector["tools_catalog"] = discovered
-        connector["tools"] = {item["name"]: connector.get("tools", {}).get(item["name"], False)
-                               for item in discovered}
-        connector["last_error"] = ""
-        await asyncio.to_thread(connectors.save_connector, orch, user_id, connector)
         return (SURFACE_KEY, {}, notice_block("success", f"Connected. Found {len(discovered)} tools; tools start disabled."))
     except Exception as error:  # noqa: BLE001
         return (SURFACE_KEY, {}, _notice_for_error(error))

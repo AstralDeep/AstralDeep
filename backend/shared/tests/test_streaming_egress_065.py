@@ -788,6 +788,30 @@ async def test_cancellation_propagates_and_is_not_relabelled() -> None:
             "ambiguous_framing",
         ),
         (
+            _response(
+                b"",
+                headers=[
+                    ("Transfer-Encoding", "chunked"),
+                    ("Transfer-Encoding", "chunked"),
+                ],
+            ),
+            EgressProtocolError,
+            "ambiguous_framing",
+        ),
+        (
+            _response(b"", headers=[("Content-Length", "0"), ("Host", "one.example"),
+                                     ("Host", "two.example")]),
+            EgressProtocolError,
+            "ambiguous_framing",
+        ),
+        (
+            _response(b"", headers=[("Content-Length", "0"),
+                                     ("Strict-Transport-Security", "max-age=31536000"),
+                                     ("Strict-Transport-Security", "max-age=0")]),
+            EgressProtocolError,
+            "ambiguous_framing",
+        ),
+        (
             _response(b"", headers=[("Content-Length", "+0")]),
             EgressProtocolError,
             "ambiguous_framing",
@@ -866,6 +890,25 @@ async def test_response_header_byte_and_count_bounds_are_enforced() -> None:
     with pytest.raises(EgressLimitError) as caught:
         await transport.post(Request())
     assert caught.value.reason == "response_header_count"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_access_control_expose_headers_are_combined() -> None:
+    response = _response(
+        b"",
+        headers=[
+            ("Content-Length", "0"),
+            ("Access-Control-Expose-Headers", "WWW-Authenticate"),
+            ("Access-Control-Expose-Headers", "Mcp-Session-Id"),
+        ],
+    )
+    transport, _, _, _ = _transport(response)
+
+    received = await transport.post(Request())
+
+    assert received.headers["access-control-expose-headers"] == (
+        "WWW-Authenticate, Mcp-Session-Id"
+    )
 
 
 def test_limits_and_tls_context_fail_closed() -> None:
