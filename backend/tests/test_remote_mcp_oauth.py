@@ -156,10 +156,13 @@ def test_clear_oauth_client_credentials_requires_boolean():
 def test_remote_mcp_edit_surfaces_expose_explicit_oauth_client_clear(monkeypatch):
     monkeypatch.setattr(remote_mcp_surface, "_enabled", lambda: True)
     monkeypatch.setattr(connectors, "list_connectors", lambda *_args: [])
-    html = asyncio.run(remote_mcp_surface.render(_Orch(), "owner-1", [], {}))
+    orch = _Orch()
+    saved = _connector(orch)
+    params = {"edit": saved["id"]}
+    html = asyncio.run(remote_mcp_surface.render(orch, "owner-1", [], params))
     assert 'name="clear_oauth_client_credentials" type="checkbox" value="true"' in html
 
-    components = asyncio.run(remote_mcp_surface.components(_Orch(), "owner-1", [], {}))
+    components = asyncio.run(remote_mcp_surface.components(orch, "owner-1", [], params))
     form = next(component for component in components if component.get("submit_action") == "chrome_remote_mcp_save")
     clear_field = next(field for field in form["fields"] if field["name"] == "clear_oauth_client_credentials")
     assert clear_field["kind"] == "boolean"

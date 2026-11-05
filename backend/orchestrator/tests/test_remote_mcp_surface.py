@@ -92,7 +92,39 @@ def test_surface_render_edit_and_cards_escape_remote_metadata(monkeypatch):
     assert "never-render" not in html
     assert f'value="{saved["id"]}"' in html
     assert 'name="oauth_client_id"' in html
+    assert "Legacy SSE" in html
+    assert 'name="clear_oauth_client_credentials"' in html
     assert "chrome_remote_mcp_toggle_tool" in html
+
+
+def test_native_form_labels_auth_fields_and_oauth_clear_visibility(monkeypatch):
+    orch = _orch()
+    monkeypatch.setattr(remote_mcp, "_enabled", lambda: True)
+    none_connector = remote_mcp_connectors.save_connector(orch, "owner", {
+        "name": "No auth", "url": "https://mcp.example/none", "transport": "sse",
+        "auth_type": "none",
+    })
+    oauth_connector = remote_mcp_connectors.save_connector(orch, "owner", {
+        "name": "OAuth", "url": "https://mcp.example/oauth", "transport": "streamable_http",
+        "auth_type": "oauth",
+    })
+
+    add_form = json.dumps(asyncio.run(remote_mcp.components(orch, "owner", [], {})))
+    none_form = json.dumps(asyncio.run(remote_mcp.components(
+        orch, "owner", [], {"edit": none_connector["id"]})))
+    oauth_form = json.dumps(asyncio.run(remote_mcp.components(
+        orch, "owner", [], {"edit": oauth_connector["id"]})))
+
+    assert '"label": "Streamable HTTP"' in add_form
+    assert '"label": "Legacy SSE"' in add_form
+    assert '"label": "Bearer token"' in add_form
+    assert '"value": "streamable_http"' in add_form
+    assert '"value": "sse"' in add_form
+    assert '"visible_when": {"field": "auth_type", "equals": "bearer", "default": "none"}' in add_form
+    assert '"visible_when": {"field": "auth_type", "equals": "oauth", "default": "none"}' in add_form
+    assert "clear_oauth_client_credentials" not in add_form
+    assert "clear_oauth_client_credentials" not in none_form
+    assert "clear_oauth_client_credentials" in oauth_form
 
 
 def test_surface_disabled_state_is_fail_closed(monkeypatch):

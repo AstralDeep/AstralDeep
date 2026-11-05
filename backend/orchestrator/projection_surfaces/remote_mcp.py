@@ -19,6 +19,8 @@ ICON = "⇄"
 SURFACE_KEY = "remote_mcp"
 _INPUT = "rounded-lg bg-white/10 border border-white/10 px-3 py-2 text-sm text-astral-text w-full"
 logger = logging.getLogger("Orchestrator.Chrome.RemoteMCP")
+_TRANSPORT_LABELS = {"streamable_http": "Streamable HTTP", "sse": "Legacy SSE"}
+_AUTH_LABELS = {"none": "None", "bearer": "Bearer token", "oauth": "OAuth"}
 
 
 def _enabled() -> bool:
@@ -34,9 +36,9 @@ def _fields(payload: Any) -> dict[str, str]:
             if isinstance(key, str) and value is not None and not isinstance(value, (dict, list))}
 
 
-def _select(name: str, options: tuple[str, ...], current: str) -> str:
-    values = "".join(f'<option value="{esc(value)}"{" selected" if value == current else ""}>{esc(value)}</option>'
-                     for value in options)
+def _select(name: str, options: tuple[tuple[str, str], ...], current: str) -> str:
+    values = "".join(f'<option value="{esc(value)}"{" selected" if value == current else ""}>{esc(label)}</option>'
+                     for value, label in options)
     return f'<label>{esc(name.replace("_", " ").title())}<select name="{esc(name)}" class="{_INPUT}">{values}</select></label>'
 
 
@@ -94,7 +96,9 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
         cards.append(
             '<section class="rounded-lg border border-white/10 p-3 space-y-2">'
             f'<div class="font-medium">{esc(connector["name"])}</div>'
-            f'<div class="text-xs text-astral-muted">{esc(connector["url"])} · {esc(connector["transport"])} · {esc(connector["auth_type"])}</div>'
+            f'<div class="text-xs text-astral-muted">{esc(connector["url"])} · '
+            f'{esc(_TRANSPORT_LABELS.get(connector["transport"], connector["transport"]))} · '
+            f'{esc(_AUTH_LABELS.get(connector["auth_type"], connector["auth_type"]))}</div>'
             f'<div>{"Saved credential present" if connector.get("has_credential") else "No credential"}</div>'
             f'{notice_block("error", esc(connector.get("last_error", ""))) if connector.get("last_error") else ""}'
             f'<div>{"".join(tools) or "No tools loaded. Test the connection to load available tools."}</div>'
@@ -110,13 +114,14 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
         f'<input type="hidden" name="connector_id" value="{esc(edit_id)}">'
         f'{_text("name", "Name", edit_config.get("name", "") if edit_config else "")}'
         f'{_text("url", "HTTPS server URL", edit_config.get("url", "https://") if edit_config else "https://")}'
-        f'{_select("transport", ("streamable_http", "sse"), edit_config.get("transport", "streamable_http") if edit_config else "streamable_http")}'
-        f'{_select("auth_type", ("none", "bearer", "oauth"), edit_config.get("auth_type", "none") if edit_config else "none")}'
+        f'{_select("transport", (("streamable_http", "Streamable HTTP"), ("sse", "Legacy SSE")), edit_config.get("transport", "streamable_http") if edit_config else "streamable_http")}'
+        f'{_select("auth_type", (("none", "None"), ("bearer", "Bearer token"), ("oauth", "OAuth")), edit_config.get("auth_type", "none") if edit_config else "none")}'
         f'{_text("token", "Bearer token", input_type="password")}'
         f'{_text("oauth_client_id", "OAuth client ID (optional when dynamic registration is supported)", edit_config.get("oauth_client_id", "") if edit_config else "")}'
         f'{_text("oauth_client_secret", "OAuth client secret", input_type="password")}'
-        '<label class="block text-sm"><input name="clear_oauth_client_credentials" type="checkbox" value="true"> Clear saved OAuth client credentials and use dynamic registration</label>'
-        '<button data-ui-action="chrome_remote_mcp_save" data-ui-collect="true">Save server</button>'
+        + ('<label class="block text-sm"><input name="clear_oauth_client_credentials" type="checkbox" value="true"> Clear saved OAuth client credentials and use dynamic registration</label>'
+           if edit_config and edit_config.get("auth_type") == "oauth" else "")
+        + '<button data-ui-action="chrome_remote_mcp_save" data-ui-collect="true">Save server</button>'
         '</form>')
     oauth_url = params.get("oauth_url") if isinstance(params.get("oauth_url"), str) else ""
     oauth_link = (f'<a rel="noopener noreferrer" target="_blank" href="{esc(oauth_url)}">Open OAuth authorization page</a>'
@@ -140,8 +145,8 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
         out.append(_sdui.text("Authorization URL (copy if the link does not open): " + params["oauth_url"], "caption"))
     for connector in rows:
         entries = [{"label": "Endpoint", "value": connector["url"]},
-                   {"label": "Transport", "value": connector["transport"]},
-                   {"label": "Authentication", "value": connector["auth_type"]},
+                   {"label": "Transport", "value": _TRANSPORT_LABELS.get(connector["transport"], connector["transport"])},
+                   {"label": "Authentication", "value": _AUTH_LABELS.get(connector["auth_type"], connector["auth_type"])},
                    {"label": "Credential", "value": "Saved" if connector.get("has_credential") else "None"}]
         buttons = [
             _sdui.button("Test and refresh tools", "chrome_remote_mcp_test", {"connector_id": connector["id"]}),
@@ -174,14 +179,24 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
     fields = [
         _sdui.field("name", "Name", default=edit_config.get("name") if edit_config else None),
         _sdui.field("url", "HTTPS server URL", default=edit_config.get("url") if edit_config else None),
-        _sdui.field("transport", "Transport", "select", default=edit_config.get("transport", "streamable_http") if edit_config else "streamable_http", options=["streamable_http", "sse"]),
-        _sdui.field("auth_type", "Authentication", "select", default=edit_config.get("auth_type", "none") if edit_config else "none", options=["none", "bearer", "oauth"]),
-        _sdui.field("token", "Bearer token", "password"),
-        _sdui.field("oauth_client_id", "OAuth client ID", default=edit_config.get("oauth_client_id") if edit_config else None),
-        _sdui.field("oauth_client_secret", "OAuth client secret", "password"),
-        _sdui.field("clear_oauth_client_credentials", "Clear saved OAuth client credentials and use dynamic registration",
-                    "boolean", default=False),
+        _sdui.field("transport", "Transport", "select", default=edit_config.get("transport", "streamable_http") if edit_config else "streamable_http",
+                    options=[{"value": "streamable_http", "label": "Streamable HTTP"},
+                             {"value": "sse", "label": "Legacy SSE"}]),
+        _sdui.field("auth_type", "Authentication", "select", default=edit_config.get("auth_type", "none") if edit_config else "none",
+                    options=[{"value": "none", "label": "None"},
+                             {"value": "bearer", "label": "Bearer token"},
+                             {"value": "oauth", "label": "OAuth"}]),
+        _sdui.field("token", "Bearer token", "password",
+                    visible_when={"field": "auth_type", "equals": "bearer", "default": "none"}),
+        _sdui.field("oauth_client_id", "OAuth client ID", default=edit_config.get("oauth_client_id") if edit_config else None,
+                    visible_when={"field": "auth_type", "equals": "oauth", "default": "none"}),
+        _sdui.field("oauth_client_secret", "OAuth client secret", "password",
+                    visible_when={"field": "auth_type", "equals": "oauth", "default": "none"}),
     ]
+    if edit_config and edit_config.get("auth_type") == "oauth":
+        fields.append(_sdui.field(
+            "clear_oauth_client_credentials", "Clear saved OAuth client credentials and use dynamic registration",
+            "boolean", default=False, visible_when={"field": "auth_type", "equals": "oauth"}))
     out.append(_sdui.form(fields, submit_action="chrome_remote_mcp_save", submit_label="Save server",
                           submit_payload={"connector_id": edit_id} if edit_id else {},
                           title="Edit MCP server" if edit_id else "Add MCP server"))
