@@ -327,3 +327,50 @@ def test_recent_outcome_timestamps_are_timezone_aware(typesafe_store) -> None:
     status = typesafe_store.status_sync(USER)
     assert status.at is not None and status.at.tzinfo is not None
     assert status.at == saved.at and before <= status.at <= datetime.now(UTC)
+
+
+@pytest.mark.parametrize("api_key", ["", KEY])
+def test_custom_decisions_round_trip_is_encrypted_and_owner_scoped(
+    typesafe_store, credential_plane, api_key
+):
+    typesafe_store.save_config_sync(
+        USER, provider="custom", base_url="https://decisions.example/v1",
+        model="bespokelabs/Bespoke-Nimble-9B", api_key=api_key,
+    )
+    stored = typesafe_store.get_key_sync(USER)
+    assert (stored.provider, stored.base_url, stored.model, stored.api_key) == (
+        "custom", "https://decisions.example/v1", "bespokelabs/Bespoke-Nimble-9B", api_key,
+    )
+    assert typesafe_store.get_key_sync(OTHER_USER) is None
+    ciphertext = credential_plane.typesafe[USER]["api_key_enc"]
+    assert "decisions.example" not in ciphertext
+    assert KEY not in ciphertext
+    status = typesafe_store.status_sync(USER)
+    assert status.provider == "custom" and status.model == stored.model
+    assert status.is_set and status.has_key == bool(api_key)
+    assert KEY not in repr(status)
+
+
+def test_replacing_decision_endpoint_invalidates_old_outcomes(typesafe_store):
+    typesafe_store.save_config_sync(USER, provider="custom", base_url="https://one.example/v1",
+                                   model="nimble", api_key=KEY)
+    previous = typesafe_store.get_key_sync(USER).fingerprint
+    typesafe_store.save_config_sync(USER, provider="custom", base_url="https://two.example/v1",
+                                   model="nimble", api_key=KEY)
+    assert not typesafe_store.record_outcome_sync(USER, "rejected", previous)
+    assert typesafe_store.status_sync(USER).name == "active"
+
+
+def test_legacy_typesafe_keys_keep_the_hosted_defaults(typesafe_store):
+    typesafe_store.save_sync(USER, KEY)
+    stored = typesafe_store.get_key_sync(USER)
+    assert (stored.provider, stored.base_url, stored.model) == (
+        "typesafe", "https://api.typesafe.ai", "jev-latest")
+
+
+def test_invalid_encrypted_decision_envelope_is_discarded(typesafe_store, credential_plane):
+    typesafe_store.save_sync(USER, KEY)
+    credential_plane.typesafe[USER]["api_key_enc"] = typesafe_store._encrypt('{"version":99}')
+    typesafe_store.invalidate(USER)
+    assert typesafe_store.get_key_sync(USER) is None
+    assert typesafe_store.status_sync(USER).name == "not_set"

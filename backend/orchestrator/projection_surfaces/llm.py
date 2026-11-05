@@ -1,12 +1,13 @@
-"""Renders the per-user provider and TypeSafe settings with sharing acknowledgments.
+"""Renders per-user LLM and decisions-provider settings with sharing acknowledgments.
 Provider saves use llm_config/ws_handlers.py for encrypted persistence followed by advisory checks.
-TypeSafe retains its separate credential handler and operation.
+Decisions providers use typesafe_handlers.py's separate probe-gated save operation.
 """
 
 from __future__ import annotations
 
 import asyncio
 import html as _htmlmod
+import json
 import logging
 import re
 from types import SimpleNamespace
@@ -301,10 +302,9 @@ def _typesafe_status_line(status: Any) -> tuple[str, str]:
     return "Not set — standard routing", "neutral"
 
 
-_TYPESAFE_HEADING = "TypeSafe routing (optional)"
+_TYPESAFE_HEADING = "Decisions model (optional)"
 _TYPESAFE_HELP = (
-    "Uses your own TypeSafe API key for faster agent routing, result layout and "
-    "an extra safety check. Without a key, Astral uses standard routing."
+    "Select TypeSafe AI or a custom System One endpoint for routing, layout, and safety checks."
 )
 
 
@@ -322,7 +322,19 @@ def _typesafe_block(status: Any) -> str:
         f'<span class="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 '
         f'rounded-full border {badge_styles[variant]}">{esc(line)}</span>'
     )
-    placeholder = "Saved key hidden" if getattr(status, "is_set", False) else ""
+    provider = getattr(status, "provider", "typesafe")
+    custom = provider == "custom"
+    has_key = getattr(status, "has_key", False)
+    placeholder = "Saved key hidden" if has_key and not custom else ""
+    custom_placeholder = "Saved key hidden" if has_key and custom else ""
+    def condition(value):
+        return esc(json.dumps({"decisions_provider": value}))
+    options = "".join(
+        f'<option value="{value}"{" selected" if value == provider else ""}>{label}</option>'
+        for value, label in (("typesafe", "TypeSafe AI"), ("custom", "Custom"))
+    )
+    endpoint = getattr(status, "base_url", "") if custom else ""
+    model = getattr(status, "model", "") if custom else ""
     remove = (
         _button("chrome_typesafe_clear", "Remove", collect=False)
         if getattr(status, "is_set", False)
@@ -333,13 +345,27 @@ def _typesafe_block(status: Any) -> str:
         f'<div class="flex items-center justify-between">'
         f'<span class="{_LABEL_TEXT_CLS}">{esc(_TYPESAFE_HEADING)}</span>{badge}</div>'
         f'<p class="text-xs text-astral-muted">{esc(_TYPESAFE_HELP)}</p>'
+        f'<label class="{_LABEL_CLS}"><span class="{_LABEL_TEXT_CLS}">Provider</span>'
+        f'<select name="decisions_provider" class="{_INPUT_CLS}">{options}</select></label>'
+        f'<div data-chrome-visible-when="{condition("typesafe")}"{" hidden" if custom else ""}>'
         f'<label class="{_LABEL_CLS}">'
         f'<span class="{_LABEL_TEXT_CLS}">TypeSafe API key</span>'
         f'<input type="password" name="typesafe_api_key" value="" '
         f'placeholder="{esc(placeholder)}" autocomplete="off" class="{_INPUT_CLS}">'
-        "</label>"
+        "</label></div>"
+        f'<div data-chrome-visible-when="{condition("custom")}"{"" if custom else " hidden"} '
+        'class="space-y-3">'
+        f'<label class="{_LABEL_CLS}"><span class="{_LABEL_TEXT_CLS}">Base URL</span>'
+        f'<input name="decisions_base_url" value="{esc(endpoint)}" class="{_INPUT_CLS}" '
+        'placeholder="https://api-llm-factory.ai.uky.edu/v1"></label>'
+        f'<label class="{_LABEL_CLS}"><span class="{_LABEL_TEXT_CLS}">Model name</span>'
+        f'<input name="decisions_model" value="{esc(model)}" class="{_INPUT_CLS}" '
+        'placeholder="bespokelabs/Bespoke-Nimble-9B"></label>'
+        f'<label class="{_LABEL_CLS}"><span class="{_LABEL_TEXT_CLS}">API key (optional)</span>'
+        f'<input type="password" name="decisions_api_key" value="" placeholder="{esc(custom_placeholder)}" '
+        f'autocomplete="off" class="{_INPUT_CLS}"></label></div>'
         '<div class="flex flex-wrap gap-2">'
-        f'{_button("chrome_typesafe_save", "Save TypeSafe key")}'
+        f'{_button("chrome_typesafe_save", "Save decisions model")}'
         f"{remove}"
         "</div></div>"
     )
@@ -520,14 +546,28 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
     typesafe_status = await _typesafe_status(orch, user_id)
     if not first_run:
         status_line, _variant = _typesafe_status_line(typesafe_status)
-        form_fields.append(
+        decision_provider = getattr(typesafe_status, "provider", "typesafe")
+        form_fields.extend([
+            _sdui.field("decisions_provider", "Decisions model", "select", default=decision_provider,
+                        options=[{"value": "typesafe", "label": "TypeSafe AI"},
+                                 {"value": "custom", "label": "Custom"}], help=f"Status: {status_line}"),
+            _sdui.field("decisions_base_url", "Base URL", "text",
+                        default=getattr(typesafe_status, "base_url", "") if decision_provider == "custom" else "",
+                        visible_when={"decisions_provider": "custom"}),
+            _sdui.field("decisions_model", "Model name", "text",
+                        default=getattr(typesafe_status, "model", "") if decision_provider == "custom" else "",
+                        visible_when={"decisions_provider": "custom"}),
+            _sdui.field("decisions_api_key", "API key (optional)", "password",
+                        help="A key is saved." if decision_provider == "custom" and getattr(typesafe_status, "has_key", False) else None,
+                        visible_when={"decisions_provider": "custom"}),
             _sdui.field(
                 "typesafe_api_key",
-                "TypeSafe API key (optional)",
+                "TypeSafe API key",
                 "password",
-                help=f"Status: {status_line}",
-            )
-        )
+                help="A key is saved." if decision_provider == "typesafe" and getattr(typesafe_status, "has_key", False) else None,
+                visible_when={"decisions_provider": "typesafe"},
+            ),
+        ])
 
     from llm_config import data_sharing as _ds
 
@@ -568,7 +608,7 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
     ]
     if not first_run:
         actions.append(
-            {"label": "Save TypeSafe key", "action": "chrome_typesafe_save"}
+            {"label": "Save decisions model", "action": "chrome_typesafe_save"}
         )
     out.append(_sdui.form(form_fields, actions=actions))
     if saved is not None:
@@ -576,7 +616,7 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
                                 variant="secondary"))
     if not first_run and getattr(typesafe_status, "is_set", False):
         out.append(
-            _sdui.button("Remove TypeSafe key", "chrome_typesafe_clear",
+            _sdui.button("Remove decisions model", "chrome_typesafe_clear",
                          variant="danger")
         )
     return out
@@ -856,10 +896,10 @@ async def _handle_clear(orch: Any, websocket: Any, user_id: str, roles: Any, pay
 
 async def _handle_typesafe_save(orch: Any, websocket: Any, user_id: str, roles: Any, payload: Any):
     _ = roles
-    from llm_config.typesafe_handlers import TypeSafeSaveError, save_key
+    from llm_config.typesafe_handlers import TypeSafeSaveError, save_decisions
 
     blocked = await _require_acknowledgment(
-        orch, websocket, user_id, payload, target="TypeSafe"
+        orch, websocket, user_id, payload, target="decisions model"
     )
     if blocked is not None:
         return (SURFACE_KEY, {"data_sharing_error": blocked.error},
@@ -868,15 +908,15 @@ async def _handle_typesafe_save(orch: Any, websocket: Any, user_id: str, roles: 
     store = _typesafe_store(orch)
     if store is None:
         return (SURFACE_KEY, {}, notice_block(
-            "error", "TypeSafe settings are unavailable — try reloading."))
+            "error", "Decisions settings are unavailable — try reloading."))
 
     fields = _fields(payload)
     actor_user_id, auth_principal = _actor(orch, websocket, user_id)
     try:
-        await save_key(
+        await save_decisions(
             store,
             user_id,
-            fields.get("typesafe_api_key"),
+            fields,
             recorder=getattr(orch, "audit_recorder", None),
             actor_user_id=actor_user_id,
             auth_principal=auth_principal,
@@ -884,12 +924,12 @@ async def _handle_typesafe_save(orch: Any, websocket: Any, user_id: str, roles: 
     except TypeSafeSaveError as exc:
         return (SURFACE_KEY, {}, notice_block("error", str(exc)))
     except Exception:
-        logger.exception("TypeSafe key save failed")
+        logger.exception("Decisions configuration save failed")
         return (SURFACE_KEY, {}, notice_block(
-            "error", "Couldn't save the TypeSafe key — try again."))
+            "error", "Couldn't save the decisions model — try again."))
 
     return (SURFACE_KEY, {}, notice_block(
-        "success", "TypeSafe key saved. Routing will use it from your next message."))
+        "success", "Decisions model saved. Routing will use it from your next message."))
 
 
 async def _handle_typesafe_clear(orch: Any, websocket: Any, user_id: str, roles: Any, payload: Any):
@@ -900,7 +940,7 @@ async def _handle_typesafe_clear(orch: Any, websocket: Any, user_id: str, roles:
     store = _typesafe_store(orch)
     if store is None:
         return (SURFACE_KEY, {}, notice_block(
-            "error", "TypeSafe settings are unavailable — try reloading."))
+            "error", "Decisions settings are unavailable — try reloading."))
 
     actor_user_id, auth_principal = _actor(orch, websocket, user_id)
     try:
@@ -912,14 +952,14 @@ async def _handle_typesafe_clear(orch: Any, websocket: Any, user_id: str, roles:
             auth_principal=auth_principal,
         )
     except Exception:
-        logger.exception("TypeSafe key clear failed")
+        logger.exception("Decisions configuration clear failed")
         return (SURFACE_KEY, {}, notice_block(
-            "error", "Couldn't remove the TypeSafe key — try again."))
+            "error", "Couldn't remove the decisions model — try again."))
 
     if removed:
         return (SURFACE_KEY, {}, notice_block(
-            "success", "TypeSafe key removed. Astral will use standard routing."))
-    return (SURFACE_KEY, {}, notice_block("info", "No TypeSafe key was stored."))
+            "success", "Decisions model removed. Astral will use standard routing."))
+    return (SURFACE_KEY, {}, notice_block("info", "No decisions model was stored."))
 
 
 HANDLERS = {

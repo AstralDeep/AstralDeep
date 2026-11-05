@@ -1,6 +1,6 @@
-"""Validates, probes, and persists a user's TypeSafe key from the settings surface: a
-failed probe never reaches typesafe_store, so a rejected save can never overwrite a
-working key. Never logs or audits the raw key.
+"""Validates, probes, and saves owner-scoped decisions providers from the settings surface.
+Failed probes preserve the existing encrypted configuration in typesafe_store.py.
+Audit events contain fingerprints rather than credentials.
 """
 
 from __future__ import annotations
@@ -9,6 +9,8 @@ import asyncio
 import logging
 import time
 from typing import Any, Optional, Tuple
+
+from orchestrator.typesafe_routing.custom import CustomDecisionClient, probe_custom
 
 logger = logging.getLogger("LLMConfig.TypeSafeHandlers")
 
@@ -152,6 +154,49 @@ async def save_key(
         fingerprint=fingerprint,
     )
     return status, fingerprint
+
+
+async def save_decisions(store: Any, user_id: str, fields: dict, **audit: Any) -> None:
+    provider = fields.get("decisions_provider", "typesafe")
+    if provider not in ("typesafe", "custom"):
+        raise TypeSafeSaveError("Choose TypeSafe AI or Custom.")
+    raw_key = fields.get("typesafe_api_key", "") if provider == "typesafe" else fields.get("decisions_api_key", "")
+    key = validate_key(raw_key) if raw_key else ""
+    saved = await store.get_key(user_id)
+    if provider == "typesafe":
+        if not key and saved is not None and saved.provider == "typesafe":
+            key = saved.api_key
+        await save_key(store, user_id, key, **audit)
+        return
+    base_url = fields.get("decisions_base_url", "").strip().rstrip("/")
+    model = fields.get("decisions_model", "").strip()
+    try:
+        CustomDecisionClient(base_url, model)
+    except ValueError:
+        raise TypeSafeSaveError(
+            "Enter a valid base URL and model name for the decisions model (HTTPS required)."
+        ) from None
+    if not key and saved is not None and saved.api_key:
+        if saved.provider != "custom" or saved.base_url != base_url:
+            raise TypeSafeSaveError(
+                "The endpoint changed; enter the API key again. "
+                "For a keyless endpoint, remove the saved decisions model first.")
+        key = saved.api_key
+    _check_probe_rate(user_id)
+    try:
+        await probe_custom(base_url=base_url, model=model, api_key=key)
+    except (ValueError, TimeoutError):
+        raise TypeSafeSaveError(
+            "Couldn't connect to the decisions model. Check the base URL, model name, and API key. "
+            "Your saved configuration was not changed.") from None
+    _, fingerprint = await store.save_config(user_id, provider=provider, base_url=base_url, model=model, api_key=key)
+    from orchestrator.typesafe_routing.budget import circuit
+
+    circuit().reset(user_id)
+    await _audit(audit.get("recorder"), actor_user_id=audit.get("actor_user_id") or user_id,
+                 auth_principal=audit.get("auth_principal") or user_id,
+                 action="saved", outcome="success", description="User saved a custom decisions model",
+                 fingerprint=fingerprint)
 
 
 async def clear_key(

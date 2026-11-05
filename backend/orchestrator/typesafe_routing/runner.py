@@ -244,7 +244,7 @@ async def start_routing(
 
     if not routing_enabled(flags):
         return _skip(Outcome.SKIPPED_DISABLED)
-    if not api_key:
+    if api_key is None or (not api_key and client is None):
         return _skip(Outcome.SKIPPED_NO_KEY)
     if request.is_empty:
         return _skip(Outcome.SKIPPED_NO_KEY)
@@ -334,7 +334,7 @@ async def screen_instruction(
     from .questions import build_security_question_set
     from .security_policy import Verdict, verdict_for
 
-    if not api_key or not text or not routing_enabled(flags):
+    if api_key is None or (not api_key and client is None) or not text or not routing_enabled(flags):
         return Verdict.PASS
     breaker = circuit if circuit is not None else default_circuit()
     if not breaker.allows(user_id, fingerprint=fingerprint):
