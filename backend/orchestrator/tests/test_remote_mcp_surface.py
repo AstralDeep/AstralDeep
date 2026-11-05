@@ -104,6 +104,43 @@ def test_surface_render_edit_and_cards_escape_remote_metadata(monkeypatch):
     assert "chrome_remote_mcp_toggle_tool" in html
 
 
+def test_connector_cards_open_server_owned_security_notice(monkeypatch):
+    orch = _orch()
+    monkeypatch.setattr(remote_mcp, "_enabled", lambda: True)
+    remote_mcp_connectors.save_connector(orch, "owner", {
+        "name": "Example", "url": "https://mcp.example/mcp", "transport": "streamable_http",
+        "auth_type": "none",
+    })
+
+    html = asyncio.run(remote_mcp.render(orch, "owner", [], {}))
+    details = asyncio.run(remote_mcp.render(
+        orch, "owner", [], {"notice": "external_mcp_security"}))
+    components = asyncio.run(remote_mcp.components(orch, "owner", [], {}))
+    notice_components = asyncio.run(remote_mcp.components(
+        orch, "owner", [], {"notice": "external_mcp_security"}))
+    serialized = json.dumps(notice_components)
+    card = next(component for component in components if component["type"] == "card")
+    header = card["content"][0]
+    warning = header["children"][1]
+
+    assert 'data-ui-action="chrome_open"' in html
+    assert "external_mcp_security" in html
+    assert "Standard MCP connection" in details
+    assert "provider controls its data handling" in details
+    assert card["title"] == ""
+    assert header["children"][0]["content"] == "Example"
+    assert warning["label"] == "⚠"
+    assert warning["action"] == "chrome_open"
+    assert warning["payload"] == {
+        "surface": "remote_mcp", "params": {"notice": "external_mcp_security"},
+    }
+    assert warning["aria-label"] == "Standard MCP connection"
+    assert warning["aria-description"] == remote_mcp._security_notice()
+    assert warning["id"] == warning["data-testid"]
+    assert "Standard MCP connection" in serialized
+    assert "provider controls its data handling" in serialized
+
+
 def test_native_form_labels_auth_fields_and_oauth_clear_visibility(monkeypatch):
     orch = _orch()
     monkeypatch.setattr(remote_mcp, "_enabled", lambda: True)

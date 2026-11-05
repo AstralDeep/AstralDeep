@@ -64,13 +64,17 @@ async def agents(orch, user_id: str) -> List[Dict[str, Any]]:
         owned = bool(email) and row.get("owner_email") == email
         if not owned and not row.get("is_public"):
             continue
-        out.append({
+        agent = {
             "id": row["id"],
             "name": row["name"],
             "description": row.get("description") or "",
             "state": "offline" if row.get("disabled") else "ready",
             "owned": owned,
-        })
+        }
+        connection_security = row.get("connection_security")
+        if isinstance(connection_security, dict):
+            agent["connection_security"] = connection_security
+        out.append(agent)
     out.sort(key=lambda a: (a["state"] != "ready", a["name"].lower()))
     return out[:MAX_AGENTS]
 

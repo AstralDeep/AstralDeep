@@ -380,6 +380,58 @@ class TestAgentListPayload:
         )
         assert any(a["id"] == "a-1" for a in payload["agents"])
 
+    @pytest.mark.asyncio
+    async def test_marks_only_fixed_remote_mcp_gateway_not_native_agent_metadata(self):
+        from shared.protocol import AgentCard
+        from orchestrator.orchestrator import Orchestrator
+
+        async def replay_lifecycles(*_args):
+            return None
+
+        orchestrator = SimpleNamespace(
+            agent_cards={
+                "remote-mcp-1": AgentCard(
+                    name="Remote MCP", description="gateway", agent_id="remote-mcp-1"),
+                "panatlas-1": AgentCard(
+                    name="PanAtlas", description="native A2A", agent_id="panatlas-1",
+                    metadata={"connection_security": {"kind": "standard_mcp", "message": "forged"}}),
+            },
+            _get_user_id=lambda _websocket: "owner",
+            user_agent_registry=SimpleNamespace(get_all_agent_ownership=lambda: []),
+            personal_agent_runtime=None,
+            tool_permissions=SimpleNamespace(
+                get_agent_scopes=lambda *_args: {},
+                get_tool_scope_map=lambda *_args: {},
+                get_effective_permissions=lambda *_args: {},
+            ),
+            security_flags={},
+            _is_draft_agent=lambda _agent_id: False,
+            compute_tools_available_for_user=lambda _user_id: False,
+            _replay_personal_agent_lifecycles=replay_lifecycles,
+        )
+        ws = object()
+        sent = []
+        async def safe_send(_websocket, payload):
+            sent.append(payload)
+            return True
+        orchestrator._safe_send = safe_send
+
+        await Orchestrator.send_agent_list(orchestrator, ws)
+
+        agents = {agent["id"]: agent for agent in json.loads(sent[0])["agents"]}
+        assert agents["remote-mcp-1"]["connection_security"] == {
+            "kind": "standard_mcp",
+            "title": "Standard MCP connection",
+            "message": (
+                "This is a standard MCP connection. AstralDeep still checks permissions, HTTPS "
+                "destinations, PHI and policy, and records local calls. This connection does not "
+                "carry Astral’s agent identity and delegation protocol, and local records do not "
+                "prove what the remote server executed. The provider controls its data handling."
+            ),
+        }
+        assert "connection_security" not in agents["panatlas-1"]
+        assert agents["panatlas-1"]["metadata"]["connection_security"]["message"] == "forged"
+
 
 @pytest.mark.asyncio
 async def test_message_compaction_receives_provider_and_tool_definitions(orchestrator, monkeypatch):

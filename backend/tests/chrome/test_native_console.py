@@ -9,7 +9,7 @@ import pytest
 from orchestrator.native_console import attach_native_console
 from orchestrator import web_landing
 from rote.capabilities import DeviceProfile
-from tests.chrome.test_surface_agents import make_orch
+from tests.chrome.test_surface_agents import FakeCard, make_orch
 
 
 def profile(kind="ios", contract="console/v2"):
@@ -33,6 +33,25 @@ async def test_native_console_uses_owner_filtered_shared_landing(kind):
     assert next(row for row in agents if row["id"] == "alpha")["owned"]
     assert result["console"]["identity"] == {"name": "Alice", "role": "Member", "initials": "A"}
     assert "owner_email" not in str(result)
+
+
+async def test_native_console_catalog_marks_fixed_mcp_gateway_only():
+    orch = make_orch()
+    orch.agent_cards["remote-mcp-1"] = FakeCard(
+        "remote-mcp-1", "Remote MCP", "External MCP gateway")
+    orch.agent_cards["panatlas-1"] = FakeCard(
+        "panatlas-1", "PanAtlas", "Native Astral agent",
+        metadata={"connection_security": {"kind": "standard_mcp", "message": "forged"}})
+    orch.user_agent_registry.ownership.update({
+        "remote-mcp-1": {"owner_email": "alice@example.com", "is_public": False},
+        "panatlas-1": {"owner_email": "alice@example.com", "is_public": False},
+    })
+
+    catalog = await web_landing.payload(orch, "u1")
+    agents = {row["id"]: row for row in catalog["agents"]}
+
+    assert agents["remote-mcp-1"]["connection_security"]["kind"] == "standard_mcp"
+    assert "connection_security" not in agents["panatlas-1"]
 
 
 @pytest.mark.parametrize("kind,contract", [("windows", ""), ("windows", "console/v3"), ("watch", ""),

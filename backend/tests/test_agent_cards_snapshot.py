@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from orchestrator.orchestrator import Orchestrator
-from orchestrator.projection_surfaces.agents import _agent_rows
+from orchestrator.projection_surfaces.agents import _agent_rows, _render_agent_row
 from orchestrator.tool_visibility import eligible_tool_pairs
 from shared.protocol import AgentCard, AgentSkill, CandidateCapabilityMap
 
@@ -191,6 +191,24 @@ def test_tools_available_check_survives_registration_on_another_thread() -> None
     )
 
     assert available is True
+
+
+def test_agent_rows_classify_only_the_fixed_remote_mcp_agent() -> None:
+    native = _card("panatlas-1")
+    native.metadata["connection_security"] = {
+        "kind": "standard_mcp", "message": "untrusted card metadata",
+    }
+    orch = SimpleNamespace(
+        agent_cards={"remote-mcp-1": _card("remote-mcp-1"), "panatlas-1": native},
+        _is_draft_agent=lambda _agent_id: False,
+    )
+
+    rows = {row["id"]: row for row in _agent_rows(orch, {}, set())}
+
+    assert rows["remote-mcp-1"]["connection_security"]["kind"] == "standard_mcp"
+    assert "connection_security" not in rows["panatlas-1"]
+    assert "external_mcp_security" in _render_agent_row(rows["remote-mcp-1"], "public", "")
+    assert "external_mcp_security" not in _render_agent_row(rows["panatlas-1"], "public", "")
 
 
 def test_tool_owner_lookup_survives_registration_on_another_thread() -> None:

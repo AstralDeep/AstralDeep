@@ -25137,6 +25137,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     "owner_email": ownership.get("owner_email"),
                     "is_public": bool(ownership.get("is_public", False)),
                 }
+                from orchestrator.remote_mcp_security import connection_security_for_agent
+
+                connection_security = connection_security_for_agent(card.agent_id)
+                if connection_security is not None:
+                    entry["connection_security"] = connection_security
                 if getattr(card, 'metadata', None):
                     entry["metadata"] = card.metadata
                 agents.append(entry)

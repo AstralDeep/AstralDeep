@@ -84,6 +84,12 @@ def _snippet(text, limit: int = 110) -> str:
     return flat[: limit - 1].rstrip() + "…"
 
 
+def _connection_security(agent_id: str) -> dict | None:
+    from orchestrator.remote_mcp_security import connection_security_for_agent
+
+    return connection_security_for_agent(agent_id)
+
+
 def _management_context(orch) -> PlaneRepositoryContext:
     source = plane_source_from_orchestrator(orch)
     repository, runtime = repository_from(
@@ -122,14 +128,18 @@ def _agent_rows(orch, ownership_map, disabled_set):
         if orch._is_draft_agent(agent_id):
             continue
         ownership = ownership_map.get(agent_id, {})
-        rows.append({
+        row = {
             "id": agent_id,
             "name": card.name,
             "description": card.description,
             "owner_email": ownership.get("owner_email"),
             "is_public": bool(ownership.get("is_public", False)),
             "disabled": agent_id in disabled_set,
-        })
+        }
+        connection_security = _connection_security(agent_id)
+        if connection_security is not None:
+            row["connection_security"] = connection_security
+        rows.append(row)
     return rows
 
 
@@ -197,6 +207,13 @@ def _render_agent_row(agent: dict, tab: str, user_email: str) -> str:
             'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">Disabled by you</span>'
         )
     open_pl = _payload({"surface": "agents", "params": {"agent_id": agent_id, "tab": tab}})
+    security_button = ""
+    if agent.get("connection_security", {}).get("kind") == "standard_mcp":
+        security_button = (
+            '<button type="button" aria-label="Standard MCP connection security notice" '
+            'title="Standard MCP connection security notice" data-ui-action="chrome_open" '
+            'data-ui-payload=\'{"surface":"remote_mcp","params":{"notice":"external_mcp_security"}}\'>⚠</button>'
+        )
     status = (
         '<span class="flex items-center gap-1.5 text-xs text-astral-muted">'
         '<span class="w-1.5 h-1.5 rounded-full bg-green-400 inline-block"></span>'
@@ -212,7 +229,7 @@ def _render_agent_row(agent: dict, tab: str, user_email: str) -> str:
         f'{esc(agent["name"])}</span>{"".join(badges)}</div>'
         f'<div class="text-xs text-astral-muted mt-0.5">{esc(_snippet(agent.get("description")))}</div>'
         f"</button>"
-        f'<div class="flex items-center gap-2 shrink-0">{status}'
+        f'<div class="flex items-center gap-2 shrink-0">{security_button}{status}'
         f'{_enable_button(agent_id, not agent.get("disabled", False), {"tab": tab})}'
         f"</div></div>"
     )
@@ -644,16 +661,20 @@ async def components(orch, user_id, roles, params):
             tool_scope_map = orch.tool_permissions.get_tool_scope_map(agent_id)
             per_tool = _effective_permissions(tool_scope_map, user_id, agent_id, ctx)
             owned = bool(ctx["user_email"]) and ctx["owner_email"] == ctx["user_email"]
+            selected = {
+                "id": agent_id, "name": card.name, "description": card.description,
+                "owner_email": ctx["owner_email"], "owned": owned,
+                "is_public": ctx["is_public"], "is_safe": ctx["is_safe"],
+                "disabled": not ctx["enabled"],
+                "external_identity": _external_identity_snapshot(
+                    ctx["external_identity_links"], agent_id, card),
+            }
+            connection_security = _connection_security(agent_id)
+            if connection_security is not None:
+                selected["connection_security"] = connection_security
             view = build_agents_view(
                 tab=tab,
-                selected={
-                    "id": agent_id, "name": card.name, "description": card.description,
-                    "owner_email": ctx["owner_email"], "owned": owned,
-                    "is_public": ctx["is_public"], "is_safe": ctx["is_safe"],
-                    "disabled": not ctx["enabled"],
-                    "external_identity": _external_identity_snapshot(
-                        ctx["external_identity_links"], agent_id, card),
-                },
+                selected=selected,
                 can_configure=True,
                 can_set_visibility=owned,
                 can_set_safe=bool(ctx["safe_known"] and (owned or "admin" in (roles or []))),

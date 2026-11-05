@@ -21,6 +21,19 @@ _INPUT = "rounded-lg bg-white/10 border border-white/10 px-3 py-2 text-sm text-a
 logger = logging.getLogger("Orchestrator.Chrome.RemoteMCP")
 _TRANSPORT_LABELS = {"streamable_http": "Streamable HTTP", "sse": "Legacy SSE"}
 _AUTH_LABELS = {"none": "None", "bearer": "Bearer token", "oauth": "OAuth"}
+_SECURITY_NOTICE_PARAM = "external_mcp_security"
+
+
+def _security_notice() -> str:
+    from orchestrator.remote_mcp_security import REMOTE_MCP_SECURITY_NOTICE
+
+    return REMOTE_MCP_SECURITY_NOTICE
+
+
+def _security_title() -> str:
+    from orchestrator.remote_mcp_security import REMOTE_MCP_SECURITY_TITLE
+
+    return REMOTE_MCP_SECURITY_TITLE
 
 
 def _enabled() -> bool:
@@ -69,6 +82,11 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
         return '<p class="text-sm text-astral-muted">Remote MCP connectors are disabled on this server.</p>'
     rows = await asyncio.to_thread(connectors.list_connectors, orch, user_id)
     params = params if isinstance(params, dict) else {}
+    security_notice = (
+        notice_block("warning", esc(f"{_security_title()}: {_security_notice()}"))
+        if params.get("notice") == _SECURITY_NOTICE_PARAM
+        else ""
+    )
     edit_id = params.get("edit") if isinstance(params.get("edit"), str) else ""
     edit_config = None
     if edit_id:
@@ -84,6 +102,11 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
             f'data-ui-payload="{{&quot;connector_id&quot;:&quot;{cid}&quot;}}">Authorize</button>'
             if connector.get("auth_type") == "oauth" else ""
         )
+        security_button = (
+            '<button type="button" aria-label="Standard MCP connection security notice" '
+            'title="Standard MCP connection security notice" data-ui-action="chrome_open" '
+            'data-ui-payload="{&quot;surface&quot;:&quot;remote_mcp&quot;,&quot;params&quot;:{&quot;notice&quot;:&quot;external_mcp_security&quot;}}">⚠</button>'
+        )
         tools = []
         for tool in connector.get("tools_catalog", []):
             name = tool.get("name", "")
@@ -95,7 +118,7 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
                 f'{"Disable" if checked else "Enable"}</button></div>')
         cards.append(
             '<section class="rounded-lg border border-white/10 p-3 space-y-2">'
-            f'<div class="font-medium">{esc(connector["name"])}</div>'
+            f'<div class="flex items-center gap-2"><span class="font-medium">{esc(connector["name"])}</span>{security_button}</div>'
             f'<div class="text-xs text-astral-muted">{esc(connector["url"])} · '
             f'{esc(_TRANSPORT_LABELS.get(connector["transport"], connector["transport"]))} · '
             f'{esc(_AUTH_LABELS.get(connector["auth_type"], connector["auth_type"]))}</div>'
@@ -117,8 +140,8 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
         f'{_select("transport", (("streamable_http", "Streamable HTTP"), ("sse", "Legacy SSE")), edit_config.get("transport", "streamable_http") if edit_config else "streamable_http")}'
         f'{_select("auth_type", (("none", "None"), ("bearer", "Bearer token"), ("oauth", "OAuth")), edit_config.get("auth_type", "none") if edit_config else "none")}'
         f'{_text("token", "Bearer token", input_type="password")}'
-        f'{_text("oauth_client_id", "OAuth client ID (optional when dynamic registration is supported)", edit_config.get("oauth_client_id", "") if edit_config else "")}'
-        f'{_text("oauth_client_secret", "OAuth client secret", input_type="password")}'
+        f'{_text("oauth_client_id", "OAuth client ID (optional)", edit_config.get("oauth_client_id", "") if edit_config else "")}'
+        f'{_text("oauth_client_secret", "OAuth client secret (optional)", input_type="password")}'
         + ('<label class="block text-sm"><input name="clear_oauth_client_credentials" type="checkbox" value="true"> Clear saved OAuth client credentials and use dynamic registration</label>'
            if edit_config and edit_config.get("auth_type") == "oauth" else "")
         + '<button data-ui-action="chrome_remote_mcp_save" data-ui-collect="true">Save server</button>'
@@ -126,7 +149,7 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
     oauth_url = params.get("oauth_url") if isinstance(params.get("oauth_url"), str) else ""
     oauth_link = (f'<a rel="noopener noreferrer" target="_blank" href="{esc(oauth_url)}">Open OAuth authorization page</a>'
                   if oauth_url else "")
-    return ("<div class=\"space-y-4\"><p class=\"text-sm text-astral-muted\">"
+    return ("<div class=\"space-y-4\">" + security_notice + "<p class=\"text-sm text-astral-muted\">"
             "Remote servers provide tools to your account. Configure and enable each server tool before chat can call it. "
             "Calls go through normal permissions, policy, and audit controls.</p>"
             + oauth_link + "".join(cards) + form + "</div>")
@@ -138,7 +161,11 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
     if not _enabled():
         return [_sdui.alert("Remote MCP connectors are disabled on this server.", "warning")]
     rows = await asyncio.to_thread(connectors.list_connectors, orch, user_id)
-    out = [_sdui.text("Remote servers provide tools to your account. Enable each server tool before chat can call it; calls use normal permissions and audit.", "caption")]
+    params = params if isinstance(params, dict) else {}
+    out = []
+    if params.get("notice") == _SECURITY_NOTICE_PARAM:
+        out.append(_sdui.alert(f"{_security_title()}: {_security_notice()}", "warning"))
+    out.append(_sdui.text("Remote servers provide tools to your account. Enable each server tool before chat can call it; calls use normal permissions and audit.", "caption"))
     if isinstance(params, dict) and isinstance(params.get("oauth_url"), str):
         encoded_url = quote(params["oauth_url"], safe=":/?&=%")
         out.append(_sdui.text(f'[Open OAuth authorization page](<{encoded_url}>)'))
@@ -167,8 +194,23 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
                               "chrome_remote_mcp_toggle_tool",
                               {"connector_id": connector["id"], "tool_name": tool["name"],
                                "enabled": not connector.get("tools", {}).get(tool["name"])})], direction="row"))
-        out.append(_sdui.card(connector["name"], [_sdui.key_value(entries), *tool_rows,
-                                                 _sdui.container(buttons, direction="row")]))
+        warning = _sdui.Button(
+            label="⚠",
+            action="chrome_open",
+            payload={"surface": SURFACE_KEY, "params": {"notice": _SECURITY_NOTICE_PARAM}},
+            variant="ghost",
+            id=f"remote-mcp-security-{connector['id']}",
+            attributes={
+                "aria-label": _security_title(),
+                "aria-description": _security_notice(),
+                "data-testid": f"remote-mcp-security-{connector['id']}",
+            },
+        ).to_dict()
+        header = _sdui.container([
+            _sdui.text(connector["name"], "h3"), warning,
+        ], direction="row")
+        out.append(_sdui.card("", [header, _sdui.key_value(entries), *tool_rows,
+                                     _sdui.container(buttons, direction="row")]))
     edit_id = params.get("edit") if isinstance(params, dict) and isinstance(params.get("edit"), str) else ""
     edit_config = None
     if edit_id:
@@ -188,9 +230,9 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
                              {"value": "oauth", "label": "OAuth"}]),
         _sdui.field("token", "Bearer token", "password",
                     visible_when={"field": "auth_type", "equals": "bearer", "default": "none"}),
-        _sdui.field("oauth_client_id", "OAuth client ID", default=edit_config.get("oauth_client_id") if edit_config else None,
+        _sdui.field("oauth_client_id", "OAuth client ID (optional)", default=edit_config.get("oauth_client_id") if edit_config else None,
                     visible_when={"field": "auth_type", "equals": "oauth", "default": "none"}),
-        _sdui.field("oauth_client_secret", "OAuth client secret", "password",
+        _sdui.field("oauth_client_secret", "OAuth client secret (optional)", "password",
                     visible_when={"field": "auth_type", "equals": "oauth", "default": "none"}),
     ]
     if edit_config and edit_config.get("auth_type") == "oauth":
