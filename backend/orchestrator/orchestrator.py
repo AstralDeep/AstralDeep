@@ -1093,8 +1093,10 @@ class Orchestrator:
         self._agent_host_sockets: Dict[int, str] = {}
         from orchestrator.computer_hosts import ComputerHostRegistry
         from orchestrator.computer_sessions import ComputerSessionManager
+        from orchestrator.computer_effect_intents import EffectIntentLedger
         self.computer_hosts = ComputerHostRegistry(self)
         self.computer_sessions = ComputerSessionManager(self, self.computer_hosts)
+        self.computer_effect_intents = EffectIntentLedger(self)
         from personalization.phi_policy import bind as bind_phi_policy
 
         bind_phi_policy(self)
@@ -1913,6 +1915,10 @@ class Orchestrator:
         host.project_mode = project_mode
         host.project_manifest = project_manifest
         host.project_manifest_highwater = project_manifest.generation if project_manifest else 0
+        try:
+            await self.computer_effect_intents.reconcile_owner(owner_sub)
+        except Exception:  # noqa: BLE001
+            logger.warning("computer outcome reconciliation failed at host registration", exc_info=True)
         ended = set()
         for previous in (*displaced, superseded):
             if previous is None or (previous.owner_sub, previous.host_id) in ended:
@@ -2024,11 +2030,52 @@ class Orchestrator:
                 "outcome_ack": {"decision": decision, "incarnation_id": incarnation_id,
                                  "connection_generation": str(generation)},
             }))
+            await self._resolve_computer_outcome_unknowns(owner_sub, host, decision, incarnation_id)
             return
         if event in ("heartbeat", "paused", "resumed", "stopped", "approval_activity"):
             await self.computer_sessions.on_host_event(
                 owner_sub, host.host_id, event,
                 str(payload.get("session_id") or ""), payload.get("reason"))
+
+    async def _effect_acknowledgment_gate(self, user_id: Optional[str], chat_id: Optional[str]) -> Optional[str]:
+        if not user_id or not chat_id or not flags.is_enabled("computer_use"):
+            return None
+        try:
+            await self.computer_effect_intents.reconcile_chat(user_id, chat_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("effect reconciliation before dispatch failed", exc_info=True)
+            return None
+        unknown = self.computer_effect_intents.unknown_for(user_id, chat_id)
+        if not unknown:
+            return None
+        counted: Dict[str, int] = {}
+        for intent in unknown:
+            counted[intent.verb] = counted.get(intent.verb, 0) + 1
+        named = ", ".join(f"{verb} ×{count}" if count > 1 else verb
+                          for verb, count in list(counted.items())[:8])
+        return ("This chat is paused: an interrupted turn left the outcome of these computer actions unknown: "
+                f"{named}. Nothing was re-run. Resolve the outcome-unknown card on the computer "
+                "(acknowledge or discard) to resume this chat.")
+
+    async def _resolve_computer_outcome_unknowns(self, owner_sub: str, host, decision: str,
+                                                 incarnation_id: str) -> None:
+        ledger = self.computer_effect_intents
+        try:
+            resolved = await ledger.resolve_owner_unknowns(owner_sub, host.host_id, decision=decision)
+        except Exception:  # noqa: BLE001
+            logger.warning("outcome-unknown resolution failed for host %s", host.host_id[:8], exc_info=True)
+            return
+        for chat_id, intents in resolved.items():
+            if not intents or not ledger.grant_resume_input(owner_sub, chat_id, incarnation_id):
+                continue
+            from orchestrator.computer_effect_intents import resume_text
+            text = resume_text(host.name, intents, ledger.lost_approvals(owner_sub, chat_id), decision)
+            try:
+                await self._append_conversation_message(
+                    None, chat_id=chat_id, user_id=owner_sub, role="user", content=text)
+            except Exception:  # noqa: BLE001
+                logger.warning("recovered resume input could not be appended to chat %s", chat_id[:8],
+                               exc_info=True)
 
     async def _record_computer_outcome_ack(
         self, owner_sub: str, host_id: str, incarnation_id: str, decision: str, retained_job_count: int,
@@ -14834,6 +14881,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         scheduled_history_stage = current_scheduled_history_stage()
         if user_id is None:
             user_id = self._get_user_id(websocket)
+        if voice_dispatch is None and not conversation_server_initiated:
+            blocked = await self._effect_acknowledgment_gate(user_id, chat_id)
+            if blocked is not None:
+                await self.send_ui_render(websocket, [Alert(message=blocked, variant="warning").to_dict()],
+                                          target="chat")
+                await self._safe_send(websocket, json.dumps({"type": "chat_status", "status": "done", "message": ""}))
+                return
         if selected_tools is not None and len(selected_tools) == 0:
             logger.warning(
                 "Chat dispatch received empty selected_tools (chat_id=%s user_id=%s) "
