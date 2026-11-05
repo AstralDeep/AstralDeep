@@ -1992,10 +1992,56 @@ class Orchestrator:
             self.computer_hosts.withdraw(owner_sub, host.host_id)
             await self.computer_hosts.push_presence(host, "offline")
             return
+        if event == "outcome_ack":
+            decision = payload.get("decision")
+            incarnation_id = payload.get("incarnation_id")
+            if (set(payload) != {"host_id", "event", "decision", "incarnation_id"}
+                    or not isinstance(decision, str) or decision not in {"acknowledge", "discard"}
+                    or not isinstance(incarnation_id, str)
+                    or not self.computer_hosts.acknowledge_outcome(host, incarnation_id)):
+                return
+            recorded = await self._record_computer_outcome_ack(
+                owner_sub, host.host_id, incarnation_id, decision,
+                len(host.descriptor.get("retained_jobs") or ()),
+                self._ws_active_chat.get(id(websocket)))
+            if not recorded:
+                host.outcome_acknowledged = False
+            return
         if event in ("heartbeat", "paused", "resumed", "stopped", "approval_activity"):
             await self.computer_sessions.on_host_event(
                 owner_sub, host.host_id, event,
                 str(payload.get("session_id") or ""), payload.get("reason"))
+
+    async def _record_computer_outcome_ack(
+        self, owner_sub: str, host_id: str, incarnation_id: str, decision: str, retained_job_count: int,
+        chat_id: Optional[str],
+    ) -> bool:
+        try:
+            from datetime import datetime, timezone
+
+            from audit.recorder import get_recorder
+            from audit.schemas import AuditEventCreate
+
+            recorder = getattr(self, "audit_recorder", None) or get_recorder()
+            if recorder is None:
+                return False
+            await recorder.record(AuditEventCreate(
+                actor_user_id=owner_sub,
+                auth_principal=owner_sub,
+                event_class="agent_lifecycle",
+                action_type="computer_host.outcome_acknowledged",
+                description=f"Computer outcome-unknown card decision recorded: {decision}",
+                conversation_id=chat_id,
+                correlation_id=incarnation_id,
+                outcome="success",
+                inputs_meta={"host_id": host_id, "incarnation_id": incarnation_id,
+                             "decision": decision, "retained_job_count": retained_job_count},
+                started_at=datetime.now(timezone.utc),
+            ))
+            return True
+        except Exception:  # noqa: BLE001
+            logger.warning("Computer outcome acknowledgment audit failed", exc_info=True)
+            return False
 
     async def _refuse_personal_agent_host(
         self,

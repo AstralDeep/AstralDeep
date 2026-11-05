@@ -179,7 +179,7 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
         'and files from this device.</p>'
         '<ol class="astral-computers-setup text-sm text-astral-muted">'
         '<li>Open the AstralDeep desktop client and sign in to this account.</li>'
-        '<li>Go to Settings → Remote control and turn on Allow remote control.</li>'
+        '<li>Open Computer controls and enable computer access.</li>'
         '<li>Refresh this list, choose your computer, then ask for what you need in chat.</li>'
         '</ol></div>'
     )

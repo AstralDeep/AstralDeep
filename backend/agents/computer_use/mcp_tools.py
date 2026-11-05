@@ -416,11 +416,11 @@ def list_computers(**kwargs) -> Dict[str, Any]:
         out.append({**r, "status": status, "session": {"state": s["state"], "controller": s["controller_label"],
                                                        "session_id": s["session_id"]} if s else None})
     if not out:
-        return _data({"computers": [], "note": "no computers — on the PC open the AstralDeep "
-                                                "desktop client and switch on Settings → Remote control"},
+        return _data({"computers": [], "note": "no computers — open the AstralDeep desktop client "
+                                                "and check Computer controls"},
                      [Card(title="My computers", content=[Text(
-                         content="No computers yet. On your PC, open the AstralDeep desktop client "
-                                 "and switch on Settings → Remote control.", variant="body")])])
+                         content="No computers yet. Open the AstralDeep desktop client and check "
+                                 "Computer controls.", variant="body")])])
     table = Table(headers=["Computer", "Platform", "Status", "Session"],
                   rows=[[r["name"], r["platform"], r["status"],
                          (r["session"]["state"] + " · " + r["session"]["controller"]) if r["session"] else "—"]

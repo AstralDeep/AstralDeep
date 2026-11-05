@@ -22,7 +22,7 @@ logger = logging.getLogger("ComputerHosts")
 
 MAX_FRAME_BYTES = int(os.getenv("COMPUTER_HOST_MAX_FRAME_BYTES", str(4 * 1024 * 1024)))
 WITHDRAWN = "consent_revoked"
-WITHDRAWN_NOTE = "access withdrawn on that Mac; re-enable it in Computer controls there"
+WITHDRAWN_NOTE = "access withdrawn; re-enable it in Computer controls on the desktop client"
 LAST_SEEN_TTL_S = int(os.getenv("COMPUTER_HOST_LAST_SEEN_TTL_S", str(24 * 3600)))
 ELEMENT_LINE_CHARS = 200
 
@@ -56,13 +56,14 @@ class ComputerHost:
     project_manifest: Any = None
     project_manifest_highwater: int = 0
     project_retirements: Dict[str, int] = field(default_factory=dict)
+    outcome_acknowledged: bool = False
 
     def unavailable(self) -> "ComputerHostError":
         if self.offline_reason == WITHDRAWN:
             return ComputerHostError("computer_unavailable", f"{self.name} withdrew computer access; ask the user "
-                                                             "to re-enable it in Computer controls on that Mac")
-        return ComputerHostError("computer_unavailable", f"{self.name} is offline — open the AstralDeep desktop "
-                                                         "client on it")
+                                                             "to re-enable it in Computer controls in the desktop client")
+        return ComputerHostError("computer_unavailable", f"{self.name} is offline — open the desktop client and "
+                                                         "check Computer controls")
 
     @property
     def name(self) -> str:
@@ -170,6 +171,15 @@ class ComputerHostRegistry:
     def forget(self, owner_sub: str, host_id: str) -> bool:
         return self._offline.pop((owner_sub, host_id), None) is not None
 
+    def acknowledge_outcome(self, host: ComputerHost, incarnation_id: str) -> bool:
+        key = (host.owner_sub, host.host_id)
+        if (self._hosts.get(key) is not host or host.outcome_acknowledged
+                or host.descriptor.get("incarnation_id") != incarnation_id
+                or not host.descriptor.get("retained_jobs")):
+            return False
+        host.outcome_acknowledged = True
+        return True
+
     def on_socket_closed(self, websocket) -> Optional[ComputerHost]:
         key = self._by_ws.pop(id(websocket), None)
         if key is None:
@@ -224,7 +234,7 @@ class ComputerHostRegistry:
                 raise ComputerHostError(
                     "computer_unavailable",
                     "none of your computers is online — open the AstralDeep desktop client "
-                    "on the PC and switch on Settings → Remote control")
+                    "and check Computer controls")
             raise ComputerHostError(
                 "ambiguous_computer", "several computers are online — say which one",
                 candidates=[h.name for h in online])
