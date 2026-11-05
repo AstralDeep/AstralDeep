@@ -1320,7 +1320,7 @@ def _private(text: str, user_id: Optional[str] = None) -> Tuple[str, Optional[st
     gate = get_phi_gate()
     try:
         try:
-            cleaned, changed = gate.redact_for_storage(text, passes=3, best_effort=True)
+            cleaned, changed = gate.redact_for_storage(text, passes=3)
         except TypeError:
             cleaned, changed = gate.redact_for_storage(text)
     except Exception:  # noqa: BLE001

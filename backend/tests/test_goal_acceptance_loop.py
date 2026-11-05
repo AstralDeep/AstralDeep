@@ -98,7 +98,7 @@ async def test_unusable_contract_stops_before_execution(acceptance_orch, user_sk
 
     o._call_llm = provider
     o.execute_single_tool = AsyncMock()
-    await o.handle_chat_message(ws, "Create and test a game", chat, user_id="seam-user")
+    await o.handle_chat_message(ws, "Work on the selected project", chat, user_id="seam-user")
     final = await _last_assistant_text(o, chat, "seam-user")
     assert "cancelled" in final.lower() if kind == "cancelled" else "incomplete" in final.lower()
     assert planner_calls == 0
@@ -107,8 +107,16 @@ async def test_unusable_contract_stops_before_execution(acceptance_orch, user_sk
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("foreign", [False, True])
-async def test_local_completion_requires_distinct_stage_evidence(acceptance_orch, user_skills_disabled, foreign):
+async def test_local_completion_requires_distinct_stage_evidence(
+    acceptance_orch, monkeypatch, user_skills_disabled, foreign,
+):
+    from orchestrator import goal_worker
+
     o = acceptance_orch
+    def worker_unavailable(*args, **kwargs):
+        raise ValueError("worker unavailable")
+
+    monkeypatch.setattr(goal_worker, "build_worker_command", worker_unavailable)
     _register(o, "run_command", "other-agent" if foreign else "computer-use-1")
     chat, ws = await _chat(o)
     planner_calls = 0
@@ -132,7 +140,7 @@ async def test_local_completion_requires_distinct_stage_evidence(acceptance_orch
                            "timed_out": False, "stdout": "Project files, environment, dependencies, tests and startup verified"}},
         error=None, ui_components=[], correlation_id=None,
     ))
-    await o.handle_chat_message(ws, "Create and verify a local game", chat, user_id="seam-user")
+    await o.handle_chat_message(ws, "Improve the selected project", chat, user_id="seam-user")
     final = await _last_assistant_text(o, chat, "seam-user")
     assert "incomplete" in final.lower()
     assert "installed, tested and launched" not in final
@@ -204,7 +212,7 @@ async def test_local_contract_respects_authority_and_cancel_boundaries(acceptanc
         result={"_data": {"computer": "Test Mac", "cwd": "/work/Game", "exit_code": 0, "timed_out": False}},
         error=None, ui_components=[], correlation_id=None,
     ))
-    await o.handle_chat_message(ws, "Build a game and verify it", chat, user_id="seam-user")
+    await o.handle_chat_message(ws, "Work on the selected project", chat, user_id="seam-user")
     final = await _last_assistant_text(o, chat, "seam-user")
     assert "cancelled" in final.lower() if boundary == "cancelled" else "incomplete" in final.lower()
     assert "finished successfully" not in final
