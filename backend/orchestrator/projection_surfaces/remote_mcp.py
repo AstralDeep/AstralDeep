@@ -115,6 +115,7 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
         f'{_text("token", "Bearer token", input_type="password")}'
         f'{_text("oauth_client_id", "OAuth client ID (optional when dynamic registration is supported)", edit_config.get("oauth_client_id", "") if edit_config else "")}'
         f'{_text("oauth_client_secret", "OAuth client secret", input_type="password")}'
+        '<label class="block text-sm"><input name="clear_oauth_client_credentials" type="checkbox" value="true"> Clear saved OAuth client credentials and use dynamic registration</label>'
         '<button data-ui-action="chrome_remote_mcp_save" data-ui-collect="true">Save server</button>'
         '</form>')
     oauth_url = params.get("oauth_url") if isinstance(params.get("oauth_url"), str) else ""
@@ -178,6 +179,8 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
         _sdui.field("token", "Bearer token", "password"),
         _sdui.field("oauth_client_id", "OAuth client ID", default=edit_config.get("oauth_client_id") if edit_config else None),
         _sdui.field("oauth_client_secret", "OAuth client secret", "password"),
+        _sdui.field("clear_oauth_client_credentials", "Clear saved OAuth client credentials and use dynamic registration",
+                    "boolean", default=False),
     ]
     out.append(_sdui.form(fields, submit_action="chrome_remote_mcp_save", submit_label="Save server",
                           submit_payload={"connector_id": edit_id} if edit_id else {},
@@ -194,6 +197,7 @@ async def _save(orch, websocket, user_id, roles, payload):
               "transport": fields.get("transport"), "auth_type": fields.get("auth_type"),
               "token": fields.get("token", ""), "oauth_client_id": fields.get("oauth_client_id", ""),
               "oauth_client_secret": fields.get("oauth_client_secret", ""), "enabled": True}
+    clear_oauth_client_credentials = fields.get("clear_oauth_client_credentials", "").casefold() == "true"
     if connector_id:
         config["id"] = connector_id
         old = await asyncio.to_thread(connectors.get_connector, orch, user_id, config["id"])
@@ -201,7 +205,8 @@ async def _save(orch, websocket, user_id, roles, payload):
         config["tools_catalog"] = old.get("tools_catalog", [])
         config["enabled"] = old.get("enabled", True)
     try:
-        await asyncio.to_thread(connectors.save_connector, orch, user_id, config)
+        await asyncio.to_thread(connectors.save_connector, orch, user_id, config,
+                                 clear_oauth_client_credentials=clear_oauth_client_credentials)
     except Exception as error:  # noqa: BLE001
         return (SURFACE_KEY, {}, _notice_for_error(error))
     return (SURFACE_KEY, {}, notice_block("success", "Remote MCP server saved."))

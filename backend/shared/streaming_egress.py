@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import aclosing
 import ipaddress
 import re
 import socket
@@ -185,17 +186,20 @@ class FixedOriginHttpTransport:
         return await self._request(method, request)
 
     async def post_stream(self, request: HttpRequestLike):
-        async for response in self._request_stream(request, method="POST"):
-            if response.body:
-                yield response.body
+        async with aclosing(self._request_stream(request, method="POST")) as responses:
+            async for response in responses:
+                if response.body:
+                    yield response.body
 
     async def get_stream(self, request: HttpRequestLike):
-        async for response in self._request_stream(request, method="GET"):
-            yield response
+        async with aclosing(self._request_stream(request, method="GET")) as responses:
+            async for response in responses:
+                yield response
 
     async def post_response_stream(self, request: HttpRequestLike):
-        async for response in self._request_stream(request, method="POST"):
-            yield response
+        async with aclosing(self._request_stream(request, method="POST")) as responses:
+            async for response in responses:
+                yield response
 
     async def _request_stream(self, request: HttpRequestLike, *, method: str):
         validated = _validate_request(request, self._origin, self._limits, method=method)

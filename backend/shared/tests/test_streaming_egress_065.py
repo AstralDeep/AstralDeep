@@ -320,6 +320,23 @@ async def test_get_stream_yields_bounded_sse_chunks_with_fixed_origin() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("method_name", ["post_stream", "get_stream", "post_response_stream"])
+async def test_early_stream_close_releases_pinned_socket(method_name: str) -> None:
+    transport, _, _, writer = _transport(_response(b"abc"))
+    request = Request(body=b"" if method_name == "get_stream" else b"request-body")
+    stream = getattr(transport, method_name)(request)
+
+    first = await anext(stream)
+    if method_name == "post_stream":
+        assert first == b"abc"
+    else:
+        assert first.status == 200 and first.body == b""
+    await stream.aclose()
+
+    assert writer.closed and writer.waited_closed
+
+
+@pytest.mark.asyncio
 async def test_streaming_target_preserves_server_issued_trailing_slash_and_query() -> None:
     transport, _, _, writer = _transport(_response(b"accepted"))
     request = Request(path="/messages/?session_id=abc%2Fdef", body=b"")

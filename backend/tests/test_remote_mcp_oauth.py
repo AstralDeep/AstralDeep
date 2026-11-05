@@ -4,6 +4,7 @@ Network requests use a deterministic fake while the connector store uses its rea
 
 from __future__ import annotations
 
+import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -14,6 +15,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from orchestrator import remote_mcp_connectors as connectors
 from orchestrator import remote_mcp_oauth as oauth
 from orchestrator.credential_manager import CredentialManager
+from orchestrator.projection_surfaces import remote_mcp as remote_mcp_surface
 
 RESOURCE = "https://mcp.example/mcp"
 ISSUER = "https://id.example"
@@ -114,6 +116,72 @@ def _connector(orch, *, client_id="client-1"):
         "name": "Example MCP", "url": RESOURCE, "transport": "streamable_http",
         "auth_type": "oauth", "oauth_client_id": client_id, "enabled": True, "tools": {},
     })
+
+
+def test_saving_connector_clears_oauth_client_and_authorization_state_only_when_requested():
+    orch = _Orch()
+    saved = _connector(orch)
+    connector = connectors.get_connector(orch, "owner-1", saved["id"])
+    connector.update({"oauth_client_secret": "client-secret", "access_token": "access",
+                      "refresh_token": "refresh", "token_endpoint": ISSUER + "/token",
+                      "authorization_endpoint": ISSUER + "/authorize", "token_expires_at": 1000,
+                      "scope": "read"})
+    connectors.save_connector(orch, "owner-1", connector)
+
+    edited = connectors.get_connector(orch, "owner-1", saved["id"])
+    connectors.save_connector(orch, "owner-1", {**edited, "oauth_client_id": "", "oauth_client_secret": ""})
+    preserved = connectors.get_connector(orch, "owner-1", saved["id"])
+    assert preserved["oauth_client_id"] == "client-1"
+    assert preserved["oauth_client_secret"] == "client-secret"
+    assert preserved["access_token"] == "access"
+
+    connectors.save_connector(orch, "owner-1", {**edited, "oauth_client_id": "", "oauth_client_secret": ""},
+                              clear_oauth_client_credentials=True)
+    cleared = connectors.get_connector(orch, "owner-1", saved["id"])
+    assert not cleared.get("oauth_client_id")
+    assert not cleared.get("oauth_client_secret")
+    assert not any(cleared.get(field) for field in (
+        "access_token", "refresh_token", "token_endpoint", "authorization_endpoint", "token_expires_at", "scope"))
+
+
+def test_clear_oauth_client_credentials_requires_boolean():
+    orch = _Orch()
+    with pytest.raises(connectors.RemoteMCPError, match="must be a boolean"):
+        connectors.save_connector(orch, "owner-1", {
+            "name": "Example MCP", "url": RESOURCE, "transport": "streamable_http",
+            "auth_type": "oauth", "oauth_client_id": "client-1",
+        }, clear_oauth_client_credentials="true")
+
+
+def test_remote_mcp_edit_surfaces_expose_explicit_oauth_client_clear(monkeypatch):
+    monkeypatch.setattr(remote_mcp_surface, "_enabled", lambda: True)
+    monkeypatch.setattr(connectors, "list_connectors", lambda *_args: [])
+    html = asyncio.run(remote_mcp_surface.render(_Orch(), "owner-1", [], {}))
+    assert 'name="clear_oauth_client_credentials" type="checkbox" value="true"' in html
+
+    components = asyncio.run(remote_mcp_surface.components(_Orch(), "owner-1", [], {}))
+    form = next(component for component in components if component.get("submit_action") == "chrome_remote_mcp_save")
+    clear_field = next(field for field in form["fields"] if field["name"] == "clear_oauth_client_credentials")
+    assert clear_field["kind"] == "boolean"
+    assert clear_field["default"] is False
+
+
+def test_remote_mcp_save_action_forwards_explicit_oauth_clear(monkeypatch):
+    connector_id = "a" * 32
+    saved = {}
+    monkeypatch.setattr(remote_mcp_surface, "_enabled", lambda: True)
+    monkeypatch.setattr(connectors, "get_connector", lambda *_args: {"tools": {}, "tools_catalog": [], "enabled": True})
+
+    def save(_orch, _owner, _config, *, clear_oauth_client_credentials=False):
+        saved["clear"] = clear_oauth_client_credentials
+
+    monkeypatch.setattr(connectors, "save_connector", save)
+    asyncio.run(remote_mcp_surface._save(None, None, "owner-1", [], {
+        "connector_id": connector_id,
+        "fields": {"name": "Example MCP", "url": RESOURCE, "transport": "streamable_http",
+                   "auth_type": "oauth", "clear_oauth_client_credentials": "true"},
+    }))
+    assert saved["clear"] is True
 
 
 @pytest.mark.asyncio
@@ -587,9 +655,9 @@ async def test_pending_state_expires_and_pending_limit_prunes_old_entries(monkey
 
 
 def test_plane_pending_credential_take_is_atomic_across_workers(plane_template, monkeypatch, tmp_path):
-    from tests.helpers.plane_template import engine_clone
-
     from cryptography.fernet import Fernet
+
+    from tests.helpers.plane_template import engine_clone
 
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
     with engine_clone(plane_template) as (runtime, _database):

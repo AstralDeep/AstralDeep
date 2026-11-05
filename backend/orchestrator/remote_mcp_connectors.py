@@ -183,9 +183,12 @@ def get_connector(orch: Any, owner_id: str, connector_id: str) -> dict[str, Any]
     return connector
 
 
-def save_connector(orch: Any, owner_id: str, values: dict[str, Any]) -> dict[str, Any]:
+def save_connector(orch: Any, owner_id: str, values: dict[str, Any], *,
+                   clear_oauth_client_credentials: bool = False) -> dict[str, Any]:
     if type(values) is not dict:
         raise RemoteMCPError("Connector configuration is invalid.")
+    if type(clear_oauth_client_credentials) is not bool:
+        raise RemoteMCPError("OAuth client credential clearing must be a boolean.")
     connector_id = values.get("id")
     if connector_id is not None and (not isinstance(connector_id, str) or not _ID.fullmatch(connector_id)):
         raise RemoteMCPError("Connector ID is invalid.")
@@ -194,13 +197,20 @@ def save_connector(orch: Any, owner_id: str, values: dict[str, Any]) -> dict[str
     existing = _repository(orch).get_credential(owner_id, _AGENT_ID, key)
     candidate = dict(values)
     candidate["id"] = connector_id
+    if clear_oauth_client_credentials:
+        candidate.pop("oauth_client_id", None)
+        candidate.pop("oauth_client_secret", None)
+        for field in ("access_token", "refresh_token", "token_endpoint", "authorization_endpoint",
+                      "token_expires_at", "scope"):
+            candidate.pop(field, None)
     if existing:
         old = json.loads(existing)
         same_authority = old.get("url") == candidate.get("url") and old.get("auth_type") == candidate.get("auth_type")
         changed_oauth_client = (
             same_authority and candidate.get("auth_type") == "oauth"
-            and any(candidate.get(key) and candidate.get(key) != old.get(key)
-                    for key in ("oauth_client_id", "oauth_client_secret"))
+            and (clear_oauth_client_credentials or any(
+                candidate.get(key) and candidate.get(key) != old.get(key)
+                for key in ("oauth_client_id", "oauth_client_secret")))
         )
         credential_fields = (
             "token", "oauth_client_id", "oauth_client_secret", "access_token", "refresh_token",
