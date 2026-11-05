@@ -84,10 +84,9 @@ def _snippet(text, limit: int = 110) -> str:
     return flat[: limit - 1].rstrip() + "…"
 
 
-def _connection_security(orch, agent_id: str) -> dict | None:
+def _connection_security(orch, agent_id: str, card) -> dict | None:
     from orchestrator.remote_mcp_security import connection_security_for_card
 
-    card = orch.agent_cards.get(agent_id)
     return connection_security_for_card(
         agent_id, card, getattr(orch, "_standard_a2a_agent_cards", {}),
         getattr(orch, "local_agents", {}),
@@ -140,7 +139,7 @@ def _agent_rows(orch, ownership_map, disabled_set):
             "is_public": bool(ownership.get("is_public", False)),
             "disabled": agent_id in disabled_set,
         }
-        connection_security = _connection_security(orch, agent_id)
+        connection_security = _connection_security(orch, agent_id, card)
         if connection_security is not None:
             row["connection_security"] = connection_security
         rows.append(row)
@@ -679,7 +678,7 @@ async def components(orch, user_id, roles, params):
                 "external_identity": _external_identity_snapshot(
                     ctx["external_identity_links"], agent_id, card),
             }
-            connection_security = _connection_security(orch, agent_id)
+            connection_security = _connection_security(orch, agent_id, card)
             if connection_security is not None:
                 selected["connection_security"] = connection_security
             view = build_agents_view(

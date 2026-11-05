@@ -240,6 +240,29 @@ def test_agent_rows_classify_server_registered_a2a_peer_and_ignore_metadata() ->
     assert "a2a-peer" not in rows
 
 
+def test_agent_row_security_uses_the_card_from_its_iteration_snapshot() -> None:
+    original = _card("racing-peer")
+    original.name = "Original card"
+    replacement = _card("racing-peer")
+    replacement.name = "Replacement card"
+    orch = SimpleNamespace(
+        agent_cards={"racing-peer": original},
+        _standard_a2a_agent_cards={},
+        local_agents={},
+    )
+
+    def replace_card(agent_id):
+        orch.agent_cards[agent_id] = replacement
+        orch._standard_a2a_agent_cards[agent_id] = replacement
+        return False
+
+    orch._is_draft_agent = replace_card
+    rows = _agent_rows(orch, {}, set())
+
+    assert rows[0]["name"] == "Original card"
+    assert "connection_security" not in rows[0]
+
+
 def test_system_config_agent_catalog_carries_server_registered_a2a_notice() -> None:
     card = _card("partner-1")
     orch = Orchestrator.__new__(Orchestrator)
