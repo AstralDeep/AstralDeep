@@ -396,6 +396,7 @@ class TestAgentListPayload:
                     name="PanAtlas", description="native A2A", agent_id="panatlas-1",
                     metadata={"connection_security": {"kind": "standard_mcp", "message": "forged"}}),
             },
+            local_agents={"remote-mcp-1": object()},
             _get_user_id=lambda _websocket: "owner",
             user_agent_registry=SimpleNamespace(get_all_agent_ownership=lambda: []),
             personal_agent_runtime=None,

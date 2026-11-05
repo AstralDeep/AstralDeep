@@ -104,6 +104,25 @@ def test_surface_render_edit_and_cards_escape_remote_metadata(monkeypatch):
     assert "chrome_remote_mcp_toggle_tool" in html
 
 
+def test_a2a_security_notice_remains_readable_when_mcp_controls_are_disabled(monkeypatch):
+    monkeypatch.setattr(remote_mcp, "_enabled", lambda: False)
+    orch = _orch()
+
+    html = asyncio.run(remote_mcp.render(
+        orch, "owner", [], {"notice": "external_a2a_security"}))
+    components = asyncio.run(remote_mcp.components(
+        orch, "owner", [], {"notice": "external_a2a_security"}))
+
+    assert "Standard A2A connection" in html
+    assert "remote enforcement of delegated permissions have not been verified" in html
+    assert "Remote MCP connectors are disabled" in html
+    encoded = json.dumps(components)
+    assert "Standard A2A connection" in encoded
+    assert "remote enforcement of delegated permissions have not been verified" in encoded
+    assert "Remote MCP connectors are disabled" in encoded
+    assert remote_mcp._security_content([]) is None
+
+
 def test_connector_cards_open_server_owned_security_notice(monkeypatch):
     orch = _orch()
     monkeypatch.setattr(remote_mcp, "_enabled", lambda: True)

@@ -21,7 +21,22 @@ _INPUT = "rounded-lg bg-white/10 border border-white/10 px-3 py-2 text-sm text-a
 logger = logging.getLogger("Orchestrator.Chrome.RemoteMCP")
 _TRANSPORT_LABELS = {"streamable_http": "Streamable HTTP", "sse": "Legacy SSE"}
 _AUTH_LABELS = {"none": "None", "bearer": "Bearer token", "oauth": "OAuth"}
-_SECURITY_NOTICE_PARAM = "external_mcp_security"
+_SECURITY_NOTICE_PARAMS = {"external_mcp_security", "external_a2a_security"}
+
+
+def _security_content(notice: Any) -> tuple[str, str] | None:
+    from orchestrator.remote_mcp_security import (
+        REMOTE_MCP_SECURITY_NOTICE,
+        REMOTE_MCP_SECURITY_TITLE,
+        STANDARD_A2A_SECURITY_NOTICE,
+        STANDARD_A2A_SECURITY_TITLE,
+    )
+
+    notices = {
+        "external_mcp_security": (REMOTE_MCP_SECURITY_TITLE, REMOTE_MCP_SECURITY_NOTICE),
+        "external_a2a_security": (STANDARD_A2A_SECURITY_TITLE, STANDARD_A2A_SECURITY_NOTICE),
+    }
+    return notices[notice] if isinstance(notice, str) and notice in _SECURITY_NOTICE_PARAMS else None
 
 
 def _security_notice() -> str:
@@ -78,15 +93,15 @@ def _disabled_result():
 
 
 async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
-    if not _enabled():
-        return '<p class="text-sm text-astral-muted">Remote MCP connectors are disabled on this server.</p>'
-    rows = await asyncio.to_thread(connectors.list_connectors, orch, user_id)
     params = params if isinstance(params, dict) else {}
+    security_content = _security_content(params.get("notice"))
     security_notice = (
-        notice_block("warning", esc(f"{_security_title()}: {_security_notice()}"))
-        if params.get("notice") == _SECURITY_NOTICE_PARAM
-        else ""
+        notice_block("warning", esc(f"{security_content[0]}: {security_content[1]}"))
+        if security_content else ""
     )
+    if not _enabled():
+        return security_notice + '<p class="text-sm text-astral-muted">Remote MCP connectors are disabled on this server.</p>'
+    rows = await asyncio.to_thread(connectors.list_connectors, orch, user_id)
     edit_id = params.get("edit") if isinstance(params.get("edit"), str) else ""
     edit_config = None
     if edit_id:
@@ -158,13 +173,15 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
 async def components(orch: Any, user_id: str, roles: Any, params: Any):
     from webrender.chrome.surfaces import _sdui
 
-    if not _enabled():
-        return [_sdui.alert("Remote MCP connectors are disabled on this server.", "warning")]
-    rows = await asyncio.to_thread(connectors.list_connectors, orch, user_id)
     params = params if isinstance(params, dict) else {}
+    security_content = _security_content(params.get("notice"))
     out = []
-    if params.get("notice") == _SECURITY_NOTICE_PARAM:
-        out.append(_sdui.alert(f"{_security_title()}: {_security_notice()}", "warning"))
+    if security_content:
+        out.append(_sdui.alert(f"{security_content[0]}: {security_content[1]}", "warning"))
+    if not _enabled():
+        out.append(_sdui.alert("Remote MCP connectors are disabled on this server.", "warning"))
+        return out
+    rows = await asyncio.to_thread(connectors.list_connectors, orch, user_id)
     out.append(_sdui.text("Remote servers provide tools to your account. Enable each server tool before chat can call it; calls use normal permissions and audit.", "caption"))
     if isinstance(params, dict) and isinstance(params.get("oauth_url"), str):
         encoded_url = quote(params["oauth_url"], safe=":/?&=%")
@@ -197,7 +214,7 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
         warning = _sdui.Button(
             label="⚠",
             action="chrome_open",
-            payload={"surface": SURFACE_KEY, "params": {"notice": _SECURITY_NOTICE_PARAM}},
+            payload={"surface": SURFACE_KEY, "params": {"notice": "external_mcp_security"}},
             variant="ghost",
             id=f"remote-mcp-security-{connector['id']}",
             attributes={

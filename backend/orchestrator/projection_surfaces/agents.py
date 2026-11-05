@@ -84,10 +84,14 @@ def _snippet(text, limit: int = 110) -> str:
     return flat[: limit - 1].rstrip() + "…"
 
 
-def _connection_security(agent_id: str) -> dict | None:
-    from orchestrator.remote_mcp_security import connection_security_for_agent
+def _connection_security(orch, agent_id: str) -> dict | None:
+    from orchestrator.remote_mcp_security import connection_security_for_card
 
-    return connection_security_for_agent(agent_id)
+    card = orch.agent_cards.get(agent_id)
+    return connection_security_for_card(
+        agent_id, card, getattr(orch, "_standard_a2a_agent_cards", {}),
+        getattr(orch, "local_agents", {}),
+    )
 
 
 def _management_context(orch) -> PlaneRepositoryContext:
@@ -136,7 +140,7 @@ def _agent_rows(orch, ownership_map, disabled_set):
             "is_public": bool(ownership.get("is_public", False)),
             "disabled": agent_id in disabled_set,
         }
-        connection_security = _connection_security(agent_id)
+        connection_security = _connection_security(orch, agent_id)
         if connection_security is not None:
             row["connection_security"] = connection_security
         rows.append(row)
@@ -208,11 +212,17 @@ def _render_agent_row(agent: dict, tab: str, user_email: str) -> str:
         )
     open_pl = _payload({"surface": "agents", "params": {"agent_id": agent_id, "tab": tab}})
     security_button = ""
-    if agent.get("connection_security", {}).get("kind") == "standard_mcp":
+    security_kind = agent.get("connection_security", {}).get("kind")
+    notice = {
+        "standard_mcp": "external_mcp_security",
+        "standard_a2a": "external_a2a_security",
+    }.get(security_kind)
+    if notice:
+        security_title = esc(agent.get("connection_security", {}).get("title") or "Connection security notice")
         security_button = (
-            '<button type="button" aria-label="Standard MCP connection security notice" '
-            'title="Standard MCP connection security notice" data-ui-action="chrome_open" '
-            'data-ui-payload=\'{"surface":"remote_mcp","params":{"notice":"external_mcp_security"}}\'>⚠</button>'
+            f'<button type="button" aria-label="{security_title}" title="{security_title}" '
+            f'id="agent-security-warning-{esc(agent_id)}" data-ui-action="chrome_open" '
+            f'data-ui-payload=\'{{"surface":"remote_mcp","params":{{"notice":"{notice}"}}}}\'>⚠</button>'
         )
     status = (
         '<span class="flex items-center gap-1.5 text-xs text-astral-muted">'
@@ -669,7 +679,7 @@ async def components(orch, user_id, roles, params):
                 "external_identity": _external_identity_snapshot(
                     ctx["external_identity_links"], agent_id, card),
             }
-            connection_security = _connection_security(agent_id)
+            connection_security = _connection_security(orch, agent_id)
             if connection_security is not None:
                 selected["connection_security"] = connection_security
             view = build_agents_view(

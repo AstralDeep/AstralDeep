@@ -42,9 +42,16 @@ select that account for you. After authorization, choose **Test and refresh tool
 Discovered tools start disabled. Enable only the individual tools needed for your work. A chat
 can call a tool only when its connector and that tool are enabled. Calls continue through
 AstralDeep's permissions, HTTPS destination checks, PHI and policy checks, and local audit
-records. The warning beside a standard MCP connection name explains the boundary: the connection
-does not carry Astral's agent identity and delegation protocol, local records do not prove what
-the remote server executed, and the provider controls its data handling.
+records. The **Standard MCP connection** warning beside a connector explains that MCP does not
+carry Astral's agent identity and delegation protocol, local records do not prove what the remote
+server executed, and the provider controls its data handling.
+
+An agent registered through the server's standard A2A-only discovery path may show a separate
+**Standard A2A connection** warning. It explains that the native Astral handshake and the remote
+enforcement of delegated permissions have not been verified for that connection. AstralDeep still
+applies local permissions, policy checks, and audit records; those records do not prove what the
+remote server executed. This is an agent connection warning, not an MCP connector; the Remote MCP
+form does not configure A2A connections.
 
 ## PanAtlas example
 

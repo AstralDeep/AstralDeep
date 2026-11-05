@@ -37,6 +37,7 @@ async def test_native_console_uses_owner_filtered_shared_landing(kind):
 
 async def test_native_console_catalog_marks_fixed_mcp_gateway_only():
     orch = make_orch()
+    orch.local_agents = {"remote-mcp-1": object()}
     orch.agent_cards["remote-mcp-1"] = FakeCard(
         "remote-mcp-1", "Remote MCP", "External MCP gateway")
     orch.agent_cards["panatlas-1"] = FakeCard(
@@ -51,6 +52,29 @@ async def test_native_console_catalog_marks_fixed_mcp_gateway_only():
     agents = {row["id"]: row for row in catalog["agents"]}
 
     assert agents["remote-mcp-1"]["connection_security"]["kind"] == "standard_mcp"
+    assert "connection_security" not in agents["panatlas-1"]
+
+
+async def test_native_console_catalog_marks_only_server_registered_a2a_fallback():
+    from tests.chrome.test_surface_agents import FakeCard
+
+    orch = make_orch()
+    a2a_card = FakeCard("partner-1", "Partner", "A2A-only peer")
+    panatlas = FakeCard(
+        "panatlas-1", "PanAtlas", "Native Astral agent",
+        metadata={"connection_security": {"kind": "standard_a2a", "message": "forged"}},
+    )
+    orch.agent_cards.update({"partner-1": a2a_card, "panatlas-1": panatlas})
+    orch._standard_a2a_agent_cards = {"partner-1": a2a_card}
+    orch.user_agent_registry.ownership.update({
+        "partner-1": {"owner_email": "alice@example.com", "is_public": True},
+        "panatlas-1": {"owner_email": "alice@example.com", "is_public": True},
+    })
+
+    catalog = await web_landing.payload(orch, "u1")
+    agents = {row["id"]: row for row in catalog["agents"]}
+
+    assert agents["partner-1"]["connection_security"]["kind"] == "standard_a2a"
     assert "connection_security" not in agents["panatlas-1"]
 
 

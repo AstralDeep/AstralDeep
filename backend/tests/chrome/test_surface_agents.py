@@ -363,6 +363,7 @@ def test_native_agent_detail_receives_server_owned_connection_security(monkeypat
 
     monkeypatch.setattr(projection_agents, "build_agents_view", build_view)
     orch = make_orch()
+    orch.local_agents = {"remote-mcp-1": object()}
     orch.agent_cards["remote-mcp-1"] = FakeCard(
         "remote-mcp-1", "Remote MCP", "External MCP gateway")
     orch.agent_cards["panatlas-1"] = FakeCard(
