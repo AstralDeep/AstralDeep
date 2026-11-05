@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -387,16 +389,293 @@ async def test_session_end_bounds_an_unanswered_kill(monkeypatch):
 def test_descriptor_accepts_optional_workspace_roots_and_old_hosts_still_validate():
     old = ComputerHostDescriptor.from_dict(_descriptor(platform="macos"))
     assert old.workspace_roots == () and "workspace_roots" not in old.to_dict()
+    assert old.incarnation_id is None and old.retained_jobs == ()
+    assert "incarnation_id" not in old.to_dict() and "retained_jobs" not in old.to_dict()
     new = ComputerHostDescriptor.from_dict(_descriptor(platform="macos", workspace_roots=[ROOT]))
     assert new.to_dict()["workspace_roots"] == [ROOT]
+
+
+def test_descriptor_round_trips_host_incarnation_and_retained_jobs():
+    incarnation = str(uuid.uuid4())
+    job_id = str(uuid.uuid4())
+    job = {"job_id": job_id, "state": "running", "exit_code": None, "signal": None, "output_bytes": 12}
+    descriptor = ComputerHostDescriptor.from_dict(_descriptor(
+        platform="macos", incarnation_id=incarnation, retained_jobs=[job]))
+    assert descriptor.incarnation_id == incarnation
+    assert descriptor.retained_jobs == (job,)
+    assert descriptor.to_dict()["incarnation_id"] == incarnation
+    assert descriptor.to_dict()["retained_jobs"] == [job]
+    floating_integer = {**job, "output_bytes": 12.0}
+    assert ComputerHostDescriptor.from_dict(_descriptor(
+        platform="macos", incarnation_id=incarnation,
+        retained_jobs=[floating_integer])).retained_jobs == (floating_integer,)
+
+
+@pytest.mark.parametrize("platform", ["windows", "linux"])
+def test_non_macos_descriptor_cannot_announce_retained_jobs(platform):
+    from shared.protocol import ProtocolValidationError
+
+    with pytest.raises(ProtocolValidationError, match="supported only by macOS"):
+        ComputerHostDescriptor.from_dict(_descriptor(
+            platform=platform, incarnation_id=str(uuid.uuid4()), retained_jobs=[{
+                "job_id": str(uuid.uuid4()), "state": "uncertain", "exit_code": None,
+                "signal": None, "output_bytes": 0,
+            }]))
+
+
+def test_non_macos_incarnation_id_remains_compatible():
+    descriptor = ComputerHostDescriptor.from_dict(_descriptor(
+        platform="windows", incarnation_id=str(uuid.uuid4())))
+    assert descriptor.incarnation_id is not None and descriptor.retained_jobs == ()
+
+
+def test_descriptor_accepts_projection_outcome_fixture():
+    fixture_path = Path(__file__).resolve().parents[2] / "components/AstralProjection/contracts/fixtures/computer_outcome/announce_and_ack.json"
+    fixture = json.loads(fixture_path.read_text())
+    host = fixture["announce"]["payload"]["host"]
+    descriptor = ComputerHostDescriptor.from_dict(host)
+    ack = fixture["outcome_ack"]["payload"]
+    assert descriptor.incarnation_id == ack["incarnation_id"]
+    assert len(descriptor.retained_jobs) == 3
+
+
+def test_registry_keeps_recovery_metadata_off_the_public_host_listing():
+    orch = _FakeOrch()
+    host_ws = orch.add(_WS())
+    incarnation = str(uuid.uuid4())
+    job = {"job_id": str(uuid.uuid4()), "state": "uncertain", "exit_code": None,
+           "signal": None, "output_bytes": 12}
+    host, _ = orch.computer_hosts.register(OWNER, host_ws, ComputerHostDescriptor.from_dict(
+        _descriptor(platform="macos", incarnation_id=incarnation, retained_jobs=[job])))
+    assert host.descriptor["incarnation_id"] == incarnation
+    assert host.descriptor["retained_jobs"] == [job]
+    public, = orch.computer_hosts.list_for_owner(OWNER)
+    assert "incarnation_id" not in public and "retained_jobs" not in public
+
+
+def test_outcome_ack_replay_survives_socket_reconnect_only_for_exact_inventory():
+    orch = _FakeOrch()
+    host_id = str(uuid.uuid4())
+    incarnation = str(uuid.uuid4())
+    job = {"job_id": str(uuid.uuid4()), "state": "uncertain", "exit_code": None,
+           "signal": None, "output_bytes": 12}
+    descriptor = ComputerHostDescriptor.from_dict(_descriptor(
+        platform="macos", host_id=host_id, incarnation_id=incarnation, retained_jobs=[job]))
+    first_ws = orch.add(_WS())
+    first, _ = orch.computer_hosts.register(OWNER, first_ws, descriptor)
+    first.outcome_acknowledged = True
+    first.outcome_decision = "acknowledge"
+
+    same_ws = orch.add(_WS())
+    same, _ = orch.computer_hosts.register(OWNER, same_ws, descriptor)
+    assert same.outcome_acknowledged and same.outcome_decision == "acknowledge"
+    assert orch.computer_hosts.begin_outcome_ack(same, incarnation, "acknowledge") == "acknowledged"
+    assert orch.computer_hosts.begin_outcome_ack(same, incarnation, "discard") == "invalid"
+
+    first.outcome_acknowledged = False
+    first.outcome_ack_pending = True
+    first.outcome_decision = "discard"
+    changed_job = {**job, "job_id": str(uuid.uuid4())}
+    changed = ComputerHostDescriptor.from_dict(_descriptor(
+        platform="macos", host_id=host_id, incarnation_id=incarnation, retained_jobs=[changed_job]))
+    changed_ws = orch.add(_WS())
+    replacement, _ = orch.computer_hosts.register(OWNER, changed_ws, changed)
+    assert not replacement.outcome_ack_pending and not replacement.outcome_acknowledged
+    assert not orch.computer_hosts.finish_outcome_ack(first, "discard", recorded=True)
+    assert orch.computer_hosts.begin_outcome_ack(replacement, incarnation, "discard") == "record"
+
+
+@pytest.mark.parametrize("incarnation", [
+    None,
+    "not-a-uuid",
+    "aaaaaaaa-aaaa-1aaa-8aaa-aaaaaaaaaaaa",
+    "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+])
+def test_descriptor_rejects_invalid_incarnation_id(incarnation):
+    with pytest.raises(ProtocolValidationError):
+        ComputerHostDescriptor.from_dict(_descriptor(platform="macos", incarnation_id=incarnation))
+
+
+@pytest.mark.parametrize("job", [
+    "not-an-object",
+    {},
+    {"job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "state": "unknown", "exit_code": None, "signal": None, "output_bytes": 0},
+    {"job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "state": "running", "exit_code": 1, "signal": None, "output_bytes": 0},
+    {"job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "state": "running", "exit_code": None, "signal": "TERM", "output_bytes": 0},
+    {"job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "state": "exited", "exit_code": -1, "signal": None, "output_bytes": 0},
+    {"job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "state": "exited", "exit_code": 1.5, "signal": None, "output_bytes": 0},
+    {"job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "state": "exited", "exit_code": None, "signal": "bad signal", "output_bytes": 0},
+    {"job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "state": "exited", "exit_code": None, "signal": None, "output_bytes": True},
+    {"job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "state": "exited", "exit_code": None, "signal": None, "output_bytes": 0.5},
+    {"job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "state": "exited", "exit_code": None, "signal": None, "output_bytes": 0, "extra": 1},
+])
+def test_descriptor_rejects_invalid_retained_jobs(job):
+    with pytest.raises(ProtocolValidationError):
+        ComputerHostDescriptor.from_dict(_descriptor(platform="macos", retained_jobs=[job]))
+
+
+def test_descriptor_rejects_duplicate_or_oversized_retained_jobs():
+    job = {"job_id": str(uuid.uuid4()), "state": "uncertain", "exit_code": None, "signal": None, "output_bytes": 0}
+    with pytest.raises(ProtocolValidationError):
+        ComputerHostDescriptor.from_dict(_descriptor(platform="macos", retained_jobs=[job, dict(job)]))
+    jobs = [{**job, "job_id": str(uuid.uuid4())} for _ in range(65)]
+    with pytest.raises(ProtocolValidationError):
+        ComputerHostDescriptor.from_dict(_descriptor(platform="macos", retained_jobs=jobs))
+    with pytest.raises(ProtocolValidationError):
+        ComputerHostDescriptor.from_dict(_descriptor(platform="macos", retained_jobs=[job]))
+
+
+async def test_outcome_ack_requires_current_announced_incarnation_and_is_single_use(monkeypatch, recorder):
+    from orchestrator.orchestrator import Orchestrator
+    from shared.feature_flags import flags
+
+    orch = _FakeOrch()
+    cancelled = []
+    monkeypatch.setitem(flags._flags, "computer_use", True)
+    monkeypatch.setattr(orch, "_tunnel_ingress_over_cap", lambda _owner: False, raising=False)
+
+    async def cancel_turn(websocket, owner, chat):
+        cancelled.append((websocket, owner, chat))
+
+    async def record_ack(*args):
+        return await Orchestrator._record_computer_outcome_ack(orch, *args)
+
+    monkeypatch.setattr(orch, "_cancel_turn", cancel_turn, raising=False)
+    monkeypatch.setattr(orch, "_record_computer_outcome_ack", record_ack, raising=False)
+    jobs = [{"job_id": str(uuid.uuid4()), "state": "uncertain", "exit_code": None,
+             "signal": None, "output_bytes": 12}]
+    host_id = str(uuid.uuid4())
+    incarnation = str(uuid.uuid4())
+    host_ws = orch.add(_WS(chat="chat-ack"))
+    host, _ = orch.computer_hosts.register(OWNER, host_ws, ComputerHostDescriptor.from_dict(
+        _descriptor(platform="macos", host_id=host_id, incarnation_id=incarnation, retained_jobs=jobs)))
+
+    async def send(decision, *, incarnation_id=incarnation, host_id_value=host_id):
+        payload = {"host_id": host_id_value, "event": "outcome_ack", "decision": decision,
+                   "incarnation_id": incarnation_id}
+        await Orchestrator._handle_computer_event(orch, host_ws, SimpleNamespace(payload=payload))
+
+    await send("acknowledge", incarnation_id=str(uuid.uuid4()))
+    await send([])
+    await send("acknowledge", host_id_value=str(uuid.uuid4()))
+    assert not recorder.events and not host.outcome_acknowledged
+    await send("acknowledge")
+    await send("discard")
+    assert len(recorder.events) == 1
+    assert recorder.events[0].action_type == "computer_host.outcome_acknowledged"
+    assert recorder.events[0].conversation_id is None
+    assert recorder.events[0].inputs_meta == {
+        "host_id": host_id, "incarnation_id": incarnation,
+        "decision": "acknowledge", "retained_job_count": 1,
+    }
+    assert recorder.events[0].correlation_id == incarnation
+    assert jobs[0]["job_id"] not in json.dumps(recorder.events[0].inputs_meta)
+    assert host_ws.frames("computer_host")[-1]["outcome_ack"] == {
+        "decision": "acknowledge", "incarnation_id": incarnation,
+        "connection_generation": str(orch._connection_contexts[id(host_ws)].connection_generation),
+    }
+    assert len([event for event in recorder.events
+                if event.action_type == "computer_host.outcome_acknowledged"]) == 1
+    assert not cancelled and host.outcome_acknowledged
+
+    second_ws = orch.add(_WS(chat="chat-discard"))
+    second_id = str(uuid.uuid4())
+    second_incarnation = str(uuid.uuid4())
+    second_host, _ = orch.computer_hosts.register(OWNER, second_ws, ComputerHostDescriptor.from_dict(
+        _descriptor(platform="macos", host_id=second_id, incarnation_id=second_incarnation,
+                    retained_jobs=[{**jobs[0], "job_id": str(uuid.uuid4())}])))
+    second_payload = {"host_id": second_id, "event": "outcome_ack", "decision": "discard",
+                      "incarnation_id": second_incarnation}
+    await Orchestrator._handle_computer_event(orch, second_ws, SimpleNamespace(payload=second_payload))
+    await Orchestrator._handle_computer_event(orch, second_ws, SimpleNamespace(payload=second_payload))
+    assert len(recorder.events) == 2 and second_host.outcome_acknowledged
+    assert recorder.events[1].inputs_meta["decision"] == "discard"
+    assert second_ws.frames("computer_host")[-1]["outcome_ack"] == {
+        "decision": "discard", "incarnation_id": second_incarnation,
+        "connection_generation": str(orch._connection_contexts[id(second_ws)].connection_generation),
+    }
+    assert len([event for event in recorder.events
+                if event.action_type == "computer_host.outcome_acknowledged"]) == 2
+    assert not cancelled
+
+    no_inventory_ws = orch.add(_WS(chat="chat-no-inventory"))
+    no_inventory_id = str(uuid.uuid4())
+    no_inventory_incarnation = str(uuid.uuid4())
+    orch.computer_hosts.register(OWNER, no_inventory_ws, ComputerHostDescriptor.from_dict(
+        _descriptor(platform="macos", host_id=no_inventory_id, incarnation_id=no_inventory_incarnation)))
+    no_inventory_payload = {"host_id": no_inventory_id, "event": "outcome_ack", "decision": "acknowledge",
+                            "incarnation_id": no_inventory_incarnation}
+    await Orchestrator._handle_computer_event(
+        orch, no_inventory_ws, SimpleNamespace(payload=no_inventory_payload))
+    assert len(recorder.events) == 2
+
+    failed_ws = orch.add(_WS(chat="chat-still-active"))
+    failed_id = str(uuid.uuid4())
+    failed_incarnation = str(uuid.uuid4())
+    failed_host, _ = orch.computer_hosts.register(OWNER, failed_ws, ComputerHostDescriptor.from_dict(
+        _descriptor(platform="macos", host_id=failed_id, incarnation_id=failed_incarnation,
+                    retained_jobs=[{**jobs[0], "job_id": str(uuid.uuid4())}])))
+    async def refuse_audit(*_args):
+        return False
+    monkeypatch.setattr(orch, "_record_computer_outcome_ack", refuse_audit)
+    await Orchestrator._handle_computer_event(orch, failed_ws, SimpleNamespace(payload={
+        "host_id": failed_id, "event": "outcome_ack", "decision": "discard",
+        "incarnation_id": failed_incarnation}))
+    assert not failed_host.outcome_acknowledged and not cancelled
+    assert not failed_ws.frames("computer_host")
+    monkeypatch.setattr(orch, "_record_computer_outcome_ack", record_ack)
+    retry = {"host_id": failed_id, "event": "outcome_ack", "decision": "discard",
+             "incarnation_id": failed_incarnation}
+    await Orchestrator._handle_computer_event(orch, failed_ws, SimpleNamespace(payload=retry))
+    assert failed_host.outcome_acknowledged
+    assert failed_ws.frames("computer_host")[-1]["outcome_ack"] == {
+        "decision": "discard", "incarnation_id": failed_incarnation,
+        "connection_generation": str(orch._connection_contexts[id(failed_ws)].connection_generation),
+    }
+    event_count = len(recorder.events)
+    await Orchestrator._handle_computer_event(orch, failed_ws, SimpleNamespace(payload=retry))
+    assert len(recorder.events) == event_count
+    assert failed_ws.frames("computer_host")[-1]["outcome_ack"] == {
+        "decision": "discard", "incarnation_id": failed_incarnation,
+        "connection_generation": str(orch._connection_contexts[id(failed_ws)].connection_generation),
+    }
+    conflict = {**retry, "decision": "acknowledge"}
+    await Orchestrator._handle_computer_event(orch, failed_ws, SimpleNamespace(payload=conflict))
+    assert len(recorder.events) == event_count
+    assert failed_ws.frames("computer_host")[-1]["outcome_ack"]["decision"] == "discard"
+
+
+async def test_outcome_ack_is_refused_for_non_macos_host(monkeypatch, recorder):
+    from orchestrator.orchestrator import Orchestrator
+    from shared.feature_flags import flags
+
+    orch = _FakeOrch()
+    monkeypatch.setitem(flags._flags, "computer_use", True)
+    monkeypatch.setattr(orch, "_tunnel_ingress_over_cap", lambda _owner: False, raising=False)
+    host_ws = orch.add(_WS())
+    incarnation = str(uuid.uuid4())
+    job = {"job_id": str(uuid.uuid4()), "state": "uncertain", "exit_code": None,
+           "signal": None, "output_bytes": 0}
+    descriptor = _descriptor(platform="windows", incarnation_id=incarnation, retained_jobs=[job])
+    host, _ = orch.computer_hosts.register(OWNER, host_ws, descriptor)
+
+    await Orchestrator._handle_computer_event(orch, host_ws, SimpleNamespace(payload={
+        "host_id": host.host_id, "event": "outcome_ack", "decision": "acknowledge",
+        "incarnation_id": incarnation,
+    }))
+
+    assert not recorder.events
+    assert not host.outcome_acknowledged
+    assert not host_ws.frames("computer_host")
 
 
 @pytest.mark.parametrize("roots", [
     "x", [ROOT, ROOT], [{"name": "x"}], [{"name": "x", "path": "relative"}], [{"name": "x", "path": "/"}],
     [{"name": "", "path": "/a"}], [{"name": "x", "path": "/a/../b"}], [{"name": "x", "path": "/a/"}],
-    [{"name": "x\n", "path": "/a"}], [{"name": "x", "path": "/a\x00"}], [{"name": "x", "path": "/a", "extra": 1}],
-    [{"name": "x" * 129, "path": "/a"}], [{"name": "x", "path": "/" + "a" * 1100}], [ "nope"],
-    [{"name": f"r{i}", "path": f"/r{i}"} for i in range(17)], [{"name": 1, "path": "/a"}],
+    [{"name": "x\n", "path": "/a"}], [{"name": "x", "path": "/a\x00"}],
+    [{"name": "x", "path": "/a\ud800"}], [{"name": "x", "path": "/a", "extra": 1}],
+    [{"name": "x" * 256, "path": "/a"}], [{"name": "x", "path": "/" + "a" * 1100}], [ "nope"],
+    [{"name": f"r{i}", "path": f"/r{i}"} for i in range(33)], [{"name": 1, "path": "/a"}],
 ])
 def test_descriptor_rejects_malformed_workspace_roots(roots):
     with pytest.raises(ProtocolValidationError):
@@ -494,7 +773,7 @@ async def test_orchestrator_passes_approval_activity_to_the_session_manager(monk
     await orch.computer_sessions.end(session, "user_stop")
 
 
-WITHDRAWN = "access withdrawn on that Mac; re-enable it in Computer controls there"
+WITHDRAWN = "access withdrawn; re-enable it in Computer controls on the desktop client"
 
 
 async def _withdrawn(monkeypatch):
@@ -526,7 +805,8 @@ async def test_start_session_on_a_withdrawn_host_names_it_and_says_how_to_re_ena
     result = await asyncio.to_thread(mcp_tools.start_session, **kwargs)
     assert result["_data"]["code"] == "computer_unavailable"
     message = result["_data"]["message"]
-    assert "RyzenRoll Mobile" in message and "re-enable" in message and "no computer called" not in message
+    assert ("RyzenRoll Mobile" in message and "re-enable" in message and "Computer controls" in message
+            and "Mac" not in message and "PC" not in message and "no computer called" not in message)
 
 
 async def test_requests_to_a_withdrawn_host_name_it(monkeypatch):

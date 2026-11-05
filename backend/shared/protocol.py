@@ -32,6 +32,10 @@ _VOICE_UTC_TIMESTAMP = re.compile(
 _VOICE_SCHEMA_VERSION = "1"
 _VOICE_PLAYOUT_MAX_BYTES = 2 * 1024
 _VOICE_CONTROL_BINDING_MAX_LIFETIME = timedelta(minutes=10)
+_COMPUTER_HOST_MAX_RETAINED_JOBS = 64
+_COMPUTER_HOST_MAX_SAFE_INTEGER = (1 << 53) - 1
+_COMPUTER_HOST_JOB_STATES = frozenset({"running", "exited", "interrupted", "timed_out", "uncertain"})
+_COMPUTER_HOST_JOB_SIGNAL = re.compile(r"^[A-Z][A-Z0-9]{0,7}$")
 
 
 class ProtocolValidationError(ValueError):
@@ -2720,8 +2724,8 @@ COMPUTER_HOST_PLATFORMS: frozenset = frozenset({"windows", "macos", "linux"})
 COMPUTER_HOST_PROTOCOL = 1
 _COMPUTER_HOST_NAME_MAX = 64
 _COMPUTER_HOST_MAX_SCREENS = 8
-_COMPUTER_HOST_MAX_ROOTS = 16
-_COMPUTER_HOST_ROOT_NAME_MAX = 128
+_COMPUTER_HOST_MAX_ROOTS = 32
+_COMPUTER_HOST_ROOT_NAME_MAX = 255
 _COMPUTER_HOST_ROOT_PATH_MAX = 1024
 
 
@@ -2742,6 +2746,8 @@ class ComputerHostDescriptor:
     workspace_roots: tuple = ()
     project_manifest: Optional[dict] = None
     excluded: tuple = ()
+    incarnation_id: Optional[str] = None
+    retained_jobs: tuple = ()
 
     def _validate_excluded(self) -> None:
         patterns = self.excluded
@@ -2762,7 +2768,10 @@ class ComputerHostDescriptor:
                 raise ProtocolValidationError("computer_host.workspace_roots entries must contain exactly name, path")
             path = root["path"]
             if (not _printable(root["name"], _COMPUTER_HOST_ROOT_NAME_MAX)
-                    or not _printable(path, _COMPUTER_HOST_ROOT_PATH_MAX) or not path.startswith("/")
+                    or not isinstance(path, str) or not path.strip()
+                    or any(0xD800 <= ord(ch) <= 0xDFFF for ch in path)
+                    or len(path.encode("utf-8")) > _COMPUTER_HOST_ROOT_PATH_MAX
+                    or any(ord(ch) < 32 or ord(ch) == 127 for ch in path) or not path.startswith("/")
                     or path == "/" or posixpath.normpath(path) != path or path in paths):
                 raise ProtocolValidationError(
                     "computer_host.workspace_roots entries need a printable name and a unique canonical absolute path")
@@ -2817,6 +2826,48 @@ class ComputerHostDescriptor:
             raise ProtocolValidationError(f"computer_host.verbs contains unknown verbs: {unknown}")
         self._validate_roots()
         self._validate_excluded()
+        if self.incarnation_id is not None:
+            _require_uuid4(self.incarnation_id, "computer_host.incarnation_id")
+        jobs = self.retained_jobs
+        if not isinstance(jobs, tuple) or len(jobs) > _COMPUTER_HOST_MAX_RETAINED_JOBS:
+            raise ProtocolValidationError(
+                f"computer_host.retained_jobs must list at most {_COMPUTER_HOST_MAX_RETAINED_JOBS} jobs")
+        if jobs and self.platform != "macos":
+            raise ProtocolValidationError("computer_host.retained_jobs is supported only by macOS hosts")
+        if jobs and self.incarnation_id is None:
+            raise ProtocolValidationError("computer_host.retained_jobs requires incarnation_id")
+        seen_jobs = set()
+        for index, job in enumerate(jobs):
+            if not isinstance(job, Mapping) or set(job) != {
+                    "job_id", "state", "exit_code", "signal", "output_bytes"}:
+                raise ProtocolValidationError(
+                    f"computer_host.retained_jobs[{index}] must contain exactly job_id, state, exit_code, signal, output_bytes")
+            job_id = job["job_id"]
+            _require_uuid4(job_id, f"computer_host.retained_jobs[{index}].job_id")
+            if job_id in seen_jobs:
+                raise ProtocolValidationError("computer_host.retained_jobs job_id values must be unique")
+            seen_jobs.add(job_id)
+            state = job["state"]
+            if not isinstance(state, str) or state not in _COMPUTER_HOST_JOB_STATES:
+                raise ProtocolValidationError(f"computer_host.retained_jobs[{index}].state is invalid")
+            output_bytes = job["output_bytes"]
+            if (isinstance(output_bytes, bool) or not isinstance(output_bytes, (int, float))
+                    or not 0 <= output_bytes <= _COMPUTER_HOST_MAX_SAFE_INTEGER
+                    or int(output_bytes) != output_bytes):
+                raise ProtocolValidationError(f"computer_host.retained_jobs[{index}].output_bytes is invalid")
+            exit_code = job["exit_code"]
+            if exit_code is not None and (
+                    isinstance(exit_code, bool) or not isinstance(exit_code, (int, float))
+                    or not 0 <= exit_code <= _COMPUTER_HOST_MAX_SAFE_INTEGER
+                    or int(exit_code) != exit_code):
+                raise ProtocolValidationError(f"computer_host.retained_jobs[{index}].exit_code is invalid")
+            signal = job["signal"]
+            if signal is not None and (not isinstance(signal, str)
+                                       or _COMPUTER_HOST_JOB_SIGNAL.fullmatch(signal) is None):
+                raise ProtocolValidationError(f"computer_host.retained_jobs[{index}].signal is invalid")
+            if state == "running" and (exit_code is not None or signal is not None):
+                raise ProtocolValidationError(
+                    f"computer_host.retained_jobs[{index}] running jobs cannot have an exit code or signal")
         if self.project_manifest is not None:
             from shared.project_workspaces import ProjectManifest, ProjectWorkspaceError
             try:
@@ -2844,6 +2895,10 @@ class ComputerHostDescriptor:
             data["project_manifest"] = ProjectManifest.from_dict(self.project_manifest).to_dict()
         if self.excluded:
             data["excluded"] = list(self.excluded)
+        if self.incarnation_id is not None:
+            data["incarnation_id"] = self.incarnation_id
+        if self.retained_jobs:
+            data["retained_jobs"] = [dict(job) for job in self.retained_jobs]
         return data
 
     @classmethod
@@ -2851,19 +2906,24 @@ class ComputerHostDescriptor:
         if not isinstance(data, Mapping):
             raise ProtocolValidationError("computer_host must be an object")
         expected = {item.name for item in fields(cls)}
-        if not expected - {"workspace_roots", "project_manifest", "excluded"} <= set(data) <= expected:
+        optional = {"workspace_roots", "project_manifest", "excluded", "incarnation_id", "retained_jobs"}
+        if not expected - optional <= set(data) <= expected:
             raise ProtocolValidationError(
                 "computer_host must contain exactly host_id, name, platform, client_version, "
-                "screens, verbs, protocol and optionally workspace_roots, project_manifest, excluded")
+                "screens, verbs, protocol and recognized optional descriptor fields")
+        if "incarnation_id" in data and data["incarnation_id"] is None:
+            raise ProtocolValidationError("computer_host.incarnation_id must be a canonical UUID4 string")
         screens = data.get("screens")
         verbs = data.get("verbs")
         roots = data.get("workspace_roots", ())
         excluded = data.get("excluded", ())
+        retained_jobs = data.get("retained_jobs", ())
         if (not isinstance(screens, (list, tuple)) or not isinstance(verbs, (list, tuple))
-                or not isinstance(roots, (list, tuple)) or not isinstance(excluded, (list, tuple))):
+                or not isinstance(roots, (list, tuple)) or not isinstance(excluded, (list, tuple))
+                or not isinstance(retained_jobs, (list, tuple))):
             raise ProtocolValidationError(
                 "computer_host.screens, computer_host.verbs, computer_host.workspace_roots "
-                "and computer_host.excluded must be arrays")
+                "computer_host.excluded and computer_host.retained_jobs must be arrays")
         descriptor = cls(
             host_id=data["host_id"],
             name=data["name"],
@@ -2875,6 +2935,8 @@ class ComputerHostDescriptor:
             workspace_roots=tuple(dict(r) if isinstance(r, Mapping) else r for r in roots),
             project_manifest=data.get("project_manifest"),
             excluded=tuple(excluded),
+            incarnation_id=data.get("incarnation_id"),
+            retained_jobs=tuple(dict(job) if isinstance(job, Mapping) else job for job in retained_jobs),
         )
         descriptor.validate()
         return descriptor

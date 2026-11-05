@@ -287,6 +287,11 @@ def test_register_ui_keeps_session_when_descriptor_is_malformed_and_carries_good
 
 async def test_registry_is_owner_scoped_and_resolves_names():
     orch = _FakeOrch()
+    with pytest.raises(ComputerHostError) as unavailable:
+        orch.computer_hosts.resolve(OWNER, None)
+    assert unavailable.value.code == "computer_unavailable"
+    assert "Computer controls" in unavailable.value.message
+    assert "Settings" not in unavailable.value.message and "PC" not in unavailable.value.message
     ws_a, host_a = await _online_host(orch, "RYZENROLL")
     ws_o, host_o = await _online_host(orch, "OTHERS-PC", user=OTHER)
     assert [h["name"] for h in orch.computer_hosts.list_for_owner(OWNER)] == ["RYZENROLL"]
@@ -815,7 +820,7 @@ async def test_surface_lists_hosts_with_the_right_controls(monkeypatch):
     assert "chrome_computer_session_start" in actions and "chrome_computer_forget" not in actions
     empty = await my_computers.render(orch, OTHER, [], {})
     assert "RYZENROLL" not in empty and "LAPTOP" not in empty
-    assert "No computers connected" in empty and "Allow remote control" in empty
+    assert "No computers connected" in empty and "Computer controls" in empty
     assert 'data-ui-action="chrome_open"' in empty and "Refresh" in empty
     assert "Commands and file changes require your approval" in empty
 

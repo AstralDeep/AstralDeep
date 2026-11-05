@@ -33,7 +33,7 @@ from orchestrator.context_token_accounting import (
 )
 
 
-def _summary_llm(websocket, prompt):
+async def _summary_llm(websocket, prompt):
     assert websocket is None
     return SimpleNamespace(content="condensed history"), None
 

@@ -160,6 +160,15 @@ def _device_type(orch, websocket) -> str:
         return "browser"
 
 
+def _work_learning_params(surface, params, device_type):
+    if type(params) is not dict or "work_result_id" not in params:
+        return params
+    if surface != "agent_authoring" or device_type != "macos":
+        from persistent_agents.models import AssignmentError
+        raise AssignmentError("work_skill_draft_unavailable", 403)
+    return {**params, "_work_learning_macos": True}
+
+
 def _strip_html(html: str) -> str:
     import html as _htmlmod
     return " ".join(_htmlmod.unescape(_TAG_RE.sub(" ", html or "")).split())
@@ -809,6 +818,7 @@ async def _dispatch_chrome_event(orch, websocket, action: str, payload: dict,
                     params = json.loads(params)
                 except json.JSONDecodeError:
                     params = {}
+            params = _work_learning_params(surface, params, _device_type(orch, websocket))
             if surface:
                 from orchestrator.projection_surfaces import get_surface
                 merge_form = getattr(get_surface(surface), "form_params", None)

@@ -55,6 +55,16 @@ async def command_world(task_runtime, monkeypatch):
 
     gate = phi_gate.PHIGate(analyzer=SimpleNamespace(analyze=analyze))
     monkeypatch.setattr(phi_gate, "get_phi_gate", lambda: gate)
+    from personalization import phi_policy
+    preferences = SimpleNamespace(
+        get_phi_protection_enabled=lambda _transaction, *, owner_id: owner_id == "owner-a",
+    )
+    orch.chat_notice_preference_context = SimpleNamespace(
+        repository=preferences,
+        call=lambda operation, **kwargs: operation(None, **kwargs),
+    )
+    phi_policy.bind(orch)
+    assert phi_policy.protection_enabled("owner-a")
     world.gate = gate
 
     async def send(socket, raw):
@@ -96,7 +106,10 @@ async def command_world(task_runtime, monkeypatch):
         return await _call(task_runtime, "run_command", **args)
     world.call = call
     yield world
-    await orch.computer_sessions.end(session, "consent_revoked")
+    try:
+        await orch.computer_sessions.end(session, "consent_revoked")
+    finally:
+        phi_policy.bind(None)
 
 
 @pytest.mark.parametrize("cwd", [None, PRIMARY, SECONDARY])
@@ -153,6 +166,14 @@ async def test_unknown_mixed_or_control_decorated_stdout_stays_private(command_w
     response = await world.call()
     assert response.error is None, response
     assert response.result["_data"]["stdout"] == "" and response.result["_data"]["privacy"] == "withheld"
+
+
+async def test_unmaskable_prefilter_match_is_withheld(command_world):
+    world = command_world
+    world.reply = _reply("ordinary prefix 123456789 suffix")
+    response = await world.call()
+    assert response.result["_data"]["stdout"] == ""
+    assert response.result["_data"]["privacy"] == "withheld"
 
 
 async def test_arbitrary_subdirectory_and_forged_result_cwd_do_not_extend_exception(command_world):

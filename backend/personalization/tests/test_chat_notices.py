@@ -17,10 +17,10 @@ class Preferences:
     def __init__(self):
         self.choices = {}
 
-    def get_chat_phi_notice_enabled(self, *, owner_id):
-        return self.choices.get(owner_id, True)
+    def get_phi_protection_enabled(self, *, owner_id):
+        return self.choices.get(owner_id, False)
 
-    def set_chat_phi_notice_enabled(self, *, owner_id, enabled):
+    def set_phi_protection_enabled(self, *, owner_id, enabled):
         self.choices[owner_id] = enabled
 
 
@@ -60,10 +60,12 @@ def test_identifying_notice_signals_remain(entities):
 
 def test_preferences_are_owner_scoped_and_survive_new_call():
     orch = make_orch()
+    assert not notices.notices_enabled(orch, "alice")
+    notices.set_notices_enabled(orch, "alice", True)
     assert notices.notices_enabled(orch, "alice")
     notices.set_notices_enabled(orch, "alice", False)
     assert not notices.notices_enabled(orch, "alice")
-    assert notices.notices_enabled(orch, "bob")
+    assert not notices.notices_enabled(orch, "bob")
     notices.set_notices_enabled(orch, "alice", True)
     assert notices.notices_enabled(orch, "alice")
 
@@ -80,6 +82,7 @@ def test_enabled_notice_once_per_chat_and_no_content_audit(monkeypatch):
     from orchestrator.orchestrator import Orchestrator
 
     orch, socket = make_orch(), object()
+    notices.set_notices_enabled(orch, "alice", True)
     monkeypatch.setattr(notices, "get_phi_gate", lambda: PHIGate(analyzer=Analyzer(["PERSON"])))
     for _ in range(2):
         asyncio.run(Orchestrator._notify_phi_if_detected(orch, socket, "chat", "alice", "Jane Doe"))
@@ -139,10 +142,11 @@ def test_notice_choice_persists_through_plane_and_preserves_other_preferences():
             return SimpleNamespace(plane_repository_source=SimpleNamespace(
                 plane_runtime=runtime, plane_repositories=runtime.repositories,
             ))
+        notices.set_notices_enabled(owner_context(), "alice", True)
         assert notices.notices_enabled(owner_context(), "alice")
         notices.set_notices_enabled(owner_context(), "alice", False)
         assert not notices.notices_enabled(owner_context(), "alice")
-        assert notices.notices_enabled(owner_context(), "bob")
+        assert not notices.notices_enabled(owner_context(), "bob")
         notices.set_notices_enabled(owner_context(), "bob", False)
         notices.set_notices_enabled(owner_context(), "alice", True)
         assert notices.notices_enabled(owner_context(), "alice")

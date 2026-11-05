@@ -106,8 +106,24 @@ async def _save_bindings(orch, websocket, owner_id, row):
 
 
 async def _augmented_result_state(service, orch, websocket, owner_id, claims, operation_id):
-    state = {"mode": "result", "status": "ready"}
+    from orchestrator.chrome_events import _device_type
+    from orchestrator import user_skills
+
+    state = {"mode": "result", "status": "ready", "skill_draft": False}
     state.update(await service.result_view(owner_id, claims, operation_id))
+    operation = state.get("operation") or {}
+    result = (state.get("result") or {}).get("result") or {}
+    content = result.get("content") if type(result) is dict else None
+    source = content.get("source") if type(content) is dict else None
+    state["skill_draft"] = (
+        _device_type(orch, websocket) == "macos"
+        and user_skills.enabled()
+        and operation.get("kind") == "research"
+        and operation.get("disposition") == "completed"
+        and result.get("available") is True
+        and type(source) is dict
+        and source.get("redacted") is False
+    )
     if ((state.get("result") or {}).get("result") or {}).get("available") is True:
         state["save"] = await _save_bindings(orch, websocket, owner_id, state["operation"])
     return state

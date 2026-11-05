@@ -1992,10 +1992,74 @@ class Orchestrator:
             self.computer_hosts.withdraw(owner_sub, host.host_id)
             await self.computer_hosts.push_presence(host, "offline")
             return
+        if event == "outcome_ack":
+            decision = payload.get("decision")
+            incarnation_id = payload.get("incarnation_id")
+            if (set(payload) != {"host_id", "event", "decision", "incarnation_id"}
+                    or host.platform != "macos"
+                    or not isinstance(decision, str) or decision not in {"acknowledge", "discard"}
+                    or not isinstance(incarnation_id, str)):
+                return
+            contexts = getattr(self, "_connection_contexts", {})
+            connection = contexts.get(id(websocket))
+            generation = getattr(connection, "connection_generation", None)
+            if connection is None or not connection.registered or connection.closing or generation is None:
+                return
+            status = self.computer_hosts.begin_outcome_ack(host, incarnation_id, decision)
+            if status == "record":
+                recorded = await self._record_computer_outcome_ack(
+                    owner_sub, host.host_id, incarnation_id, decision,
+                    len(host.descriptor.get("retained_jobs") or ()), None)
+                if not self.computer_hosts.finish_outcome_ack(host, decision, recorded=recorded) or not recorded:
+                    return
+            elif status != "acknowledged":
+                return
+            if (self.computer_hosts.get(owner_sub, host.host_id) is not host
+                    or self.computer_hosts.host_for_socket(websocket) is not host
+                    or contexts.get(id(websocket)) is not connection or connection.closing
+                    or connection.connection_generation != generation):
+                return
+            await self._safe_send(websocket, json.dumps({
+                "type": "computer_host", "host_id": host.host_id,
+                "outcome_ack": {"decision": decision, "incarnation_id": incarnation_id,
+                                 "connection_generation": str(generation)},
+            }))
+            return
         if event in ("heartbeat", "paused", "resumed", "stopped", "approval_activity"):
             await self.computer_sessions.on_host_event(
                 owner_sub, host.host_id, event,
                 str(payload.get("session_id") or ""), payload.get("reason"))
+
+    async def _record_computer_outcome_ack(
+        self, owner_sub: str, host_id: str, incarnation_id: str, decision: str, retained_job_count: int,
+        chat_id: Optional[str],
+    ) -> bool:
+        try:
+            from datetime import datetime, timezone
+
+            from audit.recorder import get_recorder
+            from audit.schemas import AuditEventCreate
+
+            recorder = getattr(self, "audit_recorder", None) or get_recorder()
+            if recorder is None:
+                return False
+            await recorder.record(AuditEventCreate(
+                actor_user_id=owner_sub,
+                auth_principal=owner_sub,
+                event_class="agent_lifecycle",
+                action_type="computer_host.outcome_acknowledged",
+                description=f"Computer outcome-unknown card decision recorded: {decision}",
+                conversation_id=chat_id,
+                correlation_id=incarnation_id,
+                outcome="success",
+                inputs_meta={"host_id": host_id, "incarnation_id": incarnation_id,
+                             "decision": decision, "retained_job_count": retained_job_count},
+                started_at=datetime.now(timezone.utc),
+            ))
+            return True
+        except Exception:  # noqa: BLE001
+            logger.warning("Computer outcome acknowledgment audit failed", exc_info=True)
+            return False
 
     async def _refuse_personal_agent_host(
         self,
@@ -16088,7 +16152,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         "message": f"Running: {', '.join(tool_names)}..."
                     }))
 
-                    messages.append(_history_assistant_message(llm_msg))
+                    history_assistant_message = _history_assistant_message(llm_msg)
+                    messages.append(history_assistant_message)
 
                     tool_results = []
                     if turn_count == 1:
@@ -16129,6 +16194,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                         call.function.name, call.function.name),
                                 )
                                 del llm_msg.tool_calls[len(tool_results):]
+                                history_assistant_message["tool_calls"] = history_assistant_message["tool_calls"][
+                                    :len(tool_results)
+                                ]
                             elif len(llm_msg.tool_calls) == 1:
                                 tc = llm_msg.tool_calls[0]
                                 res = await self.execute_single_tool(websocket, tc, tool_to_agent, chat_id, user_id=user_id, tool_to_unqualified=tool_to_unqualified)
