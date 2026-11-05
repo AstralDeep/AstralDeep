@@ -26,7 +26,7 @@ def build_gallery() -> List[Dict[str, Any]]:
         {"type": "hero", "title": "Component gallery",
          "eyebrow": "Feature 044 · cross-client parity",
          "subtitle": "Every renderable primitive, one canvas.",
-         "icon": "✨", "badges": ["35 types", "interactive", "edge cases"],
+         "icon": "✨", "badges": ["43 types", "interactive", "edge cases"],
          "variant": "gradient"},
         {"type": "text", "content": "Heading (h2)", "variant": "h2"},
         {"type": "text", "content": "Body copy renders as a paragraph.", "variant": "body"},
@@ -115,6 +115,14 @@ def build_gallery() -> List[Dict[str, Any]]:
          "download_url": _RELEASE_URL, "html_url": _RELEASE_HTML,
          "version": "1.0.0", "platform": "windows-x64",
          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+        {"type": "artifact", "title": "Quarterly report", "kind": "report",
+         "summary": "A reviewed report with a concise finding.", "sections": [{
+             "heading": "Finding", "children": [
+                 {"type": "text", "content": "Revenue increased this quarter."},
+             ],
+         }]},
+        {"type": "html_artifact", "title": "Static preview", "kind": "page",
+         "html": "<main><h1>Preview</h1><p>Static report content.</p></main>"},
 
         {"type": "audio", "src": "https://example.com/clip.mp3",
          "label": "Sample audio", "description": "A short clip.",
@@ -296,7 +304,7 @@ def _build_capture_orch(user_id: str, device: str):
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="verification.gallery_driver",
-        description="Push the canonical 41-type component gallery to a UI client "
+        description="Push the canonical 43-type component gallery to a UI client "
                     "over the real send path (feature 044 / US2).")
     p.add_argument("--user", required=True, help="target user id (session owner)")
     p.add_argument("--device", default="browser",
