@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import json
 import os
+import re
 import stat
 import threading
 import uuid
@@ -314,22 +315,24 @@ class UserSkillFacade:
             started_at=now, completed_at=now)
         self._append_audit(tx, caller, event, read_only=read_only)
 
-    def _audit(self, tx, caller, prepared, import_meta=None):
+    def _audit(self, tx, caller, prepared, import_meta=None, source_provenance=None):
         command = prepared.command
         now = datetime.now(timezone.utc)
         outputs = {'skill_id': command.skill_id, 'command_id': command.command_id,
                    'revision': command.expected_revision + 1}
         if import_meta is not None:
             outputs['import'] = import_meta
+        if source_provenance is not None:
+            outputs['source_provenance'] = source_provenance
         event = AuditEventCreate(actor_user_id=caller.owner_id, auth_principal=caller.owner_id,
-            event_id=command.command_id if import_meta is not None else None,
+            event_id=command.command_id if import_meta is not None or source_provenance is not None else None,
             event_class='settings', action_type='user_skill_' + command.command,
             description='Owner skill revision command', correlation_id=command.skill_id,
             outcome='success', outputs_meta=outputs,
             started_at=now, completed_at=now)
         self._append_audit(tx, caller, event)
 
-    async def _change(self, caller, build, *, import_meta=None):
+    async def _change(self, caller, build, *, import_meta=None, source_provenance=None):
         self._current(caller)
         caller.require_write()
         def change(tx):
@@ -338,13 +341,21 @@ class UserSkillFacade:
             command = build(tx)
             prepared = self.repository.prepare_change(tx, command=command)
             if not prepared.replayed:
-                self._audit(tx, caller, prepared, import_meta)
+                self._audit(tx, caller, prepared, import_meta, source_provenance)
             elif import_meta is not None:
                 record = self.repositories.audit.get(tx, chain_id=caller.owner_id,
                                                      event_id=command.command_id)
                 if (record is None or record.event.action_type != 'user_skill_create'
                         or record.event.correlation_id != command.skill_id
                         or json.loads(record.event.outputs_json).get('import') != import_meta):
+                    raise SkillCatalogError('skill_conflict', 409)
+            elif source_provenance is not None:
+                record = self.repositories.audit.get(tx, chain_id=caller.owner_id,
+                                                     event_id=command.command_id)
+                if (record is None or record.event.action_type != 'user_skill_create'
+                        or record.event.correlation_id != command.skill_id
+                        or json.loads(record.event.outputs_json).get('source_provenance')
+                        != source_provenance):
                     raise SkillCatalogError('skill_conflict', 409)
             result = self.repository.apply_change(tx, command=command)
             if result.replayed != prepared.replayed:
@@ -391,11 +402,28 @@ class UserSkillFacade:
 
     async def save(self, *, caller, skill_id, command_id, expected_revision, name,
                    instructions, applies_to, command='', enabled=True, slug='',
-                   import_source=None):
+                   import_source=None, source_provenance=None):
         from astralplane.repositories.guidance_models import SkillCommand, SkillDefinition
         from orchestrator.slash_commands import reserved_names
         self._current(caller)
         import_meta = None
+        if source_provenance is not None:
+            try:
+                from persistent_agents.models import validate_id
+                if (type(source_provenance) is not dict
+                        or set(source_provenance) != {"kind", "operation_id", "result_sha256",
+                                                     "source_trust", "source_content_prefilled"}
+                        or source_provenance["kind"] != "work_result"
+                        or validate_id(source_provenance["operation_id"])
+                        != source_provenance["operation_id"]
+                        or type(source_provenance["result_sha256"]) is not str
+                        or re.fullmatch(r"[a-f0-9]{64}", source_provenance["result_sha256"]) is None
+                        or source_provenance["source_trust"] != "untrusted"
+                        or source_provenance["source_content_prefilled"] is not False):
+                    raise ValueError
+            except (TypeError, ValueError, KeyError):
+                raise SkillCatalogError('skill_invalid', 422) from None
+            source_provenance = dict(source_provenance)
         if import_source is not None:
             from orchestrator.user_skill_import import audit_representation
             preview = self._import_preview(caller, import_source)
@@ -424,7 +452,8 @@ class UserSkillFacade:
                 raise ValueError
         except (TypeError, ValueError):
             raise SkillCatalogError('skill_invalid', 422) from None
-        return await self._change(caller, lambda tx: intent, import_meta=import_meta)
+        return await self._change(caller, lambda tx: intent, import_meta=import_meta,
+                                  source_provenance=source_provenance)
 
     async def set_enabled(self, *, caller, skill_id, command_id, expected_revision, enabled):
         from astralplane.repositories.guidance_models import SkillCommand

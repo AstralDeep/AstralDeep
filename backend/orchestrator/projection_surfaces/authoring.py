@@ -1003,7 +1003,21 @@ class _ImportedSkill(us.Skill):
     import_source: str = ""
 
 
+@dataclass(frozen=True, repr=False)
+class _WorkLesson(us.Skill):
+    skill_id: str = ""
+    command_id: str = ""
+    draft_id: str = ""
+    operation_id: str = ""
+    result_digest: str = ""
+
+
 def _skill_form_metadata(skill, prefill=None):
+    if skill is None and type(prefill) is _WorkLesson:
+        return {"skill_id": prefill.skill_id, "command_id": prefill.command_id,
+                "expected_revision": 0, "skill_slug": "", "skill_enabled": "false",
+                "work_skill_draft_id": prefill.draft_id,
+                "work_operation_id": prefill.operation_id}
     if skill is None and type(prefill) is _ImportedSkill:
         return {"skill_id": prefill.skill_id, "command_id": prefill.command_id,
                 "expected_revision": 0, "skill_slug": "", "skill_enabled": "false",
@@ -1020,6 +1034,11 @@ def _skill_form(skill: us.Skill | None, prefill: us.Skill | None = None) -> str:
     slug = "".join(f'<input type="hidden" name="{key}" value="{esc(str(value))}">'
                    for key, value in metadata.items())
     applies = "" if (skill is None or skill.always) else ", ".join(skill.applies_to)
+    provenance = (f'<p class="text-xs text-astral-muted mb-2">Verified Work result: '
+                 f'{esc(prefill.operation_id)} · SHA-256 {esc(prefill.result_digest)}. '
+                 "The web page text was checked for sensitive content and was not copied into "
+                 "this lesson. This candidate stays disabled.</p>"
+                 if type(prefill) is _WorkLesson else "")
     return (
         f'<div class="bg-white/5 border border-white/10 rounded-lg p-4" data-ui-form>'
         f'<div class="text-sm font-medium text-astral-text mb-1">{title}</div>'
@@ -1027,7 +1046,8 @@ def _skill_form(skill: us.Skill | None, prefill: us.Skill | None = None) -> str:
         f"words — how you like things done, a checklist, a format. It is followed in every "
         f"chat (or only when the agents you name are in play), and a /command turns it into "
         f"a shortcut you can type.</p>{slug}"
-        f'<input name="skill_name" type="text" placeholder="Name (e.g. Weekly status format)" '
+        + provenance
+        + f'<input name="skill_name" type="text" placeholder="Name (e.g. Weekly status format)" '
         f'value="{esc(shown.name) if shown else ""}" class="{_INPUT_CLS} mb-2">'
         f'<div class="flex gap-2 mb-2">'
         f'<input name="skill_command" type="text" placeholder="/command (optional)" '
@@ -1068,7 +1088,8 @@ def _skill_import_form() -> str:
 
 
 async def _render_list(orch, user_id: str, edit_skill: str = "",
-                       import_prefill: us.Skill | None = None) -> str:
+                       import_prefill: us.Skill | None = None,
+                       work_lesson: us.Skill | None = None) -> str:
     ctx = await _list_context(orch, user_id)
     skills_enabled = us.enabled()
     byo = aa.byo_enabled()
@@ -1104,7 +1125,7 @@ async def _render_list(orch, user_id: str, edit_skill: str = "",
         parts.append(f'<div class="space-y-2">{rows}</div>' if rows else
                      '<div class="text-sm text-astral-muted italic">No skills yet — add one '
                      "below. They work in every client and need no desktop.</div>")
-        parts.append(_skill_form(editing, prefill=import_prefill))
+        parts.append(_skill_form(editing, prefill=work_lesson or import_prefill))
         if us.import_enabled():
             parts.append(_skill_import_form())
     parts.append("</div>")
@@ -1300,6 +1321,26 @@ def _import_prefill(params: Any) -> us.Skill | None:
                           skill_id=identity["skill_id"], command_id=identity["command_id"])
 
 
+async def _work_lesson_prefill(orch, user_id, params):
+    operation_id = params.get("work_result_id") if type(params) is dict else None
+    if operation_id is None:
+        return None
+    if (params.get("_work_learning_macos") is not True or type(operation_id) is not str
+            or not us.enabled()):
+        raise AssignmentError("work_skill_draft_unavailable", 403)
+    from orchestrator.human_request_authority import current_human_caller
+    from orchestrator.work_skill_draft import LESSON_INSTRUCTIONS, LESSON_NAME, create_draft
+
+    caller = current_human_caller(expected_orchestrator=orch)
+    if caller is None or caller.owner_id != user_id:
+        raise AssignmentError("human_authentication_required", 401)
+    caller.require_write()
+    draft, _operation, _result = await create_draft(orch, caller, operation_id)
+    return _WorkLesson("", LESSON_NAME, LESSON_INSTRUCTIONS, ("always",), "", False, 0,
+                       str(uuid.uuid4()), str(uuid.uuid4()), draft.draft_id,
+                       draft.operation_id, draft.result_digest)
+
+
 async def render(orch, user_id: str, roles: Any, params: Any) -> str:
     _ = roles
     params = params if isinstance(params, dict) else {}
@@ -1315,8 +1356,9 @@ async def render(orch, user_id: str, roles: Any, params: Any) -> str:
         if not aa.byo_enabled():
             return notice_block("info", _DISABLED)
         return await _render_session(orch, user_id, draft_id)
+    work_lesson = await _work_lesson_prefill(orch, user_id, params)
     return await _render_list(orch, user_id, edit_skill=str(params.get("skill_slug") or ""),
-                              import_prefill=_import_prefill(params))
+                              import_prefill=_import_prefill(params), work_lesson=work_lesson)
 
 
 def _sdui_phase_fields(row: Dict[str, Any], phase: str, _sdui) -> List[Dict[str, Any]]:
@@ -1565,7 +1607,15 @@ async def _home_components(orch, user_id: str, params: Dict[str, Any], _sdui) ->
             out.append(_skill_components(skill, _sdui))
         edit_slug = str(params.get("skill_slug") or "")
         editing = next((sk for sk in ctx["skills"] if sk.slug == edit_slug), None) if edit_slug else None
-        out.extend(_skill_form_components(editing, _sdui, prefill=_import_prefill(params)))
+        work_lesson = await _work_lesson_prefill(orch, user_id, params)
+        if type(work_lesson) is _WorkLesson:
+            out.append(_sdui.alert(
+                f"Verified Work result {work_lesson.operation_id}; SHA-256 "
+                f"{work_lesson.result_digest}. Web page text was checked for sensitive content "
+                "and was not copied into this candidate. Review and edit it before saving; it "
+                "will remain disabled.", "info"))
+        out.extend(_skill_form_components(editing, _sdui,
+            prefill=work_lesson or _import_prefill(params)))
         if us.import_enabled():
             out.extend(_skill_import_components(_sdui))
     return out
@@ -1858,11 +1908,37 @@ async def _h_skill_save(orch, websocket, user_id, roles, payload):
     instructions = fields.get("skill_instructions", "")
     if type(name) is not str or type(instructions) is not str:
         raise AssignmentError("skill_invalid", 422)
+    work_draft_id = payload.get("work_skill_draft_id", fields.get("work_skill_draft_id"))
+    work_operation_id = payload.get("work_operation_id", fields.get("work_operation_id"))
+    has_work_draft = work_draft_id is not None or work_operation_id is not None
+    if has_work_draft:
+        from orchestrator.chrome_events import _device_type
+        if (_device_type(orch, websocket) != "macos" or type(work_draft_id) is not str
+                or type(work_operation_id) is not str or value != "false"
+                or identity["expected_revision"] != 0 or slug
+                or payload.get("work_skill_draft_id", work_draft_id)
+                != fields.get("work_skill_draft_id", work_draft_id)
+                or payload.get("work_operation_id", work_operation_id)
+                != fields.get("work_operation_id", work_operation_id)):
+            raise AssignmentError("work_skill_draft_unavailable", 403)
+        try:
+            from personalization.phi_gate import get_phi_gate
+            from persistent_agents.privacy import content_text, privacy_text
+
+            candidate_text = privacy_text(content_text({"name": name, "instructions": instructions}))
+            if await asyncio.to_thread(get_phi_gate().contains_phi, candidate_text):
+                raise AssignmentError("skill_sensitive_content_refused", 422)
+        except AssignmentError:
+            raise
+        except Exception:
+            raise AssignmentError("skill_privacy_unavailable", 503) from None
     source = payload.get("skill_import_source", fields.get("skill_import_source"))
     if ("skill_import_source" in payload and "skill_import_source" in fields
             and payload["skill_import_source"] != fields["skill_import_source"]):
         raise AssignmentError("skill_invalid", 422)
-    if source is None and us.import_enabled() and _is_import_source(name, instructions):
+    if has_work_draft and source is not None:
+        raise AssignmentError("skill_invalid", 422)
+    if not has_work_draft and source is None and us.import_enabled() and _is_import_source(name, instructions):
         from orchestrator.user_skill_import import SkillImportError
         if identity["expected_revision"] != 0 or slug:
             raise AssignmentError("skill_invalid", 422)
@@ -1874,11 +1950,31 @@ async def _h_skill_save(orch, websocket, user_id, roles, payload):
                                                "name": preview.name,
                                                "instructions": preview.instructions}},
                 notice_block("info", _import_notice(preview)))
-    await store.save(caller=caller, **identity, name=name,
-        instructions=instructions, applies_to=fields.get("skill_applies", ""),
-        command=fields.get("skill_command", ""), enabled=value == "true", slug=slug,
-        import_source=source)
-    message = "Skill saved disabled. Enable it when ready." if source is not None else "Skill saved."
+    source_provenance = None
+    if has_work_draft:
+        from orchestrator.work_skill_draft import finish_draft, reserve_draft
+
+        _operation, _result, result_sha256 = await reserve_draft(
+            orch, caller, work_draft_id, work_operation_id, identity["command_id"])
+        source_provenance = {"kind": "work_result", "operation_id": work_operation_id,
+                             "result_sha256": result_sha256,
+                             "source_trust": "untrusted", "source_content_prefilled": False}
+        try:
+            await store.save(caller=caller, **identity, name=name,
+                instructions=instructions, applies_to=fields.get("skill_applies", ""),
+                command=fields.get("skill_command", ""), enabled=value == "true", slug=slug,
+                import_source=source, source_provenance=source_provenance)
+        except BaseException:
+            finish_draft(orch, caller, work_draft_id, identity["command_id"], committed=False)
+            raise
+        finish_draft(orch, caller, work_draft_id, identity["command_id"], committed=True)
+    else:
+        await store.save(caller=caller, **identity, name=name,
+            instructions=instructions, applies_to=fields.get("skill_applies", ""),
+            command=fields.get("skill_command", ""), enabled=value == "true", slug=slug,
+            import_source=source, source_provenance=None)
+    message = ("Skill saved disabled. Enable it when ready."
+               if source is not None or source_provenance is not None else "Skill saved.")
     return (SURFACE_KEY, {}, notice_block("success", message))
 
 

@@ -55,6 +55,21 @@ async def test_empty_cutover_create_and_exact_receipt_replay(catalog, human, bou
     assert fixture[-1] == []
 
 
+async def test_work_learning_provenance_is_recorded_in_owner_audit(catalog, human, bound,
+                                                                  fixture, runtime):
+    caller = await selected(human, bound, fixture)
+    intent = command(enabled=False)
+    provenance = {"kind": "work_result", "operation_id": str(uuid4()),
+                  "result_sha256": "a" * 64, "source_trust": "untrusted",
+                  "source_content_prefilled": False}
+    await catalog.save(caller=caller, **intent, source_provenance=provenance)
+    with runtime.transaction() as tx:
+        event = tx.fetch_one(
+            "SELECT outputs_meta FROM audit_events WHERE action_type='user_skill_create'")
+    assert event is not None
+    assert event["outputs_meta"]["source_provenance"] == provenance
+
+
 @pytest.mark.parametrize('command_id', [None, '1cb62afb-adff-4477-b695-ef97a18a9130'])
 async def test_imported_skill_uses_real_catalog_identity_contract(catalog, human, bound, fixture, command_id):
     from uuid import UUID
