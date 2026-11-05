@@ -123,6 +123,22 @@ def build_gallery() -> List[Dict[str, Any]]:
             {"title": "Created", "time": "09:00", "description": "Draft opened", "variant": "info"},
             {"title": "Approved", "time": "11:30", "description": "Went live", "variant": "success"},
         ]},
+        {"type": "artifact", "title": "Release report", "kind": "document",
+         "subtitle": "Rendered sections with nested components",
+         "sections": [
+             {"heading": "Summary", "children": [
+                 {"type": "text", "content": "The release went out on schedule.", "variant": "body"},
+             ]},
+             {"heading": "Checklist", "children": [
+                 {"type": "badge", "label": "signed", "variant": "success"},
+                 {"type": "badge", "label": "published", "variant": "accent"},
+             ]},
+         ]},
+        {"type": "html_artifact", "title": "Interactive preview",
+         "html": "<!doctype html><html><body style=\"font-family:sans-serif\">"
+                 "<h1>Sandboxed HTML artifact</h1>"
+                 "<p>Rendered in an iframe with scripts allowed and no referrer.</p>"
+                 "</body></html>"},
         {"type": "rating", "label": "Quality", "value": 4.0, "max_value": 5,
          "subtitle": "Based on 128 reviews", "show_value": True},
         {"type": "skeleton", "variant": "list", "count": 3, "label": "Loading…"},

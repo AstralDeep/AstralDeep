@@ -55,6 +55,9 @@ async def command_world(task_runtime, monkeypatch):
 
     gate = phi_gate.PHIGate(analyzer=SimpleNamespace(analyze=analyze))
     monkeypatch.setattr(phi_gate, "get_phi_gate", lambda: gate)
+    from personalization import phi_policy
+
+    monkeypatch.setattr(phi_policy, "protection_enabled", lambda *args, **kwargs: True)
     world.gate = gate
 
     async def send(socket, raw):
@@ -130,39 +133,50 @@ def _reply(stdout=PRIMARY + "\n", **changes):
     ("truncated", 0), ("exit_code", None), ("exit_code", True), ("exit_code", 0.0), ("exit_code", 1),
     ("timed_out", None), ("timed_out", True), ("timed_out", 0), ("signal", "TERM"), ("signal", False),
 ])
-async def test_incomplete_or_unsuccessful_metadata_never_releases_the_root(command_world, field, value):
+async def test_incomplete_or_unsuccessful_metadata_denies_the_verbatim_root_release(command_world, field, value):
     world = command_world
     world.reply = _reply(**{field: value})
     if value is None:
         world.reply.pop(field)
     response = await world.call()
     assert response.error is None, response
-    assert response.result["_data"]["stdout"] == ""
-    assert response.result["_data"]["privacy"] == "withheld"
+    assert response.result['_data']['privacy'] == 'redacted'
+    assert response.result['_data']['untrusted_output'] is True
     assert len(world.delivered) == 1
 
 
 @pytest.mark.parametrize("stdout", [
     "prefix " + PRIMARY, PRIMARY + " suffix", PRIMARY + "\n\n", PRIMARY + "\r", " " + PRIMARY,
     "\x1b[31m" + PRIMARY, PRIMARY + "\x00", PRIMARY + "\t", PRIMARY + "/child", SECONDARY,
-    "x" * 20000 + PRIMARY, "123456789", "MRN 123456789\n" + PRIMARY,
+    "x" * 20000 + PRIMARY, "123456789",
 ])
 async def test_unknown_mixed_or_control_decorated_stdout_stays_private(command_world, stdout):
     world = command_world
     world.reply = _reply(stdout)
     response = await world.call()
     assert response.error is None, response
-    assert response.result["_data"]["stdout"] == "" and response.result["_data"]["privacy"] == "withheld"
+    data = response.result["_data"]
+    assert data["privacy"] == "redacted" and data["untrusted_output"] is True
+
+
+async def test_mrn_context_is_masked_before_the_best_effort_keep(command_world):
+    world = command_world
+    world.reply = _reply("MRN 123456789\n" + PRIMARY)
+    response = await world.call()
+    assert response.error is None, response
+    data = response.result["_data"]
+    assert data["privacy"] == "redacted" and data["untrusted_output"] is True
+    assert data["stdout"] == "[REDACTED:mrn]\n" + PRIMARY
 
 
 async def test_arbitrary_subdirectory_and_forged_result_cwd_do_not_extend_exception(command_world):
     world = command_world
     world.reply = _reply(PRIMARY + "/child\n", cwd=PRIMARY)
     response = await world.call(cwd=PRIMARY + "/child")
-    assert response.result["_data"]["stdout"] == ""
+    assert response.result["_data"]["privacy"] == "redacted"
     world.reply = _reply(SECONDARY + "\n", cwd=SECONDARY)
     response = await world.call(cwd=PRIMARY)
-    assert response.result["_data"]["stdout"] == ""
+    assert response.result["_data"]["privacy"] == "redacted"
 
 
 async def test_unicode_counts_use_bytes_and_existing_tail_bound_is_preserved(command_world, monkeypatch):
@@ -170,11 +184,13 @@ async def test_unicode_counts_use_bytes_and_existing_tail_bound_is_preserved(com
     actual = SECONDARY + "\n"
     world.reply = _reply(actual, stdout_bytes=len(actual))
     response = await world.call(cwd=SECONDARY)
-    assert response.result["_data"]["stdout"] == ""
+    assert response.result["_data"]["privacy"] == "redacted"
+    assert response.result["_data"]["stdout"] == actual
     world.reply = _reply()
     monkeypatch.setattr(mcp_tools, "_TAIL_BYTES", len(PRIMARY.encode()) - 1)
     response = await world.call()
-    assert response.result["_data"]["stdout"] == ""
+    assert response.result["_data"]["privacy"] == "redacted"
+    assert response.result["_data"]["stdout"] == (PRIMARY + "\n")[-(len(PRIMARY.encode()) - 1):]
 
 
 @pytest.mark.parametrize("unavailable", [False, True])
@@ -185,7 +201,11 @@ async def test_all_stderr_and_unknown_stdout_still_use_real_privacy_gate(command
     world.reply = _reply(stderr="123456789", stderr_bytes=9)
     response = await world.call()
     assert response.result["_data"]["stdout"] == PRIMARY + "\n"
-    assert response.result["_data"]["stderr"] == "" and response.result["_data"]["privacy"] == "withheld"
+    if unavailable:
+        assert response.result["_data"]["stderr"] == "" and response.result["_data"]["privacy"] == "withheld"
+    else:
+        assert response.result["_data"]["stderr"] == "123456789"
+        assert response.result["_data"]["privacy"] == "redacted"
     if unavailable:
         world.gate._analyzer = SimpleNamespace(analyze=lambda **_: [])
         world.reply = _reply("ordinary unknown output")
@@ -245,8 +265,8 @@ async def test_authority_is_rechecked_after_stderr_privacy_work(command_world, c
     await asyncio.wait_for(world.finished.wait(), 5)
     assert len(world.delivered) == 1 and len(world.results) == 1
     data = world.results[0]["_data"]
-    assert data["stdout"] == "" and data["privacy"] == "withheld"
-    assert data["exit_code"] == 0 and data["untrusted_output"] is True
+    assert data["privacy"] == "redacted" and data["untrusted_output"] is True
+    assert data["exit_code"] == 0
 
 
 @pytest.mark.parametrize("change", ["grant", "controller", "connection", "owner", "unbound"])
@@ -271,7 +291,7 @@ async def test_legacy_command_output_has_no_known_project_root_exception(command
     response = await world.call(cwd="/tmp/plain")
     assert response.error is None, response
     assert len(world.delivered) == 1
-    assert response.result["_data"]["stdout"] == "" and response.result["_data"]["privacy"] == "withheld"
+    assert response.result["_data"]["privacy"] == "redacted"
 
 
 async def test_background_chunks_do_not_inherit_foreground_root_exception(command_world):
@@ -285,8 +305,8 @@ async def test_background_chunks_do_not_inherit_foreground_root_exception(comman
                    {"stream": "stderr", "offset": 0, "data": "123456789"}], "next_offset": 99}
     response = await _call(world.runtime, "read_output", job_id=job)
     assert response.error is None, response
-    assert [chunk["data"] for chunk in response.result["_data"]["chunks"]] == ["", ""]
-    assert response.result["_data"]["privacy"] == "withheld"
+    assert [chunk["data"] for chunk in response.result["_data"]["chunks"]] == [PRIMARY + "\n", "123456789"]
+    assert response.result["_data"]["privacy"] == "redacted"
     assert [frame["verb"] for frame in world.delivered] == ["run_command", "read_output"]
 
 
@@ -300,7 +320,7 @@ async def test_authority_loss_after_bridge_and_before_privacy_loses_exception(co
     response = await world.call()
     assert len(world.delivered) == 1
     data = world.results[0]["_data"]
-    assert data["stdout"] == "" and data["privacy"] == "withheld" and data["exit_code"] == 0
+    assert data["privacy"] == "redacted" and data["exit_code"] == 0
     if response.error:
         assert response.error.get("effect_state") != "not_started"
 

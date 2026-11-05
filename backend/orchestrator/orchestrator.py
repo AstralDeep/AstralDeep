@@ -10809,6 +10809,13 @@ class Orchestrator:
                 if msg.action == "chat_message":
                     user_message = msg.payload.get("message", "")
                     chat_id = msg.session_id or msg.payload.get("chat_id")
+                    if msg.payload.get("revised_turn_id") is not None:
+                        from orchestrator import conversation_branches
+                        await conversation_branches.dispatch_revised_message(
+                            self, websocket, user_id=user_id,
+                            payload=msg.payload, submission_id=msg.submission_id,
+                        )
+                        return
                     draft_agent_id = msg.payload.get("draft_agent_id")
                     voice_origin = msg.voice_origin
                     if voice_origin is None:
@@ -11035,6 +11042,13 @@ class Orchestrator:
                       or msg.action == "chat_archive" or msg.action == "chat_unarchive"):
                     from orchestrator import chat_organization
                     await chat_organization.handle(self, websocket, user_id, msg.action, msg.payload)
+
+                elif msg.action in {"chat_fork", "chat_regenerate", "chat_branch_select"}:
+                    from orchestrator import conversation_branches
+                    await conversation_branches.handle_branch_action(
+                        self, websocket, user_id, msg.action, msg.payload,
+                        submission_id=msg.submission_id,
+                    )
 
                 elif msg.action == "load_chat":
                     chat_id = msg.payload.get("chat_id")
@@ -13059,6 +13073,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         operation_context=None,
         voice_dispatch=None,
         continuation_guard=None,
+        persisted_turn=None,
     ):
         ws_id = id(websocket)
         started = False
@@ -13103,6 +13118,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             attachments=attachments,
                             operation_context=operation_context,
                             voice_dispatch=voice_dispatch,
+                            persisted_turn=persisted_turn,
                         )
         except Exception as e:
             # Never str(e) to the user: may carry secrets or PHI
@@ -14454,6 +14470,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         self, websocket, message: str, chat_id: str, display_message: str = None,
         user_id: str = None, draft_agent_id: str = None, selected_tools=None,
         attachments=None, operation_context=None, voice_dispatch=None, selection=None,
+        persisted_turn=None,
     ):
         from persistent_agents.models import AssignmentError
 
@@ -14482,12 +14499,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         websocket, message, chat_id, display_message, user_id=user_id,
                         draft_agent_id=draft_agent_id, selected_tools=selected_tools,
                         attachments=attachments, operation_context=operation_context,
-                        voice_dispatch=voice_dispatch)
+                        voice_dispatch=voice_dispatch, persisted_turn=persisted_turn)
             return await self._handle_chat_message_with_guidance(
                 websocket, message, chat_id, display_message, user_id=user_id,
                 draft_agent_id=draft_agent_id, selected_tools=selected_tools,
                 attachments=attachments, operation_context=operation_context,
-                voice_dispatch=voice_dispatch)
+                voice_dispatch=voice_dispatch, persisted_turn=persisted_turn)
 
         if not user_skills.enabled() and not evidence_context.needs_authority(self):
             return await execute()
@@ -14550,6 +14567,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         attachments=None,
         operation_context=None,
         voice_dispatch=None,
+        persisted_turn=None,
     ):
         from orchestrator.conversation_publication import (
             reset_conversation_publication,
@@ -14686,6 +14704,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     conversation_server_initiated=server_initiated,
                     voice_acceptance=voice_acceptance,
                     llm_preflight_complete=llm_preflight_complete,
+                    persisted_turn=persisted_turn,
                 )
             if voice_dispatch is not None:
                 deferred = self._defer_voice_chat_dispatch(
@@ -14752,6 +14771,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         conversation_server_initiated: bool = False,
         voice_acceptance: dict[str, Any] | None = None,
         llm_preflight_complete: bool = False,
+        persisted_turn: dict[str, Any] | None = None,
     ):
         if voice_dispatch is None:
             logger.info(
@@ -14985,6 +15005,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         msg_to_save = display_message if display_message else message
         if voice_acceptance is not None:
             turn_message_id = int(voice_acceptance["message_id"])
+        elif persisted_turn is not None:
+            turn_message_id = int(persisted_turn["message_id"])
         else:
             turn_message_id = await self._append_conversation_message(
                 conversation_stage,
@@ -15371,7 +15393,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 self.history.get_chat, chat_id, user_id=user_id)
             if chat_data and "messages" in chat_data:
                 raw_history = chat_data["messages"]
-                if (
+                if persisted_turn is None and (
                     conversation_stage is None
                     or conversation_stage.publication_role
                     == "assistant_result"
@@ -15393,7 +15415,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             messages = [
                 {"role": "system", "content": system_prompt},
                 *history_messages,
-                {"role": "user", "content": message}
+                *([] if persisted_turn is not None else [{"role": "user", "content": message}]),
             ]
             if datamark_on:
                 messages.append({
@@ -16089,6 +16111,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     }))
 
                     messages.append(_history_assistant_message(llm_msg))
+                    _assistant_history = messages[-1]
 
                     tool_results = []
                     if turn_count == 1:
@@ -16129,6 +16152,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                         call.function.name, call.function.name),
                                 )
                                 del llm_msg.tool_calls[len(tool_results):]
+                                del _assistant_history["tool_calls"][len(tool_results):]
                             elif len(llm_msg.tool_calls) == 1:
                                 tc = llm_msg.tool_calls[0]
                                 res = await self.execute_single_tool(websocket, tc, tool_to_agent, chat_id, user_id=user_id, tool_to_unqualified=tool_to_unqualified)

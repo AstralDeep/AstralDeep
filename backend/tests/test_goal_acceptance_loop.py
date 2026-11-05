@@ -69,7 +69,8 @@ async def test_local_goal_cannot_finish_on_unsubstantiated_complete(acceptance_o
 
     o._call_llm = provider
     o.execute_single_tool = AsyncMock()
-    await o.handle_chat_message(ws, "Create a game in this project and run its tests", chat, user_id="seam-user")
+    await o.handle_chat_message(
+        ws, "Kindly produce the game project deliverable and run its tests", chat, user_id="seam-user")
     final = await _last_assistant_text(o, chat, "seam-user")
     assert "incomplete" in final.lower()
     assert "Done; the game" not in final
@@ -98,7 +99,8 @@ async def test_unusable_contract_stops_before_execution(acceptance_orch, user_sk
 
     o._call_llm = provider
     o.execute_single_tool = AsyncMock()
-    await o.handle_chat_message(ws, "Create and test a game", chat, user_id="seam-user")
+    await o.handle_chat_message(
+        ws, "Kindly deliver a game with its tests", chat, user_id="seam-user")
     final = await _last_assistant_text(o, chat, "seam-user")
     assert "cancelled" in final.lower() if kind == "cancelled" else "incomplete" in final.lower()
     assert planner_calls == 0
@@ -141,7 +143,9 @@ async def test_local_completion_requires_distinct_stage_evidence(acceptance_orch
         o.execute_single_tool.assert_not_awaited()
     else:
         assert planner_calls > 0
-        o.execute_single_tool.assert_awaited_once()
+        awaited = [call.args[1] for call in o.execute_single_tool.await_args_list]
+        assert [call.function.name for call in awaited] == ["run_command", "run_command"]
+        assert awaited[0].id == "verified" and awaited[1].id.startswith("goal-worker-")
 
 
 @pytest.mark.asyncio
@@ -204,7 +208,7 @@ async def test_local_contract_respects_authority_and_cancel_boundaries(acceptanc
         result={"_data": {"computer": "Test Mac", "cwd": "/work/Game", "exit_code": 0, "timed_out": False}},
         error=None, ui_components=[], correlation_id=None,
     ))
-    await o.handle_chat_message(ws, "Build a game and verify it", chat, user_id="seam-user")
+    await o.handle_chat_message(ws, "Assemble the game project and check it works", chat, user_id="seam-user")
     final = await _last_assistant_text(o, chat, "seam-user")
     assert "cancelled" in final.lower() if boundary == "cancelled" else "incomplete" in final.lower()
     assert "finished successfully" not in final

@@ -555,7 +555,8 @@ def local_effect(monkeypatch, tmp_path):
             candidate = (
                 __import__("pathlib").Path(path) / f"astral-srt-{state.identity}.txt"
             )
-            candidate.unlink(missing_ok=True)
+            if candidate.exists():
+                candidate.unlink(missing_ok=True)
 
 
 def test_fixed_actuator_claims_standard_receipt_before_real_golden_scratch_effect(

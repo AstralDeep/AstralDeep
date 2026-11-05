@@ -6,6 +6,7 @@ Used throughout orchestrator.py, chat_organization.py and api.py.
 
 import copy
 import hashlib
+import inspect
 import json
 import os
 import time
@@ -49,6 +50,66 @@ logger = logging.getLogger('HistoryManager')
 
 PREVIEW_MAX_CHARS = 140
 RECENT_CHATS_MAXIMUM = 200
+BRANCH_SUMMARY_PREFIX = "[Branch summary]"
+CONVERSATION_BRANCH_SIBLINGS_LIMIT = 50
+CONVERSATION_BRANCHES_CAPABILITY = "conversation_branches_v1"
+
+
+def _plane_branch_support(history_repository: Any) -> bool:
+    conversations = getattr(history_repository, "conversations", None)
+    messages = getattr(history_repository, "messages", None)
+    for group, name in (
+        (conversations, "fork"),
+        (conversations, "branch_head"),
+        (conversations, "move_branch_head"),
+        (messages, "list_branch_path"),
+        (messages, "count_message_siblings"),
+    ):
+        if not callable(getattr(group, name, None)):
+            return False
+    try:
+        parameters = inspect.signature(messages.append).parameters
+    except (TypeError, ValueError):
+        return False
+    return "parent_message_id" in parameters
+
+
+def _branch_group_id(conversation_id: str, parent_message_id: Optional[int]) -> str:
+    scope = "root" if parent_message_id is None else str(parent_message_id)
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"astral-branch:{conversation_id}:{scope}"))
+
+
+def _branch_sibling_fields(
+    conversation_id: str, records: Sequence[Any]
+) -> Dict[int, Dict[str, Any]]:
+    groups: Dict[Optional[int], List[int]] = {}
+    for record in records:
+        groups.setdefault(record.parent_message_id, []).append(record.message_id)
+    fields: Dict[int, Dict[str, Any]] = {}
+    for parent, members in groups.items():
+        if not 2 <= len(members) <= CONVERSATION_BRANCH_SIBLINGS_LIMIT:
+            continue
+        group_id = _branch_group_id(conversation_id, parent)
+        siblings = [str(member) for member in members]
+        for position, member in enumerate(members, start=1):
+            fields[member] = {
+                "group_id": group_id,
+                "index": position,
+                "count": len(members),
+                "siblings": siblings,
+            }
+    return fields
+
+
+def _positive_message_id(value: Any) -> int:
+    text = str(value).strip() if value is not None else ""
+    try:
+        parsed = int(text)
+    except ValueError:
+        raise ValueError("message id must be an integer") from None
+    if parsed <= 0 or str(parsed) != text:
+        raise ValueError("message id must be a positive integer")
+    return parsed
 
 
 class ConversationCommitConflict(RuntimeError):
@@ -60,6 +121,10 @@ class ConversationNotFound(LookupError):
 
 
 class ConversationSnapshotInvalid(RuntimeError):
+    pass
+
+
+class ConversationBranchUnavailable(RuntimeError):
     pass
 
 
@@ -537,6 +602,39 @@ class ConversationCommitRepository:
         self._artifacts = repositories.artifacts
         self.operation_coordinator = operation_coordinator
         self.uuid_factory = uuid_factory
+        self._branch_support = _plane_branch_support(self._history)
+
+    def _advance_branch_head_to_latest(
+        self,
+        transaction: Any,
+        owner_id: str,
+        chat_id: str,
+    ) -> None:
+        if not self._branch_support:
+            return
+        head = self._history.conversations.branch_head(
+            transaction,
+            owner_id=owner_id,
+            conversation_id=chat_id,
+        )
+        if head is None:
+            return
+        latest = self._history.messages.latest_visible_id(
+            transaction,
+            owner_id=owner_id,
+            conversation_id=chat_id,
+        )
+        if latest is None:
+            return
+        if head.head_message_id == latest:
+            return
+        self._history.conversations.move_branch_head(
+            transaction,
+            owner_id=owner_id,
+            conversation_id=chat_id,
+            head_message_id=latest,
+            expected_version=head.version,
+        )
 
     @contextmanager
     def _transaction(self, operation_fence: Any = None) -> Iterator[Any]:
@@ -1763,6 +1861,9 @@ class ConversationCommitRepository:
                     committed_at=current_time,
                     updated_at=current_ms,
                 )
+                self._advance_branch_head_to_latest(
+                    transaction, owner_user_id, staged.conversation_id
+                )
             except RepositoryNotFoundError as exc:
                 raise ConversationNotFound("conversation not found") from exc
             except RepositoryConflictError as exc:
@@ -2022,6 +2123,9 @@ class ConversationCommitRepository:
                     committed_at=current_time,
                     updated_at=current_ms,
                 )
+                self._advance_branch_head_to_latest(
+                    transaction, owner_user_id, staged.conversation_id
+                )
             except RepositoryNotFoundError as exc:
                 raise ConversationNotFound("conversation not found") from exc
             except RepositoryConflictError as exc:
@@ -2065,6 +2169,7 @@ class ConversationCommitRepository:
         connection_generation: Any,
         request_generation: Any,
         snapshot_purpose: str,
+        include_branch_fields: bool = False,
     ) -> dict[str, Any]:
         chat_id = _uuid4_text(chat_id, "chat_id")
         owner_user_id = _required_text(owner_user_id, "owner_user_id")
@@ -2076,12 +2181,15 @@ class ConversationCommitRepository:
         )
         if snapshot_purpose not in {"hydration", "commit"}:
             raise ValueError("snapshot_purpose is invalid")
+        if not isinstance(include_branch_fields, bool):
+            raise ValueError("include_branch_fields must be boolean")
         return self._build_snapshot_typed(
             chat_id=chat_id,
             owner_user_id=owner_user_id,
             connection_generation=connection_generation,
             request_generation=request_generation,
             snapshot_purpose=snapshot_purpose,
+            include_branch_fields=include_branch_fields,
         )
     def _build_snapshot_typed(
         self,
@@ -2091,6 +2199,7 @@ class ConversationCommitRepository:
         connection_generation: str,
         request_generation: str,
         snapshot_purpose: str,
+        include_branch_fields: bool = False,
     ) -> dict[str, Any]:
         with self.plane_runtime.transaction(
             isolation=IsolationLevel.REPEATABLE_READ
@@ -2141,17 +2250,44 @@ class ConversationCommitRepository:
                         "commit snapshot request generation does not match its commit"
                     )
 
-            message_records = self._history.messages.list_visible(
+            all_visible_records = self._history.messages.list_visible(
                 transaction,
                 owner_id=owner_user_id,
                 conversation_id=chat_id,
                 through_render_revision=render_revision,
                 limit=1000,
             )
-            if len(message_records) >= 1000:
+            if len(all_visible_records) >= 1000:
                 raise ConversationSnapshotInvalid(
                     "conversation transcript exceeds the supported bound"
                 )
+            message_records = all_visible_records
+            sibling_fields: Dict[int, Dict[str, Any]] = {}
+            if (
+                self._branch_support
+                and render_revision == 0
+            ):
+                head = self._history.conversations.branch_head(
+                    transaction,
+                    owner_id=owner_user_id,
+                    conversation_id=chat_id,
+                )
+                if head is not None and head.head_message_id is not None:
+                    branch_records = self._history.messages.list_branch_path(
+                        transaction,
+                        owner_id=owner_user_id,
+                        conversation_id=chat_id,
+                        limit=1000,
+                    )
+                    if len(branch_records) >= 1000:
+                        raise ConversationSnapshotInvalid(
+                            "conversation transcript exceeds the supported bound"
+                        )
+                    message_records = branch_records
+                    if include_branch_fields:
+                        sibling_fields = _branch_sibling_fields(
+                            chat_id, all_visible_records
+                        )
             component_records = self._workspaces.canvas.list_current(
                 transaction,
                 owner_id=owner_user_id,
@@ -2169,19 +2305,21 @@ class ConversationCommitRepository:
                 )
                 if not parts:
                     continue
-                transcript.append(
-                    {
-                        "message_id": str(message.message_id),
-                        "role": message.role,
-                        "created_at": _rfc3339(message.timestamp),
-                        "parts": parts,
-                        "attachments": self._typed_attachments(
-                            transaction,
-                            message_id=message.message_id,
-                            owner_user_id=owner_user_id,
-                        ),
-                    }
-                )
+                entry = {
+                    "message_id": str(message.message_id),
+                    "role": message.role,
+                    "created_at": _rfc3339(message.timestamp),
+                    "parts": parts,
+                    "attachments": self._typed_attachments(
+                        transaction,
+                        message_id=message.message_id,
+                        owner_user_id=owner_user_id,
+                    ),
+                }
+                branch = sibling_fields.get(message.message_id)
+                if branch is not None:
+                    entry["branch"] = dict(branch)
+                transcript.append(entry)
 
             components = []
             for position, record in enumerate(component_records):
@@ -2443,6 +2581,45 @@ class HistoryManager:
             repository=preferences_repository,
             plane_runtime=runtime,
         )
+        self._branch_support = _plane_branch_support(history_repository)
+
+    @property
+    def conversation_branches_supported(self) -> bool:
+        return self._branch_support
+
+    def _require_branch_support(self) -> None:
+        if not self._branch_support:
+            raise ConversationBranchUnavailable(
+                "the pinned AstralPlane revision does not carry conversation branches"
+            )
+
+    def _active_branch_state(self, transaction: Any, owner_id: str, chat_id: str):
+        head = self._history.repository.conversations.branch_head(
+            transaction,
+            owner_id=owner_id,
+            conversation_id=chat_id,
+        )
+        if head is None or head.head_message_id is None:
+            return None
+        return head
+
+    def _advance_branch_head(
+        self,
+        transaction: Any,
+        owner_id: str,
+        chat_id: str,
+        head,
+        message_id: int,
+    ) -> None:
+        if head is None or head.head_message_id == message_id:
+            return
+        self._history.repository.conversations.move_branch_head(
+            transaction,
+            owner_id=owner_id,
+            conversation_id=chat_id,
+            head_message_id=message_id,
+            expected_version=head.version,
+        )
 
     def create_chat(
         self,
@@ -2517,14 +2694,33 @@ class HistoryManager:
                     if len(display_content) > 30
                     else display_content
                 )
-            messages.append(
+            head = (
+                self._history.repository.conversations.branch_head(
+                    transaction,
+                    owner_id=user_id,
+                    conversation_id=chat_id,
+                )
+                if self._branch_support
+                else None
+            )
+            append_kwargs = (
+                {}
+                if head is None or head.head_message_id is None
+                else {"parent_message_id": head.head_message_id}
+            )
+            record = messages.append(
                 transaction,
                 owner_id=user_id,
                 conversation_id=chat_id,
                 role=role,
                 content=content,
                 timestamp=timestamp,
+                **append_kwargs,
             )
+            if head is not None:
+                self._advance_branch_head(
+                    transaction, user_id, chat_id, head, record.message_id
+                )
             conversations.rename(
                 transaction,
                 owner_id=user_id,
@@ -2540,6 +2736,276 @@ class HistoryManager:
             owner_id=user_id,
             conversation_id=chat_id,
         )
+
+    def _locked_branch_chat(self, transaction: Any, user_id: str, chat_id: str):
+        chat = self._history.repository.conversations.get(
+            transaction,
+            owner_id=user_id,
+            conversation_id=chat_id,
+            for_update=True,
+        )
+        if chat is None:
+            raise ConversationNotFound("conversation not found")
+        if chat.render_revision > 0:
+            raise ConversationBranchUnavailable(
+                "revisioned conversations do not serve branch operations"
+            )
+        return chat
+
+    def _active_head_and_path(self, transaction: Any, owner_id: str, chat_id: str):
+        head = self._active_branch_state(transaction, owner_id, chat_id)
+        if head is None:
+            raise ConversationBranchUnavailable(
+                "conversation has no active branch head"
+            )
+        path = self._history.repository.messages.list_branch_path(
+            transaction,
+            owner_id=owner_id,
+            conversation_id=chat_id,
+            limit=1000,
+        )
+        if len(path) >= 1000:
+            raise ConversationSnapshotInvalid(
+                "conversation message inventory exceeds the supported bound"
+            )
+        return head, path
+
+    def branch_active_view(self, chat_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+        if not self._branch_support:
+            return None
+
+        def _read(transaction: Any):
+            chat = self._history.repository.conversations.get(
+                transaction,
+                owner_id=user_id,
+                conversation_id=chat_id,
+            )
+            if chat is None:
+                return None
+            head = self._active_branch_state(transaction, user_id, chat_id)
+            path = (
+                ()
+                if head is None
+                else self._history.repository.messages.list_branch_path(
+                    transaction,
+                    owner_id=user_id,
+                    conversation_id=chat_id,
+                    limit=1000,
+                )
+            )
+            visible = self._history.repository.messages.list_visible(
+                transaction,
+                owner_id=user_id,
+                conversation_id=chat_id,
+                limit=1000,
+            )
+            return {"head": head, "path": path, "visible": visible}
+
+        return self._history.call(_read)
+
+    def edit_and_resend(
+        self,
+        chat_id: str,
+        user_id: str,
+        revised_message_id: Any,
+        content: Any,
+    ) -> Dict[str, Any]:
+        self._require_branch_support()
+        message_id = _positive_message_id(revised_message_id)
+        timestamp = int(time.time() * 1000)
+        with self._history.transaction() as transaction:
+            messages = self._history.repository.messages
+            self._locked_branch_chat(transaction, user_id, chat_id)
+            head, path = self._active_head_and_path(transaction, user_id, chat_id)
+            if message_id not in {record.message_id for record in path}:
+                raise ConversationSnapshotInvalid(
+                    "edited message is not on the active branch"
+                )
+            target = messages.get(
+                transaction,
+                owner_id=user_id,
+                conversation_id=chat_id,
+                message_id=message_id,
+            )
+            if target is None or target.role != "user":
+                raise ConversationSnapshotInvalid(
+                    "edited message must be a user turn"
+                )
+            record = messages.append(
+                transaction,
+                owner_id=user_id,
+                conversation_id=chat_id,
+                role="user",
+                content=content,
+                timestamp=timestamp,
+                parent_message_id=target.parent_message_id,
+            )
+            self._advance_branch_head(
+                transaction, user_id, chat_id, head, record.message_id
+            )
+            return {
+                "message_id": record.message_id,
+                "revised_message_id": message_id,
+                "parent_message_id": target.parent_message_id,
+            }
+
+    def prepare_regenerate(
+        self,
+        chat_id: str,
+        user_id: str,
+        reply_message_id: Any,
+    ) -> Dict[str, Any]:
+        self._require_branch_support()
+        message_id = _positive_message_id(reply_message_id)
+        with self._history.transaction() as transaction:
+            messages = self._history.repository.messages
+            self._locked_branch_chat(transaction, user_id, chat_id)
+            head, path = self._active_head_and_path(transaction, user_id, chat_id)
+            if message_id not in {record.message_id for record in path}:
+                raise ConversationSnapshotInvalid(
+                    "regenerated reply is not on the active branch"
+                )
+            target = messages.get(
+                transaction,
+                owner_id=user_id,
+                conversation_id=chat_id,
+                message_id=message_id,
+            )
+            if target is None or target.parent_message_id is None:
+                raise ConversationSnapshotInvalid(
+                    "regenerated reply has no parent turn"
+                )
+            self._advance_branch_head(
+                transaction, user_id, chat_id, head, target.parent_message_id
+            )
+            return {
+                "head_message_id": target.parent_message_id,
+                "regenerated_message_id": message_id,
+            }
+
+    def fork_chat(
+        self,
+        chat_id: str,
+        user_id: str,
+        source_message_id: Any,
+        *,
+        summary: Optional[str] = None,
+    ) -> str:
+        self._require_branch_support()
+        message_id = _positive_message_id(source_message_id)
+        new_chat_id = str(uuid.uuid4())
+        timestamp = int(time.time() * 1000)
+        with self._history.transaction() as transaction:
+            conversations = self._history.repository.conversations
+            messages = self._history.repository.messages
+            chat = self._locked_branch_chat(transaction, user_id, chat_id)
+            _head, path = self._active_head_and_path(transaction, user_id, chat_id)
+            prefix: list = []
+            for record in path:
+                prefix.append(record)
+                if record.message_id == message_id:
+                    break
+            else:
+                raise ConversationSnapshotInvalid(
+                    "fork source message is not on the active branch"
+                )
+            conversations.fork(
+                transaction,
+                owner_id=user_id,
+                conversation_id=new_chat_id,
+                source_conversation_id=chat_id,
+                source_message_id=message_id,
+                title=chat.title,
+                agent_id=chat.agent_id,
+                created_at=timestamp,
+            )
+            previous = None
+            for record in prefix:
+                copied = messages.append(
+                    transaction,
+                    owner_id=user_id,
+                    conversation_id=new_chat_id,
+                    role=record.role,
+                    content=record.content,
+                    timestamp=record.timestamp,
+                    parent_message_id=previous,
+                )
+                previous = copied.message_id
+            if summary is not None:
+                stamped = messages.append(
+                    transaction,
+                    owner_id=user_id,
+                    conversation_id=new_chat_id,
+                    role="user",
+                    content=f"{BRANCH_SUMMARY_PREFIX} {summary}",
+                    timestamp=max(timestamp, max(r.timestamp for r in prefix) + 1),
+                    parent_message_id=previous,
+                )
+                previous = stamped.message_id
+            fork_head = conversations.branch_head(
+                transaction,
+                owner_id=user_id,
+                conversation_id=new_chat_id,
+            )
+            if fork_head is not None and previous is not None:
+                self._advance_branch_head(
+                    transaction, user_id, new_chat_id, fork_head, previous
+                )
+            return new_chat_id
+
+    def switch_branch(
+        self,
+        chat_id: str,
+        user_id: str,
+        target_message_id: Any,
+        *,
+        summary: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        self._require_branch_support()
+        message_id = _positive_message_id(target_message_id)
+        timestamp = int(time.time() * 1000)
+        with self._history.transaction() as transaction:
+            conversations = self._history.repository.conversations
+            messages = self._history.repository.messages
+            self._locked_branch_chat(transaction, user_id, chat_id)
+            head, _path = self._active_head_and_path(transaction, user_id, chat_id)
+            target = messages.get(
+                transaction,
+                owner_id=user_id,
+                conversation_id=chat_id,
+                message_id=message_id,
+            )
+            if target is None:
+                raise ConversationSnapshotInvalid(
+                    "branch target message was not found"
+                )
+            self._advance_branch_head(
+                transaction, user_id, chat_id, head, message_id
+            )
+            head_id = message_id
+            if summary is not None:
+                stamped = messages.append(
+                    transaction,
+                    owner_id=user_id,
+                    conversation_id=chat_id,
+                    role="user",
+                    content=f"{BRANCH_SUMMARY_PREFIX} {summary}",
+                    timestamp=max(timestamp, target.timestamp + 1),
+                    parent_message_id=message_id,
+                )
+                head_id = stamped.message_id
+                refreshed = conversations.branch_head(
+                    transaction,
+                    owner_id=user_id,
+                    conversation_id=chat_id,
+                )
+                self._advance_branch_head(
+                    transaction, user_id, chat_id, refreshed, head_id
+                )
+            return {
+                "head_message_id": head_id,
+                "switched_from": head.head_message_id,
+            }
 
     def get_chat_agent(
         self,
@@ -2671,13 +3137,30 @@ class HistoryManager:
             publication_revision = int(
                 publication_stage.execution_base_render_revision
             )
-        message_records = self._history.call(
-            self._history.repository.messages.list_visible,
-            owner_id=user_id,
-            conversation_id=chat_id,
-            through_render_revision=publication_revision,
-            limit=1000,
-        )
+        message_records = None
+        if (
+            self._branch_support
+            and publication_revision is None
+            and chat_record is not None
+            and chat_record.render_revision == 0
+        ):
+            with self._history.transaction() as transaction:
+                head = self._active_branch_state(transaction, user_id, chat_id)
+                if head is not None:
+                    message_records = self._history.repository.messages.list_branch_path(
+                        transaction,
+                        owner_id=user_id,
+                        conversation_id=chat_id,
+                        limit=1000,
+                    )
+        if message_records is None:
+            message_records = self._history.call(
+                self._history.repository.messages.list_visible,
+                owner_id=user_id,
+                conversation_id=chat_id,
+                through_render_revision=publication_revision,
+                limit=1000,
+            )
         if len(message_records) >= 1000:
             raise ConversationSnapshotInvalid(
                 "conversation message inventory exceeds the supported bound"
