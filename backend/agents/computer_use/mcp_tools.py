@@ -55,6 +55,9 @@ from orchestrator.computer_use_policy import (
     menu_path,
     mac_terminal_application,
     resolve_cwd,
+    command_domains,
+    proxy_policy,
+    validate_allowed_domains,
     SCOPES,
     TIERS,
     TIMEOUTS,
@@ -1422,6 +1425,24 @@ def _command_args(kwargs: Dict[str, Any], host) -> Dict[str, Any]:
         if not isinstance(stdin, str) or len(stdin.encode("utf-8")) > MAX_STDIN_BYTES or "\x00" in stdin:
             raise _Refusal("out_of_range", f"stdin must be text of at most {MAX_STDIN_BYTES} bytes")
         args["stdin"] = stdin
+    domains = kwargs.get("allowed_domains")
+    sandbox = kwargs.get("sandbox")
+    if domains is not None or sandbox not in (None, "default"):
+        if not getattr(host, "sandbox_capability", False):
+            raise _Refusal("sandbox_unsupported", f"{host.name} does not advertise the command sandbox; "
+                                                  "omit allowed_domains and sandbox")
+    if domains is not None:
+        try:
+            normalized = validate_allowed_domains(domains)
+        except ValueError as exc:
+            raise _Refusal("out_of_range", str(exc)) from None
+        if normalized:
+            args["allowed_domains"] = normalized
+    if sandbox is not None:
+        if sandbox not in ("default", "escalated"):
+            raise _Refusal("out_of_range", "sandbox must be 'default' or 'escalated'")
+        if sandbox == "escalated":
+            args["sandbox"] = "escalated"
     return args
 
 
@@ -1478,10 +1499,26 @@ def run_command(**kwargs) -> Dict[str, Any]:
             output_lease = capture_project_bridge(_ORCH, _u, _c, host, ctx)
         except ComputerHostError as exc:
             return _host_error(exc)
+    data_note = None
+    if "allowed_domains" in args or args.get("sandbox") == "escalated":
+        args["proxy"] = proxy_policy(command_domains(args))
     result, err = _run(host, ctx, "run_command", args, _loop(kwargs), timeout=host_deadline("run_command", args),
                        serialize=False)
     if err:
         return err
+    if "allowed_domains" in args or args.get("sandbox") == "escalated":
+        note_domains = getattr(ctx, "note_approved_domains", None)
+        if callable(note_domains):
+            note_domains(command_domains(args))
+        sandbox = result.get("sandbox") if isinstance(result, dict) else None
+        violations = sandbox.get("violations") if isinstance(sandbox, dict) else None
+        if isinstance(sandbox, dict) and sandbox:
+            note_result = getattr(getattr(_ORCH, "computer_sessions", None), "note_sandbox_result", None)
+            if callable(note_result):
+                note_result(ctx, str(result.get("job_id") or ""), sandbox, _loop(kwargs))
+        if violations:
+            _taint_sandbox_violations(_c, violations)
+            data_note = _sandbox_violation_summary(violations)
     if args["background"]:
         job = str(result.get("job_id") or "").lower()
         if _JOB_ID.fullmatch(job) is None:
@@ -1489,8 +1526,11 @@ def run_command(**kwargs) -> Dict[str, Any]:
                          next_action="inspect the folder before starting the job again")
         started_at = _sanitize(result.get("started_at"), 64)
         _track(ctx, job, started_at)
-        return _data({"computer": host.name, "job_id": job, "started_at": started_at, "background": True,
-                      "note": "read its output with read_output; stop it with interrupt_command"})
+        background_data = {"computer": host.name, "job_id": job, "started_at": started_at, "background": True,
+                           "note": "read its output with read_output; stop it with interrupt_command"}
+        if data_note:
+            background_data["sandbox_violations"] = data_note
+        return _data(background_data)
     known_stdout = _current_root_stdout(result, args["cwd"], output_lease)
     stdout, out_state = (result["stdout"], None) if known_stdout else _tail(result.get("stdout"), _TAIL_BYTES, _u)
     stderr, err_state = _tail(result.get("stderr"), _TAIL_BYTES, _u)
@@ -1504,10 +1544,39 @@ def run_command(**kwargs) -> Dict[str, Any]:
         "truncated": result.get("truncated") is True, "cwd": _sanitize(result.get("cwd") or args["cwd"], 1024),
         "started_at": _sanitize(result.get("started_at"), 64), "untrusted_output": True,
     }, (out_state, err_state))
+    if data_note:
+        data["sandbox_violations"] = data_note
     if data["timed_out"]:
         data["note"] = ("the command reached timeout_s and its process group was stopped; it was not retried. "
                         "Inspect the folder before running it again")
     return _data(data, _command_card(host, data))
+
+
+def _taint_sandbox_violations(chat: Optional[str], violations: Any) -> None:
+    from orchestrator import taint
+
+    if not chat or not taint.taint_enabled():
+        return
+    try:
+        _ORCH._taint_tracker(chat).record_output(violations, taint.UNTRUSTED, taint.TRUSTED)
+    except Exception:  # noqa: BLE001
+        logger.debug("sandbox violation taint marking unavailable", exc_info=True)
+
+
+def _sandbox_violation_summary(violations: Any) -> List[Dict[str, Any]]:
+    if not isinstance(violations, list):
+        violations = [violations]
+    rows = []
+    for item in violations[:20]:
+        if not isinstance(item, dict):
+            rows.append({"detail": _sanitize(item, 200)})
+            continue
+        rows.append({"source": _sanitize(item.get("source"), 32),
+                     "operation": _sanitize(item.get("operation"), 64),
+                     "target": _sanitize(item.get("target"), 200),
+                     "detail": _sanitize(item.get("detail"), 200),
+                     "blocked": item.get("blocked") is True})
+    return rows
 
 
 def read_output(**kwargs) -> Dict[str, Any]:
@@ -1946,7 +2015,14 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                                 "FORCE_COLOR, CI, DEBUG, COLUMNS, LINES or APP_* names only."},
          "timeout_s": {"type": "integer", "description": "1-600 seconds (default 60); background jobs up to 3600."},
          "background": {"type": "boolean", "description": "Start and return a job_id right away."},
-         "stdin": {"type": "string", "description": "Text written to standard input, at most 16 KiB."}},
+         "stdin": {"type": "string", "description": "Text written to standard input, at most 16 KiB."},
+         "allowed_domains": {"type": "array", "items": {"type": "string"}, "maxItems": 64,
+                             "description": "Up to 64 hostnames or *.wildcards this command may reach through "
+                                            "the host sandbox's egress proxy; every destination not approved in "
+                                            "this session needs exact review."},
+         "sandbox": {"type": "string", "enum": ["default", "escalated"],
+                     "description": "default runs inside the OS command sandbox; escalated runs outside it and "
+                                    "always needs exact review."}},
         ["cwd"]),
     "read_output": _entry(
         read_output,

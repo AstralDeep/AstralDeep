@@ -597,6 +597,10 @@ def _command_request(authority, args) -> GrantRequest:
     argv = args.get("argv")
     first = argv[0] if isinstance(argv, list) and argv and isinstance(argv[0], str) else ""
     target = {"argv0": grant["argv0"] if grant else first, "cwd": args.get("cwd"), "destructive": grant is None}
+    if policy.sandbox_exact_review_required(args, getattr(authority.session, "approved_domains", None)):
+        target = {**target, "escalated": policy.sandbox_mode(args) == "escalated",
+                  "allowed_domains": list(policy.command_domains(args))}
+        return GrantRequest(target)
     if grant is None:
         return GrantRequest(target)
     return GrantRequest(target, (GrantOffer(policy.command_grant_label(grant["argv0"], grant["folder"]),
@@ -690,6 +694,11 @@ async def granted_dispatch(orch, websocket, owner, chat, agent, tool, args, risk
         if ({"terminal_input", CROSS_PRINCIPAL, IRREVERSIBLE, UNTRUSTED_TAINTED} & set(risks)
                 or _tainted_sink(orch, chat, agent, tool, args)):
             return None
+        if tool == "run_command":
+            from orchestrator import computer_use_policy as policy
+            if policy.sandbox_exact_review_required(
+                    args, getattr(authority.session, "approved_domains", None)):
+                return None
         request = grant_request(authority, tool, args)
         grant = _match_grant(orch, authority, owner, chat, tool, request) if request is not None else None
         if grant is None:
@@ -729,6 +738,9 @@ def consent_decision(orch, websocket, owner, chat, agent, tool, args, risks) -> 
             and (session.pause_reason != "approval_not_completed"
                  or capture_computer_approval(orch, websocket, owner, chat, args) is None)):
         return "refuse", "This Mac is paused. Resume it on the Mac before continuing."
+    if tool == "run_command" and policy.sandbox_exact_review_required(
+            args, getattr(session, "approved_domains", None)):
+        return "review", None
     from orchestrator.project_authority import FILE_VERBS, PROJECT_CONSENT_VERBS, current_origin
     project_standing = False
     if getattr(host, "project_mode", False):
@@ -752,7 +764,8 @@ def consent_decision(orch, websocket, owner, chat, agent, tool, args, risks) -> 
         return "refuse", "This action is outside this Mac's current authority. Choose an allowed target."
     hwnd = args.get("hwnd")
     entry = session.window_cache.get(hwnd) if session is not None and type(hwnd) is int else None
-    if policy.bypass_floor(tool, args, entry["bundle_id"] if entry else None):
+    if policy.bypass_floor(tool, args, entry["bundle_id"] if entry else None,
+                           getattr(session, "approved_domains", None)):
         return "refuse", "This action requires an allowed app or a current window target. List windows and choose an allowed target."
     return "standing", None
 
@@ -1167,6 +1180,8 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
         from orchestrator import computer_use_policy
 
         summary = confirmation_request(tool, list(call.risks)).summary
+        sandbox_notice = (computer_use_policy.escalation_lines(shown)
+                          if agent == "computer-use-1" and tool == "run_command" else [])
         context = await _computer_context(call.computer_authority, tool, args) if call.computer_authority else []
         if pending.get(call.request_id) is not call or not _current_session(orch, websocket, call, allow_local_pause=True):
             pending.pop(call.request_id, None)
@@ -1180,6 +1195,7 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             Text(content=f"Tool: {tool} · Agent: {agent}", variant="body"),
             *on_host,
             Text(content=summary, variant="body"),
+            *(Text(content=line, variant="body").to_dict() for line in sandbox_notice),
             Text(content=_review_summary(shown), variant="body"),
             *context,
             CodeBlock(code=computer_use_policy.display_text(preview, block=True) if agent == "computer-use-1"
