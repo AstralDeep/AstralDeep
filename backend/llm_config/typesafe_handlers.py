@@ -173,7 +173,9 @@ async def save_decisions(store: Any, user_id: str, fields: dict, **audit: Any) -
     try:
         CustomDecisionClient(base_url, model)
     except ValueError:
-        raise TypeSafeSaveError("Enter a valid base URL and model name for the decisions model.") from None
+        raise TypeSafeSaveError(
+            "Enter a valid base URL and model name for the decisions model (HTTPS required)."
+        ) from None
     if not key and saved is not None and saved.api_key:
         if saved.provider != "custom" or saved.base_url != base_url:
             raise TypeSafeSaveError(

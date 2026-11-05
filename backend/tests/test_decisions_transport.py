@@ -71,10 +71,21 @@ async def test_supplied_key_and_all_question_types_are_preserved(monkeypatch, en
     assert response.scores["risk"].score == 0.2
 
 
-@pytest.mark.parametrize("base", ["file:///etc/passwd", "https://user:pass@factory.example", "https://factory.example?key=secret", "https://factory.example/#secret", "https://factory.example/\n", "", "https://factory.example:0"])
+@pytest.mark.parametrize("base", ["file:///etc/passwd", "http://factory.example/v1", "https://user:pass@factory.example", "https://factory.example?key=secret", "https://factory.example/#secret", "https://factory.example/\n", "", "https://factory.example:0"])
 def test_unsafe_endpoint_is_rejected_before_dispatch(base):
     with pytest.raises(custom.CustomDecisionError):
         custom.CustomDecisionClient(base, MODEL)
+
+
+@pytest.mark.asyncio
+async def test_http_provider_is_refused_at_runtime_without_egress(monkeypatch):
+    def request(*args, **kwargs):
+        pytest.fail("an HTTP decisions URL reached external egress")
+
+    monkeypatch.setattr(external_http, "request", request)
+    with pytest.raises(custom.CustomDecisionError, match="HTTPS"):
+        await custom.probe_custom(base_url="http://factory.example/v1", model=MODEL,
+            api_key="test-only-key")
 
 
 @pytest.mark.asyncio

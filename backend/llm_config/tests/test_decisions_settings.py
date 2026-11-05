@@ -99,6 +99,25 @@ def test_invalid_decision_config_never_persists(typesafe_store, fields):
     assert typesafe_store.get_key_sync(USER) is None
 
 
+def test_http_decision_config_is_refused_before_probe_and_persistence(
+    typesafe_store, monkeypatch
+):
+    probes = []
+
+    async def probe(**kwargs):
+        probes.append(kwargs)
+
+    monkeypatch.setattr(handlers, "probe_custom", probe)
+    with pytest.raises(handlers.TypeSafeSaveError, match="HTTPS"):
+        asyncio.run(handlers.save_decisions(typesafe_store, USER, {
+            "decisions_provider": "custom",
+            "decisions_base_url": "http://models.example/v1",
+            "decisions_model": "nimble",
+        }))
+    assert probes == []
+    assert typesafe_store.get_key_sync(USER) is None
+
+
 def test_typesafe_save_uses_its_key_and_retains_hosted_defaults(typesafe_store, monkeypatch):
     seen = []
     async def probe(key):

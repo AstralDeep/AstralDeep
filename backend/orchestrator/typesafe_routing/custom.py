@@ -31,13 +31,13 @@ def normalize_base_url(base_url: str) -> str:
                 or any(ord(character) < 33 or ord(character) == 127 for character in base_url)):
             raise ValueError
         parsed = urlsplit(base_url)
-        if (parsed.scheme not in {"https", "http"} or not parsed.hostname
+        if (parsed.scheme != "https" or not parsed.hostname
                 or parsed.username is not None or parsed.password is not None
                 or parsed.query or parsed.fragment
                 or parsed.port is not None and not 1 <= parsed.port <= 65535):
             raise ValueError
     except ValueError:
-        raise CustomDecisionError("Enter a valid decisions base URL without credentials, a query, or a fragment.") from None
+        raise CustomDecisionError("Enter an HTTPS decisions base URL without credentials, a query, or a fragment.") from None
     return base_url.rstrip("/")
 
 
