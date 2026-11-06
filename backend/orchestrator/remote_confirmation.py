@@ -18,7 +18,7 @@ import logging
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from astralplane.repositories.remote_proposals import RemoteOperationProposalRecord
 from orchestrator.computer_hosts import ComputerHostError
@@ -567,7 +567,9 @@ def _audit_event(user_id: Optional[str], action_type: str, description: str, *,
                  proposal_id: Optional[str] = None, machine_id: Optional[str] = None,
                  verb: Optional[str] = None, outcome: str = "success",
                  chat_id: Optional[str] = None, display_digest: Optional[str] = None,
-                 display_echo: Optional[str] = None):
+                 display_echo: Optional[str] = None, origin: Optional[str] = None,
+                 label_hashes: Optional[List[str]] = None,
+                 event_class: str = "agent_lifecycle"):
     from datetime import datetime, timezone
 
     from audit.schemas import AuditEventCreate
@@ -582,10 +584,14 @@ def _audit_event(user_id: Optional[str], action_type: str, description: str, *,
         meta["display_digest"] = str(display_digest)
     if display_echo:
         meta["display_echo"] = str(display_echo)
+    if origin:
+        meta["origin"] = str(origin)
+    if label_hashes:
+        meta["item_labels_sha256"] = [str(item) for item in label_hashes[:32]]
     return AuditEventCreate(
         actor_user_id=user_id or "unknown",
         auth_principal=user_id or "unknown",
-        event_class="agent_lifecycle",
+        event_class=event_class,
         action_type=action_type,
         description=description[:1024],
         conversation_id=chat_id,
@@ -959,6 +965,15 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
     policy = policy_for(agent_id)
     if policy is None:
         return None
+    if agent_id == "computer-use-1" and tool_name == "browser_fill_login" and not args.get(_MARKER):
+        from orchestrator.computer_use_policy import fill_login_preflight
+
+        shape_refusal = fill_login_preflight(args)
+        if shape_refusal:
+            _audit_sync(user_id, "remote_op.refused_fill_login_arguments",
+                        "refused browser_fill_login with values or extra arguments",
+                        machine_id=args.get("computer"), verb=tool_name, outcome="failure", chat_id=chat_id)
+            return (shape_refusal, [Alert(message=shape_refusal, variant="error").to_dict()])
     if agent_id == "terminal-shell-1" and tool_name in {"start_terminal", "terminal_write"}:
         from orchestrator import terminal_approvals
 
