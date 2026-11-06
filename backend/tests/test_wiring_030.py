@@ -669,6 +669,20 @@ def test_concise_lead_strips_structure_and_ends_at_sentence():
     assert len(lead) <= 321
 
 
+def test_concise_lead_never_ends_on_a_numbered_list_marker():
+    first = "I could not use the search API because it was blocked, so I checked each page directly."
+    content = (first + " Here are three verified sources:\n\n1. " + "A long source description " * 12
+               + "\n2. Another source\n3. A third source")
+    assert Orchestrator._concise_lead(content) == first
+
+
+def test_concise_lead_falls_back_to_a_word_cut_when_only_list_markers_remain():
+    content = "Here are the verified sources that I found for you to read through this evening, in order: 1. " + "word " * 120
+    lead = Orchestrator._concise_lead(content)
+    assert not lead.endswith("1.")
+    assert lead.endswith("…")
+
+
 def test_narrative_doc_card_identity_stable_per_title():
     a1 = Orchestrator._narrative_doc_card("chat-1", "## Specific Aims\nv1 text")
     a2 = Orchestrator._narrative_doc_card("chat-1", "## Specific Aims\nv2 revised")
