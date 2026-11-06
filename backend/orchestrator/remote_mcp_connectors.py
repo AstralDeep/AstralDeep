@@ -203,6 +203,18 @@ def get_connector(orch: Any, owner_id: str, connector_id: str) -> dict[str, Any]
     return connector
 
 
+def review_tool_identifiers(orch: Any, owner_id: str, connector_id: str,
+                             tool_name: str) -> dict[str, str]:
+    if not isinstance(tool_name, str) or not _TOOL.fullmatch(tool_name):
+        raise RemoteMCPError("Choose a valid server tool.")
+    connector = get_connector(orch, owner_id, connector_id)
+    _check_tool_authority(connector, connector, tool_name)
+    if not any(isinstance(tool, dict) and tool.get("name") == tool_name
+               for tool in connector.get("tools_catalog", [])):
+        raise RemoteMCPError("Refresh the server tool list before reviewing this tool.")
+    return {"connector_id": connector_id, "tool_name": tool_name}
+
+
 def save_connector(orch: Any, owner_id: str, values: dict[str, Any], *,
                    clear_oauth_client_credentials: bool = False,
                    require_existing: bool = False) -> dict[str, Any]:

@@ -360,8 +360,8 @@ async def _oauth_start(orch, websocket, user_id, roles, payload):
 
         redirect_uri = canonical_public_base_url() + "/api/remote-mcp/oauth/callback"
         url = await begin_authorization(orch, user_id, connector_id, redirect_uri)
-        link = f'<a rel="noopener noreferrer" target="_blank" href="{esc(url)}">Open authorization page</a>'
-        return (SURFACE_KEY, {"oauth_url": url}, notice_block("info", link))
+        return (SURFACE_KEY, {"oauth_url": url}, notice_block(
+            "info", "Open the authorization page below to sign in, then refresh this server's tools."))
     except Exception as error:  # noqa: BLE001
         return (SURFACE_KEY, {}, _notice_for_error(error))
 
