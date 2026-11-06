@@ -158,6 +158,19 @@ async def test_parallel_exception_never_reaches_chat_as_raw_text(orch, monkeypat
     assert "private traceback" not in str(calls)
 
 
+@pytest.mark.parametrize("code", ["REMOTE_MCP_REVIEW_UNAVAILABLE", "ACTION_REVIEW_UNAVAILABLE"])
+def test_review_refusal_explains_no_execution_without_leaking_arguments(code):
+    error = {"code": code, "message": "private patient and credential detail", "retryable": False}
+    content = json.loads(tool_feedback.tool_failure_content("call_remote_tool", error))
+    notice = tool_feedback.tool_failure_notice("call_remote_tool", error)
+    assert content["code"] == code
+    assert content["message"] == tool_feedback.PUBLIC_ERRORS[code]
+    assert content["message"].startswith("No ")
+    assert content["retryable"] is False
+    assert notice["message"] == content["message"]
+    assert "private patient and credential detail" not in json.dumps([content, notice])
+
+
 def test_first_party_computer_errors_reach_the_model_with_their_next_action():
     from orchestrator.orchestrator import Orchestrator
 

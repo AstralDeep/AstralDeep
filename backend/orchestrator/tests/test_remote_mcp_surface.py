@@ -82,6 +82,11 @@ def test_oauth_authorization_link_is_visible_in_sdui_without_credentials(monkeyp
     assert "[Open OAuth authorization page]" in rendered
     assert auth_url in rendered
     assert "client-secret-value" not in rendered
+    assert "<a " not in result[2]
+    assert auth_url not in result[2]
+    html = asyncio.run(remote_mcp.render(orch, "owner", [], result[1]))
+    assert "Open OAuth authorization page</a>" in html
+    assert 'href="https://login.example/authorize?state=opaque&amp;code_challenge=public"' in html
 
 
 def test_surface_render_edit_and_cards_escape_remote_metadata(monkeypatch):

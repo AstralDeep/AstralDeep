@@ -918,6 +918,7 @@ def _review_summary(args: dict) -> str:
 
 
 def _review_arguments(args: dict, *, trusted_identifiers: dict | None = None,
+                      reviewed_identifiers: dict | None = None,
                       project_targets=frozenset(), extended_fields=frozenset(), phi: bool = True,
                       bounded: bool = True, code: bool = False) -> tuple[str, bool]:
     from orchestrator.hitl import _SENSITIVE_INPUT, sensitive_url
@@ -933,7 +934,8 @@ def _review_arguments(args: dict, *, trusted_identifiers: dict | None = None,
                        top_level and isinstance(value, str) and (key, value) in project_targets)
         sensitive_key = _SECRET_MARKERS.search(key) or any(
             marker in key.lower() for marker in ("password", "credential", "authorization", "cookie", "private_key"))
-        if sensitive_key or (not destination and key not in {"url", "filename", "file_name", "hostname"}
+        reviewed = top_level and isinstance(value, str) and (reviewed_identifiers or {}).get(key) == value
+        if sensitive_key or (not trusted and not reviewed and not destination and key not in {"url", "filename", "file_name", "hostname"}
                              and any(marker in key.lower() for marker in PHI_FIELD_PATTERNS)):
             reviewable = False
             return "[REDACTED — review unavailable]"
@@ -944,9 +946,12 @@ def _review_arguments(args: dict, *, trusted_identifiers: dict | None = None,
         if isinstance(value, list):
             return [walk(child, key) for child in value]
         if isinstance(value, str):
+            decoded = unquote(unquote(value))
+            if (trusted or reviewed) and (_SECRET_MARKERS.search(decoded) or _KEY_MATERIAL.search(decoded)):
+                reviewable = False
+                return "[REDACTED — review unavailable]"
             if trusted:
                 return value
-            decoded = unquote(unquote(value))
             if (_KEY_MATERIAL if code else _SECRET_MARKERS).search(decoded) or (
                     not code and not destination and _SENSITIVE_INPUT.search(decoded)):
                 reviewable = False
@@ -1027,6 +1032,18 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
         shown = {key: value for key, value in args.items()
                  if not (key == "computer" and agent == "computer-use-1") and not (key == "user_id" and value == owner)}
         trusted_identifiers = {}
+        reviewed_identifiers = {}
+        if agent == "remote-mcp-1" and tool == "call_remote_tool":
+            from orchestrator.remote_mcp_connectors import review_tool_identifiers
+
+            try:
+                identifiers = await asyncio.to_thread(
+                    review_tool_identifiers, orch, owner, args.get("connector_id"), args.get("tool_name"))
+                trusted_identifiers["connector_id"] = identifiers["connector_id"]
+                reviewed_identifiers["tool_name"] = identifiers["tool_name"]
+            except Exception:
+                return _refused("Review unavailable: the remote MCP connector or tool is not enabled for this account.",
+                                code="REMOTE_MCP_REVIEW_UNAVAILABLE")
         if agent == "terminal-shell-1" and tool in {"start_terminal", "terminal_write"}:
             try:
                 await asyncio.to_thread(orch.terminal_sessions.runtime_preview, owner,
@@ -1063,13 +1080,14 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
         phi = await asyncio.to_thread(protection_enabled, owner, orch)
         preview, reviewable = await asyncio.to_thread(
             _review_arguments, shown, trusted_identifiers=trusted_identifiers,
-            project_targets=project_targets, extended_fields=extended_fields, phi=phi)
+            reviewed_identifiers=reviewed_identifiers, project_targets=project_targets, extended_fields=extended_fields, phi=phi)
         obsolete = review_publication_refusal(orch, websocket, publication)
         if obsolete is not None:
             return _refused(obsolete[0], code="COMPUTER_REVIEW_CHANGED")
         unreviewable = _refused(
             "Review unavailable: this action includes sensitive or oversized arguments that cannot be shown "
-            "completely. Remove private identifiers or credentials, or use a smaller action.") if not reviewable else None
+            "completely. Remove private identifiers or credentials, or use a smaller action.",
+            code="ACTION_REVIEW_UNAVAILABLE") if not reviewable else None
         if unreviewable is not None and not (
                 agent == "computer-use-1"
                 and consent_decision(orch, websocket, owner, chat, agent, tool, args, risks)[0] == "standing"
