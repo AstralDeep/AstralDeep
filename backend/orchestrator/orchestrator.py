@@ -1139,6 +1139,7 @@ class Orchestrator:
         self.a2a_clients: Dict[str, Any] = {}
         self.a2a_agent_cards: Dict[str, Any] = {}
         self.agent_urls: Dict[str, str] = {}
+        self._standard_a2a_agent_cards: Dict[str, Any] = {}
 
         from llm_config import (
             build_llm_client,
@@ -5406,6 +5407,7 @@ class Orchestrator:
         ):
             self.agents.pop(agent_id, None)
         self.agent_cards.pop(agent_id, None)
+        getattr(self, "_standard_a2a_agent_cards", {}).pop(agent_id, None)
         authorities = getattr(self, "_personal_agent_runtime_authorities", None) or {}
         for runtime_id, authority in list(authorities.items()):
             if authority.agent_id == agent_id and authority.owner_id == owner_sub:
@@ -5474,7 +5476,7 @@ class Orchestrator:
             agent_id)
         return True
 
-    async def register_agent(self, websocket, msg: RegisterAgent):
+    async def register_agent(self, websocket, msg: RegisterAgent, *, standard_a2a: bool = False):
         card = msg.agent_card
         if not card:
             logger.warning("RegisterAgent with no card")
@@ -5574,6 +5576,10 @@ class Orchestrator:
             card.metadata["astral_dispatch_posture"] = "dispatch_mediated_only"
             card.metadata["protected_executor"] = False
         self.agent_cards[card.agent_id] = card
+        standard_a2a_cards = getattr(self, "_standard_a2a_agent_cards", None)
+        if standard_a2a_cards is None:
+            standard_a2a_cards = self._standard_a2a_agent_cards = {}
+        standard_a2a_cards.pop(card.agent_id, None)
 
         if is_tunnel:
             from orchestrator import user_agents as _ua
@@ -5739,6 +5745,9 @@ class Orchestrator:
         if await asyncio.to_thread(self._is_draft_agent, card.agent_id):
             return
 
+        if standard_a2a and websocket is None and self.agent_cards.get(card.agent_id) is card:
+            self._standard_a2a_agent_cards[card.agent_id] = card
+
         notify_targets = self.ui_clients
         if is_tunnel:
             _owner_sub = getattr(websocket, "owner_sub", None)
@@ -5766,6 +5775,14 @@ class Orchestrator:
                     "owner_email": ownership.get("owner_email"),
                     "is_public": bool(ownership.get("is_public", False)),
                 }
+                from orchestrator.remote_mcp_security import connection_security_for_card
+
+                connection_security = connection_security_for_card(
+                    card.agent_id, card, getattr(self, "_standard_a2a_agent_cards", {}),
+                    getattr(self, "local_agents", {}),
+                )
+                if connection_security is not None:
+                    msg["connection_security"] = connection_security
                 if getattr(card, 'metadata', None):
                     msg["metadata"] = card.metadata
                 await self._safe_send(ui, json.dumps(msg))
@@ -5915,13 +5932,21 @@ class Orchestrator:
             custom_card = a2a_card_to_custom(a2a_card)
             agent_id = custom_card.agent_id
 
-            if agent_id in self.agents or agent_id in self.a2a_clients:
+            if agent_id in FIRST_PARTY_PUBLIC_AGENT_IDS:
+                logger.warning(
+                    "Refusing standard A2A-only registration for reserved first-party agent ID %s",
+                    agent_id,
+                )
+                return
+
+            if (agent_id in self.agents or agent_id in getattr(self, "local_agents", {})
+                    or agent_id in self.a2a_clients):
                 logger.debug(f"A2A agent {agent_id} already connected")
                 return
 
             register_msg = RegisterAgent(agent_card=custom_card,
                                          api_key=os.getenv("AGENT_API_KEY") or None)
-            await self.register_agent(None, register_msg)
+            await self.register_agent(None, register_msg, standard_a2a=True)
             if self.agent_cards.get(agent_id) is not custom_card:
                 return
 
@@ -5971,7 +5996,10 @@ class Orchestrator:
             if agent_id in self.agents:
                 del self.agents[agent_id]
             if agent_id in self.agent_cards:
-                del self.agent_cards[agent_id]
+                removed_card = self.agent_cards.pop(agent_id)
+                standard_a2a_cards = getattr(self, "_standard_a2a_agent_cards", {})
+                if standard_a2a_cards.get(agent_id) is removed_card:
+                    standard_a2a_cards.pop(agent_id, None)
                 logger.info(f"Agent {agent_id} deregistered")
             if agent_id in self.security_flags:
                 del self.security_flags[agent_id]
@@ -18996,6 +19024,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from agents.terminal_shell.mcp_server import bind_owner_context
             bind_owner_context(args, user_id)
 
+        if agent_id == "remote-mcp-1":
+            args["user_id"] = user_id
+
         if agent_id in ("remote-compute-1", "computer-use-1", "gaiakeep-1", "cresco-1", "terminal-shell-1"):
             from orchestrator import remote_confirmation
             from orchestrator.terminal_security import TerminalError
@@ -24915,6 +24946,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 "owner_email": ownership.get("owner_email"),
                 "is_public": bool(ownership.get("is_public", False)),
             }
+            from orchestrator.remote_mcp_security import connection_security_for_card
+
+            connection_security = connection_security_for_card(
+                card.agent_id, card, getattr(self, "_standard_a2a_agent_cards", {}),
+                getattr(self, "local_agents", {}),
+            )
+            if connection_security is not None:
+                entry["connection_security"] = connection_security
             if getattr(card, 'metadata', None):
                 entry["metadata"] = card.metadata
             agent_list.append(entry)
@@ -25134,6 +25173,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     "owner_email": ownership.get("owner_email"),
                     "is_public": bool(ownership.get("is_public", False)),
                 }
+                from orchestrator.remote_mcp_security import connection_security_for_card
+
+                connection_security = connection_security_for_card(
+                    card.agent_id, card, getattr(self, "_standard_a2a_agent_cards", {}),
+                    getattr(self, "local_agents", {}),
+                )
+                if connection_security is not None:
+                    entry["connection_security"] = connection_security
                 if getattr(card, 'metadata', None):
                     entry["metadata"] = card.metadata
                 agents.append(entry)
@@ -25835,6 +25882,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(lets_router)
         from orchestrator.connection_guide import connection_router
         app.include_router(connection_router)
+        if flags.is_enabled("remote_mcp"):
+            from orchestrator.remote_mcp_api import remote_mcp_router
+            app.include_router(remote_mcp_router)
         app.include_router(notification_router)
         from orchestrator.a2a_publication_api import publication_router
         app.include_router(publication_router)

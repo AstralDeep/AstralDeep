@@ -55,6 +55,7 @@ class FeatureFlags:
             "bg_continuity": self._read("FF_BG_CONTINUITY", True),
             "byo_agents": self._read("FF_BYO_AGENTS", False),
             "remote_compute": self._read("FF_REMOTE_COMPUTE", False),
+            "remote_mcp": self._read("FF_REMOTE_MCP", False),
             "gaiakeep": self._read("FF_GAIAKEEP", False),
             "fhir": self._read("FF_FHIR", False),
             "clinical_note_extract": self._read("FF_CLINICAL_NOTE_EXTRACT", False),

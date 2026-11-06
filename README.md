@@ -307,6 +307,7 @@ Beyond the bundled set:
 - **Your own agents and skills.** Users can create agents and skills in the product. See [docs/your-own-agents-and-skills.md](docs/your-own-agents-and-skills.md).
 - **Bring-your-own client agents.** Personal agents run on the user's own machine, are never shared, and go offline when the client closes. See [docs/byo-client-agents.md](docs/byo-client-agents.md).
 - **Remote compute.** Agents on remote machines, and remote computer control. See [docs/remote-compute-agents.md](docs/remote-compute-agents.md) and [docs/remote-computer-control.md](docs/remote-computer-control.md).
+- **Remote MCP connections.** Connect account-scoped tools from an external MCP server. See [docs/remote-mcp-connections.md](docs/remote-mcp-connections.md).
 - **MCP server endpoint.** AstralDeep also exposes its tools over MCP. See [docs/mcp-server-endpoint.md](docs/mcp-server-endpoint.md).
 
 ## Security model
