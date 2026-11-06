@@ -20,6 +20,7 @@ class _FakeRepo:
     def __init__(self):
         self.memory = []
         self.signals = []
+        self.superseded = []
 
     def create_memory(self, user_id, category, value, *, source="explicit",
                        salience=0.0, keywords=None, project_id=None):
@@ -34,6 +35,16 @@ class _FakeRepo:
         if project_id is None:
             return rows
         return ps.filter_to_project(rows, project_id, include_global=include_global)
+
+    def delete_memory(self, user_id, mem_id):
+        before = len(self.memory)
+        self.memory = [item for item in self.memory
+                       if not (item["id"] == mem_id and item["user_id"] == user_id)]
+        return len(self.memory) < before
+
+    def supersede_memory(self, user_id, old_id, new_id=None):
+        self.superseded.append(old_id)
+        return True
 
     def add_signal(self, user_id, category, value):
         self.signals.append((category, value))
@@ -61,9 +72,60 @@ def _fake_orch(repo, gate):
     return orch
 
 
-def test_definitions_expose_three_tools():
+def test_definitions_expose_four_tools():
     names = {d["function"]["name"] for d in memory_chat.meta_tool_definitions()}
-    assert names == {"remember", "memory_search", "memory_get"}
+    assert names == {"remember", "memory_search", "memory_get", "forget"}
+
+
+_FACT_ID = "7f1c2a7e-3b1d-4c55-9a0e-2d5b8f4e6a11"
+
+
+def _repo_with_fact(owner="u1"):
+    repo = _FakeRepo()
+    repo.memory.append({"id": _FACT_ID, "user_id": owner, "category": "preference",
+                        "value": "favorite tea is oolong"})
+    return repo
+
+
+def test_forget_erases_the_stored_fact():
+    repo = _repo_with_fact()
+    res = asyncio.run(memory_chat.handle_meta_tool(
+        _fake_orch(repo, _Gate()), "forget", {"id": _FACT_ID},
+        user_id="u1", chat_id="c1", websocket=None))
+    assert res.result["status"] == "deleted"
+    assert repo.memory == []
+    assert repo.superseded == []
+
+
+def test_forget_cannot_reach_another_owners_fact():
+    repo = _repo_with_fact(owner="someone-else")
+    res = asyncio.run(memory_chat.handle_meta_tool(
+        _fake_orch(repo, _Gate()), "forget", {"id": _FACT_ID},
+        user_id="u1", chat_id="c1", websocket=None))
+    assert res.result["status"] == "not_found"
+    assert len(repo.memory) == 1
+
+
+def test_forget_reports_an_id_that_is_not_a_memory_id():
+    repo = _repo_with_fact()
+    res = asyncio.run(memory_chat.handle_meta_tool(
+        _fake_orch(repo, _Gate()), "forget", {"id": "favorite tea"},
+        user_id="u1", chat_id="c1", websocket=None))
+    assert res.result["status"] == "not_found"
+    assert len(repo.memory) == 1
+
+
+def test_a_reconcile_delete_erases_the_stored_fact():
+    repo = _repo_with_fact()
+
+    async def decide(messages):
+        return '{"action": "DELETE", "target": 1}'
+
+    res = asyncio.run(MemoryTools(repo, phi_gate=_Gate()).remember_reconciled(
+        "u1", "preference", "no longer likes oolong tea", llm_call=decide))
+    assert res["action"] == "delete"
+    assert repo.memory == []
+    assert repo.superseded == []
 
 
 def test_should_inject_respects_draft_and_flag():

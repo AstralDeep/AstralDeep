@@ -14,12 +14,14 @@ logger = logging.getLogger("Orchestrator.MemoryChat")
 META_AGENT_ID = "__memory__"
 
 SYSTEM_PROMPT_ADDENDUM = """
-CROSS-SESSION MEMORY (remember / memory_search / memory_get):
+CROSS-SESSION MEMORY (remember / memory_search / memory_get / forget):
 - This system DOES support durable, cross-session memory of NON-PHI personalization
   facts. When the user asks you to remember a preference/goal/workflow ("remember I
   prefer concise answers", "note that I work on NSF grants"), call `remember`.
 - To answer "what do you know about me / my preferences", call `memory_search` (with a
   query) or `memory_get` (everything). Prefer recalling stored facts over guessing.
+- When the user asks you to forget or delete something you remember, find it with
+  `memory_search` or `memory_get`, then call `forget` with its id. This erases it for good.
 - Never store protected health information (PHI) — the system refuses PHI writes
   automatically; do not work around it.
 """
@@ -70,6 +72,24 @@ def meta_tool_definitions() -> List[Dict[str, Any]]:
                 "name": "memory_get",
                 "description": "Return everything currently remembered about the user.",
                 "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "forget",
+                "description": (
+                    "Permanently erase one fact from the user's durable memory. Use only "
+                    "when the user asks to forget or delete it."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string",
+                               "description": "The fact's id from memory_search or memory_get"},
+                    },
+                    "required": ["id"],
+                },
             },
         },
     ]
@@ -171,6 +191,16 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
         items = tools.memory_get(user_id)
         return MCPResponse(result={"status": "ok", "count": len(items), "items": items},
                            ui_components=[_recall_component(items)])
+
+    if tool_name == "forget":
+        memory_id = str(args.get("id") or "").strip()
+        if not tools.forget(user_id, memory_id):
+            comp = Alert(message="I couldn't find that in memory.", variant="warning").to_dict()
+            return MCPResponse(result={"status": "not_found"}, ui_components=[comp])
+        await _audit(user_id, "memory.forget", "Erased a remembered fact", chat_id=chat_id,
+                     inputs_meta={"memory_id": memory_id})
+        comp = Alert(message="Got it — I've removed that from memory.", variant="info").to_dict()
+        return MCPResponse(result={"status": "deleted", "id": memory_id}, ui_components=[comp])
 
     return MCPResponse(error={"message": f"Unknown memory tool '{tool_name}'",
                               "retryable": False})

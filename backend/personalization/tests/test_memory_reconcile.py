@@ -41,6 +41,11 @@ class _FakeRepo:
         self.rows.append(item)
         return dict(item)
 
+    def delete_memory(self, user_id, mem_id):
+        before = len(self.rows)
+        self.rows = [r for r in self.rows if not (r["id"] == mem_id and r["user_id"] == user_id)]
+        return len(self.rows) < before
+
     def list_memory(self, user_id, *, project_id=None, include_global=True):
         rows = [dict(r) for r in self.rows
                 if r["user_id"] == user_id and r["superseded_at"] is None]
@@ -139,7 +144,7 @@ async def test_update_supersedes_old():
     assert [r["value"] for r in live] == ["Lives in Seattle"]
 
 
-async def test_delete_supersedes_without_adding():
+async def test_delete_erases_without_adding():
     repo = _FakeRepo()
     old = repo.create_memory("u", "workflow_tag", "Uses Vim")
     mt = _mt(repo)
@@ -147,7 +152,7 @@ async def test_delete_supersedes_without_adding():
                                        llm_call=_stub_llm('{"action":"DELETE","target":1}'))
     assert res["stored"] is False and res["action"] == "delete"
     assert res["superseded"] == old["id"]
-    assert repo.list_memory("u") == []
+    assert repo.rows == []
 
 
 async def test_noop_changes_nothing():
