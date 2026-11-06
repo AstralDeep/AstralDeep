@@ -15641,7 +15641,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             while turn_count < MAX_TURNS or (goal_progress is not None and self.cancelled_sessions.get(id(websocket))):
                 if self.cancelled_sessions.get(id(websocket)):
                     task_terminal_on_exit = TaskState.CANCELLED
-                    if goal_progress is not None and conversation_stage is not None:
+                    if conversation_stage is not None:
                         conversation_stage.completion_state = "cancelled"
                     logger.info(f"Processing cancelled by user for chat_id {chat_id}")
                     await self.send_ui_render(websocket, [
@@ -15659,7 +15659,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             ).to_dict()
                         ],
                     )
-                    if goal_progress is not None and conversation_stage is not None:
+                    if conversation_stage is not None:
                         await self._publish_conversation_snapshot(
                             websocket, stage=conversation_stage,
                             request_generation=conversation_request_generation,

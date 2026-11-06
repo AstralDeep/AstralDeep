@@ -106,6 +106,29 @@ async def test_a_cancel_with_no_tool_in_flight_behaves_as_before(orch):
     await _cleanup(orch, chat_id)
 
 
+async def test_a_cancelled_turn_keeps_the_user_message_in_the_saved_conversation(orch):
+    _register(orch)
+    ws = _ws(orch)
+    chat_id = await _chat(orch)
+    _llm(orch)
+    started = asyncio.Event()
+
+    async def slow(websocket, tc, mapping, chat, user_id=None, **_kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    orch.execute_single_tool = slow
+    turn = asyncio.create_task(registered_chat(orch, ws, "forecast please", chat_id, user_id=USER))
+    await asyncio.wait_for(started.wait(), 5)
+    await orch._cancel_turn(ws, USER, chat_id)
+    await asyncio.wait_for(turn, 5)
+    saved = (await asyncio.to_thread(orch.history.get_chat, chat_id, USER))["messages"]
+    assert [message["role"] for message in saved] == ["user", "assistant"]
+    assert "forecast please" in json.dumps(saved[0]["content"])
+    assert "cancelled" in json.dumps(saved[1]["content"]).lower()
+    await _cleanup(orch, chat_id)
+
+
 async def test_an_unrelated_cancellation_of_the_turn_still_propagates(orch):
     _register(orch)
     ws = _ws(orch)
