@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from . import living_memory as lm
@@ -344,7 +345,7 @@ class MemoryTools:
             return {"stored": False, "action": "noop",
                     "reason": "already remembered"}
         if action == "DELETE" and tgt is not None:
-            self.repo.supersede_memory(user_id, tgt["id"], None)
+            self.repo.delete_memory(user_id, tgt["id"])
             logger.info("memory.reconcile_delete",
                         extra={"user_id": user_id, "superseded": tgt["id"]})
             return {"stored": False, "action": "delete", "superseded": tgt["id"]}
@@ -401,6 +402,16 @@ class MemoryTools:
                     self.repo.record_recall(user_id, mid)
         except Exception:
             logger.debug("memory.reinforce_failed", exc_info=True)
+
+    def forget(self, user_id: str, memory_id: str) -> bool:
+        try:
+            uuid.UUID(memory_id)
+        except ValueError:
+            return False
+        deleted = self.repo.delete_memory(user_id, memory_id)
+        if deleted:
+            logger.info("memory.forgotten", extra={"user_id": user_id, "memory_id": memory_id})
+        return deleted
 
     def memory_get(self, user_id: str, *,
                    project_id: Optional[str] = None) -> List[Dict[str, Any]]:
