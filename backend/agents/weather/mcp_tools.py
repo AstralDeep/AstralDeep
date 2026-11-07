@@ -236,6 +236,7 @@ def geocode_location(
             "elevation": result.get("elevation", 0),
             "feature_code": result.get("feature_code", ""),
             "country": result.get("country", ""),
+            "country_code": result.get("country_code", ""),
             "admin1": result.get("admin1", ""),
             "timezone": result.get("timezone", ""),
             "population": result.get("population", 0)
@@ -724,12 +725,11 @@ def get_weather_alerts(
             ])
         location_data = geocode_result["_data"]
         admin1 = location_data.get("admin1", "")
-        country_code = location_data.get("country", "")
         
-        if country_code != "US":
+        if location_data.get("country_code") != "US":
             return create_ui_response([
                 Alert(
-                    message=f"Weather alerts are currently only available for US locations. Country: {country_code}",
+                    message=f"Weather alerts are currently only available for US locations. Country: {location_data.get('country', '')}",
                     variant="warning"
                 )
             ])
