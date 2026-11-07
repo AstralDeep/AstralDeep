@@ -165,6 +165,25 @@ def parse_reconcile_decision(content: str) -> Optional[Dict[str, Any]]:
     return {"action": action, "target": target, "value": value}
 
 
+def live_items(user_id: str, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drops rows past their valid time and rows whose signature no longer matches."""
+    if lm.temporal_enabled():
+        try:
+            items = lm.as_of(items, int(time.time() * 1000))
+        except Exception:
+            logger.debug("memory.temporal_filter_failed", exc_info=True)
+    if not memory_guard.guard_enabled():
+        return items
+    kept = []
+    for it in items:
+        if memory_guard.trust_of(it) == "tampered":
+            logger.warning("memory.tampered_excluded",
+                           extra={"user_id": user_id, "memory_id": it.get("id")})
+            continue
+        kept.append(it)
+    return kept
+
+
 class MemoryTools:
     def __init__(self, repo, phi_gate: Optional[PHIGate] = None) -> None:
         self.repo = repo
@@ -374,22 +393,7 @@ class MemoryTools:
 
     def _live_memory(self, user_id: str, *,
                      project_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        items = self._repo_list(user_id, project_id)
-        if lm.temporal_enabled():
-            try:
-                items = lm.as_of(items, int(time.time() * 1000))
-            except Exception:
-                logger.debug("memory.temporal_filter_failed", exc_info=True)
-        if not memory_guard.guard_enabled():
-            return items
-        kept = []
-        for it in items:
-            if memory_guard.trust_of(it) == "tampered":
-                logger.warning("memory.tampered_excluded",
-                               extra={"user_id": user_id, "memory_id": it.get("id")})
-                continue
-            kept.append(it)
-        return kept
+        return live_items(user_id, self._repo_list(user_id, project_id))
 
     def _reinforce(self, user_id: str, items: List[Dict[str, Any]]) -> None:
         if not lm.forgetting_enabled() or not items:

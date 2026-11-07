@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from .memory_tools import live_items
 from .repository import PersonalizationRepository
 
 PERSONALITY_PREAMBLE = (
@@ -63,7 +64,7 @@ class PersonalizationService:
         parts: List[str] = []
 
         try:
-            memory = self.repo.list_memory(user_id)
+            memory = live_items(user_id, self.repo.list_memory(user_id))
         except Exception:
             memory = []
         if memory:
