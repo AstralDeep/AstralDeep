@@ -12935,6 +12935,38 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             binding["snapshot_completed"] = True
         return snapshot
 
+    async def _publish_failed_turn(
+        self,
+        websocket,
+        *,
+        stage,
+        chat_id: str,
+        user_id: str,
+        request_generation: str,
+        server_initiated: bool,
+        message: str,
+    ) -> None:
+        """Commits a failed turn with its error, because an aborted stage deletes the user's message."""
+        if stage is None or stage.completion_state != "completed" or stage.sealed:
+            return
+        try:
+            stage.completion_state = "failed"
+            await self._append_conversation_message(
+                stage,
+                chat_id=chat_id,
+                user_id=user_id,
+                role="assistant",
+                content=[Alert(message=message, variant="error").to_dict()],
+            )
+            await self._publish_conversation_snapshot(
+                websocket,
+                stage=stage,
+                request_generation=request_generation,
+                server_initiated=server_initiated,
+            )
+        except Exception:
+            logger.warning("failed turn publication failed", exc_info=True)
+
     async def _publish_conversation_snapshot(
         self,
         websocket,
@@ -16095,6 +16127,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     await self.send_ui_render(websocket, [
                         Alert(message="Failed to get a response from the AI model. Please try again.", variant="error").to_dict()
                     ])
+                    await self._publish_failed_turn(
+                        websocket,
+                        stage=conversation_stage,
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        request_generation=conversation_request_generation,
+                        server_initiated=conversation_server_initiated,
+                        message="Failed to get a response from the AI model. Please try again.",
+                    )
                     return
 
                 if goal_progress is not None and getattr(llm_msg, "_astral_finish_reason", None) in {"length", "content_filter"}:
@@ -17146,6 +17187,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 await self.send_ui_render(websocket, [
                     Alert(message=error_text, variant="error", title="Error").to_dict()
                 ])
+                await self._publish_failed_turn(
+                    websocket,
+                    stage=conversation_stage,
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    request_generation=conversation_request_generation,
+                    server_initiated=conversation_server_initiated,
+                    message=error_text,
+                )
         finally:
             if task_terminal_on_exit is not None and voice_dispatch is not None:
                 self._remember_voice_operation_terminal_intent(

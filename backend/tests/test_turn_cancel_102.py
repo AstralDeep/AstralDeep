@@ -106,6 +106,37 @@ async def test_a_cancel_with_no_tool_in_flight_behaves_as_before(orch):
     await _cleanup(orch, chat_id)
 
 
+async def _failed_turn_messages(orch, call_llm):
+    _register(orch)
+    ws = _ws(orch)
+    chat_id = await _chat(orch)
+    orch._call_llm = call_llm
+    await registered_chat(orch, ws, "failure probe alpha", chat_id, user_id=USER)
+    saved = (await asyncio.to_thread(orch.history.get_chat, chat_id, USER))["messages"]
+    await _cleanup(orch, chat_id)
+    return saved
+
+
+async def test_a_turn_with_no_model_response_keeps_the_user_message_and_the_error(orch):
+    async def no_response(*_args, **_kwargs):
+        return None, None
+
+    saved = await _failed_turn_messages(orch, no_response)
+    assert [message["role"] for message in saved] == ["user", "assistant"]
+    assert "failure probe alpha" in json.dumps(saved[0]["content"])
+    assert "Failed to get a response" in json.dumps(saved[1]["content"])
+
+
+async def test_a_turn_that_raises_keeps_the_user_message_and_the_error(orch):
+    async def raises(*_args, **_kwargs):
+        raise RuntimeError("502 Bad Gateway")
+
+    saved = await _failed_turn_messages(orch, raises)
+    assert [message["role"] for message in saved] == ["user", "assistant"]
+    assert "failure probe alpha" in json.dumps(saved[0]["content"])
+    assert "502 Bad Gateway" in json.dumps(saved[1]["content"])
+
+
 async def test_an_unrelated_cancellation_of_the_turn_still_propagates(orch):
     _register(orch)
     ws = _ws(orch)
