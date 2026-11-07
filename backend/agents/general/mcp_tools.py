@@ -395,6 +395,10 @@ def modify_data(
             output_format = "csv"
         
         timestamp = int(time.time())
+        # The model chooses this name, so only its final path component is kept.
+        filename = os.path.basename((filename or "").replace("\\", "/"))
+        if filename in ("", ".", ".."):
+            filename = None
         if not filename:
             ext = "csv" if output_format == "csv" else "xlsx"
             if attachment_filename:
