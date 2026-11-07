@@ -137,6 +137,28 @@ async def test_a_turn_that_raises_keeps_the_user_message_and_the_error(orch):
     assert "502 Bad Gateway" in json.dumps(saved[1]["content"])
 
 
+async def _publish_failed(orch, stage):
+    await orch._publish_failed_turn(
+        _ws(orch), stage=stage, chat_id="c1", user_id=USER, request_generation="r1",
+        server_initiated=False, message="Failed.")
+
+
+async def test_a_failed_turn_with_no_open_stage_publishes_nothing(orch):
+    orch._append_conversation_message = AsyncMock()
+    await _publish_failed(orch, None)
+    await _publish_failed(orch, SimpleNamespace(completion_state="cancelled", sealed=False))
+    await _publish_failed(orch, SimpleNamespace(completion_state="completed", sealed=True))
+    orch._append_conversation_message.assert_not_awaited()
+
+
+async def test_a_failed_publication_is_logged_and_does_not_mask_the_turn_error(orch, caplog):
+    orch._append_conversation_message = AsyncMock(side_effect=RuntimeError("store unavailable"))
+    stage = SimpleNamespace(completion_state="completed", sealed=False)
+    await _publish_failed(orch, stage)
+    assert stage.completion_state == "failed"
+    assert "failed turn publication failed" in caplog.text
+
+
 async def test_an_unrelated_cancellation_of_the_turn_still_propagates(orch):
     _register(orch)
     ws = _ws(orch)
