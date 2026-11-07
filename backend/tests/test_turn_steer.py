@@ -25,7 +25,7 @@ def _profile(device_type="macos", contract="console/v2"):
     return SimpleNamespace(device_type=SimpleNamespace(value=device_type), console_contract=contract)
 
 
-def test_negotiation_needs_the_mac_console_device_flag_and_capability():
+async def test_negotiation_needs_the_mac_console_device_flag_and_capability():
     device = {"turn_steer_v1": True}
     assert turn_steer.negotiated(_profile(), device, ["turn_steer_v1"])
     assert not turn_steer.negotiated(_profile("ios"), device, ["turn_steer_v1"])
@@ -34,7 +34,7 @@ def test_negotiation_needs_the_mac_console_device_flag_and_capability():
     assert not turn_steer.negotiated(_profile(), device, [])
 
 
-def test_acknowledgment_offers_steering_without_the_queue():
+async def test_acknowledgment_offers_steering_without_the_queue():
     assert turn_steer.acknowledge({"console": {}}, True) == {
         "console": {"turn_steer": {"version": 1, "queue_capable": False}}}
     assert turn_steer.acknowledge({"console": {}}, False) == {"console": {}}
