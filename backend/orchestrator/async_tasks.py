@@ -1026,6 +1026,8 @@ class BackgroundTaskManager:
         )
         vws = VirtualWebSocket(bg_task, owner_id=owner_id)
         bg_task._virtual_websocket = vws
+        from orchestrator.detached_context import detached_context
+
         bg_task.asyncio_task = asyncio.create_task(
             self._run_task(
                 bg_task,
@@ -1035,6 +1037,7 @@ class BackgroundTaskManager:
                 **descriptor.kwargs,
             ),
             name=f"background-operation-{bg_task.task_id}",
+            context=detached_context(self),
         )
         return True
 
