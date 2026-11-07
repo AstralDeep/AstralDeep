@@ -353,13 +353,15 @@ def _content_parts(
     stored: Any,
     *,
     already_decoded: bool = False,
+    typed_by_user: bool = False,
 ) -> list[dict[str, Any]]:
     if already_decoded:
         if isinstance(stored, str):
             stripped = stored.strip()
             if not stripped:
                 return _recovery_parts()
-            if stripped.startswith(("{", "[")):
+            # A person can start a message with a bracket, so only other roles can be damaged JSON.
+            if stripped.startswith(("{", "[")) and not typed_by_user:
                 try:
                     json.loads(
                         stored,
@@ -2164,7 +2166,11 @@ class ConversationCommitRepository:
             for message in message_records:
                 # Don't re-parse: prose like '[]' would become real JSON
                 parts = _rail_parts(
-                    _content_parts(message.content, already_decoded=True),
+                    _content_parts(
+                        message.content,
+                        already_decoded=True,
+                        typed_by_user=message.role == "user",
+                    ),
                     canvas_component_ids=canvas_component_ids,
                 )
                 if not parts:
