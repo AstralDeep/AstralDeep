@@ -274,11 +274,11 @@ async def test_a_scheduled_summary_is_the_reply_and_never_a_status_line(
     await _seed_system(orch)
 
     async def fake_handle_chat_message(websocket, message, chat_id, **kwargs):
-        await websocket.send(json.dumps(
+        await websocket.send_text(json.dumps(
             {"type": "chat_status", "status": "thinking", "message": "Analyzing request and planning actions..."}))
-        await websocket.send(json.dumps(
+        await websocket.send_text(json.dumps(
             {"type": "ui_render", "target": "chat", "components": [{"type": "text", "content": "Inbox is clear."}]}))
-        await websocket.send(json.dumps({"type": "chat_status", "status": "done", "message": ""}))
+        await websocket.send_text(json.dumps({"type": "chat_status", "status": "done", "message": ""}))
 
     monkeypatch.setattr(orch, "handle_chat_message", fake_handle_chat_message)
     summary = await orch.run_scheduled_turn(
@@ -292,7 +292,7 @@ async def test_a_scheduled_turn_with_only_status_lines_uses_the_default_summary(
     await _seed_system(orch)
 
     async def fake_handle_chat_message(websocket, message, chat_id, **kwargs):
-        await websocket.send(json.dumps(
+        await websocket.send_text(json.dumps(
             {"type": "chat_status", "status": "thinking", "message": "Analyzing request and planning actions..."}))
 
     monkeypatch.setattr(orch, "handle_chat_message", fake_handle_chat_message)
