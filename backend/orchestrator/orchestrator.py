@@ -8728,6 +8728,10 @@ class Orchestrator:
                                     and work.frame.human_request.purpose in {"metadata", "remote_effect"}))
                                 else work.predecessors)
                 await asyncio.gather(*predecessors)
+                if work.frame.human_request is not None and work.frame.human_request.purpose == "skill_lookup":
+                    from orchestrator.human_request_authority import recheck_queued_skill_read
+
+                    work.frame.human_request = await recheck_queued_skill_read(work.frame.human_request)
             if (
                 context.closing
                 and (work.owner.owner_scope is OwnerScope.CONNECTION or work.frame.foreground)

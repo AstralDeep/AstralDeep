@@ -619,6 +619,40 @@ class _HumanSocketRequest:
         self._caller = None
 
 
+async def recheck_queued_skill_read(request):
+    """Repeats the whole capture for a chat message that waited behind a turn.
+
+    The 15-second window bounds how old the evidence is when it is used, so a request that
+    outlived its window gets new evidence rather than a longer window. The new capture may
+    adopt nothing: any difference from the original refuses the request.
+    """
+    if type(request) is not _HumanSocketRequest or request.purpose != "skill_lookup" or request.closed:
+        _unauthenticated()
+    fresh = capture_human_socket_request(
+        request.boundary, websocket=request.websocket, context=request.connection,
+        message=request.message, purpose=request.purpose)
+    try:
+        if (fresh.registration is not request.registration or fresh.captured != request.captured
+                or fresh.token != request.token or fresh.owner_id != request.owner_id
+                or fresh.session_id != request.session_id or fresh.expiry != request.expiry
+                or fresh.policy != request.policy or fresh.method != request.method
+                or fresh.message_json != request.message_json
+                or fresh.connection_generation != request.connection_generation
+                or fresh.request_generation != request.request_generation
+                or fresh.submission_id != request.submission_id):
+            _unauthenticated()
+        await fresh.capture_session()
+        previous, current = request.observation, fresh.observation
+        if (previous is None) != (current is None) or (
+                previous is not None and previous.credential != current.credential):
+            _unauthenticated()
+    except BaseException:
+        fresh.close()
+        raise
+    request.close()
+    return fresh
+
+
 def capture_human_socket_request(boundary, *, websocket, context, message, purpose="metadata"):
     if purpose == "skill_lookup":
         method = ("WS_READ" if type(message) is dict and message.get("type") == "ui_event"
