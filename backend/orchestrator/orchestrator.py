@@ -17863,12 +17863,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from types import SimpleNamespace
             reported_usage = None
             try:
-                for chunk in client.chat.completions.create(stream=True, **kwargs):
+                stream = client.chat.completions.create(stream=True, **kwargs)
+                for chunk in stream:
                     if getattr(chunk, "usage", None) is not None:
                         reported_usage = chunk.usage
                         provider_reported_usage(reported_usage)
-                    if not abandoned.is_set():
-                        loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
+                    if abandoned.is_set():
+                        # Closing the response stops the provider generating tokens nobody will read.
+                        stream.close()
+                        break
+                    loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
                 if not abandoned.is_set():
                     loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
                 return SimpleNamespace(usage=reported_usage)

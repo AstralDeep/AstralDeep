@@ -4,8 +4,11 @@ orchestrator's stream accumulator, message reconstruction, and next-request wire
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
+import threading
+import time
 import types
 from pathlib import Path
 
@@ -711,3 +714,44 @@ async def test_compaction_keeps_recent_turn_signature_state():
     assert survivors[0]["tool_calls"][0]["extra_content"] == {
         "google": {"thought_signature": SIG_A}}
     assert survivors[0]["tool_calls"][0]["function"]["arguments"] == '{"city": "Rome"}'
+
+
+async def test_cancelling_a_streamed_call_closes_the_provider_stream():
+    first_chunk = threading.Event()
+    closed = threading.Event()
+
+    class _Stream:
+        delivered = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if closed.is_set() or self.delivered >= 500:
+                raise StopIteration
+            self.delivered += 1
+            first_chunk.set()
+            time.sleep(0.01)
+            delta = types.SimpleNamespace(content="word ", tool_calls=None)
+            return types.SimpleNamespace(
+                usage=None, choices=[types.SimpleNamespace(delta=delta, finish_reason=None)])
+
+        def close(self):
+            closed.set()
+
+    stream = _Stream()
+    client = types.SimpleNamespace(chat=types.SimpleNamespace(
+        completions=types.SimpleNamespace(create=lambda **_kwargs: stream)))
+    orch = _orch(client)
+
+    async def invoke(_websocket, _chat, _purpose, _model, call, **_kwargs):
+        return await call()
+
+    orch._context_model_call = invoke
+    turn = asyncio.create_task(orch._call_llm_streamed(object(), client, {"model": "m"}, "chat-1"))
+    assert await asyncio.to_thread(first_chunk.wait, 5)
+    turn.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+    assert await asyncio.to_thread(closed.wait, 5)
+    assert stream.delivered < 500
