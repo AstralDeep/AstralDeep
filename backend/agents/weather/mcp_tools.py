@@ -802,7 +802,7 @@ def get_weather_alerts(
                 area=area
             ))
         
-        location_str = f"{city or 'Unknown'}, {state or admin1 or country_code}" if city else f"{lat:.4f}°, {lon:.4f}°"
+        location_str = f"{city or 'Unknown'}, {state or admin1 or location_data.get('country_code', '')}" if city else f"{lat:.4f}°, {lon:.4f}°"
         
         alert_components = []
         for alert in alerts:
