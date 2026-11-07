@@ -13,6 +13,9 @@ logger = logging.getLogger("Orchestrator.TurnSteer")
 CAPABILITY = "turn_steer_v1"
 MAX_MESSAGE_SCALARS = 20000
 MAX_PENDING = 16
+# The client repeats the standard envelope identity inside every ui_event payload.
+_PAYLOAD_FIELDS = {"message", "client_message_id"}
+_ENVELOPE_FIELDS = {"submission_id", "request_generation"}
 _REFUSALS = {
     "stale_turn": "The turn ended before this steer could be applied.",
     "not_running": "No turn is running in this chat.",
@@ -77,7 +80,8 @@ async def receive(orch, websocket, user_id, chat_id, payload) -> None:
         return
     message = payload.get("message")
     text = message.strip() if isinstance(message, str) else ""
-    if not text or len(text) > MAX_MESSAGE_SCALARS or set(payload) != {"message", "client_message_id"}:
+    if (not text or len(text) > MAX_MESSAGE_SCALARS
+            or not _PAYLOAD_FIELDS <= set(payload) <= _PAYLOAD_FIELDS | _ENVELOPE_FIELDS):
         await _refuse(orch, websocket, chat_id, client_message_id, "invalid_input")
         return
     mailbox = _mailboxes(orch).get((id(websocket), chat_id)) if chat_id else None

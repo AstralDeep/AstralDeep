@@ -46,7 +46,9 @@ def _sent(orch):
 
 
 def _steer(text="Use metric units"):
-    return {"message": text, "client_message_id": str(uuid.uuid4())}
+    # The client repeats the envelope identity inside the payload.
+    return {"message": text, "client_message_id": str(uuid.uuid4()),
+            "submission_id": str(uuid.uuid4()), "request_generation": str(uuid.uuid4())}
 
 
 async def _negotiated(orch):

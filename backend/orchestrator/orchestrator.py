@@ -48,6 +48,7 @@ from orchestrator.connection_context import (
     _WORKSPACE_MUTATION_LOCKS,
 )
 from orchestrator.tool_permissions import ToolPermissionManager
+from orchestrator import turn_steer
 from orchestrator.credential_manager import CredentialManager
 from orchestrator.delegation import DelegationService
 from orchestrator.tool_security import ToolSecurityAnalyzer
@@ -10484,8 +10485,6 @@ class Orchestrator:
                     rote_profile = self.rote.register_device(websocket, device_info)
                     user_data["_project_workspaces_v1"] = project_workspaces_negotiated(
                         rote_profile, device_info, user_data["_client_capabilities"])
-                    from orchestrator import turn_steer
-
                     user_data["_turn_steer_v1"] = turn_steer.negotiated(
                         rote_profile, device_info, user_data["_client_capabilities"])
                     user_data["_project_device_id"] = msg.device_id
@@ -11010,8 +11009,6 @@ class Orchestrator:
                     await self._cancel_turn(websocket, user_id, self._ws_active_chat.get(id(websocket)))
 
                 elif msg.action == "chat_steer":
-                    from orchestrator import turn_steer
-
                     await turn_steer.receive(
                         self, websocket, user_id, self._ws_active_chat.get(id(websocket)), msg.payload)
 
@@ -11709,8 +11706,6 @@ class Orchestrator:
                     new_profile, re_adapted, profile_changed = self.rote.update_device(websocket, device_info)
                     viewport_refresh = (msg.snapshot_purpose is not None or "snapshot_purpose" in msg.payload
                                         or "base_render_revision" in msg.payload)
-                    from orchestrator import turn_steer
-
                     device_ack = {
                         "type": "rote_config",
                         "device_profile": turn_steer.acknowledge(
@@ -15662,8 +15657,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     execution_fence=authority_fence,
                 )
 
-            from orchestrator import turn_steer
-
             turn_steer.open_turn(self, websocket, chat_id)
             while turn_count < MAX_TURNS or (goal_progress is not None and self.cancelled_sessions.get(id(websocket))):
                 if self.cancelled_sessions.get(id(websocket)):
@@ -17176,8 +17169,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     Alert(message=error_text, variant="error", title="Error").to_dict()
                 ])
         finally:
-            from orchestrator import turn_steer
-
             await turn_steer.close_turn(self, websocket, chat_id)
             if task_terminal_on_exit is not None and voice_dispatch is not None:
                 self._remember_voice_operation_terminal_intent(
