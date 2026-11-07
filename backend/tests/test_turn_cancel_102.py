@@ -106,6 +106,46 @@ async def test_a_cancel_with_no_tool_in_flight_behaves_as_before(orch):
     await _cleanup(orch, chat_id)
 
 
+async def test_a_cancel_during_the_model_call_runs_no_tools(orch):
+    _register(orch)
+    ws = _ws(orch)
+    chat_id = await _chat(orch)
+    tools = AsyncMock()
+    orch.execute_single_tool = tools
+
+    async def cancelled_while_thinking(*_args, **_kwargs):
+        orch.cancelled_sessions[id(ws)] = True
+        return _msg(tool_calls=[_tc()]), _usage()
+
+    orch._call_llm = cancelled_while_thinking
+    await registered_chat(orch, ws, "forecast please", chat_id, user_id=USER)
+    tools.assert_not_awaited()
+    sent = [json.loads(call.args[1]) for call in orch._safe_send.await_args_list]
+    assert not [frame for frame in sent if frame.get("status") == "executing"]
+    assert _cancel_alerts(orch)
+    await _cleanup(orch, chat_id)
+
+
+async def test_a_cancel_just_before_dispatch_runs_no_tools(orch):
+    _register(orch)
+    ws = _ws(orch)
+    chat_id = await _chat(orch)
+    tools = AsyncMock()
+    orch.execute_single_tool = tools
+    _llm(orch)
+    original_send = orch._safe_send
+
+    async def cancel_on_running(websocket, data):
+        if json.loads(data).get("status") == "executing":
+            orch.cancelled_sessions[id(ws)] = True
+        return await original_send(websocket, data)
+
+    orch._safe_send = cancel_on_running
+    await registered_chat(orch, ws, "forecast please", chat_id, user_id=USER)
+    tools.assert_not_awaited()
+    await _cleanup(orch, chat_id)
+
+
 async def test_an_unrelated_cancellation_of_the_turn_still_propagates(orch):
     _register(orch)
     ws = _ws(orch)
