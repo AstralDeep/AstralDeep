@@ -117,8 +117,7 @@ async def test_a_scheduled_turn_with_no_model_response_marks_its_stage_failed(or
         history=orch.history, chat_id=chat_id, user_id=USER,
         create_chat_if_missing=False, agent_id=None,
     ) as stage:
-        await orch._handle_chat_message_impl(
-            ws, "summarize inbox", chat_id, user_id=USER, llm_preflight_complete=True)
+        await registered_chat(orch, ws, "summarize inbox", chat_id, user_id=USER)
     assert stage.failed is True
     await _cleanup(orch, chat_id)
 
