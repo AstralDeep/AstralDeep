@@ -269,6 +269,39 @@ async def test_run_scheduled_turn_proceeds_with_system_row(
     assert orch._record_llm_unconfigured.await_count == 0
 
 
+async def test_a_scheduled_summary_is_the_reply_and_never_a_status_line(
+        orch, clean_system_row, monkeypatch):
+    await _seed_system(orch)
+
+    async def fake_handle_chat_message(websocket, message, chat_id, **kwargs):
+        await websocket.send_text(json.dumps(
+            {"type": "chat_status", "status": "thinking", "message": "Analyzing request and planning actions..."}))
+        await websocket.send_text(json.dumps(
+            {"type": "ui_render", "target": "chat", "components": [{"type": "text", "content": "Inbox is clear."}]}))
+        await websocket.send_text(json.dumps({"type": "chat_status", "status": "done", "message": ""}))
+
+    monkeypatch.setattr(orch, "handle_chat_message", fake_handle_chat_message)
+    summary = await orch.run_scheduled_turn(
+        user_id=_uid(), chat_id="sched-chat-1", instruction="summarize inbox",
+        agent_id=None, access_token="tok", allowed_scopes=[], correlation_id="corr-3")
+    assert summary == "Inbox is clear."
+
+
+async def test_a_scheduled_turn_with_only_status_lines_uses_the_default_summary(
+        orch, clean_system_row, monkeypatch):
+    await _seed_system(orch)
+
+    async def fake_handle_chat_message(websocket, message, chat_id, **kwargs):
+        await websocket.send_text(json.dumps(
+            {"type": "chat_status", "status": "thinking", "message": "Analyzing request and planning actions..."}))
+
+    monkeypatch.setattr(orch, "handle_chat_message", fake_handle_chat_message)
+    summary = await orch.run_scheduled_turn(
+        user_id=_uid(), chat_id="sched-chat-1", instruction="summarize inbox",
+        agent_id=None, access_token="tok", allowed_scopes=[], correlation_id="corr-4")
+    assert summary == "Your scheduled task finished."
+
+
 class _RunnerStore:
     def __init__(self):
         self.finished = []
