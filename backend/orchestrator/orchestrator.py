@@ -8742,15 +8742,15 @@ class Orchestrator:
 
             # Wait before claiming: claiming first can deadlock the pool
             if work.predecessors:
+                predecessors = (tuple(asyncio.shield(item) for item in work.predecessors)
+                                if (work.frame.foreground or work.frame.work_read is not None or (work.frame.human_request is not None
+                                    and work.frame.human_request.purpose in {"metadata", "remote_effect"}))
+                                else work.predecessors)
                 # A preselected operation already holds its slot, and its lease would expire during the wait.
                 if work.preselected:
                     claim, terminal = await self._claim_connection_operation(context, work)
                     if claim is not None:
                         start_lease_renewal()
-                predecessors = (tuple(asyncio.shield(item) for item in work.predecessors)
-                                if (work.frame.foreground or work.frame.work_read is not None or (work.frame.human_request is not None
-                                    and work.frame.human_request.purpose in {"metadata", "remote_effect"}))
-                                else work.predecessors)
                 await asyncio.gather(*predecessors)
             if (
                 context.closing
