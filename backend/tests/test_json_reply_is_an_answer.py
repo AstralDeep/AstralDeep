@@ -53,6 +53,7 @@ async def test_json_in_a_reply_reaches_the_user_on_the_first_try(plain_orch, use
     calls, stored = await _turn(plain_orch, [reply])
     assert len(calls) == 1
     assert kept in stored
+    assert "container" not in stored
     assert "SYSTEM RECOVERY" not in json.dumps(calls, default=str)
 
 
