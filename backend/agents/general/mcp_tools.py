@@ -284,7 +284,7 @@ def modify_data(
 
         for mod in modifications:
             action = mod.get("action")
-            name = mod.get("name", "")
+            name = mod.get("column", mod.get("name", ""))
             value = mod.get("value")
             expression = mod.get("expression")
             default = mod.get("default")
@@ -1294,7 +1294,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                         "type": "object",
                         "properties": {
                             "action": {"type": "string", "description": "Action to perform: 'add_column', 'update_column', 'calculate_column', 'drop_column', 'rename_column', 'filter_rows', 'sort_rows'"},
-                            "name": {"type": "string", "description": "Column name (can be empty for filter_rows)"},
+                            "column": {"type": "string", "description": "Column name (can be empty for filter_rows)"},
                             "value": {"type": "string", "description": "Static value, or new_name for rename_column, or 'asc'/'desc' for sort_rows"},
                             "expression": {"type": "string", "description": "Python-like expression using row['column'] for per‑row calculation (e.g., \"row['age'] * 2\" or \"row['age'] > 18\" for filtering)"},
                             "default": {"type": "string", "description": "Fallback value if expression evaluation fails"},
