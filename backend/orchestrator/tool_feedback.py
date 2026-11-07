@@ -113,6 +113,17 @@ def tool_failure_content(tool_name: object, error: object) -> str:
     })
 
 
+def ui_only_content(components: list) -> str:
+    """Result for a tool that only draws UI. "No output" reads as a failure, so the model retries
+    and says a result on screen did not work. An alert carries the outcome, such as no matches."""
+    content: dict = {"status": "shown", "message": "The user can see this result. The tool returned nothing else."}
+    notices = [c["message"] for c in components
+               if isinstance(c, Mapping) and c.get("type") == "alert" and c.get("message")]
+    if notices:
+        content["notices"] = notices
+    return json.dumps(content)
+
+
 def tool_failure_notice(tool_name: object, error: object) -> dict | None:
     message = tool_failure_message(tool_name, error)
     notices = _NOTICES.get()
