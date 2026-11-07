@@ -15352,15 +15352,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         if not tools_desc and draft_agent_id:
             _perm_memo.__exit__(None, None, None)
+            draft_refusal = (
+                "Draft agent has no usable tools yet. Configure tools "
+                "and permissions before testing it."
+            )
             await self.send_ui_render(websocket, [
-                Alert(
-                    message=(
-                        "Draft agent has no usable tools yet. Configure tools "
-                        "and permissions before testing it."
-                    ),
-                    variant="warning",
-                ).to_dict()
+                Alert(message=draft_refusal, variant="warning").to_dict()
             ])
+            await self._publish_failed_turn(
+                websocket,
+                stage=conversation_stage,
+                chat_id=chat_id,
+                user_id=user_id,
+                request_generation=conversation_request_generation,
+                server_initiated=conversation_server_initiated,
+                message=draft_refusal,
+            )
             return
         if is_text_only:
             logger.info(

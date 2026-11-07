@@ -159,6 +159,20 @@ async def test_a_failed_publication_is_logged_and_does_not_mask_the_turn_error(o
     assert "failed turn publication failed" in caplog.text
 
 
+async def test_a_draft_agent_without_tools_keeps_the_user_message(orch, monkeypatch):
+    _register(orch)
+    ws = _ws(orch)
+    chat_id = await _chat(orch)
+    orch._call_llm = AsyncMock(side_effect=AssertionError("no model call expected"))
+    orch.agent_cards["draft-empty"] = SimpleNamespace(skills=[], name="Empty draft", description="")
+    orch.agent_capabilities["draft-empty"] = []
+    await registered_chat(orch, ws, "test my draft", chat_id, user_id=USER, draft_agent_id="draft-empty")
+    saved = (await asyncio.to_thread(orch.history.get_chat, chat_id, USER))["messages"]
+    await _cleanup(orch, chat_id)
+    assert [message["role"] for message in saved] == ["user", "assistant"]
+    assert "Draft agent has no usable tools" in json.dumps(saved[1]["content"])
+
+
 async def test_an_unrelated_cancellation_of_the_turn_still_propagates(orch):
     _register(orch)
     ws = _ws(orch)
