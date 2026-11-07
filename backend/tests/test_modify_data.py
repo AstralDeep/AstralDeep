@@ -215,3 +215,47 @@ if __name__ == "__main__":
     test_backward_compatibility_with_file()
     print("✓ test_backward_compatibility_with_file passed")
     print("\nAll tests passed!")
+
+
+def test_column_field_selects_the_column():
+    result = modify_data(
+        csv_data="age\n30\n9",
+        modifications=[
+            {"action": "add_column", "column": "group", "value": "a"},
+            {"action": "drop_column", "column": "age"},
+        ],
+    )
+    path = result["_data"]["file_path"]
+    with open(path, 'r') as f:
+        rows = list(csv.DictReader(f))
+    os.remove(path)
+    assert rows == [{"group": "a"}, {"group": "a"}]
+
+
+def test_schema_offers_column_and_not_name():
+    from agents.general.mcp_tools import TOOL_REGISTRY
+
+    schema = TOOL_REGISTRY["modify_data"]["input_schema"]
+    item = schema["properties"]["modifications"]["items"]["properties"]
+    assert "column" in item
+    assert "name" not in item
+
+
+def test_column_steps_can_be_reviewed():
+    from orchestrator.hitl_confirmation import _review_arguments
+
+    for step in (
+        {"action": "add_column", "column": "double", "expression": "row['age'] * 2"},
+        {"action": "sort_rows", "column": "age", "value": "asc"},
+        {"action": "drop_column", "column": "age"},
+    ):
+        assert _review_arguments({"csv_data": "age\n30", "modifications": [step]})[1] is True
+
+
+def test_review_check_still_refuses_the_name_key_and_sensitive_column_values():
+    from orchestrator.hitl_confirmation import _review_arguments
+
+    name_key = {"modifications": [{"action": "drop_column", "name": "age"}]}
+    sensitive_value = {"modifications": [{"action": "drop_column", "column": "123-45-6789"}]}
+    assert _review_arguments(name_key)[1] is False
+    assert _review_arguments(sensitive_value)[1] is False
