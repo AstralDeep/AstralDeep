@@ -13383,7 +13383,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         effect_key: Optional[str] = None,
         payload_digest: Optional[str] = None,
     ) -> str:
-        from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
+        from orchestrator.async_tasks import (
+            BackgroundTask,
+            BackgroundTaskManager,
+            VirtualWebSocket,
+        )
         from orchestrator.scheduled_publication import stage_scheduled_history
         from persistent_agents.models import AssignmentError
 
@@ -13579,15 +13583,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:  # pragma: no cover
                 pass
 
-        summary = ""
-        for out in bg.outputs:
-            if not isinstance(out, dict):
-                continue
-            txt = out.get("text") or out.get("message")
-            if not txt and isinstance(out.get("payload"), dict):
-                txt = out["payload"].get("text") or out["payload"].get("message")
-            if isinstance(txt, str) and txt.strip():
-                summary = txt.strip()
+        summary = BackgroundTaskManager._summary_from_outputs(bg)
         logger.info(
             "scheduler.run_completed",
             extra={
