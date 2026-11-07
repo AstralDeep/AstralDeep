@@ -59,6 +59,7 @@ class ScheduledHistoryStage:
         self.create_chat_if_missing = bool(create_chat_if_missing)
         self.agent_id = agent_id
         self.requested_title: str | None = None
+        self.failed = False
         self._messages: list[StagedHistoryMessage] = []
         self._sealed = False
 

@@ -106,6 +106,22 @@ async def test_a_cancel_with_no_tool_in_flight_behaves_as_before(orch):
     await _cleanup(orch, chat_id)
 
 
+async def test_a_scheduled_turn_with_no_model_response_marks_its_stage_failed(orch):
+    from orchestrator.scheduled_publication import stage_scheduled_history
+
+    _register(orch)
+    ws = _ws(orch)
+    chat_id = await _chat(orch)
+    orch._call_llm = AsyncMock(return_value=(None, None))
+    with stage_scheduled_history(
+        history=orch.history, chat_id=chat_id, user_id=USER,
+        create_chat_if_missing=False, agent_id=None,
+    ) as stage:
+        await registered_chat(orch, ws, "summarize inbox", chat_id, user_id=USER)
+    assert stage.failed is True
+    await _cleanup(orch, chat_id)
+
+
 async def test_an_unrelated_cancellation_of_the_turn_still_propagates(orch):
     _register(orch)
     ws = _ws(orch)
