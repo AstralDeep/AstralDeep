@@ -324,6 +324,7 @@ class _ConnectionOperation:
     predecessors: tuple[asyncio.Future[None], ...] = ()
     lane_complete: asyncio.Future[None] | None = None
     lease_lost: bool = False
+    preselected: bool = False
     auth_principal: str | None = None
     auth_claims: dict[str, Any] = field(default_factory=dict, repr=False)
     subject_auth_claims: dict[str, Any] = field(default_factory=dict, repr=False)
@@ -8014,8 +8015,9 @@ class Orchestrator:
                     continue
                 scheduled.append((work, projection))
             loop = asyncio.get_running_loop()
-            for work, _projection in scheduled:
+            for work, projection in scheduled:
                 frame = work.frame
+                work.preselected = projection.state is OperationState.RUNNING
                 work.lane_complete = loop.create_future()
                 if frame.operation_kind == "voice_chat_message":
                     work.predecessors = ()
@@ -8721,8 +8723,30 @@ class Orchestrator:
 
         async def _execute() -> None:
             nonlocal connection_operation_context, renewal_task, terminal_operation, credential_connection_check
+            claim = terminal = None
+
+            def start_lease_renewal() -> None:
+                nonlocal renewal_task
+                work.fence = claim.fence
+                worker = asyncio.current_task()
+                assert worker is not None
+                renewal_task = asyncio.create_task(
+                    self._renew_connection_lease(
+                        context,
+                        work,
+                        stop_renewal,
+                        worker,
+                    ),
+                    name=f"connection-lease-{work.operation_id}",
+                )
+
             # Wait before claiming: claiming first can deadlock the pool
             if work.predecessors:
+                # A preselected operation already holds its slot, and its lease would expire during the wait.
+                if work.preselected:
+                    claim, terminal = await self._claim_connection_operation(context, work)
+                    if claim is not None:
+                        start_lease_renewal()
                 predecessors = (tuple(asyncio.shield(item) for item in work.predecessors)
                                 if (work.frame.foreground or work.frame.work_read is not None or (work.frame.human_request is not None
                                     and work.frame.human_request.purpose in {"metadata", "remote_effect"}))
@@ -8735,9 +8759,10 @@ class Orchestrator:
                 raise asyncio.CancelledError
             if work.frame.foreground:
                 await work.frame.human_request.authenticate()
-            claim, terminal = await self._claim_connection_operation(
-                context, work
-            )
+            if claim is None and terminal is None:
+                claim, terminal = await self._claim_connection_operation(
+                    context, work
+                )
             if terminal is not None:
                 terminal_operation = terminal
                 await self._send_operation_terminal(context, work, terminal)
@@ -8745,18 +8770,8 @@ class Orchestrator:
                 return
             if claim is None:
                 return
-            work.fence = claim.fence
-            worker = asyncio.current_task()
-            assert worker is not None
-            renewal_task = asyncio.create_task(
-                self._renew_connection_lease(
-                    context,
-                    work,
-                    stop_renewal,
-                    worker,
-                ),
-                name=f"connection-lease-{work.operation_id}",
-            )
+            if renewal_task is None:
+                start_lease_renewal()
             if (
                 context.closing
                 and (work.owner.owner_scope is OwnerScope.CONNECTION or work.frame.foreground)

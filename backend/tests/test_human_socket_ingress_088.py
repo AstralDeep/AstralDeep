@@ -239,6 +239,35 @@ async def test_waiting_lane_retirement_closes_capture_without_cancelling_predece
             predecessor.set_result(None)
 
 
+async def test_operation_waiting_behind_a_turn_keeps_renewing_its_lease(metadata, monkeypatch):
+    state, calls, _ = metadata
+    await registered(state)
+    context = state.orch._connection_contexts[id(state.socket)]
+    predecessor = asyncio.get_running_loop().create_future()
+    context.mutation_tail = predecessor
+    monkeypatch.setattr(module, "CONNECTION_LEASE_RENEW_SECONDS", 0.01)
+    renewed = asyncio.Event()
+    original = state.orch._call_work_admission
+
+    async def observed(callback, *args, **kwargs):
+        value = await original(callback, *args, **kwargs)
+        if getattr(callback, "__name__", "") == "renew_execution_lease":
+            renewed.set()
+        return value
+
+    monkeypatch.setattr(state.orch, "_call_work_admission", observed)
+    send(state, "chrome_user_skill_edit", attempt_write=False)
+    try:
+        await asyncio.wait_for(renewed.wait(), 5)
+        assert not predecessor.done() and not calls
+        predecessor.set_result(None)
+        assert (await terminal(state))["state"] == "completed"
+        assert len(calls) == 1
+    finally:
+        if not predecessor.done():
+            predecessor.set_result(None)
+
+
 async def test_delivery_rechecks_original_caller_after_render_wait(metadata, monkeypatch):
     state, calls, _ = metadata
     await registered(state)
