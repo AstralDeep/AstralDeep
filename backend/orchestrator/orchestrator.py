@@ -13514,6 +13514,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 target_chat,
                                 user_id=user_id,
                             )
+                        if history_stage.failed:
+                            raise RuntimeError("scheduled turn failed")
                         publication = await asyncio.to_thread(
                             scheduled_store.publish_staged_chat_effect,
                             scheduled_attempt,
@@ -17151,6 +17153,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 self._remember_voice_operation_terminal_intent(
                     task_terminal_on_exit
                 )
+            if task_terminal_on_exit is TaskState.FAILED and scheduled_history_stage is not None:
+                scheduled_history_stage.failed = True
             if task_terminal_on_exit is not None and task is not None:
                 if task._canonical_state() not in {
                     TaskState.COMPLETED,
