@@ -8017,7 +8017,8 @@ class Orchestrator:
             loop = asyncio.get_running_loop()
             for work, projection in scheduled:
                 frame = work.frame
-                work.preselected = projection.state is OperationState.RUNNING
+                # The projection read is best effort and may be missing.
+                work.preselected = projection is not None and projection.state is OperationState.RUNNING
                 work.lane_complete = loop.create_future()
                 if frame.operation_kind == "voice_chat_message":
                     work.predecessors = ()
