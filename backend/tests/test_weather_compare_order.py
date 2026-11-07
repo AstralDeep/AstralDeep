@@ -14,11 +14,17 @@ def _current(city, **_kwargs):
     return {"_data": {"current": {"temperature_2m": temperature}}}
 
 
+def _cards(value):
+    if isinstance(value, dict):
+        yield value
+        value = list(value.values())
+    if isinstance(value, list):
+        for child in value:
+            yield from _cards(child)
+
+
 def _card(result, title):
-    return next(
-        json.dumps(component) for component in result["_ui_components"][0]["content"]
-        if component.get("title") == title
-    )
+    return next(json.dumps(card) for card in _cards(result["_ui_components"]) if card.get("title") == title)
 
 
 def test_a_slower_first_location_keeps_its_own_result():
