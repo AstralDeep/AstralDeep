@@ -11,7 +11,7 @@ from security_benchmark.isolation_check import find_violations, main
 def test_product_runtime_does_not_import_harness_or_benchmarks():
     violations = find_violations()
     assert violations == [], (
-        "product runtime imports eval/benchmark code (Constitution V): "
+        "product runtime imports eval/benchmark code: "
         + "; ".join(f"{p} imports {n}" for p, n in violations)
     )
 

@@ -11004,7 +11004,7 @@ class Orchestrator:
                     task_id = msg.payload.get("task_id")
                     if task_id:
                         bg_task = await self.async_task_manager.get(task_id)
-                        if bg_task:
+                        if bg_task and bg_task.user_id == user_id:
                             task_status = bg_task._canonical_status()
                             if task_status.value in (
                                 "completed",

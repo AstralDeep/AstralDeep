@@ -4,11 +4,9 @@ This is the single repository instruction file for all coding agents, including 
 
 ## Authority and freshness
 
-- `.specify/memory/constitution.md` is the highest-authority engineering policy for this repository and for how AstralDeep consumes, pins, and releases its components. Read it before planning architecture, security, schema, dependency, UI, protocol, or client changes.
-- AstralPrimitives, AstralProjection, AstralPlane, and LETS each carry their own constitution at `.specify/memory/constitution.md` in their repository (ratified 2026-09-28); it governs work inside that component. Submodule pins older than that ratification predate the file, so read it from the component repository's `main` until the pin moves.
-- For feature intent, use the active feature's `spec.md`, `plan.md`, `tasks.md`, `contracts/`, and clarification records. A spec describes intent; verify implementation claims against the live tree and tests.
+- For feature intent, use the feature's `spec.md`, `plan.md`, `tasks.md`, `contracts/`, and clarification records under `specs/`. A spec describes intent; verify implementation claims against the live tree and tests.
 - The live branch, working tree, and current code are the source of truth for present state. Older generated feature digests remain in Git history; their technology notes may be superseded and are not current instructions.
-- Before feature work, check `git status --short --branch`, recent commits, `.specify/feature.json`, and matching `specs/<number>-*/` directories. Do not assume the highest-numbered spec or `feature.json` on `main` is the work currently in progress. Spec Kit's managed `.specify/.gitignore` lists `feature.json` as machine-local, but this repository keeps tracking it; ignore rules never untrack a tracked file.
+- Before feature work, check `git status --short --branch`, recent commits, and matching `specs/<number>-*/` directories. Do not assume the highest-numbered spec on `main` is the work currently in progress.
 - Work may continue on another machine. Do not edit an active feature branch/spec, overwrite handoff artifacts, or recreate work merely because it is absent from the current checkout. Inspect remotes and ask when ownership is genuinely ambiguous.
 - Prefer paths supplied by the current workspace and repository-relative paths. Absolute paths recorded in old docs or the knowledge vault are historical, not commands.
 
@@ -46,7 +44,7 @@ The evidence control adapter depends on the orchestrator's private ephemeral arc
 - `backend/agents/`: bundled first-party agents. Generated draft directories can appear here during development; treat unexpected untracked directories as user/generated data, never as files to stage blindly.
 - `backend/tests/` plus module-local `*/tests/`: backend verification. Root pytest discovery does not include every module suite.
 - `components/AstralProjection/windows-client/`, `components/AstralProjection/android-client/`, `components/AstralProjection/apple-clients/`: authoritative native clients and their parity/drift guards.
-- `specs/`: numbered Spec Kit feature artifacts; the spec number is more reliable than historical branch naming.
+- `specs/`: numbered feature specifications, plans, tasks, and contracts; the spec number is more reliable than historical branch naming.
 - `docs/`: operator documentation. Most of this tree is ignored; check `.gitignore` before assuming a new doc will be committed.
 
 For deployment and agent workflows, read [production deployment](docs/production-deployment.md), [BYO client agents](docs/byo-client-agents.md), [remote compute agents](docs/remote-compute-agents.md), and [authoring agents and skills](docs/your-own-agents-and-skills.md).
@@ -56,12 +54,12 @@ The pinned `components/AstralPrimitives` repository owns primitive definitions a
 ## Non-negotiable engineering rules
 
 - Backend code is Python and must remain compatible with the production Python 3.11 image. Ruff's target is `py311`, even if a host virtualenv is newer.
-- Any dependency may be added (Constitution V, v3.0.0); declare it in the owning repository's manifest and name it in the PR description.
+- Any dependency may be added; declare it in the owning repository's manifest and name it in the PR description.
 - Keep changes production-ready: no silent stubs, debug-only paths, fake success, untracked TODOs, or happy-path-only handling.
-- The code documents itself (Constitution VI, v4.0.0). Each source file opens with a header of at most three sentences: what it does and how it connects to other files. Add no other comments or docstrings except a one-line *why* where absolutely necessary. Never put spec/task IDs, feature numbers, history, TODOs, or narration in source. Tool directives (`# noqa`, `# type: ignore`, `# pragma: no cover`, eslint/ktlint/swift-format directives, shebangs) are not comments and stay.
+- The code documents itself. Each source file opens with a header of at most three sentences: what it does and how it connects to other files. Add no other comments or docstrings except a one-line *why* where absolutely necessary. Never put spec/task IDs, feature numbers, history, TODOs, or narration in source. Tool directives (`# noqa`, `# type: ignore`, `# pragma: no cover`, eslint/ktlint/swift-format directives, shebangs) are not comments and stay.
 - Write or update tests for golden paths, edge cases, denials, and failures. Changed Python lines must retain at least 90% coverage.
-- CI jobs and test suites finish within 30 minutes on hosted runners; over-budget suites get cheaper fixtures or lose their slowest tests (never sharded, raised, or waived); no soak tests; required gates stay deterministic — no live third-party network services, no exact bounds on clock-derived values, no wall-clock performance bounds on shared hosted runners, per-test retries only (Constitution XI, v5.0.0).
-- Preserve the user's working tree. Never discard unrelated changes. Local commits for work within the task's scope are allowed without additional user authorization, including Spec Kit commit hooks. Review the diff and stage only task-related files; keep unrelated changes and sensitive/generated user data out of commits.
+- CI jobs and test suites finish within 30 minutes on hosted runners; over-budget suites get cheaper fixtures or lose their slowest tests (never sharded, raised, or waived); no soak tests; required gates stay deterministic — no live third-party network services, no exact bounds on clock-derived values, no wall-clock performance bounds on shared hosted runners, per-test retries only.
+- Preserve the user's working tree. Never discard unrelated changes. Local commits for work within the task's scope are allowed without additional user authorization. Review the diff and stage only task-related files; keep unrelated changes and sensitive/generated user data out of commits.
 - Do not push, merge, release, submit to a store, or mutate external issue trackers unless the request or invoked workflow explicitly calls for it. Permission to create local commits does not authorize those actions.
 - Use targeted parallel research/review when it improves coverage, then personally verify critical seams and integrate the findings. Agent reports are evidence leads, not proof by themselves.
 - Distinguish clearly among specified, implemented, test-passing, live-verified, merged, deployed, and released. Do not collapse them into "done."
@@ -73,7 +71,7 @@ The pinned `components/AstralPrimitives` repository owns primitive definitions a
 - Use `css`, not `style`. Escape and sanitize web output through the existing renderer helpers; never pass model/user text as raw HTML.
 - `Primitive.attributes` flattens last and can overwrite declared fields, including `type`; use it only with trusted, deliberate keys.
 - The installed `astralprims` wheel may lag the sibling repository's `main`. Before importing a newer class, bump the AstralDeep version floor, rebuild the environment/image, verify the import, and run parity tests. Until then, an already-approved manifest type may be emitted as a plain dict.
-- A new primitive requires constitution approval and a coordinated change: definition/exports/serialization tests/docs/version in AstralPrimitives; renderer and ROTE behavior; `ui_protocol.json`; all affected client dispositions/renderers; drift guards; and live client verification.
+- A new primitive requires owner approval and a coordinated change: definition/exports/serialization tests/docs/version in AstralPrimitives; renderer and ROTE behavior; `ui_protocol.json`; all affected client dispositions/renderers; drift guards; and live client verification.
 - A protocol, frame, chrome, theme, component, or layout change must land across every in-scope client in the same feature. A web-only exception must be explicit in the spec and enforced by the server-owned definition, never hidden independently by clients.
 
 ## Security, identity, and data
@@ -97,50 +95,6 @@ The pinned `components/AstralPrimitives` repository owns primitive definitions a
   verification, and tests against representative existing data. Update Deep's
   composition pin only after the exact Plane revision is qualified. Do not use
   ad-hoc deployed SQL or introduce a second migration framework.
-
-## Spec Kit with Codex
-
-All agent integrations share this `AGENTS.md`. Spec Kit 1.0.12 skills no longer run an agent-context updater; the project-owned `.specify/scripts/powershell/update-agent-context.ps1` runs only when invoked explicitly and routes both Claude and Codex here, so the Spec Kit marker block below is otherwise maintained by hand. If an older installed skill or template names a different instruction file, update this file instead, including its Spec Kit markers; do not recreate the retired file. Preserve the installed integration manifests so upgrades can identify local customizations.
-
-AstralDeep's plan and tasks template customizations live in `.specify/templates/overrides/`, which Spec Kit's template resolver prefers over the core `.specify/templates/` copies. Edit the overrides; integration upgrades refresh the core copies.
-
-Codex discovers the repository-local skills in `.agents/skills/`. Invoke them with `$skill-name` (not Claude's slash-command spelling). Start a new Codex task/session after skill installation or updates so discovery refreshes.
-
-The ten core skills are installed and hash-tracked by `.specify/integrations/codex.manifest.json`. The five `speckit-git-*` skills are deliberately project-owned Codex adapters for `.specify/extensions/git/commands/` and its Bash/PowerShell scripts; Spec Kit integration upgrade/uninstall does not manage them. Preserve their remote-collision and working-tree safety additions when syncing extension changes. The installed git extension is 1.0.1 (bundled with Spec Kit 1.0.12), and the adapters call its `create-new-feature-branch` scripts; update the extension only together with the adapters.
-
-### Mandatory feature-ownership preflight
-
-This project is developed across machines, and feature directories can exist only on a remote branch. The following preflight overrides the ordering in generated skill bodies: perform it before any Spec Kit hook, script, branch creation, or file mutation.
-
-For `$speckit-specify`:
-
-- Refresh `origin` and inventory numeric `specs/<NNN>-*` directories from the working tree and the trees of every `refs/remotes/origin/*` ref, not merely remote branch names. If the remote cannot be refreshed/inspected, stop and require the user to provide an explicit collision-checked `SPECIFY_FEATURE_DIRECTORY` and `GIT_BRANCH_NAME`.
-- Choose a number unused in every inventoried tree. Verify the proposed directory and branch do not collide before running the mandatory feature-branch hook.
-- Pass the resolved `SPECIFY_FEATURE_DIRECTORY` and `GIT_BRANCH_NAME` through the workflow so the hook and spec creator cannot independently choose conflicting numbers. Never run the allocation script twice.
-
-For `$speckit-clarify`, `$speckit-plan`, `$speckit-tasks`, `$speckit-analyze`, `$speckit-implement`, `$speckit-converge`, `$speckit-checklist`, and `$speckit-taskstoissues`:
-
-- Resolve one target feature before running the skill's own pre-execution checks. On `main`, with a missing/stale pointer, when branch and feature artifacts disagree, or when work is known to be active on another machine, do not trust `.specify/feature.json` by itself. Stop and obtain an explicit target/ownership decision.
-- Require the target directory to exist in the checked-out tree. Set `SPECIFY_FEATURE_DIRECTORY` for each setup/prerequisite script invocation and verify the returned `FEATURE_DIR`/`FEATURE_SPEC`/`IMPL_PLAN` paths stay inside that exact directory. Abort on any mismatch before writes or external actions.
-- Never use a local older copy of a spec to mutate work whose newer version exists only on another remote branch. Switch/pull the authorized branch first, or leave it alone.
-
-Normal feature flow after that preflight:
-
-1. `$speckit-specify <feature description>`
-2. `$speckit-clarify`
-3. `$speckit-plan`
-4. `$speckit-tasks`
-5. `$speckit-analyze`
-6. `$speckit-implement`
-
-After implementation, `$speckit-converge` is optional: use it only when the user requests artifact-to-code reconciliation and branch/feature ownership has been re-verified, because it appends tasks. Additional workflows are `$speckit-constitution`, `$speckit-checklist`, and `$speckit-taskstoissues`. Git-extension helpers are `$speckit-git-initialize`, `$speckit-git-feature`, `$speckit-git-validate`, `$speckit-git-remote`, and `$speckit-git-commit`.
-
-- Read the selected skill completely and follow its gates. Clarify and Analyze are real quality gates, not ceremonial steps.
-- `speckit-specify` has a mandatory branch-creation hook. Later hooks may create task-scoped local commits under the standing permission above. Report these mutations before executing them and preserve unrelated working-tree changes; do not ask for separate commit authorization.
-- `speckit-taskstoissues` mutates GitHub; run it only when the user explicitly requests issue creation/synchronization.
-- Never point a workflow at a feature merely because it is the newest directory. Resolve the intended feature from the branch, `feature.json`, artifacts, remotes, and user context first.
-- This Codex integration is pinned in project metadata at Spec Kit 1.0.12. The executable on `PATH` may be older on some machines; for integration management, use a version-matched one-shot CLI or deliberately upgrade the user tool. Do not run the older executable against managed integration state, blindly reinitialize Claude, or overwrite modified Claude-managed files.
-- The core skills were rendered with PowerShell paths. Script-family selection happens before the skill body: use PowerShell scripts on Windows and substitute the same-purpose Bash script plus its native flags on POSIX. A literal PowerShell path in generated content is not a requirement to install PowerShell on macOS/Linux.
 
 ## Build and verification
 
@@ -178,7 +132,7 @@ Tests are necessary, not sufficient. Exercise changed UI behavior against the li
 
 Release-evidence collection, normalization, and parsing normally run locally before push and
 remain diagnostic. If a canonical input structurally requires a provider identity or native
-artifact that cannot exist until the exact SHA is remote, use only Constitution X's provider-native
+artifact that cannot exist until the exact SHA is remote, use only a provider-native
 lead approval bound to the exact initial SHA, path scope, and RFC 3339 expiry within 168 hours. Keep
 the PR draft/non-mergeable; run every locally executable gate; retain the external candidate-bound
 fail-closed missing-input inventory; re-query provider approval, draft state, scope, expiry, and
@@ -214,26 +168,3 @@ if the vault commit or push is blocked.
 ## Handoff standard
 
 Finish with an evidence-backed summary: files changed, behavior changed, exact tests/checks and results, live verification performed or still required, feature flags/migrations/contracts affected, and any residual risk. Keep work-in-progress recoverable across machines through a named pushed branch only when the user has requested pushing; otherwise leave a precise local handoff without claiming remote persistence.
-
-<!-- SPECKIT START -->
-## Active Feature Plan
-
-- `091-windows-ui-v2`: `specs/091-windows-ui-v2/plan.md`
-
-## Active Technologies
-
-- Python 3.11; vanilla JavaScript; Python/PySide6; Kotlin/JVM 17 with Android API 33 local-speech eligibility; Swift 5.9-compatible sources; JSON Schema 2020-12; OpenAPI 3.1; first-party C#/.NET Framework helper source + existing FastAPI/ASGI, PostgreSQL/AstralPlane, Keycloak/RFC 8693, LiveKit/ONNX/Silero/LLM Factory, ROTE/webrender, QtTextToSpeech, Android SpeechRecognizer/TextToSpeech, Apple Speech/AVFAudio, and browser Web Speech APIs; no new third-party runtime/model dependency (075-client-local-speech)
-- PostgreSQL adds an immutable voice speech-backend discriminator and conditional remote-media fields through guarded AstralPlane `075.001`; local audio, interim/final working text, digests/proofs, engine details, endpoints, and credentials remain ephemeral/non-durable (075-client-local-speech)
-
-- Python 3.11; vanilla JavaScript; Python/PySide6; Kotlin/JVM 17; Swift 5.9-compatible sources; JSON Schema 2020-12; Git/PowerShell + FastAPI/ASGI, PostgreSQL, Keycloak/RFC 8693, Docker/Compose, AstralPrimitives, AstralProjection, AstralPlane, and pinned LETS v1.0.11 public client/executor contracts (074-multirepo-lets-integration)
-- Existing PostgreSQL and configured blob roots remain in place; LETS warden storage remains external; executor replay/authority and local manuscript/evidence state remain outside repositories (074-multirepo-lets-integration)
-
-- Python 3.11, vanilla JavaScript, Python/PySide6, Kotlin/JVM 17, and Swift 5.9-compatible sources + pinned self-hosted LiveKit server/direct-RTC/client SDKs, bounded WebSocket worker control, ONNX Runtime + exact Silero VAD, FastAPI, PostgreSQL, Keycloak, astralprims/ROTE (065-conversational-voice)
-- PostgreSQL additive `voice_session`/`voice_turn` metadata plus immutable execution-base commit anchors/digests and commit-scoped workspace-layout versioning; ephemeral LiveKit media and speech buffers with no audio retention (065-conversational-voice)
-
-## Recent Changes
-
-- 075-client-local-speech: Planned a server-selected client-local ASR/TTS resilience profile across all clients, retained byte-compatible LLM Factory voice by default, bounded remote retries/warm admission, and kept every accepted turn on the ordinary authenticated dispatcher.
-- 074-multirepo-lets-integration: Planned independent Projection/Plane/Primitives/LETS submodules, a history-preserving content replacement, and fail-closed LETS enforcement without changing production during migration.
-- 065-conversational-voice: Planned an included exact-model conversational voice path across web, Windows, Android, macOS, iOS, and watchOS while preserving the normal authenticated agentic dispatcher.
-<!-- SPECKIT END -->
