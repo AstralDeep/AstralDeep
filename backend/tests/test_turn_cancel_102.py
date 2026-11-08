@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -220,6 +221,35 @@ async def test_an_unrelated_cancellation_during_the_model_call_still_propagates(
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(turn, 5)
     assert aborted.is_set()
+    await _cleanup(orch, chat_id)
+
+
+@pytest.mark.parametrize(("role", "published"), [("assistant_result", False), ("atomic", True)])
+async def test_a_cancelled_turn_publishes_its_stage_unless_it_is_a_voice_result(
+    orch, role, published, user_skills_disabled,
+):
+    _register(orch)
+    ws = _ws(orch)
+    chat_id = await _chat(orch)
+    stage = SimpleNamespace(publication_role=role, completion_state="completed")
+    orch._append_conversation_message = AsyncMock(return_value=1)
+    orch._publish_conversation_snapshot = AsyncMock(return_value={})
+    orch.execute_single_tool = AsyncMock()
+
+    async def cancelled_while_thinking(*_args, **_kwargs):
+        orch.cancelled_sessions[id(ws)] = True
+        return _msg(tool_calls=[_tc()]), _usage()
+
+    orch._call_llm = cancelled_while_thinking
+    await orch._handle_chat_message_impl(
+        ws, "forecast please", chat_id, user_id=USER, conversation_stage=stage,
+        conversation_request_generation=str(uuid.uuid4()), llm_preflight_complete=True,
+    )
+    orch.execute_single_tool.assert_not_awaited()
+    assert _cancel_alerts(orch)
+    assert orch._publish_conversation_snapshot.await_count == int(published)
+    if published:
+        assert orch._publish_conversation_snapshot.await_args.kwargs["stage"] is stage
     await _cleanup(orch, chat_id)
 
 

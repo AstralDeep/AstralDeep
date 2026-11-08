@@ -15663,7 +15663,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             ).to_dict()
                         ],
                     )
-                    if conversation_stage is not None:
+                    if conversation_stage is not None and (
+                        goal_progress is not None
+                        or conversation_stage.publication_role != "assistant_result"
+                    ):
                         await self._publish_conversation_snapshot(
                             websocket, stage=conversation_stage,
                             request_generation=conversation_request_generation,
