@@ -239,6 +239,103 @@ async def test_waiting_lane_retirement_closes_capture_without_cancelling_predece
             predecessor.set_result(None)
 
 
+async def _chat_behind_a_turn(state, monkeypatch, fixture):
+    orch = state.orch
+    orch.cancelled_sessions = {}
+    chat_id = str(uuid4())
+    monkeypatch.setattr(orch.history, "get_chat", lambda *_args, **_kwargs: {"id": chat_id})
+    used = []
+
+    async def lookup(socket, *_args, **_kwargs):
+        caller = await human.current_socket_human_read(expected_orchestrator=orch, websocket=socket)
+        try:
+            with pytest.raises(AssignmentError, match="human_write_required"):
+                caller.require_write()
+            used.append(await caller.transaction(
+                lambda tx, repos: repos.history.sessions.get_execution_state(
+                    tx, owner_id=caller.owner_id, session_id=fixture[2]), expected_orchestrator=orch))
+        finally:
+            human.retire_socket_human_read(caller)
+
+    monkeypatch.setattr(orch, "_serialized_chat", lookup, raising=False)
+    await registered(state)
+    context = orch._connection_contexts[id(state.socket)]
+    predecessor = asyncio.get_running_loop().create_future()
+    context.mutation_tail = predecessor
+    parked = asyncio.Event()
+    phase = orch._emit_long_running_operation_phase
+
+    async def lane_wait(host_context, work):
+        parked.set()
+        return await phase(host_context, work)
+
+    monkeypatch.setattr(orch, "_emit_long_running_operation_phase", lane_wait)
+    generation = send(state, "chat_message", message="queued request", chat_id=chat_id)
+    await asyncio.wait_for(parked.wait(), 5)
+    frame = next(f for f in state.frames if str(f.request_generation) == generation)
+    pending = frame.human_request
+    pending.deadline = time.monotonic() - 1
+    pending.until = human.datetime.now(human.timezone.utc) - human.timedelta(seconds=1)
+    return frame, pending, predecessor, used
+
+
+async def test_chat_message_queued_past_its_window_runs_on_a_full_recheck(metadata, fixture, monkeypatch):
+    state, _, _ = metadata
+    frame, pending, predecessor, used = await _chat_behind_a_turn(state, monkeypatch, fixture)
+    predecessor.set_result(None)
+    assert (await terminal(state))["state"] == "completed"
+    assert len(used) == 1 and pending.closed
+    await cleaned(frame)
+
+
+@pytest.mark.parametrize("change", ["token", "issuance", "message", "policy"])
+async def test_queued_chat_message_refused_when_anything_changed(
+    metadata, runtime, fixture, monkeypatch, change,
+):
+    state, _, _ = metadata
+    frame, pending, predecessor, used = await _chat_behind_a_turn(state, monkeypatch, fixture)
+    if change == "token":
+        state.orch.ui_sessions[state.socket]["_raw_token"] = "private replacement token"
+    elif change == "issuance":
+        await asyncio.to_thread(replace_session_record, runtime, get_session_record(runtime, fixture[2]))
+    elif change == "message":
+        frame.parsed["payload"]["message"] = "changed after capture"
+    else:
+        monkeypatch.setenv("KEYCLOAK_ALLOWED_AZP", "still-allows-primary-but-changed-policy")
+    predecessor.set_result(None)
+    assert (await terminal(state))["state"] == "failed"
+    assert not used
+    await cleaned(frame)
+
+
+async def test_recheck_refuses_a_replaced_registration_and_a_closed_request(metadata, fixture, monkeypatch):
+    state, _, _ = metadata
+    frame, pending, predecessor, _ = await _chat_behind_a_turn(state, monkeypatch, fixture)
+    state.orch.ui_sessions[state.socket] = deepcopy(state.orch.ui_sessions[state.socket])
+    with pytest.raises(AssignmentError, match="human_authentication_required"):
+        await human.recheck_queued_skill_read(pending)
+    pending.close()
+    with pytest.raises(AssignmentError, match="human_authentication_required"):
+        await human.recheck_queued_skill_read(pending)
+    predecessor.set_result(None)
+    await terminal(state)
+    await cleaned(frame)
+
+
+async def test_recheck_refuses_a_message_that_no_longer_captures(metadata, fixture, monkeypatch):
+    state, _, _ = metadata
+    frame, pending, predecessor, used = await _chat_behind_a_turn(state, monkeypatch, fixture)
+    pending.message = {**pending.message, "action": "not_a_guidance_read"}
+    with pytest.raises(AssignmentError, match="human_authentication_required"):
+        await human.recheck_queued_skill_read(pending)
+    assert not pending.closed
+    pending.close()
+    predecessor.set_result(None)
+    assert (await terminal(state))["state"] == "failed"
+    assert not used
+    await cleaned(frame)
+
+
 async def test_delivery_rechecks_original_caller_after_render_wait(metadata, monkeypatch):
     state, calls, _ = metadata
     await registered(state)

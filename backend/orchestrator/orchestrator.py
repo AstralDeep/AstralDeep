@@ -8762,6 +8762,12 @@ class Orchestrator:
                 and (work.owner.owner_scope is OwnerScope.CONNECTION or work.frame.foreground)
             ):
                 raise asyncio.CancelledError
+            # After the claim, so a refusal ends as failed and the client can restore the message.
+            if (work.predecessors and work.frame.human_request is not None
+                    and work.frame.human_request.purpose == "skill_lookup"):
+                from orchestrator.human_request_authority import recheck_queued_skill_read
+
+                work.frame.human_request = await recheck_queued_skill_read(work.frame.human_request)
             connection_operation_context = {
                 "operation": claim.operation,
                 "owner": work.owner,
@@ -10998,7 +11004,7 @@ class Orchestrator:
                     task_id = msg.payload.get("task_id")
                     if task_id:
                         bg_task = await self.async_task_manager.get(task_id)
-                        if bg_task:
+                        if bg_task and bg_task.user_id == user_id:
                             task_status = bg_task._canonical_status()
                             if task_status.value in (
                                 "completed",
@@ -13415,7 +13421,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         effect_key: Optional[str] = None,
         payload_digest: Optional[str] = None,
     ) -> str:
-        from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
+        from orchestrator.async_tasks import (
+            BackgroundTask,
+            BackgroundTaskManager,
+            VirtualWebSocket,
+        )
         from orchestrator.scheduled_publication import stage_scheduled_history
         from persistent_agents.models import AssignmentError
 
@@ -13546,6 +13556,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 target_chat,
                                 user_id=user_id,
                             )
+                        if history_stage.failed:
+                            raise RuntimeError("scheduled turn failed")
                         publication = await asyncio.to_thread(
                             scheduled_store.publish_staged_chat_effect,
                             scheduled_attempt,
@@ -13611,15 +13623,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:  # pragma: no cover
                 pass
 
-        summary = ""
-        for out in bg.outputs:
-            if not isinstance(out, dict):
-                continue
-            txt = out.get("text") or out.get("message")
-            if not txt and isinstance(out.get("payload"), dict):
-                txt = out["payload"].get("text") or out["payload"].get("message")
-            if isinstance(txt, str) and txt.strip():
-                summary = txt.strip()
+        summary = BackgroundTaskManager._summary_from_outputs(bg)
         logger.info(
             "scheduler.run_completed",
             extra={
@@ -15677,7 +15681,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     execution_fence=authority_fence,
                 )
 
-            while turn_count < MAX_TURNS or (goal_progress is not None and self.cancelled_sessions.get(id(websocket))):
+            while turn_count < MAX_TURNS or self.cancelled_sessions.get(id(websocket)):
                 if self.cancelled_sessions.get(id(websocket)):
                     task_terminal_on_exit = TaskState.CANCELLED
                     if goal_progress is not None and conversation_stage is not None:
@@ -15698,7 +15702,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             ).to_dict()
                         ],
                     )
-                    if goal_progress is not None and conversation_stage is not None:
+                    if conversation_stage is not None and (
+                        goal_progress is not None
+                        or conversation_stage.publication_role != "assistant_result"
+                    ):
                         await self._publish_conversation_snapshot(
                             websocket, stage=conversation_stage,
                             request_generation=conversation_request_generation,
@@ -16066,7 +16073,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if turn_count == 1 and round_one_choice is not None:
                     _round_kwargs["tool_choice"] = round_one_choice
                 _goal_buffer_token = _GOAL_BUFFERED_RESPONSE.set(goal_progress is not None)
+                _model_key = (id(websocket), chat_id)
+                self._turn_tool_tasks = getattr(self, "_turn_tool_tasks", {})
+                self._turn_tool_tasks[_model_key] = asyncio.current_task()
                 try:
+                    if self.cancelled_sessions.get(id(websocket)):
+                        continue
                     if goal_auto_refs:
                         llm_msg = SimpleNamespace(
                             content="The project is complete in the selected folder. I verified the source, isolated environment, installed dependencies, tests, and startup.",
@@ -16082,6 +16094,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 round_one_tools if turn_count == 1 else tools_desc,
                                 **_round_kwargs,
                             )
+                except asyncio.CancelledError:
+                    if not self._take_tool_cancel():
+                        raise
+                    self.cancelled_sessions[id(websocket)] = True
+                    continue
                 except Exception:
                     if _phase_recorder is not None and _phase_step_id:
                         try:
@@ -16090,9 +16107,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             pass
                     raise
                 finally:
+                    self._release_tool_dispatch(_model_key)
                     _NARRATIVE_STREAM_CHAT.reset(_stream_token)
                     _GOAL_BUFFERED_RESPONSE.reset(_goal_buffer_token)
-                if goal_progress is not None and self.cancelled_sessions.get(id(websocket)):
+                if self.cancelled_sessions.get(id(websocket)):
                     self._accumulate_usage(chat_id, usage)
                     continue
                 if task:
@@ -16235,7 +16253,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     if turn_count == 1:
                         with perf_span("turn.first_tool_dispatch", chat=chat_id):
                             pass
-                    if goal_progress is not None and self.cancelled_sessions.get(id(websocket)):
+                    if self.cancelled_sessions.get(id(websocket)):
                         continue
                     _dispatch_key = (id(websocket), chat_id)
                     self._turn_tool_tasks = getattr(self, "_turn_tool_tasks", {})
@@ -16800,6 +16818,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             logger.info("Extracted trailing JSON from mixed text+JSON response")
 
                     if looks_like_json and not _transient_evidence_turn:
+                        from webrender import allowed_primitive_types
+                        allowed = set(allowed_primitive_types()) | {"chart"}
                         try:
                             try:
                                 data = json.loads(raw_json)
@@ -16831,22 +16851,20 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             
                             valid_components = []
                             if isinstance(data, list):
-                                for item in data:
-                                    if isinstance(item, dict) and "type" in item:
-                                        from webrender import allowed_primitive_types
-                                        self._validate_component_tree(
-                                            item, set(allowed_primitive_types()) | {"chart"}
-                                        )
-                                        valid_components.append(item)
+                                # JSON the user asked for is an answer, not a failed attempt at components.
+                                if any(isinstance(item, dict) and isinstance(item.get("type"), str)
+                                       and item["type"].strip().lower() in allowed for item in data):
+                                    for item in data:
+                                        if isinstance(item, dict) and "type" in item:
+                                            self._validate_component_tree(item, allowed)
+                                            valid_components.append(item)
                             
                             if valid_components:
                                 parsed_components = valid_components
-                            else:
-                                needs_retry = True
-                                error_msg = "JSON parsed successfully but no valid UI components found. Each component MUST be an object with at least a 'type' field (e.g., {'type': 'card', 'title': '...', 'content': [...]})."
-                                
+
                         except Exception as e:
-                            needs_retry = True
+                            needs_retry = any(name.strip().lower() in allowed
+                                              for name in re.findall(r'"type"\s*:\s*"([^"]+)"', raw_json))
                             error_msg = f"Failed to parse UI components. The output is not valid JSON. Error: {str(e)}. Please respond ONLY with valid JSON, with NO surrounding text or markdown formatting."
                     
                     if needs_retry and turn_count < MAX_TURNS:
@@ -17208,6 +17226,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 self._remember_voice_operation_terminal_intent(
                     task_terminal_on_exit
                 )
+            if task_terminal_on_exit is TaskState.FAILED and scheduled_history_stage is not None:
+                scheduled_history_stage.failed = True
             if task_terminal_on_exit is not None and task is not None:
                 if task._canonical_state() not in {
                     TaskState.COMPLETED,
@@ -17585,6 +17605,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         attempt_limit = 1 if native_call else self.MAX_RETRIES
         while attempt < attempt_limit:
             attempt += 1
+            call_recorded = False
             try:
                 kwargs = {
                     "model": call_model,
@@ -17660,6 +17681,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     _msg.content = strip_reasoning_markup(_msg.content)
                 usage = getattr(response, "usage", None)
                 total_tokens = getattr(usage, "total_tokens", None) if usage else None
+                call_recorded = True
                 await self._record_llm_call(
                     self.audit_recorder,
                     actor_user_id=actor_user_id,
@@ -17698,6 +17720,25 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if native_call:
                     await client.validate()
                 return _msg, usage
+            except asyncio.CancelledError:
+                if not call_recorded:
+                    try:
+                        await self._record_llm_call(
+                            self.audit_recorder,
+                            actor_user_id=actor_user_id,
+                            auth_principal=auth_principal,
+                            feature=feature,
+                            credential_source=source,
+                            resolved=resolved,
+                            routed_model=call_model,
+                            total_tokens=None,
+                            outcome="failure",
+                            upstream_error_class="cancelled",
+                            **({"harness_capture": harness_binding.capture} if harness_binding is not None else {}),
+                        )
+                    except Exception:
+                        logger.warning("cancelled LLM call audit failed", exc_info=True)
+                raise
             except Exception as e:
                 if harness_binding is not None:
                     error = self._safe_llm_error_metadata(e)
@@ -17912,12 +17953,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from types import SimpleNamespace
             reported_usage = None
             try:
-                for chunk in client.chat.completions.create(stream=True, **kwargs):
+                stream = client.chat.completions.create(stream=True, **kwargs)
+                for chunk in stream:
                     if getattr(chunk, "usage", None) is not None:
                         reported_usage = chunk.usage
                         provider_reported_usage(reported_usage)
-                    if not abandoned.is_set():
-                        loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
+                    if abandoned.is_set():
+                        # Closing the response stops the provider generating tokens nobody will read.
+                        stream.close()
+                        break
+                    loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
                 if not abandoned.is_set():
                     loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
                 return SimpleNamespace(usage=reported_usage)
@@ -18051,6 +18096,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             abandoned.set()
             pump_task.cancel()
             await asyncio.gather(pump_task, return_exceptions=True)
+            if emitted:
+                try:
+                    await self._emit_narrative_frame(
+                        websocket, chat_id, stream_id, seq, "", terminal=True)
+                except Exception:
+                    logger.debug("narrative stream cleanup failed", exc_info=True)
             raise
         except Exception:
             abandoned.set()
@@ -18327,6 +18378,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return tool_failure_content(tool_name, res.error)
         result = getattr(res, "result", None)
         if not result:
+            if getattr(res, "ui_components", None):
+                from orchestrator.tool_feedback import ui_only_content
+                return ui_only_content(res.ui_components)
             return "No output"
         if isinstance(result, dict) and result.get("_model_digest") is not None:
             digest = result["_model_digest"]
@@ -25118,6 +25172,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         cut = text[:limit]
         for sep in (". ", "! ", "? "):
             idx = cut.rfind(sep)
+            while idx > 80 and re.search(r"(?:^|\s)\d{1,3}$", cut[:idx]):
+                idx = cut.rfind(sep, 0, idx)
             if idx > 80:
                 return cut[:idx + 1]
         return cut.rsplit(" ", 1)[0] + "…"

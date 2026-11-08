@@ -89,7 +89,7 @@ cryptography>=42.0.0
 PyNaCl>=1.6.2,<2
 
 # TypeSafe System One routing (feature 089-typesafe-a8p-integration).
-# Owner-approved 2026-09-17; Constitution v3.0.0 removed the approval gate.
+# Owner-approved 2026-09-17.
 # The import is lazy: when the package is absent the orchestrator degrades to
 # standard routing. Pinned exactly so the routing contract cannot drift.
 # Brings httpx2, msgspec and tenacity transitively.

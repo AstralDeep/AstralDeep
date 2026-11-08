@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import datetime
 import io
 import logging
 from typing import Any, Dict, List, Optional
@@ -10,6 +11,14 @@ from typing import Any, Dict, List, Optional
 from agents.general.file_tools import read_attachment_bytes
 
 logger = logging.getLogger("FileTools.read_spreadsheet")
+
+
+def _json_cell(value: Any) -> Any:
+    if isinstance(value, (datetime.date, datetime.time)):
+        return value.isoformat()
+    if isinstance(value, datetime.timedelta):
+        return str(value)
+    return value
 
 
 def _read_xlsx(payload: bytes, sheet_name: Optional[str], max_rows: int) -> Dict[str, Any]:
@@ -33,7 +42,7 @@ def _read_xlsx(payload: bytes, sheet_name: Optional[str], max_rows: int) -> Dict
             if len(rows) >= max_rows:
                 truncated = True
                 break
-            rows.append(list(row))
+            rows.append([_json_cell(cell) for cell in row])
         row_count = ws.max_row - 1 if ws.max_row else len(rows)
         return {
             "sheet_name": selected,
