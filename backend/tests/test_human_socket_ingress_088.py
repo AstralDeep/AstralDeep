@@ -1,11 +1,12 @@
 """Tests for orchestrator/human_request_authority.py and chrome_events.py: metadata
-dispatch through a real guarded repository read, capture lifecycle across admission
-waits, and refusal of unregistered or mismatched metadata actions.
+dispatch through a real guarded repository read, capture lifecycle and slot claims
+across admission waits, and refusal of unregistered or mismatched metadata actions.
 """
 
 import asyncio
 from copy import deepcopy
 import json
+import threading
 import time
 from types import SimpleNamespace
 from uuid import uuid4
@@ -14,6 +15,7 @@ import pytest
 
 from orchestrator import chrome_events, human_request_authority as human
 from orchestrator import orchestrator as module
+from orchestrator.work_admission import OperationState
 from persistent_agents.models import AssignmentError
 from tests.helpers.session_plane_runtime import get_session_record, replace_session_record
 from tests.test_work_surface_ingress_088 import (
@@ -264,6 +266,60 @@ async def test_operation_waiting_behind_a_turn_keeps_renewing_its_lease(metadata
         assert (await terminal(state))["state"] == "completed"
         assert len(calls) == 1
     finally:
+        if not predecessor.done():
+            predecessor.set_result(None)
+
+
+def _waiting_operation(state, generation):
+    context = state.orch._connection_contexts[id(state.socket)]
+    return next(work for work in context.operations.values() if str(work.frame.request_generation) == generation)
+
+
+def _parked_behind(state):
+    predecessor = asyncio.get_running_loop().create_future()
+    state.orch._connection_contexts[id(state.socket)].mutation_tail = predecessor
+    return predecessor
+
+
+async def test_cancel_during_the_early_claim_keeps_the_fence(metadata, monkeypatch):
+    state, calls, _ = metadata
+    await registered(state)
+    predecessor = _parked_behind(state)
+    entered, release, landed = threading.Event(), threading.Event(), threading.Event()
+    original = state.orch._call_work_admission
+
+    async def gated(callback, *args, **kwargs):
+        if getattr(callback, "__name__", "") != "claim_operation":
+            return await original(callback, *args, **kwargs)
+
+        def claim():
+            entered.set()
+            release.wait(5)
+            try:
+                return callback(*args, **kwargs)
+            finally:
+                landed.set()
+
+        return await asyncio.to_thread(claim)
+
+    monkeypatch.setattr(state.orch, "_call_work_admission", gated)
+    generation = send(state, "chrome_user_skill_edit", attempt_write=False)
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        work = _waiting_operation(state, generation)
+        assert work.preselected
+        work.task.cancel()
+        release.set()
+        # Holding the loop lets the thread rotate the slot lease before the task sees its cancellation.
+        assert landed.wait(5)
+        assert (await terminal(state))["state"] == "cancelled"
+        await asyncio.wait_for(asyncio.wait({work.task}), 5)
+        projection = await asyncio.to_thread(state.orch.work_admission.query_operation,
+                                             owner=work.owner, operation_id=work.operation_id)
+        assert projection.state is OperationState.CANCELLED
+        assert not predecessor.cancelled() and not calls
+    finally:
+        release.set()
         if not predecessor.done():
             predecessor.set_result(None)
 

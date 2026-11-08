@@ -17,7 +17,7 @@ if __name__ == "__main__":
 
 import logging
 import re
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -8106,11 +8106,25 @@ class Orchestrator:
                 )
                 return None, terminal
             async with context.claim_lock:
-                claim = await self._call_work_admission(
+                call = self._call_work_admission(
                     self.work_admission.claim_operation,
                     self._connection_admission_class(work.frame),
                     work.operation_id,
                 )
+                # A threaded claim still lands after cancellation, so its fence is kept to terminalize it; an inline claim cannot be interrupted.
+                if isinstance(getattr(self.work_admission, "_repository", None), InMemoryWorkAdmissionRepository):
+                    claim = await call
+                else:
+                    pending = asyncio.ensure_future(call)
+                    try:
+                        claim = await asyncio.shield(pending)
+                    except asyncio.CancelledError:
+                        while not pending.done():
+                            with suppress(asyncio.CancelledError):
+                                await asyncio.wait((pending,))
+                        if not pending.cancelled() and pending.exception() is None and pending.result() is not None:
+                            work.fence = pending.result().fence
+                        raise
             if claim is not None:
                 return claim, None
             projection = await self._call_work_admission(
