@@ -180,6 +180,46 @@ async def test_a_cancel_just_before_dispatch_runs_no_tools(orch):
     orch._safe_send = cancel_on_running
     await registered_chat(orch, ws, "forecast please", chat_id, user_id=USER)
     tools.assert_not_awaited()
+
+
+async def _turn_held_in_the_model(orch):
+    _register(orch)
+    ws = _ws(orch)
+    chat_id = await _chat(orch)
+    started, aborted = asyncio.Event(), asyncio.Event()
+
+    async def held(*_args, **_kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            aborted.set()
+            raise
+
+    orch._call_llm = held
+    orch.execute_single_tool = AsyncMock()
+    turn = asyncio.create_task(registered_chat(orch, ws, "forecast please", chat_id, user_id=USER))
+    await asyncio.wait_for(started.wait(), 5)
+    return ws, chat_id, turn, aborted
+
+
+async def test_cancel_aborts_the_model_call_in_flight(orch):
+    ws, chat_id, turn, aborted = await _turn_held_in_the_model(orch)
+    await orch._cancel_turn(ws, USER, chat_id)
+    await asyncio.wait_for(turn, 5)
+    assert aborted.is_set()
+    orch.execute_single_tool.assert_not_awaited()
+    assert _cancel_alerts(orch)
+    assert (id(ws), chat_id) not in orch._turn_tool_tasks
+    await _cleanup(orch, chat_id)
+
+
+async def test_an_unrelated_cancellation_during_the_model_call_still_propagates(orch):
+    _ws_unused, chat_id, turn, aborted = await _turn_held_in_the_model(orch)
+    turn.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(turn, 5)
+    assert aborted.is_set()
     await _cleanup(orch, chat_id)
 
 

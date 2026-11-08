@@ -16025,6 +16025,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if turn_count == 1 and round_one_choice is not None:
                     _round_kwargs["tool_choice"] = round_one_choice
                 _goal_buffer_token = _GOAL_BUFFERED_RESPONSE.set(goal_progress is not None)
+                _model_key = (id(websocket), chat_id)
+                self._turn_tool_tasks = getattr(self, "_turn_tool_tasks", {})
+                self._turn_tool_tasks[_model_key] = asyncio.current_task()
                 try:
                     if goal_auto_refs:
                         llm_msg = SimpleNamespace(
@@ -16041,6 +16044,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 round_one_tools if turn_count == 1 else tools_desc,
                                 **_round_kwargs,
                             )
+                except asyncio.CancelledError:
+                    if not self._take_tool_cancel():
+                        raise
+                    continue
                 except Exception:
                     if _phase_recorder is not None and _phase_step_id:
                         try:
@@ -16049,6 +16056,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             pass
                     raise
                 finally:
+                    self._release_tool_dispatch(_model_key)
                     _NARRATIVE_STREAM_CHAT.reset(_stream_token)
                     _GOAL_BUFFERED_RESPONSE.reset(_goal_buffer_token)
                 if self.cancelled_sessions.get(id(websocket)):
@@ -17854,12 +17862,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from types import SimpleNamespace
             reported_usage = None
             try:
-                for chunk in client.chat.completions.create(stream=True, **kwargs):
+                stream = client.chat.completions.create(stream=True, **kwargs)
+                for chunk in stream:
                     if getattr(chunk, "usage", None) is not None:
                         reported_usage = chunk.usage
                         provider_reported_usage(reported_usage)
-                    if not abandoned.is_set():
-                        loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
+                    if abandoned.is_set():
+                        # Closing the response stops the provider generating tokens nobody will read.
+                        stream.close()
+                        break
+                    loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
                 if not abandoned.is_set():
                     loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
                 return SimpleNamespace(usage=reported_usage)
