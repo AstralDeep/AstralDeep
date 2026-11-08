@@ -40,6 +40,8 @@ WEATHER_CODES = {
 OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v1"
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1"
 GEOCODING_API_URL = "https://geocoding-api.open-meteo.com/v1/search"
+AIR_QUALITY_API_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
+AIR_QUALITY_FIELDS = ("pm2_5", "pm10", "carbon_monoxide", "nitrogen_dioxide", "sulphur_dioxide", "ozone")
 
 RATE_LIMIT_REQUESTS = 100
 RATE_LIMIT_WINDOW = 86400
@@ -67,7 +69,7 @@ def _make_api_request(url: str, params: Dict, timeout: int = 10) -> Dict:
 
 
 def _build_weather_params(latitude: float, longitude: float, extra_current: str = "", extra_daily: str = "") -> Dict[str, Any]:
-    current_params = "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,pressure_msl,uv_index,pm2_5,pm10,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone"
+    current_params = "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,pressure_msl,uv_index"
     daily_params = "sunrise,sunset"
     
     if extra_current:
@@ -236,6 +238,7 @@ def geocode_location(
             "elevation": result.get("elevation", 0),
             "feature_code": result.get("feature_code", ""),
             "country": result.get("country", ""),
+            "country_code": result.get("country_code", ""),
             "admin1": result.get("admin1", ""),
             "timezone": result.get("timezone", ""),
             "population": result.get("population", 0)
@@ -315,10 +318,10 @@ def _get_coordinates_from_args(**kwargs) -> Tuple[float, float]:
         raise ValueError("Either provide latitude/longitude or city name")
     
     geocode_result = geocode_location(city, state, country)
-    if "_data" not in geocode_result:
-        raise ValueError(f"Could not geocode location: {city}, {state}")
-    
-    data = geocode_result["_data"]
+    data = geocode_result.get("_data")
+    if not data:
+        raise ValueError(f"Could not find a place named {city}. Check the spelling or use coordinates.")
+
     return data["latitude"], data["longitude"]
 
 
@@ -469,6 +472,14 @@ def get_extended_weather(
         
         current = data.get("current", {})
         daily = data.get("daily", {})
+        
+        try:
+            air = _make_api_request(AIR_QUALITY_API_URL, {
+                "latitude": lat, "longitude": lon, "current": ",".join(AIR_QUALITY_FIELDS),
+            }).get("current", {})
+            current = {**current, **{field: air.get(field) for field in AIR_QUALITY_FIELDS}}
+        except Exception as e:
+            logger.warning(f"Air quality unavailable for {lat}, {lon}: {e}")
         
         extended = ExtendedWeatherData.from_api_response(current, daily)
         
@@ -715,7 +726,7 @@ def get_weather_alerts(
             city=city, state=state, country=country,
             latitude=latitude, longitude=longitude
         )
-        if "_data" not in geocode_result:
+        if not geocode_result.get("_data"):
             return create_ui_response([
                 Alert(
                     message="Could not geocode location to determine state.",
@@ -724,12 +735,11 @@ def get_weather_alerts(
             ])
         location_data = geocode_result["_data"]
         admin1 = location_data.get("admin1", "")
-        country_code = location_data.get("country", "")
         
-        if country_code != "US":
+        if location_data.get("country_code") != "US":
             return create_ui_response([
                 Alert(
-                    message=f"Weather alerts are currently only available for US locations. Country: {country_code}",
+                    message=f"Weather alerts are currently only available for US locations. Country: {location_data.get('country', '')}",
                     variant="warning"
                 )
             ])
@@ -802,7 +812,7 @@ def get_weather_alerts(
                 area=area
             ))
         
-        location_str = f"{city or 'Unknown'}, {state or admin1 or country_code}" if city else f"{lat:.4f}°, {lon:.4f}°"
+        location_str = f"{city or 'Unknown'}, {state or admin1 or location_data.get('country_code', '')}" if city else f"{lat:.4f}°, {lon:.4f}°"
         
         alert_components = []
         for alert in alerts:
@@ -920,22 +930,26 @@ def compare_locations(
                     latitude=loc["latitude"],
                     longitude=loc["longitude"]
                 )
-                if "_data" in result:
+                if result.get("_data"):
                     return result["_data"]
-                else:
-                    return {"error": result.get("_ui_components", [])}
+                messages = [
+                    component["message"] for component in result.get("_ui_components", [])
+                    if isinstance(component, dict) and component.get("type") == "alert"
+                    and component.get("message")
+                ]
+                return {"error": " ".join(messages) or "No weather data was returned."}
             except Exception as e:
                 return {"error": str(e)}
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             future_to_loc = {executor.submit(fetch_one, loc): i for i, loc in enumerate(locations)}
-            results = []
+            results = [None] * len(locations)
             for future in concurrent.futures.as_completed(future_to_loc):
-                results.append(future.result())
+                results[future_to_loc[future]] = future.result()
         
         errors = [r for r in results if "error" in r]
         if errors:
-            error_messages = [e["error"] for e in errors]
+            error_messages = "; ".join(e["error"] for e in errors)
             return create_ui_response([
                 Alert(
                     message=f"Failed to fetch weather for some locations: {error_messages}",
@@ -1320,7 +1334,7 @@ def get_weekly_forecast(
             days=7
         )
         
-        if "_data" not in forecast_result:
+        if not forecast_result.get("_data"):
             return forecast_result
         
         data = forecast_result["_data"]
