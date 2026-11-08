@@ -179,6 +179,24 @@ def _confine_input_path(file_path: str, user_id: str) -> Optional[str]:
     return None
 
 
+def _numeric_cell(value: Any) -> Any:
+    """Reads a CSV number for math. A leading zero marks an identifier, which stays text."""
+    if isinstance(value, str) and re.fullmatch(r"-?(0|[1-9]\d*)(\.\d+)?", value.strip()):
+        text = value.strip()
+        return float(text) if "." in text else int(text)
+    return value
+
+
+def _numeric_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: _numeric_cell(value) for key, value in row.items()}
+
+
+def _sort_key(value: Any) -> tuple:
+    cell = _numeric_cell(value)
+    numeric = isinstance(cell, (int, float))
+    return (cell is None, not numeric, cell if numeric else str(cell))
+
+
 def modify_data(
     modifications: Optional[List[Dict[str, Any]]] = None,
     csv_data: Optional[str] = None,
@@ -282,6 +300,7 @@ def modify_data(
             else:
                 return create_ui_response([Alert(message="Neither csv_data nor file_path provided.", variant="error")])
 
+        failed_evaluations = 0
         for mod in modifications:
             action = mod.get("action")
             name = mod.get("name", "")
@@ -323,9 +342,10 @@ def modify_data(
                     filtered_rows = []
                     for row in rows:
                         try:
-                            if evaluator.evaluate(row):
+                            if evaluator.evaluate(_numeric_row(row)):
                                 filtered_rows.append(row)
                         except Exception:
+                            failed_evaluations += 1
                             if str(default).lower() == 'true':
                                 filtered_rows.append(row)
                     rows = filtered_rows
@@ -335,7 +355,7 @@ def modify_data(
                 
             elif action == "sort_rows":
                  reverse = str(value).lower() == 'desc'
-                 rows.sort(key=lambda r: (r.get(name) is None, r.get(name, "")), reverse=reverse)
+                 rows.sort(key=lambda r: _sort_key(r.get(name)), reverse=reverse)
                  if df is not None and PANDAS_AVAILABLE:
                      df = pd.DataFrame(rows)
                  continue
@@ -361,8 +381,9 @@ def modify_data(
                 result = None
                 if expression and evaluator:
                     try:
-                        result = evaluator.evaluate(row)
+                        result = evaluator.evaluate(_numeric_row(row))
                     except Exception:
+                        failed_evaluations += default is None
                         result = default if default is not None else value
                 else:
                     result = value
@@ -440,6 +461,10 @@ def modify_data(
                         message=f"Applied {len(modifications)} modifications to {len(rows)} rows. Output format: {output_format.upper()}.",
                         variant="success"
                     ),
+                    *([Alert(
+                        message=f"An expression could not be evaluated {failed_evaluations} times, so those rows may be missing or blank.",
+                        variant="warning"
+                    )] if failed_evaluations else []),
                     FileDownload(
                         label=f"Download {filename}",
                         url=download_url,

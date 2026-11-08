@@ -215,3 +215,64 @@ if __name__ == "__main__":
     test_backward_compatibility_with_file()
     print("✓ test_backward_compatibility_with_file passed")
     print("\nAll tests passed!")
+
+
+def _csv_rows(csv_data, *modifications):
+    result = modify_data(csv_data=csv_data, modifications=list(modifications))
+    path = result["_data"]["file_path"]
+    with open(path, 'r') as f:
+        rows = list(csv.DictReader(f))
+    os.remove(path)
+    return rows, result
+
+
+def test_csv_filter_compares_numbers():
+    rows, _ = _csv_rows(
+        "name,age\nAna,30\nBo,9",
+        {"action": "filter_rows", "expression": "row['age'] > 18"},
+    )
+    assert [row["name"] for row in rows] == ["Ana"]
+
+
+def test_csv_expression_does_math_on_numbers():
+    rows, _ = _csv_rows(
+        "age,price\n30,1.5\n9,2",
+        {"action": "add_column", "name": "double", "expression": "row['age'] * 2"},
+        {"action": "add_column", "name": "taxed", "expression": "row['price'] * 2"},
+    )
+    assert [row["double"] for row in rows] == ["60", "18"]
+    assert [row["taxed"] for row in rows] == ["3.0", "4"]
+
+
+def test_csv_sort_orders_numbers_and_puts_text_after_them():
+    rows, _ = _csv_rows(
+        "age\n30\n9\nunknown\n100",
+        {"action": "sort_rows", "name": "age", "value": "asc"},
+    )
+    assert [row["age"] for row in rows] == ["9", "30", "100", "unknown"]
+
+
+def test_csv_identifier_with_a_leading_zero_stays_text():
+    rows, _ = _csv_rows(
+        "code,age\n007,30",
+        {"action": "add_column", "name": "label", "expression": "row['code'] + '-x'"},
+    )
+    assert rows[0]["code"] == "007"
+    assert rows[0]["label"] == "007-x"
+
+
+def test_failed_expressions_are_reported_instead_of_silently_dropping_rows():
+    rows, result = _csv_rows(
+        "name,age\nAna,unknown",
+        {"action": "filter_rows", "expression": "row['age'] > 18"},
+    )
+    assert rows == []
+    assert "could not be evaluated 1 times" in str(result["_ui_components"])
+
+
+def test_a_clean_run_has_no_evaluation_warning():
+    _, result = _csv_rows(
+        "name,age\nAna,30",
+        {"action": "filter_rows", "expression": "row['age'] > 18"},
+    )
+    assert "could not be evaluated" not in str(result["_ui_components"])
