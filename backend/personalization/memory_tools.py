@@ -1,4 +1,4 @@
-"""Orchestrator-callable memory tools (remember, memory_search, memory_get,
+"""Orchestrator-callable memory tools (remember, memory_search, memory_get, forget,
 capture_signal) that gate every write through phi_gate.py and memory_guard.py, then
 reconcile, link, and PageRank-rank recall via living_memory.py and repository.py.
 """
@@ -10,11 +10,13 @@ import logging
 import os
 import re
 import time
+import uuid
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from . import living_memory as lm
 from . import memory_guard
 from . import project_scope as ps
+from .atlas_pages import parse_envelope
 from .phi_gate import PHIGate, get_phi_gate
 from .repository import MEMORY_CATEGORIES
 from .retrieval_scoring import multisignal_enabled, score_memory_row
@@ -165,6 +167,33 @@ def parse_reconcile_decision(content: str) -> Optional[Dict[str, Any]]:
     return {"action": action, "target": target, "value": value}
 
 
+def canonical_memory_id(value: Any) -> Optional[str]:
+    try:
+        return str(uuid.UUID(str(value).strip()))
+    except ValueError:
+        return None
+
+
+def live_items(user_id: str, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    # Atlas page rows carry a content fingerprint, not the memory HMAC, and belong to atlas_service.py
+    items = [it for it in items if parse_envelope(it.get("value")) is None]
+    if lm.temporal_enabled():
+        try:
+            items = lm.as_of(items, int(time.time() * 1000))
+        except Exception:
+            logger.debug("memory.temporal_filter_failed", exc_info=True)
+    if not memory_guard.guard_enabled():
+        return items
+    kept = []
+    for it in items:
+        if memory_guard.trust_of(it) == "tampered":
+            logger.warning("memory.tampered_excluded",
+                           extra={"user_id": user_id, "memory_id": it.get("id")})
+            continue
+        kept.append(it)
+    return kept
+
+
 class MemoryTools:
     def __init__(self, repo, phi_gate: Optional[PHIGate] = None) -> None:
         self.repo = repo
@@ -300,7 +329,7 @@ class MemoryTools:
                     project_id: Optional[str] = None) -> List[Dict[str, Any]]:
         vt = _tokens(value)
         scored = []
-        for it in self._repo_list(user_id, project_id):
+        for it in self._live_memory(user_id, project_id=project_id):
             overlap = len(vt & _tokens(it.get("value", "")))
             same_cat = it.get("category") == category
             if overlap or same_cat:
@@ -349,7 +378,9 @@ class MemoryTools:
                         extra={"user_id": user_id, "superseded": tgt["id"]})
             return {"stored": False, "action": "delete", "superseded": tgt["id"]}
         if action == "UPDATE" and tgt is not None:
-            new_value = decision.get("value") or value
+            category, new_value, refusal = self._gate_value(category, decision.get("value") or value)
+            if refusal is not None:
+                return refusal
             item = self._create_linked(user_id, category, new_value, project_id=write_proj)
             self.repo.supersede_memory(user_id, tgt["id"], item["id"])
             logger.info("memory.reconcile_update",
@@ -374,22 +405,7 @@ class MemoryTools:
 
     def _live_memory(self, user_id: str, *,
                      project_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        items = self._repo_list(user_id, project_id)
-        if lm.temporal_enabled():
-            try:
-                items = lm.as_of(items, int(time.time() * 1000))
-            except Exception:
-                logger.debug("memory.temporal_filter_failed", exc_info=True)
-        if not memory_guard.guard_enabled():
-            return items
-        kept = []
-        for it in items:
-            if memory_guard.trust_of(it) == "tampered":
-                logger.warning("memory.tampered_excluded",
-                               extra={"user_id": user_id, "memory_id": it.get("id")})
-                continue
-            kept.append(it)
-        return kept
+        return live_items(user_id, self._repo_list(user_id, project_id))
 
     def _reinforce(self, user_id: str, items: List[Dict[str, Any]]) -> None:
         if not lm.forgetting_enabled() or not items:
@@ -401,6 +417,26 @@ class MemoryTools:
                     self.repo.record_recall(user_id, mid)
         except Exception:
             logger.debug("memory.reinforce_failed", exc_info=True)
+
+    def forgettable(self, user_id: str, memory_id: Any, *,
+                    project_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        canonical = canonical_memory_id(memory_id)
+        if canonical is None:
+            return None
+        for it in self._live_memory(user_id, project_id=self._read_scope(project_id)):
+            if canonical_memory_id(it.get("id")) == canonical:
+                return {**it, "id": canonical}
+        return None
+
+    def forget(self, user_id: str, memory_id: Any, *,
+               project_id: Optional[str] = None) -> bool:
+        target = self.forgettable(user_id, memory_id, project_id=project_id)
+        if target is None:
+            return False
+        deleted = bool(self.repo.delete_memory(user_id, target["id"]))
+        if deleted:
+            logger.info("memory.forgotten", extra={"user_id": user_id, "memory_id": target["id"]})
+        return deleted
 
     def memory_get(self, user_id: str, *,
                    project_id: Optional[str] = None) -> List[Dict[str, Any]]:

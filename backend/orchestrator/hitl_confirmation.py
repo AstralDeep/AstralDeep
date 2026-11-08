@@ -40,6 +40,7 @@ CONTINUATION_TEXT = ("The exact approved action completed. Continue the remainin
 REMOTE_REVIEWED_VERBS = frozenset({"run_command", "write_file", "delete_path", "project_preview", "browser_evaluate",
                                    "browser_tabs"})
 _BUNDLE_ID = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+_MEMORY_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
 @dataclass(frozen=True)
@@ -222,6 +223,10 @@ def begin_task(orch, websocket, owner, chat) -> None:
 def _task(orch, websocket, owner, chat):
     task = getattr(orch, "_hitl_task_origins", {}).get((owner, chat))
     return task if task is not None and task[0] is websocket else None
+
+
+def current_task(orch, websocket, owner, chat):
+    return _task(orch, websocket, owner, chat)
 
 
 def cancel_pending(orch, websocket, owner, chat) -> None:
@@ -1044,6 +1049,10 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             except Exception:
                 return _refused("Review unavailable: the remote MCP connector or tool is not enabled for this account.",
                                 code="REMOTE_MCP_REVIEW_UNAVAILABLE")
+        if (agent == "__memory__" and tool == "forget" and isinstance(args.get("id"), str)
+                and _MEMORY_ID.fullmatch(args["id"])):
+            # A canonical id holds no private data, but some trip the long-digit PHI pattern
+            trusted_identifiers["id"] = args["id"]
         if agent == "terminal-shell-1" and tool in {"start_terminal", "terminal_write"}:
             try:
                 await asyncio.to_thread(orch.terminal_sessions.runtime_preview, owner,
