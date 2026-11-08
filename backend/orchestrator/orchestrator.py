@@ -15676,7 +15676,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     execution_fence=authority_fence,
                 )
 
-            turn_steer.open_turn(self, websocket, chat_id, user_id)
+            turn_steer.open_turn(self, websocket, chat_id, user_id, msg_to_save)
             while turn_count < MAX_TURNS or self.cancelled_sessions.get(id(websocket)):
                 if self.cancelled_sessions.get(id(websocket)):
                     task_terminal_on_exit = TaskState.CANCELLED

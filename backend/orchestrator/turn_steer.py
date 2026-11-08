@@ -32,9 +32,10 @@ _NOTICE_TASKS: set = set()
 
 
 class _Mailbox:
-    __slots__ = ("pending", "seen")
+    __slots__ = ("applied", "pending", "seen")
 
-    def __init__(self) -> None:
+    def __init__(self, request) -> None:
+        self.applied: list = [request] if request else []
         self.pending: list[tuple[str, str]] = []
         self.seen: set[str] = set()
 
@@ -137,8 +138,13 @@ async def receive(orch, websocket, user_id, chat_id, payload) -> None:
     mailbox.pending.append((client_message_id, text))
 
 
-def open_turn(orch, websocket, chat_id, user_id) -> None:
-    _mailboxes(orch)[_key(websocket, chat_id, user_id)] = _Mailbox()
+def open_turn(orch, websocket, chat_id, user_id, request=None) -> None:
+    _mailboxes(orch)[_key(websocket, chat_id, user_id)] = _Mailbox(request)
+
+
+def running_texts(orch, websocket, chat_id, user_id) -> list:
+    mailbox = _mailboxes(orch).get(_key(websocket, chat_id, user_id))
+    return list(mailbox.applied) if mailbox else []
 
 
 async def deliver(orch, websocket, chat_id, user_id, stage, messages, *, screened=False) -> int:
@@ -155,6 +161,7 @@ async def deliver(orch, websocket, chat_id, user_id, stage, messages, *, screene
             await _refuse(orch, websocket, chat_id, client_message_id, "stale_turn", _UNSAVED)
             continue
         mailbox.pending.pop(0)
+        mailbox.applied.append(text)
         messages.append({"role": "user", "content": text})
         _notify_phi(orch, websocket, chat_id, user_id, text)
         await _send(orch, websocket, {"type": "chat_steer_recorded", "chat_id": chat_id,

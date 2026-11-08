@@ -317,10 +317,12 @@ async def test_a_steer_reaches_the_model_at_the_next_tool_boundary(orch):
     tool_started, release_tool, slow_tool = _slow_first_tool()
     calls = []
     confirms = []
+    running = []
 
     async def model(websocket, messages, tools_desc=None, **_kwargs):
         calls.append(list(messages))
         confirms.append(orch._typesafe_turn_requires_confirmation(chat_id))
+        running.append(turn_steer.running_texts(orch, websocket, chat_id, USER))
         if len(calls) == 1:
             return _msg(tool_calls=[_tc()]), _usage()
         return _msg(content="Done."), _usage()
@@ -342,6 +344,8 @@ async def test_a_steer_reaches_the_model_at_the_next_tool_boundary(orch):
     assert "Use metric units" in json.dumps([m["content"] for m in saved])
     assert (id(ws), chat_id, USER) not in orch._turn_steers
     assert confirms == [False, False]
+    assert running == [["forecast please"], ["forecast please", "Use metric units"]]
+    assert turn_steer.running_texts(orch, ws, chat_id, USER) == []
     await _cleanup(orch, chat_id)
 
 
