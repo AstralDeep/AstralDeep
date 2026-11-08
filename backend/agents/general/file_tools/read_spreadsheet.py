@@ -14,7 +14,6 @@ logger = logging.getLogger("FileTools.read_spreadsheet")
 
 
 def _json_cell(value: Any) -> Any:
-    """Returns a cell the tool response can encode, keeping dates readable for the model."""
     if isinstance(value, (datetime.date, datetime.time)):
         return value.isoformat()
     if isinstance(value, datetime.timedelta):
