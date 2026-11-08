@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from . import living_memory as lm
 from . import memory_guard
 from . import project_scope as ps
+from .atlas_pages import parse_envelope
 from .phi_gate import PHIGate, get_phi_gate
 from .repository import MEMORY_CATEGORIES
 from .retrieval_scoring import multisignal_enabled, score_memory_row
@@ -166,7 +167,8 @@ def parse_reconcile_decision(content: str) -> Optional[Dict[str, Any]]:
 
 
 def live_items(user_id: str, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Drops rows past their valid time and rows whose signature no longer matches."""
+    # Atlas page rows carry a content fingerprint, not the memory HMAC, and belong to atlas_service.py
+    items = [it for it in items if parse_envelope(it.get("value")) is None]
     if lm.temporal_enabled():
         try:
             items = lm.as_of(items, int(time.time() * 1000))

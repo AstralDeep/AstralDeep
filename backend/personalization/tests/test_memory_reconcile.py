@@ -5,6 +5,7 @@ every fallback, and a real-DB supersession/retrieval-exclusion round-trip.
 
 from __future__ import annotations
 
+import json
 import uuid
 
 import pytest
@@ -221,6 +222,12 @@ async def test_phi_is_refused_before_any_llm():
     assert repo.rows == [] and calls == []
 
 
+def _atlas_value(owner):
+    return json.dumps({"body": "ciphertext", "format": "astral.atlas-page/v1", "kind": "page",
+                       "owner_id": owner, "page_id": str(uuid.uuid4()), "revision": 1,
+                       "slug": "tea-notes", "title": "Tea notes"}, sort_keys=True)
+
+
 async def test_reconcile_never_shows_a_tampered_row_to_the_model(monkeypatch):
     monkeypatch.setenv("MEMORY_HMAC_KEY", "test-only-key")
     repo = _FakeRepo()
@@ -233,6 +240,19 @@ async def test_reconcile_never_shows_a_tampered_row_to_the_model(monkeypatch):
         llm_call=_stub_llm('{"action":"UPDATE","target":1,"value":"x"}', calls))
     assert res["stored"] is True and "action" not in res
     assert calls == []
+    assert repo.rows[0]["superseded_at"] is None
+
+
+async def test_reconcile_never_offers_an_atlas_page_row(monkeypatch):
+    monkeypatch.delenv("MEMORY_HMAC_KEY", raising=False)
+    repo = _FakeRepo()
+    repo.create_memory("u", "context", _atlas_value("u"))
+    repo.create_memory("u", "context", "Notes about tea live in Atlas")
+    calls = []
+    res = await _mt(repo).remember_reconciled(
+        "u", "context", "Keeps tea notes", llm_call=_stub_llm('{"action":"DELETE","target":1}', calls))
+    assert res["action"] == "delete" and res["superseded"] == "m1"
+    assert "atlas-page" not in calls[0][1]["content"]
     assert repo.rows[0]["superseded_at"] is None
 
 
