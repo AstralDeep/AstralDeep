@@ -325,8 +325,8 @@ async def test_phi_memory_gate_and_audit_verdict_match_typed_turn(
     assert results[0].result == results[1].result
     assert phi not in repr(results)
     assert audited == [
-        (USER_ID, "memory.remember_refused", "denied"),
-        (USER_ID, "memory.remember_refused", "denied"),
+        (USER_ID, "memory.remember_refused", "failure"),
+        (USER_ID, "memory.remember_refused", "failure"),
     ]
 
 

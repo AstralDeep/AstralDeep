@@ -116,7 +116,7 @@ async def _audit(user_id: str, action_type: str, description: str,
     try:
         from datetime import datetime, timezone
 
-        from audit.recorder import get_recorder
+        from audit.recorder import get_recorder, make_correlation_id
         from audit.schemas import AuditEventCreate
         rec = get_recorder()
         if rec is None:
@@ -128,6 +128,7 @@ async def _audit(user_id: str, action_type: str, description: str,
             action_type=action_type,
             description=description[:1024],
             conversation_id=chat_id,
+            correlation_id=make_correlation_id(),
             outcome=outcome,
             inputs_meta=inputs_meta or {},
             started_at=datetime.now(timezone.utc),
@@ -172,7 +173,7 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
             comp = Alert(message=msg_text, variant="info").to_dict()
             return MCPResponse(result={"status": action, **res}, ui_components=[comp])
         await _audit(user_id, "memory.remember_refused", "Memory write refused",
-                     outcome="denied", chat_id=chat_id)
+                     outcome="failure", chat_id=chat_id)
         comp = Alert(message=res.get("reason", "I could not save that."),
                      variant="warning").to_dict()
         return MCPResponse(result={"status": "refused", **res}, ui_components=[comp])
@@ -193,14 +194,19 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
                            ui_components=[_recall_component(items)])
 
     if tool_name == "forget":
-        memory_id = str(args.get("id") or "").strip()
-        if not tools.forget(user_id, memory_id):
+        from personalization.memory_tools import canonical_memory_id
+
+        target = tools.forgettable(user_id, args.get("id"))
+        if target is None or not tools.forget(user_id, target["id"]):
+            await _audit(user_id, "memory.delete", "Found no live memory to erase",
+                         outcome="failure", chat_id=chat_id,
+                         inputs_meta={"memory_id": canonical_memory_id(args.get("id"))})
             comp = Alert(message="I couldn't find that in memory.", variant="warning").to_dict()
             return MCPResponse(result={"status": "not_found"}, ui_components=[comp])
-        await _audit(user_id, "memory.forget", "Erased a remembered fact", chat_id=chat_id,
-                     inputs_meta={"memory_id": memory_id})
+        await _audit(user_id, "memory.delete", "Erased a remembered fact", chat_id=chat_id,
+                     inputs_meta={"memory_id": target["id"]})
         comp = Alert(message="Got it — I've removed that from memory.", variant="info").to_dict()
-        return MCPResponse(result={"status": "deleted", "id": memory_id}, ui_components=[comp])
+        return MCPResponse(result={"status": "deleted", "id": target["id"]}, ui_components=[comp])
 
     return MCPResponse(error={"message": f"Unknown memory tool '{tool_name}'",
                               "retryable": False})

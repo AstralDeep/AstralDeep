@@ -1,4 +1,4 @@
-"""Orchestrator-callable memory tools (remember, memory_search, memory_get,
+"""Orchestrator-callable memory tools (remember, memory_search, memory_get, forget,
 capture_signal) that gate every write through phi_gate.py and memory_guard.py, then
 reconcile, link, and PageRank-rank recall via living_memory.py and repository.py.
 """
@@ -165,6 +165,13 @@ def parse_reconcile_decision(content: str) -> Optional[Dict[str, Any]]:
     raw_value = obj.get("value")
     value = raw_value.strip() if isinstance(raw_value, str) and raw_value.strip() else None
     return {"action": action, "target": target, "value": value}
+
+
+def canonical_memory_id(value: Any) -> Optional[str]:
+    try:
+        return str(uuid.UUID(str(value).strip()))
+    except ValueError:
+        return None
 
 
 def live_items(user_id: str, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -411,14 +418,24 @@ class MemoryTools:
         except Exception:
             logger.debug("memory.reinforce_failed", exc_info=True)
 
-    def forget(self, user_id: str, memory_id: str) -> bool:
-        try:
-            uuid.UUID(memory_id)
-        except ValueError:
+    def forgettable(self, user_id: str, memory_id: Any, *,
+                    project_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        canonical = canonical_memory_id(memory_id)
+        if canonical is None:
+            return None
+        for it in self._live_memory(user_id, project_id=self._read_scope(project_id)):
+            if canonical_memory_id(it.get("id")) == canonical:
+                return {**it, "id": canonical}
+        return None
+
+    def forget(self, user_id: str, memory_id: Any, *,
+               project_id: Optional[str] = None) -> bool:
+        target = self.forgettable(user_id, memory_id, project_id=project_id)
+        if target is None:
             return False
-        deleted = self.repo.delete_memory(user_id, memory_id)
+        deleted = bool(self.repo.delete_memory(user_id, target["id"]))
         if deleted:
-            logger.info("memory.forgotten", extra={"user_id": user_id, "memory_id": memory_id})
+            logger.info("memory.forgotten", extra={"user_id": user_id, "memory_id": target["id"]})
         return deleted
 
     def memory_get(self, user_id: str, *,

@@ -3,9 +3,12 @@ gating, remember/search/get dispatch, and refusing to persist PHI.
 """
 
 import asyncio
+import json
 import sys
 import types
 from pathlib import Path
+
+import pytest
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 if str(BACKEND_DIR) not in sys.path:
@@ -113,6 +116,84 @@ def test_forget_reports_an_id_that_is_not_a_memory_id():
         user_id="u1", chat_id="c1", websocket=None))
     assert res.result["status"] == "not_found"
     assert len(repo.memory) == 1
+
+
+@pytest.fixture
+def audits(monkeypatch):
+    events = []
+
+    class _Recorder:
+        async def record(self, event):
+            events.append(event)
+
+    monkeypatch.setattr("audit.recorder.get_recorder", lambda: _Recorder())
+    return events
+
+
+def _forget(repo, memory_id):
+    return asyncio.run(memory_chat.handle_meta_tool(
+        _fake_orch(repo, _Gate()), "forget", {"id": memory_id},
+        user_id="u1", chat_id="c1", websocket=None))
+
+
+def _atlas_envelope():
+    return json.dumps({"body": "ciphertext", "format": "astral.atlas-page/v1", "kind": "page",
+                       "owner_id": "u1", "page_id": "p1", "revision": 1,
+                       "slug": "tea-notes", "title": "Tea notes"}, sort_keys=True)
+
+
+def test_forget_normalizes_the_id_before_it_reaches_the_repository(audits):
+    repo = _repo_with_fact()
+    res = _forget(repo, f"urn:uuid:{_FACT_ID.upper()}")
+    assert res.result == {"status": "deleted", "id": _FACT_ID}
+    assert repo.memory == []
+    assert [(e.action_type, e.outcome, e.inputs_meta) for e in audits] == [
+        ("memory.delete", "success", {"memory_id": _FACT_ID})]
+
+
+def test_forget_cannot_erase_an_atlas_page_row(audits):
+    repo = _FakeRepo()
+    repo.memory.append({"id": _FACT_ID, "user_id": "u1", "category": "context",
+                        "value": _atlas_envelope(), "source": "explicit"})
+    assert _forget(repo, _FACT_ID).result["status"] == "not_found"
+    assert len(repo.memory) == 1
+    assert [(e.action_type, e.outcome) for e in audits] == [("memory.delete", "failure")]
+
+
+def test_forget_cannot_erase_a_tampered_row(monkeypatch, audits):
+    monkeypatch.setenv("MEMORY_HMAC_KEY", "test-only-key")
+    repo = _repo_with_fact()
+    repo.memory[0]["signature"] = "not-the-real-signature"
+    assert _forget(repo, _FACT_ID).result["status"] == "not_found"
+    assert len(repo.memory) == 1
+
+
+@pytest.mark.parametrize("memory_id,audited", [
+    ("0b8f0a52-6f1e-4d8e-9a43-1c2d3e4f5a6b", "0b8f0a52-6f1e-4d8e-9a43-1c2d3e4f5a6b"),
+    ("favorite tea", None),
+    (None, None),
+])
+def test_a_forget_that_finds_nothing_is_audited_as_a_failure(audits, memory_id, audited):
+    repo = _repo_with_fact()
+    assert _forget(repo, memory_id).result["status"] == "not_found"
+    assert len(repo.memory) == 1
+    assert [(e.action_type, e.outcome, e.inputs_meta) for e in audits] == [
+        ("memory.delete", "failure", {"memory_id": audited})]
+
+
+def test_forget_reports_a_row_that_vanished_before_the_delete(audits):
+    repo = _repo_with_fact()
+    repo.delete_memory = lambda user_id, mem_id: False
+    assert _forget(repo, _FACT_ID).result["status"] == "not_found"
+    assert [(e.action_type, e.outcome) for e in audits] == [("memory.delete", "failure")]
+
+
+def test_a_refused_remember_is_audited_as_a_failure(audits):
+    repo = _FakeRepo()
+    asyncio.run(memory_chat.handle_meta_tool(
+        _fake_orch(repo, _Gate(phi=True)), "remember", {"value": "MRN 4471"},
+        user_id="u1", chat_id="c1", websocket=None))
+    assert [(e.action_type, e.outcome) for e in audits] == [("memory.remember_refused", "failure")]
 
 
 def test_a_reconcile_delete_supersedes_instead_of_erasing():
