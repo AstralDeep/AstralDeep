@@ -49,6 +49,7 @@ from orchestrator.connection_context import (
 )
 from orchestrator.tool_permissions import ToolPermissionManager
 from orchestrator import turn_steer
+from orchestrator import side_question
 from orchestrator.credential_manager import CredentialManager
 from orchestrator.delegation import DelegationService
 from orchestrator.tool_security import ToolSecurityAnalyzer
@@ -6130,6 +6131,8 @@ class Orchestrator:
             return "cancel_task"
         if frame_type == "ui_event" and frame.get("action") == "chat_steer":
             return "chat_steer"
+        if frame_type == "ui_event" and frame.get("action") == "side_question":
+            return "side_question"
         if frame_type in {"cancel", "cancel_task"}:
             return "cancel_task"
         return None
@@ -9352,6 +9355,14 @@ class Orchestrator:
                 name=f"connection-control-{control}-{context.connection_scope_id}",
             )
             return True
+        if control == "side_question":
+            # Off the operation lane: a side question is answered while the turn keeps running.
+            self._track_connection_task(
+                context,
+                self._run_ui_control(context, raw),
+                name=f"connection-control-{control}-{context.connection_scope_id}",
+            )
+            return True
         if control in {
             "voice_playout_event",
             "voice_local_ready",
@@ -11016,6 +11027,10 @@ class Orchestrator:
 
                 elif msg.action == "chat_steer":
                     await turn_steer.receive(
+                        self, websocket, user_id, self._ws_active_chat.get(id(websocket)), msg.payload)
+
+                elif msg.action == "side_question":
+                    await side_question.answer(
                         self, websocket, user_id, self._ws_active_chat.get(id(websocket)), msg.payload)
 
                 elif msg.action == "watch_task":
