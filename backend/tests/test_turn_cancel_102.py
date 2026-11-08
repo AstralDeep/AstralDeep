@@ -215,6 +215,92 @@ async def test_cancel_aborts_the_model_call_in_flight(orch):
     await _cleanup(orch, chat_id)
 
 
+async def test_a_cancel_landing_before_the_model_call_skips_it(orch):
+    _register(orch)
+    ws = _ws(orch)
+    chat_id = await _chat(orch)
+    calls = _llm(orch)
+    orch.execute_single_tool = AsyncMock()
+
+    async def cancelled_while_routing(*_args, **_kwargs):
+        orch.cancelled_sessions[id(ws)] = True
+        return None
+
+    orch._typesafe_await_decision = cancelled_while_routing
+    await registered_chat(orch, ws, "forecast please", chat_id, user_id=USER)
+    assert calls == []
+    orch.execute_single_tool.assert_not_awaited()
+    assert _cancel_alerts(orch)
+    assert (id(ws), chat_id) not in orch._turn_tool_tasks
+    await _cleanup(orch, chat_id)
+
+
+async def test_an_aborted_model_call_ends_the_turn_even_if_the_cancel_flag_was_cleared(orch):
+    ws, chat_id, turn, aborted = await _turn_held_in_the_model(orch)
+    dispatching = orch._turn_tool_tasks[(id(ws), chat_id)]
+    orch._tool_cancel_requests = {dispatching}
+    orch.cancelled_sessions[id(ws)] = False
+    dispatching.cancel()
+    await asyncio.wait_for(turn, 5)
+    assert aborted.is_set() and _cancel_alerts(orch)
+    orch.execute_single_tool.assert_not_awaited()
+    await _cleanup(orch, chat_id)
+
+
+@pytest.mark.parametrize("audit_fails", [False, True])
+async def test_a_cancelled_model_call_leaves_one_failure_audit(orch, monkeypatch, audit_fails):
+    ws = _ws(orch)
+    if audit_fails:
+        orch._record_llm_call = AsyncMock(side_effect=RuntimeError("audit store down"))
+    started = asyncio.Event()
+    resolved = SimpleNamespace(model="m", base_url="https://llm.test/v1")
+
+    async def resolve(_websocket, **_kwargs):
+        return SimpleNamespace(), orch._CredentialSource.SYSTEM, resolved
+
+    async def held(*_args, **_kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(orch, "_resolve_llm_client_for", resolve)
+    monkeypatch.setattr(orch, "_context_model_call", held)
+    call = asyncio.create_task(orch._call_llm_guarded(ws, [{"role": "user", "content": "hi"}]))
+    await asyncio.wait_for(started.wait(), 5)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    recorded = [(c.kwargs["outcome"], c.kwargs.get("upstream_error_class"))
+                for c in orch._record_llm_call.await_args_list]
+    assert recorded == [("failure", "cancelled")]
+
+
+async def test_a_cancel_after_a_recorded_model_call_adds_no_failure_audit(orch, monkeypatch):
+    ws = _ws(orch)
+    started = asyncio.Event()
+    resolved = SimpleNamespace(model="m", base_url="https://llm.test/v1")
+    reply = SimpleNamespace(content="hi", tool_calls=None)
+
+    async def resolve(_websocket, **_kwargs):
+        return SimpleNamespace(), orch._CredentialSource.USER, resolved
+
+    async def answered(*_args, **_kwargs):
+        return SimpleNamespace(choices=[SimpleNamespace(message=reply, finish_reason="stop")], usage=None)
+
+    async def held(*_args, **_kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(orch, "_resolve_llm_client_for", resolve)
+    monkeypatch.setattr(orch, "_context_model_call", answered)
+    monkeypatch.setattr(orch, "_emit_llm_usage_report", held)
+    call = asyncio.create_task(orch._call_llm_guarded(ws, [{"role": "user", "content": "hi"}]))
+    await asyncio.wait_for(started.wait(), 5)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    assert [c.kwargs["outcome"] for c in orch._record_llm_call.await_args_list] == ["success"]
+
+
 async def test_an_unrelated_cancellation_during_the_model_call_still_propagates(orch):
     _ws_unused, chat_id, turn, aborted = await _turn_held_in_the_model(orch)
     turn.cancel()

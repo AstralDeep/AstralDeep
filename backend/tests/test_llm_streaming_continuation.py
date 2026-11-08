@@ -755,3 +755,50 @@ async def test_cancelling_a_streamed_call_closes_the_provider_stream():
         await turn
     assert await asyncio.to_thread(closed.wait, 5)
     assert stream.delivered < 500
+
+
+async def test_cancelling_a_streamed_call_closes_the_narrative_stream():
+    released = threading.Event()
+
+    class _Stream:
+        sent = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if not self.sent:
+                self.sent = True
+                delta = types.SimpleNamespace(content="word ", tool_calls=None)
+                return types.SimpleNamespace(
+                    usage=None, choices=[types.SimpleNamespace(delta=delta, finish_reason=None)])
+            released.wait(5)
+            raise StopIteration
+
+        def close(self):
+            released.set()
+
+    client = types.SimpleNamespace(chat=types.SimpleNamespace(
+        completions=types.SimpleNamespace(create=lambda **_kwargs: _Stream())))
+    orch = _orch(client)
+    first_frame = asyncio.Event()
+    capture = orch._safe_send
+
+    async def send(ws, payload):
+        first_frame.set()
+        return await capture(ws, payload)
+
+    async def invoke(_websocket, _chat, _purpose, _model, call, **_kwargs):
+        return await call()
+
+    orch._safe_send = send
+    orch._context_model_call = invoke
+    turn = asyncio.create_task(orch._call_llm_streamed(object(), client, {"model": "m"}, "chat-1"))
+    await asyncio.wait_for(first_frame.wait(), 5)
+    turn.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+    released.set()
+    first, last = orch._sent_frames[0], orch._sent_frames[-1]
+    assert first["terminal"] is False and last["terminal"] is True
+    assert last["stream_id"] == first["stream_id"]

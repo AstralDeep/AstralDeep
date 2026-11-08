@@ -16038,6 +16038,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 self._turn_tool_tasks = getattr(self, "_turn_tool_tasks", {})
                 self._turn_tool_tasks[_model_key] = asyncio.current_task()
                 try:
+                    if self.cancelled_sessions.get(id(websocket)):
+                        continue
                     if goal_auto_refs:
                         llm_msg = SimpleNamespace(
                             content="The project is complete in the selected folder. I verified the source, isolated environment, installed dependencies, tests, and startup.",
@@ -16056,6 +16058,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 except asyncio.CancelledError:
                     if not self._take_tool_cancel():
                         raise
+                    self.cancelled_sessions[id(websocket)] = True
                     continue
                 except Exception:
                     if _phase_recorder is not None and _phase_step_id:
@@ -17545,6 +17548,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         attempt_limit = 1 if native_call else self.MAX_RETRIES
         while attempt < attempt_limit:
             attempt += 1
+            call_recorded = False
             try:
                 kwargs = {
                     "model": call_model,
@@ -17620,6 +17624,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     _msg.content = strip_reasoning_markup(_msg.content)
                 usage = getattr(response, "usage", None)
                 total_tokens = getattr(usage, "total_tokens", None) if usage else None
+                call_recorded = True
                 await self._record_llm_call(
                     self.audit_recorder,
                     actor_user_id=actor_user_id,
@@ -17658,6 +17663,25 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if native_call:
                     await client.validate()
                 return _msg, usage
+            except asyncio.CancelledError:
+                if not call_recorded:
+                    try:
+                        await self._record_llm_call(
+                            self.audit_recorder,
+                            actor_user_id=actor_user_id,
+                            auth_principal=auth_principal,
+                            feature=feature,
+                            credential_source=source,
+                            resolved=resolved,
+                            routed_model=call_model,
+                            total_tokens=None,
+                            outcome="failure",
+                            upstream_error_class="cancelled",
+                            **({"harness_capture": harness_binding.capture} if harness_binding is not None else {}),
+                        )
+                    except Exception:
+                        logger.warning("cancelled LLM call audit failed", exc_info=True)
+                raise
             except Exception as e:
                 if harness_binding is not None:
                     error = self._safe_llm_error_metadata(e)
@@ -18015,6 +18039,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             abandoned.set()
             pump_task.cancel()
             await asyncio.gather(pump_task, return_exceptions=True)
+            if emitted:
+                try:
+                    await self._emit_narrative_frame(
+                        websocket, chat_id, stream_id, seq, "", terminal=True)
+                except Exception:
+                    logger.debug("narrative stream cleanup failed", exc_info=True)
             raise
         except Exception:
             abandoned.set()
