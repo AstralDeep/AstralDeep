@@ -533,6 +533,24 @@ class TestWikipediaRobustness:
         assert "_data" in result
         assert result["_data"]["results"][0]["title"] == "Test Article"
 
+    @pytest.mark.parametrize("language", ["attacker.example/x#", "en.evil", "EN", "", None])
+    @patch('agents.general.mcp_tools.requests.get')
+    def test_wikipedia_refuses_a_language_that_is_not_a_code(self, mock_get, language):
+        from agents.general.mcp_tools import search_wikipedia
+
+        result = search_wikipedia(query="test", language=language)
+        mock_get.assert_not_called()
+        assert "language code" in str(result["_ui_components"])
+
+    @pytest.mark.parametrize("language", ["en", "simple", "zh-yue", "roa-rup"])
+    @patch('agents.general.mcp_tools.requests.get')
+    def test_wikipedia_uses_a_valid_language_code_as_the_subdomain(self, mock_get, language):
+        from agents.general.mcp_tools import search_wikipedia
+
+        mock_get.return_value = MagicMock(status_code=200, json=lambda: {"query": {"search": []}})
+        search_wikipedia(query="test", language=language)
+        assert mock_get.call_args.args[0] == f"https://{language}.wikipedia.org/w/api.php"
+
 
 class TestLLMRouting:
     @pytest.fixture

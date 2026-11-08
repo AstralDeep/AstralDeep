@@ -746,6 +746,11 @@ import requests  # noqa: E402
 
 
 def search_wikipedia(query: str, language: str = "en", session_id: str = "default", **kwargs) -> Dict[str, Any]:
+    # The model chooses this value, and it becomes part of the host name.
+    if not isinstance(language, str) or not re.fullmatch(r"[a-z]{2,12}(-[a-z]+)*", language):
+        return create_ui_response([
+            Alert(message="Use a Wikipedia language code such as en or zh-yue.", variant="error")
+        ])
     try:
         search_url = f"https://{language}.wikipedia.org/w/api.php"
         params = {
