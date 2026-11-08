@@ -65,11 +65,11 @@ CURRENT_DEPENDENCY_AUTHORITIES = {
     "tooling/sandbox-qualification/package.json": "eaaffe389d93fa5368216ea451d94e4c6abb8c9bcd7b81266508c6c86f56b3a3",
     "tooling/sandbox-qualification/package-lock.json": "5b6925032bd3fbda37e7847037a2feb04b485afb7a66a26da57d6c65b7f6664b",
     **FEATURE_075_DEPENDENCY_AUTHORITIES,
-    "backend/security_benchmark/requirements-eval.txt": "97a1d75fd45c83331e33e7029f8f23a12870593b67c7bbc8e4470d6baf2affee",
+    "backend/security_benchmark/requirements-eval.txt": "a169ef53f35c4d4516e256eb160c3033a0d7d05ea7329f86b633eae756059f69",
     "backend/requirements-document-worker.txt": "28383cb135800b5415ca4c9504ea83e1514fa3e6f1d89257ab06fd5e8116508a",
     "Dockerfile": "21fecbf0fb9a24129ebd9e9c36808f4c41dae1117ea6b5aab55706d24fdf7527",
     "Dockerfile.voice": "82ffc56ab274790ea60e280852eb49608e9e8f7dbc3432fc16b4a1f3bcd21b84",
-    "backend/requirements.txt": "67d70c533f6abcb21d95e2fd75e9fdc2f38fd3f7760a2bc3e95b1885d76c5631",
+    "backend/requirements.txt": "06ca6a62f55178ce7ba6e124e95771fd55bc52c97e278a570da3ad4d2babff53",
     "backend/requirements-gaiakeep.txt": "87ea5ed066e8aa376f355df70a4efac295d331c7c77601d277a05c8acb37feea",
     "backend/tests/fixtures/runtime_reliability_060/runtime-lock-contract.json": (
         "ff84f895f5b8253dff59c9581cc033452ad576a09e40d00da31b5ba7b0f4875e"

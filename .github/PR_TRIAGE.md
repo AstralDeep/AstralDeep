@@ -1,7 +1,7 @@
 # Pull request triage
 
-Maintainers review the current full diff, the owning constitution, relevant issue acceptance
-checks, existing implementation, tests, and any replacement work before deciding a PR's fate.
+Maintainers review the current full diff, relevant issue acceptance checks, existing
+implementation, tests, and any replacement work before deciding a PR's fate.
 This policy applies to all contributors and preserves meaningful, repairable contributions.
 
 ## Context and truthful scope
@@ -71,7 +71,7 @@ The controller checks out no repository code, executes no contributor text, down
 artifacts, and has no secrets, OIDC, contents-write, workflow approval/rerun, merge,
 publishing, or release authority.
 Semantic quality judgments remain maintainer decisions. This policy does not replace product
-review, required checks, security policy, the owning constitution, or release qualification.
+review, required checks, security policy, or release qualification.
 
 Scheduled and manual-dispatch scans reconcile context only; they never replay closure
 commands. GitHub may replace a pending job even with `cancel-in-progress: false`. Confirm

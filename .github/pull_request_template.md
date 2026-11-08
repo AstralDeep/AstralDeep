@@ -16,8 +16,8 @@ does not prove issue completion. Explain documentation/test-only verification wh
 
 ## Compatibility and policy
 
-Name any dependencies, version/contract changes, affected consumers, migrations or recovery
-steps, and relevant constitution checks. Describe AI assistance accurately when used.
+Name any dependencies, version/contract changes, affected consumers, and migrations or recovery
+steps. Describe AI assistance accurately when used.
 
 Review the [PR triage policy](https://github.com/AstralDeep/AstralDeep/blob/main/.github/PR_TRIAGE.md). Missing context requests clarification;
 maintainers close only source-verified no-op, unsupported, duplicate, or superseded work.
