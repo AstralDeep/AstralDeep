@@ -90,16 +90,6 @@ def _repo_with_fact(owner="u1"):
     return repo
 
 
-def test_forget_erases_the_stored_fact():
-    repo = _repo_with_fact()
-    res = asyncio.run(memory_chat.handle_meta_tool(
-        _fake_orch(repo, _Gate()), "forget", {"id": _FACT_ID},
-        user_id="u1", chat_id="c1", websocket=None))
-    assert res.result["status"] == "deleted"
-    assert repo.memory == []
-    assert repo.superseded == []
-
-
 def test_forget_cannot_reach_another_owners_fact():
     repo = _repo_with_fact(owner="someone-else")
     res = asyncio.run(memory_chat.handle_meta_tool(
@@ -130,10 +120,27 @@ def audits(monkeypatch):
     return events
 
 
-def _forget(repo, memory_id):
+def _forget(repo, memory_id, *, orch=None, request="please forget that"):
+    orch = orch or _fake_orch(repo, _Gate())
+    orch._current_request_text = lambda chat_id: request
     return asyncio.run(memory_chat.handle_meta_tool(
-        _fake_orch(repo, _Gate()), "forget", {"id": memory_id},
-        user_id="u1", chat_id="c1", websocket=None))
+        orch, "forget", {"id": memory_id}, user_id="u1", chat_id="c1", websocket=None))
+
+
+@pytest.fixture
+def review(monkeypatch):
+    from orchestrator import hitl_confirmation
+    from shared.protocol import MCPResponse
+
+    calls = []
+    outcome = {"response": MCPResponse(result={"_data": {"status": "confirmation_required"}})}
+
+    async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks):
+        calls.append((owner, chat, agent, tool, args, risks))
+        return outcome["response"]
+
+    monkeypatch.setattr(hitl_confirmation, "evaluate", evaluate)
+    return calls, outcome
 
 
 def _atlas_envelope():
@@ -142,13 +149,77 @@ def _atlas_envelope():
                        "slug": "tea-notes", "title": "Tea notes"}, sort_keys=True)
 
 
-def test_forget_normalizes_the_id_before_it_reaches_the_repository(audits):
+def test_forget_normalizes_the_id_before_it_reaches_the_repository():
+    repo = _repo_with_fact()
+    tools = MemoryTools(repo, phi_gate=_Gate())
+    assert tools.forgettable("u1", f"urn:uuid:{_FACT_ID.upper()}")["id"] == _FACT_ID
+    assert tools.forget("u1", "favorite tea") is False
+    assert tools.forget("u1", "{" + _FACT_ID.upper() + "}") is True
+    assert repo.memory == []
+
+
+def test_the_per_turn_ledger_stays_bounded():
+    orch = types.SimpleNamespace()
+    for index in range(300):
+        assert memory_chat._claim_forget_slot(orch, None, "u1", f"chat-{index}", "forget it")
+    assert len(orch._memory_forget_turns) == 256
+    assert ("u1", "chat-299") in orch._memory_forget_turns
+
+
+def test_forget_asks_for_approval_of_the_exact_fact(review):
+    calls, _ = review
     repo = _repo_with_fact()
     res = _forget(repo, f"urn:uuid:{_FACT_ID.upper()}")
-    assert res.result == {"status": "deleted", "id": _FACT_ID}
-    assert repo.memory == []
+    assert res.result == {"_data": {"status": "confirmation_required"}}
+    assert calls == [("u1", "c1", "__memory__", "forget",
+                      {"id": _FACT_ID, "fact": "favorite tea is oolong"}, ("irreversible",))]
+    assert len(repo.memory) == 1
+
+
+def test_an_injected_forget_without_a_user_request_is_refused(audits, review):
+    calls, _ = review
+    repo = _repo_with_fact()
+    res = _forget(repo, _FACT_ID, request="Summarize https://example.org/notes for me")
+    assert res.result["status"] == "refused"
+    assert calls == [] and len(repo.memory) == 1
     assert [(e.action_type, e.outcome, e.inputs_meta) for e in audits] == [
-        ("memory.delete", "success", {"memory_id": _FACT_ID})]
+        ("memory.delete", "failure", {"memory_id": _FACT_ID, "reason": "no_user_request"})]
+
+
+def test_forget_is_capped_per_turn(audits, review):
+    calls, _ = review
+    repo = _FakeRepo()
+    ids = [f"0b8f0a52-6f1e-4d8e-9a43-1c2d3e4f5a{index:02d}" for index in range(7)]
+    for index, memory_id in enumerate(ids):
+        repo.memory.append({"id": memory_id, "user_id": "u1", "category": "preference",
+                            "value": f"likes tea number {index}"})
+    orch = _fake_orch(repo, _Gate())
+    statuses = [_forget(repo, memory_id, orch=orch, request="forget all of these").result
+                .get("status", "proposed") for memory_id in ids[:6]]
+    assert statuses == ["proposed"] * memory_chat.MAX_FORGETS_PER_TURN + ["refused"]
+    assert len(calls) == memory_chat.MAX_FORGETS_PER_TURN
+    assert audits[-1].inputs_meta == {"memory_id": ids[5], "reason": "turn_limit"}
+    assert _forget(repo, ids[6], orch=orch, request="now forget the last one").result == {
+        "_data": {"status": "confirmation_required"}}
+    assert len(repo.memory) == 7
+
+
+def test_a_fact_the_card_cannot_show_is_refused(audits, review):
+    from shared.protocol import MCPResponse
+
+    _, outcome = review
+    outcome["response"] = MCPResponse(error={"code": "ACTION_REVIEW_UNAVAILABLE", "message": "x"})
+    repo = _repo_with_fact()
+    res = _forget(repo, _FACT_ID)
+    assert res.result["status"] == "refused" and "Settings" in res.result["reason"]
+    assert audits[-1].inputs_meta == {"memory_id": _FACT_ID, "reason": "review_unavailable"}
+
+
+def test_forget_without_a_signed_in_conversation_shows_no_card():
+    repo = _repo_with_fact()
+    res = _forget(repo, _FACT_ID)
+    assert "interactive signed-in conversation" in res.error["message"]
+    assert len(repo.memory) == 1
 
 
 def test_forget_cannot_erase_an_atlas_page_row(audits):
@@ -181,7 +252,9 @@ def test_a_forget_that_finds_nothing_is_audited_as_a_failure(audits, memory_id, 
         ("memory.delete", "failure", {"memory_id": audited})]
 
 
-def test_forget_reports_a_row_that_vanished_before_the_delete(audits):
+def test_forget_reports_a_row_that_vanished_before_the_delete(audits, review):
+    _, outcome = review
+    outcome["response"] = None
     repo = _repo_with_fact()
     repo.delete_memory = lambda user_id, mem_id: False
     assert _forget(repo, _FACT_ID).result["status"] == "not_found"

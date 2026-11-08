@@ -1,9 +1,11 @@
 """Exposes cross-session memory recall and writes as LLM tool calls under a pseudo agent
-id outside normal per-agent permission gates, mirroring scheduling_chat.py. Memory
-writes are PHI-gated but execute immediately, without a consent card.
+id outside normal per-agent permission gates, mirroring scheduling_chat.py. Writes are
+PHI-gated and run immediately; forget erases a live row only when the user's own message
+asks for it, within a per-turn cap, and after they approve hitl_confirmation.py's card.
 """
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from astralprims import Alert, Text
@@ -13,6 +15,20 @@ logger = logging.getLogger("Orchestrator.MemoryChat")
 
 META_AGENT_ID = "__memory__"
 
+MAX_FORGETS_PER_TURN = 5
+
+_FORGET_REQUEST = re.compile(
+    r"\b(?:forget|forgets|forgetting|forgot|forgotten|delete[sd]?|deleting|"
+    r"remove[sd]?|removing|erase[sd]?|erasing)\b", re.IGNORECASE)
+
+_FORGET_REFUSALS = {
+    "no_user_request": "I only forget a memory when you ask me to. Nothing was removed.",
+    "turn_limit": (f"I can forget up to {MAX_FORGETS_PER_TURN} memories per request. Ask again "
+                   "for the rest, or delete them in Settings → Personalization → Memory."),
+    "review_unavailable": ("That memory can't be shown on an approval card, so nothing was "
+                           "removed. Delete it in Settings → Personalization → Memory."),
+}
+
 SYSTEM_PROMPT_ADDENDUM = """
 CROSS-SESSION MEMORY (remember / memory_search / memory_get / forget):
 - This system DOES support durable, cross-session memory of NON-PHI personalization
@@ -21,7 +37,8 @@ CROSS-SESSION MEMORY (remember / memory_search / memory_get / forget):
 - To answer "what do you know about me / my preferences", call `memory_search` (with a
   query) or `memory_get` (everything). Prefer recalling stored facts over guessing.
 - When the user asks you to forget or delete something you remember, find it with
-  `memory_search` or `memory_get`, then call `forget` with its id. This erases it for good.
+  `memory_search` or `memory_get`, then call `forget` with its id. The user approves each
+  erasure on a card before it happens.
 - Never store protected health information (PHI) — the system refuses PHI writes
   automatically; do not work around it.
 """
@@ -79,8 +96,8 @@ def meta_tool_definitions() -> List[Dict[str, Any]]:
             "function": {
                 "name": "forget",
                 "description": (
-                    "Permanently erase one fact from the user's durable memory. Use only "
-                    "when the user asks to forget or delete it."
+                    "Permanently erase one fact from the user's durable memory once the user "
+                    "approves it on a card. Use only when the user asks to forget or delete it."
                 ),
                 "parameters": {
                     "type": "object",
@@ -194,22 +211,90 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
                            ui_components=[_recall_component(items)])
 
     if tool_name == "forget":
-        from personalization.memory_tools import canonical_memory_id
-
-        target = tools.forgettable(user_id, args.get("id"))
-        if target is None or not tools.forget(user_id, target["id"]):
-            await _audit(user_id, "memory.delete", "Found no live memory to erase",
-                         outcome="failure", chat_id=chat_id,
-                         inputs_meta={"memory_id": canonical_memory_id(args.get("id"))})
-            comp = Alert(message="I couldn't find that in memory.", variant="warning").to_dict()
-            return MCPResponse(result={"status": "not_found"}, ui_components=[comp])
-        await _audit(user_id, "memory.delete", "Erased a remembered fact", chat_id=chat_id,
-                     inputs_meta={"memory_id": target["id"]})
-        comp = Alert(message="Got it — I've removed that from memory.", variant="info").to_dict()
-        return MCPResponse(result={"status": "deleted", "id": target["id"]}, ui_components=[comp])
+        return await _forget(orch, tools, args, user_id=user_id, chat_id=chat_id,
+                             websocket=websocket)
 
     return MCPResponse(error={"message": f"Unknown memory tool '{tool_name}'",
                               "retryable": False})
+
+
+def _request_text(orch, chat_id: Optional[str]) -> str:
+    current = getattr(orch, "_current_request_text", None)
+    text = current(chat_id) if callable(current) else ""
+    return text if isinstance(text, str) else ""
+
+
+def _claim_forget_slot(orch, websocket, user_id: str, chat_id: Optional[str], text: str) -> bool:
+    from orchestrator import hitl_confirmation
+
+    marker = hitl_confirmation.current_task(orch, websocket, user_id, chat_id) or text
+    turns = getattr(orch, "_memory_forget_turns", None)
+    if not isinstance(turns, dict):
+        turns = {}
+        orch._memory_forget_turns = turns
+    key = (user_id, chat_id)
+    seen, count = turns.pop(key, (None, 0))
+    if seen != marker:
+        count = 0
+    if count >= MAX_FORGETS_PER_TURN:
+        turns[key] = (marker, count)
+        return False
+    turns[key] = (marker, count + 1)
+    while len(turns) > 256:
+        turns.pop(next(iter(turns)))
+    return True
+
+
+def _forget_refusal(orch, websocket, user_id: str, chat_id: Optional[str]) -> Optional[str]:
+    text = _request_text(orch, chat_id)
+    if not _FORGET_REQUEST.search(text):
+        return "no_user_request"
+    if not _claim_forget_slot(orch, websocket, user_id, chat_id, text):
+        return "turn_limit"
+    return None
+
+
+async def _forget(orch, tools, args: Dict[str, Any], *, user_id: str,
+                  chat_id: Optional[str], websocket):
+    from orchestrator import hitl_confirmation
+    from orchestrator.hitl import IRREVERSIBLE
+    from personalization.memory_tools import canonical_memory_id
+    from shared.protocol import MCPResponse
+
+    async def not_found(memory_id: Optional[str]):
+        await _audit(user_id, "memory.delete", "Found no live memory to erase",
+                     outcome="failure", chat_id=chat_id, inputs_meta={"memory_id": memory_id})
+        comp = Alert(message="I couldn't find that in memory.", variant="warning").to_dict()
+        return MCPResponse(result={"status": "not_found"}, ui_components=[comp])
+
+    async def refused(memory_id: str, reason: str):
+        await _audit(user_id, "memory.delete", "Refused to erase a memory", outcome="failure",
+                     chat_id=chat_id, inputs_meta={"memory_id": memory_id, "reason": reason})
+        message = _FORGET_REFUSALS[reason]
+        return MCPResponse(result={"status": "refused", "reason": message},
+                           ui_components=[Alert(message=message, variant="warning").to_dict()])
+
+    target = tools.forgettable(user_id, args.get("id"))
+    if target is None:
+        return await not_found(canonical_memory_id(args.get("id")))
+    review = {"id": target["id"], "fact": str(target.get("value") or "")}
+    if not hitl_confirmation.matching_approval(orch, user_id, chat_id, META_AGENT_ID, "forget",
+                                               review):
+        reason = _forget_refusal(orch, websocket, user_id, chat_id)
+        if reason is not None:
+            return await refused(target["id"], reason)
+    pending = await hitl_confirmation.evaluate(orch, websocket, user_id, chat_id, META_AGENT_ID,
+                                               "forget", review, (IRREVERSIBLE,))
+    if pending is not None:
+        if (pending.error or {}).get("code") == "ACTION_REVIEW_UNAVAILABLE":
+            return await refused(target["id"], "review_unavailable")
+        return pending
+    if not tools.forget(user_id, target["id"]):
+        return await not_found(target["id"])
+    await _audit(user_id, "memory.delete", "Erased a remembered fact", chat_id=chat_id,
+                 inputs_meta={"memory_id": target["id"]})
+    comp = Alert(message="Got it — I've removed that from memory.", variant="info").to_dict()
+    return MCPResponse(result={"status": "deleted", "id": target["id"]}, ui_components=[comp])
 
 
 def _recall_component(items: List[Dict[str, Any]]) -> Dict[str, Any]:
