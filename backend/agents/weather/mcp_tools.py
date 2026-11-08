@@ -726,7 +726,7 @@ def get_weather_alerts(
             city=city, state=state, country=country,
             latitude=latitude, longitude=longitude
         )
-        if "_data" not in geocode_result:
+        if not geocode_result.get("_data"):
             return create_ui_response([
                 Alert(
                     message="Could not geocode location to determine state.",
@@ -1330,7 +1330,7 @@ def get_weekly_forecast(
             days=7
         )
         
-        if "_data" not in forecast_result:
+        if not forecast_result.get("_data"):
             return forecast_result
         
         data = forecast_result["_data"]
