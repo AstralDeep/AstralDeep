@@ -22,6 +22,7 @@ from tests.helpers.subtask_admission import admitted_parent
 
 META_TOOLS = [
     ("__memory__", "remember", "orchestrator.memory_chat"),
+    ("__memory__", "forget", "orchestrator.memory_chat"),
     ("__orchestrator__", "create_capability", "orchestrator.agentic_creation"),
     ("__orchestrator__", "extend_agent", "orchestrator.agentic_creation"),
     ("__scheduler__", "schedule_recurring_task", "orchestrator.scheduling_chat"),
