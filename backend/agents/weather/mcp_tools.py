@@ -930,7 +930,7 @@ def compare_locations(
                     latitude=loc["latitude"],
                     longitude=loc["longitude"]
                 )
-                if "_data" in result:
+                if result.get("_data"):
                     return result["_data"]
                 else:
                     return {"error": result.get("_ui_components", [])}
@@ -939,9 +939,9 @@ def compare_locations(
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             future_to_loc = {executor.submit(fetch_one, loc): i for i, loc in enumerate(locations)}
-            results = []
+            results = [None] * len(locations)
             for future in concurrent.futures.as_completed(future_to_loc):
-                results.append(future.result())
+                results[future_to_loc[future]] = future.result()
         
         errors = [r for r in results if "error" in r]
         if errors:
