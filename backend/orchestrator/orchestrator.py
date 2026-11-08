@@ -8762,6 +8762,12 @@ class Orchestrator:
                 and (work.owner.owner_scope is OwnerScope.CONNECTION or work.frame.foreground)
             ):
                 raise asyncio.CancelledError
+            # After the claim, so a refusal ends as failed and the client can restore the message.
+            if (work.predecessors and work.frame.human_request is not None
+                    and work.frame.human_request.purpose == "skill_lookup"):
+                from orchestrator.human_request_authority import recheck_queued_skill_read
+
+                work.frame.human_request = await recheck_queued_skill_read(work.frame.human_request)
             connection_operation_context = {
                 "operation": claim.operation,
                 "owner": work.owner,
