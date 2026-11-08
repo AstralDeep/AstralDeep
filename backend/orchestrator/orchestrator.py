@@ -16783,22 +16783,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             
                             valid_components = []
                             if isinstance(data, list):
-                                for item in data:
-                                    if isinstance(item, dict) and "type" in item:
-                                        from webrender import allowed_primitive_types
-                                        self._validate_component_tree(
-                                            item, set(allowed_primitive_types()) | {"chart"}
-                                        )
-                                        valid_components.append(item)
+                                from webrender import allowed_primitive_types
+                                allowed = set(allowed_primitive_types()) | {"chart"}
+                                # JSON the user asked for is an answer, not a failed attempt at components.
+                                if any(isinstance(item, dict) and isinstance(item.get("type"), str)
+                                       and item["type"].strip().lower() in allowed for item in data):
+                                    for item in data:
+                                        if isinstance(item, dict) and "type" in item:
+                                            self._validate_component_tree(item, allowed)
+                                            valid_components.append(item)
                             
                             if valid_components:
                                 parsed_components = valid_components
-                            else:
-                                needs_retry = True
-                                error_msg = "JSON parsed successfully but no valid UI components found. Each component MUST be an object with at least a 'type' field (e.g., {'type': 'card', 'title': '...', 'content': [...]})."
-                                
+
                         except Exception as e:
-                            needs_retry = True
+                            needs_retry = stripped.startswith(("{", "[")) and '"type"' in stripped
                             error_msg = f"Failed to parse UI components. The output is not valid JSON. Error: {str(e)}. Please respond ONLY with valid JSON, with NO surrounding text or markdown formatting."
                     
                     if needs_retry and turn_count < MAX_TURNS:
