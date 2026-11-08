@@ -12952,7 +12952,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         server_initiated: bool,
         message: str,
     ) -> None:
-        """Commits a failed turn with its error, because an aborted stage deletes the user's message."""
         if stage is None or stage.completion_state != "completed" or stage.sealed:
             return
         try:
