@@ -1436,7 +1436,7 @@ class BackgroundTaskManager:
     def _summary_from_outputs(bg_task: BackgroundTask) -> str:
         summary = ""
         for out in bg_task.outputs:
-            if not isinstance(out, dict):
+            if not isinstance(out, dict) or out.get("type") == "chat_status":
                 continue
             if out.get("type") == "ui_render" and out.get("target") == "chat":
                 for comp in out.get("components") or []:
