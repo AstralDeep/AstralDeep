@@ -15636,7 +15636,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     execution_fence=authority_fence,
                 )
 
-            while turn_count < MAX_TURNS or (goal_progress is not None and self.cancelled_sessions.get(id(websocket))):
+            while turn_count < MAX_TURNS or self.cancelled_sessions.get(id(websocket)):
                 if self.cancelled_sessions.get(id(websocket)):
                     task_terminal_on_exit = TaskState.CANCELLED
                     if goal_progress is not None and conversation_stage is not None:
@@ -16051,7 +16051,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 finally:
                     _NARRATIVE_STREAM_CHAT.reset(_stream_token)
                     _GOAL_BUFFERED_RESPONSE.reset(_goal_buffer_token)
-                if goal_progress is not None and self.cancelled_sessions.get(id(websocket)):
+                if self.cancelled_sessions.get(id(websocket)):
                     self._accumulate_usage(chat_id, usage)
                     continue
                 if task:
@@ -16185,7 +16185,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     if turn_count == 1:
                         with perf_span("turn.first_tool_dispatch", chat=chat_id):
                             pass
-                    if goal_progress is not None and self.cancelled_sessions.get(id(websocket)):
+                    if self.cancelled_sessions.get(id(websocket)):
                         continue
                     _dispatch_key = (id(websocket), chat_id)
                     self._turn_tool_tasks = getattr(self, "_turn_tool_tasks", {})
