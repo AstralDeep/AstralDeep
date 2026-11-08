@@ -126,6 +126,21 @@ async def test_a_cancelled_turn_keeps_the_user_message_in_the_saved_conversation
     assert [message["role"] for message in saved] == ["user", "assistant"]
     assert "forecast please" in json.dumps(saved[0]["content"])
     assert "cancelled" in json.dumps(saved[1]["content"]).lower()
+
+
+async def test_a_scheduled_turn_with_no_model_response_marks_its_stage_failed(orch):
+    from orchestrator.scheduled_publication import stage_scheduled_history
+
+    _register(orch)
+    ws = _ws(orch)
+    chat_id = await _chat(orch)
+    orch._call_llm = AsyncMock(return_value=(None, None))
+    with stage_scheduled_history(
+        history=orch.history, chat_id=chat_id, user_id=USER,
+        create_chat_if_missing=False, agent_id=None,
+    ) as stage:
+        await registered_chat(orch, ws, "summarize inbox", chat_id, user_id=USER)
+    assert stage.failed is True
     await _cleanup(orch, chat_id)
 
 
