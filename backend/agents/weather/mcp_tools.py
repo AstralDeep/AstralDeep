@@ -315,10 +315,10 @@ def _get_coordinates_from_args(**kwargs) -> Tuple[float, float]:
         raise ValueError("Either provide latitude/longitude or city name")
     
     geocode_result = geocode_location(city, state, country)
-    if "_data" not in geocode_result:
-        raise ValueError(f"Could not geocode location: {city}, {state}")
-    
-    data = geocode_result["_data"]
+    data = geocode_result.get("_data")
+    if not data:
+        raise ValueError(f"Could not find a place named {city}. Check the spelling or use coordinates.")
+
     return data["latitude"], data["longitude"]
 
 
