@@ -8,7 +8,7 @@ not change the product dispatcher, prompts, providers, permissions, schema, or U
 
 > **Eval/test-only.** Nothing here is imported by product runtime code;
 > `security_benchmark.isolation_check` fails CI if `backend/orchestrator`,
-> `backend/agents`, or `backend/shared` ever import this package (Constitution V).
+> `backend/agents`, or `backend/shared` ever import this package.
 > The package adds **no dependency**; the optional WebSocket/OpenAI paths use
 > already-declared product libraries lazily.
 
