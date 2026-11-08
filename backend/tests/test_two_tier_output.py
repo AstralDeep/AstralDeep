@@ -71,6 +71,17 @@ def test_a_ui_only_alert_tells_the_model_the_outcome():
     assert json.loads(_to_content(response))["notices"] == ["No matching journals found."]
 
 
+def test_ui_only_alert_notices_are_bounded():
+    from shared.protocol import MCPResponse
+
+    alerts = [{"type": "alert", "message": f"Notice {index}\x07 " + "x" * 400} for index in range(12)]
+    response = MCPResponse(request_id="r1", ui_components=alerts)
+
+    notices = json.loads(_to_content(response))["notices"]
+    assert len(notices) == 8 and notices[0].startswith("Notice 0 x")
+    assert all(len(notice) == 300 and "\x07" not in notice for notice in notices)
+
+
 def test_no_result_and_no_ui_is_still_no_output():
     res = types.SimpleNamespace(result=None, error=None, ui_components=[])
     assert _to_content(res) == "No output"
