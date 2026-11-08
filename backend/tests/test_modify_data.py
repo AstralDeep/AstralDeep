@@ -295,6 +295,14 @@ def test_column_field_selects_the_column():
     assert rows == [{"group": "a"}, {"group": "a"}]
 
 
+def test_a_null_column_falls_back_to_the_name_field():
+    rows, _ = _csv_rows(
+        "age\n30",
+        {"action": "add_column", "column": None, "name": "group", "value": "a"},
+    )
+    assert rows == [{"age": "30", "group": "a"}]
+
+
 def test_schema_offers_column_and_not_name():
     from agents.general.mcp_tools import TOOL_REGISTRY
 

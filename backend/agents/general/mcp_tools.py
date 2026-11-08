@@ -303,7 +303,7 @@ def modify_data(
         failed_evaluations = 0
         for mod in modifications:
             action = mod.get("action")
-            name = mod.get("column", mod.get("name", ""))
+            name = mod.get("column") or mod.get("name", "")
             value = mod.get("value")
             expression = mod.get("expression")
             default = mod.get("default")
