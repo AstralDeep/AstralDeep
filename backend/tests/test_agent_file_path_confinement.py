@@ -4,6 +4,7 @@ no path parameter in their schemas.
 """
 
 import os
+import shutil
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -177,3 +178,42 @@ def test_analyze_csv_file_schema_has_no_path_parameter():
     assert props["attachment_id"]["type"] == "string"
     assert entry["input_schema"]["required"] == ["attachment_id"]
     assert "file_path" not in entry["description"]
+
+
+def _write_with_filename(filename, user_id):
+    backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    user_dir = os.path.join(backend_dir, "tmp", user_id)
+    try:
+        result = modify_data(
+            csv_data="a\n1\n",
+            modifications=[],
+            filename=filename,
+            user_id=user_id,
+            session_id="c1",
+        )
+        written = os.listdir(os.path.join(user_dir, "c1"))
+    finally:
+        shutil.rmtree(user_dir, ignore_errors=True)
+    return result, written
+
+
+def test_modify_data_keeps_relative_output_name_in_download_folder():
+    backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    result, written = _write_with_filename("../../../escape_probe.csv", "confine-rel")
+    assert written == ["escape_probe.csv"]
+    assert result["_data"]["filename"] == "escape_probe.csv"
+    assert not os.path.exists(os.path.join(backend_dir, "escape_probe.csv"))
+
+
+def test_modify_data_keeps_absolute_output_name_in_download_folder(tmp_path):
+    target = tmp_path / "escape_probe.csv"
+    _, written = _write_with_filename(str(target), "confine-abs")
+    assert written == ["escape_probe.csv"]
+    assert not target.exists()
+
+
+def test_modify_data_names_the_file_itself_when_output_name_has_no_basename():
+    for index, name in enumerate(["..", "../", "..\\"]):
+        _, written = _write_with_filename(name, f"confine-empty-{index}")
+        assert len(written) == 1
+        assert written[0].startswith("modified_data_")

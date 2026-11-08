@@ -45,6 +45,48 @@ def test_data_key_serialized_as_before():
     assert _to_content(res) == json.dumps({"a": 1})
 
 
+def test_a_real_ui_only_tool_tells_the_model_the_result_is_on_screen():
+    from agents.connectors.mcp_server import ConnectorsMCPServer
+    from shared.protocol import MCPRequest
+
+    response = ConnectorsMCPServer().process_request(MCPRequest(
+        request_id="r1", method="tools/call", params={"name": "powerpoint_outline", "arguments": {
+            "title": "Private deck title", "slides": [{"title": "One", "bullets": ["Two"]}],
+        }},
+    ))
+
+    assert response.error is None and response.result is None and response.ui_components
+    content = json.loads(_to_content(response, "powerpoint_outline"))
+    assert content["status"] == "shown"
+    assert "Private deck title" not in json.dumps(content)
+
+
+def test_a_ui_only_alert_tells_the_model_the_outcome():
+    from shared.protocol import MCPResponse
+
+    response = MCPResponse(request_id="r1", ui_components=[
+        {"type": "alert", "variant": "warning", "message": "No matching journals found."},
+    ])
+
+    assert json.loads(_to_content(response))["notices"] == ["No matching journals found."]
+
+
+def test_ui_only_alert_notices_are_bounded():
+    from shared.protocol import MCPResponse
+
+    alerts = [{"type": "alert", "message": f"Notice {index}\x07 " + "x" * 400} for index in range(12)]
+    response = MCPResponse(request_id="r1", ui_components=alerts)
+
+    notices = json.loads(_to_content(response))["notices"]
+    assert len(notices) == 8 and notices[0].startswith("Notice 0 x")
+    assert all(len(notice) == 300 and "\x07" not in notice for notice in notices)
+
+
+def test_no_result_and_no_ui_is_still_no_output():
+    res = types.SimpleNamespace(result=None, error=None, ui_components=[])
+    assert _to_content(res) == "No output"
+
+
 def test_plain_result_serialized_whole():
     res = _res(result={"x": 1, "y": 2})
     assert _to_content(res) == json.dumps({"x": 1, "y": 2})

@@ -43,7 +43,7 @@ a look-then-act turn with `COMPUTER_USE_MAX_TURNS` (default 24).
    judges consequential (buying, sending, signing in, running a command) shows a card with
    **Approve** / **Decline** on your device. Nothing runs until you approve; a card expires
    after 15 minutes and is single-use; after Approve the task resumes by itself. There is no
-   "run a command" tool on purpose (Constitution VII) — the assistant types into a terminal
+   "run a command" tool on purpose — the assistant types into a terminal
    the way you would, and that typing is what your approval unlocks (for 3 minutes). A
    terminal is any console-hosted window (cmd, PowerShell, Windows Terminal, a Python/Node
    REPL …) or a known terminal emulator. If you approve something while someone is using

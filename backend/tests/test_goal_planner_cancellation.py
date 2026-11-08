@@ -84,11 +84,15 @@ async def test_cancel_during_goal_planner_discards_late_tool_call(
     await asyncio.wait_for(turn, timeout=10)
 
     o.execute_single_tool.assert_not_awaited()
-    assert o.token_usage[chat_id] == {
-        "prompt_tokens": 7,
-        "completion_tokens": 3,
-        "total_tokens": 10,
-    }
+    if cancel_point == "planner":
+        # Cancel aborts the call in flight, so no response or usage ever arrives.
+        assert chat_id not in o.token_usage
+    else:
+        assert o.token_usage[chat_id] == {
+            "prompt_tokens": 7,
+            "completion_tokens": 3,
+            "total_tokens": 10,
+        }
     chat = await asyncio.to_thread(o.history.get_chat, chat_id, user_id="seam-user")
     assert chat["messages"][-1]["role"] == "assistant"
     assert "cancelled" in str(chat["messages"][-1]["content"]).lower()
