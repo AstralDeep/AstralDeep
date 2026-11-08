@@ -1,26 +1,32 @@
-"""Exercises owner-bound MCP OAuth discovery, PKCE exchange, refresh, and refusal.
-Network requests use a deterministic fake while the connector store uses its real API.
+"""Exercises owner-bound MCP OAuth discovery, browser-bound start and callback, PKCE exchange,
+refresh, and refusal. Network requests use a deterministic fake while the connector store uses its real API.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
+import secrets
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
-from urllib.parse import parse_qs, urlsplit
+from types import SimpleNamespace
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 from cryptography.fernet import Fernet, InvalidToken
+from orchestrator import remote_mcp_api
 from orchestrator import remote_mcp_connectors as connectors
 from orchestrator import remote_mcp_oauth as oauth
 from orchestrator.credential_manager import CredentialManager
 from orchestrator.projection_surfaces import remote_mcp as remote_mcp_surface
+from starlette.requests import Request as StarletteRequest
 
 RESOURCE = "https://mcp.example/mcp"
 ISSUER = "https://id.example"
 CALLBACK = "https://astral.example/api/remote-mcp/oauth/callback"
+START = "https://astral.example/api/remote-mcp/oauth/start"
 _UNSET = object()
 
 
@@ -145,6 +151,13 @@ def _connector(orch, *, client_id="client-1", client_secret="", auth_method=""):
     return connectors.save_connector(orch, "owner-1", values)
 
 
+async def _authorize(orch, connector_id, requester, owner="owner-1"):
+    start_url = await oauth.begin_authorization(orch, owner, connector_id, CALLBACK, START, requester=requester)
+    assert start_url.startswith(START + "?state=")
+    state = parse_qs(urlsplit(start_url).query)["state"][0]
+    return await oauth.bind_authorization(orch, owner, state)
+
+
 def test_saving_connector_clears_oauth_client_and_authorization_state_only_when_requested():
     orch = _Orch()
     saved = _connector(orch)
@@ -259,8 +272,7 @@ async def test_pkce_exchange_stores_owner_token_and_consumes_state():
     saved = _connector(orch)
     requester = _Requester()
 
-    authorization_url = await oauth.begin_authorization(
-        orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    authorization_url, binding = await _authorize(orch, saved["id"], requester)
     query = parse_qs(urlsplit(authorization_url).query)
 
     assert query["client_id"] == ["client-1"]
@@ -270,7 +282,7 @@ async def test_pkce_exchange_stores_owner_token_and_consumes_state():
     state = query["state"][0]
     callback_worker = _Orch()
     callback_worker.credential_manager = orch.credential_manager
-    assert await oauth.complete_authorization(callback_worker, "code-1", state, requester=requester) == saved["id"]
+    assert await oauth.complete_authorization(callback_worker, "code-1", state, binding=binding, session_owner="owner-1", requester=requester) == saved["id"]
     stored = connectors.get_connector(orch, "owner-1", saved["id"])
     assert stored["access_token"] == "access-1"
     assert stored["refresh_token"] == "refresh-1"
@@ -278,7 +290,7 @@ async def test_pkce_exchange_stores_owner_token_and_consumes_state():
     assert stored["token_expires_at"] > 0
     assert connectors.list_connectors(orch, "other-owner") == []
     with pytest.raises(oauth.RemoteMCPOAuthError, match="expired"):
-        await oauth.complete_authorization(orch, "code-1", state, requester=requester)
+        await oauth.complete_authorization(orch, "code-1", state, binding=binding, session_owner="owner-1", requester=requester)
 
 
 @pytest.mark.asyncio
@@ -287,12 +299,11 @@ async def test_dynamic_registration_and_refresh():
     saved = _connector(orch, client_id="")
     requester = _Requester(registered_secret="unused-for-public-client")
 
-    authorization_url = await oauth.begin_authorization(
-        orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    authorization_url, binding = await _authorize(orch, saved["id"], requester)
     state = parse_qs(urlsplit(authorization_url).query)["state"][0]
     assert parse_qs(urlsplit(authorization_url).query)["client_id"] == ["registered-client"]
     assert connectors.get_connector(orch, "owner-1", saved["id"])["oauth_client_id"] == "registered-client"
-    await oauth.complete_authorization(orch, "code-1", state, requester=requester)
+    await oauth.complete_authorization(orch, "code-1", state, binding=binding, session_owner="owner-1", requester=requester)
     assert await oauth.refresh_authorization(orch, "owner-1", saved["id"], requester=requester) is True
     assert [url for url, method, _ in requester.calls if url == ISSUER + "/token" and method == "POST"] == [
         ISSUER + "/token", ISSUER + "/token"]
@@ -313,12 +324,11 @@ async def test_token_auth_methods_are_used_for_exchange_and_refresh(auth_method,
     client_id = "client:π name+"
     saved = _connector(orch, client_id=client_id, client_secret=client_secret)
     requester = _Requester(token_auth_methods=[auth_method])
-    authorization_url = await oauth.begin_authorization(
-        orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    authorization_url, binding = await _authorize(orch, saved["id"], requester)
     state = parse_qs(urlsplit(authorization_url).query)["state"][0]
     assert connectors.get_connector(orch, "owner-1", saved["id"])["oauth_token_endpoint_auth_method"] == auth_method
 
-    await oauth.complete_authorization(orch, "code-1", state, requester=requester)
+    await oauth.complete_authorization(orch, "code-1", state, binding=binding, session_owner="owner-1", requester=requester)
     assert await oauth.refresh_authorization(orch, "owner-1", saved["id"], requester=requester)
     token_calls = [detail for detail in requester.request_details
                    if detail[0] == ISSUER + "/token"]
@@ -346,12 +356,11 @@ async def test_missing_method_metadata_defaults_confidential_authorization_to_ba
     orch = _Orch()
     saved = _connector(orch, client_secret="confidential-secret")
     requester = _Requester(token_auth_methods=_UNSET)
-    authorization_url = await oauth.begin_authorization(
-        orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    authorization_url, binding = await _authorize(orch, saved["id"], requester)
     state = parse_qs(urlsplit(authorization_url).query)["state"][0]
 
     assert connectors.get_connector(orch, "owner-1", saved["id"])["oauth_token_endpoint_auth_method"] == "client_secret_basic"
-    await oauth.complete_authorization(orch, "code-1", state, requester=requester)
+    await oauth.complete_authorization(orch, "code-1", state, binding=binding, session_owner="owner-1", requester=requester)
     assert await oauth.refresh_authorization(orch, "owner-1", saved["id"], requester=requester)
     token_calls = [detail for detail in requester.request_details if detail[0] == ISSUER + "/token"]
     assert len(token_calls) == 2
@@ -366,7 +375,7 @@ async def test_missing_method_metadata_requires_secret_for_fresh_confidential_cl
     requester = _Requester(token_auth_methods=_UNSET)
 
     with pytest.raises(oauth.RemoteMCPOAuthError, match="do not match the saved client credentials"):
-        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
 
 
 @pytest.mark.asyncio
@@ -393,7 +402,7 @@ async def test_dcr_rejects_server_selected_auth_method_mismatch():
     requester = _Requester(registered_method="client_secret_post", registered_secret="issued")
 
     with pytest.raises(oauth.RemoteMCPOAuthError, match="unexpected token authentication method"):
-        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
 
     assert not connectors.get_connector(orch, "owner-1", saved["id"]).get("access_token")
 
@@ -405,14 +414,13 @@ async def test_dcr_defaults_to_basic_when_methods_and_registration_method_are_om
     requester = _Requester(token_auth_methods=_UNSET, registered_method=_UNSET,
                            registered_secret="issued-secret")
 
-    authorization_url = await oauth.begin_authorization(
-        orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    authorization_url, binding = await _authorize(orch, saved["id"], requester)
     registration = next(body for url, method, body in requester.calls if url == ISSUER + "/register")
     assert json.loads(registration)["token_endpoint_auth_method"] == "client_secret_basic"
     assert connectors.get_connector(orch, "owner-1", saved["id"])["oauth_token_endpoint_auth_method"] == "client_secret_basic"
     state = parse_qs(urlsplit(authorization_url).query)["state"][0]
 
-    await oauth.complete_authorization(orch, "code-1", state, requester=requester)
+    await oauth.complete_authorization(orch, "code-1", state, binding=binding, session_owner="owner-1", requester=requester)
     assert await oauth.refresh_authorization(orch, "owner-1", saved["id"], requester=requester)
     token_calls = [detail for detail in requester.request_details if detail[0] == ISSUER + "/token"]
     assert len(token_calls) == 2
@@ -427,7 +435,7 @@ async def test_dcr_selects_confidential_post_when_it_is_the_only_advertised_meth
     requester = _Requester(token_auth_methods=["client_secret_post"],
                            registered_method="client_secret_post", registered_secret="issued-secret")
 
-    await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
 
     registration = next(body for url, method, body in requester.calls if url == ISSUER + "/register")
     assert json.loads(registration)["token_endpoint_auth_method"] == "client_secret_post"
@@ -444,7 +452,7 @@ async def test_dcr_confidential_method_requires_server_issued_secret():
                            registered_method="client_secret_basic")
 
     with pytest.raises(oauth.RemoteMCPOAuthError, match="requires a client secret"):
-        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
 
 
 @pytest.mark.asyncio
@@ -454,7 +462,7 @@ async def test_dcr_requires_explicit_none_response_when_none_was_requested():
     requester = _Requester(token_auth_methods=["none"], registered_method=_UNSET)
 
     with pytest.raises(oauth.RemoteMCPOAuthError, match="unexpected token authentication method"):
-        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
 
 
 @pytest.mark.asyncio
@@ -463,7 +471,7 @@ async def test_dcr_treats_explicit_null_secret_as_absent_for_public_client():
     saved = _connector(orch, client_id="")
     requester = _Requester(token_auth_methods=["client_secret_basic", "none"], registered_secret=None)
 
-    await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
 
     stored = connectors.get_connector(orch, "owner-1", saved["id"])
     assert stored["oauth_token_endpoint_auth_method"] == "none"
@@ -477,15 +485,14 @@ async def test_pending_callback_rejects_changed_token_auth_method():
     orch = _Orch()
     saved = _connector(orch, client_secret="client-secret")
     requester = _Requester(token_auth_methods=["client_secret_basic", "client_secret_post"])
-    authorization_url = await oauth.begin_authorization(
-        orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    authorization_url, binding = await _authorize(orch, saved["id"], requester)
     state = parse_qs(urlsplit(authorization_url).query)["state"][0]
     connector = connectors.get_connector(orch, "owner-1", saved["id"])
     connectors.update_oauth_credentials(
         orch, "owner-1", connector, {"oauth_token_endpoint_auth_method": "client_secret_post"})
 
     with pytest.raises(oauth.RemoteMCPOAuthError, match="connector changed"):
-        await oauth.complete_authorization(orch, "code-1", state, requester=requester)
+        await oauth.complete_authorization(orch, "code-1", state, binding=binding, session_owner="owner-1", requester=requester)
 
 
 @pytest.mark.asyncio
@@ -495,7 +502,7 @@ async def test_saved_token_method_must_remain_supported_by_server_metadata():
     requester = _Requester(token_auth_methods=["client_secret_basic"])
 
     with pytest.raises(oauth.RemoteMCPOAuthError, match="does not support the saved token"):
-        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
 
 
 @pytest.mark.parametrize("method,secret", [
@@ -520,7 +527,7 @@ async def test_rejects_malformed_unsupported_or_unusable_token_auth_metadata(met
     requester = _Requester(token_auth_methods=methods)
 
     with pytest.raises(oauth.RemoteMCPOAuthError, match=reason):
-        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
 
 
 @pytest.mark.asyncio
@@ -528,8 +535,7 @@ async def test_authorization_endpoint_preserves_provider_query():
     orch = _Orch()
     saved = _connector(orch)
     requester = _Requester(authorization_query="?tenant=demo")
-    authorization_url = await oauth.begin_authorization(
-        orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    authorization_url, binding = await _authorize(orch, saved["id"], requester)
     query = parse_qs(urlsplit(authorization_url).query)
     assert query["tenant"] == ["demo"]
     assert query["code_challenge_method"] == ["S256"]
@@ -550,8 +556,7 @@ async def test_resource_metadata_falls_back_from_endpoint_path_to_root_and_reque
         },
     )
 
-    authorization_url = await oauth.begin_authorization(
-        orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    authorization_url, binding = await _authorize(orch, saved["id"], requester)
 
     assert [call[0] for call in requester.calls if call[0] in (path_url, root_url)] == [path_url, root_url]
     assert parse_qs(urlsplit(authorization_url).query)["scope"] == ["read write"]
@@ -567,8 +572,7 @@ async def test_challenge_scope_overrides_supported_scopes():
         scopes_supported=("generic", "other"),
     )
 
-    authorization_url = await oauth.begin_authorization(
-        orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    authorization_url, binding = await _authorize(orch, saved["id"], requester)
 
     assert parse_qs(urlsplit(authorization_url).query)["scope"] == ["files:read files:write"]
 
@@ -596,7 +600,7 @@ async def test_issuer_path_discovery_uses_ordered_oauth_and_oidc_locations():
                                  path_urls[2]: (200, metadata)},
     )
 
-    await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
 
     requested = [call[0] for call in requester.calls if call[0] in path_urls]
     assert requested == list(path_urls)
@@ -617,7 +621,7 @@ async def test_root_issuer_discovery_falls_back_to_oidc_and_requires_pkce_metada
     }
     requester = _Requester(authorization_documents={oauth_url: (404, None), oidc_url: (200, metadata)})
 
-    await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
 
     assert [call[0] for call in requester.calls if call[0] in (oauth_url, oidc_url)] == [oauth_url, oidc_url]
 
@@ -629,7 +633,7 @@ async def test_root_issuer_discovery_falls_back_to_oidc_and_requires_pkce_metada
             invalid_metadata["code_challenge_methods_supported"] = methods
         requester = _Requester(authorization_documents={oauth_url: (200, invalid_metadata)})
         with pytest.raises(oauth.RemoteMCPOAuthError, match="PKCE S256"):
-            await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+            await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
 
 
 @pytest.mark.asyncio
@@ -665,8 +669,7 @@ async def test_authorization_server_selection_skips_invalid_candidates_and_is_bo
         },
     )
 
-    authorization_url = await oauth.begin_authorization(
-        orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    authorization_url, binding = await _authorize(orch, saved["id"], requester)
 
     requested = [call[0] for call in requester.calls if call[0] in
                  (bad_url, mismatch_url, selected_url, unvisited_url)]
@@ -684,7 +687,7 @@ async def test_rejects_cross_resource_oauth_metadata(requester, reason):
     orch = _Orch()
     saved = _connector(orch)
     with pytest.raises(oauth.RemoteMCPOAuthError, match=reason):
-        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
 
 
 @pytest.mark.asyncio
@@ -692,12 +695,11 @@ async def test_failed_token_exchange_does_not_store_access_token():
     orch = _Orch()
     saved = _connector(orch)
     requester = _Requester(token_status=400)
-    authorization_url = await oauth.begin_authorization(
-        orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    authorization_url, binding = await _authorize(orch, saved["id"], requester)
     state = parse_qs(urlsplit(authorization_url).query)["state"][0]
 
     with pytest.raises(oauth.RemoteMCPOAuthError, match="rejected"):
-        await oauth.complete_authorization(orch, "bad-code", state, requester=requester)
+        await oauth.complete_authorization(orch, "bad-code", state, binding=binding, session_owner="owner-1", requester=requester)
     assert not connectors.get_connector(orch, "owner-1", saved["id"]).get("access_token")
 
 
@@ -769,7 +771,7 @@ async def test_begin_authorization_denies_bad_challenge_metadata_and_scopes(chan
             challenge_header='Bearer resource_metadata="https://mcp.example/.well-known/oauth-protected-resource/mcp"',
         )
     with pytest.raises(oauth.RemoteMCPOAuthError, match=reason):
-        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
 
 
 @pytest.mark.asyncio
@@ -777,11 +779,11 @@ async def test_pending_oauth_state_rejects_tampering_expiry_and_cross_owner_payl
     orch = _Orch()
     saved = _connector(orch)
     requester = _Requester()
-    url = await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    url, binding = await _authorize(orch, saved["id"], requester)
     state = parse_qs(urlsplit(url).query)["state"][0]
 
     with pytest.raises(oauth.RemoteMCPOAuthError, match="expired"):
-        await oauth.complete_authorization(orch, "code", state[:-2] + "xx", requester=requester)
+        await oauth.complete_authorization(orch, "code", state[:-2] + "xx", binding=binding, session_owner="owner-1", requester=requester)
 
     state_expired = orch.credential_manager.seal_transient_state(
         json.dumps({"owner_id": "owner-1", "nonce": "0" * 32}))
@@ -795,20 +797,20 @@ async def test_pending_oauth_state_rejects_tampering_expiry_and_cross_owner_payl
                                                "expires_at": 0,
                                            }), e2e=False)
     with pytest.raises(oauth.RemoteMCPOAuthError, match="expired"):
-        await oauth.complete_authorization(orch, "code", state_expired, requester=requester)
+        await oauth.complete_authorization(orch, "code", state_expired, binding=binding, session_owner="owner-1", requester=requester)
 
     state_other = orch.credential_manager.seal_transient_state(
         json.dumps({"owner_id": "owner-2", "nonce": "1" * 32}))
     with pytest.raises(oauth.RemoteMCPOAuthError, match="expired"):
-        await oauth.complete_authorization(orch, "code", state_other, requester=requester)
+        await oauth.complete_authorization(orch, "code", state_other, binding=binding, session_owner="owner-1", requester=requester)
 
     state_bad_nonce = orch.credential_manager.seal_transient_state(
         json.dumps({"owner_id": "owner-1", "nonce": "not-a-nonce"}))
     with pytest.raises(oauth.RemoteMCPOAuthError, match="expired"):
-        await oauth.complete_authorization(orch, "code", state_bad_nonce, requester=requester)
+        await oauth.complete_authorization(orch, "code", state_bad_nonce, binding=binding, session_owner="owner-1", requester=requester)
     for invalid_state in ("", "short"):
         with pytest.raises(oauth.RemoteMCPOAuthError, match="expired"):
-            await oauth.complete_authorization(orch, "code", invalid_state, requester=requester)
+            await oauth.complete_authorization(orch, "code", invalid_state, binding=binding, session_owner="owner-1", requester=requester)
 
 
 @pytest.mark.asyncio
@@ -816,20 +818,20 @@ async def test_complete_authorization_consumes_state_before_rejecting_invalid_co
     orch = _Orch()
     saved = _connector(orch)
     requester = _Requester()
-    url = await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    url, binding = await _authorize(orch, saved["id"], requester)
     state = parse_qs(urlsplit(url).query)["state"][0]
     with pytest.raises(oauth.RemoteMCPOAuthError, match="code was invalid"):
-        await oauth.complete_authorization(orch, "bad\ncode", state, requester=requester)
+        await oauth.complete_authorization(orch, "bad\ncode", state, binding=binding, session_owner="owner-1", requester=requester)
     with pytest.raises(oauth.RemoteMCPOAuthError, match="expired"):
-        await oauth.complete_authorization(orch, "valid", state, requester=requester)
+        await oauth.complete_authorization(orch, "valid", state, binding=binding, session_owner="owner-1", requester=requester)
 
-    url = await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    url, binding = await _authorize(orch, saved["id"], requester)
     state = parse_qs(urlsplit(url).query)["state"][0]
     changed = connectors.get_connector(orch, "owner-1", saved["id"])
     changed["oauth_client_id"] = "replacement-client"
     connectors.save_connector(orch, "owner-1", changed)
     with pytest.raises(oauth.RemoteMCPOAuthError, match="connector changed"):
-        await oauth.complete_authorization(orch, "valid", state, requester=requester)
+        await oauth.complete_authorization(orch, "valid", state, binding=binding, session_owner="owner-1", requester=requester)
 
 
 @pytest.mark.asyncio
@@ -839,14 +841,14 @@ async def test_complete_authorization_rejects_client_secret_rotation_during_sign
     saved["oauth_client_secret"] = "secret-old"
     connectors.save_connector(orch, "owner-1", saved)
     requester = _Requester(token_auth_methods=["client_secret_basic"])
-    url = await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    url, binding = await _authorize(orch, saved["id"], requester)
     state = parse_qs(urlsplit(url).query)["state"][0]
     changed = connectors.get_connector(orch, "owner-1", saved["id"])
     changed["oauth_client_secret"] = "secret-new"
     connectors.save_connector(orch, "owner-1", changed)
 
     with pytest.raises(oauth.RemoteMCPOAuthError, match="connector changed"):
-        await oauth.complete_authorization(orch, "valid", state, requester=requester)
+        await oauth.complete_authorization(orch, "valid", state, binding=binding, session_owner="owner-1", requester=requester)
     assert not connectors.get_connector(orch, "owner-1", saved["id"]).get("access_token")
 
 
@@ -867,10 +869,10 @@ async def test_exchange_rejects_invalid_token_payloads(token, reason):
             return await super().__call__(url, method, body, headers, maximum)
 
     requester = TokenRequester()
-    url = await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+    url, binding = await _authorize(orch, saved["id"], requester)
     state = parse_qs(urlsplit(url).query)["state"][0]
     with pytest.raises(oauth.RemoteMCPOAuthError, match=reason):
-        await oauth.complete_authorization(orch, "valid-code", state, requester=requester)
+        await oauth.complete_authorization(orch, "valid-code", state, binding=binding, session_owner="owner-1", requester=requester)
 
 
 @pytest.mark.asyncio
@@ -947,7 +949,7 @@ async def test_pending_state_expires_and_pending_limit_prunes_old_entries(monkey
                                json.dumps({"expires_at": 10**20}), e2e=False)
     requester = _Requester()
     with pytest.raises(oauth.RemoteMCPOAuthError, match="Too many"):
-        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
     assert "_pending_expired" not in manager.list_credential_keys("owner-1", oauth._PENDING_AGENT)
 
 
@@ -985,7 +987,7 @@ async def test_oauth_response_preserves_settings_changed_during_provider_request
     base_requester = _Requester()
     state = ""
     if operation == "callback":
-        url = await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=base_requester)
+        url, binding = await _authorize(orch, saved["id"], base_requester)
         state = parse_qs(urlsplit(url).query)["state"][0]
 
     async def requester(url, method, body, headers, maximum):
@@ -996,11 +998,11 @@ async def test_oauth_response_preserves_settings_changed_during_provider_request
         return await base_requester(url, method, body, headers, maximum)
 
     if operation == "callback":
-        await oauth.complete_authorization(orch, "code", state, requester=requester)
+        await oauth.complete_authorization(orch, "code", state, binding=binding, session_owner="owner-1", requester=requester)
     elif operation == "refresh":
         await oauth.refresh_authorization(orch, "owner-1", saved["id"], requester=requester)
     else:
-        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
     current = connectors.get_connector(orch, "owner-1", saved["id"])
     assert current["enabled"] is False
     assert current["name"] == "User edited"
@@ -1024,7 +1026,7 @@ async def test_oauth_response_cannot_recreate_or_restore_changed_connector(opera
                                 registered_method="client_secret_basic", registered_secret="issued-secret")
     state = ""
     if operation == "callback":
-        url = await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=base_requester)
+        url, binding = await _authorize(orch, saved["id"], base_requester)
         state = parse_qs(urlsplit(url).query)["state"][0]
 
     async def requester(url, method, body, headers, maximum):
@@ -1043,11 +1045,11 @@ async def test_oauth_response_cannot_recreate_or_restore_changed_connector(opera
 
     with pytest.raises((oauth.RemoteMCPOAuthError, connectors.RemoteMCPError)):
         if operation == "callback":
-            await oauth.complete_authorization(orch, "code", state, requester=requester)
+            await oauth.complete_authorization(orch, "code", state, binding=binding, session_owner="owner-1", requester=requester)
         elif operation == "refresh":
             await oauth.refresh_authorization(orch, "owner-1", saved["id"], requester=requester)
         else:
-            await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, requester=requester)
+            await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
     if mutation == "delete":
         assert connectors.list_connectors(orch, "owner-1") == []
     else:
@@ -1108,3 +1110,304 @@ def test_oauth_credential_update_retries_settings_only_conflict_and_bounds_conte
     assert connectors.get_connector(orch, "owner-1", saved["id"])["access_token"] == "new"
     with pytest.raises(connectors.RemoteMCPError, match="invalid"):
         connectors.update_oauth_credentials(orch, "owner-1", expected, {"enabled": True})
+
+
+def _pending_record(orch, owner="owner-1"):
+    manager = orch.credential_manager
+    [key] = manager.list_credential_keys(owner, oauth._PENDING_AGENT)
+    return key, json.loads(manager.get_credential(owner, oauth._PENDING_AGENT, key))
+
+
+def _token_calls(requester):
+    return [url for url, _method, _body in requester.calls if url == ISSUER + "/token"]
+
+
+@pytest.mark.asyncio
+async def test_begin_returns_only_a_server_start_url_and_bind_reveals_provider_url_once():
+    orch = _Orch()
+    saved = _connector(orch)
+    requester = _Requester()
+    start_url = await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
+    state = parse_qs(urlsplit(start_url).query)["state"][0]
+    assert parse_qs(urlsplit(start_url).query) == {"state": [state]}
+    assert _pending_record(orch)[1]["binding"] == ""
+
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="different AstralDeep account"):
+        await oauth.bind_authorization(orch, "owner-2", state)
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="different AstralDeep account"):
+        await oauth.bind_authorization(orch, None, state)
+    authorization_url, binding = await oauth.bind_authorization(orch, "owner-1", state)
+
+    query = parse_qs(urlsplit(authorization_url).query)
+    _key, record = _pending_record(orch)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(record["verifier"].encode()).digest()).rstrip(b"=").decode()
+    assert authorization_url.startswith(ISSUER + "/authorize?")
+    assert query["state"] == [state]
+    assert query["code_challenge"] == [challenge]
+    assert query["redirect_uri"] == [CALLBACK]
+    assert record["binding"] == hashlib.sha256(binding.encode()).hexdigest()
+    assert binding not in json.dumps(record)
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="already opened in a browser"):
+        await oauth.bind_authorization(orch, "owner-1", state)
+    assert _pending_record(orch)[1] == record
+    assert await oauth.complete_authorization(orch, "code-1", state, binding=binding, session_owner="owner-1",
+                                              requester=requester) == saved["id"]
+
+
+@pytest.mark.asyncio
+async def test_bind_refuses_when_a_concurrent_writer_changed_the_pending_record(monkeypatch):
+    orch = _Orch()
+    saved = _connector(orch)
+    requester = _Requester()
+    start_url = await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
+    state = parse_qs(urlsplit(start_url).query)["state"][0]
+    before = _pending_record(orch)
+    monkeypatch.setattr(orch.credential_manager, "compare_and_set_credential", lambda *_args: False)
+
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="already opened in a browser"):
+        await oauth.bind_authorization(orch, "owner-1", state)
+    assert _pending_record(orch) == before
+
+
+@pytest.mark.asyncio
+async def test_begin_rejects_an_unsafe_start_url_before_contacting_the_server():
+    orch = _Orch()
+    saved = _connector(orch)
+    requester = _Requester()
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="public HTTPS"):
+        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK,
+                                        "http://astral.example/api/remote-mcp/oauth/start", requester=requester)
+    assert requester.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("presented", [None, "", "short", "x" * 129, "é" * 43, "wrong"])
+async def test_callback_without_the_starting_browser_binding_is_refused_and_consumed(presented):
+    orch = _Orch()
+    saved = _connector(orch)
+    requester = _Requester()
+    authorization_url, binding = await _authorize(orch, saved["id"], requester)
+    state = parse_qs(urlsplit(authorization_url).query)["state"][0]
+    if presented == "wrong":
+        presented = secrets.token_urlsafe(32)
+
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="not started in this browser"):
+        await oauth.complete_authorization(orch, "code-1", state, binding=presented, session_owner="owner-1", requester=requester)
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="expired"):
+        await oauth.complete_authorization(orch, "code-1", state, binding=binding, session_owner="owner-1", requester=requester)
+    assert _token_calls(requester) == []
+    assert not connectors.get_connector(orch, "owner-1", saved["id"]).get("access_token")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session_owner,accepted", [
+    (None, False), ("owner-2", False), ("", False), ("owner-1", True),
+])
+async def test_callback_web_session_must_belong_to_the_flow_owner(session_owner, accepted):
+    orch = _Orch()
+    saved = _connector(orch)
+    requester = _Requester()
+    authorization_url, binding = await _authorize(orch, saved["id"], requester)
+    state = parse_qs(urlsplit(authorization_url).query)["state"][0]
+
+    if accepted:
+        assert await oauth.complete_authorization(orch, "code-1", state, binding=binding,
+                                                  session_owner=session_owner, requester=requester) == saved["id"]
+        assert connectors.get_connector(orch, "owner-1", saved["id"])["access_token"] == "access-1"
+        return
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="not started in this browser"):
+        await oauth.complete_authorization(orch, "code-1", state, binding=binding,
+                                           session_owner=session_owner, requester=requester)
+    assert _token_calls(requester) == []
+    assert not connectors.get_connector(orch, "owner-1", saved["id"]).get("access_token")
+
+
+@pytest.mark.asyncio
+async def test_bind_and_callback_refuse_tampered_expired_and_unbound_pending_state():
+    orch = _Orch()
+    saved = _connector(orch)
+    requester = _Requester()
+    manager = orch.credential_manager
+    start_url = await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
+    state = parse_qs(urlsplit(start_url).query)["state"][0]
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="expired"):
+        await oauth.bind_authorization(orch, "owner-1", state[:-2] + "xx")
+    key, record = _pending_record(orch)
+    manager.set_credential("owner-1", oauth._PENDING_AGENT, key,
+                           json.dumps({**record, "expires_at": 0}), e2e=False)
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="expired"):
+        await oauth.bind_authorization(orch, "owner-1", state)
+
+    authorization_url, binding = await _authorize(orch, saved["id"], requester)
+    state = parse_qs(urlsplit(authorization_url).query)["state"][0]
+    key, record = _pending_record(orch)
+    manager.set_credential("owner-1", oauth._PENDING_AGENT, key,
+                           json.dumps({**record, "expires_at": 0}), e2e=False)
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="expired"):
+        await oauth.complete_authorization(orch, "code-1", state, binding=binding, session_owner="owner-1", requester=requester)
+
+    legacy = {"owner_id": "owner-1", "connector_id": saved["id"], "endpoint": RESOURCE,
+              "client_id": "client-1", "client_secret": "", "token_endpoint": ISSUER + "/token",
+              "redirect_uri": CALLBACK, "resource": RESOURCE, "verifier": "v", "scope": "",
+              "expires_at": 10**20}
+    for nonce in ("2" * 32, "3" * 32):
+        manager.set_credential("owner-1", oauth._PENDING_AGENT, oauth._PENDING_PREFIX + nonce,
+                               json.dumps(legacy), e2e=False)
+    legacy_bind = manager.seal_transient_state(json.dumps({"owner_id": "owner-1", "nonce": "2" * 32}))
+    legacy_callback = manager.seal_transient_state(json.dumps({"owner_id": "owner-1", "nonce": "3" * 32}))
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="expired"):
+        await oauth.bind_authorization(orch, "owner-1", legacy_bind)
+    with pytest.raises(oauth.RemoteMCPOAuthError, match="not started in this browser"):
+        await oauth.complete_authorization(orch, "code-1", legacy_callback, binding=binding,
+                                           session_owner="owner-1", requester=requester)
+    assert _token_calls(requester) == []
+    assert manager.list_credential_keys("owner-1", oauth._PENDING_AGENT) == [oauth._PENDING_PREFIX + "2" * 32]
+
+
+class _Browser:
+    def __init__(self, owner=None):
+        self.owner = owner
+        self.cookies = {}
+
+    def request(self, path, **query):
+        cookies = dict(self.cookies)
+        if self.owner:
+            cookies["astral_session"] = "session-" + self.owner
+        headers = [(b"host", b"astral.example"), (b"accept", b"text/html")]
+        if cookies:
+            headers.append((b"cookie", "; ".join(f"{key}={value}" for key, value in cookies.items()).encode()))
+        return StarletteRequest({"type": "http", "method": "GET", "path": path, "raw_path": path.encode(),
+                                 "query_string": urlencode(query).encode(), "headers": headers,
+                                 "root_path": "", "client": ("127.0.0.1", 1),
+                                 "server": ("astral.example", 443), "scheme": "https", "http_version": "1.1"})
+
+    def keep(self, response):
+        for name, value in response.raw_headers:
+            if name == b"set-cookie":
+                key, _separator, rest = value.decode().partition("=")
+                cookie_value = rest.split(";", 1)[0]
+                if cookie_value in ("", '""'):
+                    self.cookies.pop(key, None)
+                else:
+                    self.cookies[key] = cookie_value
+        return response
+
+    async def start(self, state):
+        return self.keep(await remote_mcp_api.remote_mcp_oauth_start(
+            self.request("/api/remote-mcp/oauth/start", state=state), state=state))
+
+    async def callback(self, code, state):
+        return self.keep(await remote_mcp_api.remote_mcp_oauth_callback(
+            self.request("/api/remote-mcp/oauth/callback", code=code, state=state), code=code, state=state))
+
+
+@pytest.fixture
+def browser_flow(monkeypatch):
+    from orchestrator import auth, web_auth
+
+    orch = _Orch()
+    saved = _connector(orch)
+    requester = _Requester()
+
+    async def session(request):
+        cookie = request.cookies.get("astral_session", "")
+        owner = cookie.removeprefix("session-")
+        return {"access_token": "token-" + owner, "sub": owner} if cookie else None
+
+    async def payload(_request, credentials):
+        return {"sub": credentials.credentials.removeprefix("token-"), "realm_access": {"roles": ["user"]}}
+
+    monkeypatch.setattr(web_auth, "ensure_session", session)
+    monkeypatch.setattr(web_auth, "aget_session", session)
+    monkeypatch.setattr(auth, "get_current_user_payload", payload)
+    monkeypatch.setattr(remote_mcp_api, "_get_orchestrator", lambda request: orch)
+    monkeypatch.setattr(connectors, "http_request", requester)
+
+    async def begin():
+        start_url = await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START,
+                                                    requester=requester)
+        return parse_qs(urlsplit(start_url).query)["state"][0]
+
+    return SimpleNamespace(orch=orch, saved=saved, requester=requester, begin=begin)
+
+
+@pytest.mark.asyncio
+async def test_owner_browser_completes_flow_it_started(browser_flow):
+    state = await browser_flow.begin()
+    owner = _Browser("owner-1")
+
+    started = await owner.start(state)
+    assert started.status_code == 303
+    assert parse_qs(urlsplit(started.headers["location"]).query)["state"] == [state]
+    assert list(owner.cookies) == [remote_mcp_api._binding_cookie(state)]
+    done = await owner.callback("code-1", state)
+
+    assert done.status_code == 200
+    assert owner.cookies == {}
+    stored = connectors.get_connector(browser_flow.orch, "owner-1", browser_flow.saved["id"])
+    assert stored["access_token"] == "access-1"
+    replay = await owner.callback("code-1", state)
+    assert replay.status_code == 400
+    assert len(_token_calls(browser_flow.requester)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("victim_session", [None, "victim"])
+async def test_forwarded_provider_link_cannot_land_victim_authorization_in_initiator_connector(
+        browser_flow, victim_session):
+    state = await browser_flow.begin()
+    attacker = _Browser("owner-1")
+    assert (await attacker.start(state)).status_code == 303
+    victim = _Browser(victim_session)
+
+    landed = await victim.callback("victim-code", state)
+    late = await attacker.callback("victim-code", state)
+
+    assert landed.status_code == 400
+    assert late.status_code == 400
+    assert _token_calls(browser_flow.requester) == []
+    assert not connectors.get_connector(browser_flow.orch, "owner-1", browser_flow.saved["id"]).get("access_token")
+
+
+@pytest.mark.asyncio
+async def test_forwarded_start_link_requires_the_owner_signed_in_in_that_browser(browser_flow):
+    state = await browser_flow.begin()
+    signed_out = _Browser()
+    sign_in = await signed_out.start(state)
+    assert sign_in.status_code == 303
+    assert sign_in.headers["location"].startswith("/auth/login?next=")
+    victim = _Browser("victim")
+    refused = await victim.start(state)
+    assert refused.status_code == 400
+    assert signed_out.cookies == {} and victim.cookies == {}
+
+    owner = _Browser("owner-1")
+    assert (await owner.start(state)).status_code == 303
+    assert (await victim.callback("victim-code", state)).status_code == 400
+    assert _token_calls(browser_flow.requester) == []
+
+
+@pytest.mark.asyncio
+async def test_reopening_the_start_link_keeps_the_first_browser_flow(browser_flow):
+    state = await browser_flow.begin()
+    first = _Browser("owner-1")
+    second = _Browser("owner-1")
+    assert (await first.start(state)).status_code == 303
+
+    assert (await second.start(state)).status_code == 400
+    assert second.cookies == {}
+    assert (await first.callback("code-1", state)).status_code == 200
+    assert connectors.get_connector(browser_flow.orch, "owner-1", browser_flow.saved["id"])["access_token"] == "access-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("later_owner", ["owner-2", None])
+async def test_binding_cookie_is_refused_after_the_browser_switches_or_leaves_account(browser_flow, later_owner):
+    state = await browser_flow.begin()
+    browser = _Browser("owner-1")
+    assert (await browser.start(state)).status_code == 303
+    browser.owner = later_owner
+
+    assert (await browser.callback("code-1", state)).status_code == 400
+    assert _token_calls(browser_flow.requester) == []
+    assert not connectors.get_connector(browser_flow.orch, "owner-1", browser_flow.saved["id"]).get("access_token")
