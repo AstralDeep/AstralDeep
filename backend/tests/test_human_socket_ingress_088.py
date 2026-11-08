@@ -16,7 +16,9 @@ import pytest
 
 from orchestrator import chrome_events, human_request_authority as human
 from orchestrator import orchestrator as module
-from orchestrator.work_admission import OperationState, WorkAdmissionCoordinator
+from orchestrator.work_admission import (
+    AdmissionClass, OperationOwner, OperationRequest, OperationState, OwnerScope, WorkAdmissionCoordinator,
+)
 from persistent_agents.models import AssignmentError
 from tests.helpers.session_plane_runtime import get_session_record, replace_session_record
 from tests.test_work_surface_ingress_088 import (
@@ -394,6 +396,71 @@ async def test_preselected_wait_is_bounded_without_reordering_the_lane(metadata,
     finally:
         if not predecessor.done():
             predecessor.set_result(None)
+
+
+async def test_unselected_work_claims_only_after_its_predecessors(metadata, runtime, monkeypatch):
+    state, calls, _ = metadata
+    coordinator = await asyncio.to_thread(
+        WorkAdmissionCoordinator.from_plane, plane_runtime=runtime, clock=_Clock(), slot_lease=timedelta(seconds=60))
+    state.orch.work_admission = coordinator
+    await asyncio.to_thread(coordinator.expire_queued)
+
+    def filler():
+        owner = OperationOwner(OwnerScope.CONNECTION, None, uuid4())
+        return owner, OperationRequest(
+            operation_kind="capacity_filler", admission_class=AdmissionClass.INTERACTIVE, owner=owner,
+            submission_id=uuid4(), idempotency_namespace=None, idempotency_key=None,
+            normalized_input_digest=None, chat_id=None, parent_operation_id=None,
+            connection_generation=None, request_generation=None)
+
+    def fill():
+        held = []
+        while True:
+            owner, request = filler()
+            admitted = coordinator.submit(request)
+            if admitted.state is OperationState.QUEUED:
+                coordinator.cancel(owner=owner, operation_id=admitted.operation_id, terminal_code="cancelled_by_user")
+                return held
+            held.append(coordinator.claim_operation(AdmissionClass.INTERACTIVE, admitted.operation_id).fence)
+
+    def release(fence):
+        coordinator.terminalize(fence, state=OperationState.CANCELLED, terminal_code="cancelled_by_user",
+                                safe_summary=None, retry_after_ms=None)
+
+    held = await asyncio.to_thread(fill)
+    await registered(state)
+    predecessor = _parked_behind(state)
+    events, parked = [], asyncio.Event()
+    original, phase = state.orch._call_work_admission, state.orch._emit_long_running_operation_phase
+
+    async def observed(callback, *args, **kwargs):
+        events.append(getattr(callback, "__name__", ""))
+        return await original(callback, *args, **kwargs)
+
+    async def lane_wait(host_context, work):
+        parked.set()
+        return await phase(host_context, work)
+
+    monkeypatch.setattr(state.orch, "_call_work_admission", observed)
+    monkeypatch.setattr(state.orch, "_emit_long_running_operation_phase", lane_wait)
+    generation = send(state, "chrome_user_skill_edit", attempt_write=False)
+    try:
+        await asyncio.wait_for(parked.wait(), 5)
+        work = _waiting_operation(state, generation)
+        assert not work.preselected and "claim_operation" not in events
+        assert work.fence is None and not work.task.done()
+        await asyncio.to_thread(release, held.pop())
+        await state.orch._notify_interactive_capacity()
+        events.append("predecessor_done")
+        predecessor.set_result(None)
+        assert (await terminal(state))["state"] == "completed"
+        assert events.index("predecessor_done") < events.index("claim_operation")
+        assert len(calls) == 1
+    finally:
+        if not predecessor.done():
+            predecessor.set_result(None)
+        for fence in held:
+            await asyncio.to_thread(release, fence)
 
 
 async def _chat_behind_a_turn(state, monkeypatch, fixture):
