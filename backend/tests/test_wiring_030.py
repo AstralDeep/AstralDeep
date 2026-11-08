@@ -683,6 +683,12 @@ def test_concise_lead_falls_back_to_a_word_cut_when_only_list_markers_remain():
     assert lead.endswith("…")
 
 
+def test_concise_lead_ends_at_a_sentence_that_closes_on_a_year():
+    first = "The society published its most recent revision of the hypertension management guideline in 2024."
+    content = first + " " + "Further detail about each recommendation follows here " * 8
+    assert Orchestrator._concise_lead(content) == first
+
+
 def test_narrative_doc_card_identity_stable_per_title():
     a1 = Orchestrator._narrative_doc_card("chat-1", "## Specific Aims\nv1 text")
     a2 = Orchestrator._narrative_doc_card("chat-1", "## Specific Aims\nv2 revised")
