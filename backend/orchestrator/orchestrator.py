@@ -48,6 +48,8 @@ from orchestrator.connection_context import (
     _WORKSPACE_MUTATION_LOCKS,
 )
 from orchestrator.tool_permissions import ToolPermissionManager
+from orchestrator import turn_steer
+from orchestrator import side_question
 from orchestrator.credential_manager import CredentialManager
 from orchestrator.delegation import DelegationService
 from orchestrator.tool_security import ToolSecurityAnalyzer
@@ -6127,6 +6129,10 @@ class Orchestrator:
             return frame_type
         if frame_type == "ui_event" and frame.get("action") == "cancel_task":
             return "cancel_task"
+        if frame_type == "ui_event" and frame.get("action") == "chat_steer":
+            return "chat_steer"
+        if frame_type == "ui_event" and frame.get("action") == "side_question":
+            return "side_question"
         if frame_type in {"cancel", "cancel_task"}:
             return "cancel_task"
         return None
@@ -9341,6 +9347,22 @@ class Orchestrator:
                 return False
             context.preregistration.append(raw)
             return True
+        if control == "chat_steer":
+            # Off the operation lane: a steer must reach the turn it is steering while it runs.
+            self._track_connection_task(
+                context,
+                self._run_ui_control(context, raw),
+                name=f"connection-control-{control}-{context.connection_scope_id}",
+            )
+            return True
+        if control == "side_question":
+            # Off the operation lane: a side question is answered while the turn keeps running.
+            self._track_connection_task(
+                context,
+                self._run_ui_control(context, raw),
+                name=f"connection-control-{control}-{context.connection_scope_id}",
+            )
+            return True
         if control in {
             "voice_playout_event",
             "voice_local_ready",
@@ -10480,6 +10502,8 @@ class Orchestrator:
                     rote_profile = self.rote.register_device(websocket, device_info)
                     user_data["_project_workspaces_v1"] = project_workspaces_negotiated(
                         rote_profile, device_info, user_data["_client_capabilities"])
+                    user_data["_turn_steer_v1"] = turn_steer.negotiated(
+                        rote_profile, device_info, user_data["_client_capabilities"])
                     user_data["_project_device_id"] = msg.device_id
                     user_data["_project_connection_generation"] = msg.connection_generation
                     if _ch is not None and flags.is_enabled("computer_use"):
@@ -10712,7 +10736,8 @@ class Orchestrator:
                         int((time.monotonic() - _register_started) * 1000), user_id)
                     ready = json.dumps({
                         "type": "rote_config",
-                        "device_profile": self.rote.get_profile(websocket).to_dict(),
+                        "device_profile": turn_steer.acknowledge(
+                            self.rote.get_profile(websocket).to_dict(), user_data["_turn_steer_v1"]),
                         "speech_server_available": self.speech_server_available(),
                         "viewport_snapshot_supported": True,
                     })
@@ -10999,6 +11024,14 @@ class Orchestrator:
 
                 elif msg.action == "cancel_task":
                     await self._cancel_turn(websocket, user_id, self._ws_active_chat.get(id(websocket)))
+
+                elif msg.action == "chat_steer":
+                    await turn_steer.receive(
+                        self, websocket, user_id, self._ws_active_chat.get(id(websocket)), msg.payload)
+
+                elif msg.action == "side_question":
+                    await side_question.answer(
+                        self, websocket, user_id, self._ws_active_chat.get(id(websocket)), msg.payload)
 
                 elif msg.action == "watch_task":
                     task_id = msg.payload.get("task_id")
@@ -11696,7 +11729,8 @@ class Orchestrator:
                                         or "base_render_revision" in msg.payload)
                     device_ack = {
                         "type": "rote_config",
-                        "device_profile": new_profile.to_dict(),
+                        "device_profile": turn_steer.acknowledge(
+                            new_profile.to_dict(), (registration or {}).get("_turn_steer_v1") is True),
                         "speech_server_available": self.speech_server_available(),
                         "viewport_snapshot_supported": True,
                     }
@@ -15642,6 +15676,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     execution_fence=authority_fence,
                 )
 
+            turn_steer.open_turn(self, websocket, chat_id, user_id, msg_to_save)
             while turn_count < MAX_TURNS or self.cancelled_sessions.get(id(websocket)):
                 if self.cancelled_sessions.get(id(websocket)):
                     task_terminal_on_exit = TaskState.CANCELLED
@@ -15681,6 +15716,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                 turn_count += 1
                 logger.info(f"--- Turn {turn_count}/{MAX_TURNS} ---")
+                if turn_count > 1:
+                    await turn_steer.deliver(self, websocket, chat_id, user_id, conversation_stage, messages,
+                                             screened=typesafe_decision is not None)
                 if goal_progress is not None:
                     from orchestrator.goal_execution import budget_notice
 
@@ -17165,6 +17203,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     Alert(message=error_text, variant="error", title="Error").to_dict()
                 ])
         finally:
+            unapplied_steers = turn_steer.close_turn(self, websocket, chat_id, user_id)
             if task_terminal_on_exit is not None and voice_dispatch is not None:
                 self._remember_voice_operation_terminal_intent(
                     task_terminal_on_exit
@@ -17203,6 +17242,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 heartbeat_task.cancel()
             if active_request_token is not None:
                 _ACTIVE_REQUEST_TEXT.reset(active_request_token)
+            await turn_steer.hand_back(self, websocket, chat_id, unapplied_steers)
 
     def _accumulate_usage(self, chat_id: Optional[str], usage):
         if not usage or not chat_id:
