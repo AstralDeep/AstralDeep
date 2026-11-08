@@ -7,7 +7,6 @@ import asyncio
 import json
 import uuid
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
