@@ -18270,6 +18270,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return tool_failure_content(tool_name, res.error)
         result = getattr(res, "result", None)
         if not result:
+            if getattr(res, "ui_components", None):
+                from orchestrator.tool_feedback import ui_only_content
+                return ui_only_content(res.ui_components)
             return "No output"
         if isinstance(result, dict) and result.get("_model_digest") is not None:
             digest = result["_model_digest"]
