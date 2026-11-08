@@ -268,6 +268,7 @@ def test_failed_expressions_are_reported_instead_of_silently_dropping_rows():
     )
     assert rows == []
     assert "could not be evaluated 1 times" in str(result["_ui_components"])
+    assert result["_data"]["failed_evaluations"] == 1
 
 
 def test_a_clean_run_has_no_evaluation_warning():
@@ -276,6 +277,7 @@ def test_a_clean_run_has_no_evaluation_warning():
         {"action": "filter_rows", "expression": "row['age'] > 18"},
     )
     assert "could not be evaluated" not in str(result["_ui_components"])
+    assert result["_data"]["failed_evaluations"] == 0
 
 
 def test_column_field_selects_the_column():
@@ -300,6 +302,14 @@ def test_schema_offers_column_and_not_name():
     item = schema["properties"]["modifications"]["items"]["properties"]
     assert "column" in item
     assert "name" not in item
+
+
+def test_schema_says_numeric_cells_compare_as_numbers():
+    from agents.general.mcp_tools import TOOL_REGISTRY
+
+    schema = TOOL_REGISTRY["modify_data"]["input_schema"]
+    expression = schema["properties"]["modifications"]["items"]["properties"]["expression"]
+    assert "compare with 30, not '30'" in expression["description"]
 
 
 def test_column_steps_can_be_reviewed():

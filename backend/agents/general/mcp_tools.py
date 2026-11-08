@@ -180,7 +180,7 @@ def _confine_input_path(file_path: str, user_id: str) -> Optional[str]:
 
 
 def _numeric_cell(value: Any) -> Any:
-    """Reads a CSV number for math. A leading zero marks an identifier, which stays text."""
+    # a leading zero marks an identifier, which stays text
     if isinstance(value, str) and re.fullmatch(r"-?(0|[1-9]\d*)(\.\d+)?", value.strip()):
         text = value.strip()
         return float(text) if "." in text else int(text)
@@ -486,7 +486,8 @@ def modify_data(
                 "file_path": out_file_path,
                 "rows_count": len(rows),
                 "output_format": output_format,
-                "modifications_applied": len(modifications)
+                "modifications_applied": len(modifications),
+                "failed_evaluations": failed_evaluations
             }
         }
 
@@ -1330,7 +1331,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                             "action": {"type": "string", "description": "Action to perform: 'add_column', 'update_column', 'calculate_column', 'drop_column', 'rename_column', 'filter_rows', 'sort_rows'"},
                             "column": {"type": "string", "description": "Column name (can be empty for filter_rows)"},
                             "value": {"type": "string", "description": "Static value, or new_name for rename_column, or 'asc'/'desc' for sort_rows"},
-                            "expression": {"type": "string", "description": "Python-like expression using row['column'] for per‑row calculation (e.g., \"row['age'] * 2\" or \"row['age'] > 18\" for filtering)"},
+                            "expression": {"type": "string", "description": "Python-like expression using row['column'] for per‑row calculation (e.g., \"row['age'] * 2\" or \"row['age'] > 18\" for filtering). Numeric CSV cells are numbers (leading-zero values stay text), so compare with 30, not '30'."},
                             "default": {"type": "string", "description": "Fallback value if expression evaluation fails"},
                             "overwrite": {"type": "boolean", "description": "Whether to overwrite existing column (default true)"},
                             "dtype": {"type": "string", "description": "Data type for conversion: 'string', 'integer', 'float', 'boolean'"}
