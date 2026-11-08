@@ -70,3 +70,17 @@ async def test_a_broken_component_payload_is_still_retried(plain_orch, user_skil
     assert len(calls) == 2
     assert "SYSTEM RECOVERY" in json.dumps(calls[1], default=str)
     assert "Tide is high." in stored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply, retried", [
+    ('{"type": "object", "properties": {"name": {"type": "string"},}}', False),
+    ('[{"type": "Alert", "message": "Tide is high.",}]', True),
+])
+async def test_only_malformed_json_naming_a_component_type_is_retried(
+    plain_orch, user_skills_disabled, reply, retried,
+):
+    calls, stored = await _turn(plain_orch, [reply, "Tide is high."])
+    assert len(calls) == (2 if retried else 1)
+    assert ("SYSTEM RECOVERY" in json.dumps(calls[-1], default=str)) is retried
+    assert ("Tide is high." if retried else "properties") in stored

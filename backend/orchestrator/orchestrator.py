@@ -16767,6 +16767,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             logger.info("Extracted trailing JSON from mixed text+JSON response")
 
                     if looks_like_json and not _transient_evidence_turn:
+                        from webrender import allowed_primitive_types
+                        allowed = set(allowed_primitive_types()) | {"chart"}
                         try:
                             try:
                                 data = json.loads(raw_json)
@@ -16798,8 +16800,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             
                             valid_components = []
                             if isinstance(data, list):
-                                from webrender import allowed_primitive_types
-                                allowed = set(allowed_primitive_types()) | {"chart"}
                                 # JSON the user asked for is an answer, not a failed attempt at components.
                                 if any(isinstance(item, dict) and isinstance(item.get("type"), str)
                                        and item["type"].strip().lower() in allowed for item in data):
@@ -16812,7 +16812,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 parsed_components = valid_components
 
                         except Exception as e:
-                            needs_retry = stripped.startswith(("{", "[")) and '"type"' in stripped
+                            needs_retry = any(name.strip().lower() in allowed
+                                              for name in re.findall(r'"type"\s*:\s*"([^"]+)"', raw_json))
                             error_msg = f"Failed to parse UI components. The output is not valid JSON. Error: {str(e)}. Please respond ONLY with valid JSON, with NO surrounding text or markdown formatting."
                     
                     if needs_retry and turn_count < MAX_TURNS:
