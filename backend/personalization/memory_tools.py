@@ -366,7 +366,7 @@ class MemoryTools:
             return {"stored": False, "action": "noop",
                     "reason": "already remembered"}
         if action == "DELETE" and tgt is not None:
-            self.repo.delete_memory(user_id, tgt["id"])
+            self.repo.supersede_memory(user_id, tgt["id"], None)
             logger.info("memory.reconcile_delete",
                         extra={"user_id": user_id, "superseded": tgt["id"]})
             return {"stored": False, "action": "delete", "superseded": tgt["id"]}

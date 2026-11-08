@@ -145,7 +145,7 @@ async def test_update_supersedes_old():
     assert [r["value"] for r in live] == ["Lives in Seattle"]
 
 
-async def test_delete_erases_without_adding():
+async def test_delete_supersedes_without_adding_or_erasing():
     repo = _FakeRepo()
     old = repo.create_memory("u", "workflow_tag", "Uses Vim")
     mt = _mt(repo)
@@ -153,7 +153,8 @@ async def test_delete_erases_without_adding():
                                        llm_call=_stub_llm('{"action":"DELETE","target":1}'))
     assert res["stored"] is False and res["action"] == "delete"
     assert res["superseded"] == old["id"]
-    assert repo.rows == []
+    assert repo.list_memory("u") == []
+    assert [(r["id"], r["superseded_at"]) for r in repo.rows] == [(old["id"], 1)]
 
 
 async def test_noop_changes_nothing():

@@ -115,7 +115,7 @@ def test_forget_reports_an_id_that_is_not_a_memory_id():
     assert len(repo.memory) == 1
 
 
-def test_a_reconcile_delete_erases_the_stored_fact():
+def test_a_reconcile_delete_supersedes_instead_of_erasing():
     repo = _repo_with_fact()
 
     async def decide(messages):
@@ -124,8 +124,8 @@ def test_a_reconcile_delete_erases_the_stored_fact():
     res = asyncio.run(MemoryTools(repo, phi_gate=_Gate()).remember_reconciled(
         "u1", "preference", "no longer likes oolong tea", llm_call=decide))
     assert res["action"] == "delete"
-    assert repo.memory == []
-    assert repo.superseded == []
+    assert repo.superseded == [_FACT_ID]
+    assert [item["id"] for item in repo.memory] == [_FACT_ID]
 
 
 def test_should_inject_respects_draft_and_flag():
