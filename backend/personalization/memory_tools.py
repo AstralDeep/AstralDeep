@@ -319,7 +319,7 @@ class MemoryTools:
                     project_id: Optional[str] = None) -> List[Dict[str, Any]]:
         vt = _tokens(value)
         scored = []
-        for it in self._repo_list(user_id, project_id):
+        for it in self._live_memory(user_id, project_id=project_id):
             overlap = len(vt & _tokens(it.get("value", "")))
             same_cat = it.get("category") == category
             if overlap or same_cat:
@@ -368,7 +368,9 @@ class MemoryTools:
                         extra={"user_id": user_id, "superseded": tgt["id"]})
             return {"stored": False, "action": "delete", "superseded": tgt["id"]}
         if action == "UPDATE" and tgt is not None:
-            new_value = decision.get("value") or value
+            category, new_value, refusal = self._gate_value(category, decision.get("value") or value)
+            if refusal is not None:
+                return refusal
             item = self._create_linked(user_id, category, new_value, project_id=write_proj)
             self.repo.supersede_memory(user_id, tgt["id"], item["id"])
             logger.info("memory.reconcile_update",
