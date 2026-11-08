@@ -29,18 +29,14 @@ def test_removed_assertions_and_added_skips_are_review_findings():
     ]
 
 
-@pytest.mark.parametrize("path", [".specify/memory/constitution.md", "uv.lock"])
-def test_governance_and_lock_changes_require_review(path):
+@pytest.mark.parametrize("path", ["uv.lock", "backend/pytest.ini"])
+def test_lock_and_test_config_changes_require_review(path):
     assert inspect_change(path, "", "") == [
         {
             "path": path,
             "kind": "qualification-policy-change",
         }
     ]
-    for path in (".specify/memory/constitution.md", "uv.lock"):
-        assert inspect_change(path, "", "") == [
-            {"path": path, "kind": "qualification-policy-change"}
-        ]
 
 
 def test_deletion_and_cli_produce_immutable_diagnostic_receipts(tmp_path):
