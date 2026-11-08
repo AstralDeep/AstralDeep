@@ -25061,6 +25061,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         cut = text[:limit]
         for sep in (". ", "! ", "? "):
             idx = cut.rfind(sep)
+            while idx > 80 and re.search(r"(?:^|\s)\d+$", cut[:idx]):
+                idx = cut.rfind(sep, 0, idx)
             if idx > 80:
                 return cut[:idx + 1]
         return cut.rsplit(" ", 1)[0] + "…"
