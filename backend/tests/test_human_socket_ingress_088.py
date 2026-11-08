@@ -1,11 +1,13 @@
 """Tests for orchestrator/human_request_authority.py and chrome_events.py: metadata
-dispatch through a real guarded repository read, capture lifecycle across admission
-waits, and refusal of unregistered or mismatched metadata actions.
+dispatch through a real guarded repository read, capture lifecycle and slot claims
+across admission waits, and refusal of unregistered or mismatched metadata actions.
 """
 
 import asyncio
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 import json
+import threading
 import time
 from types import SimpleNamespace
 from uuid import uuid4
@@ -14,6 +16,9 @@ import pytest
 
 from orchestrator import chrome_events, human_request_authority as human
 from orchestrator import orchestrator as module
+from orchestrator.work_admission import (
+    AdmissionClass, OperationOwner, OperationRequest, OperationState, OwnerScope, WorkAdmissionCoordinator,
+)
 from persistent_agents.models import AssignmentError
 from tests.helpers.session_plane_runtime import get_session_record, replace_session_record
 from tests.test_work_surface_ingress_088 import (
@@ -237,6 +242,225 @@ async def test_waiting_lane_retirement_closes_capture_without_cancelling_predece
     finally:
         if not predecessor.done():
             predecessor.set_result(None)
+
+
+async def test_operation_waiting_behind_a_turn_keeps_renewing_its_lease(metadata, monkeypatch):
+    state, calls, _ = metadata
+    await registered(state)
+    context = state.orch._connection_contexts[id(state.socket)]
+    predecessor = asyncio.get_running_loop().create_future()
+    context.mutation_tail = predecessor
+    monkeypatch.setattr(module, "CONNECTION_LEASE_RENEW_SECONDS", 0.01)
+    renewed = asyncio.Event()
+    original = state.orch._call_work_admission
+
+    async def observed(callback, *args, **kwargs):
+        value = await original(callback, *args, **kwargs)
+        if getattr(callback, "__name__", "") == "renew_execution_lease":
+            renewed.set()
+        return value
+
+    monkeypatch.setattr(state.orch, "_call_work_admission", observed)
+    send(state, "chrome_user_skill_edit", attempt_write=False)
+    try:
+        await asyncio.wait_for(renewed.wait(), 5)
+        assert not predecessor.done() and not calls
+        predecessor.set_result(None)
+        assert (await terminal(state))["state"] == "completed"
+        assert len(calls) == 1
+    finally:
+        if not predecessor.done():
+            predecessor.set_result(None)
+
+
+class _Clock:
+    def __init__(self):
+        self.current = datetime.now(UTC)
+
+    def __call__(self):
+        return self.current
+
+
+def _waiting_operation(state, generation):
+    context = state.orch._connection_contexts[id(state.socket)]
+    return next(work for work in context.operations.values() if str(work.frame.request_generation) == generation)
+
+
+def _parked_behind(state):
+    predecessor = asyncio.get_running_loop().create_future()
+    state.orch._connection_contexts[id(state.socket)].mutation_tail = predecessor
+    return predecessor
+
+
+async def test_cancel_during_the_early_claim_keeps_the_fence(metadata, monkeypatch):
+    state, calls, _ = metadata
+    await registered(state)
+    predecessor = _parked_behind(state)
+    entered, release, landed = threading.Event(), threading.Event(), threading.Event()
+    original = state.orch._call_work_admission
+
+    async def gated(callback, *args, **kwargs):
+        if getattr(callback, "__name__", "") != "claim_operation":
+            return await original(callback, *args, **kwargs)
+
+        def claim():
+            entered.set()
+            release.wait(5)
+            try:
+                return callback(*args, **kwargs)
+            finally:
+                landed.set()
+
+        return await asyncio.to_thread(claim)
+
+    monkeypatch.setattr(state.orch, "_call_work_admission", gated)
+    generation = send(state, "chrome_user_skill_edit", attempt_write=False)
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        work = _waiting_operation(state, generation)
+        assert work.preselected
+        work.task.cancel()
+        release.set()
+        # Holding the loop lets the thread rotate the slot lease before the task sees its cancellation.
+        assert landed.wait(5)
+        assert (await terminal(state))["state"] == "cancelled"
+        await asyncio.wait_for(asyncio.wait({work.task}), 5)
+        projection = await asyncio.to_thread(state.orch.work_admission.query_operation,
+                                             owner=work.owner, operation_id=work.operation_id)
+        assert projection.state is OperationState.CANCELLED
+        assert not predecessor.cancelled() and not calls
+    finally:
+        release.set()
+        if not predecessor.done():
+            predecessor.set_result(None)
+
+
+async def test_preselected_wait_renews_past_the_slot_lease(metadata, runtime, monkeypatch):
+    state, calls, _ = metadata
+    clock, lease = _Clock(), timedelta(seconds=30)
+    state.orch.work_admission = await asyncio.to_thread(
+        WorkAdmissionCoordinator.from_plane, plane_runtime=runtime, clock=clock, slot_lease=lease)
+    await registered(state)
+    predecessor = _parked_behind(state)
+    monkeypatch.setattr(module, "CONNECTION_LEASE_RENEW_SECONDS", 0.01)
+    renewals = asyncio.Queue()
+    original = state.orch._call_work_admission
+
+    async def observed(callback, *args, **kwargs):
+        value = await original(callback, *args, **kwargs)
+        if getattr(callback, "__name__", "") == "renew_execution_lease":
+            renewals.put_nowait(value.lease_expires_at)
+        return value
+
+    monkeypatch.setattr(state.orch, "_call_work_admission", observed)
+    generation = send(state, "chrome_user_skill_edit", attempt_write=False)
+    try:
+        await asyncio.wait_for(renewals.get(), 5)
+        for _ in range(2):
+            clock.current += timedelta(seconds=20)
+            while await asyncio.wait_for(renewals.get(), 5) < clock.current + lease:
+                pass
+        work = _waiting_operation(state, generation)
+        expired = await asyncio.to_thread(state.orch.work_admission.expire_execution_leases)
+        assert work.operation_id not in {record.operation_id for record in expired}
+        projection = await asyncio.to_thread(state.orch.work_admission.query_operation,
+                                             owner=work.owner, operation_id=work.operation_id)
+        assert projection.state is OperationState.RUNNING
+        assert not predecessor.done() and not calls
+        predecessor.set_result(None)
+        assert (await terminal(state))["state"] == "completed"
+        assert len(calls) == 1
+    finally:
+        if not predecessor.done():
+            predecessor.set_result(None)
+
+
+async def test_preselected_wait_is_bounded_without_reordering_the_lane(metadata, monkeypatch):
+    state, calls, _ = metadata
+    await registered(state)
+    predecessor = _parked_behind(state)
+    monkeypatch.setattr(module, "CONNECTION_PRESELECTED_WAIT_SECONDS", 0.05)
+    generation = send(state, "chrome_user_skill_edit", attempt_write=False)
+    try:
+        result = await terminal(state)
+        assert result["state"] == "retryable" and result["error"]["code"] == "queue_wait_expired"
+        work = _waiting_operation(state, generation)
+        projection = await asyncio.to_thread(state.orch.work_admission.query_operation,
+                                             owner=work.owner, operation_id=work.operation_id)
+        assert projection.state is OperationState.RETRYABLE and projection.terminal_code == "queue_wait_expired"
+        await asyncio.sleep(0.05)
+        assert not work.task.done() and not work.lane_complete.done()
+        predecessor.set_result(None)
+        await asyncio.wait_for(asyncio.wait({work.task}), 5)
+        assert work.lane_complete.done() and not predecessor.cancelled() and not calls
+    finally:
+        if not predecessor.done():
+            predecessor.set_result(None)
+
+
+async def test_unselected_work_claims_only_after_its_predecessors(metadata, runtime, monkeypatch):
+    state, calls, _ = metadata
+    coordinator = await asyncio.to_thread(
+        WorkAdmissionCoordinator.from_plane, plane_runtime=runtime, clock=_Clock(), slot_lease=timedelta(seconds=60))
+    state.orch.work_admission = coordinator
+    await asyncio.to_thread(coordinator.expire_queued)
+
+    def filler():
+        owner = OperationOwner(OwnerScope.CONNECTION, None, uuid4())
+        return owner, OperationRequest(
+            operation_kind="capacity_filler", admission_class=AdmissionClass.INTERACTIVE, owner=owner,
+            submission_id=uuid4(), idempotency_namespace=None, idempotency_key=None,
+            normalized_input_digest=None, chat_id=None, parent_operation_id=None,
+            connection_generation=None, request_generation=None)
+
+    def fill():
+        held = []
+        while True:
+            owner, request = filler()
+            admitted = coordinator.submit(request)
+            if admitted.state is OperationState.QUEUED:
+                coordinator.cancel(owner=owner, operation_id=admitted.operation_id, terminal_code="cancelled_by_user")
+                return held
+            held.append(coordinator.claim_operation(AdmissionClass.INTERACTIVE, admitted.operation_id).fence)
+
+    def release(fence):
+        coordinator.terminalize(fence, state=OperationState.CANCELLED, terminal_code="cancelled_by_user",
+                                safe_summary=None, retry_after_ms=None)
+
+    held = await asyncio.to_thread(fill)
+    await registered(state)
+    predecessor = _parked_behind(state)
+    events, parked = [], asyncio.Event()
+    original, phase = state.orch._call_work_admission, state.orch._emit_long_running_operation_phase
+
+    async def observed(callback, *args, **kwargs):
+        events.append(getattr(callback, "__name__", ""))
+        return await original(callback, *args, **kwargs)
+
+    async def lane_wait(host_context, work):
+        parked.set()
+        return await phase(host_context, work)
+
+    monkeypatch.setattr(state.orch, "_call_work_admission", observed)
+    monkeypatch.setattr(state.orch, "_emit_long_running_operation_phase", lane_wait)
+    generation = send(state, "chrome_user_skill_edit", attempt_write=False)
+    try:
+        await asyncio.wait_for(parked.wait(), 5)
+        work = _waiting_operation(state, generation)
+        assert not work.preselected and "claim_operation" not in events
+        assert work.fence is None and not work.task.done()
+        await asyncio.to_thread(release, held.pop())
+        await state.orch._notify_interactive_capacity()
+        events.append("predecessor_done")
+        predecessor.set_result(None)
+        assert (await terminal(state))["state"] == "completed"
+        assert events.index("predecessor_done") < events.index("claim_operation")
+        assert len(calls) == 1
+    finally:
+        if not predecessor.done():
+            predecessor.set_result(None)
+        for fence in held:
+            await asyncio.to_thread(release, fence)
 
 
 async def _chat_behind_a_turn(state, monkeypatch, fixture):
