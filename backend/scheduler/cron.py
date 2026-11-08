@@ -138,6 +138,15 @@ def compute_next_run_ms(
     raise ScheduleError(f"unknown schedule_kind: {schedule_kind}")
 
 
+def first_run_ms(schedule_kind: str, schedule_expr: str, timezone_name: str, after_ms: int) -> int:
+    """`compute_next_run_ms` uses None for a finished job. A new job with no run would show as
+    active and never start, so it is an error here."""
+    next_run = compute_next_run_ms(schedule_kind, schedule_expr, timezone_name, after_ms)
+    if next_run is None:
+        raise ScheduleError("This schedule has no upcoming run. Choose a future time.")
+    return next_run
+
+
 def interval_seconds(schedule_kind: str, schedule_expr: str) -> Optional[int]:
     if schedule_kind != "interval":
         return None
