@@ -40,3 +40,13 @@ def test_a_location_with_no_data_is_reported_as_a_failure():
     with patch.object(mcp_tools, "get_current_weather", return_value=refused):
         result = mcp_tools.compare_locations(city1="Nowhere", city2="Elsewhere")
     assert "Failed to fetch weather for some locations" in str(result["_ui_components"])
+
+
+def test_failed_locations_are_named_in_plain_text(monkeypatch):
+    mcp_tools._geocoding_cache.clear()
+    monkeypatch.setattr(mcp_tools, "_make_api_request", lambda url, params=None, **kwargs: {})
+    result = mcp_tools.compare_locations(city1="Atlantisville", city2="Elsewhereton")
+    message = result["_ui_components"][0]["message"]
+    assert message.startswith("Failed to fetch weather for some locations: ")
+    assert "Atlantisville" in message and "Elsewhereton" in message
+    assert "; " in message and "{'type'" not in message

@@ -932,8 +932,12 @@ def compare_locations(
                 )
                 if result.get("_data"):
                     return result["_data"]
-                else:
-                    return {"error": result.get("_ui_components", [])}
+                messages = [
+                    component["message"] for component in result.get("_ui_components", [])
+                    if isinstance(component, dict) and component.get("type") == "alert"
+                    and component.get("message")
+                ]
+                return {"error": " ".join(messages) or "No weather data was returned."}
             except Exception as e:
                 return {"error": str(e)}
         
@@ -945,7 +949,7 @@ def compare_locations(
         
         errors = [r for r in results if "error" in r]
         if errors:
-            error_messages = [e["error"] for e in errors]
+            error_messages = "; ".join(e["error"] for e in errors)
             return create_ui_response([
                 Alert(
                     message=f"Failed to fetch weather for some locations: {error_messages}",
