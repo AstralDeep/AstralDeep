@@ -145,6 +145,7 @@ CONNECTION_DRAIN_TIMEOUT_SECONDS = 5.0
 REGISTRATION_QUEUE_LIMIT = 16
 CONNECTION_INGRESS_LIMIT = 4096
 CONNECTION_LEASE_RENEW_SECONDS = 5.0
+CONNECTION_PRESELECTED_WAIT_SECONDS = 120.0
 OPERATION_PROGRESS_PHASE_SECONDS = 1.0
 _CONNECTION_CLAIM_POLL_SECONDS = 0.25
 # One retry avoids orphaning a background finalizer
@@ -8755,18 +8756,35 @@ class Orchestrator:
                     name=f"connection-lease-{work.operation_id}",
                 )
 
-            # Wait before claiming: claiming first can deadlock the pool
             if work.predecessors:
+                # Preselected work holds its slot, so it claims now and renews it behind shields that keep its exit from cancelling a predecessor; claiming other work first can deadlock the pool.
                 predecessors = (tuple(asyncio.shield(item) for item in work.predecessors)
-                                if (work.frame.foreground or work.frame.work_read is not None or (work.frame.human_request is not None
-                                    and work.frame.human_request.purpose in {"metadata", "remote_effect"}))
+                                if (work.preselected or work.frame.foreground or work.frame.work_read is not None
+                                    or (work.frame.human_request is not None
+                                        and work.frame.human_request.purpose in {"metadata", "remote_effect"}))
                                 else work.predecessors)
-                # A preselected operation already holds its slot, and its lease would expire during the wait.
                 if work.preselected:
                     claim, terminal = await self._claim_connection_operation(context, work)
-                    if claim is not None:
-                        start_lease_renewal()
-                await asyncio.gather(*predecessors)
+                if claim is None:
+                    await asyncio.gather(*predecessors)
+                else:
+                    start_lease_renewal()
+                    try:
+                        async with asyncio.timeout(CONNECTION_PRESELECTED_WAIT_SECONDS):
+                            await asyncio.gather(*predecessors)
+                    except TimeoutError:
+                        stop_renewal.set()
+                        await asyncio.gather(renewal_task, return_exceptions=True)
+                        terminal_operation = await self._terminalize_connection_operation(
+                            context,
+                            work,
+                            state=OperationState.RETRYABLE,
+                            terminal_code="queue_wait_expired",
+                            safe_summary="Queue wait expired",
+                            retry_after_ms=1_000,
+                        )
+                        await asyncio.gather(*(asyncio.shield(item) for item in work.predecessors))
+                        return
             if (
                 context.closing
                 and (work.owner.owner_scope is OwnerScope.CONNECTION or work.frame.foreground)

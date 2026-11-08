@@ -5,6 +5,7 @@ across admission waits, and refusal of unregistered or mismatched metadata actio
 
 import asyncio
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 import json
 import threading
 import time
@@ -15,7 +16,7 @@ import pytest
 
 from orchestrator import chrome_events, human_request_authority as human
 from orchestrator import orchestrator as module
-from orchestrator.work_admission import OperationState
+from orchestrator.work_admission import OperationState, WorkAdmissionCoordinator
 from persistent_agents.models import AssignmentError
 from tests.helpers.session_plane_runtime import get_session_record, replace_session_record
 from tests.test_work_surface_ingress_088 import (
@@ -270,6 +271,14 @@ async def test_operation_waiting_behind_a_turn_keeps_renewing_its_lease(metadata
             predecessor.set_result(None)
 
 
+class _Clock:
+    def __init__(self):
+        self.current = datetime.now(UTC)
+
+    def __call__(self):
+        return self.current
+
+
 def _waiting_operation(state, generation):
     context = state.orch._connection_contexts[id(state.socket)]
     return next(work for work in context.operations.values() if str(work.frame.request_generation) == generation)
@@ -320,6 +329,69 @@ async def test_cancel_during_the_early_claim_keeps_the_fence(metadata, monkeypat
         assert not predecessor.cancelled() and not calls
     finally:
         release.set()
+        if not predecessor.done():
+            predecessor.set_result(None)
+
+
+async def test_preselected_wait_renews_past_the_slot_lease(metadata, runtime, monkeypatch):
+    state, calls, _ = metadata
+    clock, lease = _Clock(), timedelta(seconds=30)
+    state.orch.work_admission = await asyncio.to_thread(
+        WorkAdmissionCoordinator.from_plane, plane_runtime=runtime, clock=clock, slot_lease=lease)
+    await registered(state)
+    predecessor = _parked_behind(state)
+    monkeypatch.setattr(module, "CONNECTION_LEASE_RENEW_SECONDS", 0.01)
+    renewals = asyncio.Queue()
+    original = state.orch._call_work_admission
+
+    async def observed(callback, *args, **kwargs):
+        value = await original(callback, *args, **kwargs)
+        if getattr(callback, "__name__", "") == "renew_execution_lease":
+            renewals.put_nowait(value.lease_expires_at)
+        return value
+
+    monkeypatch.setattr(state.orch, "_call_work_admission", observed)
+    generation = send(state, "chrome_user_skill_edit", attempt_write=False)
+    try:
+        await asyncio.wait_for(renewals.get(), 5)
+        for _ in range(2):
+            clock.current += timedelta(seconds=20)
+            while await asyncio.wait_for(renewals.get(), 5) < clock.current + lease:
+                pass
+        work = _waiting_operation(state, generation)
+        expired = await asyncio.to_thread(state.orch.work_admission.expire_execution_leases)
+        assert work.operation_id not in {record.operation_id for record in expired}
+        projection = await asyncio.to_thread(state.orch.work_admission.query_operation,
+                                             owner=work.owner, operation_id=work.operation_id)
+        assert projection.state is OperationState.RUNNING
+        assert not predecessor.done() and not calls
+        predecessor.set_result(None)
+        assert (await terminal(state))["state"] == "completed"
+        assert len(calls) == 1
+    finally:
+        if not predecessor.done():
+            predecessor.set_result(None)
+
+
+async def test_preselected_wait_is_bounded_without_reordering_the_lane(metadata, monkeypatch):
+    state, calls, _ = metadata
+    await registered(state)
+    predecessor = _parked_behind(state)
+    monkeypatch.setattr(module, "CONNECTION_PRESELECTED_WAIT_SECONDS", 0.05)
+    generation = send(state, "chrome_user_skill_edit", attempt_write=False)
+    try:
+        result = await terminal(state)
+        assert result["state"] == "retryable" and result["error"]["code"] == "queue_wait_expired"
+        work = _waiting_operation(state, generation)
+        projection = await asyncio.to_thread(state.orch.work_admission.query_operation,
+                                             owner=work.owner, operation_id=work.operation_id)
+        assert projection.state is OperationState.RETRYABLE and projection.terminal_code == "queue_wait_expired"
+        await asyncio.sleep(0.05)
+        assert not work.task.done() and not work.lane_complete.done()
+        predecessor.set_result(None)
+        await asyncio.wait_for(asyncio.wait({work.task}), 5)
+        assert work.lane_complete.done() and not predecessor.cancelled() and not calls
+    finally:
         if not predecessor.done():
             predecessor.set_result(None)
 
