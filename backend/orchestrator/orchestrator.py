@@ -15661,7 +15661,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     execution_fence=authority_fence,
                 )
 
-            turn_steer.open_turn(self, websocket, chat_id)
+            turn_steer.open_turn(self, websocket, chat_id, user_id)
             while turn_count < MAX_TURNS or self.cancelled_sessions.get(id(websocket)):
                 if self.cancelled_sessions.get(id(websocket)):
                     task_terminal_on_exit = TaskState.CANCELLED
@@ -15702,7 +15702,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 turn_count += 1
                 logger.info(f"--- Turn {turn_count}/{MAX_TURNS} ---")
                 if turn_count > 1:
-                    await turn_steer.deliver(self, websocket, chat_id, user_id, conversation_stage, messages)
+                    await turn_steer.deliver(self, websocket, chat_id, user_id, conversation_stage, messages,
+                                             screened=typesafe_decision is not None)
                 if goal_progress is not None:
                     from orchestrator.goal_execution import budget_notice
 
@@ -17187,7 +17188,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     Alert(message=error_text, variant="error", title="Error").to_dict()
                 ])
         finally:
-            await turn_steer.close_turn(self, websocket, chat_id)
+            unapplied_steers = turn_steer.close_turn(self, websocket, chat_id, user_id)
             if task_terminal_on_exit is not None and voice_dispatch is not None:
                 self._remember_voice_operation_terminal_intent(
                     task_terminal_on_exit
@@ -17226,6 +17227,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 heartbeat_task.cancel()
             if active_request_token is not None:
                 _ACTIVE_REQUEST_TEXT.reset(active_request_token)
+            await turn_steer.hand_back(self, websocket, chat_id, unapplied_steers)
 
     def _accumulate_usage(self, chat_id: Optional[str], usage):
         if not usage or not chat_id:
