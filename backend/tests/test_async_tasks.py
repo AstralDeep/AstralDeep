@@ -290,6 +290,25 @@ class TestBackgroundTaskManager:
         assert t._operation.request_generation is None
 
     @pytest.mark.asyncio
+    async def test_a_background_task_does_not_inherit_the_submitting_operation(self):
+        from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
+
+        mgr = _manager()
+        seen = []
+
+        async def dummy(vws, **kw):
+            seen.append(_CONNECTION_OPERATION_CONTEXT.get())
+
+        token = _CONNECTION_OPERATION_CONTEXT.set({"execution_fence": "submitting-operation"})
+        try:
+            await mgr.submit("c1", "u1", dummy)
+            await _collect(mgr)
+            assert _CONNECTION_OPERATION_CONTEXT.get() == {"execution_fence": "submitting-operation"}
+        finally:
+            _CONNECTION_OPERATION_CONTEXT.reset(token)
+        assert seen == [None]
+
+    @pytest.mark.asyncio
     async def test_submit_persists_exact_wire_generations(self):
         mgr = _manager()
         connection_generation = uuid.uuid4()

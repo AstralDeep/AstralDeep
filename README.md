@@ -78,8 +78,6 @@ at the server boundary.
 AstralDeep composes four independently released component repositories, pinned as Git
 submodules under `components/`. Each pin records an exact commit plus its contract version and
 compatibility digests in [`config/astral-composition.json`](config/astral-composition.json).
-Each component has its own constitution at `.specify/memory/constitution.md` in its repository,
-and that constitution governs work inside the component.
 
 | Component | Role | Availability |
 |---|---|---|
@@ -112,7 +110,7 @@ fails closed when an installed component does not match its pin. See
 | `docs/` | Operator documentation (see [Documentation](#documentation)). |
 | `scripts/` | Build, verification, release-evidence, and qualification tooling. |
 | `sdk/` | The Astral agent SDK, built and tested outside the product image. |
-| `specs/` | Numbered Spec Kit feature specifications, plans, and tasks. |
+| `specs/` | Numbered feature specifications, plans, and tasks. |
 | `tooling/` | Locked CI tool manifests. |
 
 ## Getting started
@@ -233,7 +231,7 @@ Frequently used targets (`make help` lists them all):
 | `make secret-scan` | Scan the full Git history with the pinned Gitleaks. |
 | `make bootstrap` | Initialize the submodules and install the pinned component wheels into the host Python environment. |
 
-Engineering rules that apply to every change (see [AGENTS.md](AGENTS.md) and the constitution):
+Engineering rules that apply to every change (see [AGENTS.md](AGENTS.md)):
 
 - Backend code is Python compatible with the production Python 3.11 image (ruff targets `py311`).
 - Source files carry a header of at most three sentences and otherwise document themselves; the only other comments allowed are rare one-line explanations of *why*.
@@ -322,13 +320,10 @@ Beyond the bundled set:
 
 ## Spec-driven development and governance
 
-AstralDeep uses [Spec Kit](https://github.com/github/spec-kit). Each feature has a numbered
-directory under `specs/` holding its specification, plan, tasks, contracts, and
-verification records.
+Each feature has a numbered directory under `specs/` holding its specification, plan, tasks,
+contracts, and verification records.
 
-- **Constitution:** [`.specify/memory/constitution.md`](.specify/memory/constitution.md) is the highest-authority engineering policy for this repository and for how AstralDeep consumes its components.
-- **Agent guide:** [AGENTS.md](AGENTS.md) is the shared guide for coding agents (Claude, Codex, and others). It covers repository routing, rules, the feature-ownership preflight, and build and verification commands.
-- **Feature flow:** specify → clarify → plan → tasks → analyze → implement, using the Spec Kit skills installed in `.agents/skills/` for Codex (and per machine in `.claude/skills/` for Claude).
+- **Agent guide:** [AGENTS.md](AGENTS.md) is the shared guide for coding agents (Claude, Codex, and others). It covers repository routing, rules, and build and verification commands.
 - **Database schema changes:** these land only in AstralPlane's guarded migration registry. AstralDeep then moves its exact schema pin; it never runs ad-hoc SQL.
 
 ## Documentation

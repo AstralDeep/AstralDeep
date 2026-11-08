@@ -2428,8 +2428,8 @@ def _roles_from_payload(payload: dict) -> list:
         "Feature 042 — the single server-owned chrome model (top-bar controls + "
         "settings menu), role-filtered and feature-flag-resolved for the caller. "
         "Native clients (Windows/Android) render their chrome from this; it is the "
-        "same model the web shell renders and the `chrome_menu` WS frame carries "
-        "(Constitution XII: one definition, every client renders it). Admin items "
+        "same model the web shell renders and the `chrome_menu` WS frame carries; "
+        "one definition, every client renders it. Admin items "
         "are omitted for non-admins; server-side authorization stays authoritative."
     ),
 )

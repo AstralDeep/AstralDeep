@@ -215,3 +215,126 @@ if __name__ == "__main__":
     test_backward_compatibility_with_file()
     print("✓ test_backward_compatibility_with_file passed")
     print("\nAll tests passed!")
+
+
+def _csv_rows(csv_data, *modifications):
+    result = modify_data(csv_data=csv_data, modifications=list(modifications))
+    path = result["_data"]["file_path"]
+    with open(path, 'r') as f:
+        rows = list(csv.DictReader(f))
+    os.remove(path)
+    return rows, result
+
+
+def test_csv_filter_compares_numbers():
+    rows, _ = _csv_rows(
+        "name,age\nAna,30\nBo,9",
+        {"action": "filter_rows", "expression": "row['age'] > 18"},
+    )
+    assert [row["name"] for row in rows] == ["Ana"]
+
+
+def test_csv_expression_does_math_on_numbers():
+    rows, _ = _csv_rows(
+        "age,price\n30,1.5\n9,2",
+        {"action": "add_column", "name": "double", "expression": "row['age'] * 2"},
+        {"action": "add_column", "name": "taxed", "expression": "row['price'] * 2"},
+    )
+    assert [row["double"] for row in rows] == ["60", "18"]
+    assert [row["taxed"] for row in rows] == ["3.0", "4"]
+
+
+def test_csv_sort_orders_numbers_and_puts_text_after_them():
+    rows, _ = _csv_rows(
+        "age\n30\n9\nunknown\n100",
+        {"action": "sort_rows", "name": "age", "value": "asc"},
+    )
+    assert [row["age"] for row in rows] == ["9", "30", "100", "unknown"]
+
+
+def test_csv_identifier_with_a_leading_zero_stays_text():
+    rows, _ = _csv_rows(
+        "code,age\n007,30",
+        {"action": "add_column", "name": "label", "expression": "row['code'] + '-x'"},
+    )
+    assert rows[0]["code"] == "007"
+    assert rows[0]["label"] == "007-x"
+
+
+def test_failed_expressions_are_reported_instead_of_silently_dropping_rows():
+    rows, result = _csv_rows(
+        "name,age\nAna,unknown",
+        {"action": "filter_rows", "expression": "row['age'] > 18"},
+    )
+    assert rows == []
+    assert "could not be evaluated 1 times" in str(result["_ui_components"])
+    assert result["_data"]["failed_evaluations"] == 1
+
+
+def test_a_clean_run_has_no_evaluation_warning():
+    _, result = _csv_rows(
+        "name,age\nAna,30",
+        {"action": "filter_rows", "expression": "row['age'] > 18"},
+    )
+    assert "could not be evaluated" not in str(result["_ui_components"])
+    assert result["_data"]["failed_evaluations"] == 0
+
+
+def test_column_field_selects_the_column():
+    result = modify_data(
+        csv_data="age\n30\n9",
+        modifications=[
+            {"action": "add_column", "column": "group", "value": "a"},
+            {"action": "drop_column", "column": "age"},
+        ],
+    )
+    path = result["_data"]["file_path"]
+    with open(path, 'r') as f:
+        rows = list(csv.DictReader(f))
+    os.remove(path)
+    assert rows == [{"group": "a"}, {"group": "a"}]
+
+
+def test_a_null_column_falls_back_to_the_name_field():
+    rows, _ = _csv_rows(
+        "age\n30",
+        {"action": "add_column", "column": None, "name": "group", "value": "a"},
+    )
+    assert rows == [{"age": "30", "group": "a"}]
+
+
+def test_schema_offers_column_and_not_name():
+    from agents.general.mcp_tools import TOOL_REGISTRY
+
+    schema = TOOL_REGISTRY["modify_data"]["input_schema"]
+    item = schema["properties"]["modifications"]["items"]["properties"]
+    assert "column" in item
+    assert "name" not in item
+
+
+def test_schema_says_numeric_cells_compare_as_numbers():
+    from agents.general.mcp_tools import TOOL_REGISTRY
+
+    schema = TOOL_REGISTRY["modify_data"]["input_schema"]
+    expression = schema["properties"]["modifications"]["items"]["properties"]["expression"]
+    assert "compare with 30, not '30'" in expression["description"]
+
+
+def test_column_steps_can_be_reviewed():
+    from orchestrator.hitl_confirmation import _review_arguments
+
+    for step in (
+        {"action": "add_column", "column": "double", "expression": "row['age'] * 2"},
+        {"action": "sort_rows", "column": "age", "value": "asc"},
+        {"action": "drop_column", "column": "age"},
+    ):
+        assert _review_arguments({"csv_data": "age\n30", "modifications": [step]})[1] is True
+
+
+def test_review_check_still_refuses_the_name_key_and_sensitive_column_values():
+    from orchestrator.hitl_confirmation import _review_arguments
+
+    name_key = {"modifications": [{"action": "drop_column", "name": "age"}]}
+    sensitive_value = {"modifications": [{"action": "drop_column", "column": "123-45-6789"}]}
+    assert _review_arguments(name_key)[1] is False
+    assert _review_arguments(sensitive_value)[1] is False
