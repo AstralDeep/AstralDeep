@@ -12975,6 +12975,37 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             binding["snapshot_completed"] = True
         return snapshot
 
+    async def _publish_failed_turn(
+        self,
+        websocket,
+        *,
+        stage,
+        chat_id: str,
+        user_id: str,
+        request_generation: str,
+        server_initiated: bool,
+        message: str,
+    ) -> None:
+        if stage is None or stage.completion_state != "completed" or stage.sealed:
+            return
+        try:
+            stage.completion_state = "failed"
+            await self._append_conversation_message(
+                stage,
+                chat_id=chat_id,
+                user_id=user_id,
+                role="assistant",
+                content=[Alert(message=message, variant="error").to_dict()],
+            )
+            await self._publish_conversation_snapshot(
+                websocket,
+                stage=stage,
+                request_generation=request_generation,
+                server_initiated=server_initiated,
+            )
+        except Exception:
+            logger.warning("failed turn publication failed", exc_info=True)
+
     async def _publish_conversation_snapshot(
         self,
         websocket,
@@ -15358,15 +15389,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         if not tools_desc and draft_agent_id:
             _perm_memo.__exit__(None, None, None)
+            draft_refusal = (
+                "Draft agent has no usable tools yet. Configure tools "
+                "and permissions before testing it."
+            )
             await self.send_ui_render(websocket, [
-                Alert(
-                    message=(
-                        "Draft agent has no usable tools yet. Configure tools "
-                        "and permissions before testing it."
-                    ),
-                    variant="warning",
-                ).to_dict()
+                Alert(message=draft_refusal, variant="warning").to_dict()
             ])
+            await self._publish_failed_turn(
+                websocket,
+                stage=conversation_stage,
+                chat_id=chat_id,
+                user_id=user_id,
+                request_generation=conversation_request_generation,
+                server_initiated=conversation_server_initiated,
+                message=draft_refusal,
+            )
             return
         if is_text_only:
             logger.info(
@@ -16151,6 +16189,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     await self.send_ui_render(websocket, [
                         Alert(message="Failed to get a response from the AI model. Please try again.", variant="error").to_dict()
                     ])
+                    await self._publish_failed_turn(
+                        websocket,
+                        stage=conversation_stage,
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        request_generation=conversation_request_generation,
+                        server_initiated=conversation_server_initiated,
+                        message="Failed to get a response from the AI model. Please try again.",
+                    )
                     return
 
                 if goal_progress is not None and getattr(llm_msg, "_astral_finish_reason", None) in {"length", "content_filter"}:
@@ -17202,6 +17249,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 await self.send_ui_render(websocket, [
                     Alert(message=error_text, variant="error", title="Error").to_dict()
                 ])
+                await self._publish_failed_turn(
+                    websocket,
+                    stage=conversation_stage,
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    request_generation=conversation_request_generation,
+                    server_initiated=conversation_server_initiated,
+                    message=error_text if error_text != str(e) else (
+                        "Something went wrong while processing your request. Please try again."
+                    ),
+                )
         finally:
             unapplied_steers = turn_steer.close_turn(self, websocket, chat_id, user_id)
             if task_terminal_on_exit is not None and voice_dispatch is not None:
