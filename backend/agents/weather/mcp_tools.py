@@ -40,6 +40,8 @@ WEATHER_CODES = {
 OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v1"
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1"
 GEOCODING_API_URL = "https://geocoding-api.open-meteo.com/v1/search"
+AIR_QUALITY_API_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
+AIR_QUALITY_FIELDS = ("pm2_5", "pm10", "carbon_monoxide", "nitrogen_dioxide", "sulphur_dioxide", "ozone")
 
 RATE_LIMIT_REQUESTS = 100
 RATE_LIMIT_WINDOW = 86400
@@ -67,7 +69,7 @@ def _make_api_request(url: str, params: Dict, timeout: int = 10) -> Dict:
 
 
 def _build_weather_params(latitude: float, longitude: float, extra_current: str = "", extra_daily: str = "") -> Dict[str, Any]:
-    current_params = "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,pressure_msl,uv_index,pm2_5,pm10,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone"
+    current_params = "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,pressure_msl,uv_index"
     daily_params = "sunrise,sunset"
     
     if extra_current:
@@ -469,6 +471,14 @@ def get_extended_weather(
         
         current = data.get("current", {})
         daily = data.get("daily", {})
+        
+        try:
+            air = _make_api_request(AIR_QUALITY_API_URL, {
+                "latitude": lat, "longitude": lon, "current": ",".join(AIR_QUALITY_FIELDS),
+            }).get("current", {})
+            current = {**current, **{field: air.get(field) for field in AIR_QUALITY_FIELDS}}
+        except Exception as e:
+            logger.warning(f"Air quality unavailable for {lat}, {lon}: {e}")
         
         extended = ExtendedWeatherData.from_api_response(current, daily)
         
