@@ -370,6 +370,17 @@ async def test_a_turn_that_raises_keeps_the_user_message_and_the_error(orch):
     assert "502 Bad Gateway" in json.dumps(saved[1]["content"])
 
 
+async def test_a_turn_that_raises_an_unmapped_error_saves_a_generic_message(orch):
+    async def raises(*_args, **_kwargs):
+        raise RuntimeError("connect to postgresql://astral:hunter2@db failed for patient Jane Roe")
+
+    saved = await _failed_turn_messages(orch, raises)
+    stored = json.dumps(saved)
+    assert [message["role"] for message in saved] == ["user", "assistant"]
+    assert "Something went wrong while processing your request" in json.dumps(saved[1]["content"])
+    assert "hunter2" not in stored and "Jane Roe" not in stored and "postgresql://" not in stored
+
+
 async def _publish_failed(orch, stage):
     await orch._publish_failed_turn(
         _ws(orch), stage=stage, chat_id="c1", user_id=USER, request_generation="r1",

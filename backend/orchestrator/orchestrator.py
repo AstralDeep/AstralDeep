@@ -17219,7 +17219,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     user_id=user_id,
                     request_generation=conversation_request_generation,
                     server_initiated=conversation_server_initiated,
-                    message=error_text,
+                    message=error_text if error_text != str(e) else (
+                        "Something went wrong while processing your request. Please try again."
+                    ),
                 )
         finally:
             if task_terminal_on_exit is not None and voice_dispatch is not None:
