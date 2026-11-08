@@ -322,6 +322,20 @@ async def test_recheck_refuses_a_replaced_registration_and_a_closed_request(meta
     await cleaned(frame)
 
 
+async def test_recheck_refuses_a_message_that_no_longer_captures(metadata, fixture, monkeypatch):
+    state, _, _ = metadata
+    frame, pending, predecessor, used = await _chat_behind_a_turn(state, monkeypatch, fixture)
+    pending.message = {**pending.message, "action": "not_a_guidance_read"}
+    with pytest.raises(AssignmentError, match="human_authentication_required"):
+        await human.recheck_queued_skill_read(pending)
+    assert not pending.closed
+    pending.close()
+    predecessor.set_result(None)
+    assert (await terminal(state))["state"] == "failed"
+    assert not used
+    await cleaned(frame)
+
+
 async def test_delivery_rechecks_original_caller_after_render_wait(metadata, monkeypatch):
     state, calls, _ = metadata
     await registered(state)

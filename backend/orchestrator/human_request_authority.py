@@ -620,17 +620,13 @@ class _HumanSocketRequest:
 
 
 async def recheck_queued_skill_read(request):
-    """Repeats the whole capture for a chat message that waited behind a turn.
-
-    The 15-second window bounds how old the evidence is when it is used, so a request that
-    outlived its window gets new evidence rather than a longer window. The new capture may
-    adopt nothing: any difference from the original refuses the request.
-    """
     if type(request) is not _HumanSocketRequest or request.purpose != "skill_lookup" or request.closed:
         _unauthenticated()
     fresh = capture_human_socket_request(
         request.boundary, websocket=request.websocket, context=request.connection,
         message=request.message, purpose=request.purpose)
+    if fresh is None:
+        _unauthenticated()
     try:
         if (fresh.registration is not request.registration or fresh.captured != request.captured
                 or fresh.token != request.token or fresh.owner_id != request.owner_id
