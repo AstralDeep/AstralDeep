@@ -418,3 +418,9 @@ class ProjectRenameRequest(BaseModel):
     model_config = {"extra": "forbid", "strict": True}
     name: str = Field(min_length=1, max_length=200)
     revision: int = Field(ge=1, le=2**53 - 1)
+
+
+class ProjectInstructionsRequest(BaseModel):
+    model_config = {"extra": "forbid", "strict": True}
+    enabled: bool
+    revision: int = Field(ge=1, le=2**53 - 1)

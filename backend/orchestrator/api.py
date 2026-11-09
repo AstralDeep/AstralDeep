@@ -23,6 +23,7 @@ from orchestrator.models import (
     ChatMessageRequest, ChatMessageResponse,
     ChatListResponse, ChatSummary,
     ChatCreateRequest, ChatCreateResponse, ProjectCreateRequest, ProjectRenameRequest,
+    ProjectInstructionsRequest,
     ChatDetailResponse, ChatDetail,
     DeleteResponse,
     ComponentSaveRequest, ComponentSaveResponse, SavedComponent,
@@ -622,6 +623,45 @@ async def list_project_chats(request: Request, project_id: str,
     orch = _get_orchestrator(request)
     return await _project_operation(orch, user_id, ProjectService(orch.history).list_chats,
                                     user_id, project_id, cursor=cursor, limit=limit)
+
+
+@project_router.get("/{project_id}/instructions",
+                    summary="Report the project's loaded instruction files and ingestion toggle")
+async def get_project_instructions(request: Request, project_id: str,
+                                   user_id: str = Depends(require_user_id)):
+    from orchestrator import project_instructions
+    from orchestrator.projects import ProjectService
+
+    orch = _get_orchestrator(request)
+    await _project_operation(orch, user_id, ProjectService(orch.history).get, user_id, project_id)
+    return project_instructions.project_report(user_id, project_id)
+
+
+@project_router.put("/{project_id}/instructions",
+                    summary="Enable or disable project instruction ingestion for one project")
+async def set_project_instructions(request: Request, project_id: str,
+                                   body: ProjectInstructionsRequest,
+                                   user_id: str = Depends(require_user_id)):
+    from orchestrator import project_instructions
+    from orchestrator.projects import ProjectService
+
+    orch = _get_orchestrator(request)
+    await _project_operation(orch, user_id, ProjectService(orch.history).get, user_id, project_id)
+    try:
+        report = project_instructions.set_ingestion(user_id, project_id, body.enabled, body.revision)
+    except project_instructions.RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": "project_instructions_conflict",
+            "message": "The ingestion toggle changed; refresh the project instructions and retry.",
+            "revision": exc.current_revision,
+        }) from None
+    await project_instructions.audit_event(
+        orch, user_id=user_id, chat_id=None,
+        action_type="project.instructions.toggle",
+        description=f"Project instruction ingestion was {'enabled' if body.enabled else 'disabled'} for this project.",
+        outcome="success", inputs_meta={"project_id": project_id, "enabled": body.enabled,
+                                        "revision": body.revision})
+    return report
 
 
 
