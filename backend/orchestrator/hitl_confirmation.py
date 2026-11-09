@@ -908,6 +908,21 @@ async def _computer_context(authority, tool, args) -> list:
     return parts
 
 
+def _forget_fact_line(agent: str, tool: str, preview: str) -> list:
+    from orchestrator.memory_chat import META_AGENT_ID
+
+    if agent != META_AGENT_ID or tool != "forget":
+        return []
+    try:
+        fact = json.loads(preview).get("fact")
+    except (TypeError, ValueError, AttributeError):
+        return []
+    if not isinstance(fact, str) or not fact:
+        return []
+    # A code block, because clients render body text as Markdown and a stored fact is untrusted
+    return [Text(content="Memory to erase:", variant="body"), CodeBlock(code=fact, language="text")]
+
+
 def _review_summary(args: dict) -> str:
     fields = ", ".join(str(key)[:64] for key in args if not str(key).startswith("_"))[:512]
     description = f"Fields supplied: {fields or 'none'}."
@@ -1211,6 +1226,7 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             *context,
             CodeBlock(code=computer_use_policy.display_text(preview, block=True) if agent == "computer-use-1"
                       else preview, language="json"),
+            *_forget_fact_line(agent, tool, preview),
             Text(content="Approve this exact action once, or decline. This request expires in 15 minutes. "
                          "Privacy rules and current permissions still apply.", variant="caption"),
             Button(label="Approve", action="authorize_action",
