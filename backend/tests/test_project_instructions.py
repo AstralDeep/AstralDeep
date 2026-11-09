@@ -3,8 +3,9 @@ and the per-project ingestion toggle against a synthetic granted Mac host."""
 
 import json
 import posixpath
+import uuid
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from orchestrator import project_authority
@@ -12,6 +13,7 @@ from orchestrator import project_instructions as pinst
 from orchestrator.computer_hosts import ComputerHostRegistry
 from orchestrator.project_authority import ProjectOrigin
 from shared.project_workspaces import ProjectContext, ProjectManifest
+from tests.test_turn_seams_loop import _last_assistant_text, _msg, _usage, _ws
 
 PROJECT = "12345678-1234-1234-9234-123456789abc"
 ROOT = "/work/Demo"
@@ -666,6 +668,260 @@ async def test_progressive_guidance_ignores_calls_outside_the_grant(turn_env):
         tool_to_unqualified=TOOL_MAPS[1], turn_sentinel="turnsentinel")
     assert outcome is None
     assert files.reads == []
+
+
+LOOP_ROOT = "/tmp/instr-loop-demo"
+LOOP_TREE = {
+    LOOP_ROOT: {"_dir": True},
+    f"{LOOP_ROOT}/AGENTS.md": {"text": "Run make test before every commit."},
+    f"{LOOP_ROOT}/src": {"_dir": True},
+    f"{LOOP_ROOT}/src/AGENTS.md": {"text": "src guide: pytest -q"},
+}
+
+
+class LoopHostFiles:
+    def __init__(self, tree):
+        self.tree = tree
+        self.reads = []
+
+    async def __call__(self, websocket, call, tool_to_agent, chat_id, user_id=None,
+                       tool_to_unqualified=None, **_kwargs):
+        arguments = json.loads(call.function.arguments) if call.function.arguments else {}
+        verb = (tool_to_unqualified or {}).get(call.function.name, call.function.name)
+        self.reads.append((verb, arguments.get("path") or arguments.get("cwd")))
+        path = arguments["path"]
+        if verb == "list_dir":
+            prefix = path if path.endswith("/") else path + "/"
+            seen, entries = set(), []
+            for key, item in self.tree.items():
+                if not key.startswith(prefix):
+                    continue
+                name = key[len(prefix):].split("/")[0]
+                if name and name not in seen:
+                    seen.add(name)
+                    entries.append({"name": name, "is_dir": "_dir" in item})
+            return SimpleNamespace(result={"_data": {"path": path, "entries": entries,
+                                                     "count": len(entries)}},
+                                   error=None, ui_components=[], correlation_id=None)
+        value = self.tree.get(path)
+        if not isinstance(value, dict) or "_dir" in value:
+            return SimpleNamespace(error={"code": "failed", "message": "no such file"},
+                                   result=None, ui_components=[], correlation_id=None)
+        return SimpleNamespace(result={"_data": {"path": path, "text": value.get("text", ""),
+                                                 "truncated": False,
+                                                 "size": len(value.get("text", "").encode())}},
+                               error=None, ui_components=[], correlation_id=None)
+
+
+def _register_computer_tools(o):
+    from shared.protocol import AgentCard, AgentSkill
+
+    o.agent_cards["computer-use-1"] = AgentCard(
+        name="computer", description="d", agent_id="computer-use-1",
+        skills=[AgentSkill(name=name, description="d", id=name,
+                           input_schema={"type": "object"})
+                for name in ("read_file", "list_dir", "run_command")])
+    o.agents["computer-use-1"] = MagicMock()
+    o.tool_permissions = MagicMock()
+    o.tool_permissions.is_tool_allowed.return_value = True
+
+
+@pytest.fixture
+def chat_orch(orchestrator_factory, monkeypatch, user_skills_disabled):
+    from shared.feature_flags import flags
+
+    o = orchestrator_factory()
+    o._llm_store.set_sync(OWNER, provider="custom", base_url="http://test.invalid/v1",
+                          model="test-model", api_key="test-key")
+    o.audit_recorder = FakeRecorder()
+    o._record_llm_call = AsyncMock()
+    o._record_llm_unconfigured = AsyncMock()
+    o._safe_send = AsyncMock()
+    o.send_ui_render = AsyncMock()
+    heartbeat = MagicMock()
+    heartbeat.cancel = MagicMock()
+    o._start_heartbeat = AsyncMock(return_value=heartbeat)
+    o._send_or_replace_components = AsyncMock()
+    o._emit_llm_usage_report = AsyncMock()
+    o._deliver_round_components = AsyncMock(return_value=[])
+    monkeypatch.setitem(flags._flags, "project_instructions", True)
+    monkeypatch.setitem(flags._flags, "typesafe_routing", False)
+    monkeypatch.setitem(flags._flags, "designer_all_devices", False)
+    return o
+
+
+def _wire_project_chat(o, chat_id):
+    from orchestrator.projects import ProjectService
+
+    ws = _ws(o, OWNER)
+    o.ui_sessions[ws]["_project_workspaces_v1"] = True
+    registry = o.computer_hosts
+    host, _ = registry.register(OWNER, ws, {
+        "host_id": "host-instr-loop", "name": "Instr Mac", "platform": "macos",
+        "verbs": ["read_file", "list_dir"], "excluded": ["private/"],
+    })
+    host.project_mode = True
+    host.project_manifest = ProjectManifest.from_dict({
+        "generation": 1,
+        "projects": [{"project_id": PROJECT, "grant_revision": 1,
+                      "roots": [{"name": "Demo", "path": LOOP_ROOT}]}],
+    })
+    host.project_manifest_highwater = 1
+    o._connection_contexts[id(ws)] = SimpleNamespace(
+        websocket=ws, registered=True, closing=False, connection_generation="host-connection")
+    ProjectService(o.history).create(OWNER, PROJECT, "Demo")
+    ProjectService(o.history).create_chat(OWNER, PROJECT, chat_id)
+    return ws, host
+
+
+async def test_chat_loop_injects_root_instructions_and_owner_notice(chat_orch):
+    o = chat_orch
+    files = LoopHostFiles(LOOP_TREE)
+    o.execute_single_tool = files
+    chat_id = str(uuid.uuid4())
+    ws, _host = _wire_project_chat(o, chat_id)
+    _register_computer_tools(o)
+    seen_messages = []
+
+    async def provider(websocket, messages, tools_desc=None, **kwargs):
+        seen_messages.append([dict(message) for message in messages])
+        return _msg(content="Understood the project conventions."), _usage()
+
+    o._call_llm = provider
+    await o.handle_chat_message(ws, "What are this project's conventions?", chat_id,
+                                user_id=OWNER)
+    system_texts = [message["content"] for call in seen_messages for message in call
+                    if message.get("role") == "system"]
+    assert any("PROJECT INSTRUCTIONS" in text and "Demo/AGENTS.md" in text
+               and "Run make test before every commit." in text
+               for text in system_texts)
+    assert o.send_ui_render.await_count >= 1
+    rendered = json.dumps(o.send_ui_render.await_args_list, default=str)
+    assert "Project instructions loaded: Demo/AGENTS.md" in rendered
+    assert ("read_file", f"{LOOP_ROOT}/AGENTS.md") in files.reads
+    assert pinst.LEDGER.loaded_folders(OWNER, PROJECT) == {LOOP_ROOT}
+
+
+async def test_chat_loop_progressively_loads_first_touched_folder(chat_orch):
+    o = chat_orch
+    files = LoopHostFiles(LOOP_TREE)
+    o.execute_single_tool = files
+    chat_id = str(uuid.uuid4())
+    ws, _host = _wire_project_chat(o, chat_id)
+    _register_computer_tools(o)
+    seen_messages = []
+
+    async def provider(websocket, messages, tools_desc=None, **kwargs):
+        seen_messages.append([dict(message) for message in messages])
+        if len(seen_messages) == 1:
+            return _msg(tool_calls=[SimpleNamespace(
+                id="c-list", function=SimpleNamespace(
+                    name="list_dir", arguments=json.dumps({"path": f"{LOOP_ROOT}/src"})))
+            ]), _usage()
+        return _msg(content="The src guide is loaded."), _usage()
+
+    o._call_llm = provider
+    await o.handle_chat_message(ws, "Look at the src folder please", chat_id, user_id=OWNER)
+    assert len(seen_messages) == 2
+    second_system = [message["content"] for message in seen_messages[1]
+                     if message.get("role") == "system"]
+    assert any("newly touched folder" in text and "Demo/src/AGENTS.md" in text
+               and "src guide: pytest -q" in text for text in second_system)
+    assert ("read_file", f"{LOOP_ROOT}/src/AGENTS.md") in files.reads
+
+
+async def test_chat_loop_survives_instruction_failures(chat_orch, monkeypatch):
+    o = chat_orch
+    files = LoopHostFiles(LOOP_TREE)
+    o.execute_single_tool = files
+    chat_id = str(uuid.uuid4())
+    ws, _host = _wire_project_chat(o, chat_id)
+    _register_computer_tools(o)
+    seen_messages = []
+
+    async def provider(websocket, messages, tools_desc=None, **kwargs):
+        seen_messages.append([dict(message) for message in messages])
+        if len(seen_messages) == 1:
+            return _msg(tool_calls=[SimpleNamespace(
+                id="c-fail", function=SimpleNamespace(
+                    name="list_dir", arguments=json.dumps({"path": f"{LOOP_ROOT}/src"})))
+            ]), _usage()
+        return _msg(content="Recovered and answered."), _usage()
+
+    o._call_llm = provider
+
+    async def failing_turn_start(*args, **kwargs):
+        raise RuntimeError("synthetic discovery failure")
+
+    async def failing_progressive(*args, **kwargs):
+        raise RuntimeError("synthetic folder load failure")
+
+    monkeypatch.setattr(pinst, "turn_start_guidance", failing_turn_start)
+    monkeypatch.setattr(pinst, "progressive_guidance", failing_progressive)
+    await o.handle_chat_message(ws, "Look at the src folder please", chat_id, user_id=OWNER)
+    assert len(seen_messages) == 2
+    assert "Recovered and answered." in await _last_assistant_text(o, chat_id, OWNER)
+    assert "PROJECT INSTRUCTIONS" not in json.dumps(seen_messages)
+
+
+async def test_chat_loop_adds_datamark_addendum_and_tolerates_render_failure(
+        chat_orch, monkeypatch):
+    from shared.feature_flags import flags
+
+    o = chat_orch
+    monkeypatch.setitem(flags._flags, "datamarking", False)
+    files = LoopHostFiles(LOOP_TREE)
+    o.execute_single_tool = files
+    chat_id = str(uuid.uuid4())
+    ws, _host = _wire_project_chat(o, chat_id)
+    _register_computer_tools(o)
+    seen_messages = []
+
+    async def provider(websocket, messages, tools_desc=None, **kwargs):
+        seen_messages.append([dict(message) for message in messages])
+        return _msg(content="Understood the project conventions."), _usage()
+
+    o._call_llm = provider
+
+    async def broken_render(_websocket, components, **_kwargs):
+        if any("Project instructions loaded" in json.dumps(component)
+               for component in components):
+            raise RuntimeError("synthetic render failure")
+
+    o.send_ui_render = AsyncMock(side_effect=broken_render)
+    await o.handle_chat_message(ws, "What are this project's conventions?", chat_id,
+                                user_id=OWNER)
+    system_texts = [message["content"] for call in seen_messages for message in call
+                    if message.get("role") == "system"]
+    instruction = next(text for text in system_texts if "PROJECT INSTRUCTIONS" in text)
+    assert "UNTRUSTED-CONTENT HANDLING" in instruction
+    assert "Demo/AGENTS.md" in instruction
+    assert o.send_ui_render.await_count >= 1
+
+
+async def test_chat_loop_without_the_flag_reads_nothing(chat_orch, monkeypatch):
+    from shared.feature_flags import flags
+
+    o = chat_orch
+    monkeypatch.setitem(flags._flags, "project_instructions", False)
+    files = LoopHostFiles(LOOP_TREE)
+    o.execute_single_tool = files
+    chat_id = str(uuid.uuid4())
+    ws, _host = _wire_project_chat(o, chat_id)
+    _register_computer_tools(o)
+    seen_messages = []
+
+    async def provider(websocket, messages, tools_desc=None, **kwargs):
+        seen_messages.append([dict(message) for message in messages])
+        return _msg(content="Answered without repository instructions."), _usage()
+
+    o._call_llm = provider
+    await o.handle_chat_message(ws, "What are this project's conventions?", chat_id,
+                                user_id=OWNER)
+    all_content = json.dumps(seen_messages)
+    assert "PROJECT INSTRUCTIONS" not in all_content
+    assert files.reads == []
+    pinst.LEDGER.reset(OWNER, PROJECT)
 
 
 @pytest.fixture
