@@ -917,8 +917,10 @@ def _forget_fact_line(agent: str, tool: str, preview: str) -> list:
         fact = json.loads(preview).get("fact")
     except (TypeError, ValueError, AttributeError):
         return []
-    # The fact comes from the reviewed preview, so it carries the same redaction as the JSON below it
-    return [Text(content=f"Memory to erase: {fact}", variant="body")] if isinstance(fact, str) and fact else []
+    if not isinstance(fact, str) or not fact:
+        return []
+    # A code block, because clients render body text as Markdown and a stored fact is untrusted
+    return [Text(content="Memory to erase:", variant="body"), CodeBlock(code=fact, language="text")]
 
 
 def _review_summary(args: dict) -> str:
@@ -1220,11 +1222,11 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             Text(content=f"Tool: {tool} · Agent: {agent}", variant="body"),
             *on_host,
             Text(content=summary, variant="body"),
-            *_forget_fact_line(agent, tool, preview),
             Text(content=_review_summary(shown), variant="body"),
             *context,
             CodeBlock(code=computer_use_policy.display_text(preview, block=True) if agent == "computer-use-1"
                       else preview, language="json"),
+            *_forget_fact_line(agent, tool, preview),
             Text(content="Approve this exact action once, or decline. This request expires in 15 minutes. "
                          "Privacy rules and current permissions still apply.", variant="caption"),
             Button(label="Approve", action="authorize_action",
