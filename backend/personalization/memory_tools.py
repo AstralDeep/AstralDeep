@@ -360,7 +360,7 @@ class MemoryTools:
             logger.debug("memory.reconcile_llm_failed — appending", exc_info=True)
             decision = None
         if not decision:
-            return self._do_add(user_id, category, value)
+            return self._do_add(user_id, category, value, project_id=write_proj)
 
         action = decision["action"]
         target = decision["target"]

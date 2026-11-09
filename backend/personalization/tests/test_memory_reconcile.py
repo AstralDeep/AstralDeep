@@ -197,6 +197,24 @@ async def test_llm_error_fails_open_to_append():
     assert res["stored"] is True and len(repo.list_memory("u")) == 2
 
 
+@pytest.mark.parametrize("reply", ["raise", "malformed"])
+async def test_a_failed_reconcile_keeps_a_project_memory_in_its_project(monkeypatch, reply):
+    monkeypatch.setenv("FF_PROJECT_MEMORY", "true")
+    repo = _FakeRepo()
+    repo.create_memory("u", "preference", "Prefers dark mode", project_id="proj-a")
+
+    async def _call(_messages):
+        if reply == "raise":
+            raise RuntimeError("llm down")
+        return "not json"
+
+    res = await _mt(repo).remember_reconciled("u", "preference", "Prefers light mode",
+                                              llm_call=_call, project_id="proj-a")
+    assert res["stored"] is True
+    stored = [row for row in repo.rows if row["value"] == "Prefers light mode"]
+    assert [row["project_id"] for row in stored] == ["proj-a"]
+
+
 async def test_flag_off_appends(monkeypatch):
     monkeypatch.setenv("FF_MEMORY_RECONCILE", "false")
     repo = _FakeRepo()
