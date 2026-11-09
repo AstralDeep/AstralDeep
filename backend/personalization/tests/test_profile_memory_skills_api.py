@@ -126,6 +126,9 @@ def test_memory_routes_never_list_change_or_delete_an_atlas_page_row(client):
     assert tc.put(f"/api/memory/{page['id']}", json={"value": "overwrite"}).status_code == 404
     assert tc.delete(f"/api/memory/{page['id']}").status_code == 404
     assert svc.repo.get_memory(user_id, page["id"])["value"] == page_value
+    forged = tc.put(f"/api/memory/{memory['id']}", json={"value": page_value})
+    assert forged.status_code == 422
+    assert svc.repo.get_memory(user_id, memory["id"])["value"] == "concise"
     assert tc.put(f"/api/memory/{memory['id']}", json={"value": "brief"}).json()["value"] == "brief"
     assert tc.delete(f"/api/memory/{memory['id']}").status_code == 204
 

@@ -197,6 +197,23 @@ async def test_llm_error_fails_open_to_append():
     assert res["stored"] is True and len(repo.list_memory("u")) == 2
 
 
+async def test_an_atlas_page_shaped_value_is_never_remembered():
+    repo = _FakeRepo()
+    res = await _mt(repo).remember_reconciled("u", "context", _atlas_value("u"), llm_call=None)
+    assert res["stored"] is False and "Atlas page format" in res["reason"]
+    assert repo.rows == []
+
+
+def test_new_memories_are_never_linked_to_atlas_page_rows():
+    repo = _FakeRepo()
+    links = []
+    repo.add_link = lambda user_id, a_id, b_id: links.append(b_id) or True
+    page = repo.create_memory("u", "context", _atlas_value("u"), keywords="tea notes oolong")
+    plain = repo.create_memory("u", "preference", "Drinks oolong tea", keywords="tea notes oolong")
+    _mt(repo)._link_new("u", "new-id", "tea notes oolong", "tea notes oolong")
+    assert plain["id"] in links and page["id"] not in links
+
+
 async def test_flag_off_appends(monkeypatch):
     monkeypatch.setenv("FF_MEMORY_RECONCILE", "false")
     repo = _FakeRepo()

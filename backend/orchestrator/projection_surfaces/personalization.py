@@ -16,7 +16,8 @@ from typing import Optional
 from audit.hooks import record_generic
 from dreaming.consolidation import run_sweep
 from personalization.chat_notices import notices_enabled, set_notices_enabled
-from personalization.memory_tools import editable_memory, is_atlas_page_row
+from personalization.atlas_pages import parse_envelope
+from personalization.memory_tools import ATLAS_ENVELOPE_REFUSAL, editable_memory, is_atlas_page_row
 from personalization.phi_gate import get_phi_gate
 from personalization.schemas import PersonalitySpec, ProfileUpdateRequest
 from pydantic import ValidationError
@@ -897,6 +898,8 @@ async def _handle_memory_update(orch, websocket, user_id, roles, payload):
                 notice_block("error", "Memory value cannot be empty."))
     if await asyncio.to_thread(_contains_phi, value):
         return (SURFACE_KEY, _params("memory"), _phi_notice("value"))
+    if parse_envelope(value) is not None:
+        return (SURFACE_KEY, _params("memory"), notice_block("error", ATLAS_ENVELOPE_REFUSAL))
     row = await asyncio.to_thread(editable_memory, svc.repo, user_id, mem_id)
     if row is None or not await asyncio.to_thread(svc.repo.update_memory_value, user_id, row["id"], value):
         return (SURFACE_KEY, _params("memory"),

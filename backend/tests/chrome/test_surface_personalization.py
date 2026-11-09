@@ -644,6 +644,21 @@ def test_memory_update_and_delete_refuse_atlas_page_rows():
     assert "Memory deleted." in notice
 
 
+def test_memory_update_refuses_an_atlas_page_shaped_value():
+    orch = make_orch()
+    _, _, notice = call(surf._handle_memory_update, orch, {"id": "m1", "fields": {"value": ATLAS_PAGE_VALUE}})
+    assert "Atlas page format" in notice
+    assert orch.personalization_service.repo.memory[0]["value"] == "prefers tables"
+
+
+def test_pulse_digest_leaves_out_atlas_page_rows():
+    from orchestrator.projection_surfaces import pulse
+
+    items = pulse._digest_items(_orch_with_atlas_page().personalization_service.repo, "u1")
+    titles = [item["title"] for item in items]
+    assert "prefers tables" in titles and ATLAS_PAGE_VALUE not in titles
+
+
 def test_skill_toggle_enable_beyond_scope_is_denied():
     orch = make_orch()
     _, params, notice = call(

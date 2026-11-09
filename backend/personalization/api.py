@@ -16,7 +16,8 @@ from pydantic import BaseModel
 from orchestrator.auth import get_current_user_payload, require_user_id
 from audit.hooks import record_generic
 
-from .memory_tools import editable_memory, is_atlas_page_row
+from .atlas_pages import parse_envelope
+from .memory_tools import ATLAS_ENVELOPE_REFUSAL, editable_memory, is_atlas_page_row
 from .phi_gate import get_phi_gate
 from .schemas import ProfileResponse, ProfileUpdateRequest
 
@@ -145,6 +146,8 @@ async def update_memory(mem_id: str, body: MemoryUpdateRequest, request: Request
     svc = _service(request)
     if get_phi_gate().contains_phi(body.value):
         return _phi_reject("value")
+    if parse_envelope(body.value) is not None:
+        raise HTTPException(status_code=422, detail=ATLAS_ENVELOPE_REFUSAL)
     row = editable_memory(svc.repo, user_id, mem_id)
     if row is None or not svc.repo.update_memory_value(user_id, row["id"], body.value):
         raise HTTPException(status_code=404, detail="memory item not found")
