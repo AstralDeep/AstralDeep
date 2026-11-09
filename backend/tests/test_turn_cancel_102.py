@@ -339,6 +339,84 @@ async def test_a_cancelled_turn_publishes_its_stage_unless_it_is_a_voice_result(
     await _cleanup(orch, chat_id)
 
 
+async def _failed_turn_messages(orch, call_llm):
+    _register(orch)
+    ws = _ws(orch)
+    chat_id = await _chat(orch)
+    orch._call_llm = call_llm
+    await registered_chat(orch, ws, "failure probe alpha", chat_id, user_id=USER)
+    saved = (await asyncio.to_thread(orch.history.get_chat, chat_id, USER))["messages"]
+    await _cleanup(orch, chat_id)
+    return saved
+
+
+async def test_a_turn_with_no_model_response_keeps_the_user_message_and_the_error(orch):
+    async def no_response(*_args, **_kwargs):
+        return None, None
+
+    saved = await _failed_turn_messages(orch, no_response)
+    assert [message["role"] for message in saved] == ["user", "assistant"]
+    assert "failure probe alpha" in json.dumps(saved[0]["content"])
+    assert "Failed to get a response" in json.dumps(saved[1]["content"])
+
+
+async def test_a_turn_that_raises_keeps_the_user_message_and_the_error(orch):
+    async def raises(*_args, **_kwargs):
+        raise RuntimeError("502 Bad Gateway")
+
+    saved = await _failed_turn_messages(orch, raises)
+    assert [message["role"] for message in saved] == ["user", "assistant"]
+    assert "failure probe alpha" in json.dumps(saved[0]["content"])
+    assert "502 Bad Gateway" in json.dumps(saved[1]["content"])
+
+
+async def test_a_turn_that_raises_an_unmapped_error_saves_a_generic_message(orch):
+    async def raises(*_args, **_kwargs):
+        raise RuntimeError("connect to postgresql://astral:hunter2@db failed for patient Jane Roe")
+
+    saved = await _failed_turn_messages(orch, raises)
+    stored = json.dumps(saved)
+    assert [message["role"] for message in saved] == ["user", "assistant"]
+    assert "Something went wrong while processing your request" in json.dumps(saved[1]["content"])
+    assert "hunter2" not in stored and "Jane Roe" not in stored and "postgresql://" not in stored
+
+
+async def _publish_failed(orch, stage):
+    await orch._publish_failed_turn(
+        _ws(orch), stage=stage, chat_id="c1", user_id=USER, request_generation="r1",
+        server_initiated=False, message="Failed.")
+
+
+async def test_a_failed_turn_with_no_open_stage_publishes_nothing(orch):
+    orch._append_conversation_message = AsyncMock()
+    await _publish_failed(orch, None)
+    await _publish_failed(orch, SimpleNamespace(completion_state="cancelled", sealed=False))
+    await _publish_failed(orch, SimpleNamespace(completion_state="completed", sealed=True))
+    orch._append_conversation_message.assert_not_awaited()
+
+
+async def test_a_failed_publication_is_logged_and_does_not_mask_the_turn_error(orch, caplog):
+    orch._append_conversation_message = AsyncMock(side_effect=RuntimeError("store unavailable"))
+    stage = SimpleNamespace(completion_state="completed", sealed=False)
+    await _publish_failed(orch, stage)
+    assert stage.completion_state == "failed"
+    assert "failed turn publication failed" in caplog.text
+
+
+async def test_a_draft_agent_without_tools_keeps_the_user_message(orch, monkeypatch):
+    _register(orch)
+    ws = _ws(orch)
+    chat_id = await _chat(orch)
+    orch._call_llm = AsyncMock(side_effect=AssertionError("no model call expected"))
+    orch.agent_cards["draft-empty"] = SimpleNamespace(skills=[], name="Empty draft", description="")
+    orch.agent_capabilities["draft-empty"] = []
+    await registered_chat(orch, ws, "test my draft", chat_id, user_id=USER, draft_agent_id="draft-empty")
+    saved = (await asyncio.to_thread(orch.history.get_chat, chat_id, USER))["messages"]
+    await _cleanup(orch, chat_id)
+    assert [message["role"] for message in saved] == ["user", "assistant"]
+    assert "Draft agent has no usable tools" in json.dumps(saved[1]["content"])
+
+
 async def test_an_unrelated_cancellation_of_the_turn_still_propagates(orch):
     _register(orch)
     ws = _ws(orch)
