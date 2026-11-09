@@ -113,6 +113,16 @@ def tool_failure_content(tool_name: object, error: object) -> str:
     })
 
 
+def ui_only_content(components: list) -> str:
+    content: dict = {"status": "shown", "message": "The user can see this result. The tool returned nothing else."}
+    notices = [notice for c in components
+               if isinstance(c, Mapping) and c.get("type") == "alert"
+               and (notice := _bounded(c.get("message"), 300)) is not None][:8]
+    if notices:
+        content["notices"] = notices
+    return json.dumps(content)
+
+
 def tool_failure_notice(tool_name: object, error: object) -> dict | None:
     message = tool_failure_message(tool_name, error)
     notices = _NOTICES.get()
