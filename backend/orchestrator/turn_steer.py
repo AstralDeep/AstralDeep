@@ -44,9 +44,10 @@ class _Mailbox:
 
 def negotiated(profile, device, capabilities) -> bool:
     device_type = getattr(getattr(profile, "device_type", None), "value", None)
-    mac_console = device_type == "macos" and getattr(profile, "console_contract", None) == "console/v2"
+    console = getattr(profile, "console_contract", None) == "console/v2"
+    # A web profile has no console, so its acknowledgment lands where the web client reads it.
     return (
-        (mac_console or device_type in WEB_DEVICE_TYPES)
+        ((device_type == "macos" and console) or (device_type in WEB_DEVICE_TYPES and not console))
         and isinstance(device, dict)
         and device.get(CAPABILITY) is True
         and CAPABILITY in (capabilities or ())
@@ -60,8 +61,8 @@ def acknowledge(profile: dict, enabled: bool) -> dict:
     ack = {"version": 1, "queue_capable": False}
     if isinstance(profile.get("console"), dict):
         profile["console"]["turn_steer"] = ack
-    elif profile.get("device_type") in WEB_DEVICE_TYPES:
-        # The web client has no console profile, so its acknowledgment sits on the profile itself.
+    else:
+        # Only a web client negotiates without a console; a resize to watch width keeps its acknowledgment.
         profile["turn_steer"] = ack
     return profile
 

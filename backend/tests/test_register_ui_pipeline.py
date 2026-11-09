@@ -224,3 +224,29 @@ async def test_register_ui_acknowledges_web_steering_only_when_asked(
     assert rote_frame["device_profile"].get("turn_steer") == expected
     assert "console" not in rote_frame["device_profile"]
     assert orch.ui_sessions[ws].get("_turn_steer_v1") is (expected is not None)
+
+
+def _web_device(width, device_type):
+    return {"device_type": device_type, "viewport_width": width, "viewport_height": 800,
+            "screen_width": 1920, "screen_height": 1080}
+
+
+async def test_a_web_resize_to_watch_width_keeps_the_steering_acknowledgment(orch, isolated_mock_identity):
+    ws, _profile, _actions = await _register_and_observe(
+        orch,
+        isolated_mock_identity,
+        {
+            "type": "register_ui",
+            "token": isolated_mock_identity["token"],
+            "capabilities": ["render", "turn_steer_v1"],
+            "device": {**_web_device(1400, "browser"), "turn_steer_v1": True},
+        },
+    )
+    for width, device_type in [(180, "watch"), (1400, "browser")]:
+        before = len(ws.task.outputs)
+        await orch.handle_ui_message(ws, json.dumps({
+            "type": "ui_event", "action": "update_device",
+            "payload": {"device": _web_device(width, device_type)}}))
+        frame = [f for f in ws.task.outputs[before:] if f.get("type") == "rote_config"][-1]
+        assert frame["device_profile"].get("turn_steer") == {"version": 1, "queue_capable": False}
+        assert orch.ui_sessions[ws].get("_turn_steer_v1") is True

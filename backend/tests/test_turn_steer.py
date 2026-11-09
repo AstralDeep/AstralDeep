@@ -57,7 +57,7 @@ async def test_acknowledgment_offers_steering_without_the_queue():
     assert turn_steer.acknowledge({"console": {}}, True) == {
         "console": {"turn_steer": {"version": 1, "queue_capable": False}}}
     assert turn_steer.acknowledge({"console": {}}, False) == {"console": {}}
-    assert turn_steer.acknowledge({}, True) == {}
+    assert turn_steer.acknowledge({}, True) == {"turn_steer": {"version": 1, "queue_capable": False}}
 
 
 async def test_the_web_acknowledgment_sits_on_the_profile():
@@ -65,7 +65,12 @@ async def test_the_web_acknowledgment_sits_on_the_profile():
     assert turn_steer.acknowledge({"device_type": "browser"}, True) == {"device_type": "browser", "turn_steer": ack}
     assert turn_steer.acknowledge({"device_type": "mobile"}, True)["turn_steer"] == ack
     assert turn_steer.acknowledge({"device_type": "browser"}, False) == {"device_type": "browser"}
-    assert turn_steer.acknowledge({"device_type": "ios"}, True) == {"device_type": "ios"}
+    assert turn_steer.acknowledge({"device_type": "watch"}, True)["turn_steer"] == ack
+
+
+async def test_a_web_profile_claiming_the_console_contract_does_not_negotiate():
+    device = {"turn_steer_v1": True}
+    assert not turn_steer.negotiated(_profile("browser", contract="console/v2"), device, ["turn_steer_v1"])
 
 
 def _sent(orch, send=None):
