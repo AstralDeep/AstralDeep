@@ -86,7 +86,7 @@ async def test_a_failed_model_call_still_answers_the_sheet(orch):
 
 
 @pytest.mark.parametrize("client_message_id", [
-    None, 7, "not-a-uuid", str(uuid.uuid4()).upper(), str(uuid.uuid1()),
+    None, 7, "not-a-uuid", "3F2504E0-4F89-41D3-9A0C-0305E82C3301", "c232ab00-9414-11ec-b3c8-9f6bdeced846",
 ])
 async def test_a_side_question_without_a_canonical_v4_id_is_ignored(orch, client_message_id):
     ws = await _negotiated(orch)
