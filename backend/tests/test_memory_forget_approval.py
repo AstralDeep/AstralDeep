@@ -100,6 +100,8 @@ async def test_forget_erases_only_after_the_card_is_approved(runtime):
     preview = json.loads(next(item["code"] for item in _card(response)["content"]
                               if item["type"] == "code"))
     assert preview == {"id": FACT_ID, "fact": "favorite tea is oolong"}
+    texts = [item["content"] for item in _card(response)["content"] if item["type"] == "text"]
+    assert "Memory to erase: favorite tea is oolong" in texts
     assert len(runtime.repo.memory) == 1
     assert _deletes(runtime) == []
 
@@ -179,3 +181,15 @@ async def test_forget_proposals_are_capped_per_turn(runtime):
     hc.begin_task(runtime.orch, runtime.ws, "owner-a", "chat-a")
     _card(await _forget(runtime, ids[-1]))
     assert len(runtime.repo.memory) == len(ids)
+
+
+@pytest.mark.parametrize("agent, tool, preview", [
+    ("weather-1", "forget", '{"fact": "x"}'),
+    (memory_chat.META_AGENT_ID, "remember", '{"fact": "x"}'),
+    (memory_chat.META_AGENT_ID, "forget", "not json"),
+    (memory_chat.META_AGENT_ID, "forget", '["fact"]'),
+    (memory_chat.META_AGENT_ID, "forget", '{"fact": ""}'),
+    (memory_chat.META_AGENT_ID, "forget", '{"id": "only"}'),
+])
+def test_the_forget_fact_line_appears_only_for_a_forget_card_with_a_fact(agent, tool, preview):
+    assert hc._forget_fact_line(agent, tool, preview) == []
