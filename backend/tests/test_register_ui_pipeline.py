@@ -199,3 +199,28 @@ async def test_register_ui_persists_user_profile(orch, isolated_mock_identity):
 
     assert profile.owner_id == isolated_mock_identity["user_id"]
     assert profile.username == isolated_mock_identity["user_id"]
+
+
+@pytest.mark.parametrize(("capabilities", "flag", "expected"), [
+    (["render", "turn_steer_v1"], True, {"version": 1, "queue_capable": False}),
+    (["render"], True, None),
+    (["render", "turn_steer_v1"], False, None),
+])
+async def test_register_ui_acknowledges_web_steering_only_when_asked(
+    orch, isolated_mock_identity, capabilities, flag, expected
+):
+    ws, _profile, _actions = await _register_and_observe(
+        orch,
+        isolated_mock_identity,
+        {
+            "type": "register_ui",
+            "token": isolated_mock_identity["token"],
+            "capabilities": capabilities,
+            "device": {"device_type": "browser", "turn_steer_v1": flag},
+        },
+    )
+
+    rote_frame = next(f for f in ws.task.outputs if f.get("type") == "rote_config")
+    assert rote_frame["device_profile"].get("turn_steer") == expected
+    assert "console" not in rote_frame["device_profile"]
+    assert orch.ui_sessions[ws].get("_turn_steer_v1") is (expected is not None)

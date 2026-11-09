@@ -39,11 +39,33 @@ async def test_negotiation_needs_the_mac_console_device_flag_and_capability():
     assert not turn_steer.negotiated(_profile(), device, [])
 
 
+@pytest.mark.parametrize("device_type", ["browser", "tablet", "mobile"])
+async def test_negotiation_accepts_the_web_client_at_every_window_size(device_type):
+    device = {"turn_steer_v1": True}
+    assert turn_steer.negotiated(_profile(device_type, contract=""), device, ["turn_steer_v1"])
+    assert not turn_steer.negotiated(_profile(device_type, contract=""), {}, ["turn_steer_v1"])
+    assert not turn_steer.negotiated(_profile(device_type, contract=""), device, [])
+
+
+@pytest.mark.parametrize("device_type", ["ios", "android", "windows", "watch", "tv", "voice"])
+async def test_negotiation_still_refuses_other_clients(device_type):
+    assert not turn_steer.negotiated(
+        _profile(device_type, contract="console/v2"), {"turn_steer_v1": True}, ["turn_steer_v1"])
+
+
 async def test_acknowledgment_offers_steering_without_the_queue():
     assert turn_steer.acknowledge({"console": {}}, True) == {
         "console": {"turn_steer": {"version": 1, "queue_capable": False}}}
     assert turn_steer.acknowledge({"console": {}}, False) == {"console": {}}
     assert turn_steer.acknowledge({}, True) == {}
+
+
+async def test_the_web_acknowledgment_sits_on_the_profile():
+    ack = {"version": 1, "queue_capable": False}
+    assert turn_steer.acknowledge({"device_type": "browser"}, True) == {"device_type": "browser", "turn_steer": ack}
+    assert turn_steer.acknowledge({"device_type": "mobile"}, True)["turn_steer"] == ack
+    assert turn_steer.acknowledge({"device_type": "browser"}, False) == {"device_type": "browser"}
+    assert turn_steer.acknowledge({"device_type": "ios"}, True) == {"device_type": "ios"}
 
 
 def _sent(orch, send=None):

@@ -16,6 +16,8 @@ logger = logging.getLogger("Orchestrator.TurnSteer")
 
 CAPABILITY = "turn_steer_v1"
 MAX_MESSAGE_SCALARS = 20000
+# The web client reports one of these depending on its window size.
+WEB_DEVICE_TYPES = frozenset({"browser", "tablet", "mobile"})
 MAX_PENDING = 16
 # The client repeats the standard envelope identity inside every ui_event payload.
 _PAYLOAD_FIELDS = {"message", "client_message_id"}
@@ -41,9 +43,10 @@ class _Mailbox:
 
 
 def negotiated(profile, device, capabilities) -> bool:
+    device_type = getattr(getattr(profile, "device_type", None), "value", None)
+    mac_console = device_type == "macos" and getattr(profile, "console_contract", None) == "console/v2"
     return (
-        getattr(getattr(profile, "device_type", None), "value", None) == "macos"
-        and getattr(profile, "console_contract", None) == "console/v2"
+        (mac_console or device_type in WEB_DEVICE_TYPES)
         and isinstance(device, dict)
         and device.get(CAPABILITY) is True
         and CAPABILITY in (capabilities or ())
@@ -52,8 +55,14 @@ def negotiated(profile, device, capabilities) -> bool:
 
 def acknowledge(profile: dict, enabled: bool) -> dict:
     # The durable queue is not offered yet, so the client hides its affordances.
-    if enabled and isinstance(profile.get("console"), dict):
-        profile["console"]["turn_steer"] = {"version": 1, "queue_capable": False}
+    if not enabled:
+        return profile
+    ack = {"version": 1, "queue_capable": False}
+    if isinstance(profile.get("console"), dict):
+        profile["console"]["turn_steer"] = ack
+    elif profile.get("device_type") in WEB_DEVICE_TYPES:
+        # The web client has no console profile, so its acknowledgment sits on the profile itself.
+        profile["turn_steer"] = ack
     return profile
 
 
