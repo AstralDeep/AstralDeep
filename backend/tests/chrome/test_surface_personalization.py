@@ -64,6 +64,9 @@ class FakeRepo:
     def list_memory(self, user_id):
         return [dict(m) for m in self.memory]
 
+    def get_memory(self, user_id, mem_id):
+        return next((dict(m) for m in self.memory if m["id"] == mem_id), None)
+
     def update_memory_value(self, user_id, mem_id, value):
         for m in self.memory:
             if m["id"] == mem_id:
@@ -602,6 +605,43 @@ def test_memory_delete_success_then_not_found():
     assert orch.personalization_service.repo.memory == []
     _, _, notice = call(surf._handle_memory_delete, orch, {"id": "m1"})
     assert "not found" in notice
+
+
+ATLAS_PAGE_VALUE = json.dumps({"body": "ciphertext", "format": "astral.atlas-page/v1", "kind": "page",
+                               "owner_id": "u1", "page_id": "page-1", "revision": 1}, sort_keys=True)
+
+
+def _orch_with_atlas_page():
+    orch = make_orch()
+    orch.personalization_service.repo.memory.append({
+        "id": "atlas-1", "user_id": "u1", "category": "context", "value": ATLAS_PAGE_VALUE,
+        "source": "atlas", "salience": 0.0, "created_at": 1700000000000, "updated_at": 1700000000000,
+    })
+    return orch
+
+
+def test_memory_tab_hides_atlas_page_rows():
+    html = render(_orch_with_atlas_page(), {"tab": "memory"})
+    assert 'value="prefers tables"' in html
+    assert "atlas-1" not in html and "ciphertext" not in html
+
+
+def test_memory_components_hide_atlas_page_rows():
+    components = asyncio.run(surf._components_memory(_orch_with_atlas_page(), "u1"))
+    rendered = json.dumps(components)
+    assert "prefers tables" in rendered
+    assert "atlas-1" not in rendered and "ciphertext" not in rendered
+
+
+def test_memory_update_and_delete_refuse_atlas_page_rows():
+    orch = _orch_with_atlas_page()
+    _, _, notice = call(surf._handle_memory_update, orch, {"id": "atlas-1", "fields": {"value": "overwrite"}})
+    assert "not found" in notice
+    _, _, notice = call(surf._handle_memory_delete, orch, {"id": " atlas-1 "})
+    assert "not found" in notice
+    assert orch.personalization_service.repo.memory[1]["value"] == ATLAS_PAGE_VALUE
+    _, _, notice = call(surf._handle_memory_delete, orch, {"id": " m1 "})
+    assert "Memory deleted." in notice
 
 
 def test_skill_toggle_enable_beyond_scope_is_denied():

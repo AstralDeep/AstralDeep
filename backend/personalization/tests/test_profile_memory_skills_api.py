@@ -114,6 +114,22 @@ def test_memory_list_and_delete(client):
     assert tc.delete(f"/api/memory/{item['id']}").status_code == 404
 
 
+def test_memory_routes_never_list_change_or_delete_an_atlas_page_row(client):
+    import json
+    tc, svc, user_id, tp = client
+    page_value = json.dumps({"body": "ciphertext", "format": "astral.atlas-page/v1", "kind": "page",
+                             "owner_id": user_id, "page_id": str(uuid.uuid4()), "revision": 1}, sort_keys=True)
+    page = svc.repo.create_memory(user_id, "context", page_value, source="explicit")
+    memory = svc.repo.create_memory(user_id, "preference", "concise", source="explicit")
+    listed = [m["id"] for m in tc.get("/api/memory").json()["items"]]
+    assert memory["id"] in listed and page["id"] not in listed
+    assert tc.put(f"/api/memory/{page['id']}", json={"value": "overwrite"}).status_code == 404
+    assert tc.delete(f"/api/memory/{page['id']}").status_code == 404
+    assert svc.repo.get_memory(user_id, page["id"])["value"] == page_value
+    assert tc.put(f"/api/memory/{memory['id']}", json={"value": "brief"}).json()["value"] == "brief"
+    assert tc.delete(f"/api/memory/{memory['id']}").status_code == 204
+
+
 def test_skills_catalog_and_scope_gating(client):
     tc, svc, user_id, tp = client
     r = tc.get("/api/skills")

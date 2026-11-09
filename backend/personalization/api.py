@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from orchestrator.auth import get_current_user_payload, require_user_id
 from audit.hooks import record_generic
 
+from .memory_tools import editable_memory, is_atlas_page_row
 from .phi_gate import get_phi_gate
 from .schemas import ProfileResponse, ProfileUpdateRequest
 
@@ -131,7 +132,7 @@ class MemoryUpdateRequest(BaseModel):
 async def list_memory(request: Request, user_id: str = Depends(require_user_id),
                       payload: dict = Depends(get_current_user_payload)):
     svc = _service(request)
-    items = svc.repo.list_memory(user_id)
+    items = [item for item in svc.repo.list_memory(user_id) if not is_atlas_page_row(item)]
     await record_generic(claims=payload, event_class="memory", action_type="memory.view",
                          description="Viewed durable memory", outputs_meta={"count": len(items)})
     return {"items": items}
@@ -144,11 +145,12 @@ async def update_memory(mem_id: str, body: MemoryUpdateRequest, request: Request
     svc = _service(request)
     if get_phi_gate().contains_phi(body.value):
         return _phi_reject("value")
-    if not svc.repo.update_memory_value(user_id, mem_id, body.value):
+    row = editable_memory(svc.repo, user_id, mem_id)
+    if row is None or not svc.repo.update_memory_value(user_id, row["id"], body.value):
         raise HTTPException(status_code=404, detail="memory item not found")
     await record_generic(claims=payload, event_class="memory", action_type="memory.update",
-                         description="Updated a memory item", outputs_meta={"id": mem_id})
-    return svc.repo.get_memory(user_id, mem_id)
+                         description="Updated a memory item", outputs_meta={"id": row["id"]})
+    return svc.repo.get_memory(user_id, row["id"])
 
 
 @memory_router.delete("/{mem_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -156,10 +158,11 @@ async def delete_memory(mem_id: str, request: Request,
                         user_id: str = Depends(require_user_id),
                         payload: dict = Depends(get_current_user_payload)):
     svc = _service(request)
-    if not svc.repo.delete_memory(user_id, mem_id):
+    row = editable_memory(svc.repo, user_id, mem_id)
+    if row is None or not svc.repo.delete_memory(user_id, row["id"]):
         raise HTTPException(status_code=404, detail="memory item not found")
     await record_generic(claims=payload, event_class="memory", action_type="memory.delete",
-                         description="Deleted a memory item", outputs_meta={"id": mem_id})
+                         description="Deleted a memory item", outputs_meta={"id": row["id"]})
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

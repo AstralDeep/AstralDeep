@@ -174,6 +174,17 @@ def canonical_memory_id(value: Any) -> Optional[str]:
         return None
 
 
+def is_atlas_page_row(item: Optional[Dict[str, Any]]) -> bool:
+    return parse_envelope((item or {}).get("value")) is not None
+
+
+def editable_memory(repo: Any, user_id: str, memory_id: Any) -> Optional[Dict[str, Any]]:
+    # Atlas page rows look like memories in the shared table but only atlas_service.py may change them
+    key = str(memory_id or "").strip()
+    row = repo.get_memory(user_id, key) if key else None
+    return None if row is None or is_atlas_page_row(row) else row
+
+
 def live_items(user_id: str, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # Atlas page rows carry a content fingerprint, not the memory HMAC, and belong to atlas_service.py
     items = [it for it in items if parse_envelope(it.get("value")) is None]
