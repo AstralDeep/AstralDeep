@@ -1,4 +1,5 @@
-"""Runs owner-bound OAuth authorization code and PKCE for remote MCP connectors.
+"""Runs owner-bound OAuth authorization code and PKCE for remote MCP connectors, and
+completes each sign-in only in the browser that remote_mcp_api.py bound to it at start.
 The connector service supplies bounded outbound HTTP and encrypted owner storage.
 """
 
@@ -7,12 +8,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
 import re
 import secrets
 import time
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 from urllib.parse import quote_plus, urlencode, urlsplit, urlunsplit
 
@@ -28,6 +30,8 @@ _CHALLENGE_SCOPE = re.compile(r'(?:^|[\s,])scope=(?:"([^"\r\n]*)"|([^,\s]+))', r
 _PENDING_AGENT = "__remote_mcp_oauth_pending__"
 _PENDING_PREFIX = "_pending_"
 _TOKEN_AUTH_METHODS = {"none", "client_secret_basic", "client_secret_post"}
+_EXPIRED = "The OAuth sign-in expired. Start it again."
+_UNBOUND = "The OAuth sign-in was not started in this browser. Start it again from AstralDeep."
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,8 @@ class _Pending:
     verifier: str
     scope: str
     expires_at: float
+    authorization_endpoint: str = ""
+    binding: str = ""
 
 
 class RemoteMCPOAuthError(ValueError):
@@ -248,10 +254,9 @@ def _pending_put(orch: Any, pending: _Pending) -> str:
     return state
 
 
-def _pending_take(orch: Any, state: str) -> _Pending:
+def _pending_identity(manager: Any, state: str) -> tuple[str, str]:
     if type(state) is not str or not 32 <= len(state) <= 2048:
-        raise RemoteMCPOAuthError("The OAuth sign-in expired. Start it again.")
-    manager = orch.credential_manager
+        raise RemoteMCPOAuthError(_EXPIRED)
     decoded = manager.open_transient_state(state, ttl_seconds=_STATE_TTL)
     try:
         identity = json.loads(decoded or "")
@@ -260,25 +265,78 @@ def _pending_take(orch: Any, state: str) -> _Pending:
         if (type(owner_id) is not str or not owner_id or type(nonce) is not str
                 or re.fullmatch(r"[0-9a-f]{32}", nonce) is None):
             raise ValueError
-        raw = manager.take_credential(owner_id, _PENDING_AGENT, _PENDING_PREFIX + nonce)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        raise RemoteMCPOAuthError(_EXPIRED) from None
+    return owner_id, nonce
+
+
+def _pending_load(manager: Any, owner_id: str, nonce: str, *, consume: bool) -> tuple[str, _Pending]:
+    read = manager.take_credential if consume else manager.get_credential
+    try:
+        raw = read(owner_id, _PENDING_AGENT, _PENDING_PREFIX + nonce)
         payload = json.loads(raw or "")
         payload.setdefault("token_endpoint_auth_method", "")
         pending = _Pending(**payload)
     except (AttributeError, KeyError, TypeError, ValueError):
-        raise RemoteMCPOAuthError("The OAuth sign-in expired. Start it again.") from None
+        raise RemoteMCPOAuthError(_EXPIRED) from None
     if pending.owner_id != owner_id or pending.expires_at <= time.time():
-        raise RemoteMCPOAuthError("The OAuth sign-in expired. Start it again.")
-    return pending
+        raise RemoteMCPOAuthError(_EXPIRED)
+    return raw, pending
+
+
+def _pending_take(orch: Any, state: str) -> _Pending:
+    manager = orch.credential_manager
+    return _pending_load(manager, *_pending_identity(manager, state), consume=True)[1]
+
+
+def _binding_digest(binding: str) -> str:
+    return hashlib.sha256(binding.encode("ascii")).hexdigest()
+
+
+def _binding_matches(pending: _Pending, binding: Any) -> bool:
+    return (type(binding) is str and 32 <= len(binding) <= 128 and binding.isascii()
+            and type(pending.binding) is str and len(pending.binding) == 64
+            and hmac.compare_digest(pending.binding, _binding_digest(binding)))
+
+
+def _authorization_url(pending: _Pending, state: str) -> str:
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(pending.verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
+    query = {"response_type": "code", "client_id": pending.client_id, "redirect_uri": pending.redirect_uri,
+             "state": state, "code_challenge": challenge, "code_challenge_method": "S256",
+             "resource": pending.resource}
+    if pending.scope:
+        query["scope"] = pending.scope
+    separator = "&" if urlsplit(pending.authorization_endpoint).query else "?"
+    return pending.authorization_endpoint + separator + urlencode(query)
+
+
+def _pending_bind(orch: Any, owner_id: Any, state: str) -> tuple[str, str]:
+    manager = orch.credential_manager
+    state_owner, nonce = _pending_identity(manager, state)
+    if type(owner_id) is not str or owner_id != state_owner:
+        raise RemoteMCPOAuthError("This OAuth sign-in belongs to a different AstralDeep account.")
+    raw, pending = _pending_load(manager, state_owner, nonce, consume=False)
+    if not pending.authorization_endpoint:
+        raise RemoteMCPOAuthError(_EXPIRED)
+    binding = secrets.token_urlsafe(32)
+    bound = json.dumps(asdict(replace(pending, binding=_binding_digest(binding))), separators=(",", ":"))
+    if pending.binding or not manager.compare_and_set_credential(
+            state_owner, _PENDING_AGENT, _PENDING_PREFIX + nonce, raw, bound):
+        raise RemoteMCPOAuthError("This OAuth sign-in was already opened in a browser.")
+    return _authorization_url(pending, state), binding
 
 
 async def begin_authorization(orch: Any, owner_id: str, connector_id: str,
-                              redirect_uri: str, *, requester: Request | None = None) -> str:
+                              redirect_uri: str, start_uri: str,
+                              *, requester: Request | None = None) -> str:
     from orchestrator.remote_mcp_connectors import (
         get_connector,
         update_oauth_credentials,
     )
 
     redirect_uri = _url(redirect_uri)
+    start_uri = _url(start_uri)
     connector = await asyncio.to_thread(get_connector, orch, owner_id, connector_id)
     if connector.get("auth_type") != "oauth" or not connector.get("enabled"):
         raise RemoteMCPOAuthError("Enable an OAuth connector before signing in.")
@@ -379,29 +437,29 @@ async def begin_authorization(orch: Any, owner_id: str, connector_id: str,
     if (type(scope) is not str or len(scope) > 512
             or any(ord(character) < 32 or ord(character) == 127 for character in scope)):
         raise RemoteMCPOAuthError("The OAuth scope is invalid.")
-    verifier = secrets.token_urlsafe(64)
-    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
     state = await asyncio.to_thread(
         _pending_put, orch, _Pending(owner_id, connector_id, endpoint, client_id, client_secret,
-                                    token_endpoint, method, redirect_uri, resource, verifier, scope,
-                                    time.time() + _STATE_TTL))
-    query = {"response_type": "code", "client_id": client_id, "redirect_uri": redirect_uri,
-             "state": state, "code_challenge": challenge, "code_challenge_method": "S256",
-             "resource": resource}
-    if scope:
-        query["scope"] = scope
-    separator = "&" if urlsplit(authorization_endpoint).query else "?"
-    return authorization_endpoint + separator + urlencode(query)
+                                    token_endpoint, method, redirect_uri, resource,
+                                    secrets.token_urlsafe(64), scope, time.time() + _STATE_TTL,
+                                    authorization_endpoint))
+    return start_uri + "?" + urlencode({"state": state})
 
 
-async def complete_authorization(orch: Any, code: str, state: str,
-                                 *, requester: Request | None = None) -> str:
+async def bind_authorization(orch: Any, owner_id: str, state: str) -> tuple[str, str]:
+    return await asyncio.to_thread(_pending_bind, orch, owner_id, state)
+
+
+async def complete_authorization(orch: Any, code: str, state: str, *, binding: str | None,
+                                 session_owner: str | None,
+                                 requester: Request | None = None) -> str:
     from orchestrator.remote_mcp_connectors import (
         get_connector,
         update_oauth_credentials,
     )
 
     pending = await asyncio.to_thread(_pending_take, orch, state)
+    if not _binding_matches(pending, binding) or session_owner != pending.owner_id:
+        raise RemoteMCPOAuthError(_UNBOUND)
     if type(code) is not str or not 1 <= len(code) <= 2048 or any(ord(c) < 33 for c in code):
         raise RemoteMCPOAuthError("The OAuth authorization code was invalid.")
     connector = await asyncio.to_thread(get_connector, orch, pending.owner_id, pending.connector_id)
