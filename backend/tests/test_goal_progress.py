@@ -903,7 +903,7 @@ def test_repeated_identical_unparseable_arguments_still_stall():
     assert progress.assess(_completion()).status == "blocked"
 
 
-@pytest.mark.parametrize("arguments", ['{"title": "Sourdough"}', "", {"title": "Sourdough"}, '["Sourdough"]'])
+@pytest.mark.parametrize("arguments", ['{"title": "Sourdough"}', "", None, {"title": "Sourdough"}, '["Sourdough"]'])
 def test_failures_of_dispatched_arguments_stay_unresolved(arguments):
     progress = GoalProgress("Write a sourdough overview with citations")
     progress.record("dispatched", "word_document", arguments, _argument_refusal(), agent_id="connectors-1")
