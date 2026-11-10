@@ -413,6 +413,9 @@ def test_record_accepts_structured_arguments_and_generic_error_shapes():
     SimpleNamespace(error=None, result=[]),
     SimpleNamespace(error=None, result=7),
     SimpleNamespace(error=None, result=object()),
+    MCPResponse(result=None, ui_components=[]),
+    MCPResponse(result=None, ui_components=["card"]),
+    SimpleNamespace(error=None, result={"_ui_components": "card", "_data": None}),
 ])
 def test_unknown_tool_results_cannot_be_declared_complete(result):
     progress = GoalProgress("Perform and verify the requested action")
@@ -422,6 +425,59 @@ def test_unknown_tool_results_cannot_be_declared_complete(result):
 
     assert decision.status == "continue"
     assert "missing-result" in progress.evidence()["unresolved_unknown"]
+
+
+@pytest.mark.parametrize(("result", "count"), [
+    (MCPResponse(result=None, ui_components=[{"type": "card", "title": "How bread rises"}]), 1),
+    (MCPResponse(result={}, ui_components=[{"type": "table"}, {"type": "text"}]), 2),
+    (SimpleNamespace(error=None, result={"_ui_components": [{"type": "card"}], "_data": None}), 1),
+    ({"_ui_components": [{"type": "card"}, "stray"], "_data": None}, 1),
+])
+def test_rendered_ui_only_result_is_a_completed_success(result, count):
+    progress = GoalProgress("Write about 500 words on how bread rises")
+    progress.record("ui-call", "word_document", {"title": "How bread rises"}, result, agent_id="connectors-1")
+
+    observation = progress.private_observations()[-1]
+    assert progress.requires_inspection is False
+    assert (observation["outcome"], observation["completed"]) == ("success", True)
+    assert observation["result"] == {"status": "shown", "count": count}
+    assert progress.evidence()["unresolved_unknown"] == []
+    assert progress.evidence()["completed_successes"][0]["call_id"] == "ui-call"
+    assert GoalProgress.is_completed_success("word_document", result) is True
+    assert progress.assess(_completion()).status == "complete"
+
+
+@pytest.mark.parametrize(("component", "message"), [
+    ({"type": "alert", "variant": "error", "message": "Service unavailable"}, "Service unavailable"),
+    ({"type": "alert", "variant": "error"}, "The tool reported an error."),
+    ({"type": "alert", "variant": "error", "message": "Upstream timed out. " * 50}, ("Upstream timed out. " * 50)[:512]),
+])
+def test_rendered_error_alert_is_a_failure_rather_than_an_unknown_outcome(component, message):
+    progress = GoalProgress("Look up the patient record")
+    result = MCPResponse(result=None, ui_components=[{"type": "card"}, component])
+    progress.record("alert-call", "search_patients", {}, result)
+
+    evidence = progress.evidence()
+    assert progress.requires_inspection is False
+    assert evidence["tools"][0]["outcome"] == "failure"
+    assert evidence["tools"][0]["error"] == {"code": "error_alert", "message": message}
+    assert evidence["unresolved_failures"] == ["alert-call"]
+    assert evidence["unresolved_unknown"] == []
+    assert GoalProgress.is_completed_success("search_patients", result) is False
+    assert progress.assess(_completion()).status == "continue"
+
+
+def test_rendered_result_does_not_mask_a_reported_error_or_structured_data():
+    progress = GoalProgress("Run the tool")
+    progress.record("errored", "word_document", {}, SimpleNamespace(
+        error={"code": "denied", "message": "Not permitted"}, result=None, ui_components=[{"type": "card"}]))
+    progress.record("data", "get_current_weather", {}, MCPResponse(
+        result={"temperature": 49.5}, ui_components=[{"type": "alert", "variant": "error", "message": "stale"}]))
+
+    tools = progress.evidence()["tools"]
+    assert [tool["outcome"] for tool in tools] == ["failure", "success"]
+    assert tools[0]["error"]["code"] == "denied"
+    assert tools[1]["result"] == {"temperature": 49.5}
 
 
 def test_unrelated_success_does_not_resolve_unknown_result_after_evidence_truncation():
