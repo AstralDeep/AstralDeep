@@ -65,7 +65,7 @@ async def test_native_and_web_share_owner_date_query_and_availability_resolution
     assert resolutions == [("attachment-1", "verified-owner")] * 2
     assert native_query == web_query == {
         "limit": 50, "cursor": "second-page", "event_classes": ["auth"],
-        "outcomes": ["failure"], "keyword": "matching query",
+        "outcomes": ["failure"], "keyword": "matching query", "conversation_id": None,
         "from_ts": datetime(2026, 9, 1, tzinfo=timezone.utc),
         "to_ts": datetime(2026, 9, 12, tzinfo=timezone.utc),
     }
