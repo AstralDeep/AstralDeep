@@ -39,6 +39,19 @@ CONTINUATION_TEXT = ("The exact approved action completed. Continue the remainin
                      "observations; any further effects still require their ordinary authorization and review.")
 REMOTE_REVIEWED_VERBS = frozenset({"run_command", "write_file", "delete_path", "project_preview", "browser_evaluate",
                                    "browser_tabs"})
+AUTO_REVIEW_TIMEOUT_S = 20.0
+AUTO_REVIEW_OWNER_TEXT_LIMIT = 2000
+AUTO_REVIEW_VERDICT_LIMIT = 1000
+_REVIEWER_PROMPT = (
+    "You are the auto-review gate for a computer-control assistant. You have no tools and no way to run "
+    "anything; you only judge one proposed action. Decide whether the owner's own request covers this exact "
+    "action clearly enough that it can run without the owner reviewing it. Allow it only when the action is "
+    "the kind of step the owner asked for, stays inside the target the owner named, and has no consequence "
+    "the owner would want to see first. Deny with a short reason when the action goes beyond the request, "
+    "targets something the owner did not name, or could destroy, publish, spend, or send something. "
+    "Escalate when you cannot tell. Reply with only a JSON object: "
+    '{"decision": "allow" | "deny" | "escalate", "reason": "required, at most 1000 characters"}. '
+    "Code enforces the decision: anything missing or malformed becomes a human review card.")
 _BUNDLE_ID = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
 _MEMORY_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
@@ -123,6 +136,7 @@ class Approval:
 
 
 _APPROVAL = contextvars.ContextVar("hitl_approval", default=None)
+_AUTO_REVIEW_DISPATCH = contextvars.ContextVar("hitl_auto_review_dispatch", default=None)
 _GOAL_CALL_TOKEN = contextvars.ContextVar("hitl_goal_call_token", default=None)
 _GOAL_CONTINUATION = contextvars.ContextVar("hitl_goal_continuation", default=None)
 _SERVER_ARGUMENTS = frozenset({"_credentials", "_credentials_encrypted", "_session_llm_credentials",
@@ -818,6 +832,281 @@ async def bypass_dispatch(orch, websocket, owner, chat, agent, tool, args, risks
     return response
 
 
+async def _reviewer_model_id(orch, owner) -> str:
+    try:
+        config = await (orch._llm_store.get(owner) if owner else orch._llm_store.get_system())
+        return str(getattr(config, "model", "") or "")
+    except Exception:
+        logger.debug("Auto-review model id unavailable", exc_info=True)
+        return ""
+
+
+def _verdict_json(content: str):
+    text = content.strip()
+    if text.startswith("```"):
+        newline = text.find("\n")
+        text = text[newline + 1:] if newline != -1 else text[3:]
+        if text.rstrip().endswith("```"):
+            text = text.rstrip()[:-3]
+        text = text.strip()
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _parse_verdict(content: str) -> tuple[str, str, str]:
+    value = _verdict_json(content) if isinstance(content, str) else None
+    if value is None:
+        return "card", "", "invalid_json"
+    if set(value) - {"decision", "reason"}:
+        return "card", "", "missing_verdict"
+    decision = value.get("decision")
+    reason = value.get("reason")
+    if decision not in ("allow", "deny", "escalate") or not isinstance(reason, str) \
+            or len(reason) > AUTO_REVIEW_VERDICT_LIMIT:
+        return "card", "", "missing_verdict"
+    if decision == "escalate":
+        return "card", reason, "escalated"
+    return decision, reason, "reviewer"
+
+
+def _reviewer_target_line(authority, args) -> str:
+    from orchestrator import computer_use_policy as policy
+
+    parts = []
+    hwnd = args.get("hwnd")
+    entry = authority.session.window_cache.get(hwnd) if authority is not None and type(hwnd) is int else None
+    if entry is not None:
+        title = policy.input_grant_label("", entry.get("title") or "").partition("window ")[2]
+        parts.append(f"Application: {policy.application_name(entry.get('bundle_id'))}"
+                     + (f" · Window: {title}" if title else ""))
+    elif authority is not None:
+        parts.append(f"Computer: {authority.host.name}")
+    cwd = args.get("cwd")
+    if isinstance(cwd, str) and cwd:
+        parts.append(f"Folder: {cwd[:200]}")
+    path = args.get("path")
+    if isinstance(path, str) and path:
+        parts.append(f"Path: {path[:200]}")
+    return " · ".join(parts) if parts else "No window target was supplied."
+
+
+async def _auto_review_audit(orch, *, owner, chat, agent, tool, event, risk_class, model_id,
+                             input_digest, rationale_digest, event_id, reason_kind=None) -> None:
+    from audit.recorder import now_utc
+    from audit.schemas import AuditEventCreate
+
+    await orch.audit_recorder.record(AuditEventCreate(
+        actor_user_id=owner, auth_principal=owner,
+        event_class="agent_tool_call", action_type=event,
+        description=f"{event.rsplit('.', 1)[-1].replace('_', ' ')}: {tool}",
+        correlation_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"auto-review:{event_id}")),
+        conversation_id=chat,
+        outcome="success" if event == "review.auto.allowed" else "failure",
+        inputs_meta={"agent_id": agent, "tool": tool, "risk_class": risk_class, "model_id": model_id,
+                     "input_sha256": input_digest, "rationale_sha256": rationale_digest,
+                     "event_id": event_id,
+                     **({"reason_kind": reason_kind} if reason_kind else {})},
+        started_at=now_utc(), completed_at=now_utc(),
+    ))
+
+
+async def _notify_breaker(orch, websocket, reason: str) -> None:
+    from astralprims import Alert
+
+    try:
+        await orch.send_ui_render(websocket, [Alert(
+            message=f"Auto-review paused: {reason} This conversation is back in Ask mode.",
+            variant="warning").to_dict()], target="chat")
+    except Exception:
+        logger.debug("Auto-review breaker notice unavailable", exc_info=True)
+
+
+async def auto_review_stage(orch, websocket, owner, chat, agent, tool, args) -> MCPResponse | None:
+    from orchestrator import computer_use_policy as policy
+    from orchestrator import review_modes
+    from orchestrator.hitl import assess_risk
+    from orchestrator.remote_confirmation import capture_computer_approval, computer_card_host
+    from personalization.phi_policy import protection_enabled
+
+    if (agent != policy.AGENT_ID or not isinstance(args, dict) or not owner or not chat
+            or not _attended(orch, websocket, owner)):
+        return None
+    try:
+        host = computer_card_host(orch, owner, chat, args)
+    except Exception:
+        return None
+    if getattr(orch, "computer_sessions", None) is None \
+            or orch.computer_sessions.live_for_host(owner, host.host_id) is None:
+        return None
+    if review_modes.resolve_mode(orch, owner, chat, host.host_id) != "auto_review":
+        return None
+    if (matching_approval(orch, owner, chat, agent, tool, args)
+            or current_approval(orch, owner, chat, agent, tool, args) is not None
+            or reviewed_remote_proposal(orch, owner, chat, agent, tool, args) is not None
+            or grant_covers(orch, websocket, owner, chat, tool, args)
+            or bypass_covers(orch, websocket, owner, chat, agent, tool, args, ())):
+        return None
+    shown = {key: value for key, value in args.items()
+             if key != "computer" and not (key == "user_id" and value == owner)}
+    phi = await asyncio.to_thread(protection_enabled, owner, orch)
+    preview, reviewable = await asyncio.to_thread(_review_arguments, shown, phi=phi)
+    if not reviewable:
+        return None
+    authority = capture_computer_approval(orch, websocket, owner, chat, args)
+    hwnd = args.get("hwnd")
+    entry = authority.session.window_cache.get(hwnd) if authority is not None and type(hwnd) is int else None
+    window_bundle = entry.get("bundle_id") if entry else None
+    trust = "trusted"
+    try:
+        from orchestrator import taint
+        if taint.taint_enabled():
+            trust = taint.trust_name(orch._taint_tracker(chat).effective_trust_of_args(
+                taint.flow_args(agent, args), user_text=orch._current_request_text(chat)))
+    except Exception:
+        logger.debug("Auto-review taint state unavailable", exc_info=True)
+    risks = list(assess_risk(tool, args, actor_principal=owner, trust=trust, agent_id=agent))
+    if tool in {"type_text", "press_keys"} and "terminal_app" in args:
+        risks.append("terminal_input")
+    if policy.auto_review_ineligible(tool, args, risks, window_bundle=window_bundle,
+                                     tainted=_tainted_sink(orch, chat, agent, tool, args)) is not None:
+        return None
+    owner_text = (orch._current_request_text(chat) or "")[:AUTO_REVIEW_OWNER_TEXT_LIMIT]
+    user_message = (f"Owner's request:\n{owner_text or '(the owner gave no request text this turn)'}\n\n"
+                    f"Action: {tool} on {host.name}\nTarget: {_reviewer_target_line(authority, args)}\n"
+                    f"Action arguments (redacted):\n{preview}\n\n"
+                    "Reply with only the JSON verdict object.")
+    input_digest = hashlib.sha256(user_message.encode("utf-8")).hexdigest()
+    model_id = await _reviewer_model_id(orch, owner)
+    messages = [{"role": "system", "content": _REVIEWER_PROMPT}, {"role": "user", "content": user_message}]
+    kind, content = "empty", None
+    try:
+        message, _usage = await asyncio.wait_for(
+            orch._call_llm(websocket, messages, tools_desc=None, temperature=0.0, feature="auto_review"),
+            timeout=AUTO_REVIEW_TIMEOUT_S)
+        content = getattr(message, "content", None)
+        if not isinstance(content, str) or not content.strip():
+            content, kind = None, "empty"
+    except asyncio.TimeoutError:
+        kind = "timeout"
+    except Exception:
+        kind = "provider_error"
+        logger.warning("Auto-review reviewer call failed", exc_info=True)
+    if content is not None:
+        decision, reason, kind = _parse_verdict(content)
+    else:
+        decision, reason = "card", ""
+    event_id = f"review.auto.{uuid.uuid4()}"
+    meta = dict(risk_class=policy.TIERS.get(tool, "unknown"), model_id=model_id,
+                input_digest=input_digest,
+                rationale_digest=hashlib.sha256((reason or "").encode("utf-8")).hexdigest(),
+                event_id=event_id)
+    if decision == "allow":
+        try:
+            await _auto_review_audit(orch, owner=owner, chat=chat, agent=agent, tool=tool,
+                                     event="review.auto.allowed", reason_kind=None, **meta)
+        except Exception:
+            logger.warning("Auto-review allow audit unavailable; falling back to a card", exc_info=True)
+            return None
+        review_modes.record_allow(orch, owner, chat)
+        review_modes.record_verdict(orch, owner, chat, agent, tool, "allow", reason, event_id)
+        return None
+    if decision == "deny":
+        try:
+            await _auto_review_audit(orch, owner=owner, chat=chat, agent=agent, tool=tool,
+                                     event="review.auto.denied", reason_kind=None, **meta)
+        except Exception:
+            logger.warning("Auto-review deny audit unavailable; falling back to a card", exc_info=True)
+            return None
+        tripped, consecutive, total, breaker_reason = review_modes.record_denial(orch, owner, chat)
+        note = f"Auto-review denied this action: {reason}. The action was not run."
+        if tripped:
+            try:
+                await _auto_review_audit(orch, owner=owner, chat=chat, agent=agent, tool=tool,
+                                         event="review.auto.circuit_open", reason_kind=None, **meta)
+            except Exception:
+                logger.warning("Auto-review circuit audit unavailable", exc_info=True)
+            await _notify_breaker(orch, websocket, breaker_reason)
+            note += " The review circuit breaker tripped; this conversation is back in Ask mode."
+        return _refused(note)
+    try:
+        await _auto_review_audit(orch, owner=owner, chat=chat, agent=agent, tool=tool,
+                                 event="review.auto.no_verdict", reason_kind=kind, **meta)
+    except Exception:
+        logger.debug("Auto-review no-verdict audit unavailable", exc_info=True)
+    return None
+
+
+def auto_review_covers(orch, owner, chat, agent, tool, args) -> bool:
+    from orchestrator import review_modes
+
+    if not isinstance(args, dict):
+        return False
+    return (_AUTO_REVIEW_DISPATCH.get() == (owner, chat, agent, tool)
+            or current_approval(orch, owner, chat, agent, tool, args) is not None
+            or review_modes.peek_verdict(orch, owner, chat, agent, tool) is not None)
+
+
+@contextmanager
+def _auto_review_dispatch_scope(owner, chat, agent, tool):
+    token = _AUTO_REVIEW_DISPATCH.set((owner, chat, agent, tool))
+    try:
+        yield
+    finally:
+        _AUTO_REVIEW_DISPATCH.reset(token)
+
+
+async def auto_review_dispatch(orch, websocket, owner, chat, agent, tool, args, risks, *, authority=None):
+    from orchestrator import computer_use_policy as policy
+    from orchestrator import review_modes
+    from orchestrator.remote_confirmation import (capture_computer_approval, computer_approval_current,
+                                                  computer_card_host, source_review_proposal)
+
+    if agent != policy.AGENT_ID or approved_call(orch, owner, chat, agent, tool):
+        return None
+    verdict = review_modes.take_verdict(orch, owner, chat, agent, tool)
+    if verdict is None or verdict.get("decision") != "allow":
+        return None
+    from orchestrator.computer_hosts import ComputerHostError
+
+    try:
+        host = computer_card_host(orch, owner, chat, args)
+    except ComputerHostError:
+        return None
+    if authority is None:
+        if orch.computer_sessions.live_for_host(owner, host.host_id) is not None:
+            authority = capture_computer_approval(orch, websocket, owner, chat, args, standing=True)
+            if authority is None:
+                return _refused("The computer session no longer belongs to this conversation. Re-request it on the Mac.")
+    if authority is not None and authority.session.state == "paused":
+        if (authority.session.pause_reason != "approval_not_completed"
+                or not computer_approval_current(orch, websocket, authority, allow_local_pause=True)):
+            return _refused("The paused session lost its recovery authority. Resume it on the Mac.")
+        generation = authority.session.authority_generation + 1
+        await orch.computer_sessions.resume(authority.session)
+        authority = replace(authority, generation=generation)
+    from orchestrator.project_authority import current_origin
+    call = PendingCall(str(uuid.uuid4()), owner, chat, agent, tool, _arguments(args), tuple(sorted(risks)),
+                       time.monotonic() + TTL_SECONDS, _task(orch, websocket, owner, chat), authority,
+                       source_review_proposal(orch, owner, chat, agent, tool, args), websocket,
+                       cancellation_witness(orch, websocket, owner, chat, create=True),
+                       approval_source="auto_review", project_origin=current_origin(orch, owner, chat, host))
+    if not _current_session(orch, websocket, call):
+        return _refused("The computer authority changed before dispatch. Reconnect the Mac and retry.")
+    try:
+        await _audit(orch, call, "auto_review")
+    except Exception:
+        return _refused("Action audit is unavailable. The action was not run.")
+    with _auto_review_dispatch_scope(owner, chat, agent, tool):
+        response = await _dispatch_approved(orch, websocket, call)
+    data = response.result.get("_data") if isinstance(response.result, dict) else None
+    if isinstance(data, dict):
+        response.result = {**response.result, "_data": {**data, "approval_source": "auto_review"}}
+    return response
+
+
 async def project_read_approval(orch, websocket, owner, chat, agent, tool, args):
     from orchestrator.project_authority import FILE_VERBS, current_origin
     from orchestrator.remote_confirmation import computer_card_host, capture_computer_approval
@@ -1162,6 +1451,10 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
                                              authority=computer)
             if bypassed is not None:
                 return bypassed
+            reviewed = await auto_review_dispatch(orch, websocket, owner, chat, agent, tool, args, risks,
+                                                  authority=computer)
+            if reviewed is not None:
+                return reviewed
         if unreviewable is not None:
             return unreviewable
         goal_token = current_goal_call_token()

@@ -19234,6 +19234,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if agent_id == "remote-mcp-1":
             args["user_id"] = user_id
 
+        if user_id and agent_id == "computer-use-1" and chat_id and action.needs_review:
+            from orchestrator import hitl_confirmation
+
+            reviewed = await hitl_confirmation.auto_review_stage(
+                self, websocket, user_id, chat_id, agent_id, tool_name, args)
+            if reviewed is not None:
+                return GateRefusal(response=reviewed, render_components=None, render_target=None)
+
         if agent_id in ("remote-compute-1", "computer-use-1", "gaiakeep-1", "cresco-1", "terminal-shell-1"):
             from orchestrator import remote_confirmation
             from orchestrator.terminal_security import TerminalError

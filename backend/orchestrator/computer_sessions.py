@@ -301,6 +301,11 @@ class ComputerSessionManager:
     def get(self, session_id: str) -> Optional[ComputerSession]:
         return self._sessions.get(session_id)
 
+    async def push_mode(self, owner_sub: str, host_id: str) -> None:
+        session = self.live_for_host(owner_sub, host_id)
+        if session is not None:
+            await self._push(session)
+
     def live_for_host(self, owner_sub: str, host_id: str) -> Optional[ComputerSession]:
         for s in self._sessions.values():
             if s.owner_sub == owner_sub and s.host_id == host_id and s.state != ENDED:
@@ -628,8 +633,11 @@ class ComputerSessionManager:
             await self._push(session)
 
     async def _push(self, session: ComputerSession) -> None:
+        from orchestrator import review_modes
         frame = session.frame(self.grant_rows(session) if session.state != ENDED else (),
                               self.bypass_on(session.owner_sub, session.host_id))
+        frame = json.dumps({**json.loads(frame),
+                            "computer_mode": review_modes.session_mode(self._orch, session)})
         clients = list(self._orch.ui_clients)
         host = self._registry.get(session.owner_sub, session.host_id)
         if session.project_origin is not None and host is not None and host.websocket in clients:

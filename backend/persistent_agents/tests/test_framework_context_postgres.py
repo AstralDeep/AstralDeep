@@ -81,6 +81,7 @@ async def test_flag_on_consumed_framework_reservation_accounts_and_recovers_real
     state = context
     identity = owned_conversation(state) if existing else None
     accepted = await submit(state, **({"conversation_id": identity} if existing else {}))
+    await state.runner._tick_operations()
     context_id = identity or accepted["id"]
     record, actions = await settle(state, accepted["id"])
     assert record["operation"]["terminal_outcome"] == "completed"
@@ -136,6 +137,7 @@ async def test_flag_on_context_loss_refuses_before_the_provider_send(context, mo
             return value
         monkeypatch.setattr(state.context.usage, "begin", begin)
     accepted = await submit(state)
+    await state.runner._tick_operations()
     async with asyncio.timeout(20):
         while not seen or state.runner._active:
             await asyncio.sleep(0.05)
@@ -183,6 +185,7 @@ async def test_real_retained_source_reference_cannot_grant_framework_source_auth
         conversation_id=identity, limits={"model_calls": 1, "tool_calls": 1,
             "tokens": profile.RESERVED_TOKENS, "elapsed_ms": profile.RESERVED_MILLISECONDS,
             "max_retries": 0}, deadline_in_seconds=300)
+    await state.runner._tick_operations()
     await asyncio.wait_for(finished.wait(), 20)
     record, actions, _ = await stored(state.op, accepted["id"])
     assert state.op.model_calls == [] and "chat_result" not in record["checkpoint"]

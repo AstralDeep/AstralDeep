@@ -335,18 +335,52 @@ async def _h_grant_revoke(orch, websocket, user_id, roles, payload):
 
 
 async def _h_bypass_set(orch, websocket, user_id, roles, payload):
+    from orchestrator import review_modes
     from orchestrator.hitl_confirmation import attended
 
     if not _enabled():
         return (SURFACE_KEY, {}, notice_block("error", _DISABLED_MSG))
     host = orch.computer_hosts.host_for_socket(websocket) if websocket is not None else None
-    if (not isinstance(payload, dict) or set(payload) - {"host_id", "enabled", "surface"}
-            or not isinstance(payload.get("enabled"), bool) or host is None
-            or payload.get("host_id") != host.host_id or host.owner_sub != user_id
+    if (not isinstance(payload, dict) or set(payload) - {"host_id", "enabled", "mode", "surface"}
+            or host is None or payload.get("host_id") != host.host_id or host.owner_sub != user_id
             or not attended(orch, websocket, user_id)):
         return (SURFACE_KEY, {}, notice_block("error", "Bypass is not available here."))
-    await orch.computer_sessions.set_bypass(host, payload["enabled"])
-    return (SURFACE_KEY, {}, notice_block("success", "Bypass on." if payload["enabled"] else "Bypass off."))
+    mode = payload.get("mode")
+    enabled = payload.get("enabled")
+    if (("mode" in payload) == ("enabled" in payload)
+            or "mode" in payload and (not isinstance(mode, str) or mode not in ("ask", "auto_review", "bypass"))
+            or "enabled" in payload and not isinstance(enabled, bool)):
+        return (SURFACE_KEY, {}, notice_block("error", "Bypass is not available here."))
+    if mode is None:
+        await orch.computer_sessions.set_bypass(host, enabled)
+        return (SURFACE_KEY, {}, notice_block("success", "Bypass on." if enabled else "Bypass off."))
+    chat = getattr(orch, "_ws_active_chat", {}).get(id(websocket))
+    if not chat:
+        return (SURFACE_KEY, {}, notice_block("error", "Open a conversation to change its review mode."))
+    review_modes.set_mode(orch, user_id, chat, "ask" if mode == "bypass" else mode)
+    if mode == "bypass":
+        await orch.computer_sessions.set_bypass(host, True)
+    elif orch.computer_sessions.bypass_on(user_id, host.host_id):
+        await orch.computer_sessions.set_bypass(host, False)
+    try:
+        from datetime import datetime, timezone
+
+        from audit.recorder import get_recorder
+        from audit.schemas import AuditEventCreate
+        recorder = get_recorder()
+        if recorder is not None:
+            await recorder.record(AuditEventCreate(
+                actor_user_id=user_id, auth_principal=user_id, event_class="agent_lifecycle",
+                action_type="computer_mode.set",
+                description=f"review mode {mode} for {host.name} in this conversation"[:1024],
+                correlation_id=host.host_id, outcome="success",
+                inputs_meta={"host_id": host.host_id, "mode": mode, "chat_id": chat},
+                started_at=datetime.now(timezone.utc)))
+    except Exception:  # noqa: BLE001
+        pass
+    await orch.computer_sessions.push_mode(user_id, host.host_id)
+    label = {"ask": "Ask", "auto_review": "Auto-review", "bypass": "Bypass"}[mode]
+    return (SURFACE_KEY, {}, notice_block("success", f"Review mode: {label}."))
 
 
 async def _h_forget(orch, websocket, user_id, roles, payload):
