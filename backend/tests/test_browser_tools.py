@@ -243,7 +243,7 @@ def test_page_state_is_bounded():
 def test_register_adds_the_browser_tools_and_the_batch_with_policy_scopes_tiers_and_timeouts():
     registry = {}
     browser_tools.register(registry)
-    assert sorted(registry) == sorted([*BROWSER_TOOLS, "browser_batch"]) and len(registry) == 19
+    assert sorted(registry) == sorted([*BROWSER_TOOLS, "browser_batch"]) and len(registry) == 21
     for name, entry in registry.items():
         assert entry["scope"] == policy.SCOPES[name]
         assert entry["tier"] == policy.TIERS[name]
@@ -422,7 +422,7 @@ async def test_get_text_of_a_secret_field_is_refused_with_guidance(world):
     out = await world.call("browser_get_text", ref="e4")
     data = out["_data"]
     assert data["status"] == "refused" and data["code"] == "secret_field"
-    assert "never reads or fills" in data["next_action"] and "themselves" in data["next_action"]
+    assert "never reads or fills" in data["next_action"] and "browser_request_login" in data["next_action"]
     assert out["_ui_components"][0]["type"] == "alert" and out["_ui_components"][0]["variant"] == "warning"
 
 
@@ -598,7 +598,7 @@ async def test_fill_validates_fields_and_forwards_the_snapshot_bound_request(wor
 async def test_filling_a_secret_field_is_refused_with_guidance(world):
     world.replies["browser_fill"] = _error("secret_field", "e4 is a password field")
     out = await world.call("browser_fill", snapshot_id="s9", fields=[{"ref": "e4", "value": "hunter2"}])
-    assert out["_data"]["code"] == "secret_field" and "themselves" in out["_data"]["next_action"]
+    assert out["_data"]["code"] == "secret_field" and "browser_request_login" in out["_data"]["next_action"]
     assert "hunter2" not in json.dumps(out)
 
 
@@ -798,29 +798,48 @@ _VALID_CALLS = {
     "browser_evaluate": {"script": "document.title"}, "browser_resize": {"preset": "mobile"},
     "browser_tabs": {"action": "list"},
 }
+_LOGIN_TOOLS = ("browser_request_login", "browser_fill_login")
+_TABLE_TOOLS = [verb for verb in BROWSER_TOOLS if verb not in _LOGIN_TOOLS]
 
 
-def test_the_valid_call_table_covers_every_browser_tool():
-    assert sorted(_VALID_CALLS) == BROWSER_TOOLS
+def test_the_valid_call_table_covers_every_generic_browser_tool():
+    assert sorted(_VALID_CALLS) == _TABLE_TOOLS
+    assert set(_LOGIN_TOOLS) <= set(BROWSER_TOOLS)
 
 
-@pytest.mark.parametrize("tool", BROWSER_TOOLS)
+@pytest.mark.parametrize("tool", _TABLE_TOOLS)
 async def test_every_tool_refuses_without_a_signed_in_user(tool):
     out = await asyncio.to_thread(getattr(browser_tools, tool), session_id=CHAT, **_VALID_CALLS[tool])
     assert out["_data"]["code"] == "unattended_refused"
 
 
-@pytest.mark.parametrize("tool", BROWSER_TOOLS)
+@pytest.mark.parametrize("tool", ["browser_request_login", "browser_fill_login"])
+async def test_login_tools_refuse_without_a_signed_in_user(tool):
+    out = await asyncio.to_thread(getattr(browser_tools, tool), session_id=CHAT,
+                                  **({"reason": "Sign in to continue"} if tool == "browser_request_login"
+                                     else {"origin": ORIGIN, "refs": ["e2"], "snapshot_id": "s9"}))
+    assert out["_data"]["code"] == "unattended_refused"
+
+
+@pytest.mark.parametrize("tool", _TABLE_TOOLS)
 async def test_every_tool_surfaces_a_host_refusal_instead_of_a_result(world, tool):
-    for verb in BROWSER_TOOLS:
+    for verb in _TABLE_TOOLS:
         world.replies[verb] = _error("stale_ref", "gone")
     out = await world.call(tool, **_VALID_CALLS[tool])
     assert out["_data"]["code"] == "stale_ref" and out["_data"]["status"] == "refused"
     assert len(world.requests(tool)) == 1
 
 
-@pytest.mark.parametrize("tool", BROWSER_TOOLS)
+@pytest.mark.parametrize("tool", _TABLE_TOOLS)
 async def test_every_tool_needs_a_live_session(world, tool):
     await world.orch.computer_sessions.end(world.session, "user_stop")
     out = await world.call(tool, **_VALID_CALLS[tool])
+    assert out["_data"]["code"] == "no_session" and world.requests(tool) == []
+
+
+@pytest.mark.parametrize("tool", _LOGIN_TOOLS)
+async def test_login_tools_need_a_live_session(world, tool):
+    await world.orch.computer_sessions.end(world.session, "user_stop")
+    out = await world.call(tool, **({"reason": "Sign in to continue"} if tool == "browser_request_login"
+                                    else {"origin": ORIGIN, "refs": ["e2"], "snapshot_id": "s9"}))
     assert out["_data"]["code"] == "no_session" and world.requests(tool) == []

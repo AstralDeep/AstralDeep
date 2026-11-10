@@ -18,7 +18,7 @@ import logging
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from astralplane.repositories.remote_proposals import RemoteOperationProposalRecord
 from orchestrator.computer_hosts import ComputerHostError
@@ -567,7 +567,9 @@ def _audit_event(user_id: Optional[str], action_type: str, description: str, *,
                  proposal_id: Optional[str] = None, machine_id: Optional[str] = None,
                  verb: Optional[str] = None, outcome: str = "success",
                  chat_id: Optional[str] = None, display_digest: Optional[str] = None,
-                 display_echo: Optional[str] = None, reason: Optional[str] = None):
+                 display_echo: Optional[str] = None, sandbox: Optional[dict] = None,
+                 origin: Optional[str] = None, label_hashes: Optional[List[str]] = None,
+                 reason: Optional[str] = None, event_class: str = "agent_lifecycle"):
     from datetime import datetime, timezone
 
     from audit.schemas import AuditEventCreate
@@ -582,12 +584,18 @@ def _audit_event(user_id: Optional[str], action_type: str, description: str, *,
         meta["display_digest"] = str(display_digest)
     if display_echo:
         meta["display_echo"] = str(display_echo)
+    if isinstance(sandbox, dict) and sandbox:
+        meta["sandbox"] = sandbox
+    if origin:
+        meta["origin"] = str(origin)
+    if label_hashes:
+        meta["item_labels_sha256"] = [str(item) for item in label_hashes[:32]]
     if reason:
         meta["reason"] = str(reason)
     return AuditEventCreate(
         actor_user_id=user_id or "unknown",
         auth_principal=user_id or "unknown",
-        event_class="agent_lifecycle",
+        event_class=event_class,
         action_type=action_type,
         description=description[:1024],
         conversation_id=chat_id,
@@ -596,6 +604,17 @@ def _audit_event(user_id: Optional[str], action_type: str, description: str, *,
         inputs_meta=meta,
         started_at=datetime.now(timezone.utc),
     )
+
+
+def _sandbox_meta(tool_name: str, args: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    if tool_name != "run_command":
+        return None
+    from orchestrator import computer_use_policy as policy
+    mode = policy.sandbox_mode(args)
+    domains = list(policy.command_domains(args))
+    if mode == "default" and not domains:
+        return None
+    return {"mode": mode, "allowed_domains": domains}
 
 
 def _audit_sync(user_id: Optional[str], action_type: str, description: str, **kw) -> None:
@@ -853,6 +872,8 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
         if on_created is not None:
             on_created(transaction, proposal_id)
     logger.info("remote_op proposal created: %s verb=%s owner=%s", proposal_id, tool_name, user_id)
+    if agent_id == "computer-use-1":
+        _open_computer_approval_marker(orch, proposal_id, user_id, chat_id, tool_name, summary)
     offer = None
     if agent_id == "computer-use-1":
         from orchestrator.hitl_confirmation import grant_request
@@ -901,8 +922,21 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
         digest = bind_display(orch, card)
     _audit_sync(user_id, "remote_op.proposed", f"proposed {tool_name}: {summary}",
                 proposal_id=proposal_id, machine_id=machine_ref, verb=tool_name,
-                outcome="in_progress", chat_id=chat_id, display_digest=digest)
+                outcome="in_progress", chat_id=chat_id, display_digest=digest,
+                sandbox=_sandbox_meta(tool_name, args))
     return proposal_id, card
+
+
+def _open_computer_approval_marker(orch, proposal_id: str, user_id: str, chat_id: str | None,
+                                   tool_name: str, summary: str) -> None:
+    ledger = getattr(orch, "computer_effect_intents", None)
+    if ledger is None:
+        return
+    try:
+        ledger.approval_opened(proposal_id=proposal_id, owner_id=user_id, chat_id=chat_id,
+                               tool_name=tool_name, summary=summary)
+    except Exception:  # noqa: BLE001
+        logger.debug("approval outcome marker failed (non-fatal)", exc_info=True)
 
 
 def card_component_id(proposal_id: str) -> str:
@@ -994,6 +1028,15 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
     policy = policy_for(agent_id)
     if policy is None:
         return None
+    if agent_id == "computer-use-1" and tool_name == "browser_fill_login" and not args.get(_MARKER):
+        from orchestrator.computer_use_policy import fill_login_preflight
+
+        shape_refusal = fill_login_preflight(args)
+        if shape_refusal:
+            _audit_sync(user_id, "remote_op.refused_fill_login_arguments",
+                        "refused browser_fill_login with values or extra arguments",
+                        machine_id=args.get("computer"), verb=tool_name, outcome="failure", chat_id=chat_id)
+            return (shape_refusal, [Alert(message=shape_refusal, variant="error").to_dict()])
     if agent_id == "terminal-shell-1" and tool_name in {"start_terminal", "terminal_write"}:
         from orchestrator import terminal_approvals
 
@@ -1117,7 +1160,8 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
         if ok:
             _audit_sync(user_id, "remote_op.consumed",
                         f"approved & consumed {tool_name}", proposal_id=str(marker),
-                        machine_id=machine_ref, verb=tool_name, chat_id=chat_id)
+                        machine_id=machine_ref, verb=tool_name, chat_id=chat_id,
+                        sandbox=_sandbox_meta(tool_name, args))
             return None
         _audit_sync(user_id, "remote_op.approval_invalid",
                     f"invalid approval for {tool_name}", proposal_id=str(marker),
@@ -1199,6 +1243,13 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
     decision = (payload or {}).get("decision")
     resume_requested = decision == "approve_and_resume"
     grant_requested = decision == "grant_task"
+    _ledger = getattr(orch, "computer_effect_intents", None)
+    if _ledger is not None and isinstance(proposal_id, str) and proposal_id:
+        try:
+            await asyncio.to_thread(_ledger.approval_resolved, proposal_id,
+                                    note=f"the approval card received decision {decision}")
+        except Exception:  # noqa: BLE001
+            logger.debug("approval outcome marker close failed (non-fatal)", exc_info=True)
 
     async def _say(message: str, variant: str = "warning") -> None:
         from orchestrator.approval_receipts import note

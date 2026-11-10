@@ -24,6 +24,7 @@ BROWSER_VERBS: FrozenSet[str] = frozenset({
     "browser_navigate", "browser_click", "browser_fill", "browser_press", "browser_scroll",
     "browser_dialog", "browser_find", "browser_hover", "browser_zoom", "browser_console",
     "browser_network", "browser_evaluate", "browser_resize", "browser_tabs",
+    "browser_request_login", "browser_fill_login",
 })
 ACCESSIBILITY_VERBS: FrozenSet[str] = frozenset({"list_apps", "ax_tree", "ax_find", "ax_action", "menu", "zoom"})
 
@@ -40,9 +41,11 @@ INPUT_VERBS: FrozenSet[str] = frozenset({
     "browser_navigate", "browser_click", "browser_fill", "browser_press", "browser_scroll",
     "browser_dialog", "interrupt_command",
     "ax_action", "menu", "browser_hover", "browser_resize", "browser_tabs", "browser_batch",
+    "browser_request_login",
 })
 CONSEQUENTIAL_VERBS: FrozenSet[str] = frozenset({
     "write_file", "delete_path", "run_command", "project_preview", "browser_evaluate",
+    "browser_fill_login",
 })
 SESSION_VERBS: FrozenSet[str] = frozenset({
     "list_computers", "start_session", "end_session", "resume_session", "confirm_action",
@@ -70,6 +73,7 @@ SCOPES: Dict[str, str] = {
     "write_file": "tools:files",
     "delete_path": "tools:files",
     "browser_evaluate": "tools:write",
+    "browser_fill_login": "tools:write",
     "list_computers": "tools:read",
     "start_session": "tools:write",
     "end_session": "tools:write",
@@ -87,6 +91,7 @@ DESTRUCTIVE_CLASSIFICATION: Dict[str, Any] = {
     "browser_navigate": "always",
     "browser_evaluate": "always",
     "browser_tabs": "always",
+    "browser_fill_login": "always",
 }
 
 SHELL_APPS: FrozenSet[str] = frozenset({
@@ -278,6 +283,7 @@ TIMEOUTS: Dict[str, float] = {
     "list_apps": 5.0, "ax_tree": 8.0, "ax_find": 8.0, "ax_action": 10.0, "menu": 10.0, "zoom": 15.0,
     "browser_find": 5.0, "browser_hover": 5.0, "browser_zoom": 5.0, "browser_console": 5.0,
     "browser_network": 5.0, "browser_evaluate": 15.0, "browser_resize": 5.0, "browser_tabs": 15.0,
+    "browser_request_login": 630.0, "browser_fill_login": 15.0,
     "browser_batch": 120.0,
     "list_computers": 5.0, "start_session": 10.0, "end_session": 5.0,
     "resume_session": 5.0, "confirm_action": 5.0,
@@ -351,6 +357,46 @@ def _origin_label(url: Any) -> str:
     return f"{parts.scheme}://{parts.netloc}"
 
 
+WAIT_ON_OWNER_VERBS: FrozenSet[str] = frozenset({"browser_request_login"})
+LOCAL_CONFIRM_VERBS: FrozenSet[str] = frozenset({"browser_fill_login"})
+FILL_LOGIN_ORIGIN_CHARS = MAX_BROWSER_URL_CHARS
+MAX_FILL_LOGIN_FIELDS = 20
+FILL_LOGIN_ALLOWED_ARGS = frozenset({"computer", "origin", "refs", "snapshot_id", "user_id", "session_id"})
+
+
+def fill_login_origin(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or not value or len(value) > FILL_LOGIN_ORIGIN_CHARS:
+        return None
+    canonical = canonical_browser_url(value)
+    if canonical is None:
+        return None
+    parts = urlsplit(canonical)
+    if parts.path not in ("", "/") or parts.query or parts.fragment:
+        return None
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def fill_login_preflight(args: Any) -> str:
+    if not isinstance(args, Mapping):
+        return "browser_fill_login takes only origin, refs and snapshot_id and never a value"
+    extra = sorted(str(key) for key in args
+                   if not str(key).startswith("_") and str(key) not in FILL_LOGIN_ALLOWED_ARGS)
+    if extra:
+        return ("browser_fill_login takes only origin, refs and snapshot_id; refused arguments: "
+                + ", ".join(extra[:8]))
+    if fill_login_origin(args.get("origin")) is None:
+        return ("origin must be the bare http or https origin of the page in the browser pane, "
+                "such as https://example.org")
+    refs = args.get("refs")
+    if (not isinstance(refs, list) or not 1 <= len(refs) <= MAX_FILL_LOGIN_FIELDS
+            or any(not isinstance(ref, str) or not re.fullmatch(r"e[0-9]{1,9}", ref) for ref in refs)
+            or len(set(refs)) != len(refs)):
+        return f"refs must be 1-{MAX_FILL_LOGIN_FIELDS} unique field references from browser_snapshot, such as e12"
+    if not isinstance(args.get("snapshot_id"), str) or not re.fullmatch(r"s[0-9]{1,9}", args["snapshot_id"]):
+        return "snapshot_id must be the snapshot_id of the browser_snapshot the references came from"
+    return ""
+
+
 def _one_line(value: Any, limit: int) -> str:
     text = "".join(" " if unicodedata.category(ch) in ("Cc", "Zl", "Zp") else "" if unicodedata.category(ch) == "Cf"
                    else ch for ch in str(value or ""))
@@ -395,6 +441,90 @@ MAX_ARGV_ITEMS = 256
 MAX_ARG_CHARS = 4096
 MAX_ENV_VARS = 32
 MAX_STDIN_BYTES = 16 * 1024
+MAX_ALLOWED_DOMAINS = 64
+MAX_DOMAIN_CHARS = 253
+SANDBOX_MODES = ("default", "escalated")
+ESCALATION_NOTICE = ("This command runs OUTSIDE the operating-system sandbox and may reach the network. "
+                     "Approve only if you recognize every destination.")
+
+
+def validate_allowed_domains(value: Any) -> List[str]:
+    if not isinstance(value, list) or len(value) > MAX_ALLOWED_DOMAINS:
+        raise ValueError(f"allowed_domains must be a list of at most {MAX_ALLOWED_DOMAINS} hostnames")
+    out: List[str] = []
+    seen = set()
+    for item in value:
+        if (not isinstance(item, str) or not item.strip() or "\\x00" in item
+                or any(ord(ch) < 32 or ord(ch) == 127 for ch in item)):
+            raise ValueError("allowed_domains entries must be printable hostnames like example.com or *.example.com")
+        lowered = item.strip().lower()
+        if len(lowered) > MAX_DOMAIN_CHARS:
+            raise ValueError(f"each allowed domain is at most {MAX_DOMAIN_CHARS} characters")
+        body = lowered[2:] if lowered.startswith("*.") else lowered
+        if (not body or body.startswith(".") or body.endswith(".") or ".." in body
+                or any(label == "" for label in body.split("."))):
+            raise ValueError(f"{item[:80]} is not a valid hostname or *.wildcard")
+        labels = body.split(".")
+        if len(labels) < 2 or any(len(label) > 63 for label in labels):
+            raise ValueError(f"{item[:80]} is not a valid hostname or *.wildcard")
+        for label in labels:
+            if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label):
+                raise ValueError(f"{item[:80]} is not a valid hostname or *.wildcard")
+        try:
+            ipaddress.ip_address(body)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("allowed_domains entries cannot be IP addresses")
+        if "localhost" in labels:
+            raise ValueError("allowed_domains entries cannot name localhost")
+        if lowered not in seen:
+            seen.add(lowered)
+            out.append(lowered)
+    return out
+
+
+def command_domains(args: Mapping[str, Any]) -> tuple:
+    value = args.get("allowed_domains")
+    return tuple(value) if isinstance(value, list) else ()
+
+
+def sandbox_mode(args: Mapping[str, Any]) -> str:
+    value = args.get("sandbox")
+    return value if value in SANDBOX_MODES else "default"
+
+
+def sandbox_exact_review_required(args: Mapping[str, Any], approved: Any = None) -> bool:
+    if sandbox_mode(args) == "escalated":
+        return True
+    domains = command_domains(args)
+    if not domains:
+        return False
+    return True if approved is None else not set(domains) <= set(approved)
+
+
+EGRESS_DENIED_CIDRS: tuple = (
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+    "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.88.99.0/24", "192.168.0.0/16",
+    "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
+    "255.255.255.255/32",
+    "::/128", "::1/128", "::ffff:0:0/96", "64:ff9b:1::/48", "100::/64",
+    "2001:db8::/32", "fc00::/7", "fe80::/10", "ff00::/8",
+)
+
+
+def proxy_policy(domains: Sequence[str]) -> Dict[str, Any]:
+    return {"allowed_domains": list(domains), "denied_cidrs": list(EGRESS_DENIED_CIDRS)}
+
+
+def escalation_lines(args: Mapping[str, Any]) -> List[str]:
+    lines: List[str] = []
+    if sandbox_mode(args) == "escalated":
+        lines.append(ESCALATION_NOTICE)
+    domains = command_domains(args)
+    if domains:
+        lines.append("Allowed network destinations: " + ", ".join(display_text(d) for d in domains))
+    return lines
 COMMAND_DEADLINE_MARGIN_S = 10
 BACKGROUND_START_S = 30.0
 HOST_DEADLINE_GRACE_S = 15.0
@@ -733,7 +863,8 @@ def is_secure_input_app(bundle: Any) -> bool:
     return folded in SECURE_INPUT_BUNDLES or folded.startswith(_SECURE_INPUT_PREFIXES)
 
 
-def bypass_floor(tool: str, args: Mapping[str, Any], window_bundle: Optional[str]) -> bool:
+def bypass_floor(tool: str, args: Mapping[str, Any], window_bundle: Optional[str],
+                 approved: Any = None) -> bool:
     if "terminal_app" in args and tool in WINDOW_INPUT_VERBS:
         try:
             terminal = mac_terminal_application(args["terminal_app"])
@@ -744,7 +875,8 @@ def bypass_floor(tool: str, args: Mapping[str, Any], window_bundle: Optional[str
     if tool == "run_command":
         argv = args.get("argv")
         text = " ".join(str(word) for word in argv) if isinstance(argv, list) else str(args.get("command") or "")
-        return is_privilege_escalation(args) or bool(_ASTRAL_TEXT.search(text))
+        return (is_privilege_escalation(args) or bool(_ASTRAL_TEXT.search(text))
+                or sandbox_exact_review_required(args, approved))
     if tool in {"write_file", "delete_path"}:
         return bool(_ASTRAL_TEXT.search(str(args.get("path") or "")))
     if tool == "open_app":
@@ -868,6 +1000,7 @@ def _command_summary(args: Mapping[str, Any], host: str) -> str:
              "Environment: " + (", ".join(f"{display_text(key)}={display_text(value)}" for key, value in env.items())
                                 if env else "none"),
              "Background: " + ("yes" if args.get("background") else "no")]
+    lines.extend(escalation_lines(args))
     if isinstance(args.get("stdin"), str):
         lines.append(f"Standard input: {len(args['stdin'])} characters")
     return "\n".join(lines)
@@ -915,6 +1048,15 @@ def _summary_text(tool_name: str, args: Mapping[str, Any], h: str) -> str:
             return (f"Open a new tab at {_origin_label(canonical)}{path} in the "
                     f"Astral browser pane on {h}. Approving this site lets the pane load its pages.")
         return f"{action.capitalize()} tabs in the Astral browser pane on {h}"
+    if tool_name == "browser_request_login":
+        reason = _one_line(display_text(args.get("reason")), 200) if isinstance(args.get("reason"), str) else ""
+        return (f"Ask you to sign in to the site now open in the Astral browser pane on {h}. You finish the sign-in "
+                "yourself; I only see the resulting origin and title."
+                + (f" Reason: {reason}" if reason else ""))
+    if tool_name == "browser_fill_login":
+        count = len(args.get("refs")) if isinstance(args.get("refs"), list) else 0
+        return (f"Fill {count} login field(s) at {args.get('origin')} in the Astral browser pane on {h} from this "
+                "Mac's own saved passwords, after your confirmation on the Mac. I never see or supply the values.")
     if tool_name == "write_file":
         mode = "overwrite" if args.get("if_exists") == "overwrite" else "create"
         return f"Write file on {h} ({mode}): {display_text(args.get('path') or '')[:200]}"

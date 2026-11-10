@@ -99,10 +99,16 @@ class ComputerSession:
     acked: asyncio.Event = field(default_factory=asyncio.Event)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     verbs_run: int = 0
+    approved_domains: set = field(default_factory=set)
 
     @property
     def active(self) -> bool:
         return self.state == ACTIVE
+
+    def note_approved_domains(self, domains) -> None:
+        for domain in list(domains)[:64]:
+            if isinstance(domain, str) and domain.strip() and len(self.approved_domains) < 64:
+                self.approved_domains.add(domain.strip().lower()[:253])
 
     @property
     def terminal_ok(self) -> bool:
@@ -616,6 +622,60 @@ class ComputerSessionManager:
         elif event == "approval_activity":
             await self._audit(session, "computer_session.approval_activity",
                               "input on the controlled host acted on an approval card")
+
+    async def on_sandbox_violation(self, owner_sub: str, host_id: str, session_id: str,
+                                   payload: Optional[dict]) -> None:
+        session = self._sessions.get(session_id or "")
+        if session is None or session.owner_sub != owner_sub or session.host_id != host_id:
+            return
+        if not isinstance(payload, dict):
+            return
+        violations = payload.get("violations")
+        summary = {key: payload.get(key) for key in ("source", "operation", "target", "detail", "blocked")
+                   if payload.get(key) is not None}
+        meta: Dict[str, Any] = {
+            "violation": summary or ("bounded" if violations is None else ""),
+            "job_id": str(payload.get("job_id") or "")[:64]}
+        sandbox_block = payload.get("sandbox")
+        if isinstance(sandbox_block, dict):
+            digest = sandbox_block.get("profile_digest")
+            if isinstance(digest, str) and digest:
+                meta["profile_digest"] = digest[:128]
+            mode = sandbox_block.get("mode")
+            if isinstance(mode, str) and mode:
+                meta["mode"] = mode[:32]
+        await self._audit(session, "command.sandbox_violation", "the command sandbox reported a violation",
+                          meta=meta)
+
+    def note_sandbox_result(self, session, job_id: str, sandbox: dict, loop=None) -> None:
+        """Record the host-reported sandbox block (mode, profile digest, violation count)
+        for a finished job. Safe to call from the sync tool path: it schedules the audit
+        onto the given orchestrator loop, or the running loop when called from async code."""
+        if not isinstance(sandbox, dict) or not sandbox:
+            return
+        meta: Dict[str, Any] = {"job_id": str(job_id or "")[:64]}
+        digest = sandbox.get("profile_digest")
+        if isinstance(digest, str) and digest:
+            meta["profile_digest"] = digest[:128]
+        mode = sandbox.get("mode")
+        if isinstance(mode, str) and mode:
+            meta["mode"] = mode[:32]
+        violations = sandbox.get("violations")
+        if isinstance(violations, list):
+            meta["violation_count"] = len(violations)
+        target = loop
+        if target is None:
+            try:
+                target = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+        coro = self._audit(session, "command.sandbox_result",
+                           "the command sandbox reported its result for the job", meta=meta)
+        try:
+            asyncio.run_coroutine_threadsafe(coro, target)
+        except RuntimeError:
+            coro.close()
+            return
 
     def _device_id(self, websocket) -> str:
         try:
