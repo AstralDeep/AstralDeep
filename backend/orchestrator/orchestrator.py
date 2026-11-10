@@ -16608,6 +16608,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         goal_stop_reason = REPEATED_FAILURES_REASON
                         break
 
+                    if goal_progress is not None and goal_progress.repeating:
+                        from orchestrator.goal_execution import REPEATED_RESULTS_REASON
+
+                        logger.warning("goal.repeating chat=%s tools=%d", chat_id, goal_progress.tool_count)
+                        goal_stop_reason = REPEATED_RESULTS_REASON
+                        break
+
                     if (goal_progress is not None and goal_steering_plan is None
                             and goal_progress.tool_count - goal_checkpoint_tools >= 8):
                         from orchestrator.goal_verification import evaluate_progress

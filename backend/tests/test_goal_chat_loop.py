@@ -115,6 +115,87 @@ async def test_rendered_only_tool_result_lets_the_goal_finish(goal_orch, monkeyp
     assert o.execute_single_tool.await_count == 1
 
 
+_DOCUMENT_ARGUMENTS = json.dumps({
+    "title": "A short history of sourdough",
+    "sections": [{"heading": "Origins", "content": "Wild yeast leavened bread in Egypt [1]."}],
+})
+_SOURDOUGH_REQUEST = "Research the history of sourdough using web sources and write a short overview with citations"
+
+
+def _document_call(cid, arguments=_DOCUMENT_ARGUMENTS):
+    return SimpleNamespace(id=cid, function=SimpleNamespace(name="word_document", arguments=arguments))
+
+
+def _redrafting_planner(verdict, first_arguments=_DOCUMENT_ARGUMENTS):
+    counts = {"planner": 0, "verifier": 0}
+
+    async def provider(websocket, messages, tools_desc=None, **kwargs):
+        if kwargs.get("feature") == "goal_verification":
+            counts["verifier"] += 1
+            return verdict
+        counts["planner"] += 1
+        if counts["planner"] == 1:
+            return _msg(tool_calls=[_document_call("document-1", first_arguments)]), _usage()
+        last = next(m for m in reversed(messages) if isinstance(m, dict) and m.get("role") != "system")
+        if last.get("role") == "tool" and '"shown"' in str(last.get("content")):
+            return _msg(content="The sourdough overview with citations is above."), _usage()
+        return _msg(tool_calls=[_document_call(f"document-{counts['planner']}")]), _usage()
+
+    return provider, counts
+
+
+@pytest.mark.asyncio
+async def test_retry_after_malformed_arguments_lets_the_goal_finish(goal_orch, monkeypatch, user_skills_disabled):
+    from shared.protocol import MCPResponse
+
+    o = goal_orch
+    monkeypatch.setenv("GOAL_MAX_TURNS", "12")
+    _register(o, "word_document", agent_id="connectors-1")
+    chat_id, ws = await _chat(o)
+    provider, counts = _redrafting_planner(_verdict("complete"), first_arguments='{"title": "Sourdough", "sections": [')
+    o._call_llm = provider
+    real_execute = o.execute_single_tool
+    rendered = MCPResponse(result=None, ui_components=[{"type": "card", "title": "A short history of sourdough"}])
+
+    async def execute(websocket, tool_call, *args, **kwargs):
+        if tool_call.id == "document-1":
+            return await real_execute(websocket, tool_call, *args, **kwargs)
+        return rendered
+
+    o.execute_single_tool = AsyncMock(side_effect=execute)
+    await o.handle_chat_message(ws, _SOURDOUGH_REQUEST, chat_id, user_id="seam-user")
+    final = await _last_assistant_text(o, chat_id, "seam-user")
+    assert "overview with citations is above" in final
+    assert "Request incomplete" not in final
+    assert o.execute_single_tool.await_count == 2
+    assert counts == {"planner": 3, "verifier": 1}
+
+
+@pytest.mark.asyncio
+async def test_verifier_that_keeps_continuing_on_a_rendered_result_stops_the_repeats(
+    goal_orch, monkeypatch, user_skills_disabled,
+):
+    from orchestrator.goal_execution import REPEATED_RESULTS_REASON
+    from shared.protocol import MCPResponse
+
+    o = goal_orch
+    monkeypatch.setenv("GOAL_MAX_TURNS", "12")
+    _register(o, "word_document", agent_id="connectors-1")
+    chat_id, ws = await _chat(o)
+    provider, counts = _redrafting_planner(_verdict("continue", ["Confirm the document cites the web sources."]))
+    o._call_llm = provider
+    o._goal_budget_summary = AsyncMock(return_value="The overview is shown above; its citations were not confirmed.")
+    o.execute_single_tool = AsyncMock(return_value=MCPResponse(
+        result=None, ui_components=[{"type": "card", "title": "A short history of sourdough"}],
+    ))
+    await o.handle_chat_message(ws, _SOURDOUGH_REQUEST, chat_id, user_id="seam-user")
+    final = await _last_assistant_text(o, chat_id, "seam-user")
+    assert REPEATED_RESULTS_REASON in final
+    assert "citations were not confirmed" in final
+    assert o.execute_single_tool.await_count == 3
+    assert counts == {"planner": 5, "verifier": 2}
+
+
 @pytest.mark.asyncio
 async def test_informational_answer_can_finish_without_tools(goal_orch, user_skills_disabled):
     o = goal_orch

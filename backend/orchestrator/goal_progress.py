@@ -25,6 +25,8 @@ _logger = logging.getLogger(__name__)
 _TERMINAL_JOB_STATES = frozenset({"exited", "timed_out", "interrupted"})
 _UNCERTAIN_CODES = frozenset({"uncertain", "outcome_uncertain", "effect_uncertain"})
 _NO_EFFECT_WRITE_REJECTION_CODES = frozenset({"out_of_range", "invalid_tool_arguments"})
+_REPEAT_LIMIT = 3
+_WAIT_TOOLS = frozenset({"wait"})
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,8 @@ class GoalProgress:
     _early_approval_results: dict[str, dict[str, Any]] = field(default_factory=dict, init=False, repr=False)
     _acknowledged_failures: list[str] = field(default_factory=list, init=False, repr=False)
     _stall_signature: str | None = field(default=None, init=False, repr=False)
+    _last_result: str | None = field(default=None, init=False, repr=False)
+    _repeat_results: int = field(default=0, init=False, repr=False)
 
     def __init__(self, request: str) -> None:
         if not isinstance(request, str):
@@ -87,6 +91,8 @@ class GoalProgress:
         self._early_approval_results = {}
         self._acknowledged_failures = []
         self._stall_signature = None
+        self._last_result = None
+        self._repeat_results = 0
 
     @property
     def request(self) -> str:
@@ -95,6 +101,10 @@ class GoalProgress:
     @property
     def stalled(self) -> bool:
         return self._stalled
+
+    @property
+    def repeating(self) -> bool:
+        return self._repeat_results >= _REPEAT_LIMIT
 
     @property
     def last_failure_summary(self) -> str:
@@ -144,7 +154,7 @@ class GoalProgress:
     ) -> None:
         self.tool_count += 1
         self._no_tool_continues = 0
-        args = self._arguments(arguments)
+        args, unparsed = self._arguments(arguments)
         data, error = self._unwrap(result)
         status = self._job_state(data)
         outcome = self._outcome(data, error, status)
@@ -164,18 +174,27 @@ class GoalProgress:
             "project_id": self._bounded_identity(context.get("project_id")),
         }
         failure_signature = json.dumps([tool_name, self._safe(args), self._safe(data), self._safe(error)], sort_keys=True, separators=(",", ":"))
-        no_effect_malformed_write = (
-            tool_name == "write_file" and outcome == "failure"
+        no_effect_rejection = outcome == "failure" and (unparsed or (
+            tool_name == "write_file"
             and error_code in _NO_EFFECT_WRITE_REJECTION_CODES and effect_state == "not_started"
             and not (isinstance(args.get("path"), str) and args["path"].strip())
+        ))
+        result_signature = (
+            self._result_signature(tool_name, args, data)
+            if completed and tool_name not in _WAIT_TOOLS else None
         )
+        if result_signature is not None and result_signature == self._last_result:
+            self._repeat_results += 1
+        else:
+            self._last_result = result_signature
+            self._repeat_results = 1 if result_signature is not None else 0
         if outcome == "failure":
             if failure_signature == self._last_failure:
                 self._repeat_failures += 1
             else:
                 self._last_failure = failure_signature
                 self._repeat_failures = 1
-            self._stalled = self._repeat_failures >= 3
+            self._stalled = self._repeat_failures >= _REPEAT_LIMIT
             if self._stalled and self._stall_signature is None:
                 self._stall_signature = failure_signature
         else:
@@ -206,7 +225,7 @@ class GoalProgress:
                 "worker_attested": worker_attested is True,
             }
         self._update_jobs(tool_name, args, data, status)
-        if outcome == "failure" and not no_effect_malformed_write:
+        if outcome == "failure" and not no_effect_rejection:
             if call_id not in self._unresolved_failures:
                 if len(self._unresolved_failures) < _MAX_FAILURES:
                     self._unresolved_failures[call_id] = {
@@ -629,6 +648,13 @@ class GoalProgress:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     @staticmethod
+    def _result_signature(tool_name: str, args: dict[str, Any], data: Any) -> str | None:
+        try:
+            return GoalProgress._fingerprint(tool_name, {"arguments": args, "result": data})
+        except (TypeError, ValueError, RecursionError):
+            return None
+
+    @staticmethod
     def _completed(tool_name: str, data: Any, outcome: str) -> bool:
         if outcome != "success":
             return False
@@ -746,16 +772,16 @@ class GoalProgress:
                         self._uncertain_jobs.discard(job_id)
 
     @staticmethod
-    def _arguments(arguments: str | dict) -> dict[str, Any]:
+    def _arguments(arguments: str | dict) -> tuple[dict[str, Any], bool]:
         if isinstance(arguments, dict):
-            return arguments
+            return arguments, False
         if isinstance(arguments, str):
             try:
                 parsed = json.loads(arguments, strict=False)
             except (json.JSONDecodeError, TypeError):
-                return {"text": arguments}
-            return parsed if isinstance(parsed, dict) else {"text": arguments}
-        return {}
+                return {"text": arguments}, bool(arguments)
+            return (parsed if isinstance(parsed, dict) else {"text": arguments}), False
+        return {}, False
 
     @staticmethod
     def _job_state(data: Any) -> Any:

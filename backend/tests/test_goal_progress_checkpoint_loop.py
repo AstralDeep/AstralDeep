@@ -10,7 +10,9 @@ import pytest
 
 from shared.feature_flags import flags
 from tests import test_turn_seams_loop as seams
-from tests.test_turn_seams_loop import _last_assistant_text, _msg, _register, _tc, _usage, _ws
+from tests.test_turn_seams_loop import (
+    _distinct_results, _last_assistant_text, _msg, _register, _tc, _usage, _ws,
+)
 
 orch = seams.orch
 
@@ -74,10 +76,7 @@ async def test_eight_successful_tool_calls_get_checkpoint_advice_before_final_ve
         return _msg(content="The project was checked successfully."), _usage()
 
     o._call_llm = provider
-    o.execute_single_tool = AsyncMock(return_value=SimpleNamespace(
-        result={"_data": {"ok": True, "items": ["present"]}}, error=None,
-        ui_components=[], correlation_id=None,
-    ))
+    o.execute_single_tool = _distinct_results({"ok": True, "items": ["present"]})
 
     await o.handle_chat_message(ws, "Create and verify the project", chat_id, user_id="seam-user")
 
@@ -136,9 +135,7 @@ async def test_blocked_or_invalid_checkpoint_stops_ninth_planner_and_publishes_i
         return _msg(tool_calls=[_tc(cid=f"blocked-call-{planner_calls}")]), _usage()
 
     o._call_llm = provider
-    o.execute_single_tool = AsyncMock(return_value=SimpleNamespace(
-        result={"_data": {"ok": True}}, error=None, ui_components=[], correlation_id=None,
-    ))
+    o.execute_single_tool = _distinct_results({"ok": True})
 
     await o._handle_chat_message_impl(
         ws, "Create and verify the project", chat_id, user_id="seam-user",
@@ -186,9 +183,7 @@ async def test_cancelled_checkpoint_accumulates_usage_without_advice_or_next_eff
         return _msg(tool_calls=[_tc(cid=f"cancel-call-{planner_calls}")]), _usage()
 
     o._call_llm = provider
-    o.execute_single_tool = AsyncMock(return_value=SimpleNamespace(
-        result={"_data": {"ok": True}}, error=None, ui_components=[], correlation_id=None,
-    ))
+    o.execute_single_tool = _distinct_results({"ok": True})
 
     await o._handle_chat_message_impl(
         ws, "Create and verify the project", chat_id, user_id="seam-user",
@@ -237,9 +232,7 @@ async def test_checkpoint_provider_errors_and_truncation_publish_explicit_incomp
         return _msg(tool_calls=[_tc(cid=f"checkpoint-error-{planner_calls}")]), _usage()
 
     o._call_llm = provider
-    o.execute_single_tool = AsyncMock(return_value=SimpleNamespace(
-        result={"_data": {"ok": True}}, error=None, ui_components=[], correlation_id=None,
-    ))
+    o.execute_single_tool = _distinct_results({"ok": True})
 
     await o._handle_chat_message_impl(
         ws, "Create and verify the project", chat_id, user_id="seam-user",
@@ -279,9 +272,7 @@ async def test_async_checkpoint_cancellation_propagates_without_planner_continua
         return _msg(tool_calls=[_tc(cid=f"cancelled-provider-{planner_calls}")]), _usage()
 
     o._call_llm = provider
-    o.execute_single_tool = AsyncMock(return_value=SimpleNamespace(
-        result={"_data": {"ok": True}}, error=None, ui_components=[], correlation_id=None,
-    ))
+    o.execute_single_tool = _distinct_results({"ok": True})
 
     with pytest.raises(asyncio.CancelledError):
         await o._handle_chat_message_impl(
@@ -342,9 +333,7 @@ async def test_task_currentness_cancellation_after_checkpoint_fence_prevents_adv
         return _msg(tool_calls=[_tc(cid=f"fence-call-{planner_calls}")]), _usage()
 
     o._call_llm = provider
-    o.execute_single_tool = AsyncMock(return_value=SimpleNamespace(
-        result={"_data": {"ok": True}}, error=None, ui_components=[], correlation_id=None,
-    ))
+    o.execute_single_tool = _distinct_results({"ok": True})
 
     await o._handle_chat_message_impl(
         ws, "Create and verify the project", chat_id, user_id="seam-user",

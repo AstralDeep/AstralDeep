@@ -864,3 +864,93 @@ def test_the_stall_summary_names_the_repeated_failure_and_clears_on_success():
     progress.record("ok", "run_command", '{"command": "ls"}',
                     SimpleNamespace(result={"_data": {"exit_code": 0}}, error=None), agent_id="computer-use-1")
     assert not progress.stalled and progress.last_failure_summary == "none"
+
+
+_MALFORMED_DOCUMENT = '{"title": "Sourdough", "sections": ['
+_DOCUMENT = '{"title": "Sourdough", "sections": [{"heading": "Origins", "content": "Egypt [1]."}]}'
+
+
+def _argument_refusal():
+    return MCPResponse(error={
+        "message": "The arguments for 'word_document' were not valid JSON. Re-emit the tool call.",
+        "retryable": True,
+    })
+
+
+def _shown():
+    return MCPResponse(result=None, ui_components=[{"type": "card", "title": "Sourdough"}])
+
+
+def test_refused_unparseable_arguments_do_not_block_completion():
+    progress = GoalProgress("Write a sourdough overview with citations")
+    progress.record("malformed", "word_document", _MALFORMED_DOCUMENT, _argument_refusal(), agent_id="connectors-1")
+    progress.record("retry", "word_document", _DOCUMENT, _shown(), agent_id="connectors-1")
+
+    evidence = progress.evidence()
+    assert [item["outcome"] for item in evidence["call_outcomes"]] == ["failure", "success"]
+    assert evidence["unresolved_failures"] == []
+    assert progress.failure_summaries() == []
+    assert progress.assess(_completion()).status == "complete"
+
+
+def test_repeated_identical_unparseable_arguments_still_stall():
+    progress = GoalProgress("Write a sourdough overview with citations")
+    for call_id in ("m1", "m2", "m3"):
+        progress.record(call_id, "word_document", _MALFORMED_DOCUMENT, _argument_refusal(), agent_id="connectors-1")
+
+    assert progress.stalled is True
+    assert progress.evidence()["unresolved_failures"] == []
+    assert progress.assess(_completion()).status == "blocked"
+
+
+@pytest.mark.parametrize("arguments", ['{"title": "Sourdough"}', "", None, {"title": "Sourdough"}, '["Sourdough"]'])
+def test_failures_of_dispatched_arguments_stay_unresolved(arguments):
+    progress = GoalProgress("Write a sourdough overview with citations")
+    progress.record("dispatched", "word_document", arguments, _argument_refusal(), agent_id="connectors-1")
+
+    assert progress.evidence()["unresolved_failures"] == ["dispatched"]
+    assert progress.assess(_completion()).status == "continue"
+
+
+def test_the_same_completed_call_and_result_three_times_is_repeating():
+    progress = GoalProgress("Write a sourdough overview with citations")
+    progress.record("d1", "word_document", _DOCUMENT, _shown(), agent_id="connectors-1")
+    progress.record("d2", "word_document", _DOCUMENT, _shown(), agent_id="connectors-1")
+    assert progress.repeating is False
+    progress.record("d3", "word_document", _DOCUMENT, _shown(), agent_id="connectors-1")
+    assert progress.repeating is True
+    assert progress.stalled is False
+
+
+@pytest.mark.parametrize("interruption", [
+    ("word_document", '{"title": "Sourdough, revised", "sections": []}', _shown()),
+    ("word_document", _DOCUMENT, MCPResponse(result=None, ui_components=[{"type": "card"}, {"type": "text"}])),
+    ("word_document", _DOCUMENT, _argument_refusal()),
+    ("read_output", {"job_id": "job-1"}, SimpleNamespace(error=None, result={"_data": {"state": "running"}})),
+])
+def test_a_different_call_or_result_restarts_the_repeat_count(interruption):
+    progress = GoalProgress("Write a sourdough overview with citations")
+    progress.record("d1", "word_document", _DOCUMENT, _shown(), agent_id="connectors-1")
+    progress.record("d2", "word_document", _DOCUMENT, _shown(), agent_id="connectors-1")
+    tool_name, arguments, result = interruption
+    progress.record("other", tool_name, arguments, result, agent_id="connectors-1")
+    progress.record("d3", "word_document", _DOCUMENT, _shown(), agent_id="connectors-1")
+    progress.record("d4", "word_document", _DOCUMENT, _shown(), agent_id="connectors-1")
+
+    assert progress.repeating is False
+    progress.record("d5", "word_document", _DOCUMENT, _shown(), agent_id="connectors-1")
+    assert progress.repeating is True
+
+
+@pytest.mark.parametrize(("tool_name", "result"), [
+    ("wait", SimpleNamespace(error=None, result={"_data": {"waited_seconds": 2}})),
+    ("read_output", SimpleNamespace(error=None, result={"_data": {"state": "running", "stdout": ""}})),
+    ("word_document", SimpleNamespace(error=None, result={"_data": {}})),
+    ("word_document", SimpleNamespace(error=None, result={"_data": {1: "unsortable", "key": "mixed"}})),
+])
+def test_waits_polls_and_unsignable_results_never_count_as_repeats(tool_name, result):
+    progress = GoalProgress("Start the server and confirm it is up")
+    for call_id in ("r1", "r2", "r3", "r4"):
+        progress.record(call_id, tool_name, {"job_id": "job-1", "seconds": 2}, result, agent_id="computer-use-1")
+
+    assert progress.repeating is False
