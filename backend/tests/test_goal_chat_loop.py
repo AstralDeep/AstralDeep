@@ -82,6 +82,40 @@ async def test_requested_tests_continue_after_canvas_only_proposal(goal_orch, us
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["informational", "action"])
+async def test_rendered_only_tool_result_lets_the_goal_finish(goal_orch, monkeypatch, user_skills_disabled, kind):
+    from orchestrator import goal_verification
+    from orchestrator.goal_requirements import build_goal_contract
+    from shared.protocol import MCPResponse
+
+    o = goal_orch
+    monkeypatch.setattr(goal_verification, "classify_goal", AsyncMock(return_value=build_goal_contract(kind)))
+    _register(o, "word_document", agent_id="connectors-1")
+    chat_id, ws = await _chat(o)
+    planner_calls = 0
+
+    async def provider(websocket, messages, tools_desc=None, **kwargs):
+        nonlocal planner_calls
+        if kwargs.get("feature") == "goal_verification":
+            return _verdict("complete")
+        planner_calls += 1
+        if planner_calls == 1:
+            return _msg(tool_calls=[_tc("word_document", "document-call")]), _usage()
+        return _msg(content="Your bread-rising document is ready above."), _usage()
+
+    o._call_llm = provider
+    o.execute_single_tool = AsyncMock(return_value=MCPResponse(
+        result=None, ui_components=[{"type": "card", "title": "How bread rises"}],
+    ))
+    await o.handle_chat_message(ws, "Write about 500 words on how bread rises", chat_id, user_id="seam-user")
+    final = await _last_assistant_text(o, chat_id, "seam-user")
+    assert "document is ready" in final
+    assert "Request incomplete" not in final
+    assert planner_calls == 2
+    assert o.execute_single_tool.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_informational_answer_can_finish_without_tools(goal_orch, user_skills_disabled):
     o = goal_orch
     _register(o)

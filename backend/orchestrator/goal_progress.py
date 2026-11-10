@@ -654,6 +654,9 @@ class GoalProgress:
     def _unwrap(result: object) -> tuple[Any, Any]:
         error = getattr(result, "error", None)
         raw = getattr(result, "result", result)
+        components = getattr(result, "ui_components", None)
+        if components is None and isinstance(raw, dict):
+            components = raw.get("_ui_components")
         if isinstance(raw, dict) and "_error" in raw and error is None:
             error = raw.get("_error")
         if isinstance(raw, dict) and "error" in raw and error is None:
@@ -662,7 +665,20 @@ class GoalProgress:
             raw = raw.get("_data")
         if isinstance(raw, dict) and {"code", "message", "next_action"} <= raw.keys() and error is None:
             error = {key: raw[key] for key in ("code", "message", "next_action") if key in raw}
-        return raw, error
+        rendered = [item for item in components if isinstance(item, dict)] if (
+            not error and not raw and isinstance(components, list)) else []
+        if not rendered:
+            return raw, error
+        alert = next((item for item in rendered
+                      if item.get("type") == "alert" and item.get("variant") == "error"), None)
+        if alert is None:
+            return {"status": "shown", "count": len(rendered)}, None
+        message = alert.get("message")
+        return None, {
+            "code": "error_alert",
+            "message": message[:_MAX_VALUE_TEXT] if isinstance(message, str) and message.strip()
+            else "The tool reported an error.",
+        }
 
     @staticmethod
     def _error_metadata(error: Any) -> tuple[str | None, str | None]:
