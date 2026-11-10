@@ -1150,3 +1150,42 @@ async def test_batch_limit_backlog_uses_prompt_retry_not_hourly_interval() -> No
     assert callback_count == 1
     assert cancelled.is_set()
     assert task.done()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [TaskStatus.COMPLETED, TaskStatus.RUNNING])
+async def test_watch_task_refuses_a_task_owned_by_another_user(status) -> None:
+    websocket = object()
+    foreign = BackgroundTask(
+        task_id="foreign-task",
+        chat_id="chat-victim",
+        user_id="user-victim",
+        status=status,
+    )
+
+    class WatchManager:
+        async def get(self, task_id):
+            return foreign if task_id == foreign.task_id else None
+
+    sent: list[dict[str, object]] = []
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.ui_sessions = {websocket: {"sub": "user-attacker"}}
+    orchestrator.async_task_manager = WatchManager()
+    orchestrator._chat_recorders = {}
+
+    async def safe_send(_websocket, payload):
+        sent.append(json.loads(payload))
+        return True
+
+    orchestrator._safe_send = safe_send
+    for task_id in (foreign.task_id, "missing-task"):
+        await orchestrator.handle_ui_message(
+            websocket,
+            json.dumps({"type": "ui_event", "action": "watch_task", "payload": {"task_id": task_id}}),
+        )
+    await asyncio.sleep(0)
+
+    assert foreign.watchers == []
+    assert [frame["type"] for frame in sent] == ["error", "error"]
+    assert sent[0]["payload"]["message"] == "Task foreign-task not found"
+    assert "chat-victim" not in json.dumps(sent)

@@ -15,6 +15,8 @@ from astralprims import Alert
 
 _SEARCH_KEY = "Add a search provider API key in agent settings for higher limits."
 PUBLIC_ERRORS = {
+    "REMOTE_MCP_REVIEW_UNAVAILABLE": "No tool ran. The remote MCP connector or tool is unavailable for this account. Check its settings and enabled tools before trying again.",
+    "ACTION_REVIEW_UNAVAILABLE": "No action ran. Its arguments could not be shown safely and completely for approval. Remove sensitive identifiers or credentials, or use a smaller action.",
     "COMPUTER_REVIEW_CHANGED": "No action ran. This review is obsolete. Submit a fresh request only under current computer session authority; do not replay this request.",
     "SEARCH_BLOCKED": f"Keyless search is blocked. {_SEARCH_KEY}",
     "SEARCH_AUTH_FAILED": "Search credentials were rejected. Check the provider API key in agent settings.",
@@ -109,6 +111,16 @@ def tool_failure_content(tool_name: object, error: object) -> str:
         "message": tool_failure_message(tool_name, error),
         "retryable": error.get("retryable") is True,
     })
+
+
+def ui_only_content(components: list) -> str:
+    content: dict = {"status": "shown", "message": "The user can see this result. The tool returned nothing else."}
+    notices = [notice for c in components
+               if isinstance(c, Mapping) and c.get("type") == "alert"
+               and (notice := _bounded(c.get("message"), 300)) is not None][:8]
+    if notices:
+        content["notices"] = notices
+    return json.dumps(content)
 
 
 def tool_failure_notice(tool_name: object, error: object) -> dict | None:

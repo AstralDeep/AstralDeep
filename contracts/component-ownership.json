@@ -7,7 +7,6 @@
       "role": "composition, orchestration, policy, transport, and product integration",
       "mutableRoots": [
         ".github/",
-        ".specify/",
         "backend/",
         "config/",
         "contracts/",
@@ -94,7 +93,6 @@
       "owner": "astraldeep",
       "ownedPaths": [
         ".github/**",
-        ".specify/**",
         "config/**",
         "contracts/**",
         "deploy/**",

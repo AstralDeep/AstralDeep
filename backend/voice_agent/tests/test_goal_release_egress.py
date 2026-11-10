@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from voice_agent.streaming_egress import (
+    EgressConfigurationError,
     EgressLimitError,
     EgressProtocolError,
     EgressTimeoutError,
@@ -166,3 +167,50 @@ async def test_post_stream_enforces_audio_bound_and_total_timeout() -> None:
     with pytest.raises(EgressTimeoutError, match="total_timeout"):
         _ = [part async for part in timed_out.post_stream(Request(timeout_seconds=0.01))]
     assert writer.closed
+
+
+@pytest.mark.asyncio
+async def test_streaming_status_apis_preserve_response_metadata() -> None:
+    response = (
+        b"HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\n"
+        b"Transfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n"
+    )
+    get_client, get_writer = transport(response)
+    post_client, post_writer = transport(response)
+
+    get_parts = [
+        part
+        async for part in get_client.get_stream(Request(path="/health", body=b""))
+    ]
+    post_parts = [part async for part in post_client.post_response_stream(Request())]
+
+    assert [(part.status, part.body) for part in get_parts] == [(200, b""), (200, b"abc")]
+    assert get_parts[0].headers["content-type"] == "audio/mpeg"
+    assert [(part.status, part.body) for part in post_parts] == [(200, b""), (200, b"abc")]
+    assert get_writer.closed and post_writer.closed
+
+
+@pytest.mark.asyncio
+async def test_request_status_buffers_chunked_body_and_refuses_other_methods() -> None:
+    client, writer = transport(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+        b"3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n"
+    )
+
+    result = await client.request_status("GET", Request(path="/health", body=b""))
+
+    assert (result.status, result.body) == (200, b"abcde")
+    assert writer.closed
+    with pytest.raises(EgressProtocolError, match="method_refused"):
+        await client.request_status("DELETE", Request())
+
+
+@pytest.mark.asyncio
+async def test_streaming_target_accepts_query_and_rejects_malformed_query() -> None:
+    client, writer = transport(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+
+    await client.get(Request(path="/health?ready=1&mode=fast", body=b""))
+
+    assert any(b"GET /v1/health?ready=1&mode=fast HTTP/1.1" in data for data in writer.data)
+    with pytest.raises(EgressConfigurationError, match="invalid_query"):
+        await client.get(Request(path="/health?bad=%XZ", body=b""))

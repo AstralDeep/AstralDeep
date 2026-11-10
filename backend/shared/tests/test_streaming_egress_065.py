@@ -24,7 +24,6 @@ from shared.streaming_egress import (
     FixedOriginHttpTransport,
 )
 
-
 PUBLIC_IP = "203.0.113.10"
 SECOND_IP = "203.0.113.11"
 
@@ -232,6 +231,36 @@ async def test_post_pins_ip_preserves_host_sni_and_ignores_proxy_environment(
 
 
 @pytest.mark.asyncio
+async def test_status_request_returns_bounded_oauth_challenge_without_following_redirects() -> None:
+    challenge = b'{"error":"unauthorized"}'
+    response = _response(challenge, status=401, headers=[
+        ("Content-Length", str(len(challenge))),
+        ("WWW-Authenticate", 'Bearer resource_metadata="https://auth.example/.well-known/resource"'),
+    ])
+    transport, _, _, writer = _transport(response)
+
+    request = Request(path="/resource", headers={"accept": "application/json"}, body=b"")
+    result = await transport.request_status("GET", request)
+
+    assert result.status == 401
+    assert result.headers["www-authenticate"].startswith("Bearer resource_metadata=")
+    assert result.body == challenge
+    assert writer.closed
+
+    redirect_transport, _, _, _ = _transport(_response(b"", status=302))
+    with pytest.raises(EgressProtocolError, match="redirect_refused"):
+        await redirect_transport.request_status("GET", request)
+
+    oversized_transport, _, _, _ = _transport(_response(
+        challenge, status=401,
+        headers=[("Content-Length", str(len(challenge)))],
+    ), limits=EgressLimits(max_response_bytes=4))
+    with pytest.raises(EgressLimitError, match="response_too_large"):
+        await oversized_transport.request_status("GET", Request(
+            path="/resource", headers={"accept": "application/json"}, body=b"",
+            max_response_bytes=4,
+        ))
+@pytest.mark.asyncio
 async def test_get_is_body_free_and_uses_the_same_fixed_origin_policy() -> None:
     payload = b'{"object":"list","data":[]}'
     transport, resolver, connector, writer = _transport(
@@ -268,6 +297,53 @@ async def test_get_rejects_a_body_before_dns_or_io() -> None:
     assert caught.value.reason == "invalid_request_method"
     assert resolver.calls == []
     assert connector.calls == []
+
+
+@pytest.mark.asyncio
+async def test_get_stream_yields_bounded_sse_chunks_with_fixed_origin() -> None:
+    response = (
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+        b"Transfer-Encoding: chunked\r\n\r\n"
+        b"9\r\ndata: 1\n\n\r\n0\r\n\r\n"
+    )
+    transport, resolver, connector, writer = _transport(response)
+    request = Request(path="/sse", headers={"accept": "text/event-stream"}, body=b"")
+
+    chunks = [chunk async for chunk in transport.get_stream(request)]
+
+    assert chunks[0].headers["content-type"] == "text/event-stream"
+    assert chunks[0].body == b""
+    assert b"".join(chunk.body for chunk in chunks[1:]) == b"data: 1\n\n"
+    assert resolver.calls == [("speech.example", 8443)]
+    assert b"GET /v1/sse HTTP/1.1\r\n" in b"".join(writer.writes)
+    assert len(connector.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method_name", ["post_stream", "get_stream", "post_response_stream"])
+async def test_early_stream_close_releases_pinned_socket(method_name: str) -> None:
+    transport, _, _, writer = _transport(_response(b"abc"))
+    request = Request(body=b"" if method_name == "get_stream" else b"request-body")
+    stream = getattr(transport, method_name)(request)
+
+    first = await anext(stream)
+    if method_name == "post_stream":
+        assert first == b"abc"
+    else:
+        assert first.status == 200 and first.body == b""
+    await stream.aclose()
+
+    assert writer.closed and writer.waited_closed
+
+
+@pytest.mark.asyncio
+async def test_streaming_target_preserves_server_issued_trailing_slash_and_query() -> None:
+    transport, _, _, writer = _transport(_response(b"accepted"))
+    request = Request(path="/messages/?session_id=abc%2Fdef", body=b"")
+
+    await transport.get(request)
+
+    assert b"GET /v1/messages/?session_id=abc%2Fdef HTTP/1.1\r\n" in b"".join(writer.writes)
 
 
 @pytest.mark.asyncio
@@ -692,14 +768,14 @@ async def test_cancellation_propagates_and_is_not_relabelled() -> None:
         (
             _response(b"", headers=[("Transfer-Encoding", "chunked")]),
             EgressProtocolError,
-            "unsupported_framing",
+            "truncated_response",
         ),
         (
             _response(
                 b"", headers=[("Content-Length", "0"), ("Transfer-Encoding", "chunked")]
             ),
             EgressProtocolError,
-            "unsupported_framing",
+            "ambiguous_framing",
         ),
         (
             b"HTTP/1.1 200 OK\r\nX-Test: value\r\n\r\n",
@@ -708,6 +784,30 @@ async def test_cancellation_propagates_and_is_not_relabelled() -> None:
         ),
         (
             _response(b"", headers=[("Content-Length", "0"), ("Content-Length", "0")]),
+            EgressProtocolError,
+            "ambiguous_framing",
+        ),
+        (
+            _response(
+                b"",
+                headers=[
+                    ("Transfer-Encoding", "chunked"),
+                    ("Transfer-Encoding", "chunked"),
+                ],
+            ),
+            EgressProtocolError,
+            "ambiguous_framing",
+        ),
+        (
+            _response(b"", headers=[("Content-Length", "0"), ("Host", "one.example"),
+                                     ("Host", "two.example")]),
+            EgressProtocolError,
+            "ambiguous_framing",
+        ),
+        (
+            _response(b"", headers=[("Content-Length", "0"),
+                                     ("Strict-Transport-Security", "max-age=31536000"),
+                                     ("Strict-Transport-Security", "max-age=0")]),
             EgressProtocolError,
             "ambiguous_framing",
         ),
@@ -790,6 +890,94 @@ async def test_response_header_byte_and_count_bounds_are_enforced() -> None:
     with pytest.raises(EgressLimitError) as caught:
         await transport.post(Request())
     assert caught.value.reason == "response_header_count"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_access_control_expose_headers_are_combined() -> None:
+    response = _response(
+        b"",
+        headers=[
+            ("Content-Length", "0"),
+            ("Access-Control-Expose-Headers", "WWW-Authenticate"),
+            ("Access-Control-Expose-Headers", "Mcp-Session-Id"),
+        ],
+    )
+    transport, _, _, _ = _transport(response)
+
+    received = await transport.post(Request())
+
+    assert received.headers["access-control-expose-headers"] == (
+        "WWW-Authenticate, Mcp-Session-Id"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("directives", "combined"),
+    (
+        (("no-store", "no-store"), "no-store, no-store"),
+        (("no-store", "private"), "no-store, private"),
+    ),
+)
+async def test_duplicate_cache_control_directives_are_combined(directives, combined) -> None:
+    response = _response(
+        b"",
+        headers=[
+            ("Content-Length", "0"),
+            ("Cache-Control", directives[0]),
+            ("Cache-Control", directives[1]),
+        ],
+    )
+    transport, _, _, _ = _transport(response)
+
+    received = await transport.post(Request())
+
+    assert received.headers["cache-control"] == combined
+
+
+@pytest.mark.asyncio
+async def test_duplicate_cache_control_headers_remain_within_header_count_limit() -> None:
+    response = _response(
+        b"",
+        headers=[
+            ("Content-Length", "0"),
+            ("Cache-Control", "no-store"),
+            ("Cache-Control", "private"),
+        ],
+    )
+    transport, _, _, _ = _transport(response, limits=EgressLimits(max_headers=2))
+
+    with pytest.raises(EgressLimitError) as caught:
+        await transport.post(Request())
+
+    assert caught.value.reason == "response_header_count"
+
+
+@pytest.mark.asyncio
+async def test_unauthenticated_mcp_401_surfaces_challenge_and_combined_cache_control() -> None:
+    challenge = (
+        'Bearer resource_metadata="https://panatlas.net/.well-known/oauth-protected-resource/mcp/private" '
+        'scope="panatlas:read"'
+    )
+    response = _response(
+        b"",
+        status=401,
+        headers=[
+            ("Content-Length", "0"),
+            ("Cache-Control", "no-store"),
+            ("Cache-Control", "no-store"),
+            ("WWW-Authenticate", challenge),
+        ],
+    )
+    transport, _, _, _ = _transport(response)
+
+    received = await transport.request_status(
+        "POST", Request(path="/mcp/private", headers={"content-type": "application/json"}, body=b"{}")
+    )
+
+    assert received.status == 401
+    assert received.headers["www-authenticate"] == challenge
+    assert received.headers["cache-control"] == "no-store, no-store"
 
 
 def test_limits_and_tls_context_fail_closed() -> None:

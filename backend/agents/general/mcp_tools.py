@@ -179,6 +179,24 @@ def _confine_input_path(file_path: str, user_id: str) -> Optional[str]:
     return None
 
 
+def _numeric_cell(value: Any) -> Any:
+    # a leading zero marks an identifier, which stays text
+    if isinstance(value, str) and re.fullmatch(r"-?(0|[1-9]\d*)(\.\d+)?", value.strip()):
+        text = value.strip()
+        return float(text) if "." in text else int(text)
+    return value
+
+
+def _numeric_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: _numeric_cell(value) for key, value in row.items()}
+
+
+def _sort_key(value: Any) -> tuple:
+    cell = _numeric_cell(value)
+    numeric = isinstance(cell, (int, float))
+    return (cell is None, not numeric, cell if numeric else str(cell))
+
+
 def modify_data(
     modifications: Optional[List[Dict[str, Any]]] = None,
     csv_data: Optional[str] = None,
@@ -282,9 +300,10 @@ def modify_data(
             else:
                 return create_ui_response([Alert(message="Neither csv_data nor file_path provided.", variant="error")])
 
+        failed_evaluations = 0
         for mod in modifications:
             action = mod.get("action")
-            name = mod.get("name", "")
+            name = mod.get("column") or mod.get("name", "")
             value = mod.get("value")
             expression = mod.get("expression")
             default = mod.get("default")
@@ -323,9 +342,10 @@ def modify_data(
                     filtered_rows = []
                     for row in rows:
                         try:
-                            if evaluator.evaluate(row):
+                            if evaluator.evaluate(_numeric_row(row)):
                                 filtered_rows.append(row)
                         except Exception:
+                            failed_evaluations += 1
                             if str(default).lower() == 'true':
                                 filtered_rows.append(row)
                     rows = filtered_rows
@@ -335,7 +355,7 @@ def modify_data(
                 
             elif action == "sort_rows":
                  reverse = str(value).lower() == 'desc'
-                 rows.sort(key=lambda r: (r.get(name) is None, r.get(name, "")), reverse=reverse)
+                 rows.sort(key=lambda r: _sort_key(r.get(name)), reverse=reverse)
                  if df is not None and PANDAS_AVAILABLE:
                      df = pd.DataFrame(rows)
                  continue
@@ -361,8 +381,9 @@ def modify_data(
                 result = None
                 if expression and evaluator:
                     try:
-                        result = evaluator.evaluate(row)
+                        result = evaluator.evaluate(_numeric_row(row))
                     except Exception:
+                        failed_evaluations += default is None
                         result = default if default is not None else value
                 else:
                     result = value
@@ -395,6 +416,10 @@ def modify_data(
             output_format = "csv"
         
         timestamp = int(time.time())
+        # The model chooses this name, so only its final path component is kept.
+        filename = os.path.basename((filename or "").replace("\\", "/"))
+        if filename in ("", ".", ".."):
+            filename = None
         if not filename:
             ext = "csv" if output_format == "csv" else "xlsx"
             if attachment_filename:
@@ -436,6 +461,10 @@ def modify_data(
                         message=f"Applied {len(modifications)} modifications to {len(rows)} rows. Output format: {output_format.upper()}.",
                         variant="success"
                     ),
+                    *([Alert(
+                        message=f"An expression could not be evaluated {failed_evaluations} times, so those rows may be missing or blank.",
+                        variant="warning"
+                    )] if failed_evaluations else []),
                     FileDownload(
                         label=f"Download {filename}",
                         url=download_url,
@@ -457,7 +486,8 @@ def modify_data(
                 "file_path": out_file_path,
                 "rows_count": len(rows),
                 "output_format": output_format,
-                "modifications_applied": len(modifications)
+                "modifications_applied": len(modifications),
+                "failed_evaluations": failed_evaluations
             }
         }
 
@@ -742,6 +772,11 @@ import requests  # noqa: E402
 
 
 def search_wikipedia(query: str, language: str = "en", session_id: str = "default", **kwargs) -> Dict[str, Any]:
+    # The model chooses this value, and it becomes part of the host name.
+    if not isinstance(language, str) or not re.fullmatch(r"[a-z]{2,12}(-[a-z]+)*", language):
+        return create_ui_response([
+            Alert(message="Use a Wikipedia language code such as en or zh-yue.", variant="error")
+        ])
     try:
         search_url = f"https://{language}.wikipedia.org/w/api.php"
         params = {
@@ -1294,9 +1329,9 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                         "type": "object",
                         "properties": {
                             "action": {"type": "string", "description": "Action to perform: 'add_column', 'update_column', 'calculate_column', 'drop_column', 'rename_column', 'filter_rows', 'sort_rows'"},
-                            "name": {"type": "string", "description": "Column name (can be empty for filter_rows)"},
+                            "column": {"type": "string", "description": "Column name (can be empty for filter_rows)"},
                             "value": {"type": "string", "description": "Static value, or new_name for rename_column, or 'asc'/'desc' for sort_rows"},
-                            "expression": {"type": "string", "description": "Python-like expression using row['column'] for per‑row calculation (e.g., \"row['age'] * 2\" or \"row['age'] > 18\" for filtering)"},
+                            "expression": {"type": "string", "description": "Python-like expression using row['column'] for per‑row calculation (e.g., \"row['age'] * 2\" or \"row['age'] > 18\" for filtering). Numeric CSV cells are numbers (leading-zero values stay text), so compare with 30, not '30'."},
                             "default": {"type": "string", "description": "Fallback value if expression evaluation fails"},
                             "overwrite": {"type": "boolean", "description": "Whether to overwrite existing column (default true)"},
                             "dtype": {"type": "string", "description": "Data type for conversion: 'string', 'integer', 'float', 'boolean'"}

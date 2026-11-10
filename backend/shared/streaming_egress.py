@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import aclosing
 import ipaddress
 import re
 import socket
@@ -14,9 +15,9 @@ from types import MappingProxyType
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
-
 _HEADER_NAME = re.compile(rb"[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
 _STATUS_LINE = re.compile(rb"HTTP/1\.[01] ([0-9]{3})(?: [\x20-\x7e]*)?\Z")
+_COMBINABLE_HEADERS = frozenset({"access-control-expose-headers", "cache-control"})
 _FORBIDDEN_REQUEST_HEADERS = frozenset(
     {
         "accept-encoding",
@@ -180,8 +181,29 @@ class FixedOriginHttpTransport:
     async def get(self, request: HttpRequestLike) -> StreamingHttpResponse:
         return await self._request("GET", request)
 
+    async def request_status(self, method: str, request: HttpRequestLike) -> StreamingHttpResponse:
+        if method not in {"GET", "POST"}:
+            raise EgressProtocolError("method_refused")
+        return await self._request(method, request)
+
     async def post_stream(self, request: HttpRequestLike):
-        validated = _validate_request(request, self._origin, self._limits, method="POST")
+        async with aclosing(self._request_stream(request, method="POST")) as responses:
+            async for response in responses:
+                if response.body:
+                    yield response.body
+
+    async def get_stream(self, request: HttpRequestLike):
+        async with aclosing(self._request_stream(request, method="GET")) as responses:
+            async for response in responses:
+                yield response
+
+    async def post_response_stream(self, request: HttpRequestLike):
+        async with aclosing(self._request_stream(request, method="POST")) as responses:
+            async for response in responses:
+                yield response
+
+    async def _request_stream(self, request: HttpRequestLike, *, method: str):
+        validated = _validate_request(request, self._origin, self._limits, method=method)
         try:
             async with asyncio.timeout(min(validated.timeout_seconds, self._limits.total_timeout)):
                 addresses = await self._resolve()
@@ -200,8 +222,17 @@ class FixedOriginHttpTransport:
                         raise EgressProtocolError(f"http_status_{status}")
                     if headers.get("content-encoding", "identity").lower() != "identity":
                         raise EgressProtocolError("content_encoding_refused")
+                    yield StreamingHttpResponse(
+                        status=status,
+                        headers=MappingProxyType(dict(headers)),
+                        body=b"",
+                    )
                     async for part in _stream_body(reader, headers, initial, validated.max_response_bytes):
-                        yield part
+                        yield StreamingHttpResponse(
+                            status=status,
+                            headers=MappingProxyType(dict(headers)),
+                            body=part,
+                        )
                 finally:
                     await _close_writer(writer, self._limits.close_timeout)
         except asyncio.CancelledError:
@@ -460,6 +491,25 @@ def _validated_path(value: str, *, allow_root: bool) -> str:
     return normalized
 
 
+def _validated_target(value: str) -> str:
+    if not isinstance(value, str) or value.count("?") > 1 or "#" in value:
+        raise EgressConfigurationError("invalid_path")
+    path, separator, query = value.partition("?")
+    normalized = _validated_path(path, allow_root=False)
+    if path.endswith("/"):
+        normalized += "/"
+    if not separator:
+        return normalized
+    allowed = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$&'()*+,;=:@/?%"
+    if (not query or len(query) > 2048 or "\\" in query
+            or any(ord(char) < 33 or ord(char) > 126 or char not in allowed for char in query)):
+        raise EgressConfigurationError("invalid_query")
+    for match in re.finditer("%", query):
+        if not re.match(r"[0-9A-Fa-f]{2}", query[match.start() + 1:match.start() + 3]):
+            raise EgressConfigurationError("invalid_query")
+    return f"{normalized}?{query}"
+
+
 def _validate_request(
     value: HttpRequestLike,
     origin: _Origin,
@@ -470,7 +520,7 @@ def _validate_request(
     # Origin is fixed by config, never by the caller's request
     del origin
     try:
-        path = _validated_path(value.path, allow_root=False)
+        path = _validated_target(value.path)
         headers_value = value.headers
         body = value.body
         max_response = value.max_response_bytes
@@ -581,10 +631,17 @@ async def _read_response(
         raise EgressProtocolError("redirect_refused")
     if 100 <= status <= 199:
         raise EgressProtocolError("interim_response_refused")
-    if "transfer-encoding" in headers:
-        raise EgressProtocolError("unsupported_framing")
     if headers.get("content-encoding", "identity").lower() != "identity":
         raise EgressProtocolError("content_encoding_refused")
+    if "transfer-encoding" in headers:
+        body = bytearray()
+        async for part in _stream_body(reader, headers, initial_body, max_body_bytes):
+            body.extend(part)
+        return StreamingHttpResponse(
+            status=status,
+            headers=MappingProxyType(dict(headers)),
+            body=bytes(body),
+        )
     content_length = headers.get("content-length")
     if content_length is None or not content_length.isascii() or not content_length.isdigit():
         raise EgressProtocolError("ambiguous_framing")
@@ -724,8 +781,11 @@ def _parse_headers(data: bytes, *, max_headers: int) -> tuple[int, dict[str, str
             raise EgressProtocolError("malformed_response")
         name = raw_name.decode("ascii").lower()
         if name in headers:
-            raise EgressProtocolError("ambiguous_framing")
-        headers[name] = value.decode("latin-1")
+            if name not in _COMBINABLE_HEADERS:
+                raise EgressProtocolError("ambiguous_framing")
+            headers[name] += ", " + value.decode("latin-1")
+        else:
+            headers[name] = value.decode("latin-1")
     return status, headers
 
 

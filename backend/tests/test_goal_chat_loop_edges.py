@@ -278,9 +278,7 @@ async def test_goal_budget_allows_more_than_24_tool_rounds(goal_orch, monkeypatc
         return _msg(content="Completed all 25 research actions."), _usage()
 
     o._call_llm = provider
-    o.execute_single_tool = AsyncMock(return_value=SimpleNamespace(
-        result={"_data": {"items": ["result"]}}, error=None, ui_components=[], correlation_id=None,
-    ))
+    o.execute_single_tool = seams._distinct_results({"items": ["result"]})
     await o.handle_chat_message(ws, "Complete the requested research and verify it", chat_id, user_id="seam-user")
     assert "completed all 25" in (await _last_assistant_text(o, chat_id, "seam-user")).lower()
     assert planner == 26
@@ -310,9 +308,7 @@ async def test_budget_exhaustion_steers_the_model_then_summarizes_the_work(goal_
         return _msg(tool_calls=[_tc(cid=f"round-{uuid.uuid4().hex[:6]}")]), _usage()
 
     o._call_llm = provider
-    o.execute_single_tool = AsyncMock(return_value=SimpleNamespace(
-        result={"_data": {"items": ["result"]}}, error=None, ui_components=[], correlation_id=None,
-    ))
+    o.execute_single_tool = seams._distinct_results({"items": ["result"]})
     await o.handle_chat_message(ws, "Complete the requested research and verify it", chat_id, user_id="seam-user")
     final = (await _last_assistant_text(o, chat_id, "seam-user")).lower()
     assert "wrote notes.md" in final

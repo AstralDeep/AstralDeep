@@ -91,6 +91,10 @@ class ComputerHost:
     def excluded(self) -> List[str]:
         return [str(pattern) for pattern in self.descriptor.get("excluded") or []]
 
+    @property
+    def sandbox_capability(self) -> bool:
+        return "command_sandbox" in (self.descriptor.get("capabilities") or ())
+
     def public(self, online: bool = True) -> Dict[str, Any]:
         return {
             "host_id": self.host_id,

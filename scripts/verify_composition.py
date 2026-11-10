@@ -749,6 +749,7 @@ def _plane_migration_digest(component_root: Path) -> str:
         ("observation", "OBSERVATION_SCHEMA_STATEMENTS"),
         ("project", "PROJECT_SCHEMA_STATEMENTS"),
         ("harness_capture", "HARNESS_CAPTURE_SCHEMA_STATEMENTS"),
+        ("audit_conversation", "AUDIT_CONVERSATION_SCHEMA_STATEMENTS"),
     ):
         reviewed_literals.update(_plane_schema_literal_import(
             component_root, tree, stem=stem, symbol=symbol))

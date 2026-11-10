@@ -179,8 +179,10 @@ def test_chat_deleted_clears_canvas_when_active(client_js):
 def test_reconnect_refetches_session_before_register(client_js):
     fn = _norm(_js_function(client_js, "connect"))
     onclose = fn[fn.index("ws.onclose") :]
-    assert "refreshToken(false, function () { connect(); })" in onclose
-    assert "attempts <= 10" in onclose
+    assert "scheduleReconnect(thisSocket);" in onclose
+    assert "attempts <= 10" not in onclose, "the web client keeps retrying while the server is down"
+    retry = _norm(_js_function(client_js, "runReconnect"))
+    assert retry.index("refreshToken(true, function () {") < retry.index("connect();")
     rt = _norm(_js_function(client_js, "refreshToken"))
     assert 'fetch(API_URL + "/auth/session"' in rt
     assert '"same-origin"' in rt

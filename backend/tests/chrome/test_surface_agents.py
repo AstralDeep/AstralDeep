@@ -352,6 +352,43 @@ def test_list_tabs_and_drafts_button():
     assert "Drafts" in html
 
 
+def test_native_agent_detail_receives_server_owned_connection_security(monkeypatch):
+    from astralprojection.chrome import agents as projection_agents
+
+    captured = {}
+
+    def build_view(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(components=[])
+
+    monkeypatch.setattr(projection_agents, "build_agents_view", build_view)
+    orch = make_orch()
+    orch.local_agents = {"remote-mcp-1": object()}
+    orch.agent_cards["remote-mcp-1"] = FakeCard(
+        "remote-mcp-1", "Remote MCP", "External MCP gateway")
+    orch.agent_cards["panatlas-1"] = FakeCard(
+        "panatlas-1", "PanAtlas", "Native Astral agent",
+        metadata={"connection_security": {"kind": "standard_mcp", "message": "forged"}})
+
+    result = run(surface.components(
+        orch, "u1", ["user"], {"agent_id": "remote-mcp-1"}))
+
+    assert result == []
+    assert captured["selected"]["connection_security"] == {
+        "kind": "standard_mcp",
+        "title": "Standard MCP connection",
+        "message": (
+            "This is a standard MCP connection. AstralDeep still checks permissions, HTTPS "
+            "destinations, PHI and policy, and records local calls. This connection does not "
+            "carry Astral’s agent identity and delegation protocol, and local records do not "
+            "prove what the remote server executed. The provider controls its data handling."
+        ),
+    }
+    captured.clear()
+    run(surface.components(orch, "u1", ["user"], {"agent_id": "panatlas-1"}))
+    assert "connection_security" not in captured["selected"]
+
+
 def test_list_row_click_through_and_enable_toggle():
     orch = make_orch()
     html = run(surface.render(orch, "u1", ["user"], {}))

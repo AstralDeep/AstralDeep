@@ -18,7 +18,7 @@ import logging
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from astralplane.repositories.remote_proposals import RemoteOperationProposalRecord
 from orchestrator.computer_hosts import ComputerHostError
@@ -567,7 +567,7 @@ def _audit_event(user_id: Optional[str], action_type: str, description: str, *,
                  proposal_id: Optional[str] = None, machine_id: Optional[str] = None,
                  verb: Optional[str] = None, outcome: str = "success",
                  chat_id: Optional[str] = None, display_digest: Optional[str] = None,
-                 display_echo: Optional[str] = None):
+                 display_echo: Optional[str] = None, sandbox: Optional[dict] = None):
     from datetime import datetime, timezone
 
     from audit.schemas import AuditEventCreate
@@ -582,6 +582,8 @@ def _audit_event(user_id: Optional[str], action_type: str, description: str, *,
         meta["display_digest"] = str(display_digest)
     if display_echo:
         meta["display_echo"] = str(display_echo)
+    if isinstance(sandbox, dict) and sandbox:
+        meta["sandbox"] = sandbox
     return AuditEventCreate(
         actor_user_id=user_id or "unknown",
         auth_principal=user_id or "unknown",
@@ -594,6 +596,17 @@ def _audit_event(user_id: Optional[str], action_type: str, description: str, *,
         inputs_meta=meta,
         started_at=datetime.now(timezone.utc),
     )
+
+
+def _sandbox_meta(tool_name: str, args: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    if tool_name != "run_command":
+        return None
+    from orchestrator import computer_use_policy as policy
+    mode = policy.sandbox_mode(args)
+    domains = list(policy.command_domains(args))
+    if mode == "default" and not domains:
+        return None
+    return {"mode": mode, "allowed_domains": domains}
 
 
 def _audit_sync(user_id: Optional[str], action_type: str, description: str, **kw) -> None:
@@ -901,7 +914,8 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
         digest = bind_display(orch, card)
     _audit_sync(user_id, "remote_op.proposed", f"proposed {tool_name}: {summary}",
                 proposal_id=proposal_id, machine_id=machine_ref, verb=tool_name,
-                outcome="in_progress", chat_id=chat_id, display_digest=digest)
+                outcome="in_progress", chat_id=chat_id, display_digest=digest,
+                sandbox=_sandbox_meta(tool_name, args))
     return proposal_id, card
 
 
@@ -1089,7 +1103,8 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
         if ok:
             _audit_sync(user_id, "remote_op.consumed",
                         f"approved & consumed {tool_name}", proposal_id=str(marker),
-                        machine_id=machine_ref, verb=tool_name, chat_id=chat_id)
+                        machine_id=machine_ref, verb=tool_name, chat_id=chat_id,
+                        sandbox=_sandbox_meta(tool_name, args))
             return None
         _audit_sync(user_id, "remote_op.approval_invalid",
                     f"invalid approval for {tool_name}", proposal_id=str(marker),

@@ -6,8 +6,8 @@ record, and maps upstream errors to typed exceptions.
 import ipaddress
 import logging
 import math
-import re
 import os
+import re
 import socket
 from typing import Any, Dict, Iterable, Optional
 from urllib.parse import urlparse, urlsplit, urlunparse
@@ -413,6 +413,56 @@ def request_http2(
     return resp
 
 
+def fixed_origin_transport_for_external_url(url: str, *, limits=None):
+    import asyncio
+
+    from shared.streaming_egress import EgressLimits, FixedOriginHttpTransport
+
+    if type(url) is not str or len(url) > 4096 or url != url.strip():
+        raise EgressBlockedError("external endpoint is invalid")
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        raise EgressBlockedError("external endpoint is invalid") from None
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username is not None
+            or parsed.password is not None or parsed.fragment or port not in (None, 443)):
+        raise EgressBlockedError("external endpoint must use HTTPS on the default port")
+
+    async def resolver(host: str, target_port: int):
+        records = await asyncio.get_running_loop().getaddrinfo(
+            host, target_port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM,
+            proto=socket.IPPROTO_TCP,
+        )
+        if not records or len(records) > 8:
+            raise EgressBlockedError("external DNS response is invalid")
+        for record in records:
+            if (type(record) is not tuple or len(record) != 5
+                    or record[0] not in (socket.AF_INET, socket.AF_INET6)
+                    or record[1] != socket.SOCK_STREAM
+                    or record[2] not in (0, socket.IPPROTO_TCP)
+                    or type(record[4]) is not tuple or len(record[4]) < 2):
+                raise EgressBlockedError("external DNS response is invalid")
+            address = ipaddress.ip_address(record[4][0])
+            if address.version != (4 if record[0] == socket.AF_INET else 6):
+                raise EgressBlockedError("external DNS response is invalid")
+            mapped = address.ipv4_mapped if address.version == 6 else address
+            if (not address.is_global or _classify_blocked(address)
+                    or mapped is not None and (not mapped.is_global or _classify_blocked(mapped))):
+                raise EgressBlockedError("external DNS resolved to a restricted network address")
+        return records
+
+    host = parsed.hostname.lower()
+    display_host = f"[{host}]" if ":" in host else host
+    origin = f"https://{display_host}" + (f":{port}" if port else "")
+    transport = FixedOriginHttpTransport(
+        origin, limits=limits or EgressLimits(), _resolver=resolver,
+    )
+    path = parsed.path or "/"
+    path += f"?{parsed.query}" if parsed.query else ""
+    return transport, path
+
+
 async def async_post(
     url: str, *, body: bytes, headers: Dict[str, str],
     timeout_seconds: float = 60.0, max_response_bytes: int = 2 * 1024 * 1024,
@@ -422,7 +472,11 @@ async def async_post(
     from types import SimpleNamespace
     from urllib.parse import urlsplit
 
-    from shared.streaming_egress import EgressLimits, FixedOriginHttpTransport, StreamingEgressError
+    from shared.streaming_egress import (
+        EgressLimits,
+        FixedOriginHttpTransport,
+        StreamingEgressError,
+    )
 
     if (type(url) is not str or len(url) > 4096
             or type(body) is not bytes or len(body) > 1024 * 1024

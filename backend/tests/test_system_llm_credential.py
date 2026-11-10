@@ -269,6 +269,86 @@ async def test_run_scheduled_turn_proceeds_with_system_row(
     assert orch._record_llm_unconfigured.await_count == 0
 
 
+async def _run_atomic_scheduled_turn(orch, monkeypatch, *, failed):
+    from orchestrator import conversation_publication
+    from orchestrator.scheduled_publication import current_scheduled_history_stage
+
+    await _seed_system(orch)
+    uid = _uid()
+    stage = SimpleNamespace(
+        sealed=False, commit_id="commit-1", user_id=uid, base_render_revision=0,
+        next_render_revision=1, layouts=())
+    stage.seal = lambda committed: setattr(stage, "sealed", True)
+    store = MagicMock()
+    store.reserve_atomic_chat_effect.return_value = SimpleNamespace(state="reserved", ambiguous=False)
+    store.publish_staged_chat_effect.return_value = SimpleNamespace(state="published")
+    attempt = SimpleNamespace(
+        claim=SimpleNamespace(occurrence_id="occurrence-1"), request_generation="generation-1",
+        job={"id": "job-1", "user_id": uid, "target_chat_id": "job-1", "consented_scopes": []})
+
+    async def fake_handle_chat_message(websocket, message, chat_id, **kwargs):
+        current_scheduled_history_stage().failed = failed
+
+    commits = MagicMock()
+    monkeypatch.setattr(orch, "handle_chat_message", fake_handle_chat_message)
+    monkeypatch.setattr(orch, "conversation_commits", commits, raising=False)
+    monkeypatch.setattr(orch.history, "get_chat", lambda *args, **kwargs: {"id": "job-1"})
+    monkeypatch.setattr(orch, "_begin_scheduled_conversation_publication",
+                        AsyncMock(return_value=(stage, None)))
+    monkeypatch.setattr(orch, "_deliver_committed_conversation_snapshot", AsyncMock())
+    monkeypatch.setattr(conversation_publication, "reset_conversation_publication", MagicMock())
+    summary = await orch.run_scheduled_turn(
+        user_id=uid, chat_id="job-1", instruction="summarize inbox", agent_id=None,
+        access_token="tok", allowed_scopes=[], correlation_id="occurrence-1",
+        scheduled_attempt=attempt, scheduled_store=store, effect_kind="chat_history",
+        effect_key="job-1", payload_digest="digest")
+    return summary, store, commits
+
+
+async def test_a_failed_scheduled_turn_raises_and_publishes_nothing(orch, clean_system_row, monkeypatch):
+    with pytest.raises(RuntimeError, match="scheduled turn failed"):
+        await _run_atomic_scheduled_turn(orch, monkeypatch, failed=True)
+
+
+async def test_a_scheduled_turn_that_did_not_fail_still_publishes(orch, clean_system_row, monkeypatch):
+    _, store, commits = await _run_atomic_scheduled_turn(orch, monkeypatch, failed=False)
+    store.publish_staged_chat_effect.assert_called_once()
+    commits.abort_commit.assert_not_called()
+
+
+async def test_a_scheduled_summary_is_the_reply_and_never_a_status_line(
+        orch, clean_system_row, monkeypatch):
+    await _seed_system(orch)
+
+    async def fake_handle_chat_message(websocket, message, chat_id, **kwargs):
+        await websocket.send_text(json.dumps(
+            {"type": "chat_status", "status": "thinking", "message": "Analyzing request and planning actions..."}))
+        await websocket.send_text(json.dumps(
+            {"type": "ui_render", "target": "chat", "components": [{"type": "text", "content": "Inbox is clear."}]}))
+        await websocket.send_text(json.dumps({"type": "chat_status", "status": "done", "message": ""}))
+
+    monkeypatch.setattr(orch, "handle_chat_message", fake_handle_chat_message)
+    summary = await orch.run_scheduled_turn(
+        user_id=_uid(), chat_id="sched-chat-1", instruction="summarize inbox",
+        agent_id=None, access_token="tok", allowed_scopes=[], correlation_id="corr-3")
+    assert summary == "Inbox is clear."
+
+
+async def test_a_scheduled_turn_with_only_status_lines_uses_the_default_summary(
+        orch, clean_system_row, monkeypatch):
+    await _seed_system(orch)
+
+    async def fake_handle_chat_message(websocket, message, chat_id, **kwargs):
+        await websocket.send_text(json.dumps(
+            {"type": "chat_status", "status": "thinking", "message": "Analyzing request and planning actions..."}))
+
+    monkeypatch.setattr(orch, "handle_chat_message", fake_handle_chat_message)
+    summary = await orch.run_scheduled_turn(
+        user_id=_uid(), chat_id="sched-chat-1", instruction="summarize inbox",
+        agent_id=None, access_token="tok", allowed_scopes=[], correlation_id="corr-4")
+    assert summary == "Your scheduled task finished."
+
+
 class _RunnerStore:
     def __init__(self):
         self.finished = []
