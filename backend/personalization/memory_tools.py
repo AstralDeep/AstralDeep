@@ -174,6 +174,20 @@ def canonical_memory_id(value: Any) -> Optional[str]:
         return None
 
 
+ATLAS_ENVELOPE_REFUSAL = "That value is in the Atlas page format, so it can't be saved as a memory."
+
+
+def is_atlas_page_row(item: Optional[Dict[str, Any]]) -> bool:
+    return parse_envelope((item or {}).get("value")) is not None
+
+
+def editable_memory(repo: Any, user_id: str, memory_id: Any) -> Optional[Dict[str, Any]]:
+    # Atlas page rows look like memories in the shared table but only atlas_service.py may change them
+    key = str(memory_id or "").strip()
+    row = repo.get_memory(user_id, key) if key else None
+    return None if row is None or is_atlas_page_row(row) else row
+
+
 def live_items(user_id: str, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # Atlas page rows carry a content fingerprint, not the memory HMAC, and belong to atlas_service.py
     items = [it for it in items if parse_envelope(it.get("value")) is None]
@@ -205,6 +219,8 @@ class MemoryTools:
         value = (value or "").strip()
         if not value:
             return category, value, {"stored": False, "reason": "nothing to remember"}
+        if parse_envelope(value) is not None:
+            return category, value, {"stored": False, "reason": ATLAS_ENVELOPE_REFUSAL}
         if self.gate.contains_phi(value):
             logger.info("memory.write_refused_phi",
                         extra={"user_id": "?", "category": category})
@@ -294,7 +310,7 @@ class MemoryTools:
             return 0
         scored = []
         for it in self.repo.list_memory(user_id):
-            if it.get("id") == new_id:
+            if it.get("id") == new_id or is_atlas_page_row(it):
                 continue
             other = _tokens(it.get("keywords") or "") or _tokens(it.get("value", ""))
             overlap = len(kw & other)
@@ -360,7 +376,7 @@ class MemoryTools:
             logger.debug("memory.reconcile_llm_failed — appending", exc_info=True)
             decision = None
         if not decision:
-            return self._do_add(user_id, category, value)
+            return self._do_add(user_id, category, value, project_id=write_proj)
 
         action = decision["action"]
         target = decision["target"]

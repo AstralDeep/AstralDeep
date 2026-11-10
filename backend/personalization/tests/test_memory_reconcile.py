@@ -197,6 +197,41 @@ async def test_llm_error_fails_open_to_append():
     assert res["stored"] is True and len(repo.list_memory("u")) == 2
 
 
+@pytest.mark.parametrize("reply", ["raise", "malformed"])
+async def test_a_failed_reconcile_keeps_a_project_memory_in_its_project(monkeypatch, reply):
+    monkeypatch.setenv("FF_PROJECT_MEMORY", "true")
+    repo = _FakeRepo()
+    repo.create_memory("u", "preference", "Prefers dark mode", project_id="proj-a")
+
+    async def _call(_messages):
+        if reply == "raise":
+            raise RuntimeError("llm down")
+        return "not json"
+
+    res = await _mt(repo).remember_reconciled("u", "preference", "Prefers light mode",
+                                              llm_call=_call, project_id="proj-a")
+    assert res["stored"] is True
+    stored = [row for row in repo.rows if row["value"] == "Prefers light mode"]
+    assert [row["project_id"] for row in stored] == ["proj-a"]
+
+
+async def test_an_atlas_page_shaped_value_is_never_remembered():
+    repo = _FakeRepo()
+    res = await _mt(repo).remember_reconciled("u", "context", _atlas_value("u"), llm_call=None)
+    assert res["stored"] is False and "Atlas page format" in res["reason"]
+    assert repo.rows == []
+
+
+def test_new_memories_are_never_linked_to_atlas_page_rows():
+    repo = _FakeRepo()
+    links = []
+    repo.add_link = lambda user_id, a_id, b_id: links.append(b_id) or True
+    page = repo.create_memory("u", "context", _atlas_value("u"), keywords="tea notes oolong")
+    plain = repo.create_memory("u", "preference", "Drinks oolong tea", keywords="tea notes oolong")
+    _mt(repo)._link_new("u", "new-id", "tea notes oolong", "tea notes oolong")
+    assert plain["id"] in links and page["id"] not in links
+
+
 async def test_flag_off_appends(monkeypatch):
     monkeypatch.setenv("FF_MEMORY_RECONCILE", "false")
     repo = _FakeRepo()
