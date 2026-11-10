@@ -709,7 +709,8 @@ def _plane_schema_literal_import(
                      "typesafe_credential", "mesh", "stop", "completion_wake",
                      "notification", "atlas_page", "atlas_revision", "atlas_link",
                      "capability_publication", "harness_binding", "push_delivery",
-                     "observation", "harness_capture"}
+                     "observation", "harness_capture", "chat_queue", "conversation_branch",
+                     "computer_use", "verification_credential", "chat_read_receipt"}
                 and isinstance(item, ast.Call)
                 and not item.args and not item.keywords
                 and isinstance(item.func, ast.Attribute) and item.func.attr == "strip"
@@ -750,6 +751,11 @@ def _plane_migration_digest(component_root: Path) -> str:
         ("project", "PROJECT_SCHEMA_STATEMENTS"),
         ("harness_capture", "HARNESS_CAPTURE_SCHEMA_STATEMENTS"),
         ("audit_conversation", "AUDIT_CONVERSATION_SCHEMA_STATEMENTS"),
+        ("chat_queue", "CHAT_QUEUE_SCHEMA_STATEMENTS"),
+        ("conversation_branch", "CONVERSATION_BRANCH_SCHEMA_STATEMENTS"),
+        ("computer_use", "COMPUTER_USE_SCHEMA_STATEMENTS"),
+        ("verification_credential", "VERIFICATION_CREDENTIAL_SCHEMA_STATEMENTS"),
+        ("chat_read_receipt", "CHAT_READ_RECEIPT_SCHEMA_STATEMENTS"),
     ):
         reviewed_literals.update(_plane_schema_literal_import(
             component_root, tree, stem=stem, symbol=symbol))
