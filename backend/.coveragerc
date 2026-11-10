@@ -1,8 +1,8 @@
 # Coverage configuration for the backend product suite.
 #
 # The security_benchmark/ package is EVAL-ONLY and isolation-guarded
-# (isolation_check.py CI-enforces that no product-runtime module imports it,
-# Constitution V/XI). Its own suite runs inside the whole-suite set, so its
+# (isolation_check.py CI-enforces that no product-runtime module imports it).
+# Its own suite runs inside the whole-suite set, so its
 # measured lines land in the merged product report; the changed-line gate
 # requires every changed non-test file to be mapped, so the package stays
 # measurable rather than omitted.

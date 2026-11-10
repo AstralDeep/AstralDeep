@@ -129,7 +129,7 @@ def human_cadence(schedule_kind: str, schedule_expr: str, tz: str) -> str:
 def _validate_proposal(orch, user_id: str, args: Dict[str, Any]):
     from agentic_settings import (SCHEDULE_MAX_ACTIVE_JOBS_PER_USER,
                                   SCHEDULE_MIN_INTERVAL_SECONDS)
-    from scheduler.cron import ScheduleError, compute_next_run_ms
+    from scheduler.cron import ScheduleError, first_run_ms
     from scheduler.governance import GovernanceError, validate_new_job
 
     name = str(args.get("name") or "").strip()[:120]
@@ -158,8 +158,7 @@ def _validate_proposal(orch, user_id: str, args: Dict[str, Any]):
             schedule_expr=schedule_expr,
             min_interval_seconds=SCHEDULE_MIN_INTERVAL_SECONDS,
         )
-        next_run = compute_next_run_ms(schedule_kind, schedule_expr, tz,
-                                       int(time.time() * 1000))
+        next_run = first_run_ms(schedule_kind, schedule_expr, tz, int(time.time() * 1000))
     except (GovernanceError, ScheduleError) as exc:
         raise ValueError(str(exc)) from exc
 

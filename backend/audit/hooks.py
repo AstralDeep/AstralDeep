@@ -60,6 +60,9 @@ async def record_auth_event(
 _NOISY_WS_ACTIONS = frozenset({
     "ping", "heartbeat",
 })
+_CONVERSATION_WS_ACTIONS = frozenset({
+    "load_chat", "delete_chat", "save_component", "delete_component", "side_question",
+})
 
 
 async def record_ws_action(
@@ -86,7 +89,7 @@ async def record_ws_action(
         await rec.record(AuditEventCreate(
             actor_user_id=user,
             auth_principal=principal,
-            event_class="conversation" if action.startswith("chat_") or action in ("load_chat", "delete_chat", "save_component", "delete_component") else "settings",
+            event_class="conversation" if action.startswith("chat_") or action in _CONVERSATION_WS_ACTIONS else "settings",
             action_type=f"ws.{action}",
             description=f"User WS action {action!r}",
             conversation_id=chat_id,

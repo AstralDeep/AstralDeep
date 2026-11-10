@@ -358,8 +358,8 @@ async def _oauth_start(orch, websocket, user_id, roles, payload):
         from orchestrator.mcp_authz import canonical_public_base_url
         from orchestrator.remote_mcp_oauth import begin_authorization
 
-        redirect_uri = canonical_public_base_url() + "/api/remote-mcp/oauth/callback"
-        url = await begin_authorization(orch, user_id, connector_id, redirect_uri)
+        base = canonical_public_base_url() + "/api/remote-mcp/oauth"
+        url = await begin_authorization(orch, user_id, connector_id, base + "/callback", base + "/start")
         return (SURFACE_KEY, {"oauth_url": url}, notice_block(
             "info", "Open the authorization page below to sign in, then refresh this server's tools."))
     except Exception as error:  # noqa: BLE001

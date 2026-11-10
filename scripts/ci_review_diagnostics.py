@@ -51,7 +51,6 @@ def inspect_change(path, before, after):
             )
     if (
         path.startswith((".github/", "scripts/", "tooling/"))
-        or path == ".specify/memory/constitution.md"
         or Path(path).name in {"pyproject.toml", ".coveragerc", "pytest.ini", "uv.lock"}
     ):
         flags.append({"kind": "qualification-policy-change"})

@@ -91,6 +91,10 @@ class ComputerHost:
     def excluded(self) -> List[str]:
         return [str(pattern) for pattern in self.descriptor.get("excluded") or []]
 
+    @property
+    def sandbox_capability(self) -> bool:
+        return "command_sandbox" in (self.descriptor.get("capabilities") or ())
+
     def public(self, online: bool = True) -> Dict[str, Any]:
         return {
             "host_id": self.host_id,
@@ -326,6 +330,7 @@ class ComputerHostRegistry:
             raise ComputerHostError("timeout", "The computer call expired before delivery.", effect_state="not_started")
         loop = asyncio.get_running_loop()
         request_id = f"creq_{uuid.uuid4().hex}"
+        intent = await self._begin_effect_intent(host, session_id, verb, args, request_id)
         fut: asyncio.Future = loop.create_future()
         self._pending[request_id] = (fut, host.owner_sub, host.host_id, verb, session_id)
         frame = json.dumps({
@@ -348,13 +353,18 @@ class ComputerHostRegistry:
                         f"Delivery to {host.name} could not be confirmed; inspect current state before retrying")
                 payload = await fut
         except TimeoutError:
+            await self._lose_effect_intent(intent, "the host did not answer in time")
             code = ("timeout" if verb in OBSERVE_VERBS
                     else "login_timeout" if verb in WAIT_ON_OWNER_VERBS else "outcome_uncertain")
             detail = (f"the owner did not hand the login back within {timeout:g} s" if code == "login_timeout"
                       else f"did not answer {verb} within {timeout:g} s; inspect current state before retrying")
             raise ComputerHostError(code, f"{host.name} {detail}") from None
+        except ComputerHostError:
+            await self._lose_effect_intent(intent, "the host connection changed after delivery")
+            raise
         finally:
             self._pending.pop(request_id, None)
+        await self._commit_effect_intent(intent, payload)
         if origin is not None:
             try:
                 async with asyncio.timeout(max(0, expires - time.monotonic())):
@@ -374,6 +384,43 @@ class ComputerHostRegistry:
         message = str(error.get("message") or f"{verb} failed on {host.name}")[:500]
         raise ComputerHostError(code, message, effect_state=error.get("effect_state"),
                                 element_line=error.get("element_line"))
+
+    async def _begin_effect_intent(self, host: ComputerHost, session_id: str, verb: str,
+                                   args: Dict[str, Any], request_id: str) -> Optional[Any]:
+        if verb in OBSERVE_VERBS:
+            return None
+        ledger = getattr(self._orch, "computer_effect_intents", None)
+        if ledger is None:
+            return None
+        from orchestrator.computer_effect_intents import EffectIntentError
+        session = self._orch.computer_sessions.get(session_id)
+        if session is None:
+            return None
+        try:
+            return await ledger.begin_request(
+                owner_id=host.owner_sub, host=host, session_id=session_id, chat_id=session.chat_id,
+                verb=verb, args=args, operation_id=request_id)
+        except EffectIntentError as exc:
+            raise ComputerHostError(exc.code, exc.message, effect_state="not_started") from None
+
+    async def _lose_effect_intent(self, intent: Optional[Any], reason: str) -> None:
+        if intent is None:
+            return
+        try:
+            await self._orch.computer_effect_intents.outcome_lost(intent, reason=reason)
+        except Exception:  # noqa: BLE001
+            logger.warning("effect intent could not be marked unknown", exc_info=True)
+
+    async def _commit_effect_intent(self, intent: Optional[Any], payload: Dict[str, Any]) -> None:
+        if intent is None:
+            return
+        error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        try:
+            await self._orch.computer_effect_intents.commit_outcome(
+                intent.operation_id, ok=payload.get("ok") is True,
+                error_code=str(error.get("code") or ""))
+        except Exception:  # noqa: BLE001
+            logger.warning("effect outcome commit failed", exc_info=True)
 
     def handle_response(self, websocket, owner_sub: str, payload: Dict[str, Any]) -> bool:
         request_id = str(payload.get("request_id") or "")

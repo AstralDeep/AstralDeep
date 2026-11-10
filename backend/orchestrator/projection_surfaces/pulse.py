@@ -10,6 +10,7 @@ import logging
 from typing import Any, Dict, List
 
 from dreaming.pulse import build_digest, is_schedulable, propose_schedule, pulse_enabled
+from personalization.memory_tools import is_atlas_page_row
 from webrender.chrome import esc, notice_block, render_one
 from webrender.chrome.surfaces import _sdui
 
@@ -35,9 +36,8 @@ def _digest_items(repo, user_id: str) -> List[Dict[str, Any]]:
         memories = repo.list_memory(user_id) if hasattr(repo, "list_memory") else []
     except Exception:  # pragma: no cover
         memories = []
-    for mem in (memories or [])[:_MAX_MEMORIES]:
-        if not isinstance(mem, dict):
-            continue
+    memories = [mem for mem in (memories or []) if isinstance(mem, dict) and not is_atlas_page_row(mem)]
+    for mem in memories[:_MAX_MEMORIES]:
         items.append({
             "category": mem.get("category") or "general",
             "title": mem.get("value") or "",

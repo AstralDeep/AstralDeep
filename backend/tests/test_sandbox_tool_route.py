@@ -556,7 +556,8 @@ def local_effect(monkeypatch, tmp_path):
                 __import__("pathlib").Path(path) / f"astral-srt-{state.identity}.txt"
             )
             try:
-                candidate.unlink(missing_ok=True)
+                if candidate.exists():
+                    candidate.unlink(missing_ok=True)
             except OSError:
                 pass
 

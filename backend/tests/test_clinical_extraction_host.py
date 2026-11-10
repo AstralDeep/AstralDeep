@@ -37,6 +37,9 @@ async def host(orchestrator_factory, monkeypatch, tmp_path):
         monkeypatch.setitem(flags._flags, name, True)
     monkeypatch.setitem(flags._flags, "user_skills", False)
     monkeypatch.setenv("AGENT_KEY_PATH", str(tmp_path / "agent.pem"))
+    # Ambient runtime config must not override this suite's dev-posture registration.
+    monkeypatch.delenv("AGENT_API_KEY", raising=False)
+    monkeypatch.delenv("DEFAULT_AGENT_OWNER", raising=False)
     orch = await asyncio.to_thread(orchestrator_factory)
     agent = FhirAgent(port=0)
     await orch.register_agent(None, RegisterAgent(agent_card=agent.card))
@@ -1111,6 +1114,9 @@ async def test_normal_registration_installs_only_the_canonical_host_service(
 
     monkeypatch.setattr(local_agents, "discover_built_in_agent_dirs", lambda: [])
     monkeypatch.setenv("AGENT_KEY_PATH", str(tmp_path / "registered-agent.pem"))
+    # Ambient runtime config must not override this suite's dev-posture registration.
+    monkeypatch.delenv("AGENT_API_KEY", raising=False)
+    monkeypatch.delenv("DEFAULT_AGENT_OWNER", raising=False)
     for name in ("fhir", "inprocess_agents"):
         monkeypatch.setitem(flags._flags, name, True)
     for name in (
