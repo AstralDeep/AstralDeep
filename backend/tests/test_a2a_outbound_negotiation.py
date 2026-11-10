@@ -12,6 +12,7 @@ import json
 import os
 import sys
 from typing import Any, Dict, List
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -995,6 +996,7 @@ def _discovery_orchestrator() -> Orchestrator:
     orch.a2a_clients = {}
     orch.a2a_agent_cards = {}
     orch.agent_cards = {}
+    orch._standard_a2a_agent_cards = {}
     orch.agent_capabilities = {}
     orch.security_flags = {}
     orch.ui_clients = []
@@ -1003,6 +1005,9 @@ def _discovery_orchestrator() -> Orchestrator:
     orch.tool_permissions = SimpleNamespace(
         register_tool_scopes=lambda agent_id, scopes: orch.registration_events.append(("scopes", agent_id)),
         cleanup_stale_tool_overrides=lambda *args, **kwargs: None,
+        get_agent_scopes=lambda user_id, agent_id: {},
+        get_tool_scope_map=lambda agent_id: {},
+        get_effective_permissions=lambda user_id, agent_id, tools: {},
     )
     def analyze(card):
         orch.registration_events.append(("security", card.agent_id))
@@ -1015,6 +1020,78 @@ def _discovery_orchestrator() -> Orchestrator:
     orch.security_analyzer = SimpleNamespace(analyze_agent=analyze)
     orch.user_agent_registry = SimpleNamespace(get_agent_ownership=ownership)
     return orch
+
+
+@pytest.mark.asyncio
+async def test_native_websocket_agent_with_a2a_backup_is_not_classified_as_a2a_only():
+    from types import SimpleNamespace
+
+    orch = _discovery_orchestrator()
+    card = SimpleNamespace(agent_id="native-peer", metadata={})
+    orch.agent_cards[card.agent_id] = card
+    orch.agent_urls[card.agent_id] = PEER_BASE
+    orch.agents[card.agent_id] = object()
+    orch.discover_agent = AsyncMock()
+
+    async def setup_backup(base_url, agent_id):
+        orch.a2a_clients[agent_id] = base_url
+        orch.a2a_agent_cards[agent_id] = _card("1.0")
+
+    orch._setup_a2a_client_for_agent = setup_backup
+    await orch.discover_a2a_agent(PEER_BASE)
+
+    assert orch.a2a_clients[card.agent_id] == PEER_BASE
+    assert card.agent_id not in orch._standard_a2a_agent_cards
+
+
+@pytest.mark.asyncio
+async def test_native_registration_clears_a2a_marker_and_initializes_legacy_state(monkeypatch):
+    monkeypatch.setenv("AGENT_API_KEY", "discovery-key-0123456789")
+    from shared.protocol import AgentCard as AstralAgentCard
+    from shared.protocol import RegisterAgent
+
+    orch = _discovery_orchestrator()
+    del orch._standard_a2a_agent_cards
+    card = AstralAgentCard(name="Native", description="native", agent_id="native-peer")
+
+    await orch.register_agent(
+        None, RegisterAgent(agent_card=card, api_key="discovery-key-0123456789"),
+    )
+
+    assert orch._standard_a2a_agent_cards == {}
+
+
+@pytest.mark.parametrize("local_gateway_present", [True, False])
+@pytest.mark.asyncio
+async def test_a2a_fallback_rejects_reserved_remote_mcp_id(monkeypatch, local_gateway_present):
+    monkeypatch.setenv("AGENT_API_KEY", "discovery-key-0123456789")
+    from shared.protocol import AgentCard as AstralAgentCard
+
+    holder = {"card": {}}
+    runner, base_url = await _card_server(holder)
+    try:
+        holder["card"] = _advertised_card_payload(base_url, [
+            {"url": f"{base_url}/remote-mcp-1", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
+        ])
+        orch = _discovery_orchestrator()
+        local_card = AstralAgentCard(
+            name="Remote MCP", description="local gateway", agent_id="remote-mcp-1")
+        if local_gateway_present:
+            orch.local_agents["remote-mcp-1"] = object()
+            orch.agent_cards["remote-mcp-1"] = local_card
+
+        await orch.discover_a2a_agent(base_url)
+
+        if local_gateway_present:
+            assert orch.agent_cards["remote-mcp-1"] is local_card
+        else:
+            assert "remote-mcp-1" not in orch.agent_cards
+        assert orch.a2a_clients == {}
+        assert orch._standard_a2a_agent_cards == {}
+    finally:
+        await runner.cleanup()
+
+
 
 
 async def _card_server(holder: dict, path: str = "/.well-known/agent-card.json"):
@@ -1071,14 +1148,38 @@ async def test_discovery_dispatches_to_the_advertised_custom_path_and_tenant(
             ],
         )
         orch = _discovery_orchestrator()
+        client = object()
+        sent = []
+        orch.ui_clients = [client]
+        orch._get_user_id = lambda _client: "owner"
+
+        async def capture(_client, payload):
+            sent.append(json.loads(payload))
+
+        orch._safe_send = capture
         await orch.discover_a2a_agent(base_url)
 
         assert orch.a2a_clients["rpc"] == base_url
         assert orch.agent_urls["rpc"] == base_url
         assert orch.a2a_agent_cards["rpc"].supported_interfaces[0].url == custom_url
         assert orch.agent_cards["rpc"].metadata["a2a_url"] == custom_url
+        assert orch._standard_a2a_agent_cards["rpc"] is orch.agent_cards["rpc"]
+        from orchestrator.remote_mcp_security import connection_security_for_card
+        assert connection_security_for_card(
+            "rpc", orch.agent_cards["rpc"], orch._standard_a2a_agent_cards,
+        )["kind"] == "standard_a2a"
+        registered = next(message for message in sent if message.get("type") == "agent_registered")
+        assert registered["connection_security"]["kind"] == "standard_a2a"
         assert orch.registration_events == [("scopes", "rpc"), ("security", "rpc"), ("owner", "rpc")]
         assert orch.security_flags["rpc"] == {}
+
+        orch.user_agent_registry.get_all_agent_ownership = lambda: []
+        orch.compute_tools_available_for_user = lambda _owner: True
+        orch._replay_personal_agent_lifecycles = AsyncMock()
+        sent.clear()
+        await orch.send_agent_list(client)
+        catalog = next(message for message in sent if message.get("type") == "agent_list")
+        assert catalog["agents"][0]["connection_security"]["kind"] == "standard_a2a"
 
         seen = {}
 
@@ -1106,8 +1207,45 @@ async def test_discovery_dispatches_to_the_advertised_custom_path_and_tenant(
         assert seen["version"] == "1.0"
         assert seen["tenant"] == "tenant-9"
         assert seen["agent_key"] == "discovery-key-0123456789"
+
+        from shared.protocol import RegisterAgent
+
+        await orch.register_agent(
+            None,
+            RegisterAgent(agent_card=orch.agent_cards["rpc"], api_key="discovery-key-0123456789"),
+        )
+        assert "rpc" not in orch._standard_a2a_agent_cards
+        replacement = next(message for message in sent if message.get("type") == "agent_registered")
+        assert "connection_security" not in replacement
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_a2a_only_card_marker_is_cleared_when_registration_disconnects():
+    from types import SimpleNamespace
+
+    class ClosedSocket:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    from orchestrator.orchestrator import Orchestrator
+
+    orch = _discovery_orchestrator()
+    card = SimpleNamespace(agent_id="partner-1")
+    socket = ClosedSocket()
+    orch.agents[card.agent_id] = socket
+    orch.agent_cards[card.agent_id] = card
+    orch._standard_a2a_agent_cards[card.agent_id] = card
+    orch._sweep_cap_slots_for_agent = AsyncMock()
+
+    await Orchestrator._agent_listen_loop(orch, socket, card.agent_id)
+
+    assert card.agent_id not in orch.agent_cards
+    assert card.agent_id not in orch._standard_a2a_agent_cards
 
 
 @pytest.mark.asyncio
@@ -1200,14 +1338,14 @@ async def test_discovery_publishes_no_route_after_registration_refusal_or_failur
         orch = _discovery_orchestrator()
         original = orch.register_agent
 
-        async def register(websocket, message):
+        async def register(websocket, message, **kwargs):
             if failure == "invalid-key":
                 message.api_key = "different-key"
             elif failure == "invalid-schema":
                 message.agent_card.skills[0].input_schema = {"type": "string"}
             elif failure == "cancelled":
                 raise asyncio.CancelledError
-            return await original(websocket, message)
+            return await original(websocket, message, **kwargs)
 
         def failed_analysis(card):
             raise RuntimeError("synthetic analyzer failure")
@@ -1223,6 +1361,7 @@ async def test_discovery_publishes_no_route_after_registration_refusal_or_failur
         assert orch.a2a_clients == {}
         assert orch.a2a_agent_cards == {}
         assert orch.agent_urls == {}
+        assert orch._standard_a2a_agent_cards == {}
         if failure in {"invalid-key", "invalid-schema"}:
             assert orch.agent_cards == {}
             assert orch.agent_capabilities == {}

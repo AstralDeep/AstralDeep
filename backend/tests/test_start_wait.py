@@ -350,3 +350,17 @@ def test_remote_compute_flag_reads_the_feature_flag_singleton(monkeypatch):
 
     monkeypatch.setattr(flags, "is_enabled", _boom)
     assert start._remote_compute_enabled() is False
+
+
+@pytest.mark.parametrize("inprocess", [True, False])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_remote_mcp_never_spawns_as_a_standalone_agent(monkeypatch, tmp_path, inprocess, enabled):
+    backend_dir, agents_root = _agents_tree(tmp_path)
+    remote = agents_root / "remote_mcp"
+    remote.mkdir()
+    (remote / "remote_mcp_agent.py").write_text("", encoding="utf-8")
+    _, agents = _run_main(
+        monkeypatch, backend_dir, inprocess=inprocess, remote_flag=False,
+        evidence_flags=("remote_mcp",) if enabled else (),
+    )
+    assert "remote_mcp" not in agents

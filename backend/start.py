@@ -49,6 +49,14 @@ def _remote_compute_enabled() -> bool:
         return False
 
 
+def _remote_mcp_enabled() -> bool:
+    try:
+        from shared.feature_flags import flags
+        return bool(flags.is_enabled("remote_mcp"))
+    except Exception:
+        return False
+
+
 def _gaiakeep_enabled() -> bool:
     from shared.feature_flags import flags
     try:
@@ -178,6 +186,10 @@ def main(process_supervisor=None):
                 if inprocess_enabled:
                     print(f"Running {item} in-process (no port)")
                     continue
+            if item == "remote_mcp":
+                if _remote_mcp_enabled() and inprocess_enabled:
+                    print("Running remote_mcp in-process (no port)")
+                continue
             if item == "gaiakeep":
                 if not _gaiakeep_enabled():
                     continue

@@ -140,5 +140,5 @@ def test_pinned_project_registry_matches_qualified_digest():
     root = Path(__file__).resolve().parents[2] / "components/AstralPlane"
     assert (
         composition._plane_migration_digest(root)
-        == "5a03a9f11a22530ae80a11036d0ddaf72d084797546285a71ebdbc3fd741bb06"
+        == "d609f1cf1d02c744ff8b35115f8c9be2ebb873a7fa987931c08154d2ecfcb857"
     )

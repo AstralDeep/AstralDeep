@@ -4,8 +4,8 @@
 (`orchestrator/agent_constitution.py`). It MUST be **byte-identical** to the
 authoritative source at `specs/057-byo-client-agents/agent-constitution.md`.
 
-Why a copy: `Dockerfile` bakes only `backend/` into the image; `.specify/` and
-`specs/` are not present at runtime. This mirrors the feature-040 skill-pack
+Why a copy: `Dockerfile` bakes only `backend/` into the image; `specs/` is not
+present at runtime. This mirrors the feature-040 skill-pack
 precedent (authored markdown baked in, read `__file__`-relative). Do NOT hand-copy
 the constitution text into a Python literal (see `mcp_tools_dev.py` for how that
 drifts).

@@ -5,7 +5,7 @@
 > Agent-delegation (RFC 8693) client setup lives in
 > [keycloak_agent_delegation_setup.md](keycloak_agent_delegation_setup.md).
 
-AstralDeep authenticates exclusively against Keycloak (Constitution VII).
+AstralDeep authenticates exclusively against Keycloak.
 The orchestrator drives a **server-side** OIDC Authorization Code + PKCE flow
 (`/auth/login` → Keycloak → `/auth/callback`); tokens never live in the
 browser beyond the short-lived access token used for the WS handshake.

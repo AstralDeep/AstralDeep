@@ -395,6 +395,90 @@ MAX_ARGV_ITEMS = 256
 MAX_ARG_CHARS = 4096
 MAX_ENV_VARS = 32
 MAX_STDIN_BYTES = 16 * 1024
+MAX_ALLOWED_DOMAINS = 64
+MAX_DOMAIN_CHARS = 253
+SANDBOX_MODES = ("default", "escalated")
+ESCALATION_NOTICE = ("This command runs OUTSIDE the operating-system sandbox and may reach the network. "
+                     "Approve only if you recognize every destination.")
+
+
+def validate_allowed_domains(value: Any) -> List[str]:
+    if not isinstance(value, list) or len(value) > MAX_ALLOWED_DOMAINS:
+        raise ValueError(f"allowed_domains must be a list of at most {MAX_ALLOWED_DOMAINS} hostnames")
+    out: List[str] = []
+    seen = set()
+    for item in value:
+        if (not isinstance(item, str) or not item.strip() or "\\x00" in item
+                or any(ord(ch) < 32 or ord(ch) == 127 for ch in item)):
+            raise ValueError("allowed_domains entries must be printable hostnames like example.com or *.example.com")
+        lowered = item.strip().lower()
+        if len(lowered) > MAX_DOMAIN_CHARS:
+            raise ValueError(f"each allowed domain is at most {MAX_DOMAIN_CHARS} characters")
+        body = lowered[2:] if lowered.startswith("*.") else lowered
+        if (not body or body.startswith(".") or body.endswith(".") or ".." in body
+                or any(label == "" for label in body.split("."))):
+            raise ValueError(f"{item[:80]} is not a valid hostname or *.wildcard")
+        labels = body.split(".")
+        if len(labels) < 2 or any(len(label) > 63 for label in labels):
+            raise ValueError(f"{item[:80]} is not a valid hostname or *.wildcard")
+        for label in labels:
+            if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label):
+                raise ValueError(f"{item[:80]} is not a valid hostname or *.wildcard")
+        try:
+            ipaddress.ip_address(body)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("allowed_domains entries cannot be IP addresses")
+        if "localhost" in labels:
+            raise ValueError("allowed_domains entries cannot name localhost")
+        if lowered not in seen:
+            seen.add(lowered)
+            out.append(lowered)
+    return out
+
+
+def command_domains(args: Mapping[str, Any]) -> tuple:
+    value = args.get("allowed_domains")
+    return tuple(value) if isinstance(value, list) else ()
+
+
+def sandbox_mode(args: Mapping[str, Any]) -> str:
+    value = args.get("sandbox")
+    return value if value in SANDBOX_MODES else "default"
+
+
+def sandbox_exact_review_required(args: Mapping[str, Any], approved: Any = None) -> bool:
+    if sandbox_mode(args) == "escalated":
+        return True
+    domains = command_domains(args)
+    if not domains:
+        return False
+    return True if approved is None else not set(domains) <= set(approved)
+
+
+EGRESS_DENIED_CIDRS: tuple = (
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+    "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.88.99.0/24", "192.168.0.0/16",
+    "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
+    "255.255.255.255/32",
+    "::/128", "::1/128", "::ffff:0:0/96", "64:ff9b:1::/48", "100::/64",
+    "2001:db8::/32", "fc00::/7", "fe80::/10", "ff00::/8",
+)
+
+
+def proxy_policy(domains: Sequence[str]) -> Dict[str, Any]:
+    return {"allowed_domains": list(domains), "denied_cidrs": list(EGRESS_DENIED_CIDRS)}
+
+
+def escalation_lines(args: Mapping[str, Any]) -> List[str]:
+    lines: List[str] = []
+    if sandbox_mode(args) == "escalated":
+        lines.append(ESCALATION_NOTICE)
+    domains = command_domains(args)
+    if domains:
+        lines.append("Allowed network destinations: " + ", ".join(display_text(d) for d in domains))
+    return lines
 COMMAND_DEADLINE_MARGIN_S = 10
 BACKGROUND_START_S = 30.0
 HOST_DEADLINE_GRACE_S = 15.0
@@ -733,7 +817,8 @@ def is_secure_input_app(bundle: Any) -> bool:
     return folded in SECURE_INPUT_BUNDLES or folded.startswith(_SECURE_INPUT_PREFIXES)
 
 
-def bypass_floor(tool: str, args: Mapping[str, Any], window_bundle: Optional[str]) -> bool:
+def bypass_floor(tool: str, args: Mapping[str, Any], window_bundle: Optional[str],
+                 approved: Any = None) -> bool:
     if "terminal_app" in args and tool in WINDOW_INPUT_VERBS:
         try:
             terminal = mac_terminal_application(args["terminal_app"])
@@ -744,7 +829,8 @@ def bypass_floor(tool: str, args: Mapping[str, Any], window_bundle: Optional[str
     if tool == "run_command":
         argv = args.get("argv")
         text = " ".join(str(word) for word in argv) if isinstance(argv, list) else str(args.get("command") or "")
-        return is_privilege_escalation(args) or bool(_ASTRAL_TEXT.search(text))
+        return (is_privilege_escalation(args) or bool(_ASTRAL_TEXT.search(text))
+                or sandbox_exact_review_required(args, approved))
     if tool in {"write_file", "delete_path"}:
         return bool(_ASTRAL_TEXT.search(str(args.get("path") or "")))
     if tool == "open_app":
@@ -868,6 +954,7 @@ def _command_summary(args: Mapping[str, Any], host: str) -> str:
              "Environment: " + (", ".join(f"{display_text(key)}={display_text(value)}" for key, value in env.items())
                                 if env else "none"),
              "Background: " + ("yes" if args.get("background") else "no")]
+    lines.extend(escalation_lines(args))
     if isinstance(args.get("stdin"), str):
         lines.append(f"Standard input: {len(args['stdin'])} characters")
     return "\n".join(lines)

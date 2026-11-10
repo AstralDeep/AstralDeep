@@ -40,10 +40,11 @@ def budget_notice(turn_count: int, max_turns: int) -> str | None:
 
 
 REPEATED_FAILURES_REASON = "Repeated tool failures prevented verified completion."
+REPEATED_RESULTS_REASON = "The same tool call kept returning the same result, so the run stopped instead of repeating it."
 
 
 def summary_worthy(stop_reason: str | None, tool_count: int) -> bool:
-    return tool_count > 0 and stop_reason in (None, REPEATED_FAILURES_REASON)
+    return tool_count > 0 and stop_reason in (None, REPEATED_FAILURES_REASON, REPEATED_RESULTS_REASON)
 
 
 def budget_summary_prompt(max_turns: int, stop_reason: str | None = None) -> str:
