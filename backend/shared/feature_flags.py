@@ -77,6 +77,7 @@ class FeatureFlags:
             "framework_credentials": self._read("FF_FRAMEWORK_CREDENTIALS", False),
             "harness_profile_selection": self._read("FF_HARNESS_PROFILE_SELECTION", False),
             "prompt_prefix_cache": self._read("FF_PROMPT_PREFIX_CACHE", False),
+            "project_instructions": self._read("FF_PROJECT_INSTRUCTIONS", False),
         }
 
     @staticmethod

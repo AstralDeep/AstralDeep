@@ -15697,6 +15697,33 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     goal_anchor["content"] += "\n" + _STEERING_GUIDANCE
                 messages.append(goal_anchor)
 
+            if flags.is_enabled("project_instructions") and not draft_agent_id:
+                from orchestrator import project_instructions
+
+                _instruction_sentinel = turn_sentinel or datamarking.make_turn_sentinel()
+                try:
+                    _instruction_turn = await project_instructions.turn_start_guidance(
+                        self, websocket, user_id, chat_id, message,
+                        tool_to_agent=tool_to_agent, tool_to_unqualified=tool_to_unqualified,
+                        turn_sentinel=_instruction_sentinel)
+                except Exception:
+                    logger.warning("project instruction turn start failed chat=%s", chat_id,
+                                   exc_info=True)
+                    _instruction_turn = None
+                if _instruction_turn is not None:
+                    _instruction_text, _instruction_components = _instruction_turn
+                    if not datamark_on:
+                        _instruction_text += ("\n\n"
+                                              + datamarking.spotlight_system_addendum(
+                                                  _instruction_sentinel))
+                    messages.append({"role": "system", "content": _instruction_text})
+                    if _instruction_components:
+                        try:
+                            await self.send_ui_render(websocket, _instruction_components,
+                                                      target="chat", speak=False)
+                        except Exception:
+                            logger.debug("instruction notice delivery failed", exc_info=True)
+
             MAX_TURNS = 10
             if flags.is_enabled("computer_use") and any(
                     isinstance(t, dict) and (t.get("function") or {}).get("name") in ("screenshot", "start_session")
@@ -16435,6 +16462,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         _plan_tools = list(_turn_tools)
                     elif turn_hooks.plan_deviation(_plan_tools, _turn_tools) is not None:
                         logger.warning("asi_coverage.deviation chat=%s tools=%s", chat_id, _turn_tools)
+                    if flags.is_enabled("project_instructions") and llm_msg.tool_calls:
+                        from orchestrator import project_instructions
+
+                        try:
+                            _folder_guidance = await project_instructions.progressive_guidance(
+                                self, websocket, user_id, chat_id, llm_msg.tool_calls,
+                                tool_results, tool_to_agent=tool_to_agent,
+                                tool_to_unqualified=tool_to_unqualified,
+                                turn_sentinel=turn_sentinel or datamarking.make_turn_sentinel())
+                        except Exception:
+                            logger.warning("project instruction folder load failed chat=%s",
+                                           chat_id, exc_info=True)
+                            _folder_guidance = None
+                        if _folder_guidance:
+                            messages.append({"role": "system", "content": _folder_guidance})
                     if turn_hooks.over_tool_budget(_flow, _tools_used):
                         logger.info("flow_patterns budget reached (pattern=%s used=%d)", _flow, _tools_used)
                         messages.append({"role": "system", "content": (
