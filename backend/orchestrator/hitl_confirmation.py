@@ -1,7 +1,7 @@
 """Holds attended human-in-the-loop approvals bound to one server-held pending call for
 fifteen minutes, never client-supplied arguments; handle_decision() re-enters evaluate() to
 release the approved dispatch, and computer task grants or a host's bypass switch from computer_sessions
-stand in for a card outside the bypass floor.
+stand in for a card outside the bypass floor, including remote MCP connector calls from that host's socket.
 Owner settings surfaces confirm destructive controls through a single-use confirmation bound to
 the same signed-in socket, owner, action and target.
 """
@@ -35,6 +35,7 @@ _SURFACE_CONFIRMATIONS_TOTAL = 128
 POINTER_VERBS = frozenset({"click", "double_click", "right_click", "move", "drag", "scroll"})
 POINTER_REFUSAL = "Call list_windows and pass hwnd for the target window."
 CONTROL_VERBS = frozenset({"interrupt_command"})
+REMOTE_MCP_CALL = ("remote-mcp-1", "call_remote_tool")
 CONTINUATION_TEXT = ("The exact approved action completed. Continue the remaining original task using current "
                      "observations; any further effects still require their ordinary authorization and review.")
 REMOTE_REVIEWED_VERBS = frozenset({"run_command", "write_file", "delete_path", "project_preview", "browser_evaluate",
@@ -716,12 +717,28 @@ async def granted_dispatch(orch, websocket, owner, chat, agent, tool, args, risk
     return await _dispatch_approved(orch, websocket, call)
 
 
+def _connector_consent(orch, websocket, owner, chat, agent, tool, args, risks) -> tuple[str, None]:
+    from orchestrator.hitl import CROSS_PRINCIPAL, UNTRUSTED_TAINTED
+
+    hosts = getattr(orch, "computer_hosts", None)
+    sessions = getattr(orch, "computer_sessions", None)
+    host = hosts.host_for_socket(websocket) if hosts is not None and websocket is not None else None
+    if (host is None or sessions is None or host.owner_sub != owner or host.websocket is not websocket
+            or not isinstance(args, dict) or not sessions.bypass_on(owner, host.host_id)
+            or not _attended(orch, websocket, owner) or {CROSS_PRINCIPAL, UNTRUSTED_TAINTED} & set(risks)
+            or _tainted_sink(orch, chat, agent, tool, args)):
+        return "review", None
+    return "standing", None
+
+
 def consent_decision(orch, websocket, owner, chat, agent, tool, args, risks) -> tuple[str, str | None]:
     from orchestrator import computer_use_policy as policy
     from orchestrator.computer_hosts import ComputerHostError
     from orchestrator.hitl import CROSS_PRINCIPAL, UNTRUSTED_TAINTED
     from orchestrator.remote_confirmation import computer_card_host, capture_computer_approval
 
+    if (agent, tool) == REMOTE_MCP_CALL:
+        return _connector_consent(orch, websocket, owner, chat, agent, tool, args, risks)
     sessions = getattr(orch, "computer_sessions", None)
     if agent != policy.AGENT_ID or sessions is None or not isinstance(args, dict):
         return "review", None
@@ -784,6 +801,13 @@ async def bypass_dispatch(orch, websocket, owner, chat, agent, tool, args, risks
     if approved_call(orch, owner, chat, agent, tool) or not bypass_covers(
             orch, websocket, owner, chat, agent, tool, args, risks):
         return None
+    if (agent, tool) == REMOTE_MCP_CALL:
+        call = PendingCall(str(uuid.uuid4()), owner, chat, agent, tool, _arguments(args), tuple(sorted(risks)),
+                           time.monotonic() + TTL_SECONDS, _task(orch, websocket, owner, chat), None, None,
+                           websocket, cancellation_witness(orch, websocket, owner, chat, create=True),
+                           approval_source="bypass")
+        return await _standing_dispatch(orch, websocket, call,
+                                        "Bypass no longer covers this connector call. Nothing was sent.")
     host = computer_card_host(orch, owner, chat, args)
     source = standing_source(orch, owner, chat, host, tool)
     from orchestrator.project_authority import current_origin
@@ -805,16 +829,21 @@ async def bypass_dispatch(orch, websocket, owner, chat, agent, tool, args, risks
                        source_review_proposal(orch, owner, chat, agent, tool, args), websocket,
                        cancellation_witness(orch, websocket, owner, chat, create=True), approval_source=source,
                        project_origin=project_origin)
+    return await _standing_dispatch(orch, websocket, call,
+                                    "The computer authority changed before dispatch. Reconnect the Mac and retry.")
+
+
+async def _standing_dispatch(orch, websocket, call: PendingCall, changed: str) -> MCPResponse:
     if not _current_session(orch, websocket, call):
-        return _refused("The computer authority changed before dispatch. Reconnect the Mac and retry.")
+        return _refused(changed)
     try:
-        await _audit(orch, call, source)
+        await _audit(orch, call, call.approval_source)
     except Exception:
         return _refused("Action audit is unavailable. The action was not run.")
     response = await _dispatch_approved(orch, websocket, call)
     data = response.result.get("_data") if isinstance(response.result, dict) else None
     if isinstance(data, dict):
-        response.result = {**response.result, "_data": {**data, "approval_source": source}}
+        response.result = {**response.result, "_data": {**data, "approval_source": call.approval_source}}
     return response
 
 
@@ -1113,10 +1142,11 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
             "completely. Remove private identifiers or credentials, or use a smaller action.",
             code="ACTION_REVIEW_UNAVAILABLE") if not reviewable else None
         if unreviewable is not None and not (
-                agent == "computer-use-1"
+                (agent == "computer-use-1" or (agent, tool) == REMOTE_MCP_CALL)
                 and consent_decision(orch, websocket, owner, chat, agent, tool, args, risks)[0] == "standing"
                 and (await asyncio.to_thread(
                     _review_arguments, shown, trusted_identifiers=trusted_identifiers,
+                    reviewed_identifiers=reviewed_identifiers,
                     project_targets=project_targets, extended_fields=extended_fields, phi=phi, bounded=False,
                     code=tool in {"write_file", "run_command"}))[1]):
             return unreviewable
@@ -1157,7 +1187,7 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
                                                  authority=computer))
             if granted is not None:
                 return granted
-        if agent == "computer-use-1":
+        if agent == "computer-use-1" or (agent, tool) == REMOTE_MCP_CALL:
             bypassed = await bypass_dispatch(orch, websocket, owner, chat, agent, tool, args, risks,
                                              authority=computer)
             if bypassed is not None:
