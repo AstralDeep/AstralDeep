@@ -864,6 +864,8 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
         if on_created is not None:
             on_created(transaction, proposal_id)
     logger.info("remote_op proposal created: %s verb=%s owner=%s", proposal_id, tool_name, user_id)
+    if agent_id == "computer-use-1":
+        _open_computer_approval_marker(orch, proposal_id, user_id, chat_id, tool_name, summary)
     offer = None
     if agent_id == "computer-use-1":
         from orchestrator.hitl_confirmation import grant_request
@@ -915,6 +917,18 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
                 outcome="in_progress", chat_id=chat_id, display_digest=digest,
                 sandbox=_sandbox_meta(tool_name, args))
     return proposal_id, card
+
+
+def _open_computer_approval_marker(orch, proposal_id: str, user_id: str, chat_id: str | None,
+                                   tool_name: str, summary: str) -> None:
+    ledger = getattr(orch, "computer_effect_intents", None)
+    if ledger is None:
+        return
+    try:
+        ledger.approval_opened(proposal_id=proposal_id, owner_id=user_id, chat_id=chat_id,
+                               tool_name=tool_name, summary=summary)
+    except Exception:  # noqa: BLE001
+        logger.debug("approval outcome marker failed (non-fatal)", exc_info=True)
 
 
 def card_component_id(proposal_id: str) -> str:
@@ -1172,6 +1186,13 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
     decision = (payload or {}).get("decision")
     resume_requested = decision == "approve_and_resume"
     grant_requested = decision == "grant_task"
+    _ledger = getattr(orch, "computer_effect_intents", None)
+    if _ledger is not None and isinstance(proposal_id, str) and proposal_id:
+        try:
+            await asyncio.to_thread(_ledger.approval_resolved, proposal_id,
+                                    note=f"the approval card received decision {decision}")
+        except Exception:  # noqa: BLE001
+            logger.debug("approval outcome marker close failed (non-fatal)", exc_info=True)
 
     async def _say(message: str, variant: str = "warning") -> None:
         from orchestrator.approval_receipts import note
