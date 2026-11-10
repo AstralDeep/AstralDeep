@@ -156,6 +156,7 @@ _BROWSER_INPUT = {"browser_navigate", "browser_click", "browser_fill", "browser_
                   "browser_scroll", "browser_dialog"}
 _BROWSER_PARITY = {"browser_find", "browser_hover", "browser_zoom", "browser_console", "browser_network",
                    "browser_evaluate", "browser_resize", "browser_tabs"}
+_BROWSER_LOGIN = {"browser_request_login", "browser_fill_login"}
 
 
 def test_command_and_browser_verbs_join_the_closed_protocol_and_policy_sets():
@@ -167,8 +168,9 @@ def test_command_and_browser_verbs_join_the_closed_protocol_and_policy_sets():
     assert not policy.COMPOSITE_VERBS & COMPUTER_HOST_VERBS
     assert policy.COMPOSITE_VERBS <= policy.ALL_VERBS & policy.SESSION_REQUIRED
     assert policy.COMMAND_VERBS == _COMMAND_VERBS
-    assert policy.BROWSER_VERBS == _BROWSER_OBSERVE | _BROWSER_INPUT | _BROWSER_PARITY
-    assert len(policy.BROWSER_VERBS) == 18
+    assert policy.BROWSER_VERBS == _BROWSER_OBSERVE | _BROWSER_INPUT | _BROWSER_PARITY | _BROWSER_LOGIN
+    assert len(policy.BROWSER_VERBS) == 20
+    assert _BROWSER_LOGIN <= COMPUTER_HOST_VERBS
     assert not policy.COMMAND_VERBS & policy.BROWSER_VERBS
     assert _BROWSER_OBSERVE | {"read_output"} <= policy.OBSERVE_VERBS
     assert _BROWSER_INPUT | {"interrupt_command"} <= policy.INPUT_VERBS
@@ -188,7 +190,9 @@ def test_command_and_browser_verbs_have_tiers_scopes_timeouts_and_sessions():
         assert policy.TIERS[verb] == "observe"
     for verb in _BROWSER_INPUT | {"interrupt_command"}:
         assert policy.TIERS[verb] == "input"
+    assert policy.TIERS["browser_request_login"] == "input"
     assert policy.TIERS["run_command"] == "consequential"
+    assert policy.TIERS["browser_fill_login"] == "consequential"
     for verb in _BROWSER_OBSERVE:
         assert policy.SCOPES[verb] == "tools:read"
     for verb in _BROWSER_INPUT:
@@ -200,11 +204,14 @@ def test_command_and_browser_verbs_have_tiers_scopes_timeouts_and_sessions():
         assert policy.TIMEOUTS[verb] == 5.0
     assert policy.TIMEOUTS["browser_navigate"] == policy.TIMEOUTS["browser_wait"] == 15.0
     assert policy.TIMEOUTS["run_command"] == 630.0
+    assert policy.TIMEOUTS["browser_request_login"] == 630.0
+    assert policy.TIMEOUTS["browser_fill_login"] == 15.0
     assert policy.TIMEOUTS["read_output"] == 30.0
     assert policy.TIMEOUTS["interrupt_command"] == 5.0
     for verb in _BROWSER_INPUT - {"browser_navigate"}:
         assert policy.TIMEOUTS[verb] == 5.0
-    for verb in policy.HOST_VERBS - _COMMAND_VERBS - _BROWSER_OBSERVE - _BROWSER_INPUT:
+    for verb in (policy.HOST_VERBS - _COMMAND_VERBS - _BROWSER_OBSERVE - _BROWSER_INPUT
+                 - _BROWSER_LOGIN):
         assert 0 < policy.TIMEOUTS[verb] <= 30.0
     for verb in _COMMAND_VERBS | _BROWSER_OBSERVE | _BROWSER_INPUT:
         assert verb in policy.SESSION_REQUIRED
@@ -219,6 +226,10 @@ def test_every_command_and_first_navigation_need_review_and_reads_do_not():
     assert rc.classification_for("run_command", "computer-use-1") == "always"
     assert policy.is_destructive("run_command", {"command": "ls"}) is True
     assert policy.is_destructive("browser_navigate", {"url": "https://example.org"}) is True
+    assert policy.DESTRUCTIVE_CLASSIFICATION["browser_fill_login"] == "always"
+    assert "browser_request_login" not in policy.DESTRUCTIVE_CLASSIFICATION
+    assert rc.is_destructive_unattended("browser_fill_login", {}, "computer-use-1") is True
+    assert rc.is_destructive_unattended("browser_request_login", {}, "computer-use-1") is True
     for verb in (_COMMAND_VERBS - {"run_command", "project_preview"}) | _BROWSER_OBSERVE | (_BROWSER_INPUT - {"browser_navigate"}):
         assert verb not in policy.DESTRUCTIVE_CLASSIFICATION
         assert policy.is_destructive(verb, {}) is False

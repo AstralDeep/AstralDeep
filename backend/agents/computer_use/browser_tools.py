@@ -8,11 +8,13 @@ from __future__ import annotations
 
 from collections import OrderedDict
 import contextvars
+import hashlib
 import json
 import math
 import re
 import threading
 import time
+import uuid
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
@@ -60,6 +62,8 @@ _MAX_CONSOLE = 200
 _MAX_NETWORK = 100
 _MAX_SCRIPT_CHARS = 8000
 _MAX_RESULT_CHARS = 50_000
+_MAX_REASON_CHARS = 200
+_LABEL_CHARS = 200
 _MAX_BATCH_IMAGES = 3
 _MAX_BATCH_CHARS = 120_000
 _BATCH_KEPT = ("code", "status", "message", "next_action", "element", "url", "title", "snapshot_id")
@@ -73,6 +77,30 @@ _SECRET_QUERY = re.compile(r"(?i)([?&;][^=&#;]*(?:token|key|auth|pass|secret|ses
 _TOKEN = re.compile(r"^[A-Za-z0-9_:\-]{1,32}$")
 _ELEMENT = re.compile(r"\[(e\d+)\][^\n]*")
 _CONSEQUENTIAL_VERBS = frozenset({"browser_click", "browser_fill"})
+_BATCH_ONLY_REFUSAL = "browser_request_login and browser_fill_login run on their own, never inside browser_batch"
+
+
+def _tool_audit(user_id: Optional[str], chat_id: Optional[str], host, action_type: str, *, verb: str,
+                outcome: str = "success", origin: Optional[str] = None, label_hashes: Optional[List[str]] = None,
+                correlation: Optional[str] = None, detail: str = "") -> None:
+    from orchestrator import remote_confirmation as rc
+
+    rc._audit_sync(user_id, action_type, detail or action_type, verb=verb,
+                   machine_id=getattr(host, "host_id", None), chat_id=chat_id, origin=origin,
+                   label_hashes=label_hashes, proposal_id=correlation, outcome=outcome,
+                   event_class="agent_tool_call")
+
+
+def _label_hashes(labels: List[str]) -> List[str]:
+    return [hashlib.sha256(label.encode("utf-8")).hexdigest() for label in labels]
+
+
+def _handoff_result(host, session, result: Mapping[str, Any]) -> Dict[str, Any]:
+    _note_page(session.session_id, result.get("url"))
+    origin = origin_of(result.get("url"))
+    return {"computer": host.name, "status": "handed_back", "origin": origin,
+            "title": _bounded(result.get("title"), _TITLE_CHARS),
+            "note": "the page changed while the owner signed in; call browser_snapshot before using references"}
 _IMAGE_TYPES = ("image/jpeg", "image/png", "image/webp")
 _UNTRUSTED = "untrusted page content"
 
@@ -80,13 +108,18 @@ _HINTS: Dict[str, str] = {
     "stale_ref": "The page changed or that reference belongs to an older snapshot. Call browser_snapshot, "
                  "then use the new snapshot_id and the references it lists.",
     "secret_field": "This field holds a password, card number or one-time code, which Astral never reads or "
-                    "fills. Ask the user to complete it themselves in the browser pane, then continue.",
+                    "fills. Request the owner's sign-in with browser_request_login instead of typing or filling "
+                    "credentials, then continue.",
     "origin_not_approved": "The browser pane refused a site the user has not approved. Call browser_navigate "
                            "with that URL so the user is asked; do not retry this action.",
     "pending_dialog": "A page dialog is open and blocks the page. Call browser_dialog with action accept or "
                       "dismiss, then continue.",
     "unsupported": "The browser pane is not available on this Mac. Ask the user to turn on the browser pane "
                    "in Computer controls, or use the desktop tools with the user's own browser.",
+    "login_cancelled": "Do not request the login again and do not retry. Ask the owner how to proceed, or call "
+                       "browser_snapshot and continue with the page as it is now.",
+    "login_timeout": "Do not request the login again and do not retry. End the turn and tell the owner the "
+                     "sign-in handoff expired; they can ask you to continue afterwards.",
 }
 _USER_NOTICE = frozenset({"secret_field", "unsupported"})
 
@@ -650,6 +683,110 @@ def browser_dialog(**kwargs) -> Dict[str, Any]:
     return mt._data(_page_data(host, session, result, action=action))
 
 
+def _login_refusal(code: str, host, message: str, **extra: Any) -> Dict[str, Any]:
+    return _refusal(code, message, host, notice=code == "login_cancelled", **extra)
+
+
+def browser_request_login(**kwargs) -> Dict[str, Any]:
+    mt = _mt()
+    if _BATCH.get() is not None:
+        return mt._fail("out_of_range", _BATCH_ONLY_REFUSAL)
+    reason = kwargs.get("reason")
+    if not isinstance(reason, str) or not reason.strip() or len(reason) > _MAX_REASON_CHARS or "\x00" in reason:
+        return mt._fail("out_of_range", f"reason must be 1-{_MAX_REASON_CHARS} characters")
+    user_id, chat_id, host, session, reply = _begin(kwargs)
+    if reply is not None:
+        return reply
+    known = origin_of(page_url(session.session_id))
+    args: Dict[str, Any] = {"reason": " ".join(reason.split())}
+    if known is not None:
+        args["origin"] = known
+    correlation = uuid.uuid4().hex
+    _tool_audit(user_id, chat_id, host, "browser.login_handoff.started", verb="browser_request_login",
+                origin=known, correlation=correlation)
+    result, error = mt._run(host, session, "browser_request_login", args, mt._loop(kwargs))
+    if error is not None:
+        data = error.get("_data", {})
+        code = str(data.get("code") or "")
+        _tool_audit(user_id, chat_id, host, "browser.login_handoff.ended", verb="browser_request_login",
+                    outcome="failure", origin=known, correlation=correlation, detail=code or "failed")
+        if code in ("login_cancelled", "login_timeout"):
+            return _login_refusal(code, host, str(data.get("message") or code))
+        return error
+    ended = origin_of(result.get("url")) if isinstance(result, Mapping) else None
+    if ended is None:
+        _tool_audit(user_id, chat_id, host, "browser.login_handoff.ended", verb="browser_request_login",
+                    outcome="failure", origin=known, correlation=correlation, detail="malformed_reply")
+        return mt._fail("failed", "the Mac sent a login handoff result without the resulting origin")
+    _tool_audit(user_id, chat_id, host, "browser.login_handoff.ended", verb="browser_request_login",
+                origin=ended, correlation=correlation)
+    return mt._data(_handoff_result(host, session, result))
+
+
+def browser_fill_login(**kwargs) -> Dict[str, Any]:
+    mt = _mt()
+    if _BATCH.get() is not None:
+        return mt._fail("out_of_range", _BATCH_ONLY_REFUSAL)
+    from orchestrator.computer_use_policy import fill_login_origin, fill_login_preflight
+
+    origin = fill_login_origin(kwargs.get("origin"))
+    shape_refusal = fill_login_preflight(kwargs)
+    if shape_refusal:
+        _tool_audit(kwargs.get("user_id"), kwargs.get("session_id"), None, "credential_fill.refused",
+                    verb="browser_fill_login", outcome="failure", origin=origin,
+                    correlation=uuid.uuid4().hex, detail="arguments_refused")
+        return mt._fail("out_of_range", shape_refusal)
+    user_id, chat_id, host, session, reply = _begin(kwargs)
+    if reply is not None:
+        return reply
+    correlation = uuid.uuid4().hex
+    snapshot_origin = origin_of(page_url(session.session_id, {"snapshot_id": kwargs["snapshot_id"]}))
+    current = origin_of(page_url(session.session_id))
+    if current is None or current != origin:
+        _tool_audit(user_id, chat_id, host, "credential_fill.refused", verb="browser_fill_login",
+                    outcome="failure", origin=origin, correlation=correlation, detail="origin_mismatch")
+        return _refusal("origin_mismatch", "the browser pane is not on origin; call browser_snapshot and use "
+                                           "the origin it reports", host)
+    if snapshot_origin != origin:
+        _tool_audit(user_id, chat_id, host, "credential_fill.refused", verb="browser_fill_login",
+                    outcome="failure", origin=origin, correlation=correlation, detail="stale_snapshot")
+        return _refusal("stale_ref", "that snapshot_id is not a snapshot of the current page; call "
+                                    "browser_snapshot again and use its snapshot_id and references", host)
+    from orchestrator import hitl_confirmation
+
+    permit = None
+    if hitl_confirmation.approved_call(mt._ORCH, user_id, chat_id, AGENT_ID, "browser_fill_login"):
+        permit = {"origin": origin, "snapshot_id": kwargs["snapshot_id"]}
+    _tool_audit(user_id, chat_id, host, "credential_fill.requested", verb="browser_fill_login",
+                origin=origin, correlation=correlation)
+    args: Dict[str, Any] = {"refs": list(kwargs["refs"]), "snapshot_id": kwargs["snapshot_id"], "origin": origin}
+    if permit is not None:
+        args["permit"] = permit
+    result, error = mt._run(host, session, "browser_fill_login", args, mt._loop(kwargs))
+    if error is not None:
+        data = error.get("_data", {})
+        code = str(data.get("code") or "")
+        if code in ("login_cancelled", "login_timeout"):
+            return _login_refusal(code, host, str(data.get("message") or code))
+        _tool_audit(user_id, chat_id, host, "credential_fill.refused", verb="browser_fill_login",
+                    outcome="failure", origin=origin, correlation=correlation, detail=code or "refused")
+        return error
+    _note_page(session.session_id, result.get("url"))
+    raw = result.get("filled") if isinstance(result.get("filled"), list) else []
+    filled = [{"ref": item["ref"], "label": _bounded(item.get("label"), _LABEL_CHARS)}
+              for item in raw[:_MAX_FIELDS] if _is_filled_item(item)]
+    _tool_audit(user_id, chat_id, host, "credential_fill.approved", verb="browser_fill_login",
+                origin=origin_of(result.get("url")) or origin, correlation=correlation,
+                label_hashes=_label_hashes([item["label"] for item in filled]))
+    return mt._data({"computer": host.name, "status": "filled", "origin": origin,
+                     "filled_fields": filled,
+                     "note": "only field labels are reported; call browser_snapshot before using more references"})
+
+
+def _is_filled_item(item: Any) -> bool:
+    return isinstance(item, Mapping) and isinstance(item.get("ref"), str) and bool(item.get("ref"))
+
+
 def _text_arg(kwargs: Mapping[str, Any], name: str, limit: int, *, required: bool = True) -> Optional[str]:
     value = kwargs.get(name)
     if value is None and not required:
@@ -1042,9 +1179,9 @@ _SPECS: List[Tuple[Any, str, Dict[str, Any], List[str]]] = [
      ["ref", "snapshot_id"]),
     (browser_fill,
      "Type values into fields of the Astral browser pane by reference. Pass the snapshot_id of the latest "
-     "browser_snapshot. Password, card and one-time-code fields are refused with secret_field: ask the user to "
-     "enter those themselves. A field that needs review returns confirmation_required: repeat the call with "
-     "confirm_element set to the line it reports.",
+     "browser_snapshot. Password, card and one-time-code fields are refused with secret_field: request the "
+     "owner's sign-in with browser_request_login instead of typing credentials. A field that needs review "
+     "returns confirmation_required: repeat the call with confirm_element set to the line it reports.",
      {"fields": {"type": "array", "description": "Up to 20 fields.", "items": {
          "type": "object", "properties": {"ref": _REF, "value": {"type": "string"}}, "required": ["ref", "value"]}},
       "snapshot_id": _SNAPSHOT_ID, "confirm_element": _CONFIRM},
@@ -1105,6 +1242,23 @@ _SPECS: List[Tuple[Any, str, Dict[str, Any], List[str]]] = [
      {"action": {"type": "string", "enum": ["list", "create", "close", "select"]},
       "tab_id": {"type": "string", "description": "Tab id from browser_tabs list, for close and select."},
       "url": {"type": "string", "description": "http or https address for create."}}, ["action"]),
+    (browser_request_login,
+     "Hand a sign-in to the owner: the Astral browser pane asks them to sign in to the site it is showing, and "
+     "they finish it themselves. Pass one short reason. The call waits until the owner hands back or cancels, "
+     "then reports only the resulting origin and page title — never any credential. Use this when a page needs a "
+     "sign-in instead of typing or filling passwords; do not call it again after a cancel or timeout.",
+     {"reason": {"type": "string", "description": "One short sentence: why this sign-in is needed."}},
+     ["reason"]),
+    (browser_fill_login,
+     "Fill the sign-in page's login fields in the Astral browser pane from the Mac's own saved passwords, with "
+     "the owner's confirmation on the Mac. Takes only field references from browser_snapshot, their snapshot_id "
+     "and the page's origin — never any value: the credentials never reach me and the result reports only which "
+     "fields were filled. The origin must be the pane's current origin. Prefer browser_request_login when the "
+     "owner should type the credentials themselves.",
+     {"origin": {"type": "string", "description": "The bare origin of the sign-in page, such as https://example.org."},
+      "refs": {"type": "array", "description": "The login field references from the latest browser_snapshot, such as [\"e12\"].",
+               "items": {"type": "string"}},
+      "snapshot_id": _SNAPSHOT_ID}, ["origin", "refs", "snapshot_id"]),
 ]
 
 _TOOLS = {fn.__name__: fn for fn, *_rest in _SPECS}

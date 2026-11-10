@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from shared.protocol import COMPUTER_HOST_VERBS, ComputerHostDescriptor
-from orchestrator.computer_use_policy import OBSERVE_VERBS
+from orchestrator.computer_use_policy import OBSERVE_VERBS, WAIT_ON_OWNER_VERBS
 
 logger = logging.getLogger("ComputerHosts")
 
@@ -354,9 +354,11 @@ class ComputerHostRegistry:
                 payload = await fut
         except TimeoutError:
             await self._lose_effect_intent(intent, "the host did not answer in time")
-            code = "timeout" if verb in OBSERVE_VERBS else "outcome_uncertain"
-            raise ComputerHostError(code, f"{host.name} did not answer {verb} within {timeout:g} s; inspect "
-                                          "current state before retrying") from None
+            code = ("timeout" if verb in OBSERVE_VERBS
+                    else "login_timeout" if verb in WAIT_ON_OWNER_VERBS else "outcome_uncertain")
+            detail = (f"the owner did not hand the login back within {timeout:g} s" if code == "login_timeout"
+                      else f"did not answer {verb} within {timeout:g} s; inspect current state before retrying")
+            raise ComputerHostError(code, f"{host.name} {detail}") from None
         except ComputerHostError:
             await self._lose_effect_intent(intent, "the host connection changed after delivery")
             raise

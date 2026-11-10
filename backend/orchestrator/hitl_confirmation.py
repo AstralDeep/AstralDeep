@@ -789,6 +789,8 @@ def consent_decision(orch, websocket, owner, chat, agent, tool, args, risks) -> 
     if policy.bypass_floor(tool, args, entry["bundle_id"] if entry else None,
                            getattr(session, "approved_domains", None)):
         return "refuse", "This action requires an allowed app or a current window target. List windows and choose an allowed target."
+    if tool in policy.LOCAL_CONFIRM_VERBS:
+        return "review", None
     return "standing", None
 
 

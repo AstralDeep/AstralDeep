@@ -2719,6 +2719,7 @@ COMPUTER_HOST_VERBS: frozenset = frozenset({
     "list_apps", "ax_tree", "ax_find", "ax_action", "menu", "zoom",
     "browser_find", "browser_hover", "browser_zoom", "browser_console", "browser_network",
     "browser_evaluate", "browser_resize", "browser_tabs",
+    "browser_request_login", "browser_fill_login",
 })
 COMPUTER_HOST_PLATFORMS: frozenset = frozenset({"windows", "macos", "linux"})
 COMPUTER_HOST_CAPABILITIES: frozenset = frozenset({"command_sandbox"})

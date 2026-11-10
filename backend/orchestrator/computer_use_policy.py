@@ -24,6 +24,7 @@ BROWSER_VERBS: FrozenSet[str] = frozenset({
     "browser_navigate", "browser_click", "browser_fill", "browser_press", "browser_scroll",
     "browser_dialog", "browser_find", "browser_hover", "browser_zoom", "browser_console",
     "browser_network", "browser_evaluate", "browser_resize", "browser_tabs",
+    "browser_request_login", "browser_fill_login",
 })
 ACCESSIBILITY_VERBS: FrozenSet[str] = frozenset({"list_apps", "ax_tree", "ax_find", "ax_action", "menu", "zoom"})
 
@@ -40,9 +41,11 @@ INPUT_VERBS: FrozenSet[str] = frozenset({
     "browser_navigate", "browser_click", "browser_fill", "browser_press", "browser_scroll",
     "browser_dialog", "interrupt_command",
     "ax_action", "menu", "browser_hover", "browser_resize", "browser_tabs", "browser_batch",
+    "browser_request_login",
 })
 CONSEQUENTIAL_VERBS: FrozenSet[str] = frozenset({
     "write_file", "delete_path", "run_command", "project_preview", "browser_evaluate",
+    "browser_fill_login",
 })
 SESSION_VERBS: FrozenSet[str] = frozenset({
     "list_computers", "start_session", "end_session", "resume_session", "confirm_action",
@@ -70,6 +73,7 @@ SCOPES: Dict[str, str] = {
     "write_file": "tools:files",
     "delete_path": "tools:files",
     "browser_evaluate": "tools:write",
+    "browser_fill_login": "tools:write",
     "list_computers": "tools:read",
     "start_session": "tools:write",
     "end_session": "tools:write",
@@ -87,6 +91,7 @@ DESTRUCTIVE_CLASSIFICATION: Dict[str, Any] = {
     "browser_navigate": "always",
     "browser_evaluate": "always",
     "browser_tabs": "always",
+    "browser_fill_login": "always",
 }
 
 SHELL_APPS: FrozenSet[str] = frozenset({
@@ -278,6 +283,7 @@ TIMEOUTS: Dict[str, float] = {
     "list_apps": 5.0, "ax_tree": 8.0, "ax_find": 8.0, "ax_action": 10.0, "menu": 10.0, "zoom": 15.0,
     "browser_find": 5.0, "browser_hover": 5.0, "browser_zoom": 5.0, "browser_console": 5.0,
     "browser_network": 5.0, "browser_evaluate": 15.0, "browser_resize": 5.0, "browser_tabs": 15.0,
+    "browser_request_login": 630.0, "browser_fill_login": 15.0,
     "browser_batch": 120.0,
     "list_computers": 5.0, "start_session": 10.0, "end_session": 5.0,
     "resume_session": 5.0, "confirm_action": 5.0,
@@ -349,6 +355,46 @@ def _origin_label(url: Any) -> str:
         return ""
     parts = urlsplit(canonical)
     return f"{parts.scheme}://{parts.netloc}"
+
+
+WAIT_ON_OWNER_VERBS: FrozenSet[str] = frozenset({"browser_request_login"})
+LOCAL_CONFIRM_VERBS: FrozenSet[str] = frozenset({"browser_fill_login"})
+FILL_LOGIN_ORIGIN_CHARS = MAX_BROWSER_URL_CHARS
+MAX_FILL_LOGIN_FIELDS = 20
+FILL_LOGIN_ALLOWED_ARGS = frozenset({"computer", "origin", "refs", "snapshot_id", "user_id", "session_id"})
+
+
+def fill_login_origin(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or not value or len(value) > FILL_LOGIN_ORIGIN_CHARS:
+        return None
+    canonical = canonical_browser_url(value)
+    if canonical is None:
+        return None
+    parts = urlsplit(canonical)
+    if parts.path not in ("", "/") or parts.query or parts.fragment:
+        return None
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def fill_login_preflight(args: Any) -> str:
+    if not isinstance(args, Mapping):
+        return "browser_fill_login takes only origin, refs and snapshot_id and never a value"
+    extra = sorted(str(key) for key in args
+                   if not str(key).startswith("_") and str(key) not in FILL_LOGIN_ALLOWED_ARGS)
+    if extra:
+        return ("browser_fill_login takes only origin, refs and snapshot_id; refused arguments: "
+                + ", ".join(extra[:8]))
+    if fill_login_origin(args.get("origin")) is None:
+        return ("origin must be the bare http or https origin of the page in the browser pane, "
+                "such as https://example.org")
+    refs = args.get("refs")
+    if (not isinstance(refs, list) or not 1 <= len(refs) <= MAX_FILL_LOGIN_FIELDS
+            or any(not isinstance(ref, str) or not re.fullmatch(r"e[0-9]{1,9}", ref) for ref in refs)
+            or len(set(refs)) != len(refs)):
+        return f"refs must be 1-{MAX_FILL_LOGIN_FIELDS} unique field references from browser_snapshot, such as e12"
+    if not isinstance(args.get("snapshot_id"), str) or not re.fullmatch(r"s[0-9]{1,9}", args["snapshot_id"]):
+        return "snapshot_id must be the snapshot_id of the browser_snapshot the references came from"
+    return ""
 
 
 def _one_line(value: Any, limit: int) -> str:
@@ -1002,6 +1048,15 @@ def _summary_text(tool_name: str, args: Mapping[str, Any], h: str) -> str:
             return (f"Open a new tab at {_origin_label(canonical)}{path} in the "
                     f"Astral browser pane on {h}. Approving this site lets the pane load its pages.")
         return f"{action.capitalize()} tabs in the Astral browser pane on {h}"
+    if tool_name == "browser_request_login":
+        reason = _one_line(display_text(args.get("reason")), 200) if isinstance(args.get("reason"), str) else ""
+        return (f"Ask you to sign in to the site now open in the Astral browser pane on {h}. You finish the sign-in "
+                "yourself; I only see the resulting origin and title."
+                + (f" Reason: {reason}" if reason else ""))
+    if tool_name == "browser_fill_login":
+        count = len(args.get("refs")) if isinstance(args.get("refs"), list) else 0
+        return (f"Fill {count} login field(s) at {args.get('origin')} in the Astral browser pane on {h} from this "
+                "Mac's own saved passwords, after your confirmation on the Mac. I never see or supply the values.")
     if tool_name == "write_file":
         mode = "overwrite" if args.get("if_exists") == "overwrite" else "create"
         return f"Write file on {h} ({mode}): {display_text(args.get('path') or '')[:200]}"
