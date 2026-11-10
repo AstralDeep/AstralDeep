@@ -744,6 +744,12 @@ def consent_decision(orch, websocket, owner, chat, agent, tool, args, risks) -> 
             if not origin.roots and tool in FILE_VERBS:
                 return "refuse", "Choose folders for this project on this Mac before using file or command tools."
             project_standing = bool(origin.roots)
+    if not project_standing and sessions.bypass_on(owner, host.host_id):
+        from orchestrator.computer_managed_policy import refusal_message
+
+        ceilings, sources = sessions.effective_ceilings(host, ui_sessions=getattr(orch, "ui_sessions", None))
+        if not ceilings.bypass:
+            return "refuse", refusal_message("bypass", host.name, sources.get("bypass", ""))
     if not project_standing and not sessions.bypass_on(owner, host.host_id):
         approval = _APPROVAL.get()
         if (isinstance(approval, Approval) and approval.orchestrator is orch

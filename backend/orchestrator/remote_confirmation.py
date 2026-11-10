@@ -567,7 +567,7 @@ def _audit_event(user_id: Optional[str], action_type: str, description: str, *,
                  proposal_id: Optional[str] = None, machine_id: Optional[str] = None,
                  verb: Optional[str] = None, outcome: str = "success",
                  chat_id: Optional[str] = None, display_digest: Optional[str] = None,
-                 display_echo: Optional[str] = None):
+                 display_echo: Optional[str] = None, reason: Optional[str] = None):
     from datetime import datetime, timezone
 
     from audit.schemas import AuditEventCreate
@@ -582,6 +582,8 @@ def _audit_event(user_id: Optional[str], action_type: str, description: str, *,
         meta["display_digest"] = str(display_digest)
     if display_echo:
         meta["display_echo"] = str(display_echo)
+    if reason:
+        meta["reason"] = str(reason)
     return AuditEventCreate(
         actor_user_id=user_id or "unknown",
         auth_principal=user_id or "unknown",
@@ -953,6 +955,39 @@ async def _replace_card(orch, row, title: str, body: str, variant: str = "defaul
         logger.debug("remote_op card replacement failed", exc_info=True)
 
 
+def managed_policy_refusal(orch, owner: str, chat: Optional[str], tool_name: str,
+                           args: Dict[str, Any]) -> Optional[str]:
+    from orchestrator.computer_use_policy import (
+        BYPASS_VERBS,
+        BROWSER_COMPOSITE_VERBS,
+        BROWSER_VERBS,
+        HOST_VERBS,
+    )
+
+    sessions = getattr(orch, "computer_sessions", None)
+    if sessions is None or not isinstance(args, dict):
+        return None
+    try:
+        host = computer_card_host(orch, owner, chat, args)
+    except ComputerHostError:
+        return None
+    if tool_name in BROWSER_VERBS or tool_name in BROWSER_COMPOSITE_VERBS:
+        switch = "browser_pane"
+    elif tool_name in HOST_VERBS:
+        switch = "computer_use"
+    elif (tool_name in BYPASS_VERBS and tool_name not in {"list_computers", "end_session"}
+          and sessions.bypass_on(owner, host.host_id)):
+        switch = "bypass"
+    else:
+        return None
+    ceilings, sources = sessions.effective_ceilings(host, ui_sessions=getattr(orch, "ui_sessions", None))
+    if getattr(ceilings, switch):
+        return None
+    from orchestrator.computer_managed_policy import refusal_message
+
+    return refusal_message(switch, host.name, sources.get(switch, ""))
+
+
 def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
              args: Dict[str, Any], chat_id: Optional[str], user_id: Optional[str]):
     from astralprims import Alert
@@ -1000,7 +1035,14 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
                 args["params"] = dict(public["params"], request_id=reconciliation["request_id"])
     if agent_id == "computer-use-1":
         from orchestrator.hitl_confirmation import bypass_refusal
+        from orchestrator.computer_managed_policy import MANAGED_POLICY_REFUSAL_REASON
 
+        refusal = managed_policy_refusal(orch, user_id, chat_id, tool_name, args)
+        if refusal is not None:
+            _audit_sync(user_id, "remote_op.refused", f"refused {tool_name} by managed policy ceilings",
+                        verb=tool_name, outcome="failure", chat_id=chat_id,
+                        reason=MANAGED_POLICY_REFUSAL_REASON)
+            return Refusal((refusal, [Alert(message=refusal, variant="error").to_dict()]))
         if tool_name in {"read_file", "list_dir", "write_file", "delete_path"}:
             refusal = _resolve_file_folder(orch, user_id, chat_id, tool_name, args)
             if refusal is not None:

@@ -24,6 +24,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from orchestrator.computer_grants import EVENT_CREATED, EVENT_EXPIRED, EVENT_REVOKED, EVENT_USED, GrantStore
 from orchestrator.computer_hosts import ComputerHost, ComputerHostError, ComputerHostRegistry
+from orchestrator.computer_managed_policy import (
+    PolicyCeilings,
+    evaluate as evaluate_ceilings,
+    refusal_message,
+)
 
 logger = logging.getLogger("ComputerSessions")
 
@@ -242,13 +247,32 @@ class ComputerSessionManager:
         self._push_pending: set = set()
         self.review_generations: dict[tuple[str, str], int] = {}
         self._bypass: Dict[Tuple[str, str], ComputerHost] = {}
+        self._role_ceilings: Dict[str, PolicyCeilings] = {}
         self.grants = GrantStore(events=self._grant_event)
+
+    def effective_ceilings(self, host: ComputerHost, websocket=None,
+                           ui_sessions=None) -> Tuple[PolicyCeilings, Dict[str, str]]:
+        return evaluate_ceilings(self, host, websocket, ui_sessions)
+
+    def require_ceilings(self, host: ComputerHost, switches: Sequence[str], websocket=None,
+                         ui_sessions=None) -> None:
+        ceilings, sources = evaluate_ceilings(self, host, websocket, ui_sessions)
+        for switch in switches:
+            if not getattr(ceilings, switch):
+                raise ComputerHostError("managed_policy",
+                                        refusal_message(switch, host.name, sources.get(switch, "")))
 
     def bypass_on(self, owner_sub: str, host_id: str) -> bool:
         host = self._bypass.get((owner_sub, host_id))
         return host is not None and self._registry.get(owner_sub, host_id) is host
 
     async def set_bypass(self, host: ComputerHost, enabled: bool, reason: str = "owner") -> None:
+        if enabled:
+            ceilings, sources = evaluate_ceilings(self, host)
+            if not ceilings.bypass:
+                self._audit_bypass_refusal(host, sources.get("bypass", ""))
+                raise ComputerHostError("managed_policy",
+                                        refusal_message("bypass", host.name, sources.get("bypass", "")))
         key = (host.owner_sub, host.host_id)
         was = self.bypass_on(*key)
         if enabled:
@@ -298,6 +322,26 @@ class ComputerSessionManager:
         for session in [s for s in self._sessions.values() if (s.owner_sub, s.host_id) == (owner_sub, host_id)]:
             await self._push(session)
 
+    def _audit_bypass_refusal(self, host: ComputerHost, source: str) -> None:
+        try:
+            from datetime import datetime, timezone
+
+            from audit.recorder import get_recorder
+            from audit.schemas import AuditEventCreate
+            recorder = get_recorder()
+            if recorder is None:
+                return
+            recorder.record_blocking(AuditEventCreate(
+                actor_user_id=host.owner_sub, auth_principal=host.owner_sub,
+                event_class="agent_lifecycle", action_type="remote_op.refused",
+                description=f"refused bypass permissions on {host.name} by managed policy"[:1024],
+                correlation_id=host.host_id, outcome="failure",
+                inputs_meta={"reason": "managed_policy", "host_id": host.host_id,
+                             "verb": "bypass_enable", "source": source},
+                started_at=datetime.now(timezone.utc)))
+        except Exception:  # noqa: BLE001
+            logger.debug("102: bypass refusal audit failed for host %s", host.host_id[:8], exc_info=True)
+
     def get(self, session_id: str) -> Optional[ComputerSession]:
         return self._sessions.get(session_id)
 
@@ -346,6 +390,7 @@ class ComputerSessionManager:
     async def start(self, owner_sub: str, host: ComputerHost, websocket, chat_id: Optional[str],
                     *, wait_for_ack: bool = True, caller_guard=None) -> ComputerSession:
         from orchestrator.project_authority import resolve_project_origin, origin_current, ProjectSessionWitness
+        self.require_ceilings(host, ("computer_use",), websocket)
         previous = self.live_for_host(owner_sub, host.host_id)
         witness = ProjectSessionWitness.capture(self._orch, previous) if previous and host.project_mode else None
         origin = await resolve_project_origin(self._orch, owner_sub, chat_id, host)

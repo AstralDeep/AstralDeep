@@ -37,9 +37,11 @@ async def host(orchestrator_factory, monkeypatch, tmp_path):
         monkeypatch.setitem(flags._flags, name, True)
     monkeypatch.setitem(flags._flags, "user_skills", False)
     monkeypatch.setenv("AGENT_KEY_PATH", str(tmp_path / "agent.pem"))
+    agent_api_key = "clinical-host-registration-" + uuid4().hex
+    monkeypatch.setenv("AGENT_API_KEY", agent_api_key)
     orch = await asyncio.to_thread(orchestrator_factory)
     agent = FhirAgent(port=0)
-    await orch.register_agent(None, RegisterAgent(agent_card=agent.card))
+    await orch.register_agent(None, RegisterAgent(agent_card=agent.card, api_key=agent_api_key))
     orch.local_agents[agent.agent_id] = agent
     orch._evidence_context = EvidenceContext(orch)
     return SimpleNamespace(orch=orch, agent=agent)
@@ -1400,6 +1402,12 @@ async def test_current_safe_baseline_uses_public_store_truth_inside_an_active_tu
         prior_ownership = registry.get_agent_ownership("fhir-1")
         registry.upsert_agent_safe("fhir-1", True, marked_by="synthetic-admin")
         if prior_ownership is not None:
+            if prior_ownership["owner_email"] != "synthetic-owner@example.invalid":
+                runtime = orch.runtime_composition.plane.runtime
+                with runtime.transaction() as tx:
+                    runtime.repositories.agents.remove_ownership(
+                        tx, agent_id="fhir-1", owner_email=prior_ownership["owner_email"]
+                    )
             registry.set_agent_ownership(
                 "fhir-1", "synthetic-owner@example.invalid", True
             )
@@ -1482,6 +1490,14 @@ async def test_current_safe_baseline_uses_public_store_truth_inside_an_active_tu
                             tx, agent_id="fhir-1", owner_email=current_ownership["owner_email"]
                         )
             else:
+                current_ownership = registry.get_agent_ownership("fhir-1")
+                if (current_ownership is not None
+                        and current_ownership["owner_email"] != prior_ownership["owner_email"]):
+                    runtime = orch.runtime_composition.plane.runtime
+                    with runtime.transaction() as tx:
+                        runtime.repositories.agents.remove_ownership(
+                            tx, agent_id="fhir-1", owner_email=current_ownership["owner_email"]
+                        )
                 registry.set_agent_ownership(
                     "fhir-1",
                     prior_ownership["owner_email"],
