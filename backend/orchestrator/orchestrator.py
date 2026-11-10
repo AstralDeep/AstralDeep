@@ -2030,6 +2030,10 @@ class Orchestrator:
                                  "connection_generation": str(generation)},
             }))
             return
+        if event == "command.sandbox_violation":
+            await self.computer_sessions.on_sandbox_violation(
+                owner_sub, host.host_id, str(payload.get("session_id") or ""), payload)
+            return
         if event in ("heartbeat", "paused", "resumed", "stopped", "approval_activity"):
             await self.computer_sessions.on_host_event(
                 owner_sub, host.host_id, event,

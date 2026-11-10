@@ -555,7 +555,14 @@ def local_effect(monkeypatch, tmp_path):
             candidate = (
                 __import__("pathlib").Path(path) / f"astral-srt-{state.identity}.txt"
             )
-            candidate.unlink(missing_ok=True)
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError:
+                # Cleanup only: a read-only scratch mount (for example a hardened
+                # /var/tmp) cannot host the probe file, so there is nothing to
+                # remove. The probe effect itself records per-path write attempts
+                # and every assertion above is untouched by this cleanup.
+                pass
 
 
 def test_fixed_actuator_claims_standard_receipt_before_real_golden_scratch_effect(
