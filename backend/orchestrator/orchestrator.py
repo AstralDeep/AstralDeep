@@ -742,6 +742,62 @@ _GOAL_BUFFERED_RESPONSE: contextvars.ContextVar = contextvars.ContextVar(
     "goal_buffered_response", default=False)
 
 
+def _typed_refusal_meta(result: Any) -> Dict[str, Any]:
+    data = result.get("_data") if isinstance(result, dict) else None
+    code = data.get("code") if isinstance(data, dict) else None
+    return {"refusal_code": code} if isinstance(code, str) and code else {}
+
+
+def _audit_computer_policy_digest(host, data: dict) -> None:
+    from orchestrator.computer_managed_policy import policy_digest
+
+    digest = policy_digest(data)
+    if not digest:
+        return
+    try:
+        from datetime import datetime, timezone
+
+        from audit.recorder import get_recorder
+        from audit.schemas import AuditEventCreate
+        rec = get_recorder()
+        if rec is None:
+            return
+        policy = data.get("managed_policy") or {}
+        rec.record_blocking(AuditEventCreate(
+            actor_user_id=host.owner_sub, auth_principal=host.owner_sub,
+            event_class="agent_lifecycle", action_type="computer_host.announced",
+            description=f"computer host {host.name} announced a managed policy"[:1024],
+            correlation_id=host.host_id, outcome="success",
+            inputs_meta={"host_id": host.host_id, "policy_digest": digest,
+                         "computer_use_allowed": bool(policy.get("computer_use_allowed")),
+                         "browser_pane_allowed": bool(policy.get("browser_pane_allowed")),
+                         "bypass_allowed": bool(policy.get("bypass_allowed"))},
+            started_at=datetime.now(timezone.utc)))
+    except Exception:  # noqa: BLE001
+        logger.debug("076: managed-policy digest audit failed", exc_info=True)
+
+
+def _audit_computer_announce_refused(owner_sub: str, payload: dict, detail: str) -> None:
+    try:
+        from datetime import datetime, timezone
+
+        from audit.recorder import get_recorder
+        from audit.schemas import AuditEventCreate
+        rec = get_recorder()
+        if rec is None:
+            return
+        announced = payload.get("host") if isinstance(payload.get("host"), dict) else {}
+        rec.record_blocking(AuditEventCreate(
+            actor_user_id=owner_sub, auth_principal=owner_sub,
+            event_class="agent_lifecycle", action_type="computer_host.announce_refused",
+            description="refused a computer host announce with an invalid descriptor"[:1024],
+            correlation_id=str(announced.get("host_id") or "unknown")[:64], outcome="failure",
+            inputs_meta={"reason": "invalid_descriptor", "detail": detail[:500]},
+            started_at=datetime.now(timezone.utc)))
+    except Exception:  # noqa: BLE001
+        logger.debug("076: announce refusal audit failed", exc_info=True)
+
+
 def _static_asset_version(static_dir: str) -> str:
     cached = _ASSET_VERSION_CACHE.get(static_dir)
     if cached:
@@ -1920,6 +1976,7 @@ class Orchestrator:
         host.project_mode = project_mode
         host.project_manifest = project_manifest
         host.project_manifest_highwater = project_manifest.generation if project_manifest else 0
+        _audit_computer_policy_digest(host, data)
         try:
             await self.computer_effect_intents.reconcile_owner(owner_sub)
         except Exception:  # noqa: BLE001
@@ -1983,6 +2040,7 @@ class Orchestrator:
                 descriptor = ComputerHostDescriptor.from_dict(payload.get("host") or {})
             except ProtocolValidationError as exc:
                 logger.warning("076: refused malformed computer_host announce: %s", exc)
+                _audit_computer_announce_refused(owner_sub, payload, str(exc))
                 return
             await self._register_computer_host(websocket, owner_sub, descriptor)
             return
@@ -20116,7 +20174,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             elif result is None:
                 _audit_ctx.set_outcome("interrupted", "no result returned")
             else:
-                _audit_ctx.set_outputs_meta({"has_ui_components": bool(result.ui_components)})
+                _audit_ctx.set_outputs_meta({"has_ui_components": bool(result.ui_components),
+                                             **_typed_refusal_meta(result.result)})
             if result is not None:
                 try:
                     result.correlation_id = _audit_ctx.correlation_id
@@ -20624,7 +20683,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             elif result is None:
                 _audit_ctx.set_outcome("interrupted", "no result returned")
             else:
-                _audit_ctx.set_outputs_meta({"has_ui_components": bool(result.ui_components)})
+                _audit_ctx.set_outputs_meta({"has_ui_components": bool(result.ui_components),
+                                             **_typed_refusal_meta(result.result)})
             if result is not None:
                 try:
                     result.correlation_id = _audit_ctx.correlation_id
@@ -26214,6 +26274,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(chrome_router)
         from orchestrator.lets_health_api import lets_router
         app.include_router(lets_router)
+        from orchestrator.computer_policy_api import computer_policy_router
+        app.include_router(computer_policy_router)
         from orchestrator.connection_guide import connection_router
         app.include_router(connection_router)
         if flags.is_enabled("remote_mcp"):

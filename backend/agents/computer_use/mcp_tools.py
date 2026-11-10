@@ -110,7 +110,14 @@ _HOST_HINTS = {
                                        "on the computer; do not retry any effect until they have.",
     "effect_intent_failed": "The action was not sent. End your turn and report this failure; do not retry it "
                             "until the owner has checked the computer.",
+    "managed_policy": "The organization's managed policy forbids this capability on this Mac. Do not retry it; "
+                      "tell the user which capability is blocked and why.",
+    "permission_missing": "A macOS permission (Accessibility, Screen Recording or Input Monitoring) is missing "
+                          "on the computer. Ask the person there to grant it in System Settings, then resume "
+                          "computer access on that Mac.",
 }
+_HOST_PERMISSION_CAUSE = re.compile(
+    r"accessibility|screen recording|input monitoring|keyboard input is unavailable", re.IGNORECASE)
 
 
 def register_deps(orchestrator) -> None:
@@ -158,6 +165,10 @@ def _host_error(exc: ComputerHostError) -> Dict[str, Any]:
         extra["effect_state"] = exc.effect_state
     if getattr(exc, "element_line", None):
         extra["element_line"] = exc.element_line
+    if exc.code == "permission_denied" and _HOST_PERMISSION_CAUSE.search(exc.message or ""):
+        return _fail("permission_missing", exc.message,
+                     next_action="Ask the person at the computer to grant the missing macOS permission in System "
+                                 "Settings, then resume computer access on that Mac and retry once.", **extra)
     hint = _HOST_HINTS.get(exc.code, "")
     if exc.code == "ambiguous_computer" and exc.candidates:
         hint = "pass computer=<one of " + ", ".join(exc.candidates[:6]) + ">"

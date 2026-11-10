@@ -2751,6 +2751,7 @@ class ComputerHostDescriptor:
     incarnation_id: Optional[str] = None
     retained_jobs: tuple = ()
     capabilities: tuple = ()
+    managed_policy: Optional[dict] = None
 
     def _validate_excluded(self) -> None:
         patterns = self.excluded
@@ -2877,6 +2878,19 @@ class ComputerHostDescriptor:
             if state == "running" and (exit_code is not None or signal is not None):
                 raise ProtocolValidationError(
                     f"computer_host.retained_jobs[{index}] running jobs cannot have an exit code or signal")
+        if self.managed_policy is not None:
+            policy = self.managed_policy
+            if not isinstance(policy, Mapping) or set(policy) != {
+                    "digest", "computer_use_allowed", "browser_pane_allowed", "bypass_allowed"}:
+                raise ProtocolValidationError(
+                    "computer_host.managed_policy must contain exactly digest, computer_use_allowed, "
+                    "browser_pane_allowed and bypass_allowed")
+            if not isinstance(policy["digest"], str) or _LOWER_SHA256.fullmatch(policy["digest"]) is None:
+                raise ProtocolValidationError(
+                    "computer_host.managed_policy.digest must be a lowercase SHA-256 digest")
+            for switch in ("computer_use_allowed", "browser_pane_allowed", "bypass_allowed"):
+                if not isinstance(policy[switch], bool):
+                    raise ProtocolValidationError(f"computer_host.managed_policy.{switch} must be a boolean")
         if self.project_manifest is not None:
             from shared.project_workspaces import ProjectManifest, ProjectWorkspaceError
             try:
@@ -2910,6 +2924,8 @@ class ComputerHostDescriptor:
             data["retained_jobs"] = [dict(job) for job in self.retained_jobs]
         if self.capabilities:
             data["capabilities"] = list(self.capabilities)
+        if self.managed_policy is not None:
+            data["managed_policy"] = dict(self.managed_policy)
         return data
 
     @classmethod
@@ -2918,7 +2934,7 @@ class ComputerHostDescriptor:
             raise ProtocolValidationError("computer_host must be an object")
         expected = {item.name for item in fields(cls)}
         optional = {"workspace_roots", "project_manifest", "excluded", "incarnation_id", "retained_jobs",
-                    "capabilities"}
+                    "capabilities", "managed_policy"}
         if not expected - optional <= set(data) <= expected:
             raise ProtocolValidationError(
                 "computer_host must contain exactly host_id, name, platform, client_version, "
@@ -2951,6 +2967,7 @@ class ComputerHostDescriptor:
             incarnation_id=data.get("incarnation_id"),
             retained_jobs=tuple(dict(job) if isinstance(job, Mapping) else job for job in retained_jobs),
             capabilities=tuple(capabilities),
+            managed_policy=data.get("managed_policy"),
         )
         descriptor.validate()
         return descriptor
