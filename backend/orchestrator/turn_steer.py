@@ -55,7 +55,7 @@ def negotiated(profile, device, capabilities) -> bool:
 
 
 def acknowledge(profile: dict, enabled: bool) -> dict:
-    # The durable queue is not offered yet, so the client hides its affordances.
+    # There is no durable server queue yet, so a client either holds follow-ups itself or offers no queue.
     if not enabled:
         return profile
     ack = {"version": 1, "queue_capable": False}
