@@ -1086,14 +1086,15 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
                                variant="error").to_dict()]))
 
     if agent_id == "computer-use-1":
-        from orchestrator.hitl_confirmation import bypass_covers, grant_covers
+        from orchestrator.hitl_confirmation import auto_review_covers, bypass_covers, grant_covers
 
         try:
             card_host = computer_card_host(orch, user_id, chat_id, args)
         except ComputerHostError as exc:
             return Refusal((f"{exc.code}: {exc.message}", [Alert(message=exc.message, variant="error").to_dict()]))
         if (grant_covers(orch, websocket, user_id, chat_id, tool_name, args)
-                or bypass_covers(orch, websocket, user_id, chat_id, agent_id, tool_name, args, ())):
+                or bypass_covers(orch, websocket, user_id, chat_id, agent_id, tool_name, args, ())
+                or auto_review_covers(orch, user_id, chat_id, agent_id, tool_name, args)):
             return None
     review_parts = []
     if agent_id == "computer-use-1" and card_host.platform == "macos":

@@ -90,6 +90,7 @@ async def test_framework_chat_runs_after_issuer_logout_without_jwt_or_tools(fram
     with state.op.runtime.transaction() as tx:
         page = state.op.runtime.repositories.assignments.discover_due_operations_for_administration(tx)
     assert any(record.assignment_id == accepted["id"] for record in page)
+    await state.runner._tick_operations()
     await asyncio.to_thread(state.op.sessions.delete, state.op.sid)
     record, actions = await settle(state, accepted["id"])
     assert record["operation"]["authority"]["origin"] == "framework"
@@ -300,6 +301,7 @@ async def test_framework_turn_renews_and_cancellation_recovers_without_redispatc
 
     state.after = hold
     identity = (await submit(state))["id"]
+    await state.runner._tick_operations()
     await asyncio.wait_for(entered.wait(), 20)
     await asyncio.wait_for(renewed.wait(), 20)
     await state.runner.stop()
@@ -335,6 +337,7 @@ async def test_configuration_removal_after_send_quarantines_framework_answer(fra
 
     state.after = clear
     accepted = await submit(state)
+    await state.runner._tick_operations()
     async with asyncio.timeout(20):
         while not state.op.model_calls or state.runner._active:
             await asyncio.sleep(0.05)

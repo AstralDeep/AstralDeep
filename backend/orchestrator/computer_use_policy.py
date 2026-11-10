@@ -929,3 +929,34 @@ def _summary_text(tool_name: str, args: Mapping[str, Any], h: str) -> str:
 
 def is_unattended_allowed(tool_name: str) -> bool:
     return tool_name in UNATTENDED_ALLOWED
+
+AUTO_REVIEW_MODES: FrozenSet[str] = frozenset({"ask", "auto_review", "bypass"})
+REVIEWER_VERBS: FrozenSet[str] = INPUT_VERBS | CONSEQUENTIAL_VERBS
+
+
+def auto_review_ineligible(tool: str, args: Mapping[str, Any], risks: Sequence[str] = (), *,
+                           window_bundle: Optional[str] = None, tainted: bool = False) -> Optional[str]:
+    if "cross_principal" in set(risks or ()):
+        return "cross_principal"
+    if "untrusted_tainted" in set(risks or ()) or tainted:
+        return "untrusted_taint"
+    if tool not in REVIEWER_VERBS:
+        return "verb_class"
+    if "terminal_input" in set(risks or ()) or (
+            tool in KEYBOARD_VERBS and ("terminal_app" in args or is_terminal_bundle(window_bundle))):
+        return "terminal_keyboard"
+    if tool == "run_command" and is_privilege_escalation(args):
+        return "escalated_run"
+    if tool == "run_command" and is_destructive_command(args):
+        return "destructive_command"
+    if tool in WINDOW_INPUT_VERBS and is_secure_input_app(window_bundle):
+        return "secure_input"
+    if bypass_floor(tool, args, window_bundle):
+        return "bypass_floor"
+    return None
+
+
+def auto_review_eligible(tool: str, args: Mapping[str, Any], risks: Sequence[str] = (), *,
+                         window_bundle: Optional[str] = None, tainted: bool = False) -> bool:
+    return auto_review_ineligible(tool, args, risks, window_bundle=window_bundle,
+                                  tainted=tainted) is None
