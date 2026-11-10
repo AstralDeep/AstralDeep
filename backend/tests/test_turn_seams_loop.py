@@ -71,6 +71,14 @@ def _usage():
     return SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2)
 
 
+def _distinct_results(data):
+    async def execute(websocket, tool_call, *args, **kwargs):
+        return SimpleNamespace(result={"_data": {**data, "call": tool_call.id}}, error=None,
+                               ui_components=[], correlation_id=None)
+
+    return AsyncMock(side_effect=execute)
+
+
 async def _last_assistant_text(o, chat_id, user_id):
     data = await asyncio.to_thread(o.history.get_chat, chat_id, user_id=user_id) or {}
     texts = []
