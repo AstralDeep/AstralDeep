@@ -21,13 +21,13 @@ from persistent_agents.service import AssignmentService
 from shared.node_identity import canonical_owner_id
 
 
-def read_claims(roles=("user",)):
-    return {"sub": "owner", "exp": int(time.time()) + 3600,
+def read_claims(roles=("user",), sub="owner"):
+    return {"sub": sub, "exp": int(time.time()) + 3600,
             "realm_access": {"roles": list(roles)}}
 
 
-def override_read_auth(app, monkeypatch, roles=("user",)):
-    claims = read_claims(roles)
+def override_read_auth(app, monkeypatch, roles=("user",), sub="owner"):
+    claims = read_claims(roles, sub)
     async def authenticate(request: Request):
         request.state.delegation_subject_token = "fixture.access.token"
         return claims

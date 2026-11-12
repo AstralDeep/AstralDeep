@@ -181,7 +181,7 @@ async def test_http_reads_never_perform_synchronous_profile_persistence(records,
     app = FastAPI()
     app.state.orchestrator = orch
     app.include_router(work_router, prefix="/api")
-    override_read_auth(app, monkeypatch)
+    override_read_auth(app, monkeypatch, sub=OWNER_ID)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         for suffix in ("", "/" + ids[0], "/" + ids[0] + "/poll"):
             response = await client.get("/api/work/v1/operations" + suffix)
