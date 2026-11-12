@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from jsonschema import Draft202012Validator
+from referencing import Registry
+from referencing.exceptions import Unresolvable
 
 MAX_DETAIL_CHARS = 200
 
@@ -268,8 +270,13 @@ def prepare_arguments(raw: Any, schema: Optional[dict]) -> ArgumentResult:
     if _usable_schema(schema):
         value, coerced = _coerce(value, schema)
         repaired = repaired or coerced
-        errors = sorted(Draft202012Validator(schema).iter_errors(value),
-                        key=lambda e: ([str(p) for p in e.absolute_path], str(e.validator)))
+        try:
+            errors = sorted(Draft202012Validator(schema, registry=Registry()).iter_errors(value),
+                            key=lambda e: ([str(p) for p in e.absolute_path], str(e.validator)))
+        except Unresolvable:
+            return ArgumentResult(None, False, ArgumentError(
+                "schema_reference_unresolvable", "",
+                "The tool schema reference cannot be resolved within the supplied schema.", None))
         if errors:
             return ArgumentResult(None, False, _describe(errors[0], schema))
     return ArgumentResult(value, repaired, None)

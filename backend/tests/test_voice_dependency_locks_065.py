@@ -67,22 +67,22 @@ CURRENT_DEPENDENCY_AUTHORITIES = {
     **FEATURE_075_DEPENDENCY_AUTHORITIES,
     "backend/security_benchmark/requirements-eval.txt": "a169ef53f35c4d4516e256eb160c3033a0d7d05ea7329f86b633eae756059f69",
     "backend/requirements-document-worker.txt": "28383cb135800b5415ca4c9504ea83e1514fa3e6f1d89257ab06fd5e8116508a",
-    "Dockerfile": "21fecbf0fb9a24129ebd9e9c36808f4c41dae1117ea6b5aab55706d24fdf7527",
+    "Dockerfile": "0600c3c90671b363ee65daff6173e30750e29333b131633fa3883e2a51ef543f",
     "Dockerfile.voice": "82ffc56ab274790ea60e280852eb49608e9e8f7dbc3432fc16b4a1f3bcd21b84",
-    "backend/requirements.txt": "06ca6a62f55178ce7ba6e124e95771fd55bc52c97e278a570da3ad4d2babff53",
+    "backend/requirements.txt": "783b9dc29989b89df8ba816c1121dd6396e45d44710d090de59fa771689dedae",
     "backend/requirements-gaiakeep.txt": "87ea5ed066e8aa376f355df70a4efac295d331c7c77601d277a05c8acb37feea",
     "backend/tests/fixtures/runtime_reliability_060/runtime-lock-contract.json": (
         "ff84f895f5b8253dff59c9581cc033452ad576a09e40d00da31b5ba7b0f4875e"
     ),
-    "pyproject.toml": "953759380a5ecbdc1138efcd4c1adcf3b0f71f9d28cb5f2c994d2a430d69a6e2",
+    "pyproject.toml": "bb078e1bf5cd98b468bba9e44771c8dbb1f1aa0c45f86f68feeb4c6914aa1532",
     "scripts/openai_agents_example/requirements.in": (
         "470be1f7956648dbc4f439803e8a2c07baf0cd2472279384cf60c60838e66d82"
     ),
     "scripts/openai_agents_example/requirements.lock.txt": (
         "2cd8135af1e15481dea807ebff817591b00b6bc4a020adaad1f3a63f20daf9c0"
     ),
-    "tooling/backend-ci/requirements.in": "12afc5391a3bac2493ab92d5897db76ea0b81b987259fef8dd81c5ecc8f9c3f3",
-    "tooling/backend-ci/requirements.lock.txt": "a1365367ac4308e59714635b3583aa2f5bb40dc7a9b6591912059cc3a963d5b2",
+    "tooling/backend-ci/requirements.in": "6c5d44dd5d3b6c9c1241d655c6e8c2e9d8b266c0d18d99838be058ef8b7320fe",
+    "tooling/backend-ci/requirements.lock.txt": "7368b4b122049b43e1930b1be178f82f3aeb13e481b1c8e7679c3a2c8b800815",
     "tooling/requirements-gaiakeep-tests.txt": "86c94aaf151b3920dbcdb1b682fbb9401d1b3ddb64adcd508444bc86acd5d21c",
     "tooling/requirements-gaiakeep-sdk-tests.txt": "a346c3a5ad503cf1b04e61655fb6e3ec667027f8d097c92ab960b4d013fb4c78",
     "tooling/ui-ci/requirements.in": "0d95a3ca6a56ad256aefcf74f10323ebeef6f58e6f5ec2ec77c06c023d9ca052",

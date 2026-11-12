@@ -21,11 +21,14 @@ Run the installer once. It is safe to run again.
 ```
 scripts/node/install-personal-node.sh \
   --issuer https://keycloak.example/realms/astral \
-  --client-id astral-app \
-  --database-url postgresql://...
+  --client-id astral-app
 ```
 
 It creates `~/.astral-node/data` and `~/.astral-node/node.env`, both private to you. It generates the node key and the encryption secrets. It keeps any value that already exists and it never prints a secret.
+
+The node stores its data in a SQLite file named `plane.sqlite3` in the node data directory. The file is mode 0600 and needs no database server. Pass `--database-url postgresql://...` to use PostgreSQL instead. A `sqlite:///absolute/path.db` URL picks another SQLite file. The shared multi-user deployment stays on PostgreSQL and refuses a SQLite URL.
+
+The node refuses to start when the SQLite schema revision, migration digest or structure digest differs from the values pinned in `config/astral-composition.json`.
 
 Start the orchestrator with that env file. For the container image use `--env-file` and mount the data directory at the path the file names.
 
@@ -34,7 +37,8 @@ Start the orchestrator with that env file. For the container image use `--env-fi
 | Name | Meaning |
 |---|---|
 | `ASTRAL_NODE_PROFILE` | `personal` selects this profile |
-| `ASTRAL_NODE_DATA_DIR` | Where the node key and owner binding live |
+| `ASTRAL_NODE_DATA_DIR` | Where the node key, owner binding and SQLite database live |
+| `DATABASE_URL` | Optional. `sqlite:///absolute/path.db` or a PostgreSQL URL. Unset means SQLite in the node data directory |
 | `KEYCLOAK_AUTHORITY` | The first accepted issuer |
 | `ASTRAL_ACCEPTED_ISSUERS` | More accepted issuers, comma separated |
 | `KEYCLOAK_CLIENT_ID` and `KEYCLOAK_ALLOWED_AZP` | The client ids whose tokens are accepted. A token with no `azp` is refused |

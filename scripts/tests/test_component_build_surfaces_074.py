@@ -37,8 +37,9 @@ def test_docker_builds_locked_component_wheels_before_backend_copy() -> None:
         local = tomllib.load(stream)["tool"]["astraldeep"]["local-components"]
     for key in local["install-order"]:
         component = local[key]
+        package_path = "/".join(filter(None, (component["path"], component.get("package-root"))))
         for build_input in component["build-inputs"]:
-            assert f"{component['path']}/{build_input}" in dockerfile
+            assert f"{package_path}/{build_input}" in dockerfile
     assert dockerfile.index("install_local_components.py build") < dockerfile.index(
         "COPY backend/requirements.txt"
     )

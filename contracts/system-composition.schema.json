@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/AstralDeep/AstralDeep/contracts/system-composition.schema.json",
   "title": "Astral System Composition Manifest",
-  "description": "Pins the four independent component revisions and their compatibility contracts. The containing AstralDeep commit is joined externally with the canonical manifest digest to avoid a self-reference.",
+  "description": "Pins the five independent component revisions and their compatibility contracts. The containing AstralDeep commit is joined externally with the canonical manifest digest to avoid a self-reference.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -24,6 +24,7 @@
       "additionalProperties": false,
       "required": [
         "astral-projection",
+        "astral-kernel",
         "astral-plane",
         "astral-primitives",
         "lets"
@@ -31,6 +32,9 @@
       "properties": {
         "astral-projection": {
           "$ref": "#/$defs/projectionComponent"
+        },
+        "astral-kernel": {
+          "$ref": "#/$defs/kernelComponent"
         },
         "astral-plane": {
           "$ref": "#/$defs/planeComponent"
@@ -48,12 +52,16 @@
       "additionalProperties": false,
       "required": [
         "astral-projection",
+        "astral-kernel",
         "astral-plane",
         "astral-primitives",
         "lets"
       ],
       "properties": {
         "astral-projection": {
+          "const": "required-embedded"
+        },
+        "astral-kernel": {
           "const": "required-embedded"
         },
         "astral-plane": {
@@ -73,6 +81,7 @@
       "required": [
         "ui_protocol",
         "data_plane",
+        "data_plane_sqlite",
         "primitives",
         "lets"
       ],
@@ -118,6 +127,26 @@
             },
             "blob_layout_version": {
               "const": "astralplane.blob-layout/v1"
+            }
+          }
+        },
+        "data_plane_sqlite": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_revision",
+            "migration_sha256",
+            "structure_sha256"
+          ],
+          "properties": {
+            "schema_revision": {
+              "$ref": "#/$defs/revision"
+            },
+            "migration_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "structure_sha256": {
+              "$ref": "#/$defs/sha256"
             }
           }
         },
@@ -248,6 +277,27 @@
             },
             "contract_version": {
               "const": "astralprojection.contract/v1"
+            }
+          }
+        }
+      ]
+    },
+    "kernelComponent": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/baseComponent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "const": "https://github.com/AstralDeep/AstralKernel.git"
+            },
+            "path": {
+              "const": "components/AstralKernel"
+            },
+            "contract_version": {
+              "const": "0.1.0"
             }
           }
         }

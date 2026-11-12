@@ -10,6 +10,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 import unicodedata
@@ -29,13 +30,16 @@ from astralplane import (  # noqa: E402
     PACKAGE_VERSION,
     READ_COMPATIBLE_FROM,
     SCHEMA_REVISION,
+    SQLITE_MIGRATION_DIGEST,
 )
+from astralplane.database.sqlite_migrations import SQLITE_SCHEMA_STRUCTURE_DIGEST  # noqa: E402
 from astralplane.errors import PlaneError  # noqa: E402
 from orchestrator.plane_composition import (  # noqa: E402
     AstralDeepPlaneContractReconciler,
     InitializedPlaneComposition,
     PlaneCompositionError,
     PlaneContractExpectation,
+    SqliteRegistryExpectation,
     compose_plane_catalog,
     compose_plane_runtime,
     inspect_plane_composition,
@@ -1076,13 +1080,25 @@ def test_load_plane_expectation_reads_only_the_strict_data_plane_block(
                         "read_compatible_from": expectation.read_compatible_from,
                         "migration_sha256": expectation.migration_sha256,
                         "blob_layout_version": expectation.blob_layout_version,
-                    }
+                    },
+                    "data_plane_sqlite": {
+                        "schema_revision": SCHEMA_REVISION,
+                        "migration_sha256": SQLITE_MIGRATION_DIGEST,
+                        "structure_sha256": SQLITE_SCHEMA_STRUCTURE_DIGEST,
+                    },
                 },
             }
         ),
         encoding="utf-8",
     )
-    assert load_plane_expectation(path) == expectation
+    assert load_plane_expectation(path) == replace(
+        expectation,
+        sqlite=SqliteRegistryExpectation(
+            schema_revision=SCHEMA_REVISION,
+            migration_sha256=SQLITE_MIGRATION_DIGEST,
+            structure_sha256=SQLITE_SCHEMA_STRUCTURE_DIGEST,
+        ),
+    )
 
     document = json.loads(path.read_text(encoding="utf-8"))
     document["compatibility"]["data_plane"]["extra"] = "not allowed"

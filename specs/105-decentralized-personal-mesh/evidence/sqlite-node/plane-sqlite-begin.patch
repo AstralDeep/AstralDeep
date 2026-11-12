@@ -1,0 +1,11 @@
+--- a/src/astralplane/database/sqlite.py
++++ b/src/astralplane/database/sqlite.py
+@@ -285,7 +285,7 @@
+             if write:
+                 self.reserve_writer(no_wait=no_wait)
+             return
+-        immediate = write and self.begin_mode == "IMMEDIATE"
++        immediate = self.begin_mode == "IMMEDIATE"
+         timeout = (
+             0
+             if no_wait
