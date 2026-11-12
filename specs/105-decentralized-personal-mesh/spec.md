@@ -241,11 +241,17 @@ is more than a few minutes ahead of its own, so one device with a wrong clock ca
 
 ### 5.4 Storage
 
-- **On devices:** SQLite inside the kernel, holding headers, bodies, derived views and keys.
-- **On a node:** AstralPlane on PostgreSQL holds the same events in new tables and keeps its existing
-  tables as views derived from them. Spec 100's "one durable authority" stays true for each node.
-- **Not Plane on SQLite.** Plane's repositories embed PostgreSQL SQL. Porting the facade is a rewrite
-  ([research.md](research.md) A7).
+- **On devices:** SQLite inside the kernel, holding headers, bodies, derived views and keys. No
+  device needs PostgreSQL.
+- **Plane on SQLite (owner, 2026-11-12).** AstralPlane gains a SQLite backend beside PostgreSQL, so
+  Deep's Python node runs with no database server: inside the Mac app and in a personal AstralVessel
+  install. The research found that Plane's repositories embed PostgreSQL SQL ([research.md](research.md)
+  A7), so this is a port of every repository and a separate migration registry for SQLite, tested
+  against both backends with one contract suite. It starts from a clean schema at the current revision,
+  because no data is migrated (O4).
+- **PostgreSQL stays for institution nodes**, which serve many owners. There, Plane holds the events in
+  new tables and keeps its existing tables as views derived from them.
+- Spec 100's "one durable authority" stays true for each node, whichever backend it uses.
 
 ---
 
@@ -906,7 +912,10 @@ describe sync as "when both are online".
 
 The owner set the layering on 2026-11-12.
 
-- **The base** is everything that decides, stores, authorizes and adapts: the kernel, AstralDeep, AstralPlane, LETS and ROTE. It ships two ways. Every app embeds the kernel, which carries the device-side parts of Deep (the turn engine and gates), LETS (the holder and verifier) and ROTE (adaptation). AstralVessel is the installable backend: it bundles the kernel, Deep, Plane and LETS into one node with a way to talk to it (a command line, A2A, MCP, and pairing for devices).
+- **The base** is everything that decides, stores, authorizes and adapts: the kernel, AstralDeep, AstralPlane, LETS and ROTE.
+- **Two installations** (owner, 2026-11-12):
+  - **AstralVessel** is the base and its command-line tools, with no GUI. It bundles the kernel, Deep, Plane on SQLite and LETS into one node with a way to talk to it (a command line, A2A, MCP, and pairing for devices).
+  - **The AstralDeep app** is everything in AstralVessel plus the UI layer. On the Mac it carries the whole base: the kernel, and Deep's Python node on Plane's SQLite backend as a supervised background process. On the iPhone it carries the kernel only, which holds the device-side parts of Deep (the turn engine and gates), LETS (the holder and verifier) and ROTE (adaptation) with SQLite storage, because iOS cannot run Deep's Python node. The phone reaches Deep's heavier agents on the owner's Mac or another node.
 - **The UI layer** is AstralPrimitives (the vocabulary) and AstralProjection (the GUI clients and their renderers). It uses the base and never reimplements it.
 - The base depends on the UI layer in one place only: ROTE and the validator read the committed Primitives schema as data. No base code imports Projection.
 
@@ -916,11 +925,12 @@ The owner set the layering on 2026-11-12.
 |---|---|---|---|
 | **New: the kernel** (library name is the owner's, `AstralKernel` for now) | Base | Does not exist | A Rust library with Swift, Kotlin and Python bindings: event log and store, sync and transport, roster and keys, tickets, flow labels and gates, the LETS holder and verifier, the turn engine, device-side adaptation of UI. It also carries ROTE's Python package while thin clients still need it. Its own library, pinned by Deep and bundled by AstralVessel. |
 | AstralDeep | Base | The orchestrator every client depends on | The node: a single-owner profile for personal use and a multi-owner profile for institutions. Hosts the heavy first-party agents as MCP servers, the PHI checks that need large models, and a mailbox and relay for its mesh. Its turn loop converges on the kernel's. |
-| AstralPlane | Base | One database of mutable rows | The node's store. New event tables with globally unique ids. Existing tables become views derived from events. Still PostgreSQL only. |
+| AstralPlane | Base | One database of mutable rows on PostgreSQL | The node's store, on SQLite for personal installs and the Mac app, and on PostgreSQL for institution nodes. New event tables with globally unique ids. |
 | LETS | Base | A server-side budget runtime with fixed membership | Adds frozen formats and vectors, period budgets derived from a signed policy and the roster, and a device profile. The Python implementation is the reference. The kernel carries the second. |
-| AstralVessel | Base, shipped | A separate Python agent server with its own loop, sandbox and egress | The base's distribution. `astralvessel up` installs a node that runs Deep's turn loop and gates. Vessel's own loop is retired. Its sandbox and egress containers become the executor, which verifies tickets before it runs a tool. Its conformance suite becomes the base's acceptance test. |
+| AstralVessel | Base, shipped | A separate Python agent server with its own loop, sandbox and egress | The base's headless installation with its command-line tools. `astralvessel up` installs a node that runs Deep's turn loop and gates on Plane's SQLite backend. Vessel's own loop is retired. Its sandbox and egress containers become the executor, which verifies tickets before it runs a tool. Its conformance suite becomes the base's acceptance test. |
 | AstralPrimitives | UI | A Python package whose schema is generated at run time | The vocabulary's single source: a committed, versioned schema with a strict profile for generation, bindings for values and action capabilities, and the spoken and compact forms. |
 | AstralProjection | UI | Thin clients that render server frames, plus ROTE | Peers' user interfaces. Each client embeds the kernel, renders from the local log, and owns pairing, voice, local tools and notifications. ROTE moves out to the base. Projection keeps only renderers and clients. |
+| The AstralDeep app (built from Projection) | Both | A thin client of one server | The full product: the base plus the UI layer. The Mac app also runs Deep's Python node locally on SQLite. The iPhone app runs the kernel. |
 
 ---
 

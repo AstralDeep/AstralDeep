@@ -14,6 +14,7 @@ fixes the choices every lane shares, so lanes can work in parallel.
 | Live tests | The owner signs in to Keycloak when asked. Live chat turns use the model endpoint and key already in AstralDeep's `.env`, loaded by a local script. The key is never typed into a form, printed, or committed. |
 
 | Layering | The base is the kernel, Deep, Plane, LETS and ROTE, shipped as AstralVessel. The UI layer is Projection and Primitives (spec section 16). The kernel stays its own library and Vessel bundles it. Vessel runs Deep's loop and keeps its sandbox and egress as the executor. ROTE moves out of Projection now. |
+| Packaging and storage | Two installations: AstralVessel (the base and command-line tools) and the AstralDeep app (everything in Vessel plus the UI). No PostgreSQL on devices or personal installs: Plane gains a SQLite backend so Deep's Python node runs inside the Mac app and in Vessel. The iPhone runs the kernel only. PostgreSQL stays for institution nodes. |
 | Voice | The apps stop using the server's hosted voice. LFM3-Audio-2B at 3 bits runs on the device with MLX, downloaded from the Hugging Face repo `AstralDeep/LFM3-Audio-2B-3bit-MLX` (the owner uploads it) when someone first taps the mic. No voice until it is installed, and no fallback to system speech. The Metal Toolchain is installed for building MLX. Users never need it because the app ships compiled shaders. |
 
 The other questions in spec section 21 take the values the spec proposes until the owner says
@@ -166,6 +167,8 @@ model, then voice.
 |---|---|---|---|
 | RM. ROTE move | AstralKernel `python/rote/`, Projection, Deep | ROTE's Python package and its imports | ROTE leaves Projection for the kernel repository as a Python package with the same module name, and Deep and Projection depend on it. |
 | A3. LFM3 voice | Projection, branch `feat/105-apple-lfm3` | `apple-clients/AstralVoiceModel/`, `OnDevice/` | LFM3-Audio on MLX in Swift with parity tests, the model store and download prompt, the mic flow, and the server voice path retired from the Apple app. |
+| PLS. Plane on SQLite | AstralPlane | a SQLite backend | After lane PL lands: a dialect seam, every repository ported, a SQLite migration registry starting at the current revision, one contract suite run against both backends. |
+| MP. Mac node pack | Projection, Deep | the Mac app's embedded Python node | After PLS: Deep's node with a bundled Python runtime and Plane on SQLite, run by the Mac app as a supervised background process, trimmed of server-only parts. |
 | V. Vessel | AstralVessel | the distribution | Wave 3: `astralvessel up` installs the base as a node, runs Deep's loop, keeps its sandbox and egress as the ticket-checking executor, and runs its conformance suite against the node. |
 
 ### Wave 3
