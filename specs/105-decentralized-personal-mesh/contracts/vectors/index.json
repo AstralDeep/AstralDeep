@@ -40,6 +40,11 @@
       "sha256": "d58b11f8d19aafa52c06d84165e072a1b895263779e1613d4d59d3255d7c7eb4",
       "spec": "contracts/labels.md"
     },
+    "learning.json": {
+      "cases": 126,
+      "sha256": "5c8a56d74cc28d667ce32027ddd01a40beec0e4ee566d837ae9031ba6762a0e9",
+      "spec": "contracts/learning.md"
+    },
     "mailbox.json": {
       "cases": 72,
       "sha256": "333b89a224a2f08bc87152a1abca611033f4a5bb6a4d713dde67e4ab2f88f5a7",
@@ -59,6 +64,11 @@
       "cases": 58,
       "sha256": "85644279c3a3bc6579d68c892dd74055465718fe9a6b86d48e1bbe199abf4ccc",
       "spec": "contracts/roster.md"
+    },
+    "runs.json": {
+      "cases": 87,
+      "sha256": "a261d182654c08d6bb529c7b0ed4e3c91f191ecafaf3b313327f4061388526ba",
+      "spec": "contracts/runs.md"
     },
     "surface.json": {
       "cases": 55,

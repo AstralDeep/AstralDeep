@@ -166,15 +166,15 @@ The family decides the merge rule. The body of every type is a canonical JSON ob
 | `auth.policy` | authority | `mesh` | `policy`, `consent` (see `policy.md`) |
 | `auth.consent` | authority | `mesh` or chat id | `grant`, `consent` |
 | `auth.receipt` | authority | `mesh` or chat id | `receipt` (a LETS receipt) |
-| `run.lease`, `run.goal`, `run.schedule` | run | `mesh` or chat id | reserved for the runs contract |
-| `learn.proposal`, `learn.adoption`, `learn.reversal` | learning | `mesh` | reserved for the learning contract |
+| `run.lease`, `run.goal`, `run.schedule` | run | `mesh` or chat id | see `runs.md`. The lease fold reads `run`, `executor`, `supersedes`, `takeover` |
+| `learn.proposal`, `learn.adoption`, `learn.reversal` | learning | `mesh` | see `learning.md`. The ledger fold reads `op`, `proposal`, `adoption`, `mode`, `content_hash`, `report_hash` |
 | `mem.remember`, `settings.set` | memory | `mesh` | `key`, `value` |
 | `mem.supersede` | memory | `mesh` | `key`, `value`, `supersedes` |
 | `key.content` | key | `mesh` | `id`, `key`, `scope` (see `keys.md`) |
 
 A `chat.spoken` event records what the person heard in voice mode. It is visible to the owner like an assistant message and carries labels from the chat it was spoken in. A reader that builds model context for a later turn uses the spoken text of a turn in place of that turn's final model text, because the person heard only the spoken text. The complete model output stays in its `chat.model_response` events for audit and is never rewritten.
 
-The mesh family of spec section 5.3 (add or remove a device, a new key epoch, stop) is carried by roster entries, not by feeds. See `roster.md`. A run or learning event is accepted and chained like any other. This version defines no merge function for those two families. Their rules arrive with their own contracts and need no change to this one.
+The mesh family of spec section 5.3 (add or remove a device, a new key epoch, stop) is carried by roster entries, not by feeds. See `roster.md`. A run or learning event is accepted and chained like any other. The merge rules of those two families are in `runs.md` and `learning.md`.
 
 ## 10. Merge rules
 
