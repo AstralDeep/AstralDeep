@@ -5,6 +5,7 @@ node_mesh.py starts and stops it and reports its address, which devices learn fr
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -94,7 +95,8 @@ def parse_announcement(lines: Sequence[str]) -> Optional[Dict[str, Any]]:
             address = raw
     if not mailbox_id or not address:
         return None
-    return {"id": mailbox_id, "address": address}
+    encoded = base64.urlsafe_b64encode(address.encode()).rstrip(b"=").decode()
+    return {"id": mailbox_id, "address": encoded, "address_json": address}
 
 
 class MailboxProcess:

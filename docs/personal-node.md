@@ -71,3 +71,17 @@ A signed-in session keeps working. The node serves the last good issuer keys for
 ## Emergency stop
 
 Raising the stop counter halts new effects on the node. The counter is stored in the database and only rises. The node mints no delegation for an owner whose stop is engaged.
+
+## Mesh peer and mailbox
+
+A personal node joins its owner's mesh as a peer when the pinned kernel binding is installed. The image build installs the wheel and the `astral-mailbox` binary from the artifacts named in `config/astral-kernel-binding.json`. Pass them with `docker build --build-context kernel-artifacts=<directory>`. Without that context the node runs with no mesh peer.
+
+The node's mesh keys live in `<node data>/mesh` at mode 0600 and are created once. The node signs in software, reports that it is not hardware backed, and never signs an owner consent.
+
+To join, call `POST /api/node/pairing` as the owner. The response carries a `mesh` block with a code, a payload, the node's endpoint address and its mailbox address. Approve the offer on the Mac or iPhone. After that, `GET /api/node/descriptor` reports `mesh.mesh_id`, `mesh.member_id` and the mailbox address.
+
+The node supervises one mailbox for its own mesh and holds at most one mesh. Devices of the mesh set that mailbox address and exchange events through it when they are never online together.
+
+Settings: `ASTRAL_NODE_MESH=0` turns the peer off, `ASTRAL_NODE_MESH_LABEL`, `ASTRAL_NODE_MESH_RELAY` (`default`, `none` or URLs), `ASTRAL_NODE_MAILBOX=0`, `ASTRAL_MAILBOX_BIN`, `ASTRAL_NODE_MAILBOX_BIND`, and `ASTRAL_NODE_MESH_REQUESTS` (`addressed`, `all` or `off`).
+
+A request a device leaves in a mesh chat that starts with `@node` is run on the node's own loop under machine authority with no tool scopes. An owner under PHI protection is neither mirrored nor served. Writing the node's turns into the log needs the kernel export `append_chat_events`.

@@ -44,7 +44,7 @@ def test_binary_resolution(tmp_path):
 @pytest.mark.parametrize(
     "lines,expected",
     [
-        (["mailbox id a", 'address {"x":1}'], {"id": "a", "address": '{"x":1}'}),
+        (["mailbox id a", 'address {"x":1}'], {"id": "a", "address": "eyJ4IjoxfQ", "address_json": '{"x":1}'}),
         (["mailbox id a"], None),
         (["address {}"], None),
         (["mailbox id a", "address not-json"], None),
@@ -66,7 +66,7 @@ async def test_start_reports_the_address_and_stop_ends_the_child(tmp_path):
     process = nm.MailboxProcess(nm.MailboxSettings(binary=binary), data_dir=tmp_path / "d")
     await process.start()
     snapshot = process.snapshot()
-    assert snapshot["running"] and snapshot["id"] == "box-1" and process.address == '{"id":"box-1"}'
+    assert snapshot["running"] and snapshot["id"] == "box-1" and process.address == "eyJpZCI6ImJveC0xIn0"
     assert oct((tmp_path / "d").stat().st_mode & 0o777) == "0o700"
     pid = process._process.pid
     await process.stop()
