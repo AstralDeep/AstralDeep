@@ -1,0 +1,4942 @@
+{
+  "budget_input_note": "expected shares are produced by LETS and checked in its own vectors; this file fixes only the input and its digest",
+  "cases": [
+    {
+      "expect": {
+        "ok": {
+          "id": "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+        }
+      },
+      "input": {
+        "identity_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk"
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "policy": {
+          "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "classes": {
+            "desktop": {
+              "fresh": {
+                "model_tokens": 1000000,
+                "notes_write": 1000,
+                "outside_effect": 100
+              },
+              "solo": {
+                "model_tokens": 200000,
+                "notes_write": 200,
+                "outside_effect": 10
+              }
+            },
+            "node": {
+              "fresh": {
+                "model_tokens": 5000000,
+                "notes_write": 5000,
+                "outside_effect": 200
+              },
+              "solo": {
+                "model_tokens": 500000,
+                "notes_write": 500,
+                "outside_effect": 20
+              }
+            },
+            "pocket": {
+              "fresh": {
+                "model_tokens": 200000,
+                "notes_write": 200,
+                "outside_effect": 20
+              },
+              "solo": {
+                "model_tokens": 50000,
+                "notes_write": 50,
+                "outside_effect": 0
+              }
+            },
+            "satellite": {
+              "fresh": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              },
+              "solo": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              }
+            }
+          },
+          "clock": {
+            "ms": 1794441601000,
+            "n": 0
+          },
+          "devices": {},
+          "follows": [],
+          "freshness_s": 86400,
+          "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+          "period": {
+            "anchor_s": 1794355200,
+            "length_s": 86400,
+            "unit": "day"
+          },
+          "sig": "1V0ysPO5rT9SmaoWiZzfiR-g_zxZQNkY1SQscqW4N4BUYLTC1gcJC56RWl4UukvLy0DAqTHGv55MpNbEIwK4Gg",
+          "v": 1
+        }
+      },
+      "kind": "policy_verify",
+      "name": "policy-verifies"
+    },
+    {
+      "expect": {
+        "error": "policy.bad_signature"
+      },
+      "input": {
+        "identity_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk"
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "policy": {
+          "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "classes": {
+            "desktop": {
+              "fresh": {
+                "model_tokens": 1000000,
+                "notes_write": 1000,
+                "outside_effect": 100
+              },
+              "solo": {
+                "model_tokens": 200000,
+                "notes_write": 200,
+                "outside_effect": 10
+              }
+            },
+            "node": {
+              "fresh": {
+                "model_tokens": 5000000,
+                "notes_write": 5000,
+                "outside_effect": 200
+              },
+              "solo": {
+                "model_tokens": 500000,
+                "notes_write": 500,
+                "outside_effect": 20
+              }
+            },
+            "pocket": {
+              "fresh": {
+                "model_tokens": 200000,
+                "notes_write": 200,
+                "outside_effect": 20
+              },
+              "solo": {
+                "model_tokens": 50000,
+                "notes_write": 50,
+                "outside_effect": 0
+              }
+            },
+            "satellite": {
+              "fresh": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              },
+              "solo": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              }
+            }
+          },
+          "clock": {
+            "ms": 1794441601000,
+            "n": 0
+          },
+          "devices": {},
+          "follows": [],
+          "freshness_s": 1,
+          "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+          "period": {
+            "anchor_s": 1794355200,
+            "length_s": 86400,
+            "unit": "day"
+          },
+          "sig": "1V0ysPO5rT9SmaoWiZzfiR-g_zxZQNkY1SQscqW4N4BUYLTC1gcJC56RWl4UukvLy0DAqTHGv55MpNbEIwK4Gg",
+          "v": 1
+        }
+      },
+      "kind": "policy_verify",
+      "name": "policy-bad-signature"
+    },
+    {
+      "expect": {
+        "error": "policy.wrong_mesh"
+      },
+      "input": {
+        "identity_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk"
+        },
+        "mesh": "sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+        "policy": {
+          "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "classes": {
+            "desktop": {
+              "fresh": {
+                "model_tokens": 1000000,
+                "notes_write": 1000,
+                "outside_effect": 100
+              },
+              "solo": {
+                "model_tokens": 200000,
+                "notes_write": 200,
+                "outside_effect": 10
+              }
+            },
+            "node": {
+              "fresh": {
+                "model_tokens": 5000000,
+                "notes_write": 5000,
+                "outside_effect": 200
+              },
+              "solo": {
+                "model_tokens": 500000,
+                "notes_write": 500,
+                "outside_effect": 20
+              }
+            },
+            "pocket": {
+              "fresh": {
+                "model_tokens": 200000,
+                "notes_write": 200,
+                "outside_effect": 20
+              },
+              "solo": {
+                "model_tokens": 50000,
+                "notes_write": 50,
+                "outside_effect": 0
+              }
+            },
+            "satellite": {
+              "fresh": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              },
+              "solo": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              }
+            }
+          },
+          "clock": {
+            "ms": 1794441601000,
+            "n": 0
+          },
+          "devices": {},
+          "follows": [],
+          "freshness_s": 86400,
+          "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+          "period": {
+            "anchor_s": 1794355200,
+            "length_s": 86400,
+            "unit": "day"
+          },
+          "sig": "1V0ysPO5rT9SmaoWiZzfiR-g_zxZQNkY1SQscqW4N4BUYLTC1gcJC56RWl4UukvLy0DAqTHGv55MpNbEIwK4Gg",
+          "v": 1
+        }
+      },
+      "kind": "policy_verify",
+      "name": "policy-wrong-mesh"
+    },
+    {
+      "expect": {
+        "error": "policy.unknown_author"
+      },
+      "input": {
+        "identity_keys": {},
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "policy": {
+          "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "classes": {
+            "desktop": {
+              "fresh": {
+                "model_tokens": 1000000,
+                "notes_write": 1000,
+                "outside_effect": 100
+              },
+              "solo": {
+                "model_tokens": 200000,
+                "notes_write": 200,
+                "outside_effect": 10
+              }
+            },
+            "node": {
+              "fresh": {
+                "model_tokens": 5000000,
+                "notes_write": 5000,
+                "outside_effect": 200
+              },
+              "solo": {
+                "model_tokens": 500000,
+                "notes_write": 500,
+                "outside_effect": 20
+              }
+            },
+            "pocket": {
+              "fresh": {
+                "model_tokens": 200000,
+                "notes_write": 200,
+                "outside_effect": 20
+              },
+              "solo": {
+                "model_tokens": 50000,
+                "notes_write": 50,
+                "outside_effect": 0
+              }
+            },
+            "satellite": {
+              "fresh": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              },
+              "solo": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              }
+            }
+          },
+          "clock": {
+            "ms": 1794441601000,
+            "n": 0
+          },
+          "devices": {},
+          "follows": [],
+          "freshness_s": 86400,
+          "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+          "period": {
+            "anchor_s": 1794355200,
+            "length_s": 86400,
+            "unit": "day"
+          },
+          "sig": "1V0ysPO5rT9SmaoWiZzfiR-g_zxZQNkY1SQscqW4N4BUYLTC1gcJC56RWl4UukvLy0DAqTHGv55MpNbEIwK4Gg",
+          "v": 1
+        }
+      },
+      "kind": "policy_verify",
+      "name": "policy-unknown-author"
+    },
+    {
+      "expect": {
+        "error": "policy.solo_exceeds_fresh"
+      },
+      "input": {
+        "identity_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk"
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "policy": {
+          "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "classes": {
+            "desktop": {
+              "fresh": {
+                "model_tokens": 1000000,
+                "notes_write": 1000,
+                "outside_effect": 100
+              },
+              "solo": {
+                "model_tokens": 2000000,
+                "notes_write": 0,
+                "outside_effect": 0
+              }
+            },
+            "node": {
+              "fresh": {
+                "model_tokens": 5000000,
+                "notes_write": 5000,
+                "outside_effect": 200
+              },
+              "solo": {
+                "model_tokens": 500000,
+                "notes_write": 500,
+                "outside_effect": 20
+              }
+            },
+            "pocket": {
+              "fresh": {
+                "model_tokens": 200000,
+                "notes_write": 200,
+                "outside_effect": 20
+              },
+              "solo": {
+                "model_tokens": 50000,
+                "notes_write": 50,
+                "outside_effect": 0
+              }
+            },
+            "satellite": {
+              "fresh": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              },
+              "solo": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              }
+            }
+          },
+          "clock": {
+            "ms": 1794441600000,
+            "n": 0
+          },
+          "devices": {},
+          "follows": [],
+          "freshness_s": 86400,
+          "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+          "period": {
+            "anchor_s": 1794355200,
+            "length_s": 86400,
+            "unit": "day"
+          },
+          "sig": "T6HVlaEE39H_9hh2HSG9sZIFRRsc60vxw92aspEql-VPqNhdoHrlLw1Pb-0OxawSKRcB2pKfobF4IemOajBhkQ",
+          "v": 1
+        }
+      },
+      "kind": "policy_verify",
+      "name": "policy-solo-cannot-exceed-fresh"
+    },
+    {
+      "expect": {
+        "error": "policy.malformed"
+      },
+      "input": {
+        "identity_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk"
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "policy": {
+          "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "classes": {
+            "desktop": {
+              "fresh": {
+                "model_tokens": 1000000,
+                "notes_write": 1000,
+                "outside_effect": 100
+              },
+              "solo": {
+                "model_tokens": 200000,
+                "notes_write": 200,
+                "outside_effect": 10
+              }
+            },
+            "pocket": {
+              "fresh": {
+                "model_tokens": 200000,
+                "notes_write": 200,
+                "outside_effect": 20
+              },
+              "solo": {
+                "model_tokens": 50000,
+                "notes_write": 50,
+                "outside_effect": 0
+              }
+            },
+            "satellite": {
+              "fresh": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              },
+              "solo": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              }
+            }
+          },
+          "clock": {
+            "ms": 1794441600000,
+            "n": 0
+          },
+          "devices": {},
+          "follows": [],
+          "freshness_s": 86400,
+          "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+          "period": {
+            "anchor_s": 1794355200,
+            "length_s": 86400,
+            "unit": "day"
+          },
+          "sig": "jvAGgbL63OsoL-0iDr33ATGB5uDrueP-wA45kk9NUz9sdg9M9wiZHQZuAD5zl_qJChoa4WRjmRiqfWi3AAlmqg",
+          "v": 1
+        }
+      },
+      "kind": "policy_verify",
+      "name": "policy-needs-every-device-kind"
+    },
+    {
+      "expect": {
+        "error": "policy.malformed"
+      },
+      "input": {
+        "identity_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk"
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "policy": {
+          "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "classes": {
+            "desktop": {
+              "fresh": {
+                "model_tokens": 1000000,
+                "notes_write": 1000,
+                "outside_effect": 100
+              },
+              "solo": {
+                "model_tokens": 200000,
+                "notes_write": 200,
+                "outside_effect": 10
+              }
+            },
+            "node": {
+              "fresh": {
+                "model_tokens": 5000000,
+                "notes_write": 5000,
+                "outside_effect": 200
+              },
+              "solo": {
+                "model_tokens": 500000,
+                "notes_write": 500,
+                "outside_effect": 20
+              }
+            },
+            "pocket": {
+              "fresh": {
+                "model_tokens": 200000,
+                "notes_write": 200,
+                "outside_effect": 20
+              },
+              "solo": {
+                "model_tokens": 50000,
+                "notes_write": 50,
+                "outside_effect": 0
+              }
+            },
+            "satellite": {
+              "fresh": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              },
+              "solo": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              }
+            }
+          },
+          "clock": {
+            "ms": 1794441600000,
+            "n": 0
+          },
+          "devices": {},
+          "follows": [],
+          "freshness_s": 86400,
+          "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+          "period": {
+            "anchor_s": 1794355200,
+            "length_s": 0,
+            "unit": "day"
+          },
+          "sig": "ICiy1I_YKWyoHPWiLOmaDit7YR7FVFMlz1nBb7wzuIgk-4PhZKI5PHA3zLCPYhRe1wTN26r9FgF4G7RzQcYS8A",
+          "v": 1
+        }
+      },
+      "kind": "policy_verify",
+      "name": "policy-period-length-must-be-positive"
+    },
+    {
+      "expect": {
+        "ok": {
+          "accepted": [
+            "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+          ],
+          "conflict": false,
+          "effective": {
+            "classes": {
+              "desktop": {
+                "fresh": {
+                  "model_tokens": 1000000,
+                  "notes_write": 1000,
+                  "outside_effect": 100
+                },
+                "solo": {
+                  "model_tokens": 200000,
+                  "notes_write": 200,
+                  "outside_effect": 10
+                }
+              },
+              "node": {
+                "fresh": {
+                  "model_tokens": 5000000,
+                  "notes_write": 5000,
+                  "outside_effect": 200
+                },
+                "solo": {
+                  "model_tokens": 500000,
+                  "notes_write": 500,
+                  "outside_effect": 20
+                }
+              },
+              "pocket": {
+                "fresh": {
+                  "model_tokens": 200000,
+                  "notes_write": 200,
+                  "outside_effect": 20
+                },
+                "solo": {
+                  "model_tokens": 50000,
+                  "notes_write": 50,
+                  "outside_effect": 0
+                }
+              },
+              "satellite": {
+                "fresh": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                },
+                "solo": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                }
+              }
+            },
+            "devices": {},
+            "freshness_s": 86400,
+            "period": {
+              "anchor_s": 1794355200,
+              "length_s": 86400,
+              "unit": "day"
+            }
+          },
+          "heads": [
+            "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+          ],
+          "ignored": {},
+          "pending": []
+        }
+      },
+      "input": {
+        "members": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+            "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+            "kind": "desktop",
+            "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+          },
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+          }
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "wrappers": [
+          {
+            "consent": {
+              "clock": {
+                "ms": 1794441600000,
+                "n": 0
+              },
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "digest": "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51",
+              "kind": "policy",
+              "sig": "sEs023scc5_VPzN8bxZn9Znq2ENr6SZjnBVHZfiGp9lmlLjxLBCUtCjYb4gjLe6S6mCbH8AV8nIXr8tKYEb-Rg",
+              "v": 1
+            },
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 20
+                  },
+                  "solo": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "1V0ysPO5rT9SmaoWiZzfiR-g_zxZQNkY1SQscqW4N4BUYLTC1gcJC56RWl4UukvLy0DAqTHGv55MpNbEIwK4Gg",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "policy_effective",
+      "name": "first-policy-with-consent-is-accepted"
+    },
+    {
+      "expect": {
+        "ok": {
+          "accepted": [],
+          "conflict": false,
+          "effective": null,
+          "heads": [],
+          "ignored": {
+            "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51": "policy.widening_needs_consent"
+          },
+          "pending": []
+        }
+      },
+      "input": {
+        "members": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+            "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+            "kind": "desktop",
+            "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+          },
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+          }
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "wrappers": [
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 20
+                  },
+                  "solo": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "1V0ysPO5rT9SmaoWiZzfiR-g_zxZQNkY1SQscqW4N4BUYLTC1gcJC56RWl4UukvLy0DAqTHGv55MpNbEIwK4Gg",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "policy_effective",
+      "name": "first-policy-without-consent-is-ignored"
+    },
+    {
+      "expect": {
+        "ok": {
+          "accepted": [],
+          "conflict": false,
+          "effective": null,
+          "heads": [],
+          "ignored": {
+            "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51": "policy.consent.wrong_action"
+          },
+          "pending": []
+        }
+      },
+      "input": {
+        "members": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+            "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+            "kind": "desktop",
+            "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+          },
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+          }
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "wrappers": [
+          {
+            "consent": {
+              "clock": {
+                "ms": 1794441600000,
+                "n": 0
+              },
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "digest": "sha256:d9298a10d1b0735837dc4bd85dac641b0f3cef27a47e5d53a54f2f3f5b2fcffa",
+              "kind": "policy",
+              "sig": "SpkY_gW0UEOtNaKXf1zWbsjUH323vUYP_sH_JQFpUZ0FzFKn-9Sg_p6dHH39EORgAcigZN6ZC0l_NIB9RvMLkw",
+              "v": 1
+            },
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 20
+                  },
+                  "solo": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "1V0ysPO5rT9SmaoWiZzfiR-g_zxZQNkY1SQscqW4N4BUYLTC1gcJC56RWl4UukvLy0DAqTHGv55MpNbEIwK4Gg",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "policy_effective",
+      "name": "consent-for-another-policy-is-ignored"
+    },
+    {
+      "expect": {
+        "ok": {
+          "accepted": [],
+          "conflict": false,
+          "effective": null,
+          "heads": [],
+          "ignored": {
+            "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51": "policy.consent.unknown_device"
+          },
+          "pending": []
+        }
+      },
+      "input": {
+        "members": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+            "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+            "kind": "desktop",
+            "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+          },
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+          }
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "wrappers": [
+          {
+            "consent": {
+              "clock": {
+                "ms": 1,
+                "n": 0
+              },
+              "device": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed",
+              "digest": "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51",
+              "kind": "policy",
+              "sig": "ZaklvitAE5d7oDPfVrqgxEP4iMdPWL-J4ThOZ5Zp9SAXnqgFQ-Zn_L-lsY5ny2XfWCjQEG8rkvRo7fFieSRVqg",
+              "v": 1
+            },
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 20
+                  },
+                  "solo": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "1V0ysPO5rT9SmaoWiZzfiR-g_zxZQNkY1SQscqW4N4BUYLTC1gcJC56RWl4UukvLy0DAqTHGv55MpNbEIwK4Gg",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "policy_effective",
+      "name": "consent-from-unknown-device-is-ignored"
+    },
+    {
+      "expect": {
+        "ok": {
+          "accepted": [
+            "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507",
+            "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+          ],
+          "conflict": false,
+          "effective": {
+            "classes": {
+              "desktop": {
+                "fresh": {
+                  "model_tokens": 1000000,
+                  "notes_write": 1000,
+                  "outside_effect": 100
+                },
+                "solo": {
+                  "model_tokens": 200000,
+                  "notes_write": 200,
+                  "outside_effect": 10
+                }
+              },
+              "node": {
+                "fresh": {
+                  "model_tokens": 5000000,
+                  "notes_write": 5000,
+                  "outside_effect": 200
+                },
+                "solo": {
+                  "model_tokens": 500000,
+                  "notes_write": 500,
+                  "outside_effect": 20
+                }
+              },
+              "pocket": {
+                "fresh": {
+                  "model_tokens": 100000,
+                  "notes_write": 100,
+                  "outside_effect": 10
+                },
+                "solo": {
+                  "model_tokens": 20000,
+                  "notes_write": 20,
+                  "outside_effect": 0
+                }
+              },
+              "satellite": {
+                "fresh": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                },
+                "solo": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                }
+              }
+            },
+            "devices": {},
+            "freshness_s": 86400,
+            "period": {
+              "anchor_s": 1794355200,
+              "length_s": 86400,
+              "unit": "day"
+            }
+          },
+          "heads": [
+            "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507"
+          ],
+          "ignored": {},
+          "pending": []
+        }
+      },
+      "input": {
+        "members": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+            "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+            "kind": "desktop",
+            "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+          },
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+          }
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "wrappers": [
+          {
+            "consent": {
+              "clock": {
+                "ms": 1794441600000,
+                "n": 0
+              },
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "digest": "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51",
+              "kind": "policy",
+              "sig": "sEs023scc5_VPzN8bxZn9Znq2ENr6SZjnBVHZfiGp9lmlLjxLBCUtCjYb4gjLe6S6mCbH8AV8nIXr8tKYEb-Rg",
+              "v": 1
+            },
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 20
+                  },
+                  "solo": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "1V0ysPO5rT9SmaoWiZzfiR-g_zxZQNkY1SQscqW4N4BUYLTC1gcJC56RWl4UukvLy0DAqTHGv55MpNbEIwK4Gg",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 10
+                  },
+                  "solo": {
+                    "model_tokens": 20000,
+                    "notes_write": 20,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "TDsIoUjXgAoQgKscYLdfN7TeY2BFpBOmEnDtzixYKNd_zWm5B7TxXtKRdmf1ERU9lxthAJZW1WdXUThI7tjJ3Q",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "policy_effective",
+      "name": "narrowing-needs-no-consent"
+    },
+    {
+      "expect": {
+        "ok": {
+          "accepted": [
+            "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507",
+            "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51",
+            "sha256:bb17bb24ab84ddb463bd5e60caf6a39a5d410951f8c23c30b6982b3e6d85dabc",
+            "sha256:e2271ef6462b1cba2f75cc856801bce0a517c868e02e4a0f73bbb36434c7b381"
+          ],
+          "conflict": false,
+          "effective": {
+            "classes": {
+              "desktop": {
+                "fresh": {
+                  "model_tokens": 500000,
+                  "notes_write": 500,
+                  "outside_effect": 50
+                },
+                "solo": {
+                  "model_tokens": 100000,
+                  "notes_write": 100,
+                  "outside_effect": 5
+                }
+              },
+              "node": {
+                "fresh": {
+                  "model_tokens": 5000000,
+                  "notes_write": 5000,
+                  "outside_effect": 200
+                },
+                "solo": {
+                  "model_tokens": 500000,
+                  "notes_write": 500,
+                  "outside_effect": 20
+                }
+              },
+              "pocket": {
+                "fresh": {
+                  "model_tokens": 50000,
+                  "notes_write": 50,
+                  "outside_effect": 5
+                },
+                "solo": {
+                  "model_tokens": 10000,
+                  "notes_write": 10,
+                  "outside_effect": 0
+                }
+              },
+              "satellite": {
+                "fresh": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                },
+                "solo": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                }
+              }
+            },
+            "devices": {},
+            "freshness_s": 86400,
+            "period": {
+              "anchor_s": 1794355200,
+              "length_s": 86400,
+              "unit": "day"
+            }
+          },
+          "heads": [
+            "sha256:bb17bb24ab84ddb463bd5e60caf6a39a5d410951f8c23c30b6982b3e6d85dabc",
+            "sha256:e2271ef6462b1cba2f75cc856801bce0a517c868e02e4a0f73bbb36434c7b381"
+          ],
+          "ignored": {},
+          "pending": []
+        }
+      },
+      "input": {
+        "members": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+            "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+            "kind": "desktop",
+            "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+          },
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+          }
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "wrappers": [
+          {
+            "consent": {
+              "clock": {
+                "ms": 1794441600000,
+                "n": 0
+              },
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "digest": "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51",
+              "kind": "policy",
+              "sig": "sEs023scc5_VPzN8bxZn9Znq2ENr6SZjnBVHZfiGp9lmlLjxLBCUtCjYb4gjLe6S6mCbH8AV8nIXr8tKYEb-Rg",
+              "v": 1
+            },
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 20
+                  },
+                  "solo": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "1V0ysPO5rT9SmaoWiZzfiR-g_zxZQNkY1SQscqW4N4BUYLTC1gcJC56RWl4UukvLy0DAqTHGv55MpNbEIwK4Gg",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 10
+                  },
+                  "solo": {
+                    "model_tokens": 20000,
+                    "notes_write": 20,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "TDsIoUjXgAoQgKscYLdfN7TeY2BFpBOmEnDtzixYKNd_zWm5B7TxXtKRdmf1ERU9lxthAJZW1WdXUThI7tjJ3Q",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 5
+                  },
+                  "solo": {
+                    "model_tokens": 10000,
+                    "notes_write": 10,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441603000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "pD8qDG8X7UYn4rAU1Aj5czUHN3dMgp1OgAZTC6qAVWkmtcWxSKEerX0sNwSnf2qkBfTa7P9SyL80fJrQGO7zlQ",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 50
+                  },
+                  "solo": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 5
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 10
+                  },
+                  "solo": {
+                    "model_tokens": 20000,
+                    "notes_write": 20,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441603500,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "QVp2tj_DLHfQeFbk0jObJeLNICstYFz2RwU-JgyggBkSXCyClNhwrPLgCunfFhL7IgW9BdUXVknKUC20a5Y9bw",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "policy_effective",
+      "name": "concurrent-narrowings-merge-to-the-minimum"
+    },
+    {
+      "expect": {
+        "ok": {
+          "accepted": [
+            "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507",
+            "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51",
+            "sha256:bb17bb24ab84ddb463bd5e60caf6a39a5d410951f8c23c30b6982b3e6d85dabc",
+            "sha256:e2271ef6462b1cba2f75cc856801bce0a517c868e02e4a0f73bbb36434c7b381"
+          ],
+          "conflict": false,
+          "effective": {
+            "classes": {
+              "desktop": {
+                "fresh": {
+                  "model_tokens": 500000,
+                  "notes_write": 500,
+                  "outside_effect": 50
+                },
+                "solo": {
+                  "model_tokens": 100000,
+                  "notes_write": 100,
+                  "outside_effect": 5
+                }
+              },
+              "node": {
+                "fresh": {
+                  "model_tokens": 5000000,
+                  "notes_write": 5000,
+                  "outside_effect": 200
+                },
+                "solo": {
+                  "model_tokens": 500000,
+                  "notes_write": 500,
+                  "outside_effect": 20
+                }
+              },
+              "pocket": {
+                "fresh": {
+                  "model_tokens": 50000,
+                  "notes_write": 50,
+                  "outside_effect": 5
+                },
+                "solo": {
+                  "model_tokens": 10000,
+                  "notes_write": 10,
+                  "outside_effect": 0
+                }
+              },
+              "satellite": {
+                "fresh": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                },
+                "solo": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                }
+              }
+            },
+            "devices": {},
+            "freshness_s": 86400,
+            "period": {
+              "anchor_s": 1794355200,
+              "length_s": 86400,
+              "unit": "day"
+            }
+          },
+          "heads": [
+            "sha256:bb17bb24ab84ddb463bd5e60caf6a39a5d410951f8c23c30b6982b3e6d85dabc",
+            "sha256:e2271ef6462b1cba2f75cc856801bce0a517c868e02e4a0f73bbb36434c7b381"
+          ],
+          "ignored": {
+            "sha256:70fae253ceada2801ce4af423d722a1a4d63d2d777d880a6f285b85f99adfede": "policy.widening_needs_consent"
+          },
+          "pending": []
+        }
+      },
+      "input": {
+        "members": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+            "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+            "kind": "desktop",
+            "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+          },
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+          }
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "wrappers": [
+          {
+            "consent": {
+              "clock": {
+                "ms": 1794441600000,
+                "n": 0
+              },
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "digest": "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51",
+              "kind": "policy",
+              "sig": "sEs023scc5_VPzN8bxZn9Znq2ENr6SZjnBVHZfiGp9lmlLjxLBCUtCjYb4gjLe6S6mCbH8AV8nIXr8tKYEb-Rg",
+              "v": 1
+            },
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 20
+                  },
+                  "solo": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "1V0ysPO5rT9SmaoWiZzfiR-g_zxZQNkY1SQscqW4N4BUYLTC1gcJC56RWl4UukvLy0DAqTHGv55MpNbEIwK4Gg",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 10
+                  },
+                  "solo": {
+                    "model_tokens": 20000,
+                    "notes_write": 20,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "TDsIoUjXgAoQgKscYLdfN7TeY2BFpBOmEnDtzixYKNd_zWm5B7TxXtKRdmf1ERU9lxthAJZW1WdXUThI7tjJ3Q",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 5
+                  },
+                  "solo": {
+                    "model_tokens": 10000,
+                    "notes_write": 10,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441603000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "pD8qDG8X7UYn4rAU1Aj5czUHN3dMgp1OgAZTC6qAVWkmtcWxSKEerX0sNwSnf2qkBfTa7P9SyL80fJrQGO7zlQ",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 50
+                  },
+                  "solo": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 5
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 10
+                  },
+                  "solo": {
+                    "model_tokens": 20000,
+                    "notes_write": 20,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441603500,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "QVp2tj_DLHfQeFbk0jObJeLNICstYFz2RwU-JgyggBkSXCyClNhwrPLgCunfFhL7IgW9BdUXVknKUC20a5Y9bw",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 20
+                  },
+                  "solo": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441604000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:bb17bb24ab84ddb463bd5e60caf6a39a5d410951f8c23c30b6982b3e6d85dabc",
+                "sha256:e2271ef6462b1cba2f75cc856801bce0a517c868e02e4a0f73bbb36434c7b381"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "RZnUbacNc0hynaZxVFxFVMVCbpt6l-CSaPi_rhd_dwQK_W1Cj10VX16o3H0WOX-DPbgxXr5WP3fSjYsFnVOYHw",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "policy_effective",
+      "name": "widening-without-consent-is-ignored"
+    },
+    {
+      "expect": {
+        "ok": {
+          "accepted": [
+            "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507",
+            "sha256:70fae253ceada2801ce4af423d722a1a4d63d2d777d880a6f285b85f99adfede",
+            "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51",
+            "sha256:bb17bb24ab84ddb463bd5e60caf6a39a5d410951f8c23c30b6982b3e6d85dabc",
+            "sha256:e2271ef6462b1cba2f75cc856801bce0a517c868e02e4a0f73bbb36434c7b381"
+          ],
+          "conflict": false,
+          "effective": {
+            "classes": {
+              "desktop": {
+                "fresh": {
+                  "model_tokens": 1000000,
+                  "notes_write": 1000,
+                  "outside_effect": 100
+                },
+                "solo": {
+                  "model_tokens": 200000,
+                  "notes_write": 200,
+                  "outside_effect": 10
+                }
+              },
+              "node": {
+                "fresh": {
+                  "model_tokens": 5000000,
+                  "notes_write": 5000,
+                  "outside_effect": 200
+                },
+                "solo": {
+                  "model_tokens": 500000,
+                  "notes_write": 500,
+                  "outside_effect": 20
+                }
+              },
+              "pocket": {
+                "fresh": {
+                  "model_tokens": 200000,
+                  "notes_write": 200,
+                  "outside_effect": 20
+                },
+                "solo": {
+                  "model_tokens": 50000,
+                  "notes_write": 50,
+                  "outside_effect": 0
+                }
+              },
+              "satellite": {
+                "fresh": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                },
+                "solo": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                }
+              }
+            },
+            "devices": {},
+            "freshness_s": 86400,
+            "period": {
+              "anchor_s": 1794355200,
+              "length_s": 86400,
+              "unit": "day"
+            }
+          },
+          "heads": [
+            "sha256:70fae253ceada2801ce4af423d722a1a4d63d2d777d880a6f285b85f99adfede"
+          ],
+          "ignored": {},
+          "pending": []
+        }
+      },
+      "input": {
+        "members": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+            "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+            "kind": "desktop",
+            "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+          },
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+          }
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "wrappers": [
+          {
+            "consent": {
+              "clock": {
+                "ms": 1794441600000,
+                "n": 0
+              },
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "digest": "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51",
+              "kind": "policy",
+              "sig": "sEs023scc5_VPzN8bxZn9Znq2ENr6SZjnBVHZfiGp9lmlLjxLBCUtCjYb4gjLe6S6mCbH8AV8nIXr8tKYEb-Rg",
+              "v": 1
+            },
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 20
+                  },
+                  "solo": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "1V0ysPO5rT9SmaoWiZzfiR-g_zxZQNkY1SQscqW4N4BUYLTC1gcJC56RWl4UukvLy0DAqTHGv55MpNbEIwK4Gg",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 10
+                  },
+                  "solo": {
+                    "model_tokens": 20000,
+                    "notes_write": 20,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "TDsIoUjXgAoQgKscYLdfN7TeY2BFpBOmEnDtzixYKNd_zWm5B7TxXtKRdmf1ERU9lxthAJZW1WdXUThI7tjJ3Q",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 5
+                  },
+                  "solo": {
+                    "model_tokens": 10000,
+                    "notes_write": 10,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441603000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "pD8qDG8X7UYn4rAU1Aj5czUHN3dMgp1OgAZTC6qAVWkmtcWxSKEerX0sNwSnf2qkBfTa7P9SyL80fJrQGO7zlQ",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 50
+                  },
+                  "solo": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 5
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 10
+                  },
+                  "solo": {
+                    "model_tokens": 20000,
+                    "notes_write": 20,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441603500,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "QVp2tj_DLHfQeFbk0jObJeLNICstYFz2RwU-JgyggBkSXCyClNhwrPLgCunfFhL7IgW9BdUXVknKUC20a5Y9bw",
+              "v": 1
+            }
+          },
+          {
+            "consent": {
+              "clock": {
+                "ms": 1794441600000,
+                "n": 0
+              },
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "digest": "sha256:70fae253ceada2801ce4af423d722a1a4d63d2d777d880a6f285b85f99adfede",
+              "kind": "policy",
+              "sig": "-EfTWhPJrkMqGmwoNg55qlHMWf8iVvl6DOAzoIDbSzVvj4Ri5_7dFNYaXM9l3IohZ26oUfWVJyLg_kwZsb6_0Q",
+              "v": 1
+            },
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 20
+                  },
+                  "solo": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441604000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:bb17bb24ab84ddb463bd5e60caf6a39a5d410951f8c23c30b6982b3e6d85dabc",
+                "sha256:e2271ef6462b1cba2f75cc856801bce0a517c868e02e4a0f73bbb36434c7b381"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "RZnUbacNc0hynaZxVFxFVMVCbpt6l-CSaPi_rhd_dwQK_W1Cj10VX16o3H0WOX-DPbgxXr5WP3fSjYsFnVOYHw",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "policy_effective",
+      "name": "widening-with-consent-takes-effect"
+    },
+    {
+      "expect": {
+        "ok": {
+          "accepted": [
+            "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507",
+            "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51",
+            "sha256:bb17bb24ab84ddb463bd5e60caf6a39a5d410951f8c23c30b6982b3e6d85dabc",
+            "sha256:e2271ef6462b1cba2f75cc856801bce0a517c868e02e4a0f73bbb36434c7b381"
+          ],
+          "conflict": false,
+          "effective": {
+            "classes": {
+              "desktop": {
+                "fresh": {
+                  "model_tokens": 500000,
+                  "notes_write": 500,
+                  "outside_effect": 50
+                },
+                "solo": {
+                  "model_tokens": 100000,
+                  "notes_write": 100,
+                  "outside_effect": 5
+                }
+              },
+              "node": {
+                "fresh": {
+                  "model_tokens": 5000000,
+                  "notes_write": 5000,
+                  "outside_effect": 200
+                },
+                "solo": {
+                  "model_tokens": 500000,
+                  "notes_write": 500,
+                  "outside_effect": 20
+                }
+              },
+              "pocket": {
+                "fresh": {
+                  "model_tokens": 50000,
+                  "notes_write": 50,
+                  "outside_effect": 5
+                },
+                "solo": {
+                  "model_tokens": 10000,
+                  "notes_write": 10,
+                  "outside_effect": 0
+                }
+              },
+              "satellite": {
+                "fresh": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                },
+                "solo": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                }
+              }
+            },
+            "devices": {},
+            "freshness_s": 86400,
+            "period": {
+              "anchor_s": 1794355200,
+              "length_s": 86400,
+              "unit": "day"
+            }
+          },
+          "heads": [
+            "sha256:bb17bb24ab84ddb463bd5e60caf6a39a5d410951f8c23c30b6982b3e6d85dabc",
+            "sha256:e2271ef6462b1cba2f75cc856801bce0a517c868e02e4a0f73bbb36434c7b381"
+          ],
+          "ignored": {
+            "sha256:70fae253ceada2801ce4af423d722a1a4d63d2d777d880a6f285b85f99adfede": "policy.consent.wrong_action"
+          },
+          "pending": []
+        }
+      },
+      "input": {
+        "members": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+            "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+            "kind": "desktop",
+            "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+          },
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+          }
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "wrappers": [
+          {
+            "consent": {
+              "clock": {
+                "ms": 1794441600000,
+                "n": 0
+              },
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "digest": "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51",
+              "kind": "policy",
+              "sig": "sEs023scc5_VPzN8bxZn9Znq2ENr6SZjnBVHZfiGp9lmlLjxLBCUtCjYb4gjLe6S6mCbH8AV8nIXr8tKYEb-Rg",
+              "v": 1
+            },
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 20
+                  },
+                  "solo": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "1V0ysPO5rT9SmaoWiZzfiR-g_zxZQNkY1SQscqW4N4BUYLTC1gcJC56RWl4UukvLy0DAqTHGv55MpNbEIwK4Gg",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 10
+                  },
+                  "solo": {
+                    "model_tokens": 20000,
+                    "notes_write": 20,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "TDsIoUjXgAoQgKscYLdfN7TeY2BFpBOmEnDtzixYKNd_zWm5B7TxXtKRdmf1ERU9lxthAJZW1WdXUThI7tjJ3Q",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 5
+                  },
+                  "solo": {
+                    "model_tokens": 10000,
+                    "notes_write": 10,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441603000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "pD8qDG8X7UYn4rAU1Aj5czUHN3dMgp1OgAZTC6qAVWkmtcWxSKEerX0sNwSnf2qkBfTa7P9SyL80fJrQGO7zlQ",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 50
+                  },
+                  "solo": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 5
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 10
+                  },
+                  "solo": {
+                    "model_tokens": 20000,
+                    "notes_write": 20,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441603500,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "QVp2tj_DLHfQeFbk0jObJeLNICstYFz2RwU-JgyggBkSXCyClNhwrPLgCunfFhL7IgW9BdUXVknKUC20a5Y9bw",
+              "v": 1
+            }
+          },
+          {
+            "consent": {
+              "clock": {
+                "ms": 1794441600000,
+                "n": 0
+              },
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "digest": "sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+              "kind": "policy",
+              "sig": "KShgATMoVaJpnGYwDtTkXfsigY2x_Ca87DRuggy6_qU4lOeqgDKakhGyVSrlMMsrXClAKWIxsgNlTlXox1Pctw",
+              "v": 1
+            },
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 20
+                  },
+                  "solo": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441604000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:bb17bb24ab84ddb463bd5e60caf6a39a5d410951f8c23c30b6982b3e6d85dabc",
+                "sha256:e2271ef6462b1cba2f75cc856801bce0a517c868e02e4a0f73bbb36434c7b381"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "RZnUbacNc0hynaZxVFxFVMVCbpt6l-CSaPi_rhd_dwQK_W1Cj10VX16o3H0WOX-DPbgxXr5WP3fSjYsFnVOYHw",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "policy_effective",
+      "name": "widening-with-someone-elses-signature-ignored"
+    },
+    {
+      "expect": {
+        "ok": {
+          "accepted": [
+            "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507",
+            "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51",
+            "sha256:8c70518325f75bda4cb0e03f999da9e63a7c6962f5493dac2fd9044646a314c2"
+          ],
+          "conflict": false,
+          "effective": {
+            "classes": {
+              "desktop": {
+                "fresh": {
+                  "model_tokens": 1000000,
+                  "notes_write": 1000,
+                  "outside_effect": 100
+                },
+                "solo": {
+                  "model_tokens": 200000,
+                  "notes_write": 200,
+                  "outside_effect": 10
+                }
+              },
+              "node": {
+                "fresh": {
+                  "model_tokens": 5000000,
+                  "notes_write": 5000,
+                  "outside_effect": 200
+                },
+                "solo": {
+                  "model_tokens": 500000,
+                  "notes_write": 500,
+                  "outside_effect": 20
+                }
+              },
+              "pocket": {
+                "fresh": {
+                  "model_tokens": 100000,
+                  "notes_write": 100,
+                  "outside_effect": 10
+                },
+                "solo": {
+                  "model_tokens": 20000,
+                  "notes_write": 20,
+                  "outside_effect": 0
+                }
+              },
+              "satellite": {
+                "fresh": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                },
+                "solo": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                }
+              }
+            },
+            "devices": {
+              "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+                "fresh": {
+                  "model_tokens": 10000,
+                  "notes_write": 10,
+                  "outside_effect": 1
+                },
+                "solo": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                }
+              }
+            },
+            "freshness_s": 86400,
+            "period": {
+              "anchor_s": 1794355200,
+              "length_s": 86400,
+              "unit": "day"
+            }
+          },
+          "heads": [
+            "sha256:8c70518325f75bda4cb0e03f999da9e63a7c6962f5493dac2fd9044646a314c2"
+          ],
+          "ignored": {},
+          "pending": []
+        }
+      },
+      "input": {
+        "members": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+            "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+            "kind": "desktop",
+            "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+          },
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+          }
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "wrappers": [
+          {
+            "consent": {
+              "clock": {
+                "ms": 1794441600000,
+                "n": 0
+              },
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "digest": "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51",
+              "kind": "policy",
+              "sig": "sEs023scc5_VPzN8bxZn9Znq2ENr6SZjnBVHZfiGp9lmlLjxLBCUtCjYb4gjLe6S6mCbH8AV8nIXr8tKYEb-Rg",
+              "v": 1
+            },
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 20
+                  },
+                  "solo": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "1V0ysPO5rT9SmaoWiZzfiR-g_zxZQNkY1SQscqW4N4BUYLTC1gcJC56RWl4UukvLy0DAqTHGv55MpNbEIwK4Gg",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 10
+                  },
+                  "solo": {
+                    "model_tokens": 20000,
+                    "notes_write": 20,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "TDsIoUjXgAoQgKscYLdfN7TeY2BFpBOmEnDtzixYKNd_zWm5B7TxXtKRdmf1ERU9lxthAJZW1WdXUThI7tjJ3Q",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 10
+                  },
+                  "solo": {
+                    "model_tokens": 20000,
+                    "notes_write": 20,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441605000,
+                "n": 0
+              },
+              "devices": {
+                "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+                  "fresh": {
+                    "model_tokens": 10000,
+                    "notes_write": 10,
+                    "outside_effect": 1
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "follows": [
+                "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "H9qcyW2DYKpggqR6mXtpWKNHG5viynbmt4c9s0Iw1VZX2d-6kC-Xi1Ust1Fm1xBukogxiM3GRzh52E308nLvKA",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "policy_effective",
+      "name": "per-device-override-can-narrow"
+    },
+    {
+      "expect": {
+        "ok": {
+          "accepted": [
+            "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507",
+            "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+          ],
+          "conflict": false,
+          "effective": {
+            "classes": {
+              "desktop": {
+                "fresh": {
+                  "model_tokens": 1000000,
+                  "notes_write": 1000,
+                  "outside_effect": 100
+                },
+                "solo": {
+                  "model_tokens": 200000,
+                  "notes_write": 200,
+                  "outside_effect": 10
+                }
+              },
+              "node": {
+                "fresh": {
+                  "model_tokens": 5000000,
+                  "notes_write": 5000,
+                  "outside_effect": 200
+                },
+                "solo": {
+                  "model_tokens": 500000,
+                  "notes_write": 500,
+                  "outside_effect": 20
+                }
+              },
+              "pocket": {
+                "fresh": {
+                  "model_tokens": 100000,
+                  "notes_write": 100,
+                  "outside_effect": 10
+                },
+                "solo": {
+                  "model_tokens": 20000,
+                  "notes_write": 20,
+                  "outside_effect": 0
+                }
+              },
+              "satellite": {
+                "fresh": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                },
+                "solo": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                }
+              }
+            },
+            "devices": {},
+            "freshness_s": 86400,
+            "period": {
+              "anchor_s": 1794355200,
+              "length_s": 86400,
+              "unit": "day"
+            }
+          },
+          "heads": [
+            "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507"
+          ],
+          "ignored": {
+            "sha256:b91b3f1f085bbdb9d539a8ce4ca8048c068b36915be229d8847accf65a58acde": "policy.widening_needs_consent"
+          },
+          "pending": []
+        }
+      },
+      "input": {
+        "members": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+            "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+            "kind": "desktop",
+            "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+          },
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+          }
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "wrappers": [
+          {
+            "consent": {
+              "clock": {
+                "ms": 1794441600000,
+                "n": 0
+              },
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "digest": "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51",
+              "kind": "policy",
+              "sig": "sEs023scc5_VPzN8bxZn9Znq2ENr6SZjnBVHZfiGp9lmlLjxLBCUtCjYb4gjLe6S6mCbH8AV8nIXr8tKYEb-Rg",
+              "v": 1
+            },
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 20
+                  },
+                  "solo": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "1V0ysPO5rT9SmaoWiZzfiR-g_zxZQNkY1SQscqW4N4BUYLTC1gcJC56RWl4UukvLy0DAqTHGv55MpNbEIwK4Gg",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 10
+                  },
+                  "solo": {
+                    "model_tokens": 20000,
+                    "notes_write": 20,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "TDsIoUjXgAoQgKscYLdfN7TeY2BFpBOmEnDtzixYKNd_zWm5B7TxXtKRdmf1ERU9lxthAJZW1WdXUThI7tjJ3Q",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 10
+                  },
+                  "solo": {
+                    "model_tokens": 20000,
+                    "notes_write": 20,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441605000,
+                "n": 0
+              },
+              "devices": {
+                "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+                  "fresh": {
+                    "model_tokens": 100000,
+                    "notes_write": 150,
+                    "outside_effect": 10
+                  },
+                  "solo": {
+                    "model_tokens": 20000,
+                    "notes_write": 20,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "follows": [
+                "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "LOjWxxN3Yaic-aFpeivgvzAnYIauElBpmS_3LIINmqR2bFniAqO3So9ISscpWjh775P2F1FNbZPqPu8M4vSg6g",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "policy_effective",
+      "name": "per-device-override-cannot-widen-without-consent"
+    },
+    {
+      "expect": {
+        "ok": {
+          "accepted": [
+            "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+          ],
+          "conflict": false,
+          "effective": {
+            "classes": {
+              "desktop": {
+                "fresh": {
+                  "model_tokens": 1000000,
+                  "notes_write": 1000,
+                  "outside_effect": 100
+                },
+                "solo": {
+                  "model_tokens": 200000,
+                  "notes_write": 200,
+                  "outside_effect": 10
+                }
+              },
+              "node": {
+                "fresh": {
+                  "model_tokens": 5000000,
+                  "notes_write": 5000,
+                  "outside_effect": 200
+                },
+                "solo": {
+                  "model_tokens": 500000,
+                  "notes_write": 500,
+                  "outside_effect": 20
+                }
+              },
+              "pocket": {
+                "fresh": {
+                  "model_tokens": 200000,
+                  "notes_write": 200,
+                  "outside_effect": 20
+                },
+                "solo": {
+                  "model_tokens": 50000,
+                  "notes_write": 50,
+                  "outside_effect": 0
+                }
+              },
+              "satellite": {
+                "fresh": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                },
+                "solo": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                }
+              }
+            },
+            "devices": {},
+            "freshness_s": 86400,
+            "period": {
+              "anchor_s": 1794355200,
+              "length_s": 86400,
+              "unit": "day"
+            }
+          },
+          "heads": [
+            "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+          ],
+          "ignored": {
+            "sha256:b252ffafd0e99afec6d0c63e13c30ba250b385fa990ef5db5b7c2e81cd1b3f46": "policy.widening_needs_consent"
+          },
+          "pending": []
+        }
+      },
+      "input": {
+        "members": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+            "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+            "kind": "desktop",
+            "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+          },
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+          }
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "wrappers": [
+          {
+            "consent": {
+              "clock": {
+                "ms": 1794441600000,
+                "n": 0
+              },
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "digest": "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51",
+              "kind": "policy",
+              "sig": "sEs023scc5_VPzN8bxZn9Znq2ENr6SZjnBVHZfiGp9lmlLjxLBCUtCjYb4gjLe6S6mCbH8AV8nIXr8tKYEb-Rg",
+              "v": 1
+            },
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 20
+                  },
+                  "solo": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "1V0ysPO5rT9SmaoWiZzfiR-g_zxZQNkY1SQscqW4N4BUYLTC1gcJC56RWl4UukvLy0DAqTHGv55MpNbEIwK4Gg",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 20
+                  },
+                  "solo": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441606000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 172800,
+                "unit": "day"
+              },
+              "sig": "XL1RAupsfclx9wRtJ44ZxWFQyP0NcqL2GDiEpklRb3sINZYRa2EYfAlf-HjAIZYcQyIGvbozTgtWnrKd2Vj57w",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "policy_effective",
+      "name": "changing-the-period-needs-consent"
+    },
+    {
+      "expect": {
+        "ok": {
+          "accepted": [],
+          "conflict": false,
+          "effective": null,
+          "heads": [],
+          "ignored": {
+            "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507": "policy.parent_rejected",
+            "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51": "policy.widening_needs_consent"
+          },
+          "pending": []
+        }
+      },
+      "input": {
+        "members": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+            "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+            "kind": "desktop",
+            "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+          },
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+          }
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "wrappers": [
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 20
+                  },
+                  "solo": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "1V0ysPO5rT9SmaoWiZzfiR-g_zxZQNkY1SQscqW4N4BUYLTC1gcJC56RWl4UukvLy0DAqTHGv55MpNbEIwK4Gg",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 10
+                  },
+                  "solo": {
+                    "model_tokens": 20000,
+                    "notes_write": 20,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "TDsIoUjXgAoQgKscYLdfN7TeY2BFpBOmEnDtzixYKNd_zWm5B7TxXtKRdmf1ERU9lxthAJZW1WdXUThI7tjJ3Q",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "policy_effective",
+      "name": "child-of-a-rejected-policy-is-ignored"
+    },
+    {
+      "expect": {
+        "ok": {
+          "accepted": [],
+          "conflict": false,
+          "effective": null,
+          "heads": [],
+          "ignored": {},
+          "pending": [
+            "sha256:3e714024195de8fcf94901c0beb96cde71293c155ab9f3d2e24786e7ca699507"
+          ]
+        }
+      },
+      "input": {
+        "members": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+            "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+            "kind": "desktop",
+            "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+          },
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+          }
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "wrappers": [
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 10
+                  },
+                  "solo": {
+                    "model_tokens": 20000,
+                    "notes_write": 20,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "TDsIoUjXgAoQgKscYLdfN7TeY2BFpBOmEnDtzixYKNd_zWm5B7TxXtKRdmf1ERU9lxthAJZW1WdXUThI7tjJ3Q",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "policy_effective",
+      "name": "policy-with-unseen-parent-is-pending"
+    },
+    {
+      "expect": {
+        "ok": {
+          "accepted": [
+            "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+          ],
+          "conflict": false,
+          "effective": {
+            "classes": {
+              "desktop": {
+                "fresh": {
+                  "model_tokens": 1000000,
+                  "notes_write": 1000,
+                  "outside_effect": 100
+                },
+                "solo": {
+                  "model_tokens": 200000,
+                  "notes_write": 200,
+                  "outside_effect": 10
+                }
+              },
+              "node": {
+                "fresh": {
+                  "model_tokens": 5000000,
+                  "notes_write": 5000,
+                  "outside_effect": 200
+                },
+                "solo": {
+                  "model_tokens": 500000,
+                  "notes_write": 500,
+                  "outside_effect": 20
+                }
+              },
+              "pocket": {
+                "fresh": {
+                  "model_tokens": 200000,
+                  "notes_write": 200,
+                  "outside_effect": 20
+                },
+                "solo": {
+                  "model_tokens": 50000,
+                  "notes_write": 50,
+                  "outside_effect": 0
+                }
+              },
+              "satellite": {
+                "fresh": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                },
+                "solo": {
+                  "model_tokens": 0,
+                  "notes_write": 0,
+                  "outside_effect": 0
+                }
+              }
+            },
+            "devices": {},
+            "freshness_s": 86400,
+            "period": {
+              "anchor_s": 1794355200,
+              "length_s": 86400,
+              "unit": "day"
+            }
+          },
+          "heads": [
+            "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+          ],
+          "ignored": {
+            "sha256:5bb159c853b5baf825f7b3a9eca317cc3de61aeef9e41eb7a16331949becc2b1": "policy.unknown_author"
+          },
+          "pending": []
+        }
+      },
+      "input": {
+        "members": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+            "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+            "kind": "desktop",
+            "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+          },
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+          }
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "wrappers": [
+          {
+            "consent": {
+              "clock": {
+                "ms": 1794441600000,
+                "n": 0
+              },
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "digest": "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51",
+              "kind": "policy",
+              "sig": "sEs023scc5_VPzN8bxZn9Znq2ENr6SZjnBVHZfiGp9lmlLjxLBCUtCjYb4gjLe6S6mCbH8AV8nIXr8tKYEb-Rg",
+              "v": 1
+            },
+            "policy": {
+              "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 20
+                  },
+                  "solo": {
+                    "model_tokens": 50000,
+                    "notes_write": 50,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "1V0ysPO5rT9SmaoWiZzfiR-g_zxZQNkY1SQscqW4N4BUYLTC1gcJC56RWl4UukvLy0DAqTHGv55MpNbEIwK4Gg",
+              "v": 1
+            }
+          },
+          {
+            "consent": null,
+            "policy": {
+              "author": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed",
+              "classes": {
+                "desktop": {
+                  "fresh": {
+                    "model_tokens": 1000000,
+                    "notes_write": 1000,
+                    "outside_effect": 100
+                  },
+                  "solo": {
+                    "model_tokens": 200000,
+                    "notes_write": 200,
+                    "outside_effect": 10
+                  }
+                },
+                "node": {
+                  "fresh": {
+                    "model_tokens": 5000000,
+                    "notes_write": 5000,
+                    "outside_effect": 200
+                  },
+                  "solo": {
+                    "model_tokens": 500000,
+                    "notes_write": 500,
+                    "outside_effect": 20
+                  }
+                },
+                "pocket": {
+                  "fresh": {
+                    "model_tokens": 100000,
+                    "notes_write": 100,
+                    "outside_effect": 10
+                  },
+                  "solo": {
+                    "model_tokens": 20000,
+                    "notes_write": 20,
+                    "outside_effect": 0
+                  }
+                },
+                "satellite": {
+                  "fresh": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  },
+                  "solo": {
+                    "model_tokens": 0,
+                    "notes_write": 0,
+                    "outside_effect": 0
+                  }
+                }
+              },
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "devices": {},
+              "follows": [
+                "sha256:7e2185583a9cec07cafd31797db9149a46be1d1810819c61c6a0efdc543f3f51"
+              ],
+              "freshness_s": 86400,
+              "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+              "period": {
+                "anchor_s": 1794355200,
+                "length_s": 86400,
+                "unit": "day"
+              },
+              "sig": "TDsIoUjXgAoQgKscYLdfN7TeY2BFpBOmEnDtzixYKNd_zWm5B7TxXtKRdmf1ERU9lxthAJZW1WdXUThI7tjJ3Q",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "policy_effective",
+      "name": "policy-from-a-non-member-is-ignored"
+    },
+    {
+      "expect": {
+        "ok": {
+          "digest": "sha256:1aa02acfedec22b56c739a6de2c06acfc90fc4093e660b0bdcefc65580e81258",
+          "input": {
+            "freshness_s": 86400,
+            "members": [
+              {
+                "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                "kind": "desktop"
+              },
+              {
+                "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+                "kind": "pocket"
+              }
+            ],
+            "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+            "period": {
+              "anchor_s": 1794355200,
+              "length_s": 86400,
+              "unit": "day"
+            },
+            "period_index": 0,
+            "policy": "sha256:b6ff9665d2c13cc1590300d38398fc4465822aa9a4019c9489aae9d3e32c7fa2",
+            "stop": 0,
+            "v": 1
+          }
+        }
+      },
+      "input": {
+        "effective": {
+          "classes": {
+            "desktop": {
+              "fresh": {
+                "model_tokens": 1000000,
+                "notes_write": 1000,
+                "outside_effect": 100
+              },
+              "solo": {
+                "model_tokens": 200000,
+                "notes_write": 200,
+                "outside_effect": 10
+              }
+            },
+            "node": {
+              "fresh": {
+                "model_tokens": 5000000,
+                "notes_write": 5000,
+                "outside_effect": 200
+              },
+              "solo": {
+                "model_tokens": 500000,
+                "notes_write": 500,
+                "outside_effect": 20
+              }
+            },
+            "pocket": {
+              "fresh": {
+                "model_tokens": 200000,
+                "notes_write": 200,
+                "outside_effect": 20
+              },
+              "solo": {
+                "model_tokens": 50000,
+                "notes_write": 50,
+                "outside_effect": 0
+              }
+            },
+            "satellite": {
+              "fresh": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              },
+              "solo": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              }
+            }
+          },
+          "devices": {},
+          "freshness_s": 86400,
+          "period": {
+            "anchor_s": 1794355200,
+            "length_s": 86400,
+            "unit": "day"
+          }
+        },
+        "members": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "desktop",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "pocket"
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "now_s": 1794355300,
+        "stop": 0
+      },
+      "kind": "budget_input",
+      "name": "budget-input-first-period"
+    },
+    {
+      "expect": {
+        "ok": {
+          "digest": "sha256:90ffe2bcb7fc607db2a3ec5dcaa76dbfc1e9e299972604dafb6a803571ea0465",
+          "input": {
+            "freshness_s": 86400,
+            "members": [
+              {
+                "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                "kind": "desktop"
+              },
+              {
+                "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+                "kind": "pocket"
+              }
+            ],
+            "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+            "period": {
+              "anchor_s": 1794355200,
+              "length_s": 86400,
+              "unit": "day"
+            },
+            "period_index": 2,
+            "policy": "sha256:b6ff9665d2c13cc1590300d38398fc4465822aa9a4019c9489aae9d3e32c7fa2",
+            "stop": 1,
+            "v": 1
+          }
+        }
+      },
+      "input": {
+        "effective": {
+          "classes": {
+            "desktop": {
+              "fresh": {
+                "model_tokens": 1000000,
+                "notes_write": 1000,
+                "outside_effect": 100
+              },
+              "solo": {
+                "model_tokens": 200000,
+                "notes_write": 200,
+                "outside_effect": 10
+              }
+            },
+            "node": {
+              "fresh": {
+                "model_tokens": 5000000,
+                "notes_write": 5000,
+                "outside_effect": 200
+              },
+              "solo": {
+                "model_tokens": 500000,
+                "notes_write": 500,
+                "outside_effect": 20
+              }
+            },
+            "pocket": {
+              "fresh": {
+                "model_tokens": 200000,
+                "notes_write": 200,
+                "outside_effect": 20
+              },
+              "solo": {
+                "model_tokens": 50000,
+                "notes_write": 50,
+                "outside_effect": 0
+              }
+            },
+            "satellite": {
+              "fresh": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              },
+              "solo": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              }
+            }
+          },
+          "devices": {},
+          "freshness_s": 86400,
+          "period": {
+            "anchor_s": 1794355200,
+            "length_s": 86400,
+            "unit": "day"
+          }
+        },
+        "members": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "desktop",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "pocket"
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "now_s": 1794528005,
+        "stop": 1
+      },
+      "kind": "budget_input",
+      "name": "budget-input-third-period"
+    },
+    {
+      "expect": {
+        "error": "policy.before_anchor"
+      },
+      "input": {
+        "effective": {
+          "classes": {
+            "desktop": {
+              "fresh": {
+                "model_tokens": 1000000,
+                "notes_write": 1000,
+                "outside_effect": 100
+              },
+              "solo": {
+                "model_tokens": 200000,
+                "notes_write": 200,
+                "outside_effect": 10
+              }
+            },
+            "node": {
+              "fresh": {
+                "model_tokens": 5000000,
+                "notes_write": 5000,
+                "outside_effect": 200
+              },
+              "solo": {
+                "model_tokens": 500000,
+                "notes_write": 500,
+                "outside_effect": 20
+              }
+            },
+            "pocket": {
+              "fresh": {
+                "model_tokens": 200000,
+                "notes_write": 200,
+                "outside_effect": 20
+              },
+              "solo": {
+                "model_tokens": 50000,
+                "notes_write": 50,
+                "outside_effect": 0
+              }
+            },
+            "satellite": {
+              "fresh": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              },
+              "solo": {
+                "model_tokens": 0,
+                "notes_write": 0,
+                "outside_effect": 0
+              }
+            }
+          },
+          "devices": {},
+          "freshness_s": 86400,
+          "period": {
+            "anchor_s": 1794355200,
+            "length_s": 86400,
+            "unit": "day"
+          }
+        },
+        "members": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "desktop",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "pocket"
+        },
+        "mesh": "sha256:8432681bdb8a2962e2a7c578b8c743099aed788f9bf8b0e66093393e177468ef",
+        "now_s": 1794355199,
+        "stop": 0
+      },
+      "kind": "budget_input",
+      "name": "budget-input-before-anchor"
+    }
+  ],
+  "devices": {
+    "alice": {
+      "identity_scalar_hex": "0ce393242316eeda13b045c780dd99a3784bbaec0abd572ed0d822df7a61e9a6",
+      "kind": "desktop",
+      "ops_seed_hex": "37a6db180b13765d86ecf35cb5ed52d2a4aa7fb3ece91194f61e7f645e82c3c6",
+      "presence_scalar_hex": "66b9efeacbe85c32fafabc4594ae4c65513ae9a9f15078f02b6238780ebd99ea",
+      "wrap_private_hex": "934e3161ec9672a79552d2db56e2ac25fa5377388f3eb0ea915c9df63ba3a676"
+    },
+    "bob": {
+      "identity_scalar_hex": "5fcd1295f19588d646f38f369c1aa31ab0ba657e2a0ae5e11c740f26a089c84e",
+      "kind": "pocket",
+      "ops_seed_hex": "b0e9bfff3ad8661a30c97858c5492e774456b06d6ec7cb73b3a3c18431a408d3",
+      "presence_scalar_hex": "436f7838b991b7dc7203257f893bf810b7005d216efa22108493968e4ceb230c",
+      "wrap_private_hex": "66ccd3807bc7390c1937aa892b267d756fd593dfb6bc212889bf4f586cb1d6a0"
+    },
+    "carol": {
+      "identity_scalar_hex": "37c4f251aa26504e40020b2c1a8991abd1375409e99d798db37a6ea0a112424f",
+      "kind": "desktop",
+      "ops_seed_hex": "12470ac3ce9fedabd6ec8c1975aee8b9530a10f189cdd7e814eb4ccc67c75aaa",
+      "presence_scalar_hex": "bfcf06edd73197dc7ff47b135cc6a5792aaab1ab3fef426b56921ff2ebea0edb",
+      "wrap_private_hex": "f2100eb3b3967d9462d41955564ba00be4694df3ad48cbb13a3e8347e306670d"
+    },
+    "dave": {
+      "identity_scalar_hex": "b889f91aabfd0f244f12f137e15b19f247a02d2799824ba1af6c3eb9265422a3",
+      "kind": "satellite",
+      "ops_seed_hex": "91f3ea8d5dc532355d1d9fed02e3130595e425dc932d1ac92a03d892e8384860",
+      "presence_scalar_hex": "32aa0246bf7a4958376612da9172a936fdfbbc754c9588938df23474d9da802d",
+      "wrap_private_hex": "999c04164c2f8c4f3e38e0a4071a6ef6da25a744fac14e5076fd7d9b95c4587d"
+    },
+    "mallory": {
+      "identity_scalar_hex": "b9fdeaa4e28ffe58ee6323e71e30140fd0db2bf430601c734dd757f0ea38a72d",
+      "kind": "pocket",
+      "ops_seed_hex": "3f425ae3013e29a6fd8d3e8d9449ff0e85f8013275a283880dbfef18075ca71d",
+      "presence_scalar_hex": "d6a9b899c9eae91a1cbba1abc64728f6f083c6718c0c3b78155eaf9cd8f2859c",
+      "wrap_private_hex": "528456ec67167228ec4f9df7c714ee125c28e39201372e46bed8c21603181006"
+    },
+    "node1": {
+      "identity_scalar_hex": "782850c40eb281337d54e213fbb6f1e45fa58883d25b1ac60e6b1e4cd9f765f4",
+      "kind": "node",
+      "ops_seed_hex": "f4c7daa92619d74644c327b2de7c4bb58b29f4b7005cdc3718fcb9751257132e",
+      "presence_scalar_hex": "2e1efe8dcf780eea84694e338691bca0f8a379f3ebf2692ee279bcc3256f4d2a",
+      "wrap_private_hex": "ed77f67bea91fde1d5e0b5456f847ab758bcf3cd41202fc74c0e2335d53d9c74"
+    }
+  },
+  "format": "astral.vectors/v1",
+  "name": "policy",
+  "spec": "contracts/policy.md"
+}

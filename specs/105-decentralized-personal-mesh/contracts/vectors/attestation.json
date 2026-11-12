@@ -1,0 +1,934 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "ok": {
+          "iat": 1794441600,
+          "issuer": "https://auth.example.test/realms/astral",
+          "stale": false,
+          "subject": "user-1001"
+        }
+      },
+      "input": {
+        "att": {
+          "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "id_token": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImVzLTEiLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiJhc3RyYWwtYXBwIiwiZXhwIjoxNzk0NDQxOTAwLCJpYXQiOjE3OTQ0NDE2MDAsImlzcyI6Imh0dHBzOi8vYXV0aC5leGFtcGxlLnRlc3QvcmVhbG1zL2FzdHJhbCIsIm5vbmNlIjoiMzk5NjM4ZjViZjhjNWFlNzQ1ZWYwOGVkZTU4ZmVkODFmYzU2MjNjYTM1MDI0YzVjNDU0ZDI0NmJlYWNmNTQ4OSIsInN1YiI6InVzZXItMTAwMSJ9.5_8uvlAcURwBqO29aH3AuBs8OKsWjefHEABmE9Eqwh9c6oaA66yXJ77BAFXK5AInL063TtlZny1Y0w5MfEw8mQ",
+          "issuer": "https://auth.example.test/realms/astral",
+          "kind": "identity",
+          "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+          "sig": "EPnC_jh3fYFRBd7OqTzR71J8YGImzeqFVHkYJgWFBhgT4T6igpdy742kemAeshdJrfDhFIrHUJSBkz1ivKb8NA",
+          "subject": "user-1001"
+        },
+        "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "issuers": {
+          "https://auth.example.test/realms/astral": {
+            "aud": "astral-app",
+            "iss": "https://auth.example.test/realms/astral",
+            "keys": [
+              {
+                "crv": "P-256",
+                "kid": "es-1",
+                "kty": "EC",
+                "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+              },
+              {
+                "e": "AQAB",
+                "kid": "rs-1",
+                "kty": "RSA",
+                "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+              }
+            ]
+          }
+        },
+        "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "nonce-binds-key-and-mesh"
+    },
+    {
+      "expect": {
+        "ok": {
+          "iat": 1794441600,
+          "issuer": "https://auth.example.test/realms/astral",
+          "stale": false,
+          "subject": "user-1001"
+        }
+      },
+      "input": {
+        "att": {
+          "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "id_token": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImVzLTEiLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiJhc3RyYWwtYXBwIiwiZXhwIjoxNzk0NDQxOTAwLCJpYXQiOjE3OTQ0NDE2MDAsImlzcyI6Imh0dHBzOi8vYXV0aC5leGFtcGxlLnRlc3QvcmVhbG1zL2FzdHJhbCIsIm5vbmNlIjoiMzk5NjM4ZjViZjhjNWFlNzQ1ZWYwOGVkZTU4ZmVkODFmYzU2MjNjYTM1MDI0YzVjNDU0ZDI0NmJlYWNmNTQ4OSIsInN1YiI6InVzZXItMTAwMSJ9.5_8uvlAcURwBqO29aH3AuBs8OKsWjefHEABmE9Eqwh9c6oaA66yXJ77BAFXK5AInL063TtlZny1Y0w5MfEw8mQ",
+          "issuer": "https://auth.example.test/realms/astral",
+          "kind": "identity",
+          "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+          "sig": "EPnC_jh3fYFRBd7OqTzR71J8YGImzeqFVHkYJgWFBhgT4T6igpdy742kemAeshdJrfDhFIrHUJSBkz1ivKb8NA",
+          "subject": "user-1001"
+        },
+        "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "issuers": {
+          "https://auth.example.test/realms/astral": {
+            "aud": "astral-app",
+            "iss": "https://auth.example.test/realms/astral",
+            "keys": [
+              {
+                "crv": "P-256",
+                "kid": "es-1",
+                "kty": "EC",
+                "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+              },
+              {
+                "e": "AQAB",
+                "kid": "rs-1",
+                "kty": "RSA",
+                "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+              }
+            ]
+          }
+        },
+        "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "es256-token"
+    },
+    {
+      "expect": {
+        "ok": {
+          "iat": 1794441600,
+          "issuer": "https://auth.example.test/realms/astral",
+          "stale": false,
+          "subject": "user-1001"
+        }
+      },
+      "input": {
+        "att": {
+          "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "id_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6InJzLTEiLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiJhc3RyYWwtYXBwIiwiZXhwIjoxNzk0NDQxOTAwLCJpYXQiOjE3OTQ0NDE2MDAsImlzcyI6Imh0dHBzOi8vYXV0aC5leGFtcGxlLnRlc3QvcmVhbG1zL2FzdHJhbCIsIm5vbmNlIjoiMzk5NjM4ZjViZjhjNWFlNzQ1ZWYwOGVkZTU4ZmVkODFmYzU2MjNjYTM1MDI0YzVjNDU0ZDI0NmJlYWNmNTQ4OSIsInN1YiI6InVzZXItMTAwMSJ9.dnau6m0Rgqx02_q9hbtrtdjGW49BuHOTaOdxzDnH5S-qJPiAUf1sHHfISY2z0QL3_3WKrPeGaUeVWf0k-O3pvqGZdE3uVT86PmBJkGH55Gqd2PPH9WiphilN4si-6RG_p6xiOGStalcBnIjIeQnYhDwam8d_DDxn-vMtGm3ssLn-EaG3DQE8WDSdMmEcGj9It9mCWWgxQImMSny5eg74WKhbAB-f5UV65VfThZH2plEBhIyueXyVRoyd0RtzDPKBH0sK0mLyh676hrOn04e9qlVk-2yMEfExHIlk7h2NDg0hrwIEGeLkx0c7kBHaeR_Jf4Rws9Pq2ybQwTJRqOb58Q",
+          "issuer": "https://auth.example.test/realms/astral",
+          "kind": "identity",
+          "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+          "sig": "x7xBfS8lPhrLrjdODmwLky0QMu0WWbL1Tp5uI9ghj7p6nkwXgpMCDVWgmltHLLiw_XJ1zAKQZhvns7-AJmHOLA",
+          "subject": "user-1001"
+        },
+        "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "issuers": {
+          "https://auth.example.test/realms/astral": {
+            "aud": "astral-app",
+            "iss": "https://auth.example.test/realms/astral",
+            "keys": [
+              {
+                "crv": "P-256",
+                "kid": "es-1",
+                "kty": "EC",
+                "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+              },
+              {
+                "e": "AQAB",
+                "kid": "rs-1",
+                "kty": "RSA",
+                "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+              }
+            ]
+          }
+        },
+        "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "rs256-token"
+    },
+    {
+      "expect": {
+        "ok": {
+          "iat": 1791763200,
+          "issuer": "https://auth.example.test/realms/astral",
+          "stale": true,
+          "subject": "user-1001"
+        }
+      },
+      "input": {
+        "att": {
+          "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "id_token": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImVzLTEiLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiJhc3RyYWwtYXBwIiwiZXhwIjoxNzkxNzYzNTAwLCJpYXQiOjE3OTE3NjMyMDAsImlzcyI6Imh0dHBzOi8vYXV0aC5leGFtcGxlLnRlc3QvcmVhbG1zL2FzdHJhbCIsIm5vbmNlIjoiMzk5NjM4ZjViZjhjNWFlNzQ1ZWYwOGVkZTU4ZmVkODFmYzU2MjNjYTM1MDI0YzVjNDU0ZDI0NmJlYWNmNTQ4OSIsInN1YiI6InVzZXItMTAwMSJ9.SFRg9_0Ht5MFXD4HxqD3L7hGoTwT04Ac9U4cMxaJl6EjBd2hyFIOpLassOWTfWMu1uf6IaNgLLxR74unKlBsEA",
+          "issuer": "https://auth.example.test/realms/astral",
+          "kind": "identity",
+          "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+          "sig": "O7_XgLur6Vou98Y6-7y-IZscWg5QzVS0CnOlocp2XzkrXCBo_WGqynBIyH1d1rU7LSEf5Aiuubxtxjv8cKHTaQ",
+          "subject": "user-1001"
+        },
+        "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "issuers": {
+          "https://auth.example.test/realms/astral": {
+            "aud": "astral-app",
+            "iss": "https://auth.example.test/realms/astral",
+            "keys": [
+              {
+                "crv": "P-256",
+                "kid": "es-1",
+                "kty": "EC",
+                "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+              },
+              {
+                "e": "AQAB",
+                "kid": "rs-1",
+                "kty": "RSA",
+                "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+              }
+            ]
+          }
+        },
+        "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "stale-after-thirty-days"
+    },
+    {
+      "expect": {
+        "ok": {
+          "iat": 1791849600,
+          "issuer": "https://auth.example.test/realms/astral",
+          "stale": false,
+          "subject": "user-1001"
+        }
+      },
+      "input": {
+        "att": {
+          "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "id_token": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImVzLTEiLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiJhc3RyYWwtYXBwIiwiZXhwIjoxNzkxODQ5OTAwLCJpYXQiOjE3OTE4NDk2MDAsImlzcyI6Imh0dHBzOi8vYXV0aC5leGFtcGxlLnRlc3QvcmVhbG1zL2FzdHJhbCIsIm5vbmNlIjoiMzk5NjM4ZjViZjhjNWFlNzQ1ZWYwOGVkZTU4ZmVkODFmYzU2MjNjYTM1MDI0YzVjNDU0ZDI0NmJlYWNmNTQ4OSIsInN1YiI6InVzZXItMTAwMSJ9.tlabZAbsOF4g1vRFVMyqoch5GPVRSavG75ULA4rRQ6gbKYDS8_prmKjK8hv2_ZvtAxO5nrwuK6ctvumfYNTcTA",
+          "issuer": "https://auth.example.test/realms/astral",
+          "kind": "identity",
+          "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+          "sig": "C1VJX6yYKccvcnoB5NkcWNFNoi6DO5UnJyhD9cSTr58a2kD8hT-wPne58q1uNHFefEi-ZPmxqHYZLVhLpaIPnw",
+          "subject": "user-1001"
+        },
+        "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "issuers": {
+          "https://auth.example.test/realms/astral": {
+            "aud": "astral-app",
+            "iss": "https://auth.example.test/realms/astral",
+            "keys": [
+              {
+                "crv": "P-256",
+                "kid": "es-1",
+                "kty": "EC",
+                "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+              },
+              {
+                "e": "AQAB",
+                "kid": "rs-1",
+                "kty": "RSA",
+                "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+              }
+            ]
+          }
+        },
+        "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "fresh-at-thirty-days"
+    },
+    {
+      "expect": {
+        "error": "attestation.wrong_nonce"
+      },
+      "input": {
+        "att": {
+          "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "id_token": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImVzLTEiLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiJhc3RyYWwtYXBwIiwiZXhwIjoxNzk0NDQxOTAwLCJpYXQiOjE3OTQ0NDE2MDAsImlzcyI6Imh0dHBzOi8vYXV0aC5leGFtcGxlLnRlc3QvcmVhbG1zL2FzdHJhbCIsIm5vbmNlIjoiZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZiIsInN1YiI6InVzZXItMTAwMSJ9.wHbfA5lKMlwAfclvQUaciUW-v6IqsdZjvRcnTN8nZYlaW9mkCWem9VOQa6TdWaPZwjnxnfaVHaXj2aKkOA-YFA",
+          "issuer": "https://auth.example.test/realms/astral",
+          "kind": "identity",
+          "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+          "sig": "Q1AlyxWI7qDW9jDRiC1hY8D1DoD9oCM587z4jQqAFegM0ezHBS_BpRlrJLhOrBDXMHkw6AI5r68ye3G3tp4pWg",
+          "subject": "user-1001"
+        },
+        "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "issuers": {
+          "https://auth.example.test/realms/astral": {
+            "aud": "astral-app",
+            "iss": "https://auth.example.test/realms/astral",
+            "keys": [
+              {
+                "crv": "P-256",
+                "kid": "es-1",
+                "kty": "EC",
+                "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+              },
+              {
+                "e": "AQAB",
+                "kid": "rs-1",
+                "kty": "RSA",
+                "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+              }
+            ]
+          }
+        },
+        "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "wrong-nonce"
+    },
+    {
+      "expect": {
+        "error": "attestation.wrong_nonce"
+      },
+      "input": {
+        "att": {
+          "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "id_token": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImVzLTEiLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiJhc3RyYWwtYXBwIiwiZXhwIjoxNzk0NDQxOTAwLCJpYXQiOjE3OTQ0NDE2MDAsImlzcyI6Imh0dHBzOi8vYXV0aC5leGFtcGxlLnRlc3QvcmVhbG1zL2FzdHJhbCIsIm5vbmNlIjoiYWVjMGJhNzRhMTBlZDU3NWE3NTI4ZGMyZTgzY2UzZjg4MTdhMWYxNzkyNjAwNTljMDdmOWI0MmY1OTkwZTI5ZCIsInN1YiI6InVzZXItMTAwMSJ9.lK-badcbma0W_rqlANzatNPEbb5sAio_zo0woKQcuxIbRVKUgvMHHc1-LFprR95gtvfqthWEfMY5E5KKbPMSrA",
+          "issuer": "https://auth.example.test/realms/astral",
+          "kind": "identity",
+          "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+          "sig": "Jc2RZ64yxwEdQxXjnSuduDYquIQ9dIpokQazRzscqj9ymuXB5ctVNztB88cBnaEyHdL4n1zIW9CIRPfWXZ_Bkw",
+          "subject": "user-1001"
+        },
+        "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "issuers": {
+          "https://auth.example.test/realms/astral": {
+            "aud": "astral-app",
+            "iss": "https://auth.example.test/realms/astral",
+            "keys": [
+              {
+                "crv": "P-256",
+                "kid": "es-1",
+                "kty": "EC",
+                "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+              },
+              {
+                "e": "AQAB",
+                "kid": "rs-1",
+                "kty": "RSA",
+                "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+              }
+            ]
+          }
+        },
+        "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "nonce-for-another-mesh"
+    },
+    {
+      "expect": {
+        "error": "attestation.wrong_audience"
+      },
+      "input": {
+        "att": {
+          "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "id_token": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImVzLTEiLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiJhbm90aGVyLWFwcCIsImV4cCI6MTc5NDQ0MTkwMCwiaWF0IjoxNzk0NDQxNjAwLCJpc3MiOiJodHRwczovL2F1dGguZXhhbXBsZS50ZXN0L3JlYWxtcy9hc3RyYWwiLCJub25jZSI6IjM5OTYzOGY1YmY4YzVhZTc0NWVmMDhlZGU1OGZlZDgxZmM1NjIzY2EzNTAyNGM1YzQ1NGQyNDZiZWFjZjU0ODkiLCJzdWIiOiJ1c2VyLTEwMDEifQ.6grYHSY9-soRGjIJWa15k_hTWepdSpSTJEYnLwTWEad_RHDmHvk8pPlfzjnDFQc7Qm5T2KpYjRM_e9fQ4xa3tQ",
+          "issuer": "https://auth.example.test/realms/astral",
+          "kind": "identity",
+          "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+          "sig": "FpsCnpmWrnX_NVrojSd_9AksT35IbaHJ1GL-oP3vprNlRE5AV8nSLcnho7cSmRjllsZQLWgG9IswwnAmRnfUJg",
+          "subject": "user-1001"
+        },
+        "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "issuers": {
+          "https://auth.example.test/realms/astral": {
+            "aud": "astral-app",
+            "iss": "https://auth.example.test/realms/astral",
+            "keys": [
+              {
+                "crv": "P-256",
+                "kid": "es-1",
+                "kty": "EC",
+                "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+              },
+              {
+                "e": "AQAB",
+                "kid": "rs-1",
+                "kty": "RSA",
+                "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+              }
+            ]
+          }
+        },
+        "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "wrong-audience"
+    },
+    {
+      "expect": {
+        "error": "attestation.unknown_key"
+      },
+      "input": {
+        "att": {
+          "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "id_token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1pc3NpbmciLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiJhc3RyYWwtYXBwIiwiZXhwIjoxNzk0NDQxOTAwLCJpYXQiOjE3OTQ0NDE2MDAsImlzcyI6Imh0dHBzOi8vYXV0aC5leGFtcGxlLnRlc3QvcmVhbG1zL2FzdHJhbCIsIm5vbmNlIjoiMzk5NjM4ZjViZjhjNWFlNzQ1ZWYwOGVkZTU4ZmVkODFmYzU2MjNjYTM1MDI0YzVjNDU0ZDI0NmJlYWNmNTQ4OSIsInN1YiI6InVzZXItMTAwMSJ9.sh4ZECSHVgWs75ZQEl2uMyzvkWzDsSoSJTjDXv9xQOkruHacw-n8bZKWdV0qZ_0dcFOBzBoAHyEah5k6xI4zSg",
+          "issuer": "https://auth.example.test/realms/astral",
+          "kind": "identity",
+          "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+          "sig": "8qEfJsEqt39wflZmaTgMI3_bpy-DF8JZaS6iE0Zf6r476t2yDMn8feXY07Yt3E0VDjGGqMSUu_iLeuos05f9gA",
+          "subject": "user-1001"
+        },
+        "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "issuers": {
+          "https://auth.example.test/realms/astral": {
+            "aud": "astral-app",
+            "iss": "https://auth.example.test/realms/astral",
+            "keys": [
+              {
+                "crv": "P-256",
+                "kid": "es-1",
+                "kty": "EC",
+                "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+              },
+              {
+                "e": "AQAB",
+                "kid": "rs-1",
+                "kty": "RSA",
+                "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+              }
+            ]
+          }
+        },
+        "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "unknown-key-id"
+    },
+    {
+      "expect": {
+        "error": "attestation.unknown_issuer"
+      },
+      "input": {
+        "att": {
+          "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "id_token": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImVzLTEiLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiJhc3RyYWwtYXBwIiwiZXhwIjoxNzk0NDQxOTAwLCJpYXQiOjE3OTQ0NDE2MDAsImlzcyI6Imh0dHBzOi8vYXV0aC5leGFtcGxlLnRlc3QvcmVhbG1zL2FzdHJhbCIsIm5vbmNlIjoiMzk5NjM4ZjViZjhjNWFlNzQ1ZWYwOGVkZTU4ZmVkODFmYzU2MjNjYTM1MDI0YzVjNDU0ZDI0NmJlYWNmNTQ4OSIsInN1YiI6InVzZXItMTAwMSJ9.5_8uvlAcURwBqO29aH3AuBs8OKsWjefHEABmE9Eqwh9c6oaA66yXJ77BAFXK5AInL063TtlZny1Y0w5MfEw8mQ",
+          "issuer": "https://auth.example.test/realms/astral",
+          "kind": "identity",
+          "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+          "sig": "EPnC_jh3fYFRBd7OqTzR71J8YGImzeqFVHkYJgWFBhgT4T6igpdy742kemAeshdJrfDhFIrHUJSBkz1ivKb8NA",
+          "subject": "user-1001"
+        },
+        "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "issuers": {},
+        "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "issuer-not-accepted"
+    },
+    {
+      "expect": {
+        "error": "attestation.bad_token_signature"
+      },
+      "input": {
+        "att": {
+          "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "id_token": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImVzLTEiLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiJhc3RyYWwtYXBwIiwiZXhwIjoxNzk0NDQxOTAwLCJpYXQiOjE3OTQ0NDE2MDAsImlzcyI6Imh0dHBzOi8vYXV0aC5leGFtcGxlLnRlc3QvcmVhbG1zL2FzdHJhbCIsIm5vbmNlIjoiMzk5NjM4ZjViZjhjNWFlNzQ1ZWYwOGVkZTU4ZmVkODFmYzU2MjNjYTM1MDI0YzVjNDU0ZDI0NmJlYWNmNTQ4OSIsInN1YiI6InVzZXItMTAwMSJ9.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "issuer": "https://auth.example.test/realms/astral",
+          "kind": "identity",
+          "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+          "sig": "OmpRoCXUfEKNPypH7X3ADbk4K-InhCRGXrJhBkYnghQ0HQS5XvtDE7fHAp3ivBoHTUk4mKiV_4Jl4hrpHOW0Vg",
+          "subject": "user-1001"
+        },
+        "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "issuers": {
+          "https://auth.example.test/realms/astral": {
+            "aud": "astral-app",
+            "iss": "https://auth.example.test/realms/astral",
+            "keys": [
+              {
+                "crv": "P-256",
+                "kid": "es-1",
+                "kty": "EC",
+                "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+              },
+              {
+                "e": "AQAB",
+                "kid": "rs-1",
+                "kty": "RSA",
+                "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+              }
+            ]
+          }
+        },
+        "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "token-signature-invalid"
+    },
+    {
+      "expect": {
+        "error": "attestation.bad_alg"
+      },
+      "input": {
+        "att": {
+          "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "id_token": "eyJhbGciOiJub25lIiwia2lkIjoiZXMtMSIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJhc3RyYWwtYXBwIiwiaWF0IjoxNzk0NDQxNjAwLCJpc3MiOiJodHRwczovL2F1dGguZXhhbXBsZS50ZXN0L3JlYWxtcy9hc3RyYWwiLCJub25jZSI6IjM5OTYzOGY1YmY4YzVhZTc0NWVmMDhlZGU1OGZlZDgxZmM1NjIzY2EzNTAyNGM1YzQ1NGQyNDZiZWFjZjU0ODkiLCJzdWIiOiJ1c2VyLTEwMDEifQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "issuer": "https://auth.example.test/realms/astral",
+          "kind": "identity",
+          "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+          "sig": "-iZh2InTvJmEI-GXlsosk0Aw3mrqurO--jlBienABTw44tcH4ZAn2h1J4JFpqkbPWsozrli-4XuTssSkkMGizw",
+          "subject": "user-1001"
+        },
+        "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "issuers": {
+          "https://auth.example.test/realms/astral": {
+            "aud": "astral-app",
+            "iss": "https://auth.example.test/realms/astral",
+            "keys": [
+              {
+                "crv": "P-256",
+                "kid": "es-1",
+                "kty": "EC",
+                "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+              },
+              {
+                "e": "AQAB",
+                "kid": "rs-1",
+                "kty": "RSA",
+                "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+              }
+            ]
+          }
+        },
+        "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "alg-none-refused"
+    },
+    {
+      "expect": {
+        "error": "attestation.wrong_subject"
+      },
+      "input": {
+        "att": {
+          "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "id_token": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImVzLTEiLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiJhc3RyYWwtYXBwIiwiZXhwIjoxNzk0NDQxOTAwLCJpYXQiOjE3OTQ0NDE2MDAsImlzcyI6Imh0dHBzOi8vYXV0aC5leGFtcGxlLnRlc3QvcmVhbG1zL2FzdHJhbCIsIm5vbmNlIjoiMzk5NjM4ZjViZjhjNWFlNzQ1ZWYwOGVkZTU4ZmVkODFmYzU2MjNjYTM1MDI0YzVjNDU0ZDI0NmJlYWNmNTQ4OSIsInN1YiI6InVzZXItMTAwMSJ9.5_8uvlAcURwBqO29aH3AuBs8OKsWjefHEABmE9Eqwh9c6oaA66yXJ77BAFXK5AInL063TtlZny1Y0w5MfEw8mQ",
+          "issuer": "https://auth.example.test/realms/astral",
+          "kind": "identity",
+          "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+          "sig": "fmvQkEPgOx3aMoihANS_NBLA-a36RmwpP5tmCUQf1L9fqne29mcvv5-zO_M0TLDHu1nMPEwqO-hxYAuz9Y2Dog",
+          "subject": "someone-else"
+        },
+        "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "issuers": {
+          "https://auth.example.test/realms/astral": {
+            "aud": "astral-app",
+            "iss": "https://auth.example.test/realms/astral",
+            "keys": [
+              {
+                "crv": "P-256",
+                "kid": "es-1",
+                "kty": "EC",
+                "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+              },
+              {
+                "e": "AQAB",
+                "kid": "rs-1",
+                "kty": "RSA",
+                "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+              }
+            ]
+          }
+        },
+        "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "subject-differs-from-token"
+    },
+    {
+      "expect": {
+        "error": "attestation.wrong_issuer"
+      },
+      "input": {
+        "att": {
+          "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "id_token": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImVzLTEiLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiJhc3RyYWwtYXBwIiwiZXhwIjoxNzk0NDQxOTAwLCJpYXQiOjE3OTQ0NDE2MDAsImlzcyI6Imh0dHBzOi8vYXV0aC5vdGhlci50ZXN0Iiwibm9uY2UiOiIzOTk2MzhmNWJmOGM1YWU3NDVlZjA4ZWRlNThmZWQ4MWZjNTYyM2NhMzUwMjRjNWM0NTRkMjQ2YmVhY2Y1NDg5Iiwic3ViIjoidXNlci0xMDAxIn0.EDXmQGyACHW3MhVz_r8xy46AjqhEr0II3x25TzrBWR4uV8STh6Ra0NkWbim_Hv3G6sdsnE2ORnIQw_sYY4ebIg",
+          "issuer": "https://auth.example.test/realms/astral",
+          "kind": "identity",
+          "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+          "sig": "XPDW7Ybi8zzqCPWEd9YxKaj1mcl2LvooJXDc6IECB7R41SaJK4JtJ9aCfk8ldtVwRu4DAbO8I1_WEBaWpHek8Q",
+          "subject": "user-1001"
+        },
+        "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "issuers": {
+          "https://auth.example.test/realms/astral": {
+            "aud": "astral-app",
+            "iss": "https://auth.example.test/realms/astral",
+            "keys": [
+              {
+                "crv": "P-256",
+                "kid": "es-1",
+                "kty": "EC",
+                "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+              },
+              {
+                "e": "AQAB",
+                "kid": "rs-1",
+                "kty": "RSA",
+                "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+              }
+            ]
+          }
+        },
+        "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "token-issuer-differs"
+    },
+    {
+      "expect": {
+        "error": "attestation.bad_signature"
+      },
+      "input": {
+        "att": {
+          "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "id_token": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImVzLTEiLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiJhc3RyYWwtYXBwIiwiZXhwIjoxNzk0NDQxOTAwLCJpYXQiOjE3OTQ0NDE2MDAsImlzcyI6Imh0dHBzOi8vYXV0aC5leGFtcGxlLnRlc3QvcmVhbG1zL2FzdHJhbCIsIm5vbmNlIjoiMzk5NjM4ZjViZjhjNWFlNzQ1ZWYwOGVkZTU4ZmVkODFmYzU2MjNjYTM1MDI0YzVjNDU0ZDI0NmJlYWNmNTQ4OSIsInN1YiI6InVzZXItMTAwMSJ9.5_8uvlAcURwBqO29aH3AuBs8OKsWjefHEABmE9Eqwh9c6oaA66yXJ77BAFXK5AInL063TtlZny1Y0w5MfEw8mQ",
+          "issuer": "https://auth.example.test/realms/astral",
+          "kind": "identity",
+          "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+          "sig": "EPnC_jh3fYFRBd7OqTzR71J8YGImzeqFVHkYJgWFBhgT4T6igpdy742kemAeshdJrfDhFIrHUJSBkz1ivKb8NA",
+          "subject": "user-1001 "
+        },
+        "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "issuers": {
+          "https://auth.example.test/realms/astral": {
+            "aud": "astral-app",
+            "iss": "https://auth.example.test/realms/astral",
+            "keys": [
+              {
+                "crv": "P-256",
+                "kid": "es-1",
+                "kty": "EC",
+                "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+              },
+              {
+                "e": "AQAB",
+                "kid": "rs-1",
+                "kty": "RSA",
+                "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+              }
+            ]
+          }
+        },
+        "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "device-signature-edited"
+    },
+    {
+      "expect": {
+        "error": "attestation.wrong_device"
+      },
+      "input": {
+        "att": {
+          "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+          "id_token": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImVzLTEiLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiJhc3RyYWwtYXBwIiwiZXhwIjoxNzk0NDQxOTAwLCJpYXQiOjE3OTQ0NDE2MDAsImlzcyI6Imh0dHBzOi8vYXV0aC5leGFtcGxlLnRlc3QvcmVhbG1zL2FzdHJhbCIsIm5vbmNlIjoiMGJmMjg4NjJiZjNkMGE2MDcwMTc3OTkyNDdhYjgyMjgwZDM1ZTVmYmNiYWI5ZjcxMWM3MjY0YmU0Yzc1MzUyNCIsInN1YiI6InVzZXItMTAwMSJ9.t_9iqW62tO7XcQJVYYM6Ff2tPmdNqef3CHpcUc3NghNC7jrC3otTXTqH9WAMdfvaxbKNH9IPEPhfA-i54VEfpg",
+          "issuer": "https://auth.example.test/realms/astral",
+          "kind": "identity",
+          "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+          "sig": "mBagr_Jjp-ybabCnhTBq5RQoN6JZ_V-NIGmq2iMGWXhRdTG6BrksYjt0bz5mREe_yZFqvpzKQOUPIVRRgJB6IA",
+          "subject": "user-1001"
+        },
+        "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "issuers": {
+          "https://auth.example.test/realms/astral": {
+            "aud": "astral-app",
+            "iss": "https://auth.example.test/realms/astral",
+            "keys": [
+              {
+                "crv": "P-256",
+                "kid": "es-1",
+                "kty": "EC",
+                "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+              },
+              {
+                "e": "AQAB",
+                "kid": "rs-1",
+                "kty": "RSA",
+                "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+              }
+            ]
+          }
+        },
+        "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "attestation-for-another-device"
+    },
+    {
+      "expect": {
+        "error": "attestation.malformed"
+      },
+      "input": {
+        "att": {
+          "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "id_token": "abc",
+          "issuer": "https://auth.example.test/realms/astral",
+          "kind": "identity",
+          "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+          "sig": "CIDpJ4vwA00dE1_pfpPSORcyCw6COsFzSwDlXOZ9EgpYRgSn4hWkA_b6Hirmfi9B3pbrF_oFpbFGv3HP9ymvNA",
+          "subject": "user-1001"
+        },
+        "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "issuers": {
+          "https://auth.example.test/realms/astral": {
+            "aud": "astral-app",
+            "iss": "https://auth.example.test/realms/astral",
+            "keys": [
+              {
+                "crv": "P-256",
+                "kid": "es-1",
+                "kty": "EC",
+                "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+              },
+              {
+                "e": "AQAB",
+                "kid": "rs-1",
+                "kty": "RSA",
+                "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+              }
+            ]
+          }
+        },
+        "mesh": "sha256:2dc17da9485db804b2feec287335c034ced2dbb85358317b9630057a17282891",
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "not-a-jws"
+    },
+    {
+      "expect": {
+        "ok": {
+          "institution": "BAGMu-tuK7NjZs_73-5YTLpdd0cvdshZPvUrDUGxr9sg1mYx0We20ZnRSEwNb6TA1z5PViQC8-sDi19aGwEWEq4",
+          "not_after_s": 1797033600,
+          "subject": "node-7"
+        }
+      },
+      "input": {
+        "att": {
+          "institution": "BAGMu-tuK7NjZs_73-5YTLpdd0cvdshZPvUrDUGxr9sg1mYx0We20ZnRSEwNb6TA1z5PViQC8-sDi19aGwEWEq4",
+          "issued_s": 1794441600,
+          "kind": "phi",
+          "not_after_s": 1797033600,
+          "sig": "wydGlSqOD3TzsOO7qfrn4gevTLeIBY0R4SzOxNs58sMLolbzy7mxQSC_1VjUoHDLqeb8Uprdq7toFYjtoj4MTA",
+          "subject": "node-7",
+          "subject_kind": "node"
+        },
+        "authorities": [
+          "BAGMu-tuK7NjZs_73-5YTLpdd0cvdshZPvUrDUGxr9sg1mYx0We20ZnRSEwNb6TA1z5PViQC8-sDi19aGwEWEq4"
+        ],
+        "now_s": 1794441610
+      },
+      "kind": "attestation_verify",
+      "name": "phi-approval"
+    },
+    {
+      "expect": {
+        "ok": {
+          "institution": "BAGMu-tuK7NjZs_73-5YTLpdd0cvdshZPvUrDUGxr9sg1mYx0We20ZnRSEwNb6TA1z5PViQC8-sDi19aGwEWEq4",
+          "not_after_s": 1794528000,
+          "subject": "https://llm.example.test/v1"
+        }
+      },
+      "input": {
+        "att": {
+          "institution": "BAGMu-tuK7NjZs_73-5YTLpdd0cvdshZPvUrDUGxr9sg1mYx0We20ZnRSEwNb6TA1z5PViQC8-sDi19aGwEWEq4",
+          "issued_s": 1794441600,
+          "kind": "phi",
+          "not_after_s": 1794528000,
+          "sig": "QosEwUPrJCHfQ59U6zcN4uSVpMnO-pirIEliZBWd1UkBy8iQPQat9vdFii47wHWccsE4vtr00oPegJle2L5Ugw",
+          "subject": "https://llm.example.test/v1",
+          "subject_kind": "endpoint"
+        },
+        "authorities": [
+          "BAGMu-tuK7NjZs_73-5YTLpdd0cvdshZPvUrDUGxr9sg1mYx0We20ZnRSEwNb6TA1z5PViQC8-sDi19aGwEWEq4"
+        ],
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "phi-approval-endpoint"
+    },
+    {
+      "expect": {
+        "error": "attestation.expired"
+      },
+      "input": {
+        "att": {
+          "institution": "BAGMu-tuK7NjZs_73-5YTLpdd0cvdshZPvUrDUGxr9sg1mYx0We20ZnRSEwNb6TA1z5PViQC8-sDi19aGwEWEq4",
+          "issued_s": 1794441600,
+          "kind": "phi",
+          "not_after_s": 1797033600,
+          "sig": "wydGlSqOD3TzsOO7qfrn4gevTLeIBY0R4SzOxNs58sMLolbzy7mxQSC_1VjUoHDLqeb8Uprdq7toFYjtoj4MTA",
+          "subject": "node-7",
+          "subject_kind": "node"
+        },
+        "authorities": [
+          "BAGMu-tuK7NjZs_73-5YTLpdd0cvdshZPvUrDUGxr9sg1mYx0We20ZnRSEwNb6TA1z5PViQC8-sDi19aGwEWEq4"
+        ],
+        "now_s": 1797120000
+      },
+      "kind": "attestation_verify",
+      "name": "phi-approval-expired"
+    },
+    {
+      "expect": {
+        "error": "attestation.expired"
+      },
+      "input": {
+        "att": {
+          "institution": "BAGMu-tuK7NjZs_73-5YTLpdd0cvdshZPvUrDUGxr9sg1mYx0We20ZnRSEwNb6TA1z5PViQC8-sDi19aGwEWEq4",
+          "issued_s": 1794441600,
+          "kind": "phi",
+          "not_after_s": 1797033600,
+          "sig": "wydGlSqOD3TzsOO7qfrn4gevTLeIBY0R4SzOxNs58sMLolbzy7mxQSC_1VjUoHDLqeb8Uprdq7toFYjtoj4MTA",
+          "subject": "node-7",
+          "subject_kind": "node"
+        },
+        "authorities": [
+          "BAGMu-tuK7NjZs_73-5YTLpdd0cvdshZPvUrDUGxr9sg1mYx0We20ZnRSEwNb6TA1z5PViQC8-sDi19aGwEWEq4"
+        ],
+        "now_s": 1794441599
+      },
+      "kind": "attestation_verify",
+      "name": "phi-approval-not-yet-valid"
+    },
+    {
+      "expect": {
+        "error": "attestation.unknown_authority"
+      },
+      "input": {
+        "att": {
+          "institution": "BAGMu-tuK7NjZs_73-5YTLpdd0cvdshZPvUrDUGxr9sg1mYx0We20ZnRSEwNb6TA1z5PViQC8-sDi19aGwEWEq4",
+          "issued_s": 1794441600,
+          "kind": "phi",
+          "not_after_s": 1797033600,
+          "sig": "wydGlSqOD3TzsOO7qfrn4gevTLeIBY0R4SzOxNs58sMLolbzy7mxQSC_1VjUoHDLqeb8Uprdq7toFYjtoj4MTA",
+          "subject": "node-7",
+          "subject_kind": "node"
+        },
+        "authorities": [],
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "phi-approval-unknown-institution"
+    },
+    {
+      "expect": {
+        "error": "attestation.bad_signature"
+      },
+      "input": {
+        "att": {
+          "institution": "BAGMu-tuK7NjZs_73-5YTLpdd0cvdshZPvUrDUGxr9sg1mYx0We20ZnRSEwNb6TA1z5PViQC8-sDi19aGwEWEq4",
+          "issued_s": 1794441600,
+          "kind": "phi",
+          "not_after_s": 1797033600,
+          "sig": "wydGlSqOD3TzsOO7qfrn4gevTLeIBY0R4SzOxNs58sMLolbzy7mxQSC_1VjUoHDLqeb8Uprdq7toFYjtoj4MTA",
+          "subject": "node-8",
+          "subject_kind": "node"
+        },
+        "authorities": [
+          "BAGMu-tuK7NjZs_73-5YTLpdd0cvdshZPvUrDUGxr9sg1mYx0We20ZnRSEwNb6TA1z5PViQC8-sDi19aGwEWEq4"
+        ],
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "phi-approval-edited"
+    },
+    {
+      "expect": {
+        "error": "attestation.malformed"
+      },
+      "input": {
+        "att": {
+          "institution": "BAGMu-tuK7NjZs_73-5YTLpdd0cvdshZPvUrDUGxr9sg1mYx0We20ZnRSEwNb6TA1z5PViQC8-sDi19aGwEWEq4",
+          "issued_s": 1794441600,
+          "kind": "phi",
+          "not_after_s": 1797033600,
+          "sig": "wydGlSqOD3TzsOO7qfrn4gevTLeIBY0R4SzOxNs58sMLolbzy7mxQSC_1VjUoHDLqeb8Uprdq7toFYjtoj4MTA",
+          "subject": "node-7",
+          "subject_kind": "user"
+        },
+        "authorities": [
+          "BAGMu-tuK7NjZs_73-5YTLpdd0cvdshZPvUrDUGxr9sg1mYx0We20ZnRSEwNb6TA1z5PViQC8-sDi19aGwEWEq4"
+        ],
+        "now_s": 1794441600
+      },
+      "kind": "attestation_verify",
+      "name": "phi-approval-bad-subject-kind"
+    }
+  ],
+  "devices": {
+    "alice": {
+      "identity_scalar_hex": "0ce393242316eeda13b045c780dd99a3784bbaec0abd572ed0d822df7a61e9a6",
+      "kind": "desktop",
+      "ops_seed_hex": "37a6db180b13765d86ecf35cb5ed52d2a4aa7fb3ece91194f61e7f645e82c3c6",
+      "presence_scalar_hex": "66b9efeacbe85c32fafabc4594ae4c65513ae9a9f15078f02b6238780ebd99ea",
+      "wrap_private_hex": "934e3161ec9672a79552d2db56e2ac25fa5377388f3eb0ea915c9df63ba3a676"
+    },
+    "bob": {
+      "identity_scalar_hex": "5fcd1295f19588d646f38f369c1aa31ab0ba657e2a0ae5e11c740f26a089c84e",
+      "kind": "pocket",
+      "ops_seed_hex": "b0e9bfff3ad8661a30c97858c5492e774456b06d6ec7cb73b3a3c18431a408d3",
+      "presence_scalar_hex": "436f7838b991b7dc7203257f893bf810b7005d216efa22108493968e4ceb230c",
+      "wrap_private_hex": "66ccd3807bc7390c1937aa892b267d756fd593dfb6bc212889bf4f586cb1d6a0"
+    },
+    "carol": {
+      "identity_scalar_hex": "37c4f251aa26504e40020b2c1a8991abd1375409e99d798db37a6ea0a112424f",
+      "kind": "desktop",
+      "ops_seed_hex": "12470ac3ce9fedabd6ec8c1975aee8b9530a10f189cdd7e814eb4ccc67c75aaa",
+      "presence_scalar_hex": "bfcf06edd73197dc7ff47b135cc6a5792aaab1ab3fef426b56921ff2ebea0edb",
+      "wrap_private_hex": "f2100eb3b3967d9462d41955564ba00be4694df3ad48cbb13a3e8347e306670d"
+    },
+    "dave": {
+      "identity_scalar_hex": "b889f91aabfd0f244f12f137e15b19f247a02d2799824ba1af6c3eb9265422a3",
+      "kind": "satellite",
+      "ops_seed_hex": "91f3ea8d5dc532355d1d9fed02e3130595e425dc932d1ac92a03d892e8384860",
+      "presence_scalar_hex": "32aa0246bf7a4958376612da9172a936fdfbbc754c9588938df23474d9da802d",
+      "wrap_private_hex": "999c04164c2f8c4f3e38e0a4071a6ef6da25a744fac14e5076fd7d9b95c4587d"
+    },
+    "mallory": {
+      "identity_scalar_hex": "b9fdeaa4e28ffe58ee6323e71e30140fd0db2bf430601c734dd757f0ea38a72d",
+      "kind": "pocket",
+      "ops_seed_hex": "3f425ae3013e29a6fd8d3e8d9449ff0e85f8013275a283880dbfef18075ca71d",
+      "presence_scalar_hex": "d6a9b899c9eae91a1cbba1abc64728f6f083c6718c0c3b78155eaf9cd8f2859c",
+      "wrap_private_hex": "528456ec67167228ec4f9df7c714ee125c28e39201372e46bed8c21603181006"
+    },
+    "node1": {
+      "identity_scalar_hex": "782850c40eb281337d54e213fbb6f1e45fa58883d25b1ac60e6b1e4cd9f765f4",
+      "kind": "node",
+      "ops_seed_hex": "f4c7daa92619d74644c327b2de7c4bb58b29f4b7005cdc3718fcb9751257132e",
+      "presence_scalar_hex": "2e1efe8dcf780eea84694e338691bca0f8a379f3ebf2692ee279bcc3256f4d2a",
+      "wrap_private_hex": "ed77f67bea91fde1d5e0b5456f847ab758bcf3cd41202fc74c0e2335d53d9c74"
+    }
+  },
+  "format": "astral.vectors/v1",
+  "issuer_secrets": {
+    "es256_scalar_hex": "790a234bbf9109ae155b09c042646c0754589a1135dd3413a2e780370f594528"
+  },
+  "name": "attestation",
+  "nonce_hex": "399638f5bf8c5ae745ef08ede58fed81fc5623ca35024c5c454d246beacf5489",
+  "spec": "contracts/roster.md#identity-attestation"
+}

@@ -1,0 +1,75 @@
+{
+  "files": {
+    "attestation.json": {
+      "cases": 24,
+      "sha256": "87f55d5e660c41338b013439f7bf515b3303a466479ab56b2c892256979633b8",
+      "spec": "contracts/roster.md#identity-attestation"
+    },
+    "canonical-json.json": {
+      "cases": 20,
+      "sha256": "8db7914348c71fbf9fc41693cc5fa5760680996aca06a848173719d66a866651",
+      "spec": "contracts/event.md#canonical-json"
+    },
+    "crypto.json": {
+      "cases": 26,
+      "sha256": "1a8f0161e135974ed6e775173ecbbf4644e4af9447904bf2dc31de10b149cd67",
+      "spec": "contracts/event.md#signatures-and-ids"
+    },
+    "event.json": {
+      "cases": 31,
+      "sha256": "1945f3933edf45807e0bf20a6db688a98fe8f9a4a0ec36d46933a865e1ea127c",
+      "spec": "contracts/event.md"
+    },
+    "feed.json": {
+      "cases": 15,
+      "sha256": "daa11d245026807300f6907191d9b96a6f2edb7fb54ba8fd75cd654419bef84a",
+      "spec": "contracts/event.md#feeds-and-chains"
+    },
+    "fold.json": {
+      "cases": 22,
+      "sha256": "20be9a77033448a202deb0860e63e236073aa036bffb57d05355e63d41b9b1ac",
+      "spec": "contracts/event.md#merge-rules"
+    },
+    "keys.json": {
+      "cases": 31,
+      "sha256": "03e66f17bbf074ba5a94e0f10e84ca6f5f51fe51ea55c2fd0188126e8f0bb701",
+      "spec": "contracts/keys.md"
+    },
+    "labels.json": {
+      "cases": 52,
+      "sha256": "d58b11f8d19aafa52c06d84165e072a1b895263779e1613d4d59d3255d7c7eb4",
+      "spec": "contracts/labels.md"
+    },
+    "pairing.json": {
+      "cases": 10,
+      "sha256": "de4fa981a1b92a8af6d59687ba2438fb5c8f55d26f9417d1e92c2450aad84d1f",
+      "spec": "contracts/roster.md#pairing"
+    },
+    "policy.json": {
+      "cases": 25,
+      "sha256": "d3fde6bd8a19258e30dd88b91e53d148f547a674b06eebf9b9da4d4fd84b2306",
+      "spec": "contracts/policy.md"
+    },
+    "roster.json": {
+      "cases": 55,
+      "sha256": "b73732de536b7d73b26dae1cf4aeb5e8317a6680e2988eecb01f82cded0323c8",
+      "spec": "contracts/roster.md"
+    },
+    "surface.json": {
+      "cases": 55,
+      "sha256": "da7fb3dd2c0abba8f563e6a7665d28795cf62e1e4cff87ead300b9a7dc161855",
+      "spec": "contracts/surface.md"
+    },
+    "sync.json": {
+      "cases": 47,
+      "sha256": "4034be19810654e279e67a33541654cf6e0953e3b09f9de95a30f044d4fda23c",
+      "spec": "contracts/sync.md"
+    },
+    "ticket.json": {
+      "cases": 44,
+      "sha256": "8b017842b83acf8eff285d00c0824f3f470a812ef0f020db2a1db3268a080d23",
+      "spec": "contracts/ticket.md"
+    }
+  },
+  "format": "astral.vectors/v1"
+}

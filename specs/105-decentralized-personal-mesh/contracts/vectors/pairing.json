@@ -1,0 +1,305 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "ok": {
+          "valid": true
+        }
+      },
+      "input": {
+        "invite": {
+          "addr": "iroh:endpoint-alice",
+          "expires_s": 1794442200,
+          "inviter": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "kind": "invite",
+          "mesh": "sha256:161c297a2c35c1b0a65fa2aa26bf77521110801fa61903432d48c4bb2548f74e",
+          "nonce": "qbCi0EuyiPKzTCXqoBx9yA",
+          "sig": "bqN0YJB00bEvyYmcQxIWPE7HHUbJ-F5RjH4ymQZwaTZzjU71-wk7DW-5V4xlKn6QHZ_lQydSf-PIbsDq7q0Nlg",
+          "v": 1
+        },
+        "inviter_identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "mesh": "sha256:161c297a2c35c1b0a65fa2aa26bf77521110801fa61903432d48c4bb2548f74e",
+        "now_s": 1794441600
+      },
+      "kind": "pairing_invite",
+      "name": "invite-valid"
+    },
+    {
+      "expect": {
+        "error": "pairing.expired"
+      },
+      "input": {
+        "invite": {
+          "addr": "iroh:endpoint-alice",
+          "expires_s": 1794442200,
+          "inviter": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "kind": "invite",
+          "mesh": "sha256:161c297a2c35c1b0a65fa2aa26bf77521110801fa61903432d48c4bb2548f74e",
+          "nonce": "qbCi0EuyiPKzTCXqoBx9yA",
+          "sig": "bqN0YJB00bEvyYmcQxIWPE7HHUbJ-F5RjH4ymQZwaTZzjU71-wk7DW-5V4xlKn6QHZ_lQydSf-PIbsDq7q0Nlg",
+          "v": 1
+        },
+        "inviter_identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "mesh": "sha256:161c297a2c35c1b0a65fa2aa26bf77521110801fa61903432d48c4bb2548f74e",
+        "now_s": 1794442201
+      },
+      "kind": "pairing_invite",
+      "name": "invite-expired"
+    },
+    {
+      "expect": {
+        "error": "pairing.wrong_mesh"
+      },
+      "input": {
+        "invite": {
+          "addr": "iroh:endpoint-alice",
+          "expires_s": 1794442200,
+          "inviter": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "kind": "invite",
+          "mesh": "sha256:161c297a2c35c1b0a65fa2aa26bf77521110801fa61903432d48c4bb2548f74e",
+          "nonce": "qbCi0EuyiPKzTCXqoBx9yA",
+          "sig": "bqN0YJB00bEvyYmcQxIWPE7HHUbJ-F5RjH4ymQZwaTZzjU71-wk7DW-5V4xlKn6QHZ_lQydSf-PIbsDq7q0Nlg",
+          "v": 1
+        },
+        "inviter_identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "mesh": "sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+        "now_s": 1794441600
+      },
+      "kind": "pairing_invite",
+      "name": "invite-wrong-mesh"
+    },
+    {
+      "expect": {
+        "error": "pairing.wrong_signer"
+      },
+      "input": {
+        "invite": {
+          "addr": "iroh:endpoint-alice",
+          "expires_s": 1794442200,
+          "inviter": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "kind": "invite",
+          "mesh": "sha256:161c297a2c35c1b0a65fa2aa26bf77521110801fa61903432d48c4bb2548f74e",
+          "nonce": "qbCi0EuyiPKzTCXqoBx9yA",
+          "sig": "bqN0YJB00bEvyYmcQxIWPE7HHUbJ-F5RjH4ymQZwaTZzjU71-wk7DW-5V4xlKn6QHZ_lQydSf-PIbsDq7q0Nlg",
+          "v": 1
+        },
+        "inviter_identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+        "mesh": "sha256:161c297a2c35c1b0a65fa2aa26bf77521110801fa61903432d48c4bb2548f74e",
+        "now_s": 1794441600
+      },
+      "kind": "pairing_invite",
+      "name": "invite-wrong-signer"
+    },
+    {
+      "expect": {
+        "error": "pairing.bad_signature"
+      },
+      "input": {
+        "invite": {
+          "addr": "iroh:endpoint-mallory",
+          "expires_s": 1794442200,
+          "inviter": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "kind": "invite",
+          "mesh": "sha256:161c297a2c35c1b0a65fa2aa26bf77521110801fa61903432d48c4bb2548f74e",
+          "nonce": "qbCi0EuyiPKzTCXqoBx9yA",
+          "sig": "bqN0YJB00bEvyYmcQxIWPE7HHUbJ-F5RjH4ymQZwaTZzjU71-wk7DW-5V4xlKn6QHZ_lQydSf-PIbsDq7q0Nlg",
+          "v": 1
+        },
+        "inviter_identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "mesh": "sha256:161c297a2c35c1b0a65fa2aa26bf77521110801fa61903432d48c4bb2548f74e",
+        "now_s": 1794441600
+      },
+      "kind": "pairing_invite",
+      "name": "invite-address-edited"
+    },
+    {
+      "expect": {
+        "ok": {
+          "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        }
+      },
+      "input": {
+        "mesh": "sha256:161c297a2c35c1b0a65fa2aa26bf77521110801fa61903432d48c4bb2548f74e",
+        "nonce": "qbCi0EuyiPKzTCXqoBx9yA",
+        "request": {
+          "addr": "iroh:endpoint-bob",
+          "device": {
+            "cert": "bg6C8q4qOFhuhrK1SJd5pjefrmZk6Os1ULaRHwdIqeAP6f4lmJ0t17IaxSmK5EkF24SWEaY5yWTnTdc61SDo4Q",
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "label": "bob",
+            "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+            "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+          },
+          "kind": "request",
+          "mesh": "sha256:161c297a2c35c1b0a65fa2aa26bf77521110801fa61903432d48c4bb2548f74e",
+          "nonce": "qbCi0EuyiPKzTCXqoBx9yA",
+          "sig": "qPBZzFcKT3NL_7cLAiJMyixR-nP3lty4sO28axi4aChOUjNy18NuRxHo7sEljuyT6PLG6IXoR3_hl0a5a6J7ZQ",
+          "v": 1
+        }
+      },
+      "kind": "pairing_request",
+      "name": "request-valid"
+    },
+    {
+      "expect": {
+        "error": "pairing.wrong_nonce"
+      },
+      "input": {
+        "mesh": "sha256:161c297a2c35c1b0a65fa2aa26bf77521110801fa61903432d48c4bb2548f74e",
+        "nonce": "AQEBAQEBAQEBAQEBAQEBAQ",
+        "request": {
+          "addr": "iroh:endpoint-bob",
+          "device": {
+            "cert": "bg6C8q4qOFhuhrK1SJd5pjefrmZk6Os1ULaRHwdIqeAP6f4lmJ0t17IaxSmK5EkF24SWEaY5yWTnTdc61SDo4Q",
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "label": "bob",
+            "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+            "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+          },
+          "kind": "request",
+          "mesh": "sha256:161c297a2c35c1b0a65fa2aa26bf77521110801fa61903432d48c4bb2548f74e",
+          "nonce": "qbCi0EuyiPKzTCXqoBx9yA",
+          "sig": "qPBZzFcKT3NL_7cLAiJMyixR-nP3lty4sO28axi4aChOUjNy18NuRxHo7sEljuyT6PLG6IXoR3_hl0a5a6J7ZQ",
+          "v": 1
+        }
+      },
+      "kind": "pairing_request",
+      "name": "request-wrong-nonce"
+    },
+    {
+      "expect": {
+        "error": "pairing.wrong_mesh"
+      },
+      "input": {
+        "mesh": "sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+        "nonce": "qbCi0EuyiPKzTCXqoBx9yA",
+        "request": {
+          "addr": "iroh:endpoint-bob",
+          "device": {
+            "cert": "bg6C8q4qOFhuhrK1SJd5pjefrmZk6Os1ULaRHwdIqeAP6f4lmJ0t17IaxSmK5EkF24SWEaY5yWTnTdc61SDo4Q",
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "label": "bob",
+            "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+            "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+          },
+          "kind": "request",
+          "mesh": "sha256:161c297a2c35c1b0a65fa2aa26bf77521110801fa61903432d48c4bb2548f74e",
+          "nonce": "qbCi0EuyiPKzTCXqoBx9yA",
+          "sig": "qPBZzFcKT3NL_7cLAiJMyixR-nP3lty4sO28axi4aChOUjNy18NuRxHo7sEljuyT6PLG6IXoR3_hl0a5a6J7ZQ",
+          "v": 1
+        }
+      },
+      "kind": "pairing_request",
+      "name": "request-wrong-mesh"
+    },
+    {
+      "expect": {
+        "error": "pairing.bad_signature"
+      },
+      "input": {
+        "mesh": "sha256:161c297a2c35c1b0a65fa2aa26bf77521110801fa61903432d48c4bb2548f74e",
+        "nonce": "qbCi0EuyiPKzTCXqoBx9yA",
+        "request": {
+          "addr": "iroh:other",
+          "device": {
+            "cert": "bg6C8q4qOFhuhrK1SJd5pjefrmZk6Os1ULaRHwdIqeAP6f4lmJ0t17IaxSmK5EkF24SWEaY5yWTnTdc61SDo4Q",
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "label": "bob",
+            "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+            "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+          },
+          "kind": "request",
+          "mesh": "sha256:161c297a2c35c1b0a65fa2aa26bf77521110801fa61903432d48c4bb2548f74e",
+          "nonce": "qbCi0EuyiPKzTCXqoBx9yA",
+          "sig": "qPBZzFcKT3NL_7cLAiJMyixR-nP3lty4sO28axi4aChOUjNy18NuRxHo7sEljuyT6PLG6IXoR3_hl0a5a6J7ZQ",
+          "v": 1
+        }
+      },
+      "kind": "pairing_request",
+      "name": "request-address-edited"
+    },
+    {
+      "expect": {
+        "error": "roster.bad_device_cert"
+      },
+      "input": {
+        "mesh": "sha256:161c297a2c35c1b0a65fa2aa26bf77521110801fa61903432d48c4bb2548f74e",
+        "nonce": "qbCi0EuyiPKzTCXqoBx9yA",
+        "request": {
+          "addr": "a",
+          "device": {
+            "cert": "YCItoHuGGPwJNTmqO4-vv5oQ4ApTh0T8djW9gtfPmXk9JYwsnNr-T56XXybt9C3D5z08-DVhquoadyIxIi61Hw",
+            "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+            "kind": "pocket",
+            "label": "bob",
+            "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+            "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+          },
+          "kind": "request",
+          "mesh": "sha256:161c297a2c35c1b0a65fa2aa26bf77521110801fa61903432d48c4bb2548f74e",
+          "nonce": "qbCi0EuyiPKzTCXqoBx9yA",
+          "sig": "zgLej2SGAKeTnwOgm4fcuB1OLd6yn3bIGcEcTkYF3L86CqBCuFlW-dm4s3WcxgxBlPjpxt7JfjuHsZ680pz0tA",
+          "v": 1
+        }
+      },
+      "kind": "pairing_request",
+      "name": "request-device-cert-for-another-mesh"
+    }
+  ],
+  "devices": {
+    "alice": {
+      "identity_scalar_hex": "0ce393242316eeda13b045c780dd99a3784bbaec0abd572ed0d822df7a61e9a6",
+      "kind": "desktop",
+      "ops_seed_hex": "37a6db180b13765d86ecf35cb5ed52d2a4aa7fb3ece91194f61e7f645e82c3c6",
+      "presence_scalar_hex": "66b9efeacbe85c32fafabc4594ae4c65513ae9a9f15078f02b6238780ebd99ea",
+      "wrap_private_hex": "934e3161ec9672a79552d2db56e2ac25fa5377388f3eb0ea915c9df63ba3a676"
+    },
+    "bob": {
+      "identity_scalar_hex": "5fcd1295f19588d646f38f369c1aa31ab0ba657e2a0ae5e11c740f26a089c84e",
+      "kind": "pocket",
+      "ops_seed_hex": "b0e9bfff3ad8661a30c97858c5492e774456b06d6ec7cb73b3a3c18431a408d3",
+      "presence_scalar_hex": "436f7838b991b7dc7203257f893bf810b7005d216efa22108493968e4ceb230c",
+      "wrap_private_hex": "66ccd3807bc7390c1937aa892b267d756fd593dfb6bc212889bf4f586cb1d6a0"
+    },
+    "carol": {
+      "identity_scalar_hex": "37c4f251aa26504e40020b2c1a8991abd1375409e99d798db37a6ea0a112424f",
+      "kind": "desktop",
+      "ops_seed_hex": "12470ac3ce9fedabd6ec8c1975aee8b9530a10f189cdd7e814eb4ccc67c75aaa",
+      "presence_scalar_hex": "bfcf06edd73197dc7ff47b135cc6a5792aaab1ab3fef426b56921ff2ebea0edb",
+      "wrap_private_hex": "f2100eb3b3967d9462d41955564ba00be4694df3ad48cbb13a3e8347e306670d"
+    },
+    "dave": {
+      "identity_scalar_hex": "b889f91aabfd0f244f12f137e15b19f247a02d2799824ba1af6c3eb9265422a3",
+      "kind": "satellite",
+      "ops_seed_hex": "91f3ea8d5dc532355d1d9fed02e3130595e425dc932d1ac92a03d892e8384860",
+      "presence_scalar_hex": "32aa0246bf7a4958376612da9172a936fdfbbc754c9588938df23474d9da802d",
+      "wrap_private_hex": "999c04164c2f8c4f3e38e0a4071a6ef6da25a744fac14e5076fd7d9b95c4587d"
+    },
+    "mallory": {
+      "identity_scalar_hex": "b9fdeaa4e28ffe58ee6323e71e30140fd0db2bf430601c734dd757f0ea38a72d",
+      "kind": "pocket",
+      "ops_seed_hex": "3f425ae3013e29a6fd8d3e8d9449ff0e85f8013275a283880dbfef18075ca71d",
+      "presence_scalar_hex": "d6a9b899c9eae91a1cbba1abc64728f6f083c6718c0c3b78155eaf9cd8f2859c",
+      "wrap_private_hex": "528456ec67167228ec4f9df7c714ee125c28e39201372e46bed8c21603181006"
+    },
+    "node1": {
+      "identity_scalar_hex": "782850c40eb281337d54e213fbb6f1e45fa58883d25b1ac60e6b1e4cd9f765f4",
+      "kind": "node",
+      "ops_seed_hex": "f4c7daa92619d74644c327b2de7c4bb58b29f4b7005cdc3718fcb9751257132e",
+      "presence_scalar_hex": "2e1efe8dcf780eea84694e338691bca0f8a379f3ebf2692ee279bcc3256f4d2a",
+      "wrap_private_hex": "ed77f67bea91fde1d5e0b5456f847ab758bcf3cd41202fc74c0e2335d53d9c74"
+    }
+  },
+  "format": "astral.vectors/v1",
+  "name": "pairing",
+  "spec": "contracts/roster.md#pairing"
+}

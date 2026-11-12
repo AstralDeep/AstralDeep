@@ -1,0 +1,1318 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "ok": {
+          "branches": [],
+          "queued": {},
+          "roots": [
+            "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02"
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "base": null,
+              "text": "hi"
+            },
+            "clock": {
+              "ms": 900,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:ca0df2c95aa144c1d0ff2ff3c8f967fdc1de9ef0c4120b3726416701b519d619",
+            "seq": 2,
+            "type": "chat.user_message"
+          },
+          {
+            "after": [],
+            "body": {
+              "continues": null,
+              "message": "sha256:ca0df2c95aa144c1d0ff2ff3c8f967fdc1de9ef0c4120b3726416701b519d619"
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02",
+            "seq": 1,
+            "type": "chat.turn_start"
+          }
+        ]
+      },
+      "kind": "fold_branches",
+      "name": "one-line-of-turns-has-no-branch"
+    },
+    {
+      "expect": {
+        "ok": {
+          "branches": [
+            {
+              "children": [
+                "sha256:53ef272d2d0955b78ed3c3043b26e169ab2b16f7b46c87b784b39762e1e2a11a",
+                "sha256:89f5451d7d9dde5fe37903715aeb5a4238b100ad3261143f716f170344d2c19d"
+              ],
+              "parent": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02"
+            }
+          ],
+          "queued": {},
+          "roots": [
+            "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02"
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "base": null,
+              "text": "hi"
+            },
+            "clock": {
+              "ms": 900,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:ca0df2c95aa144c1d0ff2ff3c8f967fdc1de9ef0c4120b3726416701b519d619",
+            "seq": 2,
+            "type": "chat.user_message"
+          },
+          {
+            "after": [],
+            "body": {
+              "continues": null,
+              "message": "sha256:ca0df2c95aa144c1d0ff2ff3c8f967fdc1de9ef0c4120b3726416701b519d619"
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02",
+            "seq": 1,
+            "type": "chat.turn_start"
+          },
+          {
+            "after": [],
+            "body": {
+              "base": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02",
+              "text": "a"
+            },
+            "clock": {
+              "ms": 1900,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:2af506904de678f612879b2a80caffce82427deb75494ddc3ad2d10915a36294",
+            "seq": 4,
+            "type": "chat.user_message"
+          },
+          {
+            "after": [],
+            "body": {
+              "continues": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02",
+              "message": "sha256:2af506904de678f612879b2a80caffce82427deb75494ddc3ad2d10915a36294"
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:53ef272d2d0955b78ed3c3043b26e169ab2b16f7b46c87b784b39762e1e2a11a",
+            "seq": 3,
+            "type": "chat.turn_start"
+          },
+          {
+            "after": [],
+            "body": {
+              "base": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02",
+              "text": "b"
+            },
+            "clock": {
+              "ms": 2050,
+              "n": 0
+            },
+            "feed": "bbb",
+            "id": "sha256:540b60dd6430c143b36930dfd191a29e0980fc14a97ba73dc3d59d30812e6d91",
+            "seq": 2,
+            "type": "chat.user_message"
+          },
+          {
+            "after": [],
+            "body": {
+              "continues": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02",
+              "message": "sha256:540b60dd6430c143b36930dfd191a29e0980fc14a97ba73dc3d59d30812e6d91"
+            },
+            "clock": {
+              "ms": 2100,
+              "n": 0
+            },
+            "feed": "bbb",
+            "id": "sha256:89f5451d7d9dde5fe37903715aeb5a4238b100ad3261143f716f170344d2c19d",
+            "seq": 1,
+            "type": "chat.turn_start"
+          }
+        ]
+      },
+      "kind": "fold_branches",
+      "name": "two-devices-continue-one-turn-make-two-branches"
+    },
+    {
+      "expect": {
+        "ok": {
+          "branches": [
+            {
+              "children": [
+                "sha256:53ef272d2d0955b78ed3c3043b26e169ab2b16f7b46c87b784b39762e1e2a11a",
+                "sha256:89f5451d7d9dde5fe37903715aeb5a4238b100ad3261143f716f170344d2c19d"
+              ],
+              "parent": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02"
+            }
+          ],
+          "queued": {
+            "sha256:153812ae5fea0b73a011bf28bd7cea93644437c3fe3260b7b2d7e1e2f9f46bde": "sha256:89f5451d7d9dde5fe37903715aeb5a4238b100ad3261143f716f170344d2c19d"
+          },
+          "roots": [
+            "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02"
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "base": null,
+              "text": "hi"
+            },
+            "clock": {
+              "ms": 900,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:ca0df2c95aa144c1d0ff2ff3c8f967fdc1de9ef0c4120b3726416701b519d619",
+            "seq": 2,
+            "type": "chat.user_message"
+          },
+          {
+            "after": [],
+            "body": {
+              "continues": null,
+              "message": "sha256:ca0df2c95aa144c1d0ff2ff3c8f967fdc1de9ef0c4120b3726416701b519d619"
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02",
+            "seq": 1,
+            "type": "chat.turn_start"
+          },
+          {
+            "after": [],
+            "body": {
+              "base": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02",
+              "text": "a"
+            },
+            "clock": {
+              "ms": 1900,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:2af506904de678f612879b2a80caffce82427deb75494ddc3ad2d10915a36294",
+            "seq": 4,
+            "type": "chat.user_message"
+          },
+          {
+            "after": [],
+            "body": {
+              "continues": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02",
+              "message": "sha256:2af506904de678f612879b2a80caffce82427deb75494ddc3ad2d10915a36294"
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:53ef272d2d0955b78ed3c3043b26e169ab2b16f7b46c87b784b39762e1e2a11a",
+            "seq": 3,
+            "type": "chat.turn_start"
+          },
+          {
+            "after": [],
+            "body": {
+              "base": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02",
+              "text": "b"
+            },
+            "clock": {
+              "ms": 2050,
+              "n": 0
+            },
+            "feed": "bbb",
+            "id": "sha256:540b60dd6430c143b36930dfd191a29e0980fc14a97ba73dc3d59d30812e6d91",
+            "seq": 2,
+            "type": "chat.user_message"
+          },
+          {
+            "after": [],
+            "body": {
+              "continues": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02",
+              "message": "sha256:540b60dd6430c143b36930dfd191a29e0980fc14a97ba73dc3d59d30812e6d91"
+            },
+            "clock": {
+              "ms": 2100,
+              "n": 0
+            },
+            "feed": "bbb",
+            "id": "sha256:89f5451d7d9dde5fe37903715aeb5a4238b100ad3261143f716f170344d2c19d",
+            "seq": 1,
+            "type": "chat.turn_start"
+          },
+          {
+            "after": [],
+            "body": {
+              "base": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02",
+              "text": "while offline"
+            },
+            "clock": {
+              "ms": 5000,
+              "n": 0
+            },
+            "feed": "ccc",
+            "id": "sha256:153812ae5fea0b73a011bf28bd7cea93644437c3fe3260b7b2d7e1e2f9f46bde",
+            "seq": 1,
+            "type": "chat.user_message"
+          }
+        ]
+      },
+      "kind": "fold_branches",
+      "name": "queued-message-is-not-a-branch"
+    },
+    {
+      "expect": {
+        "ok": {
+          "branches": [],
+          "queued": {
+            "sha256:153812ae5fea0b73a011bf28bd7cea93644437c3fe3260b7b2d7e1e2f9f46bde": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02"
+          },
+          "roots": [
+            "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02"
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "base": null,
+              "text": "hi"
+            },
+            "clock": {
+              "ms": 900,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:ca0df2c95aa144c1d0ff2ff3c8f967fdc1de9ef0c4120b3726416701b519d619",
+            "seq": 2,
+            "type": "chat.user_message"
+          },
+          {
+            "after": [],
+            "body": {
+              "continues": null,
+              "message": "sha256:ca0df2c95aa144c1d0ff2ff3c8f967fdc1de9ef0c4120b3726416701b519d619"
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02",
+            "seq": 1,
+            "type": "chat.turn_start"
+          },
+          {
+            "after": [],
+            "body": {
+              "base": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02",
+              "text": "while offline"
+            },
+            "clock": {
+              "ms": 5000,
+              "n": 0
+            },
+            "feed": "ccc",
+            "id": "sha256:153812ae5fea0b73a011bf28bd7cea93644437c3fe3260b7b2d7e1e2f9f46bde",
+            "seq": 1,
+            "type": "chat.user_message"
+          }
+        ]
+      },
+      "kind": "fold_branches",
+      "name": "queued-message-on-a-single-line-goes-after-the-latest-turn"
+    },
+    {
+      "expect": {
+        "ok": {
+          "branches": [
+            {
+              "children": [
+                "sha256:53ef272d2d0955b78ed3c3043b26e169ab2b16f7b46c87b784b39762e1e2a11a",
+                "sha256:9d43b0c8809fee43ac31f155453e3e2d3575f41f0b048909c435917f4bd1a1e3"
+              ],
+              "parent": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02"
+            }
+          ],
+          "queued": {},
+          "roots": [
+            "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02"
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "base": null,
+              "text": "hi"
+            },
+            "clock": {
+              "ms": 900,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:ca0df2c95aa144c1d0ff2ff3c8f967fdc1de9ef0c4120b3726416701b519d619",
+            "seq": 2,
+            "type": "chat.user_message"
+          },
+          {
+            "after": [],
+            "body": {
+              "continues": null,
+              "message": "sha256:ca0df2c95aa144c1d0ff2ff3c8f967fdc1de9ef0c4120b3726416701b519d619"
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02",
+            "seq": 1,
+            "type": "chat.turn_start"
+          },
+          {
+            "after": [],
+            "body": {
+              "base": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02",
+              "text": "a"
+            },
+            "clock": {
+              "ms": 1900,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:2af506904de678f612879b2a80caffce82427deb75494ddc3ad2d10915a36294",
+            "seq": 4,
+            "type": "chat.user_message"
+          },
+          {
+            "after": [],
+            "body": {
+              "continues": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02",
+              "message": "sha256:2af506904de678f612879b2a80caffce82427deb75494ddc3ad2d10915a36294"
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:53ef272d2d0955b78ed3c3043b26e169ab2b16f7b46c87b784b39762e1e2a11a",
+            "seq": 3,
+            "type": "chat.turn_start"
+          },
+          {
+            "after": [],
+            "body": {
+              "continues": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02",
+              "message": "sha256:2af506904de678f612879b2a80caffce82427deb75494ddc3ad2d10915a36294"
+            },
+            "clock": {
+              "ms": 3000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:9d43b0c8809fee43ac31f155453e3e2d3575f41f0b048909c435917f4bd1a1e3",
+            "seq": 5,
+            "type": "chat.turn_start"
+          }
+        ]
+      },
+      "kind": "fold_branches",
+      "name": "regenerating-from-the-same-turn-also-branches"
+    },
+    {
+      "expect": {
+        "error": "fold.unknown_turn"
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "continues": "sha256:628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02",
+              "message": "sha256:2af506904de678f612879b2a80caffce82427deb75494ddc3ad2d10915a36294"
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:53ef272d2d0955b78ed3c3043b26e169ab2b16f7b46c87b784b39762e1e2a11a",
+            "seq": 3,
+            "type": "chat.turn_start"
+          }
+        ]
+      },
+      "kind": "fold_branches",
+      "name": "turn-continuing-an-unknown-turn"
+    },
+    {
+      "expect": {
+        "ok": {
+          "grants": {},
+          "rules": {},
+          "waiting_for_consent": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "agent": "agent.mail",
+              "scope": "mesh",
+              "tool": "mail.send",
+              "widening": false
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038",
+            "seq": 1,
+            "type": "auth.grant"
+          },
+          {
+            "after": [],
+            "body": {
+              "agent": "agent.mail",
+              "scope": "mesh",
+              "tool": "mail.send"
+            },
+            "clock": {
+              "ms": 1100,
+              "n": 0
+            },
+            "feed": "bbb",
+            "id": "sha256:82f3e9c695dc6b8d1b11818d5701919e286de8d47f7c3eb3100c485f79e57828",
+            "seq": 1,
+            "type": "auth.revoke"
+          }
+        ],
+        "presence_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+        }
+      },
+      "kind": "fold_authority",
+      "name": "revoke-beats-a-concurrent-grant"
+    },
+    {
+      "expect": {
+        "ok": {
+          "grants": {},
+          "rules": {},
+          "waiting_for_consent": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "agent": "agent.mail",
+              "scope": "mesh",
+              "tool": "mail.send",
+              "widening": false
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038",
+            "seq": 1,
+            "type": "auth.grant"
+          },
+          {
+            "after": [
+              "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038"
+            ],
+            "body": {
+              "agent": "agent.mail",
+              "scope": "mesh",
+              "tool": "mail.send"
+            },
+            "clock": {
+              "ms": 1100,
+              "n": 0
+            },
+            "feed": "bbb",
+            "id": "sha256:db77fd01af957221a4989b64b3770a83a3c56068405b9f0e9408feae57fd17e4",
+            "seq": 1,
+            "type": "auth.revoke"
+          }
+        ],
+        "presence_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+        }
+      },
+      "kind": "fold_authority",
+      "name": "revoke-after-the-grant-removes-it"
+    },
+    {
+      "expect": {
+        "ok": {
+          "grants": {
+            "agent.mail/mail.send/mesh": "sha256:4d2f4b668cfc48e6059d36e91326bf87de39ba819f35450477bc1ce614a63bbd"
+          },
+          "rules": {},
+          "waiting_for_consent": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "agent": "agent.mail",
+              "scope": "mesh",
+              "tool": "mail.send",
+              "widening": false
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038",
+            "seq": 1,
+            "type": "auth.grant"
+          },
+          {
+            "after": [],
+            "body": {
+              "agent": "agent.mail",
+              "scope": "mesh",
+              "tool": "mail.send"
+            },
+            "clock": {
+              "ms": 1100,
+              "n": 0
+            },
+            "feed": "bbb",
+            "id": "sha256:82f3e9c695dc6b8d1b11818d5701919e286de8d47f7c3eb3100c485f79e57828",
+            "seq": 1,
+            "type": "auth.revoke"
+          },
+          {
+            "after": [
+              "sha256:82f3e9c695dc6b8d1b11818d5701919e286de8d47f7c3eb3100c485f79e57828"
+            ],
+            "body": {
+              "agent": "agent.mail",
+              "scope": "mesh",
+              "tool": "mail.send",
+              "widening": false
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:4d2f4b668cfc48e6059d36e91326bf87de39ba819f35450477bc1ce614a63bbd",
+            "seq": 2,
+            "type": "auth.grant"
+          }
+        ],
+        "presence_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+        }
+      },
+      "kind": "fold_authority",
+      "name": "grant-after-the-revoke-takes-effect"
+    },
+    {
+      "expect": {
+        "ok": {
+          "grants": {
+            "agent.mail/mail.send/mesh": "sha256:3921871aa0881e3e94830142ac90994452f670fe337eb50303ea9cc6d0f3ae37"
+          },
+          "rules": {},
+          "waiting_for_consent": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "agent": "agent.mail",
+              "scope": "mesh",
+              "tool": "mail.send"
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:e49d63b2a8a78f048bafc4b4590029603a5a4165ee8bf98af15d62f24cd83479",
+            "seq": 1,
+            "type": "auth.revoke"
+          },
+          {
+            "after": [],
+            "body": {
+              "agent": "agent.mail",
+              "scope": "mesh",
+              "tool": "mail.send",
+              "widening": false
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:3921871aa0881e3e94830142ac90994452f670fe337eb50303ea9cc6d0f3ae37",
+            "seq": 2,
+            "type": "auth.grant"
+          }
+        ],
+        "presence_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+        }
+      },
+      "kind": "fold_authority",
+      "name": "grant-that-follows-a-revoke-in-its-own-feed"
+    },
+    {
+      "expect": {
+        "ok": {
+          "grants": {},
+          "rules": {},
+          "waiting_for_consent": [
+            "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf"
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "agent": "agent.mail",
+              "scope": "mesh",
+              "tool": "mail.send",
+              "widening": true
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf",
+            "seq": 1,
+            "type": "auth.grant"
+          }
+        ],
+        "presence_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+        }
+      },
+      "kind": "fold_authority",
+      "name": "widening-grant-waits-for-consent"
+    },
+    {
+      "expect": {
+        "ok": {
+          "grants": {
+            "agent.mail/mail.send/mesh": "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf"
+          },
+          "rules": {},
+          "waiting_for_consent": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "agent": "agent.mail",
+              "scope": "mesh",
+              "tool": "mail.send",
+              "widening": true
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf",
+            "seq": 1,
+            "type": "auth.grant"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1500,
+                  "n": 0
+                },
+                "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                "digest": "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf",
+                "kind": "grant",
+                "sig": "9beeJ9N4vK4l_LGsQfQ02Y0N-jP56JyNg6eFk9i7q1EUfNGFJObok7m2qqDZs3UEJKEUk7TbMZPM3Z94bOC3vg",
+                "v": 1
+              },
+              "grant": "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf"
+            },
+            "clock": {
+              "ms": 1500,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:d0f631ca1ddba8db3bcfcb9e057cdc98d0379f1bee00e75a545147a27dadd982",
+            "seq": 2,
+            "type": "auth.consent"
+          }
+        ],
+        "presence_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+        }
+      },
+      "kind": "fold_authority",
+      "name": "widening-grant-with-consent-takes-effect"
+    },
+    {
+      "expect": {
+        "ok": {
+          "grants": {},
+          "rules": {},
+          "waiting_for_consent": [
+            "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf"
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "agent": "agent.mail",
+              "scope": "mesh",
+              "tool": "mail.send",
+              "widening": true
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf",
+            "seq": 1,
+            "type": "auth.grant"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1500,
+                  "n": 0
+                },
+                "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                "digest": "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf",
+                "kind": "grant",
+                "sig": "JnIST1Clrrpb96gPw3Q_-L15sRYFmnDBLzumniQYpkht00Ainl00yu7-Jq-3W2jQYo_Sop7tH0JVvPeOgw_Ehg",
+                "v": 1
+              },
+              "grant": "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf"
+            },
+            "clock": {
+              "ms": 1500,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:9c0abe51c6e6655d81de2d044d4fb194931f058c0426c67c7285d8f5657ed64a",
+            "seq": 2,
+            "type": "auth.consent"
+          }
+        ],
+        "presence_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+        }
+      },
+      "kind": "fold_authority",
+      "name": "consent-signed-with-the-wrong-key-does-not-count"
+    },
+    {
+      "expect": {
+        "ok": {
+          "grants": {},
+          "rules": {},
+          "waiting_for_consent": [
+            "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf"
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "agent": "agent.mail",
+              "scope": "mesh",
+              "tool": "mail.send",
+              "widening": true
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf",
+            "seq": 1,
+            "type": "auth.grant"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1500,
+                  "n": 0
+                },
+                "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                "digest": "sha256:d9298a10d1b0735837dc4bd85dac641b0f3cef27a47e5d53a54f2f3f5b2fcffa",
+                "kind": "grant",
+                "sig": "Iqj8Yu3zmUSJhulL1SqlfP-e-ApBP8-azpvqXsNikB0nFOul0lanGsX5QwwJH0DwaIjo4Um8cjpo9PhUO1Tkbg",
+                "v": 1
+              },
+              "grant": "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf"
+            },
+            "clock": {
+              "ms": 1500,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:7c1c97df17c066924822b0af09a65251554962c61e23329aed04cd19020dc3b8",
+            "seq": 2,
+            "type": "auth.consent"
+          }
+        ],
+        "presence_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+        }
+      },
+      "kind": "fold_authority",
+      "name": "consent-for-another-grant-does-not-count"
+    },
+    {
+      "expect": {
+        "ok": {
+          "grants": {},
+          "rules": {
+            "mail.send": "deny"
+          },
+          "waiting_for_consent": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "key": "mail.send",
+              "rule": "consent"
+            },
+            "clock": {
+              "ms": 3000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:676b8bb84ce7267dd520deca4811c8f10a53e636352f06987f42fe425acedd80",
+            "seq": 3,
+            "type": "auth.narrow"
+          },
+          {
+            "after": [],
+            "body": {
+              "key": "mail.send",
+              "rule": "deny"
+            },
+            "clock": {
+              "ms": 3100,
+              "n": 0
+            },
+            "feed": "bbb",
+            "id": "sha256:0480a93d2e9b094b89e08e01976089ac18193af802c66b631cc8d2dc1bae8c88",
+            "seq": 1,
+            "type": "auth.narrow"
+          },
+          {
+            "after": [],
+            "body": {
+              "key": "mail.send",
+              "rule": "allow"
+            },
+            "clock": {
+              "ms": 3200,
+              "n": 0
+            },
+            "feed": "ccc",
+            "id": "sha256:8721d664ef60096aa559e1aa6c72caf1facf5ce08b03aa6921ed9af5645d5466",
+            "seq": 1,
+            "type": "auth.narrow"
+          }
+        ],
+        "presence_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+        }
+      },
+      "kind": "fold_authority",
+      "name": "narrowing-merges-to-the-strictest-rule"
+    },
+    {
+      "expect": {
+        "error": "fold.bad_rule"
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "key": "k",
+              "rule": "maybe"
+            },
+            "clock": {
+              "ms": 1,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:88450b082ec4df2fdccd3a626c6e489b31ef8cbf151bd543acf6e8890ffa1f49",
+            "seq": 1,
+            "type": "auth.narrow"
+          }
+        ],
+        "presence_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+        }
+      },
+      "kind": "fold_authority",
+      "name": "narrowing-with-an-unknown-rule"
+    },
+    {
+      "expect": {
+        "error": "fold.cycle"
+      },
+      "input": {
+        "events": [
+          {
+            "after": [
+              "sha256:103d6254a6d94bacc82e822885185f56c69cb799ec5124c0aa405e386975151b"
+            ],
+            "body": {
+              "agent": "a",
+              "scope": "s",
+              "tool": "t"
+            },
+            "clock": {
+              "ms": 1,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:6959097001d10501ac7d54c0bdb8db61420f658f2922cc26e46d536119a31126",
+            "seq": 1,
+            "type": "auth.revoke"
+          },
+          {
+            "after": [
+              "sha256:6959097001d10501ac7d54c0bdb8db61420f658f2922cc26e46d536119a31126"
+            ],
+            "body": {
+              "agent": "a",
+              "scope": "s",
+              "tool": "t"
+            },
+            "clock": {
+              "ms": 1,
+              "n": 0
+            },
+            "feed": "bbb",
+            "id": "sha256:103d6254a6d94bacc82e822885185f56c69cb799ec5124c0aa405e386975151b",
+            "seq": 1,
+            "type": "auth.revoke"
+          }
+        ],
+        "presence_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+        }
+      },
+      "kind": "fold_authority",
+      "name": "causal-cycle-is-refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "theme": "dark"
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "key": "theme",
+              "value": "dark"
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:e8bc163c82eee18733288c7d4ac636db3a6deb013ef2d37b68322be20edc45cc",
+            "seq": 1,
+            "type": "settings.set"
+          },
+          {
+            "after": [],
+            "body": {
+              "key": "theme",
+              "value": "light"
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "bbb",
+            "id": "sha256:ad328846aa18b32a335816374511cac1063c704b8c57999e51da9f908290a7a4",
+            "seq": 1,
+            "type": "settings.set"
+          }
+        ]
+      },
+      "kind": "fold_settings",
+      "name": "later-clock-wins"
+    },
+    {
+      "expect": {
+        "ok": {
+          "theme": "light"
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "key": "theme",
+              "value": "dark"
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:e8bc163c82eee18733288c7d4ac636db3a6deb013ef2d37b68322be20edc45cc",
+            "seq": 1,
+            "type": "settings.set"
+          },
+          {
+            "after": [],
+            "body": {
+              "key": "theme",
+              "value": "light"
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "bbb",
+            "id": "sha256:ad328846aa18b32a335816374511cac1063c704b8c57999e51da9f908290a7a4",
+            "seq": 1,
+            "type": "settings.set"
+          }
+        ]
+      },
+      "kind": "fold_settings",
+      "name": "equal-clock-breaks-by-feed-id"
+    },
+    {
+      "expect": {
+        "ok": {
+          "theme": "light"
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "key": "theme",
+              "value": "dark"
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "bbb",
+            "id": "sha256:e8bc163c82eee18733288c7d4ac636db3a6deb013ef2d37b68322be20edc45cc",
+            "seq": 1,
+            "type": "settings.set"
+          },
+          {
+            "after": [],
+            "body": {
+              "key": "theme",
+              "value": "light"
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 1
+            },
+            "feed": "aaa",
+            "id": "sha256:ad328846aa18b32a335816374511cac1063c704b8c57999e51da9f908290a7a4",
+            "seq": 1,
+            "type": "settings.set"
+          }
+        ]
+      },
+      "kind": "fold_settings",
+      "name": "counter-breaks-equal-milliseconds"
+    },
+    {
+      "expect": {
+        "ok": {
+          "home": "y",
+          "n": 1
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "key": "home",
+              "value": "x"
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:e8bc163c82eee18733288c7d4ac636db3a6deb013ef2d37b68322be20edc45cc",
+            "seq": 1,
+            "type": "mem.remember"
+          },
+          {
+            "after": [],
+            "body": {
+              "key": "home",
+              "value": "y"
+            },
+            "clock": {
+              "ms": 1001,
+              "n": 0
+            },
+            "feed": "bbb",
+            "id": "sha256:ad328846aa18b32a335816374511cac1063c704b8c57999e51da9f908290a7a4",
+            "seq": 1,
+            "type": "mem.remember"
+          },
+          {
+            "after": [],
+            "body": {
+              "key": "n",
+              "value": 1
+            },
+            "clock": {
+              "ms": 5,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:41242b9fae56fad4e6e77dfe33cb18d1c3fc583f988cf25ef9f2d9be0d440bbb",
+            "seq": 2,
+            "type": "settings.set"
+          }
+        ]
+      },
+      "kind": "fold_settings",
+      "name": "memory-and-settings-share-the-rule"
+    },
+    {
+      "expect": {
+        "ok": {
+          "theme": "light"
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "key": "theme",
+              "value": "light"
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "bbb",
+            "id": "sha256:ad328846aa18b32a335816374511cac1063c704b8c57999e51da9f908290a7a4",
+            "seq": 1,
+            "type": "settings.set"
+          },
+          {
+            "after": [],
+            "body": {
+              "key": "theme",
+              "value": "dark"
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:e8bc163c82eee18733288c7d4ac636db3a6deb013ef2d37b68322be20edc45cc",
+            "seq": 1,
+            "type": "settings.set"
+          }
+        ]
+      },
+      "kind": "fold_settings",
+      "name": "order-of-arrival-does-not-matter"
+    }
+  ],
+  "format": "astral.vectors/v1",
+  "name": "fold",
+  "spec": "contracts/event.md#merge-rules"
+}
