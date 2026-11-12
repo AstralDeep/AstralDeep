@@ -25,6 +25,7 @@ docs/*
 # 2026-07-07 release audit; its four siblings had needed `git add -f`).
 !docs/keycloak*.md
 !docs/production-deployment.md
+!docs/personal-node.md
 !docs/byo-client-agents.md
 !docs/remote-compute-agents.md
 !docs/mcp-server-endpoint.md

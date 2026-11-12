@@ -16,7 +16,6 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.routing import APIRoute
-from jose import jwt as jose_jwt
 
 import shared  # noqa: F401
 
@@ -294,26 +293,13 @@ async def verify_production_token(token: str) -> dict:
     authority, client_id, _ = _get_keycloak_config()
     if not authority or not client_id:
         raise HTTPException(status_code=500, detail="Auth not configured")
-        
     try:
-        jwks_url = f"{authority}/protocol/openid-connect/certs"
-        from shared.jwks_cache import get_jwks
-        jwks = await get_jwks(jwks_url, token=token)
-
-        # aud check off — Keycloak sets aud='account', not client_id
-        payload = jose_jwt.decode(
-            token, jwks, algorithms=["RS256"],
-            options={"verify_aud": False, "verify_at_hash": False}
-        )
-        iss = payload.get("iss")
-        if iss and authority and iss.rstrip("/") != authority.rstrip("/"):
-            raise HTTPException(status_code=401, detail="Invalid issuer")
-        azp = payload.get("azp")
-        from shared.auth_clients import is_azp_allowed
-        if azp and not is_azp_allowed(azp):
-             raise HTTPException(status_code=401, detail="Invalid client")
+        from shared.token_verify import verify_idp_token
+        payload = await verify_idp_token(token)
         _reject_non_first_party(payload)
         return payload
+    except HTTPException:
+        raise
     except Exception:
         logger.error("Token validation failed in auth wrapper")
         raise HTTPException(status_code=401, detail="Invalid token")

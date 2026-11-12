@@ -30,9 +30,7 @@ def allowed_azps() -> Set[str]:
 
 
 def is_azp_allowed(azp: str) -> bool:
-    if not azp:
-        return True
-    return azp in allowed_azps()
+    return bool(azp) and azp in allowed_azps()
 
 
 def agent_service_client_id() -> str:

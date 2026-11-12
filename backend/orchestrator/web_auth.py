@@ -1010,7 +1010,13 @@ def _establish_session(request: Request, payload: Dict[str, Any], nxt: str) -> R
 
 
 def _sub_from_jwt(token: str) -> str:
-    return _jwt_payload(token).get("sub", "anonymous") or "anonymous"
+    from shared import node_identity
+
+    claims = _jwt_payload(token)
+    try:
+        return node_identity.canonical_owner_id(claims.get("iss"), claims.get("sub"))
+    except node_identity.NodeIdentityError:
+        return "anonymous"
 
 
 async def _audit(action: str, sub: str, description: str, *, outcome: str = "success") -> None:

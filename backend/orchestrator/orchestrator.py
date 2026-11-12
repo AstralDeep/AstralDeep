@@ -22294,11 +22294,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return await renewal.wait_for_token(resolver, timeout=30.0)
 
     def _delegation_required(self) -> bool:
+        from shared import node_identity
+
         override = os.getenv("DELEGATION_REQUIRED", "").strip().lower()
         if override in ("1", "true", "yes"):
             return True
         if override in ("0", "false", "no"):
-            return False
+            return node_identity.is_personal() and os.getenv(
+                "ASTRAL_ENV", "").strip().lower() != "development"
         return os.getenv("ASTRAL_ENV", "").strip().lower() != "development"
 
     async def _delegation_denied_for_permissions(
@@ -22345,6 +22348,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             "MCP delegation refused: server delegation signing key "
                             "is not configured (set DELEGATION_CHILD_SIGNING_KEY); "
                             "logged once")
+                    return None
+            from shared import node_identity
+            if node_identity.is_personal():
+                from orchestrator import delegation as _dg
+                if session.get("sub") != user_id:
+                    return None
+                try:
+                    return await self._mint_mcp_delegation_token(
+                        agent_id, user_id, session, node_session=True)
+                except _dg.DelegationConfigError:
+                    session["_delegation_fault"] = "signing_key_unset"
+                    logger.error("Node delegation refused: node signing key unavailable")
                     return None
             raw_token = None
             resolver = None
@@ -22513,12 +22528,26 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         agent_id: str,
         user_id: str,
         claims: Dict[str, Any],
+        *,
+        node_session: bool = False,
     ) -> Optional[str]:
         from orchestrator import delegation as _dg
 
         card = self.agent_cards.get(agent_id)
         if not card:
             return None
+        stop = getattr(self, "emergency_stop", None)
+        if node_session and stop is not None and not stop.admission_allowed(user_id):
+            return None
+        machine_scopes = None
+        if node_session:
+            from orchestrator.chain_authority import machine_scope_ceiling
+
+            machine_scopes = machine_scope_ceiling(claims)
+            if machine_scopes is not None and claims.get(
+                "_machine_authority_agent"
+            ) not in (None, agent_id):
+                return None
         agent_flags = self.security_flags.get(agent_id, {})
 
         def _scope_reads():
@@ -22531,9 +22560,20 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     agent_id,
                     skill.id,
                 )
+                and (
+                    machine_scopes is None
+                    or self.tool_permissions.get_tool_scope(agent_id, skill.id)
+                    in machine_scopes
+                )
             ]
-            scopes = self.tool_permissions.get_enabled_scope_names(user_id, agent_id)
-            return allowed, scopes
+            if node_session:
+                from orchestrator.tool_permissions import VALID_SCOPES
+
+                granted = {
+                    self.tool_permissions.get_tool_scope(agent_id, tool) for tool in allowed
+                }
+                return allowed, [scope for scope in VALID_SCOPES if scope in granted]
+            return allowed, self.tool_permissions.get_enabled_scope_names(user_id, agent_id)
 
         allowed_tools, enabled_scopes = await asyncio.to_thread(_scope_reads)
         if not enabled_scopes:
@@ -22552,7 +22592,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             "iss": "astral-internal-delegation",
             "aud": self.delegation.agent_service_client_id,
             "iat": now,
-            "exp": min(inbound_exp, now + 300),
+            "exp": now + 300 if node_session else min(inbound_exp, now + 300),
             "delegation": True,
         }
         return _dg.encode_delegation_payload(payload)
@@ -26288,8 +26328,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(share_router)
         app.include_router(auth_router)
         from orchestrator.mesh_web import mesh_web_router
+        from orchestrator.node_api import node_router
         app.include_router(mesh_router)
         app.include_router(mesh_web_router)
+        app.include_router(node_router)
         app.include_router(push_router)
         from orchestrator.harness.selection_api import harness_router
         app.include_router(harness_router)
@@ -26803,35 +26845,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         try:
             authority = os.getenv("KEYCLOAK_AUTHORITY")
             expected_client = os.getenv("KEYCLOAK_CLIENT_ID")
-            
+
             if not authority or not expected_client:
                 logger.warning("Auth not configured (KEYCLOAK_AUTHORITY/CLIENT_ID missing)")
                 return None
 
-            jwks_url = f"{authority}/protocol/openid-connect/certs"
-            from shared.jwks_cache import get_jwks
-            jwks = await get_jwks(jwks_url, token=token)
-
-            # Skips aud check by design: Keycloak always sets aud=account
-            payload = jose_jwt.decode(
-                token,
-                jwks,
-                algorithms=["RS256"],
-                options={"verify_aud": False, "verify_at_hash": False}
-            )
-
-            iss = payload.get("iss")
-            if iss and authority and iss.rstrip("/") != authority.rstrip("/"):
-                logger.warning("Token 'iss' does not match the configured authority — rejecting")
-                return None
-
-            azp = payload.get("azp")
-            from shared.auth_clients import is_azp_allowed, allowed_azps
-            if azp and not is_azp_allowed(azp):
-                logger.warning(
-                    f"Token azp '{azp}' is not an accepted client "
-                    f"(allowed: {sorted(allowed_azps())})"
-                )
+            from shared.token_verify import TokenRefused, verify_idp_token
+            try:
+                payload = await verify_idp_token(token)
+            except TokenRefused as refused:
+                logger.warning("Token refused for a UI session: %s", refused.reason)
                 return None
 
             # Only the audience marks a token as agent, not user
