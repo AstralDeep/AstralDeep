@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from tests.helpers.work_control_caller import OWNER_ID
 
 from astralplane.repositories import RepositoryConflictError, RepositoryError
 from astralplane.repositories.tracked_jobs import TrackedJobRecord
@@ -26,7 +27,7 @@ from orchestrator.remote_transport import MachineTarget, RemoteResult, Verdict, 
 from persistent_agents.runtime_values import digest as _rv_digest
 from tests.helpers.remote_plane_runtime import make_remote_wake_plane_source
 
-OWNER = "owner"
+OWNER = OWNER_ID
 MACHINE = "a" * 32
 TRACKED = "b" * 32
 SCHEDULER_JOB = "4242"

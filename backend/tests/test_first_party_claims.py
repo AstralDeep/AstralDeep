@@ -16,6 +16,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from shared import auth_clients  # noqa: E402
+from shared.node_identity import canonical_owner_id  # noqa: E402
 
 AUTHORITY = "https://idp.example/realms/astral"
 
@@ -111,17 +112,24 @@ def test_mcp_audience_literal_matches_mcp_authz():
 def test_rest_accepts_first_party_token(jwks_env):
     payload = {"sub": "u1", "azp": "astral-frontend", "aud": "account",
                "iss": AUTHORITY}
-    assert _validate(payload, jwks_env)["sub"] == "u1"
-
-
-def test_rest_accepts_token_without_iss(jwks_env):
-    assert _validate({"sub": "u1", "azp": "astral-frontend"}, jwks_env)["sub"] == "u1"
+    assert _validate(payload, jwks_env)["sub"] == canonical_owner_id(AUTHORITY, "u1")
 
 
 @pytest.mark.parametrize("payload", [
-    {"sub": "u1", "azp": "astral-frontend", "act": {"sub": "agent:summarizer-1"}},
-    {"sub": "u1", "azp": "astral-frontend", "delegation": True},
-    {"sub": "u1", "azp": "astral-frontend", "aud": ["account", "astral-mcp"]},
+    {"sub": "u1", "azp": "astral-frontend"},
+    {"sub": "u1", "iss": AUTHORITY},
+    {"sub": "u1", "iss": AUTHORITY, "azp": ""},
+])
+def test_rest_rejects_token_without_iss_or_azp(jwks_env, payload):
+    with pytest.raises(HTTPException) as exc:
+        _validate(payload, jwks_env)
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.parametrize("payload", [
+    {"sub": "u1", "azp": "astral-frontend", "iss": AUTHORITY, "act": {"sub": "agent:summarizer-1"}},
+    {"sub": "u1", "azp": "astral-frontend", "iss": AUTHORITY, "delegation": True},
+    {"sub": "u1", "azp": "astral-frontend", "iss": AUTHORITY, "aud": ["account", "astral-mcp"]},
 ])
 def test_rest_rejects_non_first_party_tokens(jwks_env, payload):
     with pytest.raises(HTTPException) as exc:
@@ -139,4 +147,4 @@ def test_rest_rejects_foreign_issuer(jwks_env):
 
 def test_rest_tolerates_trailing_slash_issuer(jwks_env):
     payload = {"sub": "u1", "azp": "astral-frontend", "iss": AUTHORITY + "/"}
-    assert _validate(payload, jwks_env)["sub"] == "u1"
+    assert _validate(payload, jwks_env)["sub"] == canonical_owner_id(AUTHORITY, "u1")

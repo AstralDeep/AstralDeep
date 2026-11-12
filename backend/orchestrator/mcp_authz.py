@@ -183,6 +183,10 @@ async def decode_mcp_token(token: str) -> dict[str, Any]:
     )
     if not isinstance(payload, dict) or not payload.get("sub"):
         raise ValueError("MCP token has no subject")
+    from shared import node_identity
+
+    payload["sub"] = node_identity.canonical_owner_id(authority, payload["sub"])
+    node_identity.enforce_owner(payload["sub"])
     return payload
 
 

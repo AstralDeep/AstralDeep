@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from tests.helpers.work_control_caller import OWNER_ID
 from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from astralplane.repositories.assignment_models import (
@@ -41,7 +42,7 @@ def records(plane):
     cipher = Fernet(Fernet.generate_key())
     identities = []
     with plane.transaction() as transaction:
-        for owner in ("owner", "owner", "other"):
+        for owner in (OWNER_ID, OWNER_ID, "other"):
             identity = str(uuid4())
             now = int(datetime.now(UTC).timestamp())
             session = sessions.put(transaction, SessionRecord(
@@ -75,12 +76,12 @@ def records(plane):
             identities.append(identity)
         grant = str(uuid4())
         plane.repositories.offline_grants.create_grant(
-            transaction, grant_id=grant, owner_id="owner", agent_id=None,
+            transaction, grant_id=grant, owner_id=OWNER_ID, agent_id=None,
             encrypted_refresh_token=b"opaque fixture bytes", issued_at=1, expires_at=9999999999999)
         limits = dict(definition.limits, cadence_seconds=60)
         limits.update({"daily_" + key: limits[key] for key in ("model_calls", "tool_calls", "tokens", "elapsed_ms")})
         legacy = repository.create_assignment(
-            transaction, owner_id="owner", assignment_id=str(uuid4()), submission_id=str(uuid4()),
+            transaction, owner_id=OWNER_ID, assignment_id=str(uuid4()), submission_id=str(uuid4()),
             submission_digest=digest("legacy"), definition=replace(
                 definition, source={"reader": "fixture.read", "url": "https://example.org"},
                 allowed_tools=("fixture.read",), consented_scopes=("tools:read",),
@@ -96,9 +97,9 @@ def records(plane):
 @pytest.mark.asyncio
 async def test_real_owner_pagination_legacy_isolation_and_read_only_projection(records):
     plane, service, ids, legacy = records
-    first = await service.list("owner", {"sub": "owner"}, limit=1)
-    second = await service.list("owner", {"sub": "owner"}, limit=1, after_id=first["next_cursor"])
-    last = await service.list("owner", {"sub": "owner"}, limit=1, after_id=second["next_cursor"])
+    first = await service.list(OWNER_ID, {"sub": OWNER_ID}, limit=1)
+    second = await service.list(OWNER_ID, {"sub": OWNER_ID}, limit=1, after_id=first["next_cursor"])
+    last = await service.list(OWNER_ID, {"sub": OWNER_ID}, limit=1, after_id=second["next_cursor"])
     assert [first["operations"][0]["id"], second["operations"][0]["id"]] == sorted(ids[:2])
     assert last == {"operations": [], "next_cursor": None, "page_full": False}
     row = first["operations"][0]
@@ -109,16 +110,16 @@ async def test_real_owner_pagination_legacy_isolation_and_read_only_projection(r
     assert "private" not in str(row) and "authority" not in str(row)
     for identity in (ids[2], legacy, str(uuid4())):
         with pytest.raises(AssignmentError) as error:
-            await service.get("owner", {"sub": "owner"}, identity)
+            await service.get(OWNER_ID, {"sub": OWNER_ID}, identity)
         assert (error.value.code, error.value.status_code) == ("work_not_found", 404)
     assert (await service.get("other", {"sub": "other"}, ids[2]))["id"] == ids[2]
-    assert (await service.get("owner", {"sub": "owner"}, row["id"]))["revision"] == 1
+    assert (await service.get(OWNER_ID, {"sub": OWNER_ID}, row["id"]))["revision"] == 1
 
 
 @pytest.mark.asyncio
 async def test_metadata_envelope_discloses_money_status_without_measurement_fields(records):
     _, service, ids, _ = records
-    operation = await service.get("owner", {"sub": "owner"}, ids[0])
+    operation = await service.get(OWNER_ID, {"sub": OWNER_ID}, ids[0])
     assert set(operation) == {
         "id", "revision", "instruction_revision", "control_epoch", "title", "kind",
         "disposition", "lifecycle", "phase", "created_at", "updated_at", "next_wake_at",
@@ -126,7 +127,7 @@ async def test_metadata_envelope_discloses_money_status_without_measurement_fiel
     assert operation["usage"]["money_status"] == "unknown"
     assert set(operation["usage"]) == {"spent", "daily", "outstanding", "money_status"}
     assert not {"tasks", "intervals", "claim_count", "observed_ms"} & set(operation)
-    measurements = await service.measurements("owner", {"sub": "owner"}, ids[0])
+    measurements = await service.measurements(OWNER_ID, {"sub": OWNER_ID}, ids[0])
     assert measurements["id"] == operation["id"]
     assert measurements["revision"] == operation["revision"]
     assert "usage" not in measurements and "title" not in measurements
@@ -135,19 +136,19 @@ async def test_metadata_envelope_discloses_money_status_without_measurement_fiel
 @pytest.mark.asyncio
 async def test_real_poll_observes_committed_control_and_no_poll_side_effect(records):
     _, service, ids, _ = records
-    owner = {"sub": "owner"}
-    initial = await service.get("owner", owner, ids[0])
-    unchanged = await service.poll("owner", owner, ids[0], after_revision=initial["revision"])
+    owner = {"sub": OWNER_ID}
+    initial = await service.get(OWNER_ID, owner, ids[0])
+    unchanged = await service.poll(OWNER_ID, owner, ids[0], after_revision=initial["revision"])
     assert unchanged == {"revision": 1, "changed": False, "resync_required": False, "operation": None}
     await service.store.transaction(lambda tx, repo: repo.apply_control(
-        tx, owner_id="owner", assignment_id=ids[0], expected_state_version=initial["revision"],
+        tx, owner_id=OWNER_ID, assignment_id=ids[0], expected_state_version=initial["revision"],
         expected_instruction_revision=initial["instruction_revision"],
         expected_control_epoch=initial["control_epoch"], submission_id=str(uuid4()),
         submission_digest=digest("fixture-pause"), control="pause"))
-    updated = await service.poll("owner", owner, ids[0], after_revision=initial["revision"])
+    updated = await service.poll(OWNER_ID, owner, ids[0], after_revision=initial["revision"])
     assert updated["changed"] is True and updated["operation"]["disposition"] == "paused"
     assert updated["revision"] > initial["revision"]
-    assert (await service.get("owner", owner, ids[0]))["revision"] == updated["revision"]
+    assert (await service.get(OWNER_ID, owner, ids[0]))["revision"] == updated["revision"]
 
 
 @pytest.mark.asyncio
@@ -158,7 +159,7 @@ async def test_future_operation_payload_is_opaque_but_safe_outer_identity_is_rea
             "UPDATE persistent_assignment SET data=jsonb_set(data, '{operation}', %s::jsonb) WHERE id=%s",
             ('{"version":3,"kind":{"private":"opaque"},"deadline_at":"private","authority":"private"}', ids[0]))
     await service.store.transaction(future_record)
-    result = await service.get("owner", {"sub": "owner"}, ids[0])
+    result = await service.get(OWNER_ID, {"sub": OWNER_ID}, ids[0])
     assert result["id"] == ids[0] and result["schema_supported"] is False
     assert result["disposition"] == "unsupported_version"
     assert result["kind"] is None and result["deadline_at"] is None
@@ -180,7 +181,7 @@ async def test_http_reads_never_perform_synchronous_profile_persistence(records,
     app = FastAPI()
     app.state.orchestrator = orch
     app.include_router(work_router, prefix="/api")
-    override_read_auth(app, monkeypatch)
+    override_read_auth(app, monkeypatch, sub=OWNER_ID)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         for suffix in ("", "/" + ids[0], "/" + ids[0] + "/poll"):
             response = await client.get("/api/work/v1/operations" + suffix)

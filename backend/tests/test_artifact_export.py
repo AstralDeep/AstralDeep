@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 import orchestrator.web_auth as web_auth  # noqa: E402
 from orchestrator.api import _csv_body, export_router  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
+from shared.node_identity import canonical_owner_id  # noqa: E402
 
 
 def _make_mock_token(payload: dict) -> str:
@@ -369,14 +370,15 @@ def test_cookie_session_real_mode_serves_export(client, orch, monkeypatch):
     monkeypatch.setattr("shared.jwks_cache.get_jwks", _jwks)
     monkeypatch.setattr(
         "jose.jwt.decode",
-        lambda token, key, **kw: {"sub": USER_ID, "azp": "astral-frontend"},
+        lambda token, key, **kw: {"sub": USER_ID, "azp": "astral-frontend",
+                                  "iss": "https://idp.example/realms/astral"},
     )
 
     orch.workspace.aget_by_component_id.return_value = _row(_table_cd())
     r = client.get("/api/export/component/wc_tbl1.csv", params={"chat_id": CHAT_ID})
     assert r.status_code == 200
     orch.workspace.aget_by_component_id.assert_awaited_once_with(
-        CHAT_ID, USER_ID, "wc_tbl1")
+        CHAT_ID, canonical_owner_id("https://idp.example/realms/astral", USER_ID), "wc_tbl1")
 
 
 def test_bearer_takes_precedence_over_cookie(client, orch, monkeypatch):

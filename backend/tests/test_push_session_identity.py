@@ -17,6 +17,7 @@ from orchestrator import auth, push_api, web_auth
 from orchestrator.push_delivery import PushDeliveryCoordinator
 from orchestrator.push_destinations import DestinationStoreUnavailable, PushDestinationStore
 from orchestrator.session_store import WebSessionStore
+from shared.node_identity import canonical_owner_id
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 from tests.test_push_delivery_270 import FakeAdapter, _notification
 
@@ -71,15 +72,16 @@ def harness(runtime, signing_key, monkeypatch):
         return signing_key[1]
 
     monkeypatch.setattr("shared.jwks_cache.get_jwks", jwks)
-    owner, device = str(uuid4()), "device-" + uuid4().hex
+    base_subject, device = str(uuid4()), "device-" + uuid4().hex
+    owner = canonical_owner_id(ISSUER, base_subject)
 
-    def token(*, issuer=ISSUER, client=CLIENT, subject=owner):
+    def token(*, issuer=ISSUER, client=CLIENT, subject=base_subject):
         return jwt.encode({"sub": subject, "iss": issuer, "azp": client, "aud": "account",
             "exp": int(time.time()) + 600, "realm_access": {"roles": ["user"]}, "jti": uuid4().hex}, signing_key[0],
             algorithm="RS256", headers={"kid": "push-session-identity"})
 
-    def session(*, issuer=ISSUER, client=CLIENT, subject=owner):
-        return sessions.create(uuid4().hex, user_id=subject,
+    def session(*, issuer=ISSUER, client=CLIENT, subject=base_subject):
+        return sessions.create(uuid4().hex, user_id=canonical_owner_id(ISSUER, subject),
             access_token=token(issuer=issuer or ISSUER, client=client or CLIENT, subject=subject),
             refresh_token="synthetic-refresh", hard_max_seconds=3600,
             issuing_issuer=issuer, issuing_client_id=client)
@@ -143,13 +145,13 @@ def test_normal_jwt_policy_denies_untrusted_bearer_before_claim(harness, issuer,
 def test_optional_legacy_jwt_claims_cannot_authorize_native_custody(harness, claims):
     h = harness
     result = h.enroll(h.session(), **claims)
-    assert result.status_code == 503 and h.store.list_destinations(h.owner) == []
+    assert result.status_code == 401 and h.store.list_destinations(h.owner) == []
 
 
 @pytest.mark.parametrize("fault", ["missing", "duplicate", "foreign", "retired"])
 def test_signed_cookie_denials_leave_no_destination(harness, fault):
     h = harness
-    row = h.session(subject="other-owner" if fault == "foreign" else h.owner)
+    row = h.session(**({"subject": "other-owner"} if fault == "foreign" else {}))
     headers = h.headers(row)
     if fault == "missing":
         del headers["Cookie"]
