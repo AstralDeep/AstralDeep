@@ -15,6 +15,17 @@ import pytest
 from verification.drivers.in_process import InProcessDriver, _run_sync
 
 
+def _plane():
+    class Cleanup:
+        def purge_run(self, transaction, *, profile, run_id, owner_issuer_hash=None):
+            raise AssertionError("setup must not purge synthetic rows")
+
+    return SimpleNamespace(
+        runtime=SimpleNamespace(transaction=lambda: None),
+        repositories=SimpleNamespace(harness_cleanup=Cleanup()), blobs=object(),
+    )
+
+
 def _driver(tmp_path):
     return InProcessDriver(
         SimpleNamespace(run_dir=str(tmp_path), run_id="__verif__setup", mode="in_process")
@@ -46,7 +57,7 @@ def test_setup_constructs_off_loop_but_starts_on_callers_loop(tmp_path, monkeypa
             assert threading.get_ident() == caller
             events.append("start")
 
-        graph = SimpleNamespace(runtime_composition=SimpleNamespace(start=start))
+        graph = SimpleNamespace(runtime_composition=SimpleNamespace(start=start, plane=_plane()))
 
         def construct():
             assert threading.get_ident() != caller
@@ -175,7 +186,7 @@ def test_setup_rolls_back_registration_or_start_failure(tmp_path, monkeypatch, p
         events.append("close")
 
     graph = SimpleNamespace(
-        runtime_composition=SimpleNamespace(start=lambda: step("start")),
+        runtime_composition=SimpleNamespace(start=lambda: step("start"), plane=_plane()),
         _close_started_services=close,
     )
     monkeypatch.setattr(product, "Orchestrator", lambda: graph)

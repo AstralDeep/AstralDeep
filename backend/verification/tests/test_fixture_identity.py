@@ -35,7 +35,14 @@ def test_ordinary_auth_accepts_only_untampered_signature(identity):
     })
 
     async def exercise():
-        assert await verify_user(await verify_production_token(token)) == claims
+        from shared.node_identity import canonical_owner_id
+
+        verified = await verify_user(await verify_production_token(token))
+        assert verified == claims | {
+            "sub": canonical_owner_id(identity.authority, claims["sub"]),
+            "astral_idp_iss": identity.authority,
+            "astral_idp_sub": claims["sub"],
+        }
         tampered = jwt.encode(claims | {"sub": "foreign"}, "wrong-key", algorithm="HS256")
         with pytest.raises(HTTPException) as error:
             await verify_production_token(tampered)

@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from verification.config import RunConfig
 from verification.evidence import CapturedEvidence, flatten_components
-from verification.isolation import Principal, teardown
+from verification.isolation import Principal, require_issuer_scoped_cleanup, teardown
 from verification.personas import Fixture, materialize
 from verification.scenarios import Scenario
 from verification.drivers.scripted_llm import scripted_llm_for
@@ -94,6 +94,7 @@ class InProcessDriver:
         self._uploaded_blob_owners: set[str] = set()
         self._execution_nonce = uuid.uuid4().hex[:16]
         self._execution_principals: dict[str, Principal] = {}
+        self._execution_subjects: dict[str, str] = {}
         self._teardown_task: asyncio.Task[None] | None = None
         self._fixture_identity = None
 
@@ -123,6 +124,8 @@ class InProcessDriver:
         try:
             if cancellation is not None:
                 raise cancellation
+            _runtime, repositories, _blobs = self._plane_dependencies()
+            require_issuer_scoped_cleanup(repositories)
             from pathlib import Path
             from orchestrator.knowledge_synthesis import KnowledgeIndex
 
@@ -160,6 +163,11 @@ class InProcessDriver:
         return runtime, repositories, blobs
 
     def _execution_principal(self, principal: Principal) -> Principal:
+        from shared.node_identity import canonical_owner_id
+
+        identity = getattr(self, "_fixture_identity", None)
+        if identity is None or identity.closed:
+            raise RuntimeError("verification owner requires an active fixture identity")
         existing = self._execution_principals.get(principal.user_id)
         if existing is not None:
             if tuple(existing.roles) != tuple(principal.roles):
@@ -170,11 +178,14 @@ class InProcessDriver:
             raise ValueError("verification principal is outside the configured run namespace")
         identity_digest = hashlib.sha256(principal.user_id.encode("utf-8")).hexdigest()[:12]
         suffix = f"_exec_{self._execution_nonce}_{identity_digest}"
-        maximum_base = 255 - len(suffix)
+        owner_prefix_length = len(canonical_owner_id(identity.authority, "x")) - 1
+        maximum_base = 255 - owner_prefix_length - len(suffix)
         if len(expected_prefix) > maximum_base:
             raise ValueError("verification run namespace is too long for blob ownership")
-        scoped_id = f"{principal.user_id[:maximum_base]}{suffix}"
+        subject = f"{principal.user_id[:maximum_base]}{suffix}"
+        scoped_id = canonical_owner_id(identity.authority, subject)
         scoped = Principal(user_id=scoped_id, roles=list(principal.roles))
+        self._execution_subjects[scoped_id] = subject
         self._execution_principals[principal.user_id] = scoped
         self._execution_principals[scoped_id] = scoped
         return scoped
@@ -294,9 +305,17 @@ class InProcessDriver:
 
     async def _register_session(self, principal: Principal, chat_id: Optional[str] = None) -> CaptureSocket:
         principal = self._execution_principal(principal)
+        from orchestrator.auth import verify_production_token, verify_user
+
+        subject = self._execution_subjects[principal.user_id]
+        _, token = self._fixture_identity.claims_and_token(
+            Principal(subject, list(principal.roles)).claims()
+        )
+        claims = await verify_user(await verify_production_token(token))
+        if claims.get("sub") != principal.user_id:
+            raise RuntimeError("verification authenticated owner differs from fixture owner")
         await self._seed_llm_config(principal.user_id)
         ws = CaptureSocket(label=principal.user_id)
-        claims, token = self._fixture_identity.claims_and_token(principal.claims())
         self.orch.ui_sessions[ws] = claims | {"_raw_token": token}
         ws.scope = {"type": "websocket", "headers": [], "query_string": b""}
         context = self.orch._new_connection_context(ws)
@@ -702,11 +721,17 @@ class InProcessDriver:
 
         if not errors and plane_runtime is not None and plane_repositories is not None:
             try:
+                scope = {}
+                if getattr(self, "_execution_subjects", {}):
+                    from shared.node_identity import issuer_digest
+
+                    scope["owner_issuer_hash"] = issuer_digest(self._fixture_identity.authority)
                 await asyncio.to_thread(
                     teardown,
                     plane_runtime=plane_runtime,
                     plane_repositories=plane_repositories,
                     run_id=self.config.run_id,
+                    **scope,
                 )
             except BaseException as error:
                 errors.append(error)
