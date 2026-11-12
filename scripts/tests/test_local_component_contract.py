@@ -29,7 +29,6 @@ EXPECTED: dict[str, dict[str, Any]] = {
             "LICENSE.md",
             "NOTICE",
             "backend/webrender",
-            "backend/rote",
             "contracts",
             "src/astralprojection",
         ],
@@ -41,7 +40,27 @@ EXPECTED: dict[str, dict[str, Any]] = {
             "webrender/static/astral.css",
             "webrender/static/vendor/livekit-client.umd.min.js",
             "webrender/templates/shell.html",
+        ],
+    },
+    "astral-kernel": {
+        "distribution": "astral-rote",
+        "version": "0.1.0",
+        "path": "components/AstralKernel",
+        "package-root": "python/rote",
+        "contract": "0.1.0",
+        "availability": "required-embedded",
+        "import": "rote",
+        "extras": [],
+        "build-inputs": [
+            "pyproject.toml",
+            "README.md",
+            "src/rote",
+        ],
+        "required-wheel-paths": [
             "rote/__init__.py",
+            "rote/adapter.py",
+            "rote/surfaces.py",
+            "rote/work_continuity.py",
         ],
     },
     "astral-plane": {
@@ -120,7 +139,9 @@ def test_build_tools_satisfy_every_pinned_component_backend() -> None:
     dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text()
     makefile = (REPOSITORY_ROOT / "Makefile").read_text()
     for key in local["install-order"]:
-        component = _toml(REPOSITORY_ROOT / local[key]["path"] / "pyproject.toml")
+        component = _toml(
+            REPOSITORY_ROOT / local[key]["path"] / local[key].get("package-root", "") / "pyproject.toml"
+        )
         required = set(component["build-system"]["requires"])
         assert required <= tools, (key, required - tools)
         assert all(requirement in dockerfile and requirement in makefile for requirement in required)
@@ -135,6 +156,7 @@ def test_local_component_contract_matches_manifest_and_package_metadata() -> Non
     assert local["wheel-lock-format"] == "astraldeep.component-wheel-lock/v1"
     assert local["install-order"] == [
         "astral-primitives",
+        "astral-kernel",
         "astral-projection",
         "astral-plane",
         "lets",
@@ -173,7 +195,8 @@ def test_local_component_contract_matches_manifest_and_package_metadata() -> Non
 
         component_root = (REPOSITORY_ROOT / expected["path"]).resolve(strict=True)
         assert component_root.parent == (REPOSITORY_ROOT / "components").resolve()
-        project = _toml(component_root / "pyproject.toml")["project"]
+        package_root = component_root / expected.get("package-root", "")
+        project = _toml(package_root / "pyproject.toml")["project"]
         assert project["name"] == expected["distribution"]
         assert project["version"] == expected["version"]
         for extra in expected["extras"]:

@@ -4,7 +4,7 @@
 # for a push to `main`; PR runs, failed runs, and other branches never publish.
 # `workflow_run` workflows are loaded from the default branch, so a candidate
 # cannot replace this publisher. The image is built from the exact commit the
-# green CI run tested, with all four component submodules initialized and the
+# green CI run tested, with all five component submodules initialized and the
 # same fail-closed composition preflight `make up`/`make build` require locally.
 #
 # Tags:

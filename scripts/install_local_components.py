@@ -41,6 +41,7 @@ BUILD_TOOL_REQUIREMENTS = (
 )
 EXPECTED_INSTALL_ORDER = (
     "astral-primitives",
+    "astral-kernel",
     "astral-projection",
     "astral-plane",
     "lets",
@@ -49,6 +50,10 @@ EXPECTED_IDENTITIES = {
     "astral-primitives": (
         "components/AstralPrimitives",
         "https://github.com/AstralDeep/AstralPrimitives.git",
+    ),
+    "astral-kernel": (
+        "components/AstralKernel",
+        "https://github.com/AstralDeep/AstralKernel.git",
     ),
     "astral-projection": (
         "components/AstralProjection",
@@ -71,6 +76,7 @@ _CONTROL_KEYS = frozenset(
         "build-tools",
     }
 )
+_OPTIONAL_COMPONENT_FIELDS = frozenset({"package-root"})
 _COMPONENT_FIELDS = frozenset(
     {
         "distribution",
@@ -131,9 +137,14 @@ class ComponentSpec:
     extras: tuple[str, ...]
     build_inputs: tuple[str, ...]
     required_wheel_paths: tuple[str, ...]
+    package_root: str = ""
 
     def source_root(self, repository_root: Path) -> Path:
-        return repository_root / Path(self.relative_path)
+        return repository_root / Path(self.relative_path) / Path(self.package_root)
+
+    @property
+    def package_path(self) -> str:
+        return f"{self.relative_path}/{self.package_root}" if self.package_root else self.relative_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,9 +224,9 @@ def _string_list(value: Any, *, field: str, allow_empty: bool = False) -> tuple[
 def _component_spec(key: str, value: Any) -> ComponentSpec:
     if not isinstance(value, dict):
         raise ComponentInstallError(f"component {key!r} must be a TOML table")
-    if set(value) != _COMPONENT_FIELDS:
+    if not _COMPONENT_FIELDS <= set(value) <= _COMPONENT_FIELDS | _OPTIONAL_COMPONENT_FIELDS:
         missing = sorted(_COMPONENT_FIELDS - set(value))
-        unexpected = sorted(set(value) - _COMPONENT_FIELDS)
+        unexpected = sorted(set(value) - _COMPONENT_FIELDS - _OPTIONAL_COMPONENT_FIELDS)
         raise ComponentInstallError(
             f"component {key!r} has invalid fields; missing={missing}, "
             f"unexpected={unexpected}"
@@ -249,6 +260,11 @@ def _component_spec(key: str, value: Any) -> ComponentSpec:
             f"component {key!r} must be an immediate child of components/"
         )
 
+    package_root = (
+        _safe_relative_path(value["package-root"], field=f"{key}.package-root")
+        if "package-root" in value
+        else ""
+    )
     build_inputs = tuple(
         _safe_relative_path(item, field=f"{key}.build-inputs")
         for item in _string_list(value["build-inputs"], field=f"{key}.build-inputs")
@@ -270,6 +286,7 @@ def _component_spec(key: str, value: Any) -> ComponentSpec:
         extras=_string_list(value["extras"], field=f"{key}.extras", allow_empty=True),
         build_inputs=build_inputs,
         required_wheel_paths=required_paths,
+        package_root=package_root,
     )
 
 
@@ -438,7 +455,7 @@ def _validate_component_sources(contract: LocalContract) -> None:
     for component in contract.components:
         source_root = _resolved_child(
             contract.repository_root,
-            component.relative_path,
+            component.package_path,
             field=f"{component.key}.path",
         )
         if not source_root.is_dir():

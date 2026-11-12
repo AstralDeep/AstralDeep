@@ -5,8 +5,14 @@
     "astral-projection": {
       "repository": "https://github.com/AstralDeep/AstralProjection.git",
       "path": "components/AstralProjection",
-      "commit": "ca7ba29c5115684fad0d79aa781c0c4ec24ad60d",
+      "commit": "1dd06b88f133761c0d4ee2eaa6ab732f5df445cc",
       "contract_version": "astralprojection.contract/v1"
+    },
+    "astral-kernel": {
+      "repository": "https://github.com/AstralDeep/AstralKernel.git",
+      "path": "components/AstralKernel",
+      "commit": "36b6b0c2dccad84d938f10e8b9d3d4a23d0da011",
+      "contract_version": "0.1.0"
     },
     "astral-plane": {
       "repository": "https://github.com/AstralDeep/AstralPlane.git",
@@ -30,6 +36,7 @@
   },
   "availability": {
     "astral-projection": "required-embedded",
+    "astral-kernel": "required-embedded",
     "astral-plane": "required-embedded",
     "astral-primitives": "required-embedded",
     "lets": "external-feature-gated"
@@ -37,7 +44,7 @@
   "compatibility": {
     "ui_protocol": {
       "version": "1",
-      "sha256": "9e236329eb09cef7436e7c68fe75bf2e37dc6e6ec473fbdb812c3e69f374b9a3"
+      "sha256": "aaa5877ac3bd1ae20e639e2a3d91e60ed55b3382e82593386acc28c587f3f6b3"
     },
     "data_plane": {
       "contract_version": "astralplane.contract/v1",

@@ -75,6 +75,11 @@ def _composition() -> dict[str, object]:
                 "components/AstralProjection",
                 "astralprojection.contract/v1",
             ),
+            "astral-kernel": component(
+                "https://github.com/AstralDeep/AstralKernel.git",
+                "components/AstralKernel",
+                "0.1.0",
+            ),
             "astral-plane": component(
                 "https://github.com/AstralDeep/AstralPlane.git",
                 "components/AstralPlane",
@@ -89,6 +94,7 @@ def _composition() -> dict[str, object]:
         },
         "availability": {
             "astral-projection": "required-embedded",
+            "astral-kernel": "required-embedded",
             "astral-plane": "required-embedded",
             "astral-primitives": "required-embedded",
             "lets": "external-feature-gated",

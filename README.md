@@ -75,14 +75,15 @@ at the server boundary.
 
 ## Components
 
-AstralDeep composes four independently released component repositories, pinned as Git
+AstralDeep composes five independently released component repositories, pinned as Git
 submodules under `components/`. Each pin records an exact commit plus its contract version and
 compatibility digests in [`config/astral-composition.json`](config/astral-composition.json).
 
 | Component | Role | Availability |
 |---|---|---|
 | [AstralPrimitives](https://github.com/AstralDeep/AstralPrimitives) | Defines the UI primitives and their JSON serialization (published to PyPI as `astralprims`). | Required, embedded |
-| [AstralProjection](https://github.com/AstralDeep/AstralProjection) | Renders and sanitizes primitives, adapts them per device (ROTE), owns the UI protocol manifest and the web, Windows, Android, and Apple clients. | Required, embedded |
+| [AstralProjection](https://github.com/AstralDeep/AstralProjection) | Renders and sanitizes primitives, owns the UI protocol manifest and the web, Windows, Android, and Apple clients. | Required, embedded |
+| [AstralKernel](https://github.com/AstralDeep/AstralKernel) | The base library. Deep installs its `python/rote/` package as `astral-rote`, which adapts primitives per device (ROTE). | Required, embedded |
 | [AstralPlane](https://github.com/AstralDeep/AstralPlane) | Durable-state library: PostgreSQL pool, guarded migration registry, repositories, blob stores, and recovery. | Required, embedded |
 | [LETS](https://github.com/AstralDeep/LETS) | Lineage Escrow Transition Systems: an external warden that conserves and attenuates agent authority and issues verifiable receipts. | External, feature-gated |
 
@@ -103,7 +104,7 @@ fails closed when an installed component does not match its pin. See
 | `backend/shared/` | Shared protocol structures (`protocol.py`), the approved outbound HTTP path (`external_http.py`), and other cross-cutting helpers. |
 | `backend/llm_config/`, `backend/personalization/`, `backend/scheduler/`, `backend/voice_agent/`, `backend/audit/` | Per-user LLM configuration, memory and personalization, scheduled jobs, conversational voice, and the audit trail. |
 | `backend/tests/` and `*/tests/` | Backend test suites. |
-| `components/` | The four pinned component submodules. |
+| `components/` | The five pinned component submodules. |
 | `config/` | The composition manifest and related configuration. |
 | `contracts/` | JSON Schemas for cross-repository contracts. |
 | `deploy/` | Deployment assets (for example the LiveKit and LETS configurations). |

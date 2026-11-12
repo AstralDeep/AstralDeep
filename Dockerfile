@@ -18,8 +18,10 @@ COPY scripts/install_local_components.py ./scripts/install_local_components.py
 COPY components/AstralProjection/pyproject.toml components/AstralProjection/README.md components/AstralProjection/LICENSE.md components/AstralProjection/NOTICE ./components/AstralProjection/
 COPY components/AstralProjection/src/astralprojection/ ./components/AstralProjection/src/astralprojection/
 COPY components/AstralProjection/backend/webrender/ ./components/AstralProjection/backend/webrender/
-COPY components/AstralProjection/backend/rote/ ./components/AstralProjection/backend/rote/
 COPY components/AstralProjection/contracts/ ./components/AstralProjection/contracts/
+
+COPY components/AstralKernel/python/rote/pyproject.toml components/AstralKernel/python/rote/README.md ./components/AstralKernel/python/rote/
+COPY components/AstralKernel/python/rote/src/rote/ ./components/AstralKernel/python/rote/src/rote/
 
 COPY components/AstralPlane/pyproject.toml components/AstralPlane/README.md components/AstralPlane/LICENSE ./components/AstralPlane/
 COPY components/AstralPlane/src/astralplane/ ./components/AstralPlane/src/astralplane/
