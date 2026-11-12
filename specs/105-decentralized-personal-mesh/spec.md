@@ -1021,7 +1021,7 @@ an evaluation the paper did not have: adaptive attacks, a live model, and small 
 7. **The interim relay.** Until a UofL host exists, may clients use the transport's public relays?
 8. **The model endpoint.** Is LLM Factory staying available to users outside UK, or should the default
    change?
-9. **The name** of the new component. The distribution is AstralVessel (owner, 2026-11-12). The kernel library's own name is still open.
+9. **The name** of the new component. The distribution is AstralVessel and the kernel library is AstralKernel, at `github.com/AstralDeep/AstralKernel` (owner, 2026-11-12).
 10. **The rule changes in section 17.**
 11. **A shared deployment during the transition (C10).** Does a multi-user server have to keep working
     between the personal node (phase 1) and the institution profile (phase 7)? If yes, the node keeps a
