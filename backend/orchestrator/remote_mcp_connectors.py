@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from jsonschema import Draft202012Validator
 from jsonschema import exceptions as jsonschema_exceptions
+from orchestrator import remote_mcp_pins as pins
 from shared import external_http
 from shared.streaming_egress import EgressLimits
 
@@ -80,6 +81,7 @@ def _validate_config(value: Any) -> dict[str, Any]:
         "oauth_client_secret", "oauth_token_endpoint_auth_method", "access_token", "refresh_token", "token_endpoint",
         "authorization_endpoint", "token_expires_at", "scope", "tools", "enabled",
         "tools_catalog", "last_error", "unsupported_tool_count", "unsupported_tool_reason",
+        "tool_pins", "tool_changes",
     }:
         raise RemoteMCPError("Connector configuration is invalid.")
     name = value.get("name")
@@ -131,6 +133,18 @@ def _validate_config(value: Any) -> dict[str, Any]:
     if type(catalog) is not list or len(catalog) > _MAX_TOOLS or len(json.dumps(catalog)) > _MAX_SCHEMA_BYTES * 2:
         raise RemoteMCPError("The saved tool catalogue is invalid.")
     result["tools_catalog"] = catalog
+    tool_pins = value.get("tool_pins", {})
+    if (type(tool_pins) is not dict or len(tool_pins) > _MAX_TOOLS * 2
+            or any(type(k) is not str or not _TOOL.fullmatch(k) or not pins.is_pin(v) for k, v in tool_pins.items())):
+        raise RemoteMCPError("The saved tool approvals are invalid.")
+    result["tool_pins"] = dict(tool_pins)
+    tool_changes = value.get("tool_changes", {})
+    if (type(tool_changes) is not dict or len(tool_changes) > _MAX_TOOLS * 2
+            or any(type(k) is not str or not _TOOL.fullmatch(k) or type(v) is not dict
+                   or v.get("status") not in (pins.CHANGED, pins.REMOVED) for k, v in tool_changes.items())):
+        raise RemoteMCPError("The saved tool change records are invalid.")
+    result["tool_changes"] = {k: {"status": v["status"], "pinned": str(v.get("pinned", "")),
+                                  "current": str(v.get("current", ""))} for k, v in tool_changes.items()}
     result["last_error"] = str(value.get("last_error", ""))[:300]
     skipped = value.get("unsupported_tool_count", 0)
     if type(skipped) is not int or not 0 <= skipped <= _MAX_TOOLS:
@@ -182,7 +196,8 @@ def list_enabled_tools(orch: Any, owner_id: str) -> list[dict[str, Any]]:
         if not connector.get("enabled"):
             continue
         for tool in connector.get("tools_catalog", []):
-            if connector.get("tools", {}).get(tool.get("name")) is True:
+            if (connector.get("tools", {}).get(tool.get("name")) is True
+                    and pins.verdict(connector.get("tool_pins", {}), tool) == "ok"):
                 tools.append({"connector_id": connector["id"], "connector": connector["name"],
                               "name": tool["name"], "description": tool["description"],
                               "inputSchema": tool["inputSchema"]})
@@ -250,6 +265,8 @@ def save_connector(orch: Any, owner_id: str, values: dict[str, Any], *,
             candidate["enabled"] = old.get("enabled", True)
             candidate["tools"] = old.get("tools", {})
             candidate["tools_catalog"] = old.get("tools_catalog", [])
+            candidate["tool_pins"] = old.get("tool_pins", {})
+            candidate["tool_changes"] = old.get("tool_changes", {})
         same_authority = old.get("url") == candidate.get("url") and old.get("auth_type") == candidate.get("auth_type")
         if same_authority:
             candidate["unsupported_tool_count"] = old.get("unsupported_tool_count", 0)
@@ -285,6 +302,8 @@ def save_connector(orch: Any, owner_id: str, values: dict[str, Any], *,
         if not same_authority or changed_oauth_client or changed_bearer_token:
             candidate["tools"] = {}
             candidate["tools_catalog"] = []
+            candidate["tool_pins"] = {}
+            candidate["tool_changes"] = {}
             candidate["unsupported_tool_count"] = 0
             candidate["unsupported_tool_reason"] = ""
     elif len(list_connectors(orch, owner_id)) >= _MAX_CONNECTORS:
@@ -345,7 +364,7 @@ def update_oauth_credentials(orch: Any, owner_id: str, expected: dict[str, Any],
 
 
 def _update_tool_catalog(orch: Any, owner_id: str, expected: dict[str, Any],
-                         tools: list[dict[str, Any]], unsupported_tool_count: int = 0) -> None:
+                         tools: list[dict[str, Any]], unsupported_tool_count: int = 0) -> list[dict[str, str]]:
     manager = _repository(orch)
     key = _KEY_PREFIX + expected["id"]
     for _ in range(5):
@@ -356,14 +375,14 @@ def _update_tool_catalog(orch: Any, owner_id: str, expected: dict[str, Any],
         if not _same_oauth_authority(current, expected):
             raise RemoteMCPError("The connector changed while loading its tools. Try again.")
         current["tools_catalog"] = tools
-        current["tools"] = {item["name"]: current.get("tools", {}).get(item["name"], False)
-                            for item in tools}
+        current["tools"], current["tool_changes"], events = pins.reconcile(
+            current.get("tool_pins", {}), current.get("tools", {}), current.get("tool_changes", {}), tools)
         current["unsupported_tool_count"] = max(0, min(_MAX_TOOLS, unsupported_tool_count))
         current["unsupported_tool_reason"] = _UNSUPPORTED_TOOL_REASON if current["unsupported_tool_count"] else ""
         current["last_error"] = ""
         current = _validate_config(current)
         if manager.compare_and_set_credential(owner_id, _AGENT_ID, key, raw, json.dumps(current)):
-            return
+            return events
     raise RemoteMCPError("The connector changed. Reload its settings and try again.")
 
 
@@ -782,8 +801,11 @@ async def _initialize(connector: dict[str, Any], *, transport_factory=None):
                 continue
             description = re.sub(r"<[^>]*>", " ", str(item.get("description", "")))
             description = " ".join("".join(c for c in description if ord(c) >= 32).split())[:500]
-            safe.append({"name": item["name"], "description": "Untrusted remote metadata: " + description,
-                         "inputSchema": schema})
+            entry = {"name": item["name"], "description": "Untrusted remote metadata: " + description,
+                     "inputSchema": schema}
+            if annotations := pins.sanitize_annotations(item.get("annotations")):
+                entry["annotations"] = annotations
+            safe.append(entry)
         connector["_unsupported_tool_count"] = unsupported
         return safe, session
     except Exception:
@@ -840,8 +862,9 @@ def refresh_tools(orch: Any, owner_id: str, connector_id: str, *, transport_fact
         raise RemoteMCPError("Enable the connector before loading its tools.")
     connector = _ensure_oauth(orch, owner_id, connector)
     tools = _run(discover_tools(connector, transport_factory=transport_factory))
-    _update_tool_catalog(orch, owner_id, connector, tools,
-                         connector.get("_unsupported_tool_count", 0))
+    events = _update_tool_catalog(orch, owner_id, connector, tools,
+                                  connector.get("_unsupported_tool_count", 0))
+    _run(_audit_tool_changes(owner_id, connector_id, events, "refresh"))
     return tools
 
 
@@ -865,6 +888,7 @@ def _update_connector_control(orch: Any, owner_id: str, connector_id: str,
     manager = _repository(orch)
     key = _KEY_PREFIX + connector_id
     for _ in range(5):
+        approved = ""
         raw = manager.get_credential(owner_id, _AGENT_ID, key)
         if not raw:
             raise RemoteMCPError("Connector was not found.")
@@ -874,8 +898,16 @@ def _update_connector_control(orch: Any, owner_id: str, connector_id: str,
         else:
             if not any(item.get("name") == tool_name for item in connector.get("tools_catalog", [])):
                 raise RemoteMCPError("Refresh the server tool list before changing this tool.")
+            entry = next(item for item in connector["tools_catalog"] if item.get("name") == tool_name)
             connector.setdefault("tools", {})[tool_name] = enabled is True
+            if enabled is True:
+                approved = pins.definition_hash(entry)
+                connector.setdefault("tool_pins", {})[tool_name] = approved
+                connector.setdefault("tool_changes", {}).pop(tool_name, None)
         if manager.compare_and_set_credential(owner_id, _AGENT_ID, key, raw, json.dumps(connector)):
+            if approved:
+                _run(_audit_tool_changes(owner_id, connector_id, [
+                    {"tool": tool_name, "status": "approved", "pinned": approved, "current": approved}], "approve"))
             return {key: value for key, value in connector.items()
                     if key not in {"token", "oauth_client_secret", "access_token", "refresh_token"}}
     raise RemoteMCPError("The connector changed. Reload its settings and try again.")
@@ -908,6 +940,58 @@ async def _audit_remote_tool(owner_id: str, connector_id: str, tool_name: str,
     )
 
 
+def _disable_tool(orch: Any, owner_id: str, connector_id: str, tool_name: str) -> None:
+    manager = _repository(orch)
+    key = _KEY_PREFIX + connector_id
+    for _ in range(5):
+        raw = manager.get_credential(owner_id, _AGENT_ID, key)
+        if not raw:
+            return
+        current = _validate_config(json.loads(raw))
+        current["tools"][tool_name] = False
+        current["tool_changes"][tool_name] = {"status": pins.REMOVED, "pinned": current["tool_pins"].get(tool_name, ""),
+                                              "current": ""}
+        if manager.compare_and_set_credential(owner_id, _AGENT_ID, key, raw, json.dumps(current)):
+            return
+
+
+async def _audit_tool_changes(owner_id: str, connector_id: str, events: list[dict[str, str]],
+                              source: str) -> None:
+    from audit.hooks import record_generic
+
+    for event in events:
+        await record_generic(
+            claims={"sub": owner_id}, event_class="agent_tool_call",
+            action_type=f"remote_mcp.tool.definition_{event['status']}",
+            description="Remote MCP tool definition " + ("approved and pinned" if event["status"] == "approved"
+                                                         else f"{event['status']} since approval"),
+            inputs_meta={"connector_id": connector_id, "tool_name": event["tool"], "source": source},
+            outputs_meta={"pinned": event["pinned"], "current": event["current"]},
+            outcome="success" if event["status"] == "approved" else "failure",
+        )
+
+
+def _flag_changed_tool(orch: Any, owner_id: str, connector_id: str, tool: dict[str, Any]) -> dict[str, str] | None:
+    manager = _repository(orch)
+    key = _KEY_PREFIX + connector_id
+    for _ in range(5):
+        raw = manager.get_credential(owner_id, _AGENT_ID, key)
+        if not raw:
+            return None
+        current = _validate_config(json.loads(raw))
+        pin = current.get("tool_pins", {}).get(tool["name"])
+        if not pins.is_pin(pin):
+            return None
+        record = {"status": pins.CHANGED, "pinned": pin, "current": pins.definition_hash(tool)}
+        current["tools"][tool["name"]] = False
+        current["tool_changes"][tool["name"]] = record
+        current["tools_catalog"] = [tool if item.get("name") == tool["name"] else item
+                                    for item in current["tools_catalog"]]
+        if manager.compare_and_set_credential(owner_id, _AGENT_ID, key, raw, json.dumps(current)):
+            return {"tool": tool["name"], **record}
+    return None
+
+
 def call_tool(orch: Any, owner_id: str, connector_id: str, tool_name: str,
               arguments: dict[str, Any], *, transport_factory=None) -> dict[str, Any]:
     try:
@@ -920,6 +1004,8 @@ def call_tool(orch: Any, owner_id: str, connector_id: str, tool_name: str,
             raise RemoteMCPError("This connector is disabled.")
         if connector.get("tools", {}).get(tool_name) is not True:
             raise RemoteMCPError("This server tool is not enabled.")
+        if not pins.is_pin(connector.get("tool_pins", {}).get(tool_name)):
+            raise RemoteMCPError("This server tool has not been approved. Enable it again after reviewing it.")
         connector = _ensure_oauth(orch, owner_id, connector)
         _check_tool_authority(connector, connector, tool_name)
 
@@ -928,7 +1014,17 @@ def call_tool(orch: Any, owner_id: str, connector_id: str, tool_name: str,
             try:
                 match = next((item for item in tools if item["name"] == tool_name), None)
                 if match is None:
+                    removed = {"tool": tool_name, "status": pins.REMOVED,
+                               "pinned": connector["tool_pins"][tool_name], "current": ""}
+                    await asyncio.to_thread(_disable_tool, orch, owner_id, connector_id, tool_name)
+                    await _audit_tool_changes(owner_id, connector_id, [removed], "dispatch")
                     raise RemoteMCPError("The server no longer offers this tool.")
+                if pins.verdict(connector["tool_pins"], match) != "ok":
+                    changed = await asyncio.to_thread(_flag_changed_tool, orch, owner_id, connector_id, match)
+                    await _audit_tool_changes(owner_id, connector_id, [changed] if changed else [
+                        {"tool": tool_name, "status": pins.CHANGED, "pinned": connector["tool_pins"][tool_name],
+                         "current": pins.definition_hash(match)}], "dispatch")
+                    raise RemoteMCPError("This server tool changed since it was approved. Review it and enable it again.")
                 if type(arguments) is not dict or len(json.dumps(arguments)) > _MAX_SCHEMA_BYTES:
                     raise RemoteMCPError("Tool arguments are invalid or too large.")
                 if not _validate_schema(match.get("inputSchema", {"type": "object", "properties": {}}), arguments):
