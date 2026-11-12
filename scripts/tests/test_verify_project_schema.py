@@ -140,5 +140,59 @@ def test_pinned_project_registry_matches_qualified_digest():
     root = Path(__file__).resolve().parents[2] / "components/AstralPlane"
     assert (
         composition._plane_migration_digest(root)
-        == "d609f1cf1d02c744ff8b35115f8c9be2ebb873a7fa987931c08154d2ecfcb857"
+        == "dde302967743cf8f6f5d55e82f8355ef405823dfee638909c3a2f11b85f5cb27"
     )
+
+
+MESH_SYMBOL = "MESH_EVENT_SCHEMA_STATEMENTS"
+MESH_IMPORT = f"from astralplane.database.mesh_event_schema import {MESH_SYMBOL}\n"
+CONSTANTS = "_HASH = \"'^sha256:'\"\n_BOUND = \"9007\"\n"
+
+
+def read_formatted(tmp_path: Path, source: str, stem: str = "mesh_event", symbol: str = MESH_SYMBOL):
+    path = tmp_path / f"src/astralplane/database/{stem}_schema.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(source, encoding="utf-8")
+    tree = composition.ast.parse(f"from astralplane.database.{stem}_schema import {symbol}\n")
+    return composition._plane_schema_literal_import(tmp_path, tree, stem=stem, symbol=symbol)
+
+
+@pytest.mark.parametrize(
+    "stem,symbol",
+    [("mesh_event", MESH_SYMBOL), ("run_ledger", "RUN_LEDGER_SCHEMA_STATEMENTS")],
+)
+def test_formatted_schema_tuples_resolve_only_module_string_constants(tmp_path, stem, symbol):
+    source = (
+        '"""Doc."""\n' + CONSTANTS
+        + f'{symbol} = (\n    f"""\nCREATE TABLE t (h TEXT CHECK(h ~ {{_HASH}}), n BIGINT CHECK(n < {{_BOUND}}))\n""".strip(),\n'
+        '    "SELECT 1",\n)\n'
+    )
+    assert read_formatted(tmp_path, source, stem, symbol) == {
+        symbol: ("CREATE TABLE t (h TEXT CHECK(h ~ '^sha256:'), n BIGINT CHECK(n < 9007))", "SELECT 1"),
+    }
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        f'{CONSTANTS}{MESH_SYMBOL} = (f"{{UNKNOWN}}".strip(),)\n',
+        f'{CONSTANTS}{MESH_SYMBOL} = (f"{{_HASH!r}}".strip(),)\n',
+        f'{CONSTANTS}{MESH_SYMBOL} = (f"{{_HASH:>4}}".strip(),)\n',
+        f'{CONSTANTS}{MESH_SYMBOL} = (f"{{_HASH.upper()}}".strip(),)\n',
+        f'{CONSTANTS}_HASH = "again"\n{MESH_SYMBOL} = ("SQL",)\n',
+        f'_HASH = f"{{_BOUND}}"\n_BOUND = "1"\n{MESH_SYMBOL} = ("SQL",)\n',
+        f'_HASH = 1\n{MESH_SYMBOL} = ("SQL",)\n',
+        f'import os\n{MESH_SYMBOL} = ("SQL",)\n',
+        f'{CONSTANTS}{MESH_SYMBOL} = (f"{{_HASH}}",)\n',
+        f'{CONSTANTS}{MESH_SYMBOL} = (f"{{_HASH}}".lower(),)\n',
+    ],
+)
+def test_formatted_schema_grammar_cannot_expand(tmp_path, source):
+    with pytest.raises(composition.CompositionError):
+        read_formatted(tmp_path, source)
+
+
+def test_formatted_strings_stay_refused_for_other_schemas(tmp_path):
+    source = f'{CONSTANTS}{SYMBOL} = (f"{{_HASH}}".strip(),)\n'
+    with pytest.raises(composition.CompositionError):
+        read_formatted(tmp_path, source, "project", SYMBOL)

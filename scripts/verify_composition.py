@@ -647,6 +647,47 @@ def compute_primitives_digest(component_root: Path) -> str:
     return digest.hexdigest()
 
 
+_FORMATTED_SCHEMA_STEMS = frozenset({"mesh_event", "run_ledger"})
+
+
+def _leading_string_constants(
+    stem: str, declarations: list[ast.stmt]
+) -> tuple[dict[str, str], list[ast.stmt]]:
+    constants: dict[str, str] = {}
+    index = 0
+    while index < len(declarations) - 1:
+        declaration = declarations[index]
+        if (not isinstance(declaration, ast.Assign) or len(declaration.targets) != 1
+                or not isinstance(declaration.targets[0], ast.Name)
+                or not isinstance(declaration.value, ast.Constant)
+                or type(declaration.value.value) is not str
+                or declaration.targets[0].id in constants):
+            raise CompositionError(
+                f"Plane {stem} schema may declare only unique string constants before the reviewed tuple"
+            )
+        constants[declaration.targets[0].id] = declaration.value.value
+        index += 1
+    return constants, declarations[index:]
+
+
+def _schema_text(node: ast.expr, constants: dict[str, str]) -> str | None:
+    if isinstance(node, ast.Constant):
+        return node.value if type(node.value) is str else None
+    if not isinstance(node, ast.JoinedStr):
+        return None
+    parts: list[str] = []
+    for part in node.values:
+        if isinstance(part, ast.Constant) and type(part.value) is str:
+            parts.append(part.value)
+        elif (isinstance(part, ast.FormattedValue) and isinstance(part.value, ast.Name)
+                and part.value.id in constants and part.conversion == -1
+                and part.format_spec is None):
+            parts.append(constants[part.value.id])
+        else:
+            return None
+    return "".join(parts)
+
+
 def _plane_schema_literal_import(
     component_root: Path, tree: ast.Module, *, stem: str, symbol: str
 ) -> dict[str, object]:
@@ -701,6 +742,9 @@ def _plane_schema_literal_import(
             and declarations[1].annotation.id == "Final"):
         declaration = declarations[1]
         declarations = [ast.Assign(targets=[declaration.target], value=declaration.value)]
+    constants: dict[str, str] = {}
+    if stem in _FORMATTED_SCHEMA_STEMS:
+        constants, declarations = _leading_string_constants(stem, declarations)
     if (len(declarations) != 1 or not isinstance(declarations[0], ast.Assign)
             or len(declarations[0].targets) != 1 or not isinstance(declarations[0].targets[0], ast.Name)
             or declarations[0].targets[0].id != symbol or not isinstance(declarations[0].value, ast.Tuple)):
@@ -712,13 +756,14 @@ def _plane_schema_literal_import(
                      "notification", "atlas_page", "atlas_revision", "atlas_link",
                      "capability_publication", "harness_binding", "push_delivery",
                      "observation", "harness_capture", "chat_queue", "conversation_branch",
-                     "computer_use", "verification_credential", "chat_read_receipt"}
+                     "computer_use", "verification_credential", "chat_read_receipt",
+                     *_FORMATTED_SCHEMA_STEMS}
                 and isinstance(item, ast.Call)
                 and not item.args and not item.keywords
                 and isinstance(item.func, ast.Attribute) and item.func.attr == "strip"
-                and isinstance(item.func.value, ast.Constant)
-                and type(item.func.value.value) is str):
-            items[index] = ast.Constant(value=item.func.value.value.strip())
+                and (stem in _FORMATTED_SCHEMA_STEMS or isinstance(item.func.value, ast.Constant))
+                and (text := _schema_text(item.func.value, constants)) is not None):
+            items[index] = ast.Constant(value=text.strip())
     if (not 1 <= len(items) <= _MAX_LITERAL_SEQUENCE_ITEMS or any(
             not isinstance(item, ast.Constant) or not isinstance(item.value, str) or not item.value
             for item in items)):
@@ -758,6 +803,8 @@ def _plane_migration_digest(component_root: Path) -> str:
         ("computer_use", "COMPUTER_USE_SCHEMA_STATEMENTS"),
         ("verification_credential", "VERIFICATION_CREDENTIAL_SCHEMA_STATEMENTS"),
         ("chat_read_receipt", "CHAT_READ_RECEIPT_SCHEMA_STATEMENTS"),
+        ("mesh_event", "MESH_EVENT_SCHEMA_STATEMENTS"),
+        ("run_ledger", "RUN_LEDGER_SCHEMA_STATEMENTS"),
     ):
         reviewed_literals.update(_plane_schema_literal_import(
             component_root, tree, stem=stem, symbol=symbol))
