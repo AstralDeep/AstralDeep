@@ -390,7 +390,7 @@ async def test_original_iam_rechecked_after_render_without_profile_write(host, m
     monkeypatch.setattr("shared.jwks_cache.get_jwks", AsyncMock(return_value={"keys": []}))
     session = AsyncMock(return_value={"access_token": "fixture.access.token"})
     monkeypatch.setattr(web_auth, "ensure_session", session)
-    issuer = {"iss": "https://iam.example/realms/test", "azp": "astral-frontend"}
+    issuer = {"iss": "https://iam.example/realms/test", "azp": "astral-frontend", "aud": "account"}
     owner = canonical_owner_id(issuer["iss"], "owner")
     host.repository.get.side_effect = lambda tx, owner_id, conversation_id: (
         SimpleNamespace(render_revision=7) if (owner_id, conversation_id) == (owner, "chat") else None)

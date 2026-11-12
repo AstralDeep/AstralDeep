@@ -34,6 +34,7 @@ from orchestrator.projection_surfaces import authoring  # noqa: E402
 from orchestrator.human_request_authority import (  # noqa: E402
     authenticate_current_human_request, bind_human_caller,
 )
+from tests.helpers.fixture_owner import AUTHORITY, fixture_owner, fixture_subject
 from verification.drivers.fixture_identity import FixtureIdentity  # noqa: E402
 
 BUNDLE = {name: f"# {name}\n" for name in BYO_BUNDLE_FILENAMES}
@@ -70,8 +71,8 @@ class LifecycleIds:
 def lifecycle_ids():
     token = uuid.uuid4().hex[:12]
     return LifecycleIds(
-        owner=f"__verif__byolife-{token}_owner",
-        foreign=f"__verif__byolife-{token}_foreign",
+        owner=fixture_owner(f"__verif__byolife-{token}_owner"),
+        foreign=fixture_owner(f"__verif__byolife-{token}_foreign"),
         agent_id=f"ua-mailer-{token}",
         host_session_id=f"hs-{token}",
     )
@@ -99,7 +100,7 @@ async def orch(monkeypatch, lifecycle_ids, tmp_path):
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("MOCK_AUTH", "false")
     o = await asyncio.to_thread(Orchestrator)
-    identity = FixtureIdentity(lifecycle_ids.owner.rsplit("_", 1)[0])
+    identity = FixtureIdentity(fixture_subject(lifecycle_ids.owner).rsplit("_", 1)[0], authority=AUTHORITY)
     o._lifecycle_fixture_identity = identity
     knowledge = tmp_path / "knowledge"
     knowledge.mkdir()
@@ -133,7 +134,7 @@ async def orch(monkeypatch, lifecycle_ids, tmp_path):
 
 async def _render(orch, owner, roles, params):
     _claims, token = orch._lifecycle_fixture_identity.claims_and_token({
-        "sub": owner, "realm_access": {"roles": roles},
+        "sub": fixture_subject(owner), "realm_access": {"roles": roles},
     })
     request = Request({
         "type": "http", "method": "GET", "scheme": "https",

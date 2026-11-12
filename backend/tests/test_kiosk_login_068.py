@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from orchestrator import web_auth as wa
 from shared.feature_flags import FeatureFlags
+from shared.node_identity import canonical_owner_id
 
 
 def _jwt(payload: dict) -> str:
@@ -27,8 +28,9 @@ def _jwt(payload: dict) -> str:
     return f"{seg({'alg': 'none'})}.{seg(payload)}.x"
 
 
-KIOSK_TOKEN = _jwt({"sub": "kiosk-user", "azp": "astral-kiosk"})
-WEB_TOKEN = _jwt({"sub": "web-user", "azp": "astral-frontend"})
+AUTHORITY = "https://kiosk-tests.invalid/realms/astral"
+KIOSK_TOKEN = _jwt({"sub": "kiosk-user", "azp": "astral-kiosk", "iss": AUTHORITY, "aud": "account"})
+WEB_TOKEN = _jwt({"sub": "web-user", "azp": "astral-frontend", "iss": AUTHORITY, "aud": "account"})
 
 
 def _refresh_store(access):
@@ -164,7 +166,7 @@ def test_approval_sets_the_session_cookie_and_returns_no_tokens(client, monkeypa
     assert "refresh-abc" not in res.text
     raw = res.headers["set-cookie"]
     assert wa.COOKIE_NAME in raw and "HttpOnly" in raw
-    assert any(s.get("sub") == "kiosk-user" for s in wa._SESSIONS.values())
+    assert any(s.get("sub") == canonical_owner_id(AUTHORITY, "kiosk-user") for s in wa._SESSIONS.values())
 
 
 async def _noop():

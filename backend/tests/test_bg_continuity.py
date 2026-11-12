@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from tests.helpers.registered_human import registered_chat
+from tests.helpers.fixture_owner import AUTHORITY, fixture_owner
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -58,7 +59,7 @@ async def orch(bg_flag, monkeypatch):
 def signed_background(orch):
     from verification.drivers.fixture_identity import FixtureIdentity
 
-    identity = FixtureIdentity("__verif__background_fixture")
+    identity = FixtureIdentity("__verif__background_fixture", authority=AUTHORITY)
     orch._fixture_identity = identity
     try:
         yield
@@ -250,7 +251,7 @@ async def _cleanup(orch, user_id, chat_ids=()):
 
 
 async def test_task_started_fans_to_second_socket(orch, signed_background):
-    user_id = f"bgc-{uuid.uuid4().hex[:8]}"
+    user_id = fixture_owner(f"bgc-{uuid.uuid4().hex[:8]}")
     ws1, ws2 = _capture_socket(orch, user_id), _capture_socket(orch, user_id)
     chat_id = await asyncio.to_thread(orch.history.create_chat, user_id=user_id)
 
@@ -274,7 +275,7 @@ async def test_task_started_fans_to_second_socket(orch, signed_background):
 
 
 async def test_completion_fan_reaches_socket_joined_after_start(orch, signed_background):
-    user_id = f"bgc-{uuid.uuid4().hex[:8]}"
+    user_id = fixture_owner(f"bgc-{uuid.uuid4().hex[:8]}")
     ws1 = _capture_socket(orch, user_id)
     chat_id = await asyncio.to_thread(orch.history.create_chat, user_id=user_id)
     hold = asyncio.Event()
@@ -318,7 +319,7 @@ async def test_completion_fan_reaches_socket_joined_after_start(orch, signed_bac
 
 async def test_vws_narrative_and_done_reach_chat_socket(orch):
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
-    user_id = f"bgc-{uuid.uuid4().hex[:8]}"
+    user_id = fixture_owner(f"bgc-{uuid.uuid4().hex[:8]}")
     ws2 = _capture_socket(orch, user_id)
     chat_id = await asyncio.to_thread(orch.history.create_chat, user_id=user_id)
     orch._ws_active_chat[id(ws2)] = chat_id
@@ -444,7 +445,7 @@ async def test_completed_unnotified_replay_marks_notified(orch):
 async def test_flag_off_all_new_sends_absent(orch, signed_background):
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     flags._flags["bg_continuity"] = False
-    user_id = f"bgc-{uuid.uuid4().hex[:8]}"
+    user_id = fixture_owner(f"bgc-{uuid.uuid4().hex[:8]}")
     ws1, ws2 = _capture_socket(orch, user_id), _capture_socket(orch, user_id)
     chat_id = await asyncio.to_thread(orch.history.create_chat, user_id=user_id)
     orch._ws_active_chat[id(ws2)] = chat_id
@@ -532,7 +533,7 @@ async def test_scheduled_fallback_chat_created(orch, monkeypatch):
 
 async def test_completion_with_no_real_sockets_stays_unnotified(orch):
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
-    user_id = f"bgc-{uuid.uuid4().hex[:8]}"
+    user_id = fixture_owner(f"bgc-{uuid.uuid4().hex[:8]}")
     task = BackgroundTask(task_id=uuid.uuid4().hex[:8], chat_id="c", user_id=user_id)
     vws = VirtualWebSocket(task)
     orch.ui_sessions[vws] = {"sub": user_id}

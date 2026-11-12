@@ -342,7 +342,7 @@ def test_cookie_session_real_mode_mints(
     monkeypatch.setattr(
         "jose.jwt.decode",
         lambda token, key, **kw: {"sub": user, "azp": "astral-frontend",
-                                  "iss": "https://idp.example/realms/astral"},
+                                  "iss": "https://idp.example/realms/astral", "aud": "account"},
     )
 
     r = client.post("/api/share", json={"chat_id": CHAT_ID, "scope": "component",

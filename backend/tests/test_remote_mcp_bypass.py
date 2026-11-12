@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from orchestrator import hitl_confirmation as confirmation
+from orchestrator.remote_mcp_pins import definition_hash
 from orchestrator.hitl import CROSS_PRINCIPAL, UNTRUSTED_TAINTED
 from shared.protocol import MCPResponse
 
@@ -23,6 +24,7 @@ class ConnectorStore:
                 "id": CONNECTOR_ID, "name": "Synthetic connection", "url": "https://mcp.example/mcp",
                 "transport": "streamable_http", "auth_type": "none", "enabled": True,
                 "tools": {"echo": True}, "tools_catalog": [{"name": "echo"}],
+                "tool_pins": {"echo": definition_hash({"name": "echo"})},
             }),
         }
 

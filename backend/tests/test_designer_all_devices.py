@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from tests.helpers.registered_human import registered_chat
+from tests.helpers.fixture_owner import fixture_owner
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -143,7 +144,7 @@ async def env(monkeypatch, user_skills_disabled):
         result={"ok": True}, error=None, ui_components=_rich_components(),
         correlation_id=None))
 
-    user_id = f"dad-test-{uuid.uuid4().hex[:8]}"
+    user_id = fixture_owner(f"dad-test-{uuid.uuid4().hex[:8]}")
     ws = _fresh_socket()
     orch.ui_sessions[ws] = {"sub": user_id, "preferred_username": user_id}
     orch.ui_clients.append(ws)

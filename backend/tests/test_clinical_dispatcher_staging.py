@@ -18,6 +18,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from jose import jwk, jwt
 
 from shared.protocol import AgentCard, AgentSkill
+from shared.node_identity import canonical_owner_id
 
 pytestmark = pytest.mark.asyncio
 
@@ -78,7 +79,7 @@ async def staging(orchestrator_factory, monkeypatch):
     def token(owner: str) -> str:
         return jwt.encode(
             {
-                "sub": owner,
+                "sub": owner.split(".", 2)[2],
                 "iss": authority,
                 "azp": "astral-web",
                 "aud": "account",
@@ -119,8 +120,8 @@ async def staging(orchestrator_factory, monkeypatch):
         return True
 
     orch._safe_send = safe_send
-    owner_a = f"__bench__clinical-a-{uuid.uuid4().hex}"
-    owner_b = f"__bench__clinical-b-{uuid.uuid4().hex}"
+    owner_a = canonical_owner_id(authority, f"__bench__clinical-a-{uuid.uuid4().hex}")
+    owner_b = canonical_owner_id(authority, f"__bench__clinical-b-{uuid.uuid4().hex}")
     yield SimpleNamespace(
         orch=orch, sockets=sockets, token=token, owner_a=owner_a, owner_b=owner_b,
     )

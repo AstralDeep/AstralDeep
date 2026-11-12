@@ -236,7 +236,7 @@ async def test_original_auth_path_rechecks_credential_and_roles(host, monkeypatc
     session = AsyncMock(return_value={"access_token": "fixture.access.token",
         "sid": "fixture-sid", "incarnation_id": "fixture-incarnation"})
     monkeypatch.setattr(web_auth, "ensure_session", session)
-    issuer = {"iss": "https://iam.example/realms/test", "azp": "astral-frontend"}
+    issuer = {"iss": "https://iam.example/realms/test", "azp": "astral-frontend", "aud": "account"}
     owner = canonical_owner_id(issuer["iss"], "owner")
     read.assignment.owner_id = owner
     orch.persistent_assignments.store.plane_runtime.repositories.history.sessions.get_execution_state.return_value.credential.owner_id = owner

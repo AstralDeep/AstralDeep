@@ -497,7 +497,7 @@ def _executor_client(orch):
 def _tool_call(client, name="get_weather", headers=None, rpc_id="c1"):
     claims = {
         "sub": "caller-sub", "iss": "https://iam.example/realms/astral",
-        "azp": "astral-frontend", "realm_access": {"roles": ["user"]},
+        "azp": "astral-frontend", "aud": "account", "realm_access": {"roles": ["user"]},
     }
     message = {
         "message_id": f"m-{rpc_id}", "role": "ROLE_USER",

@@ -16,6 +16,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from tests.helpers.registered_human import registered_chat
+from tests.helpers.fixture_owner import fixture_owner
+
+USER = fixture_owner("text-only-test-user")
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -26,7 +29,7 @@ async def orchestrator(orchestrator_factory):
     try:
         await asyncio.to_thread(
             orch._llm_store.set_sync,
-            "text-only-test-user",
+            USER,
             provider="custom",
             base_url="http://test.invalid/v1",
             model="test-model",
@@ -49,7 +52,7 @@ async def orchestrator(orchestrator_factory):
         try:
             await asyncio.to_thread(
                 orch._llm_store.clear_sync,
-                "text-only-test-user",
+                USER,
             )
         finally:
             await orch._close_started_services()
@@ -63,7 +66,7 @@ def _rendered_components_text(orchestrator) -> str:
     return "\n".join(chunks)
 
 
-def _fake_websocket(orchestrator, user_id="text-only-test-user"):
+def _fake_websocket(orchestrator, user_id=USER):
     ws = MagicMock()
     orchestrator.ui_sessions[ws] = {
         "sub": user_id,
@@ -177,7 +180,7 @@ class TestHandleChatMessageTextOnly:
         ws = _fake_websocket(orchestrator)
         chat_id = str(uuid.uuid4())
         await asyncio.to_thread(
-            orchestrator.history.create_chat, chat_id, user_id="text-only-test-user")
+            orchestrator.history.create_chat, chat_id, user_id=USER)
         captured_call = {}
 
         async def fake_call_llm(websocket, messages, tools_desc=None, temperature=None,
@@ -191,7 +194,7 @@ class TestHandleChatMessageTextOnly:
 
         await registered_chat(orchestrator,
             ws, "What is the capital of France?", chat_id,
-            user_id="text-only-test-user",
+            user_id=USER,
         )
 
         assert not captured_call.get("tools_desc"), (
@@ -210,20 +213,20 @@ class TestHandleChatMessageTextOnly:
         )
 
         chat = await asyncio.to_thread(
-            orchestrator.history.get_chat, chat_id, user_id="text-only-test-user")
+            orchestrator.history.get_chat, chat_id, user_id=USER)
         assert chat is not None
         roles = [m["role"] for m in chat["messages"]]
         assert "assistant" in roles, "assistant reply must be saved to history"
 
         await asyncio.to_thread(
-            orchestrator.history.delete_chat, chat_id, user_id="text-only-test-user")
+            orchestrator.history.delete_chat, chat_id, user_id=USER)
 
     @pytest.mark.asyncio
     async def test_text_only_dispatch_emits_correct_audit_feature_tag(self, orchestrator):
         ws = _fake_websocket(orchestrator)
         chat_id = str(uuid.uuid4())
         await asyncio.to_thread(
-            orchestrator.history.create_chat, chat_id, user_id="text-only-test-user")
+            orchestrator.history.create_chat, chat_id, user_id=USER)
         captured_features = []
 
         async def fake_call_llm(websocket, messages, tools_desc=None, temperature=None,
@@ -234,7 +237,7 @@ class TestHandleChatMessageTextOnly:
         orchestrator._call_llm = fake_call_llm
 
         await registered_chat(orchestrator,
-            ws, "hello", chat_id, user_id="text-only-test-user"
+            ws, "hello", chat_id, user_id=USER
         )
 
         assert captured_features == ["chat_dispatch_text_only"], (
@@ -243,14 +246,14 @@ class TestHandleChatMessageTextOnly:
         )
 
         await asyncio.to_thread(
-            orchestrator.history.delete_chat, chat_id, user_id="text-only-test-user")
+            orchestrator.history.delete_chat, chat_id, user_id=USER)
 
     @pytest.mark.asyncio
     async def test_draft_chat_with_no_tools_does_not_fall_through(self, orchestrator):
         ws = _fake_websocket(orchestrator)
         chat_id = str(uuid.uuid4())
         await asyncio.to_thread(
-            orchestrator.history.create_chat, chat_id, user_id="text-only-test-user")
+            orchestrator.history.create_chat, chat_id, user_id=USER)
         called = {"count": 0}
 
         async def fake_call_llm(websocket, messages, tools_desc=None, temperature=None,
@@ -262,7 +265,7 @@ class TestHandleChatMessageTextOnly:
 
         await registered_chat(orchestrator,
             ws, "test draft", chat_id,
-            user_id="text-only-test-user",
+            user_id=USER,
             draft_agent_id="a-not-registered",
         )
 
@@ -276,7 +279,7 @@ class TestHandleChatMessageTextOnly:
         )
 
         await asyncio.to_thread(
-            orchestrator.history.delete_chat, chat_id, user_id="text-only-test-user")
+            orchestrator.history.delete_chat, chat_id, user_id=USER)
 
     @pytest.mark.asyncio
     async def test_tool_augmented_dispatch_does_not_inject_addendum(self, orchestrator):
@@ -298,7 +301,7 @@ class TestHandleChatMessageTextOnly:
         ws = _fake_websocket(orchestrator)
         chat_id = str(uuid.uuid4())
         await asyncio.to_thread(
-            orchestrator.history.create_chat, chat_id, user_id="text-only-test-user")
+            orchestrator.history.create_chat, chat_id, user_id=USER)
         captured = {}
 
         async def fake_call_llm(websocket, messages, tools_desc=None, temperature=None,
@@ -311,7 +314,7 @@ class TestHandleChatMessageTextOnly:
         orchestrator._call_llm = fake_call_llm
 
         await registered_chat(orchestrator,
-            ws, "search something", chat_id, user_id="text-only-test-user"
+            ws, "search something", chat_id, user_id=USER
         )
 
         assert captured["tools_desc"], "tool-augmented turn must have non-empty tools list"
@@ -324,7 +327,7 @@ class TestHandleChatMessageTextOnly:
         )
 
         await asyncio.to_thread(
-            orchestrator.history.delete_chat, chat_id, user_id="text-only-test-user")
+            orchestrator.history.delete_chat, chat_id, user_id=USER)
 
 
 class TestAgentListPayload:
@@ -458,15 +461,15 @@ async def test_message_compaction_receives_provider_and_tool_definitions(orchest
     ws = _fake_websocket(orchestrator)
     chat_id = str(uuid.uuid4())
     await asyncio.to_thread(
-        orchestrator.history.create_chat, chat_id, user_id="text-only-test-user")
+        orchestrator.history.create_chat, chat_id, user_id=USER)
     try:
         await registered_chat(
             orchestrator, ws, "What is the capital of France?", chat_id,
-            user_id="text-only-test-user",
+            user_id=USER,
         )
     finally:
         await asyncio.to_thread(
-            orchestrator.history.delete_chat, chat_id, user_id="text-only-test-user")
+            orchestrator.history.delete_chat, chat_id, user_id=USER)
 
     assert captured["model_name"] == "test-model"
     assert captured["kwargs"]["provider"] == "custom"

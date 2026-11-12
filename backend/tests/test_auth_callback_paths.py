@@ -35,7 +35,7 @@ class _FakeRequest:
 
 
 def _signed_jwt(payload: dict, key) -> str:
-    claims = {"iss": os.environ["KEYCLOAK_AUTHORITY"],
+    claims = {"aud": "account", "iss": os.environ["KEYCLOAK_AUTHORITY"],
               "azp": os.environ["KEYCLOAK_CLIENT_ID"], **payload}
     return jwt.encode(claims, key[0], algorithm="RS256",
                       headers={"kid": "synthetic-request-authority"})

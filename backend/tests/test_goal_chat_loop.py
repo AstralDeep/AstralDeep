@@ -130,6 +130,8 @@ def _redrafting_planner(verdict, first_arguments=_DOCUMENT_ARGUMENTS):
     counts = {"planner": 0, "verifier": 0}
 
     async def provider(websocket, messages, tools_desc=None, **kwargs):
+        if kwargs.get("feature") == "tool_argument_repair":
+            return _msg(content="invalid arguments"), _usage()
         if kwargs.get("feature") == "goal_verification":
             counts["verifier"] += 1
             return verdict

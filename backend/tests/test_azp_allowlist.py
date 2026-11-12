@@ -1,6 +1,5 @@
 """Tests for shared/auth_clients.py: the desktop client's azp claim is accepted only
-when listed in KEYCLOAK_ALLOWED_AZP, while tokens omitting azp entirely are still
-tolerated.
+when listed in KEYCLOAK_ALLOWED_AZP, and tokens omitting azp are refused.
 """
 
 from __future__ import annotations
@@ -17,11 +16,11 @@ def test_only_primary_when_no_allowlist(monkeypatch):
     assert not auth_clients.is_azp_allowed("astral-desktop")
 
 
-def test_missing_azp_is_tolerated(monkeypatch):
+def test_missing_azp_is_refused(monkeypatch):
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
     monkeypatch.delenv("KEYCLOAK_ALLOWED_AZP", raising=False)
-    assert auth_clients.is_azp_allowed("")
-    assert auth_clients.is_azp_allowed(None)  # type: ignore[arg-type]
+    assert not auth_clients.is_azp_allowed("")
+    assert not auth_clients.is_azp_allowed(None)  # type: ignore[arg-type]
 
 
 def test_allowlist_adds_desktop_client(monkeypatch):

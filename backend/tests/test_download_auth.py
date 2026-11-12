@@ -166,7 +166,7 @@ def test_cookie_token_valid_via_jwks(real_auth_env, client, user_file, monkeypat
     monkeypatch.setattr("shared.jwks_cache.get_jwks", _jwks)
     monkeypatch.setattr(
         "jose.jwt.decode",
-        lambda token, key, **kw: {"sub": "test_user", "azp": "astral-frontend", "iss": AUTHORITY},
+        lambda token, key, **kw: {"sub": "test_user", "azp": "astral-frontend", "iss": AUTHORITY, "aud": "account"},
     )
 
     res = client.get(f"/api/download/{SESSION_ID}/{FILE_NAME}")

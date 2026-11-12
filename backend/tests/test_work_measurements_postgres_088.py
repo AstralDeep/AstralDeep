@@ -31,12 +31,13 @@ from orchestrator.work_api import work_router
 from persistent_agents.models import AssignmentError
 from persistent_agents.runtime_values import digest
 from persistent_agents.tests.test_engine_postgres import plane as plane  # noqa: F401
+from tests.helpers.work_control_caller import OWNER_ID
 from tests.test_work_service_postgres_088 import records as records  # noqa: F401
 
-OWNER = {"sub": "owner"}
+OWNER = {"sub": OWNER_ID}
 
 
-async def claimed(service, identity, *, owner="owner"):
+async def claimed(service, identity, *, owner=OWNER_ID):
     sessions = service.store.plane_runtime.repositories.history.sessions
     work = WorkAdmissionRepository()
     configs = (
@@ -109,7 +110,7 @@ async def claim_task(service, identity, fence, binding, authority, action, *, ou
     if outcome is None:
         return attempt
     await service.store.call(
-        "record_action_outcome", owner_id="owner", assignment_id=identity,
+        "record_action_outcome", owner_id=OWNER_ID, assignment_id=identity,
         action_id=action.action_id, attempt_id=attempt, dispatch_token=permit.dispatch_token,
         expected_request_digest=action.intent.request_digest,
         outcome=AssignmentActionOutcome(
@@ -125,14 +126,14 @@ async def test_one_logical_task_reports_every_physical_claim_separately(records)
     identity = ids[0]
     fence, binding, authority = await claimed(service, identity)
     action = await issue_task(service, identity, fence, binding, authority)
-    declared = await service.measurements("owner", OWNER, identity)
+    declared = await service.measurements(OWNER_ID, OWNER, identity)
     assert declared["task_count"] == 1 and declared["claim_count"] == 0
     assert declared["tasks"][0]["claims"] == 0 and declared["tasks"][0]["observed_ms"] is None
     await claim_task(service, identity, fence, binding, authority, action,
                      outcome="failed", elapsed=7)
     await claim_task(service, identity, fence, binding, authority, action,
                      outcome="succeeded", elapsed=11)
-    measured = await service.measurements("owner", OWNER, identity)
+    measured = await service.measurements(OWNER_ID, OWNER, identity)
     assert measured["task_count"] == 1 and measured["claim_count"] == 2
     assert measured["measured_claim_count"] == 2 and measured["observed_ms"] == 18
     assert measured["tasks"][0]["id"] == action.action_id
@@ -151,7 +152,7 @@ async def test_an_unmeasured_claim_is_incomplete_and_never_counted_as_zero(recor
     action = await issue_task(service, identity, fence, binding, authority)
     await claim_task(service, identity, fence, binding, authority, action,
                      outcome=None, elapsed=None)
-    started = await service.measurements("owner", OWNER, identity)
+    started = await service.measurements(OWNER_ID, OWNER, identity)
     assert started["claim_count"] == 1 and started["measured_claim_count"] == 0
     assert started["observed_ms"] is None and started["tasks"][0]["observed_ms"] is None
     assert started["tasks"][0]["incomplete"] is True and started["incomplete"] is True
@@ -160,7 +161,7 @@ async def test_an_unmeasured_claim_is_incomplete_and_never_counted_as_zero(recor
 @pytest.mark.asyncio
 async def test_operation_without_a_ledger_gets_no_synthesized_attempt(records):
     _, service, ids, _ = records
-    result = await service.measurements("owner", OWNER, ids[0])
+    result = await service.measurements(OWNER_ID, OWNER, ids[0])
     assert result["task_count"] == 0 and result["claim_count"] == 0
     assert result["measured_claim_count"] == 0 and result["tasks"] == []
     assert result["observed_ms"] is None and result["elapsed_ms"] is None
@@ -180,7 +181,7 @@ async def test_activity_sequence_splits_the_window_into_measured_intervals(recor
             tx, fence=fence, activity=AssignmentActivityRecord(
                 f"measure:{index}", "attention", "Ongoing agent needs attention",
                 "fixture", notification_state="none")))
-    result = await service.measurements("owner", OWNER, identity)
+    result = await service.measurements(OWNER_ID, OWNER, identity)
     assert [item["sequence"] for item in result["intervals"]] == [1, 2, None]
     closed = result["intervals"][:2]
     assert all(item["open"] is False and item["end_at"] is not None for item in closed)
@@ -195,14 +196,14 @@ async def test_activity_sequence_splits_the_window_into_measured_intervals(recor
 async def test_terminal_operation_closes_the_window_and_reports_elapsed(records):
     _, service, ids, _ = records
     identity = ids[0]
-    current = await service.get("owner", OWNER, identity)
+    current = await service.get(OWNER_ID, OWNER, identity)
     await service.store.transaction(lambda tx, repo: repo.apply_control(
-        tx, owner_id="owner", assignment_id=identity,
+        tx, owner_id=OWNER_ID, assignment_id=identity,
         expected_state_version=current["revision"],
         expected_instruction_revision=current["instruction_revision"],
         expected_control_epoch=current["control_epoch"], submission_id=str(uuid4()),
         submission_digest=digest("measure-stop"), control="stop"))
-    result = await service.measurements("owner", OWNER, identity)
+    result = await service.measurements(OWNER_ID, OWNER, identity)
     assert result["disposition"] == "cancelled" and result["cutoff"] is False
     assert type(result["elapsed_ms"]) is int and result["elapsed_ms"] >= 0
     assert result["intervals"][-1]["open"] is False
@@ -219,7 +220,7 @@ async def test_future_operation_reports_no_measurement_instead_of_guessing(recor
             ('{"version":3,"kind":{"private":"opaque"},"deadline_at":"private",'
              '"authority":"private"}', ids[0]))
     await service.store.transaction(future_record)
-    result = await service.measurements("owner", OWNER, ids[0])
+    result = await service.measurements(OWNER_ID, OWNER, ids[0])
     assert result["task_count"] is None and result["claim_count"] is None
     assert result["observed_ms"] is None and result["elapsed_ms"] is None
     assert result["tasks"] == [] and result["intervals"] == []
@@ -232,7 +233,7 @@ async def test_foreign_legacy_and_unknown_identities_share_one_refusal(records):
     _, service, ids, legacy = records
     for identity in (ids[2], legacy, str(uuid4()), "not-an-id"):
         with pytest.raises(AssignmentError) as failure:
-            await service.measurements("owner", OWNER, identity)
+            await service.measurements(OWNER_ID, OWNER, identity)
         assert (failure.value.code, failure.value.status_code) == ("work_not_found", 404)
     assert (await service.measurements("other", {"sub": "other"}, ids[2]))["id"] == ids[2]
 
@@ -244,7 +245,7 @@ async def test_http_measurements_route_is_owner_scoped_and_never_cached(records,
     app = FastAPI()
     app.state.orchestrator = SimpleNamespace(persistent_assignments=service.assignments)
     app.include_router(work_router, prefix="/api")
-    override_read_auth(app, monkeypatch)
+    override_read_auth(app, monkeypatch, sub=OWNER_ID)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url="http://test") as client:
         response = await client.get(f"/api/work/v1/operations/{ids[0]}/measurements")
@@ -270,7 +271,7 @@ async def test_plane_charge_basis_and_money_disclosure_are_forwarded_verbatim(re
              '"spend_micro_units":0},"basis":{"tokens":"observed",'
              '"spend_micro_units":"uncertain","elapsed_ms":null}}', ids[0]))
     await service.store.transaction(annotate)
-    usage = (await service.get("owner", OWNER, ids[0]))["usage"]
+    usage = (await service.get(OWNER_ID, OWNER, ids[0]))["usage"]
     assert usage["money_status"] == "unknown" and usage["currency"] == "USD"
     assert usage["spent"]["spend_micro_units"] == 0
     assert usage["basis"] == {"tokens": "observed", "spend_micro_units": "uncertain",
@@ -280,7 +281,7 @@ async def test_plane_charge_basis_and_money_disclosure_are_forwarded_verbatim(re
 @pytest.mark.asyncio
 async def test_absent_and_null_usage_disclosures_are_never_coerced(records):
     _, service, ids, _ = records
-    baseline = (await service.get("owner", OWNER, ids[0]))["usage"]
+    baseline = (await service.get(OWNER_ID, OWNER, ids[0]))["usage"]
     # Absent key must stay absent, never default to a value
     assert baseline["money_status"] == "unknown"
     assert "currency" not in baseline and "basis" not in baseline
@@ -291,7 +292,7 @@ async def test_absent_and_null_usage_disclosures_are_never_coerced(records):
             "data->'usage' || %s::jsonb) WHERE id=%s",
             ('{"money_status":null,"currency":null,"basis":null}', ids[0]))
     await service.store.transaction(nulls)
-    usage = (await service.get("owner", OWNER, ids[0]))["usage"]
+    usage = (await service.get(OWNER_ID, OWNER, ids[0]))["usage"]
     assert usage["money_status"] is None and usage["currency"] is None
     assert usage["basis"] is None
 
@@ -307,5 +308,5 @@ async def test_unknown_usage_disclosure_is_refused_rather_than_reinterpreted(rec
         "UPDATE persistent_assignment SET data=jsonb_set(data, '{usage}', "
         "data->'usage' || %s::jsonb) WHERE id=%s", (annotation, ids[0])))
     with pytest.raises(AssignmentError) as failure:
-        await service.get("owner", OWNER, ids[0])
+        await service.get(OWNER_ID, OWNER, ids[0])
     assert (failure.value.code, failure.value.status_code) == ("work_read_unavailable", 503)

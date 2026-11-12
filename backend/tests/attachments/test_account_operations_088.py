@@ -21,6 +21,7 @@ from persistent_agents.runtime_values import digest
 from tests.test_work_service_postgres_088 import plane as plane
 from tests.test_work_service_postgres_088 import records as records
 from tests.test_work_measurements_postgres_088 import claimed
+from tests.helpers.work_control_caller import OWNER_ID
 from tests.attachments.test_purge_coordinator_074 import _coordinator
 
 
@@ -29,7 +30,7 @@ def client_app(runtime, service, blobs):
         plane_runtime=runtime, purge_repository=runtime.repositories.purge, blobs=blobs)
     app = FastAPI()
     app.state.orchestrator = SimpleNamespace(attachment_purge_coordinator=coordinator)
-    app.dependency_overrides[require_user_id] = lambda: "owner"
+    app.dependency_overrides[require_user_id] = lambda: OWNER_ID
     app.include_router(attachments_router)
     return app, coordinator
 
@@ -40,10 +41,10 @@ async def retire(client):
 
 async def repository_snapshot(service, identity):
     def read(tx, repo):
-        record = repo.get_assignment(tx, owner_id="owner", assignment_id=identity)
-        tombstones = tx.fetch_all("SELECT * FROM astralplane_purge_tombstone WHERE owner_id=%s", ("owner",))
-        retired = tx.fetch_one("SELECT state FROM astralplane_blob_owner_state WHERE owner_id=%s", ("owner",))
-        receipts = tx.fetch_all("SELECT * FROM assignment_operation_receipt WHERE owner_id=%s", ("owner",))
+        record = repo.get_assignment(tx, owner_id=OWNER_ID, assignment_id=identity)
+        tombstones = tx.fetch_all("SELECT * FROM astralplane_purge_tombstone WHERE owner_id=%s", (OWNER_ID,))
+        retired = tx.fetch_one("SELECT state FROM astralplane_blob_owner_state WHERE owner_id=%s", (OWNER_ID,))
+        receipts = tx.fetch_all("SELECT * FROM assignment_operation_receipt WHERE owner_id=%s", (OWNER_ID,))
         return record, tombstones, retired, receipts
     return await service.store.transaction(read)
 
@@ -53,7 +54,7 @@ async def test_mixed_profile_retirement_schedules_only_after_safe_removal_and_co
     runtime, service, identities, legacy = records
     blob_root = tmp_path / "blobs"
     blobs = create_streaming_blob_store(root=blob_root)
-    for owner in ("owner", "other"):
+    for owner in (OWNER_ID, "other"):
         path = blob_root / owner / "orphan" / "private.bin"
         path.parent.mkdir(parents=True)
         path.write_bytes(b"private fixture payload")
@@ -65,12 +66,12 @@ async def test_mixed_profile_retirement_schedules_only_after_safe_removal_and_co
             cleanup_id = response.json()["cleanup_id"]
             assert (await retire(client)).json()["cleanup_id"] == cleanup_id
             for identity in (*identities[:2], legacy):
-                assert await service.store.call("get_assignment", owner_id="owner", assignment_id=identity) is None
+                assert await service.store.call("get_assignment", owner_id=OWNER_ID, assignment_id=identity) is None
             assert await service.store.call("get_assignment", owner_id="other", assignment_id=identities[2]) is not None
             await coordinator.areconcile_once(fail_on_incomplete=True)
             status = await client.get(f"/api/account/retirement/{cleanup_id}")
             assert status.json()["status"] == "purged"
-        assert not (blob_root / "owner").exists()
+        assert not (blob_root / OWNER_ID).exists()
         assert (blob_root / "other/orphan/private.bin").read_bytes() == b"private fixture payload"
         _, _, retired, receipts = await repository_snapshot(service, identities[0])
         assert retired["state"] == "retired" and not receipts
@@ -185,7 +186,7 @@ async def test_unqualified_retirement_cannot_skip_durable_work_or_use_legacy_ada
         runtime.repositories.assignments = SimpleNamespace(retire_owner=legacy)
     try:
         with pytest.raises(AttachmentPurgeReadinessError, match="account_retirement_repository_unavailable"):
-            await coordinator.aschedule_owner(owner_id="owner")
+            await coordinator.aschedule_owner(owner_id=OWNER_ID)
         assert repository.owner_values is None and "executor.execute" not in events
         legacy.assert_not_called()
     finally:

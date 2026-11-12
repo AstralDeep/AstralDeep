@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import time
 import uuid
+from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -17,7 +18,7 @@ from jose import jwk, jwt
 class FixtureIdentity:
     _active = None
 
-    def __init__(self, run_id: str) -> None:
+    def __init__(self, run_id: str, *, authority: str | None = None) -> None:
         from shared import jwks_cache
 
         if os.environ.get("ASTRAL_ENV") != "development":
@@ -26,8 +27,13 @@ class FixtureIdentity:
             raise ValueError("synthetic verification IAM requires a namespaced run")
         if type(self)._active is not None:
             raise RuntimeError("synthetic verification IAM already has an active owner")
+        if authority is not None:
+            parsed = urlsplit(authority)
+            if (parsed.scheme != "https" or parsed.netloc != "verification.invalid"
+                    or not parsed.path.startswith("/realms/") or parsed.query or parsed.fragment):
+                raise ValueError("synthetic IAM issuer must remain on verification.invalid")
         self.run_id = run_id
-        self.authority = f"https://verification.invalid/realms/{uuid.uuid4().hex}"
+        self.authority = authority or f"https://verification.invalid/realms/{uuid.uuid4().hex}"
         self.url = f"{self.authority}/protocol/openid-connect/certs"
         self.kid = f"fixture-{uuid.uuid4().hex}"
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)

@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from orchestrator.work_api import work_router
+from tests.helpers.work_control_caller import OWNER_ID
 from tests.test_work_continuations_postgres_088 import (
     plane as plane, read_records as read_records, signing_key as signing_key,
     value as value, current, uncertain, wait_body, reconcile_body,
@@ -41,8 +42,8 @@ async def test_mounted_owner_wait_changes_once_and_retains_manual_namespace(valu
     assert record.operation["control"]["wait"] == {
         "event_key": "owner:" + body["owner_event_id"], "source_revision": body["owner_revision"]}
     assert accepted.headers["cache-control"] == replay.headers["cache-control"] == "no-store"
-    assert len(value.audit.list_for_user("owner")[0]) == 1
-    assert value.audit.verify_chain("owner") is None
+    assert len(value.audit.list_for_user(OWNER_ID)[0]) == 1
+    assert value.audit.verify_chain(OWNER_ID) is None
 
 
 @pytest.mark.parametrize("decision", ["confirmed_applied", "confirmed_not_applied"])
@@ -63,8 +64,8 @@ async def test_mounted_reconciliation_settles_once_without_refund_output_or_wake
     assert after.wake_generation == before.wake_generation and after.next_wake_at is None
     assert "prior_result_digest" not in accepted.text and "synthetic" not in accepted.text
     assert accepted.headers["cache-control"] == replay.headers["cache-control"] == "no-store"
-    assert len(value.audit.list_for_user("owner")[0]) == 1
-    assert value.audit.verify_chain("owner") is None
+    assert len(value.audit.list_for_user(OWNER_ID)[0]) == 1
+    assert value.audit.verify_chain(OWNER_ID) is None
 
 
 @pytest.mark.parametrize("kind", ["wait", "reconcile"])
@@ -84,4 +85,4 @@ async def test_mounted_safe_continuation_is_owner_scoped_and_rejects_authority_f
                                     headers=headers(value))
         assert malformed.status_code == 422 and malformed.json() == {"error": "work_control_invalid"}
         assert denied.headers["cache-control"] == malformed.headers["cache-control"] == "no-store"
-    assert await current(value) == before and value.audit.list_for_user("owner")[0] == []
+    assert await current(value) == before and value.audit.list_for_user(OWNER_ID)[0] == []

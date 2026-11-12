@@ -224,7 +224,7 @@ async def test_orchestrator_auth_module_uses_shared_jwks_cache(monkeypatch, inva
 
     authority = "https://idp.example/realms/test"
     keys = {"keys": [{"kid": "test-key"}]}
-    payload = {"sub": "owner", "iss": authority, "azp": "astral-frontend"}
+    payload = {"sub": "owner", "iss": authority, "azp": "astral-frontend", "aud": "account"}
     cache = AsyncMock(return_value=keys)
     decode = Mock(side_effect=ValueError("invalid signature") if invalid else None,
                   return_value=payload)

@@ -158,8 +158,11 @@ async def test_discovery_requires_a_current_selected_human_session(discovery, ki
 
 
 async def test_foreign_current_human_cannot_discover_another_owners_attempt(discovery, fixture):
-    owner, sid = str(uuid.uuid4()), uuid.uuid4().hex
-    token = fixture[3](sub=owner)
+    from shared.token_verify import verify_idp_token
+
+    subject, sid = str(uuid.uuid4()), uuid.uuid4().hex
+    token = fixture[3](sub=subject)
+    owner = (await verify_idp_token(token))["sub"]
     fixture[0].create(sid, user_id=owner, access_token=token, refresh_token="fixture-other-refresh", hard_max_seconds=3600)
     try:
         response = await inventory(discovery, headers={"Cookie": "astral_session=" + web_auth._sign(sid),

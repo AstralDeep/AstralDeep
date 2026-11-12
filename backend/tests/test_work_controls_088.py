@@ -254,7 +254,7 @@ async def test_write_uses_original_credential_verification_on_every_retry(contro
     monkeypatch.setattr("shared.jwks_cache.get_jwks", AsyncMock(return_value={"keys": []}))
     session = AsyncMock(return_value={"access_token": "fixture.access.token"})
     monkeypatch.setattr(web_auth, "ensure_session", session)
-    issuer = {"iss": "https://iam.example/realms/test", "azp": "astral-frontend"}
+    issuer = {"iss": "https://iam.example/realms/test", "azp": "astral-frontend", "aud": "account"}
     read.assignment.owner_id = canonical_owner_id(issuer["iss"], "owner")
     decode = Mock(return_value={"sub": "owner", "realm_access": {"roles": ["user"]}} | issuer)
     monkeypatch.setattr("jose.jwt.decode", decode)

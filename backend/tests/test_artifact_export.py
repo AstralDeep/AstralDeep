@@ -371,7 +371,7 @@ def test_cookie_session_real_mode_serves_export(client, orch, monkeypatch):
     monkeypatch.setattr(
         "jose.jwt.decode",
         lambda token, key, **kw: {"sub": USER_ID, "azp": "astral-frontend",
-                                  "iss": "https://idp.example/realms/astral"},
+                                  "iss": "https://idp.example/realms/astral", "aud": "account"},
     )
 
     orch.workspace.aget_by_component_id.return_value = _row(_table_cd())
