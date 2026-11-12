@@ -61,7 +61,7 @@ check if time($t), $t < <expiry as RFC 3339>;
 
 ## 4. Verifying a ticket
 
-The executor knows its mesh id, the roster's feed statuses, the stop counter, the time, the action it was asked to run, whether policy requires consent, and a callback that checks a LETS receipt. It runs these steps in order. The first failure is the error.
+The executor knows its mesh id, the roster's feed statuses, the stop counter, the time, the action it was asked to run, the effect kind of that action, whether policy requires consent, and a callback that checks a LETS receipt. It runs these steps in order. The first failure is the error.
 
 1. The ticket has the right shape (`ticket.malformed`). The action has the right shape (`ticket.malformed_action`). The action's mesh is this mesh (`ticket.mesh_mismatch`). The capability decodes (`ticket.malformed`).
 2. The token parses as a Biscuit and its blocks follow the grammar and the layout of section 3 (`ticket.malformed`, `ticket.wrong_block_shape`). The call block carries exactly the two labels with valid values and valid source ids (`ticket.label_missing`).
@@ -72,7 +72,7 @@ The executor knows its mesh id, the roster's feed statuses, the stop counter, th
 7. The token's signature chain verifies under that operations key (`ticket.bad_root`), with no third-party blocks (`ticket.wrong_block_shape`).
 8. The authorizer runs with the facts `time`, `tool`, `args_digest`, `action_digest`, `agent`, `mesh_ctx` and `stop_current` taken from the request and not from the token, and a single `allow if true` policy. Any failed check is `ticket.unauthorized`. This is where an expired capability, a tool outside the turn's set, or different arguments are refused. The executor sets generous run limits. The reference retries when the library's one-millisecond default is hit and raises `ticket.limits` if it never completes.
 9. The token's device, turn and last agent equal the action's (`ticket.unauthorized`). The label sources equal the action's `influence` (`ticket.unauthorized`).
-10. The receipt is an object (`ticket.receipt_missing`). Its `type` is `lets.receipt/v1` and its `evidence_digest` is the action digest (`ticket.receipt_mismatch`). The LETS callback accepts it (`ticket.receipt_invalid`). The receipt's signature and budget are LETS's to check.
+10. The receipt, by the effect's kind (section 6). For a kind with a budget, the receipt is an object (`ticket.receipt_missing`). Its `type` is `lets.receipt/v1` and its `evidence_digest` is the action digest (`ticket.receipt_mismatch`). The LETS callback accepts it (`ticket.receipt_invalid`). The receipt's signature and budget are LETS's to check. For a kind without one, the receipt is null (`ticket.receipt_unexpected`) and LETS is not consulted.
 11. Consent. If the consent is null and policy requires it, `ticket.consent_required`. If a consent is given, whether required or not, it must verify with kind `action` and the action digest (`ticket.consent_wrong_action` for a different action, `ticket.consent_invalid` for other failures) and its clock must be within 600000 milliseconds of the executor's time in either direction (`ticket.consent_stale`).
 
 The result is the claims: `mesh`, `device`, `feed`, `stop_counter`, `turn`, `agents` (in order), `action`, and `labels` (`integrity`, `confidentiality` and `sources`). The executor applies its own flow rules to the labels. An institution's node never trusts a device's gates. It verifies the ticket and then runs its own.
@@ -84,6 +84,14 @@ A consent object is the one of `policy.md` section 2 with `kind` `action` and `d
 ## 6. Receipt binding
 
 The ticket carries a LETS receipt in the format LETS freezes. This contract needs two things from it. Its `type` field is `lets.receipt/v1`, and its `evidence_digest` is the action digest. LETS's device profile sets the other bindings (tenant, subject and idempotency key). When LETS publishes them they are added to this section without changing the rest.
+
+**Which effects carry a receipt.** The budget classes of `policy.md` cover only `mesh_write` (class `notes_write`) and `outside_effect` (class `outside_effect`). Reads inside the mesh and outward reads have no budget, because the flow rules govern them, so the gate stack issues no receipt for them (`labels.md`, gate step 7). A receipt exists exactly when the kind has a budget.
+
+- The **effect kind** is an input of the verification and never a field of the ticket. The executor derives it from its own record of the tool, the definition pinned under the action's `tool_def`, and passes one of `mesh_read`, `mesh_write`, `outward_read` or `outside_effect`. Any other value raises `labels.invalid`. A presenter cannot choose the kind, so it cannot choose to go without a receipt.
+- For `mesh_write` and `outside_effect` the receipt is required and checked as in step 10.
+- For `mesh_read` and `outward_read` the receipt must be null. A receipt attached to a read is refused with `ticket.receipt_unexpected`, so no receipt issued for another action can ride along and no charge is counted for a call that has none. The verifier does not call the LETS callback for a null receipt.
+
+The ticket shape is unchanged. The field stays, and null is its value for an effect without a budget.
 
 ## 7. Verified by the kernel only
 

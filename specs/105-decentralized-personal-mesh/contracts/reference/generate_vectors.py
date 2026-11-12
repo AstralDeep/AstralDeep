@@ -2605,6 +2605,7 @@ def build_ticket(repin: bool = False) -> Suite:
         v: dict[str, Any] = {
             "action": action,
             "consent_required": False,
+            "effect_kind": "outside_effect",
             "mesh": mesh,
             "now_s": now_s,
             "presence_keys": presence,
@@ -3041,6 +3042,45 @@ def build_ticket(repin: bool = False) -> Suite:
         "ticket_verify",
         base(receipt_valid=False),
         error="ticket.receipt_invalid",
+    )
+    for kind in ("mesh_read", "outward_read"):
+        s.add(
+            f"{kind.replace('_', '-')}-carries-no-receipt",
+            "ticket_verify",
+            base(effect_kind=kind, ticket=with_ticket(receipt=None)),
+            expect=claims,
+        )
+        s.add(
+            f"{kind.replace('_', '-')}-never-consults-lets",
+            "ticket_verify",
+            base(
+                effect_kind=kind, receipt_valid=False, ticket=with_ticket(receipt=None)
+            ),
+            expect=claims,
+        )
+        s.add(
+            f"{kind.replace('_', '-')}-refuses-an-attached-receipt",
+            "ticket_verify",
+            base(effect_kind=kind),
+            error="ticket.receipt_unexpected",
+        )
+    s.add(
+        "mesh-write-needs-its-receipt",
+        "ticket_verify",
+        base(effect_kind="mesh_write", ticket=with_ticket(receipt=None)),
+        error="ticket.receipt_missing",
+    )
+    s.add(
+        "mesh-write-with-bound-receipt",
+        "ticket_verify",
+        base(effect_kind="mesh_write"),
+        expect=claims,
+    )
+    s.add(
+        "unknown-effect-kind",
+        "ticket_verify",
+        base(effect_kind="send"),
+        error="labels.invalid",
     )
     s.add(
         "capability-not-base64url",

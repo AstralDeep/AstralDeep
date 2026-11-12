@@ -312,6 +312,7 @@ def _ticket_verify(i: dict[str, Any]) -> Any:
         stop=i["stop"],
         now_s=i["now_s"],
         action=i["action"],
+        effect_kind=i["effect_kind"],
         consent_required=i["consent_required"],
         receipt_verifier=lambda _receipt: i["receipt_valid"],
     )

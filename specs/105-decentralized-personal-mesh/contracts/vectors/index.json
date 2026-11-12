@@ -71,8 +71,8 @@
       "spec": "contracts/sync.md"
     },
     "ticket.json": {
-      "cases": 44,
-      "sha256": "4e363884f1138db89a287df2a30713ba5604030f4d0fadf87ffb8b9283e14d59",
+      "cases": 53,
+      "sha256": "03ba467bf82c742d89a2d8949531fc2ea8cf2d11ade603ea29533a218a197eaf",
       "spec": "contracts/ticket.md"
     }
   },

@@ -34,6 +34,12 @@ _FACT = re.compile(r"^([a-z_]+)\((.*)\);$")
 _ARG = re.compile(r'^(?:"[A-Za-z0-9_.:/@=+-]{1,200}"|-?[0-9]{1,18})$')
 _CHECK = re.compile(r"^check if .+;$")
 RECEIPT_TYPE = "lets.receipt/v1"
+BUDGET_DIMENSIONS = {
+    "mesh_read": None,
+    "mesh_write": "notes_write",
+    "outward_read": None,
+    "outside_effect": "outside_effect",
+}
 RETRIES = 20
 AUTHORITY_FACTS = {"actor", "device", "feed", "mesh", "stop_counter"}
 TURN_FACTS = {"actor", "turn"}
@@ -294,6 +300,7 @@ def verify_ticket(
     stop: int,
     now_s: int,
     action: dict[str, Any],
+    effect_kind: str,
     consent_required: bool,
     receipt_verifier: Callable[[dict[str, Any]], bool],
 ) -> dict[str, Any]:
@@ -329,15 +336,26 @@ def verify_ticket(
         raise MeshError(
             "ticket.unauthorized", "labels do not match the action's influence list"
         )
+    if effect_kind not in BUDGET_DIMENSIONS:
+        raise MeshError("labels.invalid", str(effect_kind)[:40])
     receipt = ticket["receipt"]
-    if not isinstance(receipt, dict):
-        raise MeshError("ticket.receipt_missing", "")
-    if receipt.get("type") != RECEIPT_TYPE or receipt.get("evidence_digest") != digest:
-        raise MeshError(
-            "ticket.receipt_mismatch", "the receipt is not bound to this action"
-        )
-    if not receipt_verifier(receipt):
-        raise MeshError("ticket.receipt_invalid", "LETS refused the receipt")
+    if BUDGET_DIMENSIONS[effect_kind] is None:
+        if receipt is not None:
+            raise MeshError(
+                "ticket.receipt_unexpected", "this effect kind has no budget to count"
+            )
+    else:
+        if not isinstance(receipt, dict):
+            raise MeshError("ticket.receipt_missing", "")
+        if (
+            receipt.get("type") != RECEIPT_TYPE
+            or receipt.get("evidence_digest") != digest
+        ):
+            raise MeshError(
+                "ticket.receipt_mismatch", "the receipt is not bound to this action"
+            )
+        if not receipt_verifier(receipt):
+            raise MeshError("ticket.receipt_invalid", "LETS refused the receipt")
     if ticket["consent"] is None:
         if consent_required:
             raise MeshError("ticket.consent_required", "")

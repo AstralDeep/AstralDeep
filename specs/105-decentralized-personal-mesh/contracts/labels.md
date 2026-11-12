@@ -62,7 +62,7 @@ One effect passes these steps in order. The first refusal ends it. The input is 
 | 4 | Policy rules, merged by narrowing only. Result `allow`, `consent` or `deny` | `gate.policy_denied` for `deny`. `consent` adds the reason `policy` |
 | 5 | Flow rules of section 4 | `flow.secret_in_context`, `flow.phi_to_model`. Consent reasons are added |
 | 6 | Consent, when any earlier step asked for it, or when the allowance is `solo` (reason `solo_allowance`) | Outcome `consent`, code `consent.required`, with the reasons, unless consent is already given |
-| 7 | Allowance: a LETS receipt is issued and counted | `allowance.exhausted`. This applies even when consent is given |
+| 7 | Allowance: for `mesh_write` and `outside_effect`, a LETS receipt is issued and counted. Reads (`mesh_read`, `outward_read`) have no budget class, so they pass this step with no receipt and the ticket carries a null one (`ticket.md` section 6) | `allowance.exhausted`. This applies even when consent is given |
 | 8 | Dispatch with an idempotency key | not a refusal. The allow result reports gate 8 |
 | 9 | The result is written as a signed event with its labels | not part of the pure function |
 
