@@ -81,3 +81,24 @@ The input is the canonical JSON of
 `period_index` is `floor((now_s - anchor_s) / length_s)`. A time before the anchor raises `policy.before_anchor`. The input's digest is the hash of its canonical JSON. Two devices that hold the same roster and policy build the same input and so derive the same budget with the same disjoint shares.
 
 Whether a device is fresh or solo depends on the device's own clock and contact. It is not part of the input. LETS applies it when the device spends.
+
+## 6. Carrying a transfer
+
+A device that has headroom can give part of its own share to another device with the LETS prepare, accept and finalize steps (spec section 8.3). LETS owns the voucher and the acknowledgement, their signatures and the accounting. The mesh only carries them, as `auth.transfer` events with scope `mesh`. The labels are private and owner.
+
+The body has exactly two fields. `kind` is `voucher` or `ack`. `transfer` is the LETS object, an object with a string `type` and a string `transfer_id`. The type is `lets.transfer-voucher/v1` for a voucher and `lets.transfer-ack/v1` for an acknowledgement.
+
+| Failure | Error |
+|---|---|
+| Wrong fields, an unknown kind, or a transfer that is not an object with a string `type` and `transfer_id` | `transfer.malformed` |
+| The object's `type` does not match the kind | `transfer.type_mismatch` |
+
+Rules for the devices that read these events. Every step is idempotent, so a retry or a restart changes nothing.
+
+- The giver writes the voucher once per `transfer_id`. After a pairing approval the voucher is the new device's headroom offer, and the giver writes it again after a restart if it is still unsettled and no voucher event for it exists.
+- A device acts on a voucher only when LETS names it as the target. It accepts the voucher into its holder, then writes the acknowledgement once per `transfer_id`. LETS refuses a voucher that was signed for another period, another target or another policy digest, and the device leaves such an event alone.
+- The giver finalizes when it sees an acknowledgement for a voucher it gave. LETS refuses an acknowledgement that does not match its voucher.
+- A transfer moves headroom and never creates it. What the giver gave is subtracted from its allowance for the period, and the target's allowance rises by the same amount only after acceptance.
+
+Vectors: `transfer.json`.
+

@@ -36,6 +36,7 @@ EVENT_TYPES = {
     "auth.policy": "authority",
     "auth.consent": "authority",
     "auth.receipt": "authority",
+    "auth.transfer": "authority",
     "run.lease": "run",
     "run.goal": "run",
     "run.schedule": "run",

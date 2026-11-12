@@ -28,6 +28,7 @@ from astral_mesh_ref import (
     runs as runs_ref,
     sync,
     ticket,
+    transfer as transfer_ref,
 )
 from astral_mesh_ref.cj import b64url_decode, b64url_encode, canonical
 from astral_mesh_ref.testkit import DetRng, TestDevice, hlc, seed
@@ -36,6 +37,7 @@ mailbox_ref.register(runner.op)
 runs_ref.register(runner.op)
 learning_ref.register(runner.op)
 credential_ref.register(runner.op)
+transfer_ref.register(runner.op)
 
 HERE = Path(__file__).resolve().parent
 VECTORS = HERE.parent / "vectors"
@@ -8310,6 +8312,70 @@ def build_credential() -> Suite:
     return s
 
 
+def build_transfer() -> Suite:
+    s = Suite("transfer", "contracts/policy.md#carrying-a-transfer")
+    voucher = {
+        "amount": [200000, 4, 2],
+        "transfer_id": "transfer-a-0-1",
+        "type": "lets.transfer-voucher/v1",
+    }
+    ack = {"transfer_id": "transfer-a-0-1", "type": "lets.transfer-ack/v1"}
+    s.add(
+        "a-voucher-is-carried",
+        "transfer_check",
+        {"body": {"kind": "voucher", "transfer": voucher}},
+        expect={"id": "transfer-a-0-1", "kind": "voucher"},
+    )
+    s.add(
+        "an-ack-is-carried",
+        "transfer_check",
+        {"body": {"kind": "ack", "transfer": ack}},
+        expect={"id": "transfer-a-0-1", "kind": "ack"},
+    )
+    s.add(
+        "an-ack-object-under-the-voucher-kind-is-refused",
+        "transfer_check",
+        {"body": {"kind": "voucher", "transfer": ack}},
+        error="transfer.type_mismatch",
+    )
+    s.add(
+        "an-unknown-kind-is-refused",
+        "transfer_check",
+        {"body": {"kind": "offer", "transfer": voucher}},
+        error="transfer.malformed",
+    )
+    s.add(
+        "an-extra-field-is-refused",
+        "transfer_check",
+        {"body": {"kind": "voucher", "to": "x", "transfer": voucher}},
+        error="transfer.malformed",
+    )
+    s.add(
+        "a-transfer-without-an-id-is-refused",
+        "transfer_check",
+        {
+            "body": {
+                "kind": "voucher",
+                "transfer": {"type": "lets.transfer-voucher/v1"},
+            }
+        },
+        error="transfer.malformed",
+    )
+    s.add(
+        "a-transfer-that-is-not-an-object-is-refused",
+        "transfer_check",
+        {"body": {"kind": "ack", "transfer": "ack"}},
+        error="transfer.malformed",
+    )
+    s.add(
+        "a-body-that-is-not-an-object-is-refused",
+        "transfer_check",
+        {"body": []},
+        error="transfer.malformed",
+    )
+    return s
+
+
 def suites(repin: bool) -> list[Suite]:
     return [
         build_canonical(),
@@ -8330,6 +8396,7 @@ def suites(repin: bool) -> list[Suite]:
         build_runs(),
         build_learning(),
         build_credential(),
+        build_transfer(),
     ]
 
 

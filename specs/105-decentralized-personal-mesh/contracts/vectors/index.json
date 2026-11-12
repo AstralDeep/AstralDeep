@@ -89,6 +89,11 @@
       "cases": 53,
       "sha256": "03ba467bf82c742d89a2d8949531fc2ea8cf2d11ade603ea29533a218a197eaf",
       "spec": "contracts/ticket.md"
+    },
+    "transfer.json": {
+      "cases": 8,
+      "sha256": "f9e241cbbc7d204fb8b80b4572d060d94a7c6b7ecea8314823ffce450540874e",
+      "spec": "contracts/policy.md#carrying-a-transfer"
     }
   },
   "format": "astral.vectors/v1"

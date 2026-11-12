@@ -12,7 +12,7 @@ The formats are the ones fixed in [../tasks.md](../tasks.md). Where a format nee
 | [sync.md](sync.md) | `astral.sync/v1` (ALPN `astral/sync/1`) | Messages, session, event acceptance, bodies by hash, PHI withholding, checkpoints, fork and shortened-feed evidence, restored device | `sync.json`, `feed.json` | `sync.py` |
 | [roster.md](roster.md) | `astral.roster/v1` | Genesis, add, remove, rotate, attest, accepted issuer, PHI authority and approval, epoch, wrap, stop, the merge, identity attestation, unattested devices, pairing | `roster.json`, `attestation.json`, `pairing.json` | `roster.py`, `attestation.py`, `pairing.py` |
 | [keys.md](keys.md) | `astral.keys/v1`, wrap `astral.wrap/v1`, backup `astral.backup/v1` | Device keys, key groups and epochs, wrapping, content keys, recovery key and its 24 words, encrypted backup | `keys.json`, `crypto.json`, `credential.json` | `keys.py`, `crypto.py`, `credential.py` |
-| [policy.md](policy.md) | `astral.policy/v1` | Budget policy, consent for widening, narrowing-only merge, input to LETS | `policy.json` | `policy.py`, `consent.py` |
+| [policy.md](policy.md) | `astral.policy/v1` | Budget policy, consent for widening, narrowing-only merge, input to LETS | `policy.json`, `transfer.json` | `policy.py`, `consent.py`, `transfer.py` |
 | [ticket.md](ticket.md) | `astral.ticket/v1` | Biscuit capability chain, action digest, consent, receipt binding, labels as facts | `ticket.json` | `ticket.py`, `consent.py` |
 | [labels.md](labels.md) | `astral.labels/v1` | Integrity and confidentiality axes, inheritance, quarantined readers, flow rules, gate order | `labels.json` | `labels.py` |
 | [surface.md](surface.md) | `astral.surface/v1` | Surface documents, patches, action events and capabilities, value bindings | `surface.json` | `surface.py` |
@@ -84,6 +84,7 @@ A harness runs each case by `kind` with `input` and compares the result with `ex
 | `labels.json` | `labels_join`, `labels_quarantine`, `labels_flow`, `labels_gate` | none |
 | `surface.json` | `surface_validate`, `surface_fold`, `surface_action`, `surface_bind` | `vocabulary`, `actionable` |
 | `credential.json` | `credential_check`, `credential_recipients`, `credential_seal`, `credential_open`, `credential_fold` | `devices` |
+| `transfer.json` | `transfer_check` | none |
 | `sync.json` | `sync_plan`, `sync_bodies`, `sync_message`, `sync_frame`, `checkpoint_verify`, `shortened` | `devices` |
 | `fold.json` | `fold_branches`, `fold_authority`, `fold_settings` | none |
 | `runs.json` | `run_lease_fold` (`events`, `devices`: feed id to device id, `presence_keys`: device id to presence key of the current roster) gives `runs`. `run_takeover_digest` (`run`, `supersedes`, `executor`) gives `digest`. `run_state_fold` (`run`, `chat`, `events`) gives `state`. `run_start` (`spec`, `device`, `now_ms`) gives `run` and `events`. `run_schedule_plan` (`schedule`, `now_ms`, `last_slot`). `run_precheck` (`probe`, `last_fingerprint`). `run_judge_answer` (`goal`, `round`, `round_output`, `raw`) gives `verdict`, `progress`, `content` | none |

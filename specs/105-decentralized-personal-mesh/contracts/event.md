@@ -166,6 +166,7 @@ The family decides the merge rule. The body of every type is a canonical JSON ob
 | `auth.policy` | authority | `mesh` | `policy`, `consent` (see `policy.md`) |
 | `auth.consent` | authority | `mesh` or chat id | `grant`, `consent` |
 | `auth.receipt` | authority | `mesh` or chat id | `receipt` (a LETS receipt) |
+| `auth.transfer` | authority | `mesh` | `kind`, `transfer` (a LETS voucher or acknowledgement, see `policy.md` section 6) |
 | `run.lease`, `run.goal`, `run.schedule` | run | `mesh` or chat id | see `runs.md`. The lease fold reads `run`, `executor`, `supersedes`, `takeover` |
 | `learn.proposal`, `learn.adoption`, `learn.reversal` | learning | `mesh` | see `learning.md`. The ledger fold reads `op`, `proposal`, `adoption`, `mode`, `content_hash`, `report_hash` |
 | `mem.remember`, `settings.set` | memory | `mesh` | `key`, `value` |
