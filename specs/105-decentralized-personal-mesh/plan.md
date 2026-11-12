@@ -140,8 +140,10 @@ home server or a VM.
 
 | Repository | Work |
 |---|---|
-| AstralDeep | A single-owner node profile with its own startup posture (`session_store.py:81-143` assumes operator secrets). Enforce token audience and issuer (`auth.py:303-310`). Key owners on `(issuer, subject)`. Mint delegation locally with an asymmetric key in place of the per-dispatch Keycloak exchange (`orchestrator.py:22320`). The MCP channel already mints locally (`:22511-22558`). A node descriptor and a pairing endpoint, building on `mesh_enrollment.py`. An installer for the node (re-file of Deep #246, #293). Raise and persist the stop counter (Deep #245, #289). |
-| AstralProjection | Pairing by QR or code in place of the compiled-in server (`Configuration.swift:13-14`, `app/build.gradle.kts:298,331-332`, `deployment/release-profile.json`). A list of the owner's nodes in settings. Device identity and presence keys in the Secure Enclave, StrongBox or TPM in place of software seeds (`MeshEnrollment.swift:149`). The sign-in nonce bound to the device key. |
+| AstralDeep | A single-owner node profile with its own startup posture (`session_store.py:81-143` assumes operator secrets). Enforce token audience and issuer (`auth.py:303-310`). Key owners on `(issuer, subject)`. Mint delegation locally with an asymmetric key in place of the per-dispatch Keycloak exchange (`orchestrator.py:22320`). The MCP channel already mints locally (`:22511-22558`). A node descriptor and a pairing endpoint, building on `mesh_enrollment.py`. The low-level node installer that AstralVessel calls (re-file of Deep #246, #293). Raise and persist the stop counter (Deep #245, #289). Takes ROTE from Projection through the kernel's Python package. |
+| AstralVessel | Becomes the base's distribution (spec section 16). `astralvessel up` installs a personal node that runs Deep's turn loop and gates, with Plane and LETS. Vessel's own loop is retired. Its sandbox and egress become the node's executor. Its conformance suite runs against the node. |
+| AstralKernel | Takes ROTE's Python package out of Projection, unchanged in behavior, so Deep and Projection both depend on the base for it. |
+| AstralProjection | ROTE leaves `backend/rote/` for the kernel's Python package. Pairing by QR or code in place of the compiled-in server (`Configuration.swift:13-14`, `app/build.gradle.kts:298,331-332`, `deployment/release-profile.json`). A list of the owner's nodes in settings. Device identity and presence keys in the Secure Enclave, StrongBox or TPM in place of software seeds (`MeshEnrollment.swift:149`). The sign-in nonce bound to the device key. |
 | AstralPlane | The `(issuer, subject)` owner key. No migration of old data is needed. |
 
 **Exit criteria.**
@@ -239,7 +241,7 @@ it.
 
 | Repository | Work |
 |---|---|
-| AstralProjection | One duplex audio graph with echo cancellation per platform. Voice activity and end-of-turn detection. Streaming transcription (replacing the final-only path in `AppleLocalSpeech.swift` and `LocalSpeechEngine.kt`). Streaming speech. The interruption logic of section 12.3. The watch as an audio satellite of the phone. Push-to-talk and wake phrase on the Mac (Projection #142). Model downloads with size shown first. |
+| AstralProjection | One duplex audio graph with echo cancellation per platform. Voice activity and end-of-turn detection. Streaming transcription (replacing the final-only path in `AppleLocalSpeech.swift` and `LocalSpeechEngine.kt`). Streaming speech. The interruption logic of section 12.3. The watch as an audio satellite of the phone. Push-to-talk and wake phrase on the Mac (Projection #142). Model downloads with size shown first. The voice model is LFM3-Audio-2B at 3 bits on MLX for recognition, speech and short spoken replies. It is downloaded from Hugging Face the first time someone taps the mic, and there is no voice until it is installed (owner, 2026-11-12). The server's hosted voice models are no longer used. |
 | Kernel | The fast-path and full-answer split. Speculative generation on partial transcripts. Recording only what was spoken. The rule that a risky action cannot be approved by voice alone. |
 | AstralDeep | Retire `backend/voice_agent/` and the LiveKit dependency once clients no longer use them. |
 

@@ -900,16 +900,27 @@ describe sync as "when both are online".
 
 ---
 
-## 16. What each repository becomes
+## 16. Layers, and what each repository becomes
 
-| Repository | Today | After |
-|---|---|---|
-| **New: the kernel** (name is the owner's) | Does not exist | A Rust library with Swift, Kotlin and Python bindings: event log and store, sync and transport, roster and keys, tickets, flow labels and gates, the LETS holder and verifier, the turn engine, device-side adaptation of UI. Pinned by Deep the way Plane and LETS are. |
-| AstralDeep | The orchestrator every client depends on | The node: a single-owner profile for personal use and a multi-owner profile for institutions. Hosts the heavy first-party agents as MCP servers, the PHI checks that need large models, the sandbox, and a mailbox and relay for its mesh. Its turn loop converges on the kernel's. |
-| AstralProjection | Thin clients that render server frames | Peers. Each client embeds the kernel, renders from the local log, and owns pairing, voice, local tools and notifications. The Python adaptation layer is retired once the kernel's passes the same tests. |
-| AstralPlane | One database of mutable rows | The node's store. New event tables with globally unique ids. Existing tables become views derived from events. Still PostgreSQL only. |
-| AstralPrimitives | A Python package whose schema is generated at run time | The vocabulary's single source: a committed, versioned schema with a strict profile for generation, bindings for values and action capabilities, and the spoken and compact forms. |
-| LETS | A server-side budget runtime with fixed membership | Adds frozen formats and vectors, period budgets derived from a signed policy and the roster, and a device profile. The Python implementation is the reference. The kernel carries the second. |
+### 16.1 Two layers
+
+The owner set the layering on 2026-11-12.
+
+- **The base** is everything that decides, stores, authorizes and adapts: the kernel, AstralDeep, AstralPlane, LETS and ROTE. It ships two ways. Every app embeds the kernel, which carries the device-side parts of Deep (the turn engine and gates), LETS (the holder and verifier) and ROTE (adaptation). AstralVessel is the installable backend: it bundles the kernel, Deep, Plane and LETS into one node with a way to talk to it (a command line, A2A, MCP, and pairing for devices).
+- **The UI layer** is AstralPrimitives (the vocabulary) and AstralProjection (the GUI clients and their renderers). It uses the base and never reimplements it.
+- The base depends on the UI layer in one place only: ROTE and the validator read the committed Primitives schema as data. No base code imports Projection.
+
+### 16.2 Repositories
+
+| Repository | Layer | Today | After |
+|---|---|---|---|
+| **New: the kernel** (library name is the owner's, `AstralKernel` for now) | Base | Does not exist | A Rust library with Swift, Kotlin and Python bindings: event log and store, sync and transport, roster and keys, tickets, flow labels and gates, the LETS holder and verifier, the turn engine, device-side adaptation of UI. It also carries ROTE's Python package while thin clients still need it. Its own library, pinned by Deep and bundled by AstralVessel. |
+| AstralDeep | Base | The orchestrator every client depends on | The node: a single-owner profile for personal use and a multi-owner profile for institutions. Hosts the heavy first-party agents as MCP servers, the PHI checks that need large models, and a mailbox and relay for its mesh. Its turn loop converges on the kernel's. |
+| AstralPlane | Base | One database of mutable rows | The node's store. New event tables with globally unique ids. Existing tables become views derived from events. Still PostgreSQL only. |
+| LETS | Base | A server-side budget runtime with fixed membership | Adds frozen formats and vectors, period budgets derived from a signed policy and the roster, and a device profile. The Python implementation is the reference. The kernel carries the second. |
+| AstralVessel | Base, shipped | A separate Python agent server with its own loop, sandbox and egress | The base's distribution. `astralvessel up` installs a node that runs Deep's turn loop and gates. Vessel's own loop is retired. Its sandbox and egress containers become the executor, which verifies tickets before it runs a tool. Its conformance suite becomes the base's acceptance test. |
+| AstralPrimitives | UI | A Python package whose schema is generated at run time | The vocabulary's single source: a committed, versioned schema with a strict profile for generation, bindings for values and action capabilities, and the spoken and compact forms. |
+| AstralProjection | UI | Thin clients that render server frames, plus ROTE | Peers' user interfaces. Each client embeds the kernel, renders from the local log, and owns pairing, voice, local tools and notifications. ROTE moves out to the base. Projection keeps only renderers and clients. |
 
 ---
 
@@ -920,6 +931,7 @@ These need the owner's sign-off, because they contradict text in `AGENTS.md` or 
 | Where | Says today | Proposed |
 |---|---|---|
 | `AGENTS.md`, mental model | One FastAPI orchestrator and PostgreSQL backend. Native clients are thin consumers of server-owned UI | Peers with a shared kernel. The orchestrator is a node. UI contracts are owned by the kernel and vocabulary |
+| `AGENTS.md`, UI contract line | AstralPrimitives defines, AstralProjection renders and adapts, AstralDeep orchestrates | The base (kernel, Deep, Plane, LETS and ROTE, shipped as AstralVessel) decides, authorizes and adapts. AstralProjection renders. AstralPrimitives defines the vocabulary. ROTE leaves Projection. |
 | `AGENTS.md`, security | Keycloak-only user IAM and RFC 8693 attenuated delegation | Keycloak remains the only source of user identity, proven at enrollment. Delegation is by offline-verifiable tickets with the same narrowing and actor-chain properties. RFC 8693 remains at the edge. |
 | `AGENTS.md`, engineering | Backend code is Python | The kernel is Rust. Python remains the node's language. |
 | `AGENTS.md`, credentials | LLM credentials are configured in-product and encrypted | Unchanged in intent. Custody moves from a server key to device keystores, and credentials sync as items sealed to each device. |
@@ -939,8 +951,8 @@ These need the owner's sign-off, because they contradict text in `AGENTS.md` or 
 - **The stack integration draft** treats Astral as one consumer of MCP surfaces and says nothing in the
   wider stack may depend on Keycloak. This design is compatible with both. A node's state can still be
   backed up to GaiaKeep as that draft describes.
-- **AstralVessel** fits as a sandboxed executor a node can use. Any executor must verify tickets as
-  section 8.2 requires.
+- **AstralVessel** becomes the base's distribution (section 16). It runs Deep's turn loop, and its
+  sandbox and egress become the executor. The executor must verify tickets as section 8.2 requires.
 
 ---
 
@@ -998,7 +1010,7 @@ an evaluation the paper did not have: adaptive attacks, a live model, and small 
 7. **The interim relay.** Until a UofL host exists, may clients use the transport's public relays?
 8. **The model endpoint.** Is LLM Factory staying available to users outside UK, or should the default
    change?
-9. **The name** of the new component.
+9. **The name** of the new component. The distribution is AstralVessel (owner, 2026-11-12). The kernel library's own name is still open.
 10. **The rule changes in section 17.**
 11. **A shared deployment during the transition (C10).** Does a multi-user server have to keep working
     between the personal node (phase 1) and the institution profile (phase 7)? If yes, the node keeps a

@@ -13,12 +13,22 @@ fixes the choices every lane shares, so lanes can work in parallel.
 | 7. Interim relay | The transport's public relays may be used. |
 | Live tests | The owner signs in to Keycloak when asked. Live chat turns use the model endpoint and key already in AstralDeep's `.env`, loaded by a local script. The key is never typed into a form, printed, or committed. |
 
+| Layering | The base is the kernel, Deep, Plane, LETS and ROTE, shipped as AstralVessel. The UI layer is Projection and Primitives (spec section 16). The kernel stays its own library and Vessel bundles it. Vessel runs Deep's loop and keeps its sandbox and egress as the executor. ROTE moves out of Projection now. |
+| Voice | The apps stop using the server's hosted voice. LFM3-Audio-2B at 3 bits runs on the device with MLX, downloaded from the Hugging Face repo `AstralDeep/LFM3-Audio-2B-3bit-MLX` (the owner uploads it) when someone first taps the mic. No voice until it is installed, and no fallback to system speech. The Metal Toolchain is installed for building MLX. Users never need it because the app ships compiled shaders. |
+
 The other questions in spec section 21 take the values the spec proposes until the owner says
 otherwise: a phone runs turns alone (C1), a mesh needs one Keycloak attestation to be created, the
 allowance table in section 8.3, a new device reads earlier history by default, speech runs on the
 device (C8), the kernel is called `AstralKernel` for now, and multi-owner hosting returns with the
 institution profile (C10). Who signs PHI approvals is open, so the roster accepts PHI authorities
 but no build ships one.
+
+## Checks against real systems
+
+| Check (plan.md phase 0) | Result, 2026-11-12 |
+|---|---|
+| Can a device exchange an authorization code with Keycloak itself, so it holds the ID token that carries its bound nonce? | Yes. `astral-desktop` and `astral-mobile` are public clients: a token request with a bogus code returns `invalid_grant`, not `invalid_client`. |
+| Does the realm sign ID tokens with an algorithm the kernel can verify offline? | The realm advertises RS256, ES256 and EdDSA among others. |
 
 ## Repositories and paths
 
@@ -69,6 +79,10 @@ These are fixed. A lane that finds one unworkable stops and reports, and does no
   action digest. Labels ride in the capability as facts.
 - **Transport** is iroh with ALPN `astral/sync/1`, local-network discovery, and the default public
   relays. A pairing payload carries the inviting device's iroh address.
+- **Links in generated surfaces.** The strict validator rejects any link, image, autolink, reference
+  definition or raw HTML in model-written text, using a markdown parser, not patterns. Renderers also
+  show that text with link and image parsing off. A link or image appears only through a handle the
+  host resolves. Both layers are required, because a validator alone has always had gaps.
 
 ## Kernel layout
 
@@ -134,6 +148,9 @@ branch and reports what is implemented, what tests pass, and what is not done.
 | P. Primitives | AstralPrimitives | the package | The committed versioned wire schema and strict generation profile, then the phase 6 fields: value bindings, action capabilities, spoken and compact forms, node provenance, handle-only links and images, the A2UI catalog. |
 | N1. Node | Deep | `backend/orchestrator/auth.py`, `delegation.py`, `mesh_*.py`, `session_store.py`, `shared/a2a_security.py`, the delegation and token-validation regions of `orchestrator.py`, new `node_*.py` | Phase 1 backend: single-owner node profile, issuer and audience checks on all three verification paths, `(issuer, subject)` owner ids, Ed25519 local delegation, node descriptor and pairing endpoint, stop wiring. |
 | PL. Plane | AstralPlane | new schema and repository modules | Event tables with hash ids, chat views derived from events, learning ledger and goal runs, with the guarded migration and revision bump. |
+| A1. Apple identity | Projection, branch `feat/105-apple-identity` | `apple-clients/AstralApp/AstralApp/Mesh/`, Info.plist and entitlements | Secure Enclave identity and presence keys, the restore marker, the host signer, the host-drawn consent sheet, enrollment sign-in with a bound nonce, local network permission. |
+| A2. Apple on-device | Projection, branch `feat/105-apple-voice` | `apple-clients/AstralApp/AstralApp/OnDevice/` | The Foundation Models adapter, the on-device voice pipeline, barge-in as a clock-injected state machine, the fast path, Mac push-to-talk. |
+| N6. Protocols | Deep, branch `feat/105-protocols` | A2A registration, remote MCP approval, publication | Signed agent cards required at registration, hash-pinned MCP tool definitions, selective publication per node. |
 
 ### Wave 2, after C and K0
 
@@ -142,6 +159,14 @@ pairing. Transport. Labels, gates, tickets and LETS. Turn engine, providers, arg
 adaptation and surface documents. Apple client integration starts at the same time against the FFI
 surface: the mesh runtime, pairing and settings, chats from the local log, consent, the on-device
 model, then voice.
+
+### Layering lanes, from 2026-11-12
+
+| Lane | Repository | Owns | Delivers |
+|---|---|---|---|
+| RM. ROTE move | AstralKernel `python/rote/`, Projection, Deep | ROTE's Python package and its imports | ROTE leaves Projection for the kernel repository as a Python package with the same module name, and Deep and Projection depend on it. |
+| A3. LFM3 voice | Projection, branch `feat/105-apple-lfm3` | `apple-clients/AstralVoiceModel/`, `OnDevice/` | LFM3-Audio on MLX in Swift with parity tests, the model store and download prompt, the mic flow, and the server voice path retired from the Apple app. |
+| V. Vessel | AstralVessel | the distribution | Wave 3: `astralvessel up` installs the base as a node, runs Deep's loop, keeps its sandbox and egress as the ticket-checking executor, and runs its conformance suite against the node. |
 
 ### Wave 3
 
