@@ -131,10 +131,13 @@ def check_device_record(record: Any, mesh: str | None) -> str:
 def _check_issuer(issuer: Any) -> None:
     if (
         not isinstance(issuer, dict)
-        or set(issuer) != {"aud", "iss", "keys"}
+        or set(issuer) != {"clients", "iss", "keys"}
         or not isinstance(issuer["iss"], str)
         or not issuer["iss"]
-        or not isinstance(issuer["aud"], str)
+        or not isinstance(issuer["clients"], list)
+        or not issuer["clients"]
+        or any(not isinstance(c, str) or not c for c in issuer["clients"])
+        or len(set(issuer["clients"])) != len(issuer["clients"])
         or not isinstance(issuer["keys"], list)
         or not issuer["keys"]
         or any(
@@ -631,6 +634,7 @@ class _Fold:
                     b64url_decode(body["device"]["identity"]),
                     self.mesh,
                     p.issuers,
+                    entry_time_s=e["clock"]["ms"] // 1000,
                     now_s=self.now_s,
                 )
         elif kind == "rotate":
@@ -656,6 +660,7 @@ class _Fold:
                 b64url_decode(p.members[e["author"]]["identity"]),
                 self.mesh,
                 p.issuers,
+                entry_time_s=e["clock"]["ms"] // 1000,
                 now_s=self.now_s,
             )
         elif (

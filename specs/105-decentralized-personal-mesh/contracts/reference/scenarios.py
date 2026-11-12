@@ -17,7 +17,8 @@ from astral_mesh_ref.testkit import DetRng, TestDevice, hlc, scalar, seed
 BASE_MS = 1_794_441_600_000
 BASE_S = BASE_MS // 1000
 ISSUER = "https://auth.example.test/realms/astral"
-AUDIENCE = "astral-app"
+AUDIENCE = "astral-desktop"
+CLIENTS = ["astral-desktop", "astral-mobile", "astral-watch"]
 RSA_P = int(
     "ecb3ef1654bf1e3cd8b6655aa429de671a3861f219acbaa7c60b87b8582aed53aee41b562586b485b507b7cc36ff1542fe5731ec43a0ce2dda352c2a962881d7"
     "e3ccd6779b56a568ce860a3bdce9e2801f16cd24a741266ab8e416ecf8135a4af274bae57d0dcb4a26e68a25953f68ca0cc36d01901d403d13c0e2b610c5f3c1",
@@ -49,12 +50,14 @@ def _b64int(value: int) -> str:
     return b64url_encode(value.to_bytes((value.bit_length() + 7) // 8, "big"))
 
 
-def issuer_record(iss: str = ISSUER, aud: str = AUDIENCE) -> dict[str, Any]:
+def issuer_record(
+    iss: str = ISSUER, clients: list[str] | None = None
+) -> dict[str, Any]:
     scalar_value = scalar("issuer/es256")
     point = crypto.p256_public(scalar_value)
     numbers = rsa_key().public_key().public_numbers()
     return {
-        "aud": aud,
+        "clients": list(CLIENTS if clients is None else clients),
         "iss": iss,
         "keys": [
             {
@@ -103,13 +106,15 @@ def id_token(
     sub: str = "user-1001",
     nonce: str | None = None,
     iat: int = BASE_S,
-    aud: str = AUDIENCE,
+    aud: Any = AUDIENCE,
+    azp: str | None = None,
+    exp: int | None = None,
     iss: str = ISSUER,
     kid: str | None = None,
 ) -> str:
     claims = {
         "aud": aud,
-        "exp": iat + 300,
+        "exp": iat + 300 if exp is None else exp,
         "iat": iat,
         "iss": iss,
         "nonce": nonce
@@ -117,6 +122,8 @@ def id_token(
         else attestation.nonce_for(device.identity_public, mesh),
         "sub": sub,
     }
+    if azp is not None:
+        claims["azp"] = azp
     return make_jwt(alg, kid or ("es-1" if alg == "ES256" else "rs-1"), claims)
 
 

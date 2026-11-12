@@ -1,8 +1,8 @@
 {
   "files": {
     "attestation.json": {
-      "cases": 24,
-      "sha256": "87f55d5e660c41338b013439f7bf515b3303a466479ab56b2c892256979633b8",
+      "cases": 32,
+      "sha256": "6264949e45ed2a9fc4b324fb60f3a0a4a635ce84284a044e08077c8ca3fea231",
       "spec": "contracts/roster.md#identity-attestation"
     },
     "canonical-json.json": {
@@ -32,7 +32,7 @@
     },
     "keys.json": {
       "cases": 31,
-      "sha256": "03e66f17bbf074ba5a94e0f10e84ca6f5f51fe51ea55c2fd0188126e8f0bb701",
+      "sha256": "a74d2fe6eeb44155ee177d68a47f329c0a1e03f87dac2bbaacb437368f275938",
       "spec": "contracts/keys.md"
     },
     "labels.json": {
@@ -52,12 +52,12 @@
     },
     "policy.json": {
       "cases": 25,
-      "sha256": "d3fde6bd8a19258e30dd88b91e53d148f547a674b06eebf9b9da4d4fd84b2306",
+      "sha256": "1d239ac6920045fc870112d3894d54aa37888915fbdcaf816db4663b4d4f76b3",
       "spec": "contracts/policy.md"
     },
     "roster.json": {
-      "cases": 55,
-      "sha256": "b73732de536b7d73b26dae1cf4aeb5e8317a6680e2988eecb01f82cded0323c8",
+      "cases": 58,
+      "sha256": "85644279c3a3bc6579d68c892dd74055465718fe9a6b86d48e1bbe199abf4ccc",
       "spec": "contracts/roster.md"
     },
     "surface.json": {
@@ -67,12 +67,12 @@
     },
     "sync.json": {
       "cases": 47,
-      "sha256": "4034be19810654e279e67a33541654cf6e0953e3b09f9de95a30f044d4fda23c",
+      "sha256": "6f61c0597c836dc2792167053b6c32cc4aec2acdf9771dd623c2a1605b9f1b9c",
       "spec": "contracts/sync.md"
     },
     "ticket.json": {
       "cases": 44,
-      "sha256": "8b017842b83acf8eff285d00c0824f3f470a812ef0f020db2a1db3268a080d23",
+      "sha256": "4e363884f1138db89a287df2a30713ba5604030f4d0fadf87ffb8b9283e14d59",
       "spec": "contracts/ticket.md"
     }
   },

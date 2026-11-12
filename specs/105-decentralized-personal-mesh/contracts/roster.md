@@ -67,7 +67,7 @@ An entry with unknown type, fields or encodings raises `roster.malformed`. A rec
 Details.
 
 - **genesis.** `device` is the first device's record. `epoch` is an epoch body for the `personal` group wrapped to that device and to the recovery key. `issuers` lists at least one accepted issuer. `recovery` is `{"sign": Ed25519 public key, "wrap": X25519 public key}`. The genesis entry's id is the personal group's first epoch id and the mesh id. The creating device derives the mesh id before it signs in to Keycloak (section 6).
-- **issuer record.** `{"iss": string, "aud": string, "keys": [JWK, ...]}` with at least one key. Each JWK has a `kid`. RSA keys use `n` and `e`. P-256 keys use `crv`, `x` and `y`. This is how a mesh learns which Keycloak realm to trust and which keys check its tokens. Moving to another realm adds an `issuer` entry approved on an existing device. Removing the old one is a second entry.
+- **issuer record.** `{"iss": string, "clients": [string, ...], "keys": [JWK, ...]}` with at least one key and at least one client. `clients` lists the OIDC client ids whose tokens the mesh accepts, without duplicates. A genesis entry written by an app build lists `astral-desktop`, `astral-mobile` and `astral-watch` unless the owner chooses otherwise. Each JWK has a `kid`. RSA keys use `n` and `e`. P-256 keys use `crv`, `x` and `y`. This is how a mesh learns which Keycloak realm to trust and which keys check its tokens. Moving to another realm adds an `issuer` entry approved on an existing device. Removing the old one is a second entry.
 - **remove.** `cutoff` maps each feed of the removed device to the highest sequence number the remover holds (zero if none). It must name every feed the device ever had. Events past the cutoff are not accepted after the removal is seen. Events at or below it stay valid.
 - **rotate.** A device that creates a new operations key adds the new feed. The old feed stays valid for what it already holds. Rotation is how a restored device continues without reusing a sequence number (`sync.md`).
 - **attest.** Adds an identity attestation after the fact. The creating device uses it right after genesis, once its Keycloak sign-in has returned.
@@ -114,7 +114,7 @@ Consequences, all covered by vectors.
 - **Mutual removal.** If two devices remove each other at the same time, both are removed. Removal entries are never void, because authority merges toward less. Only the recovery key can then add a member. This costs the owner a recovery, and it is the safe side of the choice.
 - **The recovery key outranks any device.** Its entries are never void, and it can add devices and write the other types in section 3.
 - **An accepted issuer** is in force if no active removal for it is concurrent with or later than every add. An add that comes after a removal restores it. Among several adds of one issuer, the newest by `(clock, id)` supplies the keys.
-- **A PHI authority** and **a PHI approval** follow the same rule as issuers. A revoke beats a concurrent grant, and a grant written after the revoke stands. An approval counts only while its institution is an authority and, when a time is supplied, while `issued_s` is at most the time and `not_after_s` is at least the time.
+- **A PHI authority** and **a PHI approval** follow the same rule as issuers. A revoke beats a concurrent grant, and a grant written after the revoke stands. An approval counts only while its institution is an authority and, when a time is supplied, while `not_after_s` is at least the time. Membership does not look at `issued_s`. Only the check of a single approval in section 7 does.
 - **Epochs.** Every active `epoch` entry is valid, so two devices that start epochs while apart both succeed. The **current epoch** of a group is the newest, by `(clock, id)`, among epochs that no other epoch of the group follows. A later epoch that follows both replaces them.
 - **Stop counter.** The maximum over active stop entries.
 
@@ -132,7 +132,7 @@ where `identity_public_key` is the 65 bytes and `mesh_id_bytes` is the 32 raw by
 
 An **identity attestation** is an object with exactly these fields: `kind` (`identity`), `device`, `mesh`, `issuer`, `subject`, `id_token` (the compact JWS exactly as issued) and `sig`. The `sig` is the identity-key signature of the attestation context over the object without `sig`.
 
-Verification takes the device's identity key, the mesh id, the roster's accepted issuers and optionally the time.
+Verification takes the device's identity key, the mesh id, the roster's accepted issuers, the entry time and optionally the current time. The current time only decides staleness.
 
 1. The object has exactly those fields and `kind` is `identity` (`attestation.malformed`).
 2. `device` is the hash of the identity key and `mesh` is this mesh (`attestation.wrong_device`).
@@ -140,10 +140,10 @@ Verification takes the device's identity key, the mesh id, the roster's accepted
 4. `issuer` is an accepted issuer (`attestation.unknown_issuer`).
 5. The token has three segments that decode as canonical base64url and as JSON objects (`attestation.malformed`).
 6. The header `alg` is `RS256` or `ES256`. Any other value, including `none`, is refused (`attestation.bad_alg`). The `kid` names a key of the issuer record (`attestation.unknown_key`). The signature verifies (`attestation.bad_token_signature`). For `ES256` the signature is 64 raw bytes.
-7. The claim `iss` equals `issuer` (`attestation.wrong_issuer`). The issuer record's `aud` is among the claim `aud` (`attestation.wrong_audience`). The claim `sub` equals `subject` and is not empty (`attestation.wrong_subject`). The claim `nonce` equals the nonce above (`attestation.wrong_nonce`). The claim `iat` is a non-negative integer (`attestation.malformed`).
-8. The token's `exp` is not checked. It is the time of enrollment that matters and not whether the token is still alive.
+7. The claim `iss` equals `issuer` (`attestation.wrong_issuer`). The client is the claim `azp` when the token has one, otherwise the claim `aud`. It must be a string that is in the issuer record's `clients`, so a list in `aud` without an `azp` is refused (`attestation.wrong_audience`). The claim `sub` equals `subject` and is not empty (`attestation.wrong_subject`). The claim `nonce` equals the nonce above (`attestation.wrong_nonce`). The claims `iat` and `exp` are non-negative integers (`attestation.malformed`).
+8. The token's validity is judged at the time of the entry that carries the attestation, never at the verifier's own clock, so every peer reaches the same answer. Let `entry_time_s` be the whole seconds of that entry's signed clock (`clock.ms` divided by 1000, rounded down) and `skew` the fixed constant 300 seconds. The token is not yet valid when `entry_time_s + skew < iat` (`attestation.token_not_yet_valid`). It is expired when `entry_time_s - skew > exp` (`attestation.token_expired`). So `iat - skew <= entry_time_s <= exp + skew`.
 
-The result is `{issuer, subject, iat, stale}`. A device's attestation is **stale** when the time is more than 30 days after `iat`. A stale device keeps working. A node that demands a fresh attestation refuses it. Re-attestation is a new authorization request with the same nonce rule, written as an `attest` entry. It is not a refresh, because Keycloak leaves the nonce out of tokens issued by refresh.
+The result is `{issuer, subject, iat, stale}`. A device's attestation is **stale** when the current time is more than 30 days after `iat`. Staleness never changes whether an entry is valid. A stale device keeps working. A node that demands a fresh attestation refuses it. Re-attestation is a new authorization request with the same nonce rule, written as an `attest` entry. It is not a refresh, because Keycloak leaves the nonce out of tokens issued by refresh.
 
 **The mesh principal** is the mesh id with the set of attested `(issuer, subject)` pairs of members. Nothing is keyed on a bare `sub`.
 

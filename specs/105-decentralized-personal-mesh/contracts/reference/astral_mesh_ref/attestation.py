@@ -17,6 +17,7 @@ from .cj import b64url_decode, strict_loads
 from .errors import MeshError
 
 STALE_AFTER_S = 30 * 24 * 3600
+TOKEN_SKEW_S = 300
 IDENTITY_FIELDS = {"device", "id_token", "issuer", "kind", "mesh", "sig", "subject"}
 PHI_FIELDS = {
     "institution",
@@ -84,6 +85,7 @@ def verify_identity(
     mesh_id: str,
     issuers: dict[str, dict[str, Any]],
     *,
+    entry_time_s: int,
     now_s: int | None = None,
 ) -> dict[str, Any]:
     if (
@@ -109,10 +111,9 @@ def verify_identity(
         raise MeshError("attestation.bad_token_signature", "token signature")
     if claims.get("iss") != att["issuer"]:
         raise MeshError("attestation.wrong_issuer", str(claims.get("iss")))
-    audience = claims.get("aud")
-    audiences = audience if isinstance(audience, list) else [audience]
-    if issuer["aud"] not in audiences:
-        raise MeshError("attestation.wrong_audience", str(audience))
+    client = claims["azp"] if "azp" in claims else claims.get("aud")
+    if not isinstance(client, str) or client not in issuer["clients"]:
+        raise MeshError("attestation.wrong_audience", str(client))
     if (
         claims.get("sub") != att["subject"]
         or not isinstance(att["subject"], str)
@@ -126,6 +127,13 @@ def verify_identity(
     iat = claims.get("iat")
     if type(iat) is not int or iat < 0:
         raise MeshError("attestation.malformed", "iat")
+    exp = claims.get("exp")
+    if type(exp) is not int or exp < 0:
+        raise MeshError("attestation.malformed", "exp")
+    if entry_time_s + TOKEN_SKEW_S < iat:
+        raise MeshError("attestation.token_not_yet_valid", "issued after the entry")
+    if entry_time_s - TOKEN_SKEW_S > exp:
+        raise MeshError("attestation.token_expired", "expired before the entry")
     stale = now_s is not None and now_s - iat > STALE_AFTER_S
     return {
         "issuer": att["issuer"],

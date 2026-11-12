@@ -907,10 +907,11 @@ def build_roster() -> Suite:
     R("add-device-unattested", m, members=[A, C], unattested=[A, C])
     assert add_un
     m = sc.Mesh("s1c", ALICE)
-    m.attest(ALICE, [m.mesh], iat=sc.BASE_S - 31 * DAY)
+    m.attest(ALICE, [m.mesh])
     R(
         "attestation-older-than-thirty-days-is-stale",
         m,
+        now_s=sc.BASE_S + 31 * DAY,
         stale_attestation=[A],
         unattested=[],
     )
@@ -929,6 +930,27 @@ def build_roster() -> Suite:
         unattested=[A],
         rejected={roster.entry_id(m.entries[-1]): "attestation.wrong_nonce"},
     )
+
+    for label, case_name, token, code in [
+        ("s1e", "attestation-with-expired-token-rejected", {"iat": sc.BASE_S - 1000, "exp": sc.BASE_S - 400}, "attestation.token_expired"),
+        ("s1f", "attestation-with-token-issued-after-the-entry-rejected", {"iat": sc.BASE_S + 400}, "attestation.token_not_yet_valid"),
+        ("s1g", "attestation-from-an-unlisted-client-rejected", {"azp": "evil-app"}, "attestation.wrong_audience"),
+    ]:
+        m = sc.Mesh(label, ALICE)
+        m.put(
+            m.entry(
+                "attest",
+                ALICE,
+                [m.mesh],
+                {"attestation": sc.identity_attestation(ALICE, m.mesh, **token)},
+            )
+        )
+        R(
+            case_name,
+            m,
+            unattested=[A],
+            rejected={roster.entry_id(m.entries[-1]): code},
+        )
 
     m = sc.Mesh("s2", ALICE)
     g = m.mesh
@@ -1493,6 +1515,7 @@ def build_attestation() -> Suite:
         *,
         error: str | None = None,
         now_s: int | None = sc.BASE_S,
+        entry_s: int = sc.BASE_S,
         **kw: Any,
     ) -> None:
         s.add(
@@ -1500,6 +1523,7 @@ def build_attestation() -> Suite:
             "attestation_verify",
             {
                 "att": att,
+                "entry_time_s": entry_s,
                 "identity": ident,
                 "issuers": kw.get("issuers", issuers),
                 "mesh": mesh,
@@ -1516,6 +1540,7 @@ def build_attestation() -> Suite:
         "attestation_verify",
         {
             "att": make(),
+            "entry_time_s": sc.BASE_S,
             "identity": ident,
             "issuers": issuers,
             "mesh": mesh,
@@ -1531,8 +1556,16 @@ def build_attestation() -> Suite:
     s.doc["nonce_hex"] = attestation.nonce_for(ALICE.identity_public, mesh)
     case("es256-token", make())
     case("rs256-token", make(alg="RS256"))
-    case("stale-after-thirty-days", make(iat=sc.BASE_S - 31 * DAY))
-    case("fresh-at-thirty-days", make(iat=sc.BASE_S - 30 * DAY))
+    case(
+        "stale-after-thirty-days",
+        make(iat=sc.BASE_S - 31 * DAY),
+        entry_s=sc.BASE_S - 31 * DAY + 10,
+    )
+    case(
+        "fresh-at-thirty-days",
+        make(iat=sc.BASE_S - 30 * DAY),
+        entry_s=sc.BASE_S - 30 * DAY + 10,
+    )
     case("wrong-nonce", make(nonce="f" * 64), error="attestation.wrong_nonce")
     case(
         "nonce-for-another-mesh",
@@ -1544,6 +1577,37 @@ def build_attestation() -> Suite:
         error="attestation.wrong_nonce",
     )
     case("wrong-audience", make(aud="another-app"), error="attestation.wrong_audience")
+    case(
+        "unlisted-client-in-azp",
+        make(azp="evil-app"),
+        error="attestation.wrong_audience",
+    )
+    case(
+        "audience-list-without-azp",
+        make(aud=["astral-desktop", "astral-mobile"]),
+        error="attestation.wrong_audience",
+    )
+    case("azp-selects-the-client", make(aud="other-api", azp="astral-mobile"))
+    case(
+        "token-expired-before-the-entry",
+        make(iat=sc.BASE_S - 1000, exp=sc.BASE_S - 301),
+        error="attestation.token_expired",
+    )
+    case(
+        "token-expired-within-skew",
+        make(iat=sc.BASE_S - 1000, exp=sc.BASE_S - 300),
+    )
+    case(
+        "token-issued-after-the-entry",
+        make(iat=sc.BASE_S + 301),
+        error="attestation.token_not_yet_valid",
+    )
+    case("token-issued-within-skew-of-the-entry", make(iat=sc.BASE_S + 300))
+    case(
+        "token-with-negative-exp",
+        sc.identity_attestation(ALICE, mesh, exp=-1),
+        error="attestation.malformed",
+    )
     case("unknown-key-id", make(kid="missing"), error="attestation.unknown_key")
     case("issuer-not-accepted", make(), error="attestation.unknown_issuer", issuers={})
     base = make()
@@ -1561,6 +1625,7 @@ def build_attestation() -> Suite:
         "es-1",
         {
             "aud": sc.AUDIENCE,
+            "exp": sc.BASE_S + 300,
             "iat": sc.BASE_S,
             "iss": sc.ISSUER,
             "nonce": attestation.nonce_for(ALICE.identity_public, mesh),

@@ -237,6 +237,7 @@ def _attestation_verify(i: dict[str, Any]) -> Any:
         b64url_decode(i["identity"]),
         i["mesh"],
         i["issuers"],
+        entry_time_s=i["entry_time_s"],
         now_s=i.get("now_s"),
     )
 
