@@ -72,26 +72,51 @@ These are fixed. A lane that finds one unworkable stops and reports, and does no
 
 ## Kernel layout
 
-One Cargo workspace in `AstralKernel`:
+One Cargo workspace in `AstralKernel`, one crate per area so each lane owns one crate. Every crate
+depends on `astral-core` and on nothing else in the workspace except where the table says so. A
+crate that needs another area defines a small trait, and the facade wires the real one in.
 
 | Crate | Holds |
 |---|---|
-| `astral-kernel` | Everything below as modules: `canonical`, `crypto`, `event`, `feed`, `store` (rusqlite, bundled), `fold` (chats, branches, surfaces, settings), `roster`, `keys` (groups, epochs, recovery), `sync`, `net` (iroh), `labels`, `gates`, `ticket` (biscuit-auth), `lets` (holder, verifier, period budgets), `engine` (turn state machine, provider layer, argument pipeline), `mcp` (remote client), `ui` (device adaptation and surface documents), `runs`, `learning`. |
-| `astral-kernel-ffi` | The UniFFI interface. Swift and Python bindings are generated from it. |
-| `astral-mailbox` | A small server binary: blind mailbox and the lost-device removal notice. |
+| `astral-core` | Canonical JSON, hashing, key and signature types, the event header, ids, the hybrid clock. No I/O. |
+| `astral-log` | The SQLite store, feeds and chain checks, the fold (chats, branches, surfaces, settings), and the sync protocol state machine, independent of transport. |
+| `astral-mesh` | Roster entries and merge, identity attestation checks, key groups and epochs, wrapping, the recovery key and backup file, pairing. |
+| `astral-net` | iroh transport carrying the sync protocol, local discovery, relays, mailbox client. Depends on `astral-log` for sync messages. |
+| `astral-authz` | Labels and flow rules, the gate stack, tickets (biscuit-auth), consent checks, the LETS holder and verifier, period budgets and allowances. |
+| `astral-engine` | The turn state machine and step journal, the provider layer (clocks, retries, fallback chain), the argument pipeline, the quarantined reader, the MCP client, runs and learning. |
+| `astral-ui` | Device adaptation of surfaces, surface documents and patches, action capabilities, value bindings, the decoding grammar from the strict schema, A2UI import and export. |
+| `astral-kernel` | The facade that composes the crates into one `Kernel`. |
+| `astral-kernel-ffi` | The UniFFI interface over the facade. Swift and Python bindings are generated from it. |
+| `astral-mailbox` | A small server binary: blind relay helper, mailbox and the lost-device removal notice. |
 | `astral-kernel-cli` | A command-line peer used by tests, by the node installer, and to load a model credential from a file. |
 
 Build outputs: `scripts/build-apple.sh` makes `AstralKernelFFI.xcframework` (macOS arm64 and x86_64,
 iOS arm64, iOS simulator arm64) and the generated Swift file. `scripts/build-python.sh` builds a
 Linux wheel inside Docker for the node.
 
-**The FFI surface** stays small and is owned by the kernel FFI lane. Hosts give the kernel three
-callback objects: a `HostSigner` (identity and presence signatures, backed by the Secure Enclave),
-an `OnDeviceModel` (Apple's Foundation Models where present), and a `LocalTools` host. The kernel
-gives hosts one `Kernel` object with methods for the mesh (create, pairing offer, approve, join,
-remove, stop, roster), chats (list, view with branches, send, fork), turns (run, steer, interrupt,
-resolve consent), sync state, model providers (set, sealed), budgets, runs and learning review, and
-a listener callback for changes.
+**The FFI surface** stays small and is owned by the facade lane. Swift lanes code against these
+shapes before the facade exists. Names are UniFFI names. Blocking calls run off the main thread.
+
+Callback interfaces the host implements:
+
+| Interface | Methods |
+|---|---|
+| `HostSigner` | `identity_public_key() -> bytes` (65-byte P-256 point), `identity_sign(message) -> bytes` (64-byte `r||s` over SHA-256 of message), `presence_public_key() -> bytes`, `presence_sign(prompt: ConsentPrompt, message) -> bytes` (the host draws the prompt from `ConsentPrompt`, asks for biometrics, then signs), `hardware_backed() -> bool` |
+| `OnDeviceModel` | `available() -> bool`, `complete(request: OnDeviceRequest) -> OnDeviceResponse` (messages, an optional JSON schema for constrained output, max tokens) |
+| `LocalTools` | `list() -> [LocalToolSpec]`, `call(name, arguments_json, ticket) -> string` |
+| `KernelListener` | `on_change(change: KernelChange)`: chat changed, sync state changed, consent requested, roster changed, turn progress, allowance changed |
+
+The `Kernel` object:
+
+| Area | Methods |
+|---|---|
+| Lifecycle | `open(config, signer, model, tools, listener)`, `start_network()`, `stop_network()`, `version()` |
+| Mesh | `mesh_status()`, `begin_mesh_creation() -> AttestationRequest` (the OIDC nonce to send), `complete_mesh_creation(id_token) -> RecoveryKit`, `create_pairing_offer() -> PairingOffer` (short code and payload, shown on the new device), `approve_pairing(payload)` (on an existing device, with consent), `roster()`, `remove_device(member_id)`, `raise_stop()`, `reattest(id_token)`, `export_backup(path)` |
+| Chats | `list_chats()`, `chat(chat_id) -> ChatView` (messages, branches, surfaces, labels, status), `create_chat(title)`, `send_message(chat_id, text, continues)`, `fork(chat_id, event_id)`, `act(surface_id, component_id, action)` |
+| Turns | `run_turn(chat_id)`, `steer(chat_id, text)`, `interrupt(chat_id)`, `pending_consents()`, `resolve_consent(request_id, approve)` |
+| Models | `set_model_provider(config)` (stored as a sealed secret item), `model_providers()` (never returns secrets) |
+| Sync and budget | `sync_state()`, `allowance()` |
+| Runs and learning | `runs()`, `hand_off_run(run_id, member_id)`, `take_over_run(run_id)`, `learning_proposals()`, `review_proposal(id, adopt)`, `undo_adoption(id)` |
 
 ## Lanes
 
