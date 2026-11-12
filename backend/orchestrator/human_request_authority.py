@@ -517,10 +517,13 @@ class _HumanSocketRequest:
                 claims = auth.jose_jwt.get_unverified_claims(self.token)
                 authority, client_id, _ = auth._get_keycloak_config()
                 from shared.auth_clients import is_azp_allowed
+                from shared.token_verify import with_owner_identity
                 if (not authority or not client_id or type(claims.get("iss")) is not str
                         or claims["iss"].rstrip("/") != authority.rstrip("/")
-                        or type(claims.get("azp")) is not str or not is_azp_allowed(claims["azp"])
-                        or _expiry(claims, self.owner_id) != self.expiry):
+                        or type(claims.get("azp")) is not str or not is_azp_allowed(claims["azp"])):
+                    return
+                claims = with_owner_identity(claims, authority)
+                if _expiry(claims, self.owner_id) != self.expiry:
                     return
                 auth._reject_non_first_party(claims)
                 await auth.verify_user(claims)

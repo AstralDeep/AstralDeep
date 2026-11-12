@@ -112,6 +112,9 @@ class A2ASecurityValidator:
         except TokenRefused as exc:
             logger.warning("A2A token rejected: %s", exc.reason)
             return None
+        except Exception as exc:
+            logger.error(f"A2A token validation failed: {exc}")
+            return None
 
     def _validate_node_token(self, token: str) -> Optional[Dict[str, Any]]:
         try:

@@ -26,6 +26,15 @@ def jwks_url_for(issuer: str) -> str:
     return f"{issuer}/protocol/openid-connect/certs"
 
 
+def with_owner_identity(claims: Dict[str, Any], issuer: str) -> Dict[str, Any]:
+    owner = node_identity.canonical_owner_id(issuer, claims.get("sub"))
+    stamped = dict(claims)
+    stamped[IDP_SUBJECT_CLAIM] = claims["sub"]
+    stamped[IDP_ISSUER_CLAIM] = node_identity.normalize_issuer(issuer)
+    stamped["sub"] = owner
+    return stamped
+
+
 async def verify_idp_token(
     token: str,
     *,
@@ -46,20 +55,19 @@ async def verify_idp_token(
             peeked = ""
         if peeked in issuers:
             claimed = peeked
-    try:
-        url = jwks_url_for(claimed)
-        if jwks_getter is not None:
-            jwks = await jwks_getter(url, token)
-        else:
-            jwks = await jwks_cache.get_jwks(url, token=token)
-        payload = jose_jwt.decode(
-            token,
-            jwks,
-            algorithms=["RS256"],
-            options={"verify_aud": False, "verify_at_hash": False, "require_exp": True},
-        )
-    except Exception:
-        raise TokenRefused("signature_or_expiry") from None
+    url = jwks_url_for(claimed)
+    # Decode errors propagate unwrapped because callers tell expiry from forgery by exception type
+    if jwks_getter is not None:
+        jwks = await jwks_getter(url, token)
+    else:
+        jwks = await jwks_cache.get_jwks(url, token=token)
+    payload = jose_jwt.decode(
+        token,
+        jwks,
+        algorithms=["RS256"],
+        options={"verify_aud": False, "verify_at_hash": False, "require_exp": True},
+    )
+    payload = dict(payload)
     token_issuer = node_identity.normalize_issuer(payload.get("iss"))
     if not token_issuer:
         raise TokenRefused("missing_issuer")
@@ -71,16 +79,13 @@ async def verify_idp_token(
     if azp not in allowed_azps() | {a for a in extra_azps if a}:
         raise TokenRefused("azp_not_accepted")
     try:
-        owner = node_identity.canonical_owner_id(claimed, payload.get("sub"))
+        stamped = with_owner_identity(payload, claimed)
     except node_identity.NodeIdentityError:
         raise TokenRefused("subject_unusable") from None
     try:
-        node_identity.enforce_owner(owner)
+        node_identity.enforce_owner(stamped["sub"])
     except node_identity.OwnerMismatch:
         raise TokenRefused("owner_mismatch") from None
     except node_identity.NodeIdentityError:
         raise TokenRefused("owner_binding_unavailable") from None
-    payload[IDP_SUBJECT_CLAIM] = payload["sub"]
-    payload[IDP_ISSUER_CLAIM] = claimed
-    payload["sub"] = owner
-    return payload
+    return stamped

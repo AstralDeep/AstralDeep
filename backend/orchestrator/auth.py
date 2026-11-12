@@ -16,6 +16,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.routing import APIRoute
+from jose import jwt as jose_jwt  # noqa: F401  (read as auth.jose_jwt by human_request_authority)
 
 import shared  # noqa: F401
 
@@ -295,7 +296,7 @@ async def verify_production_token(token: str) -> dict:
         raise HTTPException(status_code=500, detail="Auth not configured")
     try:
         from shared.token_verify import verify_idp_token
-        payload = await verify_idp_token(token)
+        payload = await verify_idp_token(token, extra_issuers=[authority])
         _reject_non_first_party(payload)
         return payload
     except HTTPException:
