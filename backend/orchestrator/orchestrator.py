@@ -198,6 +198,22 @@ class _LLMStreamStalledError(TimeoutError):
         self.phase = phase
 
 
+class _LLMStreamInterrupted(RuntimeError):
+    def __init__(self, partial: str):
+        super().__init__("stream interrupted after visible text")
+        self.partial = partial
+
+
+_CONTINUE_PROMPT = (
+    "Continue your previous message from exactly where it stopped. "
+    "Do not repeat any of it and do not restart."
+)
+_INCOMPLETE_NOTICE = (
+    "The model connection dropped before this answer finished. "
+    "The text above may be incomplete."
+)
+
+
 LLM_CREDENTIAL_ATTEMPT_TIMEOUT_SECONDS = 10.0
 PERSONAL_AGENT_STARTUP_TIMEOUT_SECONDS = 5.0
 PERSONAL_AGENT_HEARTBEAT_TIMEOUT_SECONDS = 5.0
@@ -17926,6 +17942,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 context_base_url=getattr(resolved, "base_url", None),
                                 deadlines=deadlines,
                             )
+                    except _LLMStreamInterrupted as interrupted:
+                        response = await self._continue_interrupted_stream(
+                            websocket, kwargs, interrupted.partial,
+                            lambda request: tracked_provider(
+                                lambda: create_completion(client, **request), request))
                     except _LLMStreamStalledError:
                         raise
                     except Exception as _stream_exc:
@@ -18130,6 +18151,30 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
                 await asyncio.sleep(backoff)
         return None, None
+
+    async def _continue_interrupted_stream(self, websocket, kwargs: Dict[str, Any], partial: str, invoke) -> Any:
+        from types import SimpleNamespace
+        request = {**kwargs, "messages": [
+            *kwargs["messages"],
+            {"role": "assistant", "content": partial},
+            {"role": "user", "content": _CONTINUE_PROMPT},
+        ]}
+        try:
+            response = await invoke(request)
+            message = response.choices[0].message
+            message.content = partial + (getattr(message, "content", None) or "")
+            return response
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("LLM stream continuation failed exception_class=%s", type(exc).__name__)
+        if websocket is not None:
+            await self.send_ui_render(
+                websocket, [Alert(message=_INCOMPLETE_NOTICE, variant="warning").to_dict()], target="chat")
+        message = self._assemble_streamed_message(partial, {})
+        object.__setattr__(message, "_astral_incomplete", True)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message, finish_reason="length")], usage=None)
 
     _MOA_CANDIDATE_LABELS = "ABCDEFGH"
 
@@ -18419,6 +18464,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         websocket, chat_id, stream_id, seq, "", terminal=True)
                 except Exception:
                     logger.debug("narrative stream cleanup failed", exc_info=True)
+            if emitted and not buffer_narrative:
+                _NARRATIVE_STREAMED.set(True)
+                raise _LLMStreamInterrupted("".join(content_parts)) from None
             raise
         except Exception:
             abandoned.set()
@@ -18431,6 +18479,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         websocket, chat_id, stream_id, seq, "", terminal=True)
                 except Exception:
                     logger.debug("narrative stream cleanup failed", exc_info=True)
+            if emitted and not buffer_narrative:
+                _NARRATIVE_STREAMED.set(True)
+                raise _LLMStreamInterrupted("".join(content_parts)) from None
             raise
         await pump_task
         if native_call:
