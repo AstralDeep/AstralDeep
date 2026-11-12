@@ -477,6 +477,16 @@ async def test_store_factory_cannot_reuse_a_legacy_writer_or_replaced_runtime(
         user_skills.store_for(SimpleNamespace())
 
 
+async def test_store_factory_creates_a_missing_private_knowledge_root(human, tmp_path, monkeypatch):
+    from shared.feature_flags import flags
+    monkeypatch.setitem(flags._flags, 'user_skills', True)
+    root = tmp_path / 'node' / 'knowledge'
+    human[2]._user_skill_store = None
+    human[2].knowledge_index = SimpleNamespace(knowledge_dir=str(root))
+    assert user_skills.store_for(human[2]).knowledge_dir == str(root)
+    assert root.is_dir() and root.stat().st_mode & 0o777 == 0o700
+
+
 async def test_capture_requires_existing_root_and_missing_parent_remains_stable(tmp_path):
     from orchestrator.user_skill_catalog import capture_legacy_files
     with pytest.raises(AssignmentError, match='skill_materialization_conflict'):
