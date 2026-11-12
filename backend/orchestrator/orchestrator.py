@@ -64,7 +64,7 @@ from llm_config.tool_continuation import (
 from orchestrator import evidence_context
 from orchestrator import context_engineering
 from orchestrator import datamarking
-from orchestrator import model_router
+from orchestrator import llm_recovery, model_router
 from orchestrator import viewport
 from orchestrator.hooks import HookManager, HookEvent, HookContext
 from orchestrator.task_state import TaskManager, TaskState
@@ -15926,6 +15926,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             designed_turn_marker: Optional[str] = None
 
             denial_tracker: Dict[str, int] = {}
+            llm_recovery.reset_turn()
             DENIAL_THRESHOLD = 2
 
             if (
@@ -17854,6 +17855,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.debug("model_router: selection failed — using default model",
                              exc_info=True)
+        plain_call = harness_binding is None and persistent_dispatch is None and not native_call
+        chain = llm_recovery.fallback_models(resolved.model) if plain_call else []
+        pinned = llm_recovery.TURN_MODEL.get()
+        if pinned in chain:
+            chain = chain[chain.index(pinned) + 1:]
+            call_model = pinned
+
         def _probe_state(model_name: str):
             key = (getattr(resolved, "base_url", None), model_name)
             rejected = set() if native_call else getattr(self, "_llm_unsupported_params", {}).get(key, set())
@@ -18119,6 +18127,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
 
                 if not error.retryable or attempt == attempt_limit:
+                    if chain and llm_recovery.fallback_eligible(error.status_code, error.upstream_error_class):
+                        failed_model, call_model = call_model, chain.pop(0)
+                        await self._record_llm_call(
+                            self.audit_recorder, actor_user_id=actor_user_id, auth_principal=auth_principal,
+                            feature=feature, credential_source=source, resolved=resolved,
+                            routed_model=failed_model, total_tokens=None, outcome="failure",
+                            upstream_error_class=error.upstream_error_class)
+                        first_switch = llm_recovery.TURN_MODEL.get() is None
+                        llm_recovery.TURN_MODEL.set(call_model)
+                        cap_key, extra_kwargs = _probe_state(call_model)
+                        attempt = 0
+                        if first_switch and websocket is not None:
+                            await self.send_ui_render(websocket, [Alert(
+                                message=llm_recovery.fallback_notice(resolved.model, call_model),
+                                variant="info").to_dict()], target="chat")
+                        continue
                     runner_failed(error.exception_class, credential_rejected=error.status_code == 401)
                     await self._record_llm_call(
                         self.audit_recorder,
@@ -18141,7 +18165,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     # None here, not raise: avoids leaking raw payloads to chat
                     return None, None
 
-                backoff = min(2 ** (attempt - 1), 8) * random.uniform(0.8, 1.2)
+                backoff = llm_recovery.retry_delay(
+                    attempt, llm_recovery.retry_after_seconds(e), random.uniform(0.8, 1.2))
                 logger.info(
                     "Transient LLM error; retrying attempt=%d/%d "
                     "backoff_seconds=%.3f",
