@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import enum
 import itertools
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, List, Optional
 

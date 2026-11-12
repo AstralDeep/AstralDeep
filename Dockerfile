@@ -2,6 +2,8 @@
 # UI on port 8001 with no separate frontend build; installs pinned local component wheels plus
 # poppler/libmagic for the file-upload tools.
 
+FROM scratch AS kernel-artifacts
+
 FROM python:3.11-slim AS component-builder
 WORKDIR /build
 
@@ -67,6 +69,12 @@ RUN python scripts/install_local_components.py install \
         --root /app \
         --lock /opt/astral-component-wheels/astral-component-wheels.lock.json \
     && python -m pip check
+
+COPY config/astral-kernel-binding.json ./config/astral-kernel-binding.json
+COPY scripts/install_kernel_binding.py ./scripts/install_kernel_binding.py
+RUN --mount=type=bind,from=kernel-artifacts,target=/kernel-artifacts \
+    python scripts/install_kernel_binding.py install --artifacts /kernel-artifacts --allow-missing
+ENV PATH="/opt/astral-kernel/bin:${PATH}"
 
 RUN python -m spacy download en_core_web_lg
 
