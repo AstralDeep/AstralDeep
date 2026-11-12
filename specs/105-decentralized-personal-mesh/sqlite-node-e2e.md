@@ -53,29 +53,44 @@ Facts from `report-stock.txt`:
 
 ### Result
 
-With the pinned Plane (`cbf621a`), the tool runs and the turn then fails when it persists the reply:
-`SQLite write lock was not available in time`. It reproduced on every run (`report-stock.txt`).
+With Plane `cbf621a` the tool ran and the turn then failed when it persisted the reply with
+`SQLite write lock was not available in time`. It reproduced on every run (`report-stock.txt`). One
+changed line in Plane made the whole turn complete (`report-plane-fix.txt`).
 
-With one line changed in Plane (`evidence/sqlite-node/plane-sqlite-begin.patch`) the whole turn
-completes: user message, tool result with `_source_tool: generate_dynamic_chart`, final model text,
-operation `completed` (`report-plane-fix.txt`).
+### Result with the pinned Plane `f8f2a63`
 
-## What blocks a clean SQLite node
+Plane `feat/105-plane-sqlite` at `f8f2a63` holds both fixes in the library. `f8f2a63` begins every
+read-write transaction as `BEGIN IMMEDIATE` and `ddff26e` provides `RIGHT()` for SQLite. Deep pins that
+revision in `config/astral-composition.json`. The PostgreSQL migration digest `dde30296...5cb27` and the
+SQLite structure digest `5f45079d...4d0b` are unchanged. The SQLite migration digest is now
+`a6681e87...9a84`. All three were computed through Plane's public facade and
+`scripts/verify_composition.py`, which reports the five pins as exact.
 
-Both items are in AstralPlane `feat/105-plane-sqlite` at `cbf621a`, not in Deep.
+`evidence/sqlite-node/run-pinned.sh` rebuilds the node image from this branch (`docker build -t
+deepint-node:105 .`, Plane 0.1.12 installed in the image), then starts an issuer, the deterministic
+model and the node on a private `--internal` Docker network and a fresh volume. No PostgreSQL is
+reachable and the node has no `postgres` database URL. The output is `report-pinned.txt`:
 
-1. `src/astralplane/database/sqlite.py`, `SQLiteConnection.begin_if_needed`. A transaction that starts
-   with a plain SELECT begins as `BEGIN DEFERRED`. A later write calls `reserve_writer`, which runs
-   `UPDATE schema_meta SET value=value WHERE 0`. When another connection commits in between, SQLite
-   returns `database is locked` at once, because the read snapshot is stale, and the busy timeout does
-   not apply. Deep's `fenced_transaction` reads the operation row first and then locks it with
-   `FOR UPDATE`, so a chat turn hits this whenever any other thread commits. The patch begins every
-   read-write transaction as `BEGIN IMMEDIATE`. It serializes read-write transactions, which suits a
-   one-owner node. A retry on this error class would be the alternative.
-2. `src/astralplane/repositories/tool_policy.py:185`, `list_scoped_agent_owners_for_administration`
-   uses `RIGHT(agent_id, length(?))`. SQLite has no `RIGHT`. Two startup sweeps log
-   `no such function: RIGHT` (orphaned-draft permission sweep and legacy directory-id ownership
-   sweep). They are non-fatal. Registering `right` in `sqlite_functions.py` fixes both.
+- `/healthz` and `/readyz` are ok with `db: ok` and nine in-process agents.
+- The SQLite file has 151 tables and the pinned migration digest in `schema_meta`.
+- No token and a forged token get 401. The owner token gets 200.
+- The owner saves a provider, creates a chat and grants `tools:read`. The turn ends with the operation
+  `completed`. The saved chat holds the user message, the `generate_dynamic_chart` result with
+  `_source_tool` set and the model's final answer `FAKE-MODEL-OK: tool result received (236 chars)`.
+- The node log has zero `write lock was not available`, zero `database is locked`, zero `no such
+  function` and zero tracebacks.
+
+This is a local test observation on one machine, not protected CI.
+
+## What blocked a clean SQLite node, now fixed in Plane
+
+Both items were in AstralPlane `feat/105-plane-sqlite` at `cbf621a`, not in Deep.
+
+1. `SQLiteConnection.begin_if_needed` began a read-write transaction that started with a SELECT as
+   `BEGIN DEFERRED`. A later write found a stale read snapshot and failed at once with `database is
+   locked`. Fixed by `f8f2a63`, which holds the writer from the first statement.
+2. `list_scoped_agent_owners_for_administration` uses `RIGHT(agent_id, length(?))` and SQLite has no
+   `RIGHT`. Two startup sweeps logged `no such function: RIGHT`. Fixed by `ddff26e`.
 
 ## Deep fix made on the way
 
@@ -87,10 +102,11 @@ the directory with mode 0700 (`4cc12578`).
 ## Commands
 
 ```
-docker build -t sqlite-node-lane:105 .
-evidence/sqlite-node/run-variant.sh stock
-PLANE_SQLITE_PATCHED=<patched sqlite.py> evidence/sqlite-node/run-variant.sh plane-fix
+docker build -t deepint-node:105 .
+evidence/sqlite-node/run-pinned.sh deepint-node:105 "$PWD/evidence/sqlite-node/report-pinned.txt"
 ```
+
+The earlier stock and patched runs used `run-variant.sh stock` and `run-variant.sh plane-fix`.
 
 The node container needs no PostgreSQL. `docker exec sn105-node python` against
 `file:/node-data/plane.sqlite3?mode=ro` shows the schema rows quoted above.
