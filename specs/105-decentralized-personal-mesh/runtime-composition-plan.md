@@ -1,6 +1,7 @@
 # Runtime composition and local qualification
 
-**Date:** 2026-11-12. **Status:** implementation in progress, local branches only. This plan connects
+**Date:** 2026-11-12. **Status:** stopped at the owner's request; local branches only. Resume from
+[local-integration-handoff.md](local-integration-handoff.md). This plan connects
 the separately implemented lanes to the phase exit criteria in [plan.md](plan.md). It does not mark
 any phase live-verified or authorize product pushes, releases, model uploads or shared-stack changes.
 
@@ -19,8 +20,9 @@ any phase live-verified or authorize product pushes, releases, model uploads or 
   `8bf644a37d680a227296b8c0849a7f4b328b8b73`, frozen with their license for deterministic tests.
   The complete Primitives suite passed 2,477 tests. The package is unreleased.
 - Projection locally integrated identity, on-device voice and ROTE lanes. Voice requires an explicit
-  `VoiceKernelLink`; there is no production link yet. The SQLite Plane lane remains under
-  qualification, and Deep's composition pin has not changed.
+  `VoiceKernelLink`; there is no production link yet. Plane's final shared qualification is recorded
+  in the handoff; Deep's primary composition pin has not changed. The tested Apple custody branch is
+  also separate and unmerged.
 - Exact signing-input consent binding passed 29 focused tests on each of macOS and iOS. The shared
   canonical-JSON wrapper passed six tests on each platform. Required unavailable biometrics refuse
   before policy evaluation; display-only prompts cannot authorize signing. Roster prompt factories
@@ -104,6 +106,10 @@ their scoped runtime port lands.
   Python 3.11. Keep genuine backend-specific catalog/locking checks explicit and replace them with
   meaningful SQLite equivalents. Verify PostgreSQL regressions, schema identity, recovery and
   changed-line coverage before changing Deep's composition pin.
+- Deep currently calls `create_postgres_runtime` and binds PostgreSQL's registry digest. Add an
+  authorized backend selection and an exact SQLite registry expectation through Plane's public
+  facade before enabling a SQLite node. Updating the Plane library pin alone does not enable that
+  host composition.
 - Integrate the ROTE composition changes only with exact qualified Kernel/Projection/Plane revisions.
   Build the Linux Python binding from that Kernel revision, and exercise it in the node.
 - Build the supervised Mac node pack and retire Vessel's independent loop through its own ticket

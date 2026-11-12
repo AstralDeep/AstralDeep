@@ -1,8 +1,10 @@
 # Tasks for spec 105
 
-**Date:** 2026-11-12. **Status:** in progress on branch `feat/105-personal-mesh` in AstralDeep,
-AstralProjection, AstralPlane, AstralPrimitives and LETS, and on `codex/105-kernel-integration` in the
-new local repository `AstralKernel`. Product work is not pushed. Read [spec.md](spec.md) and [plan.md](plan.md) first. This file
+**Date:** 2026-11-12. **Status:** stopped at the owner's request; not complete. Resume from
+[local-integration-handoff.md](local-integration-handoff.md). Primary Deep/Projection integration is
+on `feat/105-personal-mesh`; Kernel integration is on `codex/105-kernel-integration`. Separate candidate,
+Plane, schema and custody branches are frozen in the handoff. Product work is not pushed.
+Read [spec.md](spec.md) and [plan.md](plan.md) for intent. This file
 fixes the choices every lane shares, so lanes can work in parallel.
 
 ## Owner answers, 2026-11-12
