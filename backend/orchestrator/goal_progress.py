@@ -133,6 +133,10 @@ class GoalProgress:
         return isinstance(data, dict) and data.get("status") == "confirmation_required"
 
     @staticmethod
+    def has_error(result: object) -> bool:
+        return bool(GoalProgress._unwrap(result)[1])
+
+    @staticmethod
     def is_completed_success(tool_name: str, result: object) -> bool:
         data, error = GoalProgress._unwrap(result)
         outcome = GoalProgress._outcome(data, error, GoalProgress._job_state(data))

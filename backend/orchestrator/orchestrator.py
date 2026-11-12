@@ -54,6 +54,7 @@ from orchestrator.credential_manager import CredentialManager
 from orchestrator.delegation import DelegationService
 from orchestrator.tool_security import ToolSecurityAnalyzer
 from orchestrator.compaction import compact_messages
+from llm_config import deadlines as llm_deadlines
 from llm_config.client_factory import create_completion
 from llm_config.tool_continuation import (
     is_gemini_continuation_profile,
@@ -63,7 +64,8 @@ from llm_config.tool_continuation import (
 from orchestrator import evidence_context
 from orchestrator import context_engineering
 from orchestrator import datamarking
-from orchestrator import model_router
+from orchestrator import llm_recovery, model_router, repeat_guard
+from orchestrator.tool_arguments import ArgumentError, ArgumentResult, model_error_text, prepare_arguments
 from orchestrator import viewport
 from orchestrator.hooks import HookManager, HookEvent, HookContext
 from orchestrator.task_state import TaskManager, TaskState
@@ -189,6 +191,33 @@ class _LLMHTMLMaintenanceError(RuntimeError):
 
 class _LLMMalformedResponseError(RuntimeError):
     pass
+
+
+class _LLMStreamStalledError(TimeoutError):
+    def __init__(self, phase: str):
+        super().__init__(phase)
+        self.phase = phase
+
+
+class _LLMStreamInterrupted(RuntimeError):
+    def __init__(self, partial: str):
+        super().__init__("stream interrupted after visible text")
+        self.partial = partial
+
+
+_ARGUMENT_REPAIR_PROMPT = (
+    "You repair the arguments of one tool call. Reply with one JSON object that matches the schema. "
+    "Use only values that appear in the original arguments. If a required value is not there, reply with {}."
+)
+_MAX_REGENERATED_ARGUMENT_CHARS = 8000
+_CONTINUE_PROMPT = (
+    "Continue your previous message from exactly where it stopped. "
+    "Do not repeat any of it and do not restart."
+)
+_INCOMPLETE_NOTICE = (
+    "The model connection dropped before this answer finished. "
+    "The text above may be incomplete."
+)
 
 
 LLM_CREDENTIAL_ATTEMPT_TIMEOUT_SECONDS = 10.0
@@ -15903,6 +15932,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             designed_turn_marker: Optional[str] = None
 
             denial_tracker: Dict[str, int] = {}
+            llm_recovery.reset_turn()
+            repeat_guard.start_turn()
             DENIAL_THRESHOLD = 2
 
             if (
@@ -16514,6 +16545,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         "message": f"Running: {', '.join(tool_names)}..."
                     }))
 
+                    await self._prepare_tool_calls(websocket, llm_msg.tool_calls, tool_to_agent, tool_to_unqualified)
                     history_assistant_message = _history_assistant_message(llm_msg)
                     messages.append(history_assistant_message)
 
@@ -16705,6 +16737,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                     # OpenAI tool messages can't carry images; these follow
                     self._append_tool_images(messages, llm_msg.tool_calls, tool_results)
+
+                    if self._apply_repeat_guard(llm_msg.tool_calls, tool_results, tool_to_unqualified, messages):
+                        if goal_progress is not None:
+                            from orchestrator.goal_execution import REPEATED_FAILURES_REASON
+                            goal_stop_reason = REPEATED_FAILURES_REASON
+                            break
+                        await self.send_ui_render(websocket, [
+                            Alert(message=repeat_guard.STOP_NOTICE, variant="warning").to_dict()], target="chat")
+                        await self._safe_send(websocket, json.dumps(
+                            {"type": "chat_status", "status": "done", "message": ""}))
+                        break
 
                     if goal_progress is not None and not goal_recovery_nudge_sent and tool_results:
                         from orchestrator.computer_use_policy import MAX_WRITE_BYTES
@@ -17831,6 +17874,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.debug("model_router: selection failed — using default model",
                              exc_info=True)
+        plain_call = harness_binding is None and persistent_dispatch is None and not native_call
+        chain = llm_recovery.fallback_models(resolved.model) if plain_call else []
+        pinned = llm_recovery.TURN_MODEL.get()
+        if pinned in chain:
+            chain = chain[chain.index(pinned) + 1:]
+            call_model = pinned
+
         def _probe_state(model_name: str):
             key = (getattr(resolved, "base_url", None), model_name)
             rejected = set() if native_call else getattr(self, "_llm_unsupported_params", {}).get(key, set())
@@ -17901,6 +17951,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                 response = None
                 if stream_allowed:
+                    deadlines = llm_deadlines.deadlines_for(getattr(resolved, "base_url", None))
                     try:
                         if evidence_context.enabled() or evidence_bound:
                             retry_of = previous_context_attempt
@@ -17910,12 +17961,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 context_attempt=previous_context_attempt, context_retry=retry_of, purpose=feature,
                                 context_base_url=getattr(resolved, "base_url", None),
                                 context_provider_capture=getattr(client, "_evidence_provider_capture", None),
+                                deadlines=deadlines,
                             )
                         else:
                             response = await self._call_llm_streamed(
                                 websocket, client, kwargs, stream_chat_id,
                                 context_base_url=getattr(resolved, "base_url", None),
+                                deadlines=deadlines,
                             )
+                    except _LLMStreamInterrupted as interrupted:
+                        response = await self._continue_interrupted_stream(
+                            websocket, kwargs, interrupted.partial,
+                            lambda request: tracked_provider(
+                                lambda: create_completion(client, **request), request))
+                    except _LLMStreamStalledError:
+                        raise
                     except Exception as _stream_exc:
                         if native_call:
                             raise
@@ -18086,6 +18146,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
 
                 if not error.retryable or attempt == attempt_limit:
+                    if chain and llm_recovery.fallback_eligible(error.status_code, error.upstream_error_class):
+                        failed_model, call_model = call_model, chain.pop(0)
+                        await self._record_llm_call(
+                            self.audit_recorder, actor_user_id=actor_user_id, auth_principal=auth_principal,
+                            feature=feature, credential_source=source, resolved=resolved,
+                            routed_model=failed_model, total_tokens=None, outcome="failure",
+                            upstream_error_class=error.upstream_error_class)
+                        first_switch = llm_recovery.TURN_MODEL.get() is None
+                        llm_recovery.TURN_MODEL.set(call_model)
+                        cap_key, extra_kwargs = _probe_state(call_model)
+                        attempt = 0
+                        if first_switch and websocket is not None:
+                            await self.send_ui_render(websocket, [Alert(
+                                message=llm_recovery.fallback_notice(resolved.model, call_model),
+                                variant="info").to_dict()], target="chat")
+                        continue
                     runner_failed(error.exception_class, credential_rejected=error.status_code == 401)
                     await self._record_llm_call(
                         self.audit_recorder,
@@ -18108,7 +18184,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     # None here, not raise: avoids leaking raw payloads to chat
                     return None, None
 
-                backoff = min(2 ** (attempt - 1), 8) * random.uniform(0.8, 1.2)
+                backoff = llm_recovery.retry_delay(
+                    attempt, llm_recovery.retry_after_seconds(e), random.uniform(0.8, 1.2))
                 logger.info(
                     "Transient LLM error; retrying attempt=%d/%d "
                     "backoff_seconds=%.3f",
@@ -18118,6 +18195,30 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
                 await asyncio.sleep(backoff)
         return None, None
+
+    async def _continue_interrupted_stream(self, websocket, kwargs: Dict[str, Any], partial: str, invoke) -> Any:
+        from types import SimpleNamespace
+        request = {**kwargs, "messages": [
+            *kwargs["messages"],
+            {"role": "assistant", "content": partial},
+            {"role": "user", "content": _CONTINUE_PROMPT},
+        ]}
+        try:
+            response = await invoke(request)
+            message = response.choices[0].message
+            message.content = partial + (getattr(message, "content", None) or "")
+            return response
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("LLM stream continuation failed exception_class=%s", type(exc).__name__)
+        if websocket is not None:
+            await self.send_ui_render(
+                websocket, [Alert(message=_INCOMPLETE_NOTICE, variant="warning").to_dict()], target="chat")
+        message = self._assemble_streamed_message(partial, {})
+        object.__setattr__(message, "_astral_incomplete", True)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message, finish_reason="length")], usage=None)
 
     _MOA_CANDIDATE_LABELS = "ABCDEFGH"
 
@@ -18217,7 +18318,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return os.getenv("FF_LLM_STREAMING", "true").lower() in ("true", "1", "yes")
 
     async def _call_llm_streamed(self, websocket, client, kwargs, chat_id, *, context_attempt=None, context_retry=None,
-                                  purpose="conversation", context_base_url=None, context_provider_capture=None):
+                                  purpose="conversation", context_base_url=None, context_provider_capture=None,
+                                  deadlines: Optional[llm_deadlines.LLMDeadlines] = None):
         from llm_config.native_provider import NativeMessagesClient
         native_call = isinstance(client, NativeMessagesClient)
         buffer_narrative = _GOAL_BUFFERED_RESPONSE.get()
@@ -18295,9 +18397,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         emitted = False
         sent_len = 0
         last_emit = 0.0
+        started = last_progress = loop.time()
+        progressed = False
         try:
             while True:
-                kind, payload = await queue.get()
+                if deadlines is None:
+                    kind, payload = await queue.get()
+                else:
+                    wait, phase = llm_deadlines.stream_wait(
+                        deadlines, now=loop.time(), started=started,
+                        last_progress=last_progress, progressed=progressed)
+                    try:
+                        async with asyncio.timeout(wait):
+                            kind, payload = await queue.get()
+                    except TimeoutError:
+                        raise _LLMStreamStalledError(phase) from None
                 if kind == "done":
                     break
                 if kind == "error":
@@ -18316,6 +18430,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 delta = getattr(choice, "delta", None)
                 if delta is None:
                     continue
+                if getattr(delta, "tool_calls", None) or getattr(delta, "content", None):
+                    last_progress, progressed = loop.time(), True
                 if getattr(delta, "tool_calls", None):
                     if mode is None:
                         mode = "tool"
@@ -18382,6 +18498,20 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 except Exception:
                     logger.debug("narrative stream cleanup failed", exc_info=True)
             raise
+        except _LLMStreamStalledError:
+            abandoned.set()
+            pump_task.cancel()
+            await asyncio.gather(pump_task, return_exceptions=True)
+            if emitted:
+                try:
+                    await self._emit_narrative_frame(
+                        websocket, chat_id, stream_id, seq, "", terminal=True)
+                except Exception:
+                    logger.debug("narrative stream cleanup failed", exc_info=True)
+            if emitted and not buffer_narrative:
+                _NARRATIVE_STREAMED.set(True)
+                raise _LLMStreamInterrupted("".join(content_parts)) from None
+            raise
         except Exception:
             abandoned.set()
             if native_call:
@@ -18393,6 +18523,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         websocket, chat_id, stream_id, seq, "", terminal=True)
                 except Exception:
                     logger.debug("narrative stream cleanup failed", exc_info=True)
+            if emitted and not buffer_narrative:
+                _NARRATIVE_STREAMED.set(True)
+                raise _LLMStreamInterrupted("".join(content_parts)) from None
             raise
         await pump_task
         if native_call:
@@ -19058,6 +19191,96 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return False
         md = getattr(card, "metadata", {}) or {}
         return tool_name in (md.get("long_running_tools") or [])
+
+    def _tool_input_schema(self, agent_id: Optional[str], tool_name: str) -> Optional[dict]:
+        if not agent_id:
+            return None
+        card = self.agent_cards.get(agent_id)
+        if card is None:
+            return None
+        for skill in card.skills:
+            if tool_name in {getattr(skill, "id", None), getattr(skill, "name", None)}:
+                schema = getattr(skill, "input_schema", None)
+                return schema if isinstance(schema, dict) else None
+        return None
+
+    async def _regenerate_tool_arguments(self, websocket, tool_name: str, schema: Optional[dict],
+                                         raw: Any, error: ArgumentError) -> Optional[dict]:
+        from persistent_agents.dispatch_context import current_dispatch
+        if (not isinstance(schema, dict) or not isinstance(raw, str)
+                or len(raw) > _MAX_REGENERATED_ARGUMENT_CHARS or current_dispatch() is not None):
+            return None
+        try:
+            result = await self._call_llm_json(
+                websocket,
+                [{"role": "system", "content": _ARGUMENT_REPAIR_PROMPT},
+                 {"role": "user", "content": json.dumps(
+                     {"tool": tool_name, "problem": error.message, "original_arguments": raw})}],
+                schema=schema, schema_name="tool_arguments", temperature=0, feature="tool_argument_repair")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("tool_arg_regeneration_failed tool=%s", tool_name, exc_info=True)
+            return None
+        if not isinstance(result, dict):
+            return None
+        checked = prepare_arguments(result, schema)
+        return checked.args if checked.error is None else None
+
+    async def _prepare_tool_calls(self, websocket, tool_calls, tool_to_agent: Dict,
+                                  tool_to_unqualified: Optional[Dict[str, str]]) -> None:
+        for call in tool_calls:
+            llm_tool_name = call.function.name
+            tool_name = (tool_to_unqualified or {}).get(llm_tool_name, llm_tool_name)
+            agent_id = tool_to_agent.get(llm_tool_name)
+            if agent_id is None and tool_to_agent:
+                wanted = llm_tool_name.replace("-", "_").lower()
+                matches = [k for k in tool_to_agent if k.replace("-", "_").lower() == wanted]
+                if len(matches) == 1:
+                    llm_tool_name = matches[0]
+                    tool_name = (tool_to_unqualified or {}).get(llm_tool_name, tool_name)
+                    agent_id = tool_to_agent.get(llm_tool_name)
+            if agent_id == "computer-use-1" and tool_name == "write_file":
+                continue
+            schema = self._tool_input_schema(agent_id, tool_name)
+            raw = call.function.arguments
+            result = prepare_arguments(raw, schema)
+            kind = "repaired"
+            if result.error is not None:
+                regenerated = await self._regenerate_tool_arguments(
+                    websocket, tool_name, schema, raw, result.error)
+                if regenerated is None:
+                    object.__setattr__(call, "_astral_argument_error", result.error)
+                    continue
+                result, kind = ArgumentResult(regenerated, True, None), "regenerated"
+            if result.repaired:
+                call.function.arguments = json.dumps(result.args, ensure_ascii=False)
+                logger.info("tool_arg_repaired tool=%s kind=%s", tool_name, kind)
+
+    def _apply_repeat_guard(self, tool_calls, tool_results, tool_to_unqualified: Optional[Dict[str, str]],
+                            messages: List[Dict[str, Any]]) -> bool:
+        guard = repeat_guard.current()
+        if guard is None:
+            return False
+        stop = False
+        for index, call in enumerate(tool_calls):
+            result = tool_results[index] if index < len(tool_results) else None
+            name = (tool_to_unqualified or {}).get(call.function.name, call.function.name)
+            verdict = guard.observe(name, call.function.arguments, repeat_guard.is_failure(result))
+            if verdict == "warn":
+                messages.append({"role": "system", "content": repeat_guard.warn_text(name)})
+            elif verdict == "stop":
+                stop = True
+        return stop
+
+    def _invalid_arguments_response(self, tool_name: str, error: ArgumentError) -> MCPResponse:
+        return MCPResponse(error={
+            "code": "invalid_tool_arguments",
+            "message": model_error_text(tool_name, error),
+            "retryable": True,
+            "effect_state": "not_started",
+            "data": {"field": error.field, "reason": error.code},
+        })
 
     def _tool_accepts_context_arg(
         self, agent_id: Optional[str], tool_name: str, arg_name: str
@@ -19937,6 +20160,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 agent_id = tool_to_agent.get(llm_tool_name)
         is_computer_write = agent_id == "computer-use-1" and tool_name == "write_file"
         raw_arguments = tool_call.function.arguments
+        argument_error = getattr(tool_call, "_astral_argument_error", None)
+        if argument_error is not None and not is_computer_write:
+            refused = self._invalid_arguments_response(tool_name, argument_error)
+            await self.send_ui_render(websocket, [Alert(message=refused.error["message"], variant="error").to_dict()])
+            return refused
+        guard = repeat_guard.current()
+        if guard is not None and guard.blocked(tool_name, raw_arguments):
+            return MCPResponse(error={
+                "code": "repeated_call_blocked", "message": repeat_guard.blocked_text(tool_name),
+                "retryable": False, "effect_state": "not_started"})
 
         def invalid_write_arguments(message, *, missing_keys=(), limit_bytes=None):
             error_data = {}
@@ -20829,8 +21062,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             else:
                 tool_name = llm_tool_name
             agent_id = tool_to_agent.get(llm_tool_name)
+            argument_error = getattr(tc, "_astral_argument_error", None)
+            if argument_error is not None:
+                async def _arg_refused(response=self._invalid_arguments_response(tool_name, argument_error)):
+                    return response
+                prepared.append((idx, tc, tool_name, agent_id, None, _arg_refused()))
+                continue
+            guard = repeat_guard.current()
+            if guard is not None and guard.blocked(tool_name, tc.function.arguments):
+                async def _repeat_refused(response=MCPResponse(error={
+                        "code": "repeated_call_blocked", "message": repeat_guard.blocked_text(tool_name),
+                        "retryable": False, "effect_state": "not_started"})):
+                    return response
+                prepared.append((idx, tc, tool_name, agent_id, None, _repeat_refused()))
+                continue
             try:
-                args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                args = json.loads(tc.function.arguments, strict=False) if tc.function.arguments else {}
             except json.JSONDecodeError as _json_err:
                 _pj_msg = (f"The arguments for '{tool_name}' were not valid "
                            f"JSON ({str(_json_err).splitlines()[0]}). Re-emit "

@@ -9,6 +9,7 @@ import pytest
 from llm_config.tests.native_fixtures import native_offline as native_offline
 
 from llm_config.client_factory import build_llm_client, create_completion
+from llm_config.deadlines import deadlines_for
 from llm_config.types import CredentialSource, LLMUnavailable
 from llm_config.tests.test_native_wire import MODEL, response
 
@@ -37,7 +38,7 @@ def test_default_off_does_not_reinterpret_native_looking_compat_config(monkeypat
     config = SimpleNamespace(provider="anthropic", base_url="https://api.anthropic.com/v1", model=MODEL, api_key="compat-owner")
     with patch("llm_config.client_factory.OpenAI") as factory:
         _, _, resolved = build_llm_client(config, CredentialSource.USER)
-    assert factory.call_args.kwargs == {"base_url": config.base_url, "max_retries": 0, "timeout": 60.0, "api_key": "compat-owner"}
+    assert factory.call_args.kwargs == {"base_url": config.base_url, "max_retries": 0, "timeout": deadlines_for(config.base_url).http_timeout(), "api_key": "compat-owner"}
     assert resolved.base_url == config.base_url
     config.provider = "anthropic-native"
     with pytest.raises(LLMUnavailable):

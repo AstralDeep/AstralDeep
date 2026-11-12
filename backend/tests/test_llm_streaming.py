@@ -165,24 +165,30 @@ async def test_json_shaped_content_stays_silent():
     assert msg.content == '{"type": "card", "title": "x"}'
 
 
-async def test_mid_stream_error_falls_back_to_non_streaming(caplog):
+async def test_mid_stream_error_before_visible_text_falls_back_to_non_streaming(caplog):
     sentinel = "SENTINEL_STREAM_BODY_MUST_NOT_ESCAPE"
-    comp = _FakeCompletions(
-        chunks=[_content_chunk("partial ")],
-        raise_after=1,
-        content="recovered",
-        error_message=sentinel,
-    )
+    comp = _FakeCompletions(chunks=[_content_chunk("partial ")], raise_after=0,
+                            content="recovered", error_message=sentinel)
     orch = _bare_orch(comp)
     msg, _usage = await orch._call_llm(
-        object(), [{"role": "user", "content": "hi"}],
-        allow_stream=True, stream_chat_id="chat-1")
+        object(), [{"role": "user", "content": "hi"}], allow_stream=True, stream_chat_id="chat-1")
     assert msg.content == "recovered"
     assert comp.calls[0].get("stream") is True
     assert "stream" not in comp.calls[-1]
-    frames = _stream_frames(orch)
-    if frames:
-        assert frames[-1]["terminal"] is True, "partial text must be cleared"
+    assert _stream_frames(orch) == []
+    assert sentinel not in caplog.text
+
+
+async def test_mid_stream_error_after_visible_text_continues_without_rerun(caplog):
+    sentinel = "SENTINEL_STREAM_BODY_MUST_NOT_ESCAPE"
+    comp = _FakeCompletions(chunks=[_content_chunk("First line.\n"), _content_chunk("lost")], raise_after=1,
+                            content="Second line.", error_message=sentinel)
+    orch = _bare_orch(comp)
+    msg, _usage = await orch._call_llm(
+        object(), [{"role": "user", "content": "hi"}], allow_stream=True, stream_chat_id="chat-1")
+    assert msg.content == "First line.\nSecond line."
+    assert len(comp.calls) == 2
+    assert _stream_frames(orch)[-1]["terminal"] is True
     assert sentinel not in caplog.text
 
 
