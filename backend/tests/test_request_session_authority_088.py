@@ -24,6 +24,7 @@ from fastapi import Request
 from jose import jwk, jwt
 
 from orchestrator import session_authority as sa, session_store as ss, web_auth
+from shared.node_identity import canonical_owner_id
 from tests.helpers.session_plane_runtime import (
     get_session_record, isolated_plane_runtime, replace_session_record, web_session_store,
 )
@@ -60,11 +61,13 @@ def session_fixture(runtime, monkeypatch, signing_key, *, owner=None):
     monkeypatch.setenv("KEYCLOAK_CLIENT_SECRET", "synthetic-secret")
     monkeypatch.setenv("KEYCLOAK_ALLOWED_AZP", "astral-native")
     # Digit runs stay letter-prefixed so no approval review can misread the fixture owner as a credential.
-    owner, sid = owner or f"review-owner-p{os.getpid()}-x{next(_SESSION_OWNER_SEQUENCE):06d}", uuid.uuid4().hex
+    subject = owner.split(".", 2)[2] if owner else f"review-owner-p{os.getpid()}-x{next(_SESSION_OWNER_SEQUENCE):06d}"
+    sid = uuid.uuid4().hex
+    owner = canonical_owner_id("https://request-authority.invalid/realm", subject)
     store = web_session_store(runtime)
 
     def token(**changes):
-        claims = {"sub": owner, "iss": "https://request-authority.invalid/realm",
+        claims = {"sub": subject, "iss": "https://request-authority.invalid/realm",
                   "azp": "astral-web", "aud": "account", "exp": int(time.time()) + 300,
                   "realm_access": {"roles": ["user"]}, "sid": "not-the-cookie-sid"}
         claims.update(changes)
@@ -127,7 +130,7 @@ def test_synthetic_signing_reuses_key_without_reloading_private_pem(fixture, sig
     claims = [jwt.decode(value, signing_key[1], algorithms=["RS256"], audience="account",
                          issuer="https://request-authority.invalid/realm") for value in tokens]
     assert claims[0]["jti"] != claims[1]["jti"]
-    assert all(value["sub"] == fixture[1] for value in claims)
+    assert all(value["sub"] == fixture[1].split(".", 2)[2] for value in claims)
     observation = run(fixture)
     assert observation.credential.owner_id == fixture[1]
     assert len(fixture[4]) == 1

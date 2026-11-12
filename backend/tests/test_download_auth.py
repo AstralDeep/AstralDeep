@@ -15,8 +15,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import orchestrator.web_auth as web_auth  # noqa: E402
 from orchestrator.auth import auth_router, require_download_user_id  # noqa: E402
+from shared.node_identity import canonical_owner_id  # noqa: E402
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+AUTHORITY = "https://idp.example/realms/astral"
 SESSION_ID = "dl-auth-test-sess"
 FILE_NAME = "report.csv"
 FILE_BODY = b"a,b\n1,2\n"
@@ -31,7 +33,7 @@ def mock_auth_env(monkeypatch):
 @pytest.fixture
 def real_auth_env(monkeypatch):
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/astral")
+    monkeypatch.setenv("KEYCLOAK_AUTHORITY", AUTHORITY)
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
 
 
@@ -66,6 +68,7 @@ def user_file():
     session_dirs = []
     for user, name, body in (
         ("test_user", FILE_NAME, FILE_BODY),
+        (canonical_owner_id(AUTHORITY, "test_user"), FILE_NAME, FILE_BODY),
         ("other_user", CROSS_USER_FILE, b"SECRET"),
     ):
         d = os.path.join(BACKEND_DIR, "tmp", user, SESSION_ID)
@@ -163,7 +166,7 @@ def test_cookie_token_valid_via_jwks(real_auth_env, client, user_file, monkeypat
     monkeypatch.setattr("shared.jwks_cache.get_jwks", _jwks)
     monkeypatch.setattr(
         "jose.jwt.decode",
-        lambda token, key, **kw: {"sub": "test_user", "azp": "astral-frontend"},
+        lambda token, key, **kw: {"sub": "test_user", "azp": "astral-frontend", "iss": AUTHORITY},
     )
 
     res = client.get(f"/api/download/{SESSION_ID}/{FILE_NAME}")

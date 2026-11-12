@@ -18,9 +18,11 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from shared.node_identity import canonical_owner_id  # noqa: E402
 from shared.protocol import MCPResponse  # noqa: E402
 
 ALICE = "alice-sub"
+ALICE_OWNER = canonical_owner_id("https://iam.example/realms/astral", ALICE)
 BOB = "bob-sub"
 
 
@@ -360,16 +362,14 @@ def _validator(monkeypatch, claims, *, strict=True):
 
     validator = a2a_security.A2ASecurityValidator(require_first_party_user=strict)
     validator._get_jwks = AsyncMock(return_value={"keys": []})
-    monkeypatch.setattr(
-        a2a_security.jose_jwt, "decode", lambda token, key, **kw: dict(claims)
-    )
+    monkeypatch.setattr("jose.jwt.decode", lambda token, key, **kw: dict(claims))
     return validator
 
 
 @pytest.mark.asyncio
 async def test_strict_accepts_first_party_user_token(keycloak_env, monkeypatch):
     v = _validator(monkeypatch, _user_claims(ALICE))
-    assert (await v.validate_token("t"))["sub"] == ALICE
+    assert (await v.validate_token("t"))["sub"] == ALICE_OWNER
 
 
 @pytest.mark.asyncio
@@ -414,7 +414,7 @@ async def test_strict_accepts_web_gate_equivalents(keycloak_env, monkeypatch, mu
         else:
             claims[key] = value
     v = _validator(monkeypatch, claims)
-    assert (await v.validate_token("t"))["sub"] == ALICE
+    assert (await v.validate_token("t"))["sub"] == ALICE_OWNER
 
 
 @pytest.mark.asyncio
@@ -422,7 +422,7 @@ async def test_agent_posture_still_accepts_delegation_tokens(keycloak_env, monke
     claims = _user_claims(ALICE, act={"sub": "agent:weather-1"}, delegation=True)
     claims.pop("realm_access")
     v = _validator(monkeypatch, claims, strict=False)
-    assert (await v.validate_token("t"))["sub"] == ALICE
+    assert (await v.validate_token("t"))["sub"] == ALICE_OWNER
     assert await _validator(
         monkeypatch, _user_claims(ALICE, iss="https://other.example"), strict=False
     ).validate_token("t") is None
@@ -431,7 +431,7 @@ async def test_agent_posture_still_accepts_delegation_tokens(keycloak_env, monke
     ).validate_token("t") is None
     assert (await _validator(
         monkeypatch, _user_claims(ALICE, azp="astral-desktop"), strict=False
-    ).validate_token("t"))["sub"] == ALICE
+    ).validate_token("t"))["sub"] == ALICE_OWNER
 
 
 @pytest.mark.asyncio

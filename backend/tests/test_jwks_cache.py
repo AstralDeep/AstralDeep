@@ -207,8 +207,10 @@ def test_orchestrator_validate_token_uses_shared_jwks_cache():
     from orchestrator.orchestrator import Orchestrator
 
     src = inspect.getsource(Orchestrator.validate_token)
-    assert "shared.jwks_cache" in src
-    assert "get_jwks" in src
+    assert "verify_idp_token" in src
+    from shared import token_verify
+
+    assert "jwks_cache.get_jwks" in inspect.getsource(token_verify.verify_idp_token)
 
 
 @pytest.mark.asyncio
@@ -228,9 +230,10 @@ async def test_orchestrator_auth_module_uses_shared_jwks_cache(monkeypatch, inva
                   return_value=payload)
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
+    monkeypatch.setenv("KEYCLOAK_AUTHORITY", authority)
     monkeypatch.setattr(auth_mod, "_get_keycloak_config", lambda: (authority, "astral-frontend", ""))
     monkeypatch.setattr(jwks_cache, "get_jwks", cache)
-    monkeypatch.setattr(auth_mod.jose_jwt, "decode", decode)
+    monkeypatch.setattr("jose.jwt.decode", decode)
     request = types.SimpleNamespace(method="GET", query_params={}, state=types.SimpleNamespace())
     credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="synthetic-token")
     if invalid:
@@ -243,4 +246,5 @@ async def test_orchestrator_auth_module_uses_shared_jwks_cache(monkeypatch, inva
         assert request.state.audit_claims == payload
     cache.assert_awaited_once_with(f"{authority}/protocol/openid-connect/certs", token="synthetic-token")
     decode.assert_called_once_with("synthetic-token", keys, algorithms=["RS256"],
-                                   options={"verify_aud": False, "verify_at_hash": False})
+                                   options={"verify_aud": False, "verify_at_hash": False,
+                                            "require_exp": True})

@@ -80,6 +80,7 @@ def registered(mesh):
     host.ui_sessions = {
         socket: {
             **jwt.get_unverified_claims(mesh.owner_token),
+            "sub": mesh.owner,
             "_raw_token": mesh.owner_token,
         }
     }

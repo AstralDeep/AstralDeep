@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse
 from jose import jwt
 
 from orchestrator import web_auth
+from shared.node_identity import canonical_owner_id
 from tests.helpers.session_plane_runtime import (
     isolated_plane_runtime,
     purge_revocations,
@@ -154,10 +155,11 @@ def _session_rows(plane_runtime, user_id):
 
 
 def test_callback_success_redirects_to_deep_link(store, monkeypatch, real_auth_env):
-    user_id = f"u-{uuid.uuid4()}"
+    subject = f"u-{uuid.uuid4()}"
+    user_id = canonical_owner_id(os.environ["KEYCLOAK_AUTHORITY"], subject)
     state = _seed_pending(DEEP_LINK)
     token_response = {
-        "access_token": _signed_jwt({"sub": user_id, "exp": int(time.time()) + 300,
+        "access_token": _signed_jwt({"sub": subject, "exp": int(time.time()) + 300,
                                    "realm_access": {"roles": ["user"]}}, real_auth_env),
         "refresh_token": f"rt-{uuid.uuid4()}",
     }
@@ -252,11 +254,12 @@ def test_callback_token_exchange_failure_preserves_next(monkeypatch, real_auth_e
 def test_callback_no_access_role_refused(
     plane_runtime, store, monkeypatch, real_auth_env
 ):
-    user_id = f"u-{uuid.uuid4()}"
+    subject = f"u-{uuid.uuid4()}"
+    user_id = canonical_owner_id(os.environ["KEYCLOAK_AUTHORITY"], subject)
     refresh = f"rt-{uuid.uuid4()}"
     state = _seed_pending(DEEP_LINK)
     token_response = {
-        "access_token": _signed_jwt({"sub": user_id, "exp": int(time.time()) + 300,
+        "access_token": _signed_jwt({"sub": subject, "exp": int(time.time()) + 300,
                                    "realm_access": {"roles": ["offline_access"]},
                                    "resource_access": {"acct": {"roles": ["view-profile"]}}}, real_auth_env),
         "refresh_token": refresh,
@@ -299,10 +302,11 @@ def test_callback_no_access_role_refused(
 def test_callback_user_role_passes_gate(
     plane_runtime, store, monkeypatch, real_auth_env
 ):
-    user_id = f"u-{uuid.uuid4()}"
+    subject = f"u-{uuid.uuid4()}"
+    user_id = canonical_owner_id(os.environ["KEYCLOAK_AUTHORITY"], subject)
     state = _seed_pending("/")
     token_response = {
-        "access_token": _signed_jwt({"sub": user_id, "exp": int(time.time()) + 300,
+        "access_token": _signed_jwt({"sub": subject, "exp": int(time.time()) + 300,
                                    "realm_access": {"roles": ["user"]}}, real_auth_env),
         "refresh_token": f"rt-{uuid.uuid4()}",
     }
