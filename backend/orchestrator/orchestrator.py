@@ -64,7 +64,7 @@ from llm_config.tool_continuation import (
 from orchestrator import evidence_context
 from orchestrator import context_engineering
 from orchestrator import datamarking
-from orchestrator import llm_recovery, model_router
+from orchestrator import llm_recovery, model_router, repeat_guard
 from orchestrator.tool_arguments import ArgumentError, ArgumentResult, model_error_text, prepare_arguments
 from orchestrator import viewport
 from orchestrator.hooks import HookManager, HookEvent, HookContext
@@ -15933,6 +15933,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
             denial_tracker: Dict[str, int] = {}
             llm_recovery.reset_turn()
+            repeat_guard.start_turn()
             DENIAL_THRESHOLD = 2
 
             if (
@@ -16736,6 +16737,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                     # OpenAI tool messages can't carry images; these follow
                     self._append_tool_images(messages, llm_msg.tool_calls, tool_results)
+
+                    if self._apply_repeat_guard(llm_msg.tool_calls, tool_results, tool_to_unqualified, messages):
+                        if goal_progress is not None:
+                            from orchestrator.goal_execution import REPEATED_FAILURES_REASON
+                            goal_stop_reason = REPEATED_FAILURES_REASON
+                            break
+                        await self.send_ui_render(websocket, [
+                            Alert(message=repeat_guard.STOP_NOTICE, variant="warning").to_dict()], target="chat")
+                        await self._safe_send(websocket, json.dumps(
+                            {"type": "chat_status", "status": "done", "message": ""}))
+                        break
 
                     if goal_progress is not None and not goal_recovery_nudge_sent and tool_results:
                         from orchestrator.computer_use_policy import MAX_WRITE_BYTES
@@ -19245,6 +19257,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 call.function.arguments = json.dumps(result.args, ensure_ascii=False)
                 logger.info("tool_arg_repaired tool=%s kind=%s", tool_name, kind)
 
+    def _apply_repeat_guard(self, tool_calls, tool_results, tool_to_unqualified: Optional[Dict[str, str]],
+                            messages: List[Dict[str, Any]]) -> bool:
+        guard = repeat_guard.current()
+        if guard is None:
+            return False
+        stop = False
+        for index, call in enumerate(tool_calls):
+            result = tool_results[index] if index < len(tool_results) else None
+            name = (tool_to_unqualified or {}).get(call.function.name, call.function.name)
+            verdict = guard.observe(name, call.function.arguments, repeat_guard.is_failure(result))
+            if verdict == "warn":
+                messages.append({"role": "system", "content": repeat_guard.warn_text(name)})
+            elif verdict == "stop":
+                stop = True
+        return stop
+
     def _invalid_arguments_response(self, tool_name: str, error: ArgumentError) -> MCPResponse:
         return MCPResponse(error={
             "code": "invalid_tool_arguments",
@@ -20137,6 +20165,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             refused = self._invalid_arguments_response(tool_name, argument_error)
             await self.send_ui_render(websocket, [Alert(message=refused.error["message"], variant="error").to_dict()])
             return refused
+        guard = repeat_guard.current()
+        if guard is not None and guard.blocked(tool_name, raw_arguments):
+            return MCPResponse(error={
+                "code": "repeated_call_blocked", "message": repeat_guard.blocked_text(tool_name),
+                "retryable": False, "effect_state": "not_started"})
 
         def invalid_write_arguments(message, *, missing_keys=(), limit_bytes=None):
             error_data = {}
@@ -21034,6 +21067,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 async def _arg_refused(response=self._invalid_arguments_response(tool_name, argument_error)):
                     return response
                 prepared.append((idx, tc, tool_name, agent_id, None, _arg_refused()))
+                continue
+            guard = repeat_guard.current()
+            if guard is not None and guard.blocked(tool_name, tc.function.arguments):
+                async def _repeat_refused(response=MCPResponse(error={
+                        "code": "repeated_call_blocked", "message": repeat_guard.blocked_text(tool_name),
+                        "retryable": False, "effect_state": "not_started"})):
+                    return response
+                prepared.append((idx, tc, tool_name, agent_id, None, _repeat_refused()))
                 continue
             try:
                 args = json.loads(tc.function.arguments, strict=False) if tc.function.arguments else {}
