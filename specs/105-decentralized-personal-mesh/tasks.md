@@ -1,10 +1,10 @@
 # Tasks for spec 105
 
-**Date:** 2026-11-12. **Status:** stopped at the owner's request; not complete. Resume from
-[local-integration-handoff.md](local-integration-handoff.md). Primary Deep/Projection integration is
-on `feat/105-personal-mesh`; Kernel integration is on `codex/105-kernel-integration`. Separate candidate,
-Plane, schema and custody branches are frozen in the handoff. Product work is not pushed.
-Read [spec.md](spec.md) and [plan.md](plan.md) for intent. This file
+**Date:** 2026-11-12. **Status:** resumed by the owner after two stops; not complete. The resume
+point is the "Second stop" section of [local-integration-handoff.md](local-integration-handoff.md).
+Kernel lanes are on `k/runtime` and `k/turns`, cut from `codex/105-kernel-integration`. The Apple mesh
+app is on Projection `feat/105-mesh-app`. The Deep SQLite node is on `feat/105-sqlite-node`. Product
+work is not pushed. Read [spec.md](spec.md) and [plan.md](plan.md) for intent. This file
 fixes the choices every lane shares, so lanes can work in parallel.
 
 ## Owner answers, 2026-11-12
