@@ -26727,6 +26727,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         evidence_service = evidence_context.get_context(self)
         if evidence_service is not None:
             evidence_service.start()
+        from orchestrator import node_mesh_chat
+
+        try:
+            await node_mesh_chat.start_for(self)
+        except Exception:
+            logger.exception("node_mesh_start_failed")
         await server.serve()
 
     async def _close_started_services(self) -> None:
@@ -26752,6 +26758,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             raise
 
     async def _close_started_services_once(self) -> None:
+        from orchestrator import node_mesh_chat
+
+        try:
+            await node_mesh_chat.stop_all()
+        except Exception:
+            logger.exception("node_mesh_shutdown_failed")
         qualification_agent = getattr(self, "local_agents", {}).get("sandbox-qualification-runner")
         if qualification_agent is not None:
             from agents.sandbox_qualification.sandbox_qualification_agent import SandboxQualificationAgent

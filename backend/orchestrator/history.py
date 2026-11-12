@@ -2539,6 +2539,9 @@ class HistoryManager:
                 expected_updated_at=chat.updated_at,
                 updated_at=max(timestamp, chat.updated_at + 1),
             )
+        from orchestrator import node_mesh_chat
+
+        node_mesh_chat.observe_message(user_id, chat_id, role, content)
 
     def get_latest_message_id(self, chat_id: str, user_id: str = 'legacy'):
         return self._history.call(

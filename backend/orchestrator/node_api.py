@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from orchestrator import mesh_api
 from orchestrator import mesh_enrollment as me
+from orchestrator import node_mesh
 from shared import node_identity
 
 node_router = APIRouter(tags=["Node"])
@@ -79,6 +80,44 @@ def descriptor() -> dict[str, Any]:
         "capabilities": list(CAPABILITIES),
         "transport_addresses": [],
     }
+
+
+async def mesh_descriptor_fields(document: dict[str, Any]) -> dict[str, Any]:
+    mesh = node_mesh.current()
+    if mesh is None or not mesh.started:
+        return document
+    status = await mesh.status()
+    enrolled = bool(status.get("enrolled"))
+    document["mesh"] = {
+        "state": status["state"],
+        "mesh_id": status.get("mesh_id"),
+        "member_id": status.get("member_id"),
+        "hardware_backed": status["hardware_backed"],
+        "turn_events": status["turn_events"],
+    }
+    capabilities = list(document["capabilities"]) + ["mesh-peer"]
+    if status.get("endpoint_address"):
+        document["transport_addresses"] = [{"kind": "iroh", "address": status["endpoint_address"]}]
+    mailbox = status.get("mailbox") or {}
+    if enrolled and mailbox.get("address"):
+        document["mailbox"] = {"kind": "iroh-mailbox", "address": mailbox["address"]}
+        capabilities.append("mesh-mailbox")
+    document["capabilities"] = capabilities
+    return document
+
+
+async def _mesh_pairing() -> dict[str, Any] | None:
+    mesh = node_mesh.current()
+    if mesh is None or not mesh.started:
+        return None
+    status = await mesh.status()
+    if status.get("enrolled"):
+        return {"state": status["state"], "mesh_id": status["mesh_id"], "member_id": status["member_id"]}
+    try:
+        offer = await mesh.pairing_offer()
+    except node_mesh.NodeMeshError as exc:
+        return {"state": status["state"], "error": exc.code}
+    return {"state": "offer", **offer}
 
 
 def _normalize_code(raw: Any) -> str:
@@ -148,7 +187,7 @@ def _no_store(response: Response) -> None:
 @node_router.get("/api/node/descriptor")
 async def get_descriptor(response: Response):
     _no_store(response)
-    return descriptor()
+    return await mesh_descriptor_fields(descriptor())
 
 
 @node_router.get("/.well-known/astral-node/jwks.json", include_in_schema=False)
@@ -210,7 +249,7 @@ async def create_pairing(
         while _digest(code) in _offers:
             code = _new_code()
         _offers[_digest(code)] = {"document": document, "expires_at": expires_at / 1000}
-    return {
+    body = {
         "pairing": {
             "code": display_code(code),
             "expires_at": expires_at,
@@ -219,6 +258,10 @@ async def create_pairing(
         },
         "invitation": result["invitation"],
     }
+    mesh_offer = await _mesh_pairing()
+    if mesh_offer is not None:
+        body["mesh"] = mesh_offer
+    return body
 
 
 @node_router.post("/api/node/pairing/resolve")

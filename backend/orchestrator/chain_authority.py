@@ -21,6 +21,7 @@ DEFAULT_CHAIN_WALL_CLOCK_S = float(os.getenv("CHAIN_WALL_CLOCK_SECONDS", "120"))
 
 MACHINE_TURN_CLASSES = (
     "scheduled_job", "parser_replay", "draft_self_test", "persistent_assignment",
+    "mesh_request",
 )
 
 _MACHINE_SCOPE_KEY = "_machine_authority_scopes"
