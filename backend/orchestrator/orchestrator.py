@@ -54,6 +54,7 @@ from orchestrator.credential_manager import CredentialManager
 from orchestrator.delegation import DelegationService
 from orchestrator.tool_security import ToolSecurityAnalyzer
 from orchestrator.compaction import compact_messages
+from llm_config import deadlines as llm_deadlines
 from llm_config.client_factory import create_completion
 from llm_config.tool_continuation import (
     is_gemini_continuation_profile,
@@ -189,6 +190,12 @@ class _LLMHTMLMaintenanceError(RuntimeError):
 
 class _LLMMalformedResponseError(RuntimeError):
     pass
+
+
+class _LLMStreamStalledError(TimeoutError):
+    def __init__(self, phase: str):
+        super().__init__(phase)
+        self.phase = phase
 
 
 LLM_CREDENTIAL_ATTEMPT_TIMEOUT_SECONDS = 10.0
@@ -17901,6 +17908,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                 response = None
                 if stream_allowed:
+                    deadlines = llm_deadlines.deadlines_for(getattr(resolved, "base_url", None))
                     try:
                         if evidence_context.enabled() or evidence_bound:
                             retry_of = previous_context_attempt
@@ -17910,12 +17918,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 context_attempt=previous_context_attempt, context_retry=retry_of, purpose=feature,
                                 context_base_url=getattr(resolved, "base_url", None),
                                 context_provider_capture=getattr(client, "_evidence_provider_capture", None),
+                                deadlines=deadlines,
                             )
                         else:
                             response = await self._call_llm_streamed(
                                 websocket, client, kwargs, stream_chat_id,
                                 context_base_url=getattr(resolved, "base_url", None),
+                                deadlines=deadlines,
                             )
+                    except _LLMStreamStalledError:
+                        raise
                     except Exception as _stream_exc:
                         if native_call:
                             raise
@@ -18217,7 +18229,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return os.getenv("FF_LLM_STREAMING", "true").lower() in ("true", "1", "yes")
 
     async def _call_llm_streamed(self, websocket, client, kwargs, chat_id, *, context_attempt=None, context_retry=None,
-                                  purpose="conversation", context_base_url=None, context_provider_capture=None):
+                                  purpose="conversation", context_base_url=None, context_provider_capture=None,
+                                  deadlines: Optional[llm_deadlines.LLMDeadlines] = None):
         from llm_config.native_provider import NativeMessagesClient
         native_call = isinstance(client, NativeMessagesClient)
         buffer_narrative = _GOAL_BUFFERED_RESPONSE.get()
@@ -18295,9 +18308,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         emitted = False
         sent_len = 0
         last_emit = 0.0
+        started = last_progress = loop.time()
+        progressed = False
         try:
             while True:
-                kind, payload = await queue.get()
+                if deadlines is None:
+                    kind, payload = await queue.get()
+                else:
+                    wait, phase = llm_deadlines.stream_wait(
+                        deadlines, now=loop.time(), started=started,
+                        last_progress=last_progress, progressed=progressed)
+                    try:
+                        async with asyncio.timeout(wait):
+                            kind, payload = await queue.get()
+                    except TimeoutError:
+                        raise _LLMStreamStalledError(phase) from None
                 if kind == "done":
                     break
                 if kind == "error":
@@ -18316,6 +18341,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 delta = getattr(choice, "delta", None)
                 if delta is None:
                     continue
+                if getattr(delta, "tool_calls", None) or getattr(delta, "content", None):
+                    last_progress, progressed = loop.time(), True
                 if getattr(delta, "tool_calls", None):
                     if mode is None:
                         mode = "tool"
@@ -18372,6 +18399,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 await self._emit_narrative_frame(
                     websocket, chat_id, stream_id, seq, "", terminal=True)
         except asyncio.CancelledError:
+            abandoned.set()
+            pump_task.cancel()
+            await asyncio.gather(pump_task, return_exceptions=True)
+            if emitted:
+                try:
+                    await self._emit_narrative_frame(
+                        websocket, chat_id, stream_id, seq, "", terminal=True)
+                except Exception:
+                    logger.debug("narrative stream cleanup failed", exc_info=True)
+            raise
+        except _LLMStreamStalledError:
             abandoned.set()
             pump_task.cancel()
             await asyncio.gather(pump_task, return_exceptions=True)
