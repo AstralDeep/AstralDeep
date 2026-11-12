@@ -119,6 +119,33 @@ async def test_a_marked_call_is_refused_the_same_way_on_both_paths(orch):
         assert response.error["data"] == {"field": "city", "reason": "schema_mismatch"}
 
 
+async def test_unresolvable_schema_is_refused_before_single_and_parallel_dispatch(orch, monkeypatch):
+    retrieved = []
+
+    def retrieve(request, *args, **kwargs):
+        retrieved.append(request.full_url)
+        raise AssertionError("Schema validation must not retrieve resources")
+
+    monkeypatch.setattr("urllib.request.urlopen", retrieve)
+    schema = {"$ref": "file:///unavailable/private-schema.json"}
+    skill = SimpleNamespace(id="t1", name="t1", input_schema=schema)
+    orch.agent_cards["a1"] = SimpleNamespace(skills=[skill])
+    orch._call_llm_json = AsyncMock(return_value={})
+    marked = call("t1", "{}")
+
+    await orch._prepare_tool_calls(None, [marked], {"t1": "a1"}, None)
+    single = await orch.execute_single_tool(MagicMock(), marked, {"t1": "a1"}, "c1", user_id="u1")
+    parallel = (await orch.execute_parallel_tools(MagicMock(), [marked], {"t1": "a1"}, "c1", user_id="u1"))[0]
+
+    assert retrieved == []
+    for response in (single, parallel):
+        assert response.error["code"] == "invalid_tool_arguments"
+        assert response.error["effect_state"] == "not_started"
+        assert response.error["data"] == {"field": "", "reason": "schema_reference_unresolvable"}
+        assert "private-schema" not in response.error["message"]
+    assert orch.local_agents["a1"].mock_calls == []
+
+
 async def test_parallel_path_accepts_raw_control_characters(orch):
     results = await orch.execute_parallel_tools(
         MagicMock(), [call("t1", '{"q": "a\nb"}')], {"t1": "ghost"}, "c1", user_id="u1")
