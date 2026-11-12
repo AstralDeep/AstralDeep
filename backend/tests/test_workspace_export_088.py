@@ -17,6 +17,7 @@ from starlette.requests import Request
 
 from orchestrator import auth
 from orchestrator import workspace_export as export
+from shared.node_identity import canonical_owner_id
 
 REAL_AUTHENTICATE = auth.get_web_or_bearer_user_payload
 PATH = "/api/export/canvas/chat/presentation"
@@ -389,7 +390,11 @@ async def test_original_iam_rechecked_after_render_without_profile_write(host, m
     monkeypatch.setattr("shared.jwks_cache.get_jwks", AsyncMock(return_value={"keys": []}))
     session = AsyncMock(return_value={"access_token": "fixture.access.token"})
     monkeypatch.setattr(web_auth, "ensure_session", session)
-    decode = Mock(return_value={"sub": "owner", "realm_access": {"roles": ["user"]}})
+    issuer = {"iss": "https://iam.example/realms/test", "azp": "astral-frontend"}
+    owner = canonical_owner_id(issuer["iss"], "owner")
+    host.repository.get.side_effect = lambda tx, owner_id, conversation_id: (
+        SimpleNamespace(render_revision=7) if (owner_id, conversation_id) == (owner, "chat") else None)
+    decode = Mock(return_value={"sub": "owner", "realm_access": {"roles": ["user"]}} | issuer)
     monkeypatch.setattr("jose.jwt.decode", decode)
     headers = TOKEN_HEADERS if transport == "bearer" else {"content-type": "application/json", "origin": "https://test"}
     assert (await post(host, headers=headers)).status_code == 200

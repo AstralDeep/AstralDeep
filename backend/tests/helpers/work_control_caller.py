@@ -12,8 +12,13 @@ from fastapi import FastAPI
 from jose import jwt
 
 from orchestrator.work_control_authority import authenticate_work_control_request
+from shared.node_identity import canonical_owner_id
 from tests.helpers.session_plane_runtime import web_session_store
 from tests.test_request_session_authority_088 import request
+
+
+ISSUER = "https://request-authority.invalid/realm"
+OWNER_ID = canonical_owner_id(ISSUER, "owner")
 
 
 @asynccontextmanager
@@ -27,7 +32,7 @@ async def current_control_caller(assignments, monkeypatch, signing_key):
     monkeypatch.setenv("KEYCLOAK_CLIENT_SECRET", "synthetic-secret")
     monkeypatch.setenv("KEYCLOAK_ALLOWED_AZP", "astral-native")
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://app.invalid")
-    claims = {"sub": "owner", "iss": "https://request-authority.invalid/realm",
+    claims = {"sub": "owner", "iss": ISSUER,
               "azp": "astral-web", "aud": "account", "exp": int(time.time()) + 300,
               "realm_access": {"roles": ["user"]}}
     token = jwt.encode(claims, signing_key[0], algorithm="RS256",
@@ -44,7 +49,7 @@ async def current_control_caller(assignments, monkeypatch, signing_key):
     runtime = assignments.store.plane_runtime
     sessions = web_session_store(runtime)
     sid = uuid4().hex
-    sessions.create(sid, user_id="owner", access_token=token,
+    sessions.create(sid, user_id=OWNER_ID, access_token=token,
                     refresh_token="synthetic-control-refresh", hard_max_seconds=3600)
     orch = assignments.orch
     orch.persistent_assignments = assignments

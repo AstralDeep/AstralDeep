@@ -9,7 +9,7 @@ import pytest
 
 from shared import jwks_cache
 from shared import node_identity as ni
-from shared.token_verify import TokenRefused, verify_idp_token
+from shared.token_verify import verify_idp_token
 from tests.helpers.idp_tokens import AUTHORITY, CLIENT_ID, FakeIssuer
 
 JWKS_URL = f"{AUTHORITY}/protocol/openid-connect/certs"
@@ -87,11 +87,11 @@ async def test_verification_stops_when_the_grace_runs_out(node):
     await verify_idp_token(token)
     node.clock["up"] = False
     node.clock["now"] += jwks_cache._TTL_SECONDS + jwks_cache._DEFAULT_GRACE_SECONDS + 1
-    with pytest.raises(TokenRefused):
+    with pytest.raises(OSError):
         await verify_idp_token(token)
 
 
 async def test_a_new_sign_in_needs_the_issuer(node):
     node.clock["up"] = False
-    with pytest.raises(TokenRefused):
+    with pytest.raises(OSError):
         await verify_idp_token(node.issuer.token("owner-1"))

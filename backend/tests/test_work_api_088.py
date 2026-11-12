@@ -18,6 +18,7 @@ from orchestrator.work_api import work_router
 from orchestrator.work_service import WorkService
 from persistent_agents.models import AssignmentError
 from persistent_agents.service import AssignmentService
+from shared.node_identity import canonical_owner_id
 
 
 def read_claims(roles=("user",)):
@@ -235,7 +236,11 @@ async def test_original_auth_path_rechecks_credential_and_roles(host, monkeypatc
     session = AsyncMock(return_value={"access_token": "fixture.access.token",
         "sid": "fixture-sid", "incarnation_id": "fixture-incarnation"})
     monkeypatch.setattr(web_auth, "ensure_session", session)
-    decode = Mock(return_value=read_claims())
+    issuer = {"iss": "https://iam.example/realms/test", "azp": "astral-frontend"}
+    owner = canonical_owner_id(issuer["iss"], "owner")
+    read.assignment.owner_id = owner
+    orch.persistent_assignments.store.plane_runtime.repositories.history.sessions.get_execution_state.return_value.credential.owner_id = owner
+    decode = Mock(return_value=read_claims() | issuer)
     monkeypatch.setattr("jose.jwt.decode", decode)
     app = FastAPI()
     app.state.orchestrator = orch
@@ -243,8 +248,9 @@ async def test_original_auth_path_rechecks_credential_and_roles(host, monkeypatc
     headers = {"Authorization": "Bearer fixture.access.token"} if transport == "bearer" else {}
     path = f"/api/work/v1/operations/{read.assignment.assignment_id}/poll"
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        assert (await client.get(path, headers=headers)).status_code == 200
-        decode.return_value = {"sub": "owner", "realm_access": {"roles": []}}
+        first = await client.get(path, headers=headers)
+        assert first.status_code == 200, first.text
+        decode.return_value = {"sub": "owner", "realm_access": {"roles": []}} | issuer
         denied = await client.get(path, headers=headers)
         assert denied.status_code == 403 and denied.headers["cache-control"] == "no-store"
         decode.side_effect = JWTError("fixture credential expired")

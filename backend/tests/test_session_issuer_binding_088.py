@@ -18,6 +18,7 @@ from cryptography.fernet import Fernet
 from jose import jwt
 
 from orchestrator import offline_grant as og, session_authority as sa, session_store as ss, web_auth
+from shared.node_identity import canonical_owner_id
 from tests.helpers.session_consent_088 import consent_from_store
 from tests.helpers.session_plane_runtime import (
     get_session_record, isolated_plane_runtime, purge_revocations, replace_session_record,
@@ -52,10 +53,11 @@ def fixture(runtime, monkeypatch, signing_key):
     monkeypatch.setenv("KEYCLOAK_CLIENT_SECRET", "synthetic-confidential-secret")
     monkeypatch.setenv("KEYCLOAK_ALLOWED_AZP", CLIENT)
     monkeypatch.delenv("KEYCLOAK_TOKEN_URL", raising=False)
-    owner, sid = str(uuid4()), uuid4().hex
+    subject, sid = str(uuid4()), uuid4().hex
+    owner = canonical_owner_id(ISSUER, subject)
     store = web_session_store(runtime)
     def token(**changes):
-        claims = {"sub": owner, "iss": ISSUER, "azp": CLIENT, "aud": "account",
+        claims = {"sub": subject, "iss": ISSUER, "azp": CLIENT, "aud": "account",
                   "exp": int(time.time()) + 300, "realm_access": {"roles": ["user"]}}
         claims.update(changes)
         return jwt.encode(claims, signing_key[0], algorithm="RS256",

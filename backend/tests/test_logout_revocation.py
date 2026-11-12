@@ -15,6 +15,7 @@ from cryptography.fernet import Fernet
 from jose import jwt
 
 from orchestrator import web_auth
+from shared.node_identity import canonical_owner_id
 from tests.helpers.session_plane_runtime import (
     isolated_plane_runtime,
     purge_revocations,
@@ -331,7 +332,8 @@ def test_auth_callback_user_switch_revokes_prior_session(
 
         assert resp.status_code == 303
         assert web_auth.COOKIE_NAME in resp.headers.get("set-cookie", "")
-        new_sids = [s for s, v in web_auth._SESSIONS.items() if v.get("sub") == user_b]
+        owner_b = canonical_owner_id(os.environ["KEYCLOAK_AUTHORITY"], user_b)
+        new_sids = [s for s, v in web_auth._SESSIONS.items() if v.get("sub") == owner_b]
         assert len(new_sids) == 1
         assert store.get(new_sids[0]) is not None
     finally:
@@ -339,7 +341,7 @@ def test_auth_callback_user_switch_revokes_prior_session(
         for s in new_sids:
             web_auth._SESSIONS.pop(s, None)
         store.delete(sid_a)
-        store.delete_for_user(user_b)
+        store.delete_for_user(canonical_owner_id(os.environ["KEYCLOAK_AUTHORITY"], user_b))
         _purge_queue(plane_runtime, user_a, user_b)
         web_auth._PENDING.pop(state, None)
 

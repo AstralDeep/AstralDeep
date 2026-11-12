@@ -31,6 +31,7 @@ from orchestrator.artifact_share import (  # noqa: E402
 )
 from personalization.phi_gate import PHIGate, set_phi_gate  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
+from shared.node_identity import canonical_owner_id  # noqa: E402
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
@@ -340,13 +341,15 @@ def test_cookie_session_real_mode_mints(
     monkeypatch.setattr("shared.jwks_cache.get_jwks", _jwks)
     monkeypatch.setattr(
         "jose.jwt.decode",
-        lambda token, key, **kw: {"sub": user, "azp": "astral-frontend"},
+        lambda token, key, **kw: {"sub": user, "azp": "astral-frontend",
+                                  "iss": "https://idp.example/realms/astral"},
     )
 
     r = client.post("/api/share", json={"chat_id": CHAT_ID, "scope": "component",
                                         "component_id": "wc_shared"})
     assert r.status_code == 201
-    assert _grant_rows(plane_runtime, user)[0]["id"] == r.json()["id"]
+    owner = canonical_owner_id("https://idp.example/realms/astral", user)
+    assert _grant_rows(plane_runtime, owner)[0]["id"] == r.json()["id"]
 
 
 def test_dashboard_with_dates_and_large_values_mints_and_serves(

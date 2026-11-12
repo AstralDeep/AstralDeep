@@ -242,8 +242,12 @@ async def test_orchestrator_auth_module_uses_shared_jwks_cache(monkeypatch, inva
         assert error.value.status_code == 401
         assert not hasattr(request.state, "audit_claims")
     else:
-        assert await auth_mod.get_current_user_payload(request, credentials) == payload
-        assert request.state.audit_claims == payload
+        from shared.node_identity import canonical_owner_id
+
+        result = await auth_mod.get_current_user_payload(request, credentials)
+        assert result == payload | {"sub": canonical_owner_id(authority, "owner"),
+                                    "astral_idp_sub": "owner", "astral_idp_iss": authority}
+        assert request.state.audit_claims == result
     cache.assert_awaited_once_with(f"{authority}/protocol/openid-connect/certs", token="synthetic-token")
     decode.assert_called_once_with("synthetic-token", keys, algorithms=["RS256"],
                                    options={"verify_aud": False, "verify_at_hash": False,

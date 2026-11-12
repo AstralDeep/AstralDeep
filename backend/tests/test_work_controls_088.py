@@ -21,6 +21,7 @@ from orchestrator.work_control_authority import WorkCallerAuthority
 from orchestrator.work_controls import WorkControlRequest, WorkControlService, WorkDeleteRequest
 from orchestrator.work_submit_authority import AuthenticatedWorkRequest
 from persistent_agents.models import AssignmentError
+from shared.node_identity import canonical_owner_id
 from tests.test_work_api_088 import host as host
 
 
@@ -253,14 +254,16 @@ async def test_write_uses_original_credential_verification_on_every_retry(contro
     monkeypatch.setattr("shared.jwks_cache.get_jwks", AsyncMock(return_value={"keys": []}))
     session = AsyncMock(return_value={"access_token": "fixture.access.token"})
     monkeypatch.setattr(web_auth, "ensure_session", session)
-    decode = Mock(return_value={"sub": "owner", "realm_access": {"roles": ["user"]}})
+    issuer = {"iss": "https://iam.example/realms/test", "azp": "astral-frontend"}
+    read.assignment.owner_id = canonical_owner_id(issuer["iss"], "owner")
+    decode = Mock(return_value={"sub": "owner", "realm_access": {"roles": ["user"]}} | issuer)
     monkeypatch.setattr("jose.jwt.decode", decode)
     headers = {"Authorization": "Bearer fixture.access.token"} if transport == "bearer" else {"Origin": "http://test"}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         path = f"/api/work/v1/operations/{read.assignment.assignment_id}/pause"
         payload = body()
         assert (await client.post(path, json=payload, headers=headers)).status_code == 200
-        decode.return_value = {"sub": "owner", "realm_access": {"roles": []}}
+        decode.return_value = {"sub": "owner", "realm_access": {"roles": []}} | issuer
         assert (await client.post(path, json=payload, headers=headers)).status_code == 403
         decode.side_effect = JWTError("private expired credential")
         expired = await client.post(path, json=payload, headers=headers)

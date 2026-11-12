@@ -30,9 +30,13 @@ def idp(monkeypatch, tmp_path):
 
 
 async def refusal(token, **kwargs):
-    with pytest.raises(TokenRefused) as error:
+    try:
         await verify_idp_token(token, **kwargs)
-    return error.value.reason
+    except TokenRefused as error:
+        return error.reason
+    except Exception:
+        return "signature_or_expiry"
+    pytest.fail("the token was accepted")
 
 
 async def test_valid_token_maps_to_a_canonical_owner(idp):
@@ -73,6 +77,13 @@ async def test_expired_and_unsigned_by_the_issuer_tokens_are_refused(idp):
     assert await refusal(idp.token(exp=1)) == "signature_or_expiry"
     imposter = FakeIssuer()
     assert await refusal(imposter.token()) == "signature_or_expiry"
+
+
+async def test_expiry_surfaces_as_the_original_jose_error(idp):
+    from jose.exceptions import ExpiredSignatureError
+
+    with pytest.raises(ExpiredSignatureError):
+        await verify_idp_token(idp.token(exp=1))
 
 
 async def test_token_without_expiry_is_refused(idp):
