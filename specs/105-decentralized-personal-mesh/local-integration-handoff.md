@@ -103,3 +103,36 @@ workers, exact read-only component sources, Node 24, scratch tmpfs and a masked 
 `astraldeep` stack/database were not recreated or modified. The task-owned `ad105-codex-pg` fixture is
 stopped without removal for this handoff; restarting it is a future test setup action, not deployment.
 No model weights, credentials, generated user code or private runtime data were staged.
+
+## Second stop, later on 2026-11-12
+
+The owner said "continue" after the first stop, then asked for a stopping point again. Every agent and
+every task build is stopped, task containers are stopped (not removed), and nothing is pushed. The
+first stop's state above still holds except where this section says otherwise.
+
+| Lane | Branch and revision | State |
+|---|---|---|
+| Kernel runtime | `k/runtime` at `55ad4fd`, from `codex/105-kernel-integration` | Real facade and FFI for mesh creation with attestation, pairing over `astral/pair/1`, durable roster and keys, chats, sync with relays configurable, listener. Eight two- and three-runtime mesh flow tests pass. Rust traits `HostKeys`, `PresenceSigner`, `ConsentPromptSpec` in `astral-kernel/src/consent.rs`; FFI `HostSigner`, `ConsentPrompt` in `astral-kernel-ffi/src/host.rs`. `Kernel.open(config, signer, listener)` replaces the spike constructors. Not done: mailbox client in the sync loop, restore marker after a pairing join, recovery-word add flow, `preview_pairing`, `record_spoken`, Apple and Linux binding builds, the Python binding test (written, uncommitted). Uncommitted follow-up work is saved as `wip/k-runtime-followups` (`6740e9f`). |
+| Kernel turns | `k/turns` at `024c301` | Committed: the receipt seam (effect kind is a verifier input, reads carry no receipt, `ticket.receipt_unexpected`, contract commit `3e146215` here), model-token metering, per-attempt model admission that fails closed with `admission.no_context`, label sources on gate requests, no redirects to model or MCP servers. `astral-engine` 180 tests pass. `TurnService`, providers, egress validation, the SQLite allowance store and the turn FFI were in progress and are uncommitted and untested; they are saved as `wip/k-turns-turnservice` (`7cb66f8`). |
+| Apple mesh app | Projection `feat/105-mesh-app` at `55a83ec` | Custody branch merged. Keychain service names derived from the bundle identifier. `MeshKernelAPI` protocol mirroring the FFI, an in-memory kernel, `MeshRuntime`, and mesh screens (create with recovery words, join with code and QR, add device by paste or scan, devices with remove and stop, chats from the log, consent cards, provider form, allowance, voice link). 81 mesh tests pass on macOS and iOS. Full macOS `AstralAppTests`: 1,426 tests, six records in one CGEvent test that passes alone. Full iOS: four records in the known scheduled-work test. Not bound to the real kernel: a production build says the mesh runtime is not included yet. Asks for FFI `previewPairing` and `recordSpoken` and a handle resolver. |
+| Deep SQLite node | `feat/105-sqlite-node` at `dd61b1a6` | Merged the Plane 0.1.12 candidate (`4cbdcff0`), added SQLite or PostgreSQL selection for Plane with the exact SQLite registry pin (`e7240511`), composed AstralKernel and `astral-rote` (`044c90b8`, `dd61b1a6`). The full root suite on this branch and the SQLite node smoke were not finished. One uncommitted test edit is saved as `wip/feat-105-sqlite-node` (`12949f8f`). |
+
+### Resume order now
+
+1. Finish `k/turns` from `wip/k-turns-turnservice` (review it, test it, commit), then the runtime
+   follow-ups from `wip/k-runtime-followups`.
+2. Merge `k/runtime` and `k/turns` into one kernel branch: adapt `PresenceSigner` to the turns lane's
+   consent signer, append the turn variants to `KernelChange`, reconcile the `ticket_vectors` count,
+   then build the Apple bindings and the Linux wheel and run the Python binding test.
+3. Bind Projection `feat/105-mesh-app` to the generated bindings and update the wrapper's
+   `KernelService` for `Kernel.open`.
+4. Finish `feat/105-sqlite-node`: the full root suite and module suites, then boot a personal node on
+   SQLite end to end.
+5. Then the command-line peer that loads the model credentials from `.env` as a sealed item, the node
+   joining the mesh through the Python binding, the Mac node pack, Vessel convergence, and the live
+   tests on the Mac and the iPhone simulator, which need the owner for Keycloak sign-in, Touch ID and
+   the Hugging Face upload of the LFM3 weights.
+
+Task containers stopped without removal: `ad105-codex-pg`, `adwt-pg-phase-r`, `adwt-pg-rote`,
+`plane-pls-pg`, `plane-sqlite-contract-pg`, `sqlite-node-issuer`. The shared `astraldeep` stack was not
+touched.
