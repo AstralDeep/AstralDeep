@@ -516,6 +516,19 @@ def build_event() -> Suite:
         {"text": "result"},
         sc.BASE_MS + 5000,
     )
+    spoken = seal(
+        "spoken-event-in-chat",
+        5,
+        phi["event_id"],
+        [],
+        chat_id,
+        "chat.spoken",
+        own,
+        ck,
+        content,
+        {"kind": "answer", "text": "Here is what you heard."},
+        sc.BASE_MS + 6000,
+    )
     keysets = {
         "content_keys": {
             ck: content.hex(),
@@ -529,6 +542,7 @@ def build_event() -> Suite:
         ("open-chat-create", create),
         ("open-user-message", msg),
         ("open-phi-event", phi),
+        ("open-spoken-event", spoken),
     ):
         s.add(
             name,

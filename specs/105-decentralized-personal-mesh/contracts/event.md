@@ -156,6 +156,7 @@ The family decides the merge rule. The body of every type is a canonical JSON ob
 | `chat.tool_result` | chat | chat id | the whole body is addressable by surface bindings |
 | `chat.turn_start` | chat | chat id | `continues` (turn id or null), `message` (user message id or null) |
 | `chat.turn_end`, `chat.turn_outcome_unknown` | chat | chat id | none |
+| `chat.spoken` | chat | chat id | none. `kind` is `answer` or `acknowledgement`, `text` is the assistant text a device actually played aloud, and `turn` is optional |
 | `ui.surface_put` | ui | chat id | `document` (see `surface.md`) |
 | `ui.patch` | ui | chat id | `surface`, `ops` |
 | `ui.action` | ui | chat id | `surface`, `component`, `capability`, `args` |
@@ -170,6 +171,8 @@ The family decides the merge rule. The body of every type is a canonical JSON ob
 | `mem.remember`, `settings.set` | memory | `mesh` | `key`, `value` |
 | `mem.supersede` | memory | `mesh` | `key`, `value`, `supersedes` |
 | `key.content` | key | `mesh` | `id`, `key`, `scope` (see `keys.md`) |
+
+A `chat.spoken` event records what the person heard in voice mode. It is visible to the owner like an assistant message and carries labels from the chat it was spoken in. A reader that builds model context for a later turn uses the spoken text of a turn in place of that turn's final model text, because the person heard only the spoken text. The complete model output stays in its `chat.model_response` events for audit and is never rewritten.
 
 The mesh family of spec section 5.3 (add or remove a device, a new key epoch, stop) is carried by roster entries, not by feeds. See `roster.md`. A run or learning event is accepted and chained like any other. This version defines no merge function for those two families. Their rules arrive with their own contracts and need no change to this one.
 

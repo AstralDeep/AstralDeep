@@ -16,8 +16,8 @@
       "spec": "contracts/event.md#signatures-and-ids"
     },
     "event.json": {
-      "cases": 31,
-      "sha256": "1945f3933edf45807e0bf20a6db688a98fe8f9a4a0ec36d46933a865e1ea127c",
+      "cases": 33,
+      "sha256": "68ba5fd33466c7be2e265e0cc4dc667bafd52ce1c67a290b8dba9a09e12cd17f",
       "spec": "contracts/event.md"
     },
     "feed.json": {

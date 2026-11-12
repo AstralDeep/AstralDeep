@@ -26,6 +26,7 @@ EVENT_TYPES = {
     "chat.turn_start": "chat",
     "chat.turn_end": "chat",
     "chat.turn_outcome_unknown": "chat",
+    "chat.spoken": "chat",
     "ui.surface_put": "ui",
     "ui.patch": "ui",
     "ui.action": "ui",

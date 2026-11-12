@@ -310,6 +310,67 @@
     {
       "expect": {
         "ok": {
+          "envelope": {
+            "body_ct": "XacfIjzNignO-Bhy_AAPzC8xgBfamqT94wXWQhzzU56Av4Gh1ps9GXT3SXdphysN8bMe2b3oBsCYsJoN7-AogKfM4wcAlCBLnGIFJit58Cbjp0ZJAxT290YP",
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "header_ct": "v5poeCQdWgkUq07N-m_UdfirOaOSOpCUrjg2mbEGcLi5ZsaV1WDPxDpdMneDH0HmrebyoiIyutWUeIpXKBO8xtTsBO_fRtpVWkff_CeaE9sdCcXoc07pbdrkqqylrOD1PgNt5BHxuPBzh_92RynOclYPGHAiUwnZKaY7fpf6DKas3Vr-Cmakm1GzAGM3L7vkyHuuSN8BiEAI00vOO_7lQGgFDt-OU1cOb3A8aAjJXiQY3VXSeG4L3XMZAfMlepyrqw2jxOt8GF-IfcdGcV3RGwkCCL5TrvY493nyEnd3S5Rg6nvXjG-MLGeliEkyVZom-IKNGciI9y7zEuG8JxrS3-poO2VblBlRtpTyckhU9iTmWLXieHOH1_vWbAFbRH7fu3kLIxybI2PbJmN_ltF30969rIzGbk-jWr3Zw29ZpqzfeSUUADa8BZw9aP1e9DfvSXqYJPeae3F-4nHE-t6vc66vC-BbakoHmCEg54gjffxSppBELA2NeiEAhu2pHq7jHrpVgg-rh1pvptjF42zovH5613lhzuxmyIj3sQykYIWul3Drr1XvSZwi-uhqXTSph4auzvlOTkjsx90ZsYa1qtROckVXuV80ovVzuywrEjeC2A2Uo0GiE5ZIdWAFalwLjZwyG_emLkSp17BrMgtoZf3A6DbJUxCZ5mWZ5iQTQO6Zwhg8VmtcgmmF8XBc2-62HkZMh2uGIOi5RFgKnKVDUtIA9e4ibAgBBwW6Va2ZmkeBcRvyDp_x-PJ55gWMqO7n7DpKMdrjVm6j9tUgS_NXlRJs56ea-rv3hdcAVm1VFyN8mBNvQbxbL0yiLGcbyOpm9lo1vrOUfescTPTWaxl_",
+            "seq": 5
+          },
+          "event_id": "sha256:78ce534dfd89c0997247cb60d30847dffe592db3fc16a998bdad4796449fc533",
+          "header": {
+            "after": [],
+            "body": "sha256:9b214160c47ece22897d5e877a79d7d7da302a30f6f4c707ceeae6b24abb546e",
+            "clock": {
+              "ms": 1794441606000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "key": "ck:8Udf6HMCBFY6jhlKq7BfbQ",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "prev": "sha256:7830a5cfcfd6c795a9f7daf916bf75571cb39f6477f79bd156dbd398cb79e5e7",
+            "scope": "sha256:b5ebf2ce19a10f54c39d248c995d3b83ae0b3258f38aa4bfe26b987d74bfe4a2",
+            "seq": 5,
+            "sig": "qQyvwNIBLzWr_9rBQ7zX2l-cLlrJdGLxJkfKLI8SQtOaYFkn2zT00P292Uz46hutHhxswttvpqwlYMCRxdx3CQ",
+            "type": "chat.spoken",
+            "v": 1
+          }
+        }
+      },
+      "input": {
+        "after": [],
+        "body": {
+          "kind": "answer",
+          "text": "Here is what you heard."
+        },
+        "body_nonce_hex": "5da71f223ccd8a09cef81872fc000fcc2f318017da9aa4fd",
+        "clock": {
+          "ms": 1794441606000,
+          "n": 0
+        },
+        "content_key_hex": "b7ce4b4985d5cefb777a9644c2f0a1fcc53caf8cadf2dfe2f45157dd702a6784",
+        "epoch_id": "sha256:bf9a6878241d5a0914ab4ecdfa6fd475f8ab39a3923a9094ae383699b10670b8",
+        "epoch_key_hex": "cc5245d68265dc769a0a3e01822ec73c56c3f53b57c14e3ee851238af44f474c",
+        "header_nonce_hex": "b966c695d560cfc43a5d3277831f41e6ade6f2a22232bad5",
+        "key": "ck:8Udf6HMCBFY6jhlKq7BfbQ",
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        },
+        "ops_seed_hex": "37a6db180b13765d86ecf35cb5ed52d2a4aa7fb3ece91194f61e7f645e82c3c6",
+        "prev": "sha256:7830a5cfcfd6c795a9f7daf916bf75571cb39f6477f79bd156dbd398cb79e5e7",
+        "scope": "sha256:b5ebf2ce19a10f54c39d248c995d3b83ae0b3258f38aa4bfe26b987d74bfe4a2",
+        "seq": 5,
+        "type": "chat.spoken"
+      },
+      "kind": "seal_event",
+      "name": "spoken-event-in-chat"
+    },
+    {
+      "expect": {
+        "ok": {
           "body": {
             "id": "ck:8Udf6HMCBFY6jhlKq7BfbQ",
             "key": "t85LSYXVzvt3epZEwvCh_MU8r4yt8t_i9FFX3XAqZ4Q",
@@ -505,6 +566,56 @@
       },
       "kind": "open_event",
       "name": "open-phi-event"
+    },
+    {
+      "expect": {
+        "ok": {
+          "body": {
+            "kind": "answer",
+            "text": "Here is what you heard."
+          },
+          "event_id": "sha256:78ce534dfd89c0997247cb60d30847dffe592db3fc16a998bdad4796449fc533",
+          "header": {
+            "after": [],
+            "body": "sha256:9b214160c47ece22897d5e877a79d7d7da302a30f6f4c707ceeae6b24abb546e",
+            "clock": {
+              "ms": 1794441606000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "key": "ck:8Udf6HMCBFY6jhlKq7BfbQ",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "prev": "sha256:7830a5cfcfd6c795a9f7daf916bf75571cb39f6477f79bd156dbd398cb79e5e7",
+            "scope": "sha256:b5ebf2ce19a10f54c39d248c995d3b83ae0b3258f38aa4bfe26b987d74bfe4a2",
+            "seq": 5,
+            "sig": "qQyvwNIBLzWr_9rBQ7zX2l-cLlrJdGLxJkfKLI8SQtOaYFkn2zT00P292Uz46hutHhxswttvpqwlYMCRxdx3CQ",
+            "type": "chat.spoken",
+            "v": 1
+          }
+        }
+      },
+      "input": {
+        "content_keys": {
+          "ck:8Udf6HMCBFY6jhlKq7BfbQ": "b7ce4b4985d5cefb777a9644c2f0a1fcc53caf8cadf2dfe2f45157dd702a6784",
+          "ek:personal:sha256:bf9a6878241d5a0914ab4ecdfa6fd475f8ab39a3923a9094ae383699b10670b8": "cc5245d68265dc769a0a3e01822ec73c56c3f53b57c14e3ee851238af44f474c",
+          "ek:phi:sha256:863884724bbe1c22ac43be8eac40a6199fad9abc022b0df63601b5006a43804e": "d72c618b1dc66a8f78d6199fc41b463d0ea12258e23b6deeaebb3cc6bfa5ce3e"
+        },
+        "envelope": {
+          "body_ct": "XacfIjzNignO-Bhy_AAPzC8xgBfamqT94wXWQhzzU56Av4Gh1ps9GXT3SXdphysN8bMe2b3oBsCYsJoN7-AogKfM4wcAlCBLnGIFJit58Cbjp0ZJAxT290YP",
+          "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+          "header_ct": "v5poeCQdWgkUq07N-m_UdfirOaOSOpCUrjg2mbEGcLi5ZsaV1WDPxDpdMneDH0HmrebyoiIyutWUeIpXKBO8xtTsBO_fRtpVWkff_CeaE9sdCcXoc07pbdrkqqylrOD1PgNt5BHxuPBzh_92RynOclYPGHAiUwnZKaY7fpf6DKas3Vr-Cmakm1GzAGM3L7vkyHuuSN8BiEAI00vOO_7lQGgFDt-OU1cOb3A8aAjJXiQY3VXSeG4L3XMZAfMlepyrqw2jxOt8GF-IfcdGcV3RGwkCCL5TrvY493nyEnd3S5Rg6nvXjG-MLGeliEkyVZom-IKNGciI9y7zEuG8JxrS3-poO2VblBlRtpTyckhU9iTmWLXieHOH1_vWbAFbRH7fu3kLIxybI2PbJmN_ltF30969rIzGbk-jWr3Zw29ZpqzfeSUUADa8BZw9aP1e9DfvSXqYJPeae3F-4nHE-t6vc66vC-BbakoHmCEg54gjffxSppBELA2NeiEAhu2pHq7jHrpVgg-rh1pvptjF42zovH5613lhzuxmyIj3sQykYIWul3Drr1XvSZwi-uhqXTSph4auzvlOTkjsx90ZsYa1qtROckVXuV80ovVzuywrEjeC2A2Uo0GiE5ZIdWAFalwLjZwyG_emLkSp17BrMgtoZf3A6DbJUxCZ5mWZ5iQTQO6Zwhg8VmtcgmmF8XBc2-62HkZMh2uGIOi5RFgKnKVDUtIA9e4ibAgBBwW6Va2ZmkeBcRvyDp_x-PJ55gWMqO7n7DpKMdrjVm6j9tUgS_NXlRJs56ea-rv3hdcAVm1VFyN8mBNvQbxbL0yiLGcbyOpm9lo1vrOUfescTPTWaxl_",
+          "seq": 5
+        },
+        "epoch_keys": {
+          "sha256:bf9a6878241d5a0914ab4ecdfa6fd475f8ab39a3923a9094ae383699b10670b8": "cc5245d68265dc769a0a3e01822ec73c56c3f53b57c14e3ee851238af44f474c"
+        },
+        "now_ms": 1794441610000
+      },
+      "kind": "open_event",
+      "name": "open-spoken-event"
     },
     {
       "expect": {
