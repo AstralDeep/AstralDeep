@@ -17,6 +17,7 @@ from astral_mesh_ref import (
     crypto,
     event,
     keys,
+    mailbox as mailbox_ref,
     pairing,
     policy,
     roster,
@@ -24,8 +25,10 @@ from astral_mesh_ref import (
     sync,
     ticket,
 )
-from astral_mesh_ref.cj import b64url_decode, b64url_encode
+from astral_mesh_ref.cj import b64url_decode, b64url_encode, canonical
 from astral_mesh_ref.testkit import DetRng, TestDevice, hlc, seed
+
+mailbox_ref.register(runner.op)
 
 HERE = Path(__file__).resolve().parent
 VECTORS = HERE.parent / "vectors"
@@ -4834,6 +4837,841 @@ def build_fold() -> Suite:
     return s
 
 
+MBOX_SEED = seed("mailbox/ops")
+MBOX = b64url_encode(crypto.ed25519_public(MBOX_SEED))
+MBOX_MESH = crypto.sha256_id(b"mailbox-test-mesh")
+MBOX_OTHER_MESH = crypto.sha256_id(b"mailbox-other-mesh")
+MBOX_RECOVERY_SEED = seed("mailbox/recovery")
+MBOX_RECOVERY = b64url_encode(crypto.ed25519_public(MBOX_RECOVERY_SEED))
+MBOX_T = 1794441600
+
+
+def mb_request(
+    dev: TestDevice,
+    op: str,
+    body: dict[str, Any],
+    *,
+    mesh: str = MBOX_MESH,
+    ts: int = MBOX_T,
+    audience: str = MBOX,
+    signer: TestDevice | None = None,
+) -> dict[str, Any]:
+    request: dict[str, Any] = {
+        "body": body,
+        "device": dev.feed,
+        "mailbox": audience,
+        "mesh": mesh,
+        "op": op,
+        "ts": ts,
+        "v": 1,
+    }
+    request["sig"] = mailbox_ref.sign("ed25519", (signer or dev).ops_seed, request)
+    return request
+
+
+def mb_members(*devs: TestDevice) -> list[dict[str, str]]:
+    return sorted(
+        ({"ops": d.feed, "presence": b64url_encode(d.presence_public)} for d in devs),
+        key=lambda m: m["ops"],
+    )
+
+
+def mb_statement(
+    signer: TestDevice | None,
+    members: list[dict[str, str]],
+    seq: int,
+    *,
+    mesh: str = MBOX_MESH,
+    recovery: str = MBOX_RECOVERY,
+) -> dict[str, Any]:
+    statement: dict[str, Any] = {
+        "kind": "members",
+        "members": members,
+        "mesh": mesh,
+        "recovery": recovery,
+        "seq": seq,
+        "v": 1,
+    }
+    if signer is None:
+        statement["by"] = MBOX_RECOVERY
+        statement["via"] = "recovery"
+        statement["sig"] = mailbox_ref.sign(
+            "ed25519",
+            MBOX_RECOVERY_SEED,
+            statement | {"by": MBOX_RECOVERY, "via": "recovery"},
+        )
+    else:
+        statement["by"] = b64url_encode(signer.presence_public)
+        statement["via"] = "presence"
+        statement["sig"] = mailbox_ref.sign("p256", signer.presence_scalar, statement)
+    return statement
+
+
+def mb_envelope(
+    dev: TestDevice, seq: int, tag: str, body: bool = True
+) -> dict[str, Any]:
+    rng = DetRng(f"mailbox/{dev.name}/{seq}/{tag}")
+    return {
+        "body_ct": b64url_encode(rng.bytes(40)) if body else None,
+        "feed": dev.feed,
+        "header_ct": b64url_encode(rng.bytes(96)),
+        "seq": seq,
+    }
+
+
+def mb_notice(
+    dev: TestDevice, kind: str = "remove", mesh: str = MBOX_MESH, tag: str = "a"
+) -> dict[str, Any]:
+    return {
+        "author": dev.id,
+        "body": {"device": crypto.sha256_id(tag.encode())},
+        "mesh": mesh,
+        "sig": b64url_encode(DetRng("mailbox/notice/" + tag).bytes(64)),
+        "type": kind,
+    }
+
+
+def build_mailbox() -> Suite:
+    s = Suite(
+        "mailbox",
+        "contracts/mailbox.md",
+        devices=secrets_block(),
+        mailbox={
+            "ops_seed_hex": MBOX_SEED.hex(),
+            "key": MBOX,
+            "recovery_seed_hex": MBOX_RECOVERY_SEED.hex(),
+            "recovery": MBOX_RECOVERY,
+            "mesh": MBOX_MESH,
+        },
+    )
+    a, b, c, mal = ALICE, BOB, CAROL, MALLORY
+
+    def check(
+        name: str,
+        request: dict[str, Any],
+        now_s: int = MBOX_T,
+        peer: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        case_input: dict[str, Any] = {
+            "mailbox": MBOX,
+            "now_s": now_s,
+            "request": request,
+        }
+        if peer is not None:
+            case_input["peer"] = peer
+        s.add(name, "mailbox_request", case_input, error=error)
+
+    fetch_body = {"after": 0, "limit": 10}
+    good = mb_request(a, "fetch", fetch_body)
+    check("request/valid-fetch", good, peer=a.feed)
+    check(
+        "request/wrong-audience",
+        mb_request(
+            a,
+            "fetch",
+            fetch_body,
+            audience=b64url_encode(crypto.ed25519_public(seed("mailbox/other"))),
+        ),
+        error="mailbox.wrong_audience",
+    )
+    check(
+        "request/stale-timestamp",
+        mb_request(a, "fetch", fetch_body, ts=MBOX_T - 301),
+        error="mailbox.stale",
+    )
+    check(
+        "request/future-timestamp",
+        mb_request(a, "fetch", fetch_body, ts=MBOX_T + 301),
+        error="mailbox.stale",
+    )
+    check(
+        "request/skew-edge-is-accepted",
+        mb_request(a, "fetch", fetch_body, ts=MBOX_T - 300),
+    )
+    check(
+        "request/peer-differs-from-signer",
+        good,
+        peer=b.feed,
+        error="mailbox.wrong_peer",
+    )
+    check(
+        "request/signed-by-another-key",
+        mb_request(a, "fetch", fetch_body, signer=b),
+        error="mailbox.bad_signature",
+    )
+    tampered = {**good, "body": {"after": 1, "limit": 10}}
+    check("request/body-edited-after-signing", tampered, error="mailbox.bad_signature")
+    check("request/extra-field", {**good, "extra": 1}, error="mailbox.malformed")
+    check("request/unknown-op", {**good, "op": "delete"}, error="mailbox.malformed")
+    check("request/not-an-object", [], error="mailbox.malformed")
+    check("request/bad-mesh-id", {**good, "mesh": "mesh"}, error="mailbox.malformed")
+    check("request/short-signature", {**good, "sig": "AAAA"}, error="mailbox.malformed")
+    check(
+        "request/fetch-limit-too-large",
+        mb_request(a, "fetch", {"after": 0, "limit": 257}),
+        error="mailbox.too_large",
+    )
+    check(
+        "request/fetch-limit-zero",
+        mb_request(a, "fetch", {"after": 0, "limit": 0}),
+        error="mailbox.malformed",
+    )
+    check(
+        "request/status-with-a-body",
+        mb_request(a, "status", {"x": 1}),
+        error="mailbox.malformed",
+    )
+    check(
+        "request/empty-deposit",
+        mb_request(a, "deposit", {"envelopes": []}),
+        error="mailbox.malformed",
+    )
+    check(
+        "request/too-many-envelopes",
+        mb_request(
+            a,
+            "deposit",
+            {"envelopes": [mb_envelope(a, n, "many") for n in range(1, 66)]},
+        ),
+        error="mailbox.too_large",
+    )
+    check(
+        "request/notice-of-another-type",
+        mb_request(a, "notice_put", {"notice": mb_notice(a, "add")}),
+        error="mailbox.notice_type",
+    )
+    check(
+        "request/notice-of-another-mesh",
+        mb_request(a, "notice_put", {"notice": mb_notice(a, mesh=MBOX_OTHER_MESH)}),
+        error="mailbox.wrong_mesh",
+    )
+
+    ctx_request = {k: v for k, v in good.items() if k != "sig"}
+    s.add(
+        "sign/request-ed25519",
+        "mailbox_sign",
+        {"alg": "ed25519", "object": ctx_request, "secret_hex": a.ops_seed.hex()},
+        expect={"sig": good["sig"]},
+    )
+    s.add(
+        "sign/ignores-an-existing-sig-field",
+        "mailbox_sign",
+        {
+            "alg": "ed25519",
+            "object": {**ctx_request, "sig": "x"},
+            "secret_hex": a.ops_seed.hex(),
+        },
+        expect={"sig": good["sig"]},
+    )
+
+    st = mb_statement(a, mb_members(a, b), 1)
+    s.add(
+        "statement/presence-signed",
+        "mailbox_statement",
+        {"statement": st},
+        expect={"by": st["by"], "seq": 1, "via": "presence"},
+    )
+    rs = mb_statement(None, mb_members(a), 2)
+    s.add(
+        "statement/recovery-signed",
+        "mailbox_statement",
+        {"statement": rs},
+        expect={"by": MBOX_RECOVERY, "seq": 2, "via": "recovery"},
+    )
+    s.add(
+        "statement/edited-after-signing",
+        "mailbox_statement",
+        {"statement": {**st, "seq": 2}},
+        error="mailbox.bad_signature",
+    )
+    s.add(
+        "statement/members-edited-after-signing",
+        "mailbox_statement",
+        {"statement": {**st, "members": mb_members(a)}},
+        error="mailbox.bad_signature",
+    )
+    s.add(
+        "statement/other-key-claims-to-sign",
+        "mailbox_statement",
+        {"statement": {**st, "by": b64url_encode(b.presence_public)}},
+        error="mailbox.bad_signature",
+    )
+    s.add(
+        "statement/members-out-of-order",
+        "mailbox_statement",
+        {"statement": {**st, "members": list(reversed(st["members"]))}},
+        error="mailbox.malformed",
+    )
+    s.add(
+        "statement/duplicate-member",
+        "mailbox_statement",
+        {"statement": {**st, "members": [st["members"][0], st["members"][0]]}},
+        error="mailbox.malformed",
+    )
+    s.add(
+        "statement/no-members",
+        "mailbox_statement",
+        {"statement": {**st, "members": []}},
+        error="mailbox.malformed",
+    )
+    s.add(
+        "statement/seq-zero",
+        "mailbox_statement",
+        {"statement": {**st, "seq": 0}},
+        error="mailbox.malformed",
+    )
+    s.add(
+        "statement/unknown-via",
+        "mailbox_statement",
+        {"statement": {**st, "via": "device"}},
+        error="mailbox.malformed",
+    )
+    s.add(
+        "statement/presence-key-with-recovery-length",
+        "mailbox_statement",
+        {"statement": {**st, "via": "recovery"}},
+        error="mailbox.malformed",
+    )
+    s.add(
+        "statement/extra-field",
+        "mailbox_statement",
+        {"statement": {**st, "label": "x"}},
+        error="mailbox.malformed",
+    )
+
+    notice = mb_notice(a)
+    out = s.add(
+        "notice/remove-entry-is-held",
+        "mailbox_notice",
+        {"mesh": MBOX_MESH, "notice": notice},
+    )
+    assert out["id"] == crypto.sha256_id(canonical(notice))
+    s.add(
+        "notice/stop-entry-is-held",
+        "mailbox_notice",
+        {"mesh": MBOX_MESH, "notice": mb_notice(a, "stop", tag="s")},
+    )
+    s.add(
+        "notice/epoch-entry-is-held",
+        "mailbox_notice",
+        {"mesh": MBOX_MESH, "notice": mb_notice(a, "epoch", tag="e")},
+    )
+    s.add(
+        "notice/add-entry-is-refused",
+        "mailbox_notice",
+        {"mesh": MBOX_MESH, "notice": mb_notice(a, "add")},
+        error="mailbox.notice_type",
+    )
+    s.add(
+        "notice/genesis-entry-is-refused",
+        "mailbox_notice",
+        {"mesh": MBOX_MESH, "notice": mb_notice(a, "genesis")},
+        error="mailbox.notice_type",
+    )
+    s.add(
+        "notice/missing-signature",
+        "mailbox_notice",
+        {"mesh": MBOX_MESH, "notice": {k: v for k, v in notice.items() if k != "sig"}},
+        error="mailbox.malformed",
+    )
+    s.add(
+        "notice/too-large",
+        "mailbox_notice",
+        {"mesh": MBOX_MESH, "notice": {**notice, "body": {"pad": "x" * 17000}}},
+        error="mailbox.too_large",
+    )
+
+    env = mb_envelope(a, 1, "x")
+    s.add("envelope/valid", "mailbox_envelope", {"envelope": env})
+    s.add(
+        "envelope/body-withheld",
+        "mailbox_envelope",
+        {"envelope": mb_envelope(a, 1, "w", body=False)},
+    )
+    s.add(
+        "envelope/extra-field",
+        "mailbox_envelope",
+        {"envelope": {**env, "labels": []}},
+        error="mailbox.malformed",
+    )
+    s.add(
+        "envelope/seq-zero",
+        "mailbox_envelope",
+        {"envelope": {**env, "seq": 0}},
+        error="mailbox.malformed",
+    )
+    s.add(
+        "envelope/short-header",
+        "mailbox_envelope",
+        {"envelope": {**env, "header_ct": b64url_encode(b"x" * 71)}},
+        error="mailbox.malformed",
+    )
+    s.add(
+        "envelope/padded-base64",
+        "mailbox_envelope",
+        {"envelope": {**env, "body_ct": env["body_ct"] + "="}},
+        error="mailbox.malformed",
+    )
+    s.add(
+        "envelope/feed-not-a-key",
+        "mailbox_envelope",
+        {"envelope": {**env, "feed": "abc"}},
+        error="mailbox.malformed",
+    )
+    s.add(
+        "envelope/over-4-mib",
+        "mailbox_envelope",
+        {"envelope": {**env, "body_ct": b64url_encode(b"x" * 3200000)}},
+        error="mailbox.too_large",
+    )
+
+    def run(
+        name: str,
+        steps: list[dict[str, Any]],
+        limits: dict[str, int] | None = None,
+        admission: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        case_input: dict[str, Any] = {"mailbox": MBOX, "steps": steps}
+        if limits:
+            case_input["limits"] = limits
+        if admission is not None:
+            case_input["admission"] = admission
+        return s.add(name, "mailbox_replay", case_input)["results"]
+
+    def step(
+        request: dict[str, Any], at_s: int = MBOX_T, peer: str | None = None
+    ) -> dict[str, Any]:
+        out: dict[str, Any] = {"at_s": at_s, "request": request}
+        if peer is not None:
+            out["peer"] = peer
+        return out
+
+    def register(
+        dev: TestDevice, *others: TestDevice, mesh: str = MBOX_MESH
+    ) -> dict[str, Any]:
+        return step(
+            mb_request(
+                dev,
+                "members",
+                {
+                    "statement": mb_statement(
+                        dev, mb_members(dev, *others), 1, mesh=mesh
+                    )
+                },
+                mesh=mesh,
+            )
+        )
+
+    def dep(
+        dev: TestDevice, *envelopes: dict[str, Any], at_s: int = MBOX_T
+    ) -> dict[str, Any]:
+        return step(
+            mb_request(dev, "deposit", {"envelopes": list(envelopes)}, ts=at_s), at_s
+        )
+
+    def fet(
+        dev: TestDevice, after: int, limit: int = 10, at_s: int = MBOX_T
+    ) -> dict[str, Any]:
+        return step(
+            mb_request(dev, "fetch", {"after": after, "limit": limit}, ts=at_s), at_s
+        )
+
+    def stat(dev: TestDevice, at_s: int = MBOX_T) -> dict[str, Any]:
+        return step(mb_request(dev, "status", {}, ts=at_s), at_s)
+
+    e1, e2, e3 = (mb_envelope(a, n, "r") for n in (1, 2, 3))
+    out = run(
+        "replay/two-devices-never-online-together-converge",
+        [
+            register(a, b),
+            dep(a, e1, e2),
+            stat(a),
+            fet(b, 0, at_s=MBOX_T + 3600),
+            stat(a, at_s=MBOX_T + 3600),
+            fet(b, 2, at_s=MBOX_T + 3601),
+            stat(a, at_s=MBOX_T + 3602),
+        ],
+    )
+    assert out[3]["ok"]["items"] == [{"envelope": e1, "n": 1}, {"envelope": e2, "n": 2}]
+    assert out[3]["ok"]["next"] == 2 and out[4]["ok"]["items"] == 2
+    assert out[5]["ok"] == {"items": [], "more": False, "next": 2, "truncated": False}
+    assert out[6]["ok"]["items"] == 0 and out[6]["ok"]["head"] == 2
+
+    out = run(
+        "replay/depositor-does-not-fetch-its-own-envelopes",
+        [register(a, b), dep(a, e1), fet(a, 0)],
+    )
+    assert out[2]["ok"]["items"] == [] and out[2]["ok"]["next"] == 1
+
+    out = run(
+        "replay/fetch-pages-with-more-and-next",
+        [register(a, b), dep(a, e1, e2, e3), fet(b, 0, 2), fet(b, 2, 2), fet(b, 3, 2)],
+    )
+    assert out[2]["ok"]["more"] is True and out[2]["ok"]["next"] == 2
+    assert out[3]["ok"]["more"] is False and out[3]["ok"]["next"] == 3
+    assert [i["n"] for i in out[3]["ok"]["items"]] == [3]
+
+    out = run(
+        "replay/duplicate-deposits-are-counted-once",
+        [register(a, b), dep(a, e1, e2), dep(a, e2, e3)],
+    )
+    assert out[2]["ok"] == {"accepted": 1, "duplicates": 1, "head": 3}
+
+    fork = mb_envelope(a, 1, "fork")
+    out = run(
+        "replay/two-envelopes-at-one-position-are-both-held",
+        [register(a, b, c), dep(b, e1), dep(c, fork), fet(a, 0)],
+    )
+    assert [i["n"] for i in out[3]["ok"]["items"]] == [1, 2]
+
+    out = run(
+        "replay/a-device-that-is-not-listed-is-refused",
+        [
+            register(a, b),
+            dep(mal, e1),
+            fet(mal, 0),
+            stat(mal),
+            step(mb_request(a, "notice_get", {}, mesh=MBOX_OTHER_MESH)),
+        ],
+    )
+    assert [r.get("error") for r in out[1:]] == [
+        "mailbox.not_a_member",
+        "mailbox.not_a_member",
+        "mailbox.not_a_member",
+        "mailbox.unknown_mesh",
+    ]
+
+    out = run(
+        "replay/a-removed-device-is-refused-and-told-so",
+        [
+            register(a, b),
+            dep(a, e1),
+            step(
+                mb_request(
+                    a, "members", {"statement": mb_statement(a, mb_members(a), 2)}
+                )
+            ),
+            fet(b, 0),
+            dep(b, e2),
+            stat(a),
+        ],
+    )
+    assert out[2]["ok"] == {"seq": 2}
+    assert out[3]["error"] == "mailbox.removed" and out[4]["error"] == "mailbox.removed"
+    assert out[5]["ok"]["items"] == 0
+
+    out = run(
+        "replay/membership-needs-a-listed-presence-key",
+        [
+            register(a, b),
+            step(
+                mb_request(
+                    mal,
+                    "members",
+                    {"statement": mb_statement(mal, mb_members(a, b, mal), 2)},
+                )
+            ),
+            step(
+                mb_request(
+                    a,
+                    "members",
+                    {"statement": mb_statement(mal, mb_members(a, b, mal), 2)},
+                )
+            ),
+            step(
+                mb_request(
+                    a, "members", {"statement": mb_statement(a, mb_members(a, b, c), 2)}
+                )
+            ),
+            fet(c, 0),
+        ],
+    )
+    assert [r.get("error") for r in out[1:3]] == ["mailbox.members_unauthorized"] * 2
+    assert out[3]["ok"] == {"seq": 2} and out[4]["ok"]["items"] == []
+
+    out = run(
+        "replay/membership-seq-must-rise",
+        [
+            register(a, b),
+            step(
+                mb_request(
+                    a, "members", {"statement": mb_statement(a, mb_members(a), 1)}
+                )
+            ),
+            step(
+                mb_request(
+                    a, "members", {"statement": mb_statement(a, mb_members(a, b), 1)}
+                )
+            ),
+            step(
+                mb_request(
+                    a, "members", {"statement": mb_statement(a, mb_members(a, b, c), 3)}
+                )
+            ),
+            step(
+                mb_request(
+                    a, "members", {"statement": mb_statement(b, mb_members(a, b), 2)}
+                )
+            ),
+        ],
+    )
+    assert out[1]["error"] == "mailbox.members_seq"
+    assert out[2]["ok"] == {"seq": 1}
+    assert out[3]["ok"] == {"seq": 3}
+    assert out[4]["error"] == "mailbox.members_seq"
+
+    out = run(
+        "replay/registration-rules",
+        [
+            step(
+                mb_request(
+                    a, "members", {"statement": mb_statement(a, mb_members(a), 2)}
+                )
+            ),
+            step(
+                mb_request(
+                    a, "members", {"statement": mb_statement(None, mb_members(a), 1)}
+                )
+            ),
+            step(
+                mb_request(
+                    a, "members", {"statement": mb_statement(b, mb_members(a), 1)}
+                )
+            ),
+            step(
+                mb_request(
+                    b, "members", {"statement": mb_statement(a, mb_members(a), 1)}
+                )
+            ),
+            step(
+                mb_request(
+                    a,
+                    "members",
+                    {
+                        "statement": mb_statement(
+                            a, mb_members(a), 1, mesh=MBOX_OTHER_MESH
+                        )
+                    },
+                )
+            ),
+            register(a),
+            register(mal),
+        ],
+    )
+    assert [r.get("error") for r in out] == [
+        "mailbox.members_seq",
+        "mailbox.members_unauthorized",
+        "mailbox.members_unauthorized",
+        "mailbox.members_unauthorized",
+        "mailbox.wrong_mesh",
+        None,
+        "mailbox.members_unauthorized",
+    ]
+
+    out = run(
+        "replay/recovery-key-restores-access",
+        [
+            register(a, b),
+            step(
+                mb_request(
+                    a, "members", {"statement": mb_statement(a, mb_members(a), 2)}
+                )
+            ),
+            step(
+                mb_request(
+                    c, "members", {"statement": mb_statement(None, mb_members(c), 3)}
+                )
+            ),
+            dep(c, e1),
+            fet(a, 0),
+            step(
+                mb_request(
+                    c,
+                    "members",
+                    {
+                        "statement": mb_statement(
+                            None,
+                            mb_members(c),
+                            4,
+                            recovery=b64url_encode(
+                                crypto.ed25519_public(seed("mailbox/rec2"))
+                            ),
+                        )
+                    },
+                )
+            ),
+        ],
+    )
+    assert out[2]["ok"] == {"seq": 3} and out[4]["error"] == "mailbox.removed"
+    assert out[5]["error"] == "mailbox.recovery_mismatch"
+
+    out = run(
+        "replay/admission-list-limits-who-may-register",
+        [register(b), register(a)],
+        admission=[a.feed],
+    )
+    assert out[0]["error"] == "mailbox.admission_denied" and "ok" in out[1]
+
+    out = run(
+        "replay/mesh-count-is-limited",
+        [register(a), register(a, mesh=MBOX_OTHER_MESH)],
+        limits={"max_meshes": 1},
+    )
+    assert out[1]["error"] == "mailbox.quota_exceeded"
+
+    out = run(
+        "replay/uncollected-envelopes-expire-and-the-reader-is-told",
+        [
+            register(a, b),
+            dep(a, e1, e2),
+            fet(b, 0, at_s=MBOX_T + 101),
+            dep(a, e3, at_s=MBOX_T + 102),
+            stat(a, at_s=MBOX_T + 102),
+        ],
+        limits={"max_age_s": 100},
+    )
+    assert out[2]["ok"]["truncated"] is True and out[2]["ok"]["items"] == []
+    assert out[3]["ok"]["head"] == 3 and out[4]["ok"]["expired_through"] == 2
+
+    out = run(
+        "replay/collected-envelopes-leave-without-a-truncation-flag",
+        [
+            register(a, b),
+            dep(a, e1),
+            fet(b, 0),
+            fet(b, 1, at_s=MBOX_T + 1000),
+            fet(b, 1, at_s=MBOX_T + 2000),
+        ],
+        limits={"max_age_s": 100},
+    )
+    assert out[4]["ok"]["truncated"] is False
+
+    out = run(
+        "replay/deposits-over-the-item-quota-are-refused-whole",
+        [register(a, b), dep(a, e1, e2), dep(a, e3), dep(a, e2), fet(b, 0, 1)],
+        limits={"max_mesh_items": 2},
+    )
+    assert (
+        out[2]["error"] == "mailbox.quota_exceeded" and out[3]["ok"]["duplicates"] == 1
+    )
+    out = run(
+        "replay/deposits-over-the-byte-quota-are-refused",
+        [register(a, b), dep(a, e1, e2), dep(a, e3)],
+        limits={"max_mesh_bytes": 2 * len(canonical(e1)) + 1},
+    )
+    assert out[2]["error"] == "mailbox.quota_exceeded"
+
+    out = run(
+        "replay/a-cursor-ahead-of-the-head-is-refused",
+        [register(a, b), dep(a, e1), fet(b, 5)],
+    )
+    assert out[2]["error"] == "mailbox.cursor_ahead"
+
+    n_remove, n_stop = mb_notice(a, tag="r"), mb_notice(a, "stop", tag="s")
+    out = run(
+        "replay/a-removal-notice-waits-for-a-device-that-comes-online-later",
+        [
+            register(a, b, c),
+            step(mb_request(a, "notice_put", {"notice": n_remove})),
+            step(mb_request(a, "notice_put", {"notice": n_remove})),
+            step(mb_request(a, "notice_put", {"notice": n_stop})),
+            stat(b, at_s=MBOX_T + 86400 * 20),
+            step(
+                mb_request(b, "notice_get", {}, ts=MBOX_T + 86400 * 20),
+                MBOX_T + 86400 * 20,
+            ),
+            step(
+                mb_request(c, "notice_get", {}, ts=MBOX_T + 86400 * 40),
+                MBOX_T + 86400 * 40,
+            ),
+            step(
+                mb_request(c, "notice_get", {}, ts=MBOX_T + 86400 * 41),
+                MBOX_T + 86400 * 41,
+            ),
+        ],
+    )
+    assert out[1]["ok"]["new"] is True and out[2]["ok"]["new"] is False
+    assert out[4]["ok"]["notices"] == 2
+    assert [n["notice"] for n in out[5]["ok"]["notices"]] == [n_remove, n_stop]
+    assert len(out[6]["ok"]["notices"]) == 2 and out[7]["ok"]["notices"] == []
+
+    out = run(
+        "replay/notices-expire-and-are-limited",
+        [
+            register(a, b),
+            step(mb_request(a, "notice_put", {"notice": n_remove})),
+            step(mb_request(a, "notice_put", {"notice": n_stop})),
+            step(mb_request(a, "notice_put", {"notice": mb_notice(a, tag="third")})),
+            step(mb_request(b, "notice_get", {}, ts=MBOX_T + 200), MBOX_T + 200),
+        ],
+        limits={"max_notices": 2, "notice_max_age_s": 100},
+    )
+    assert out[3]["error"] == "mailbox.quota_exceeded" and out[4]["ok"]["notices"] == []
+
+    out = run(
+        "replay/a-removed-device-no-longer-holds-back-collection",
+        [
+            register(a, b, c),
+            dep(a, e1),
+            fet(b, 0),
+            fet(b, 1),
+            stat(a),
+            step(
+                mb_request(
+                    a, "members", {"statement": mb_statement(a, mb_members(a, b), 2)}
+                )
+            ),
+            stat(a),
+        ],
+    )
+    assert out[4]["ok"]["items"] == 1 and out[6]["ok"]["items"] == 0
+
+    out = run(
+        "replay/an-added-device-collects-what-is-still-held",
+        [
+            register(a, b),
+            dep(a, e1),
+            step(
+                mb_request(
+                    a, "members", {"statement": mb_statement(a, mb_members(a, b, c), 2)}
+                )
+            ),
+            fet(b, 0),
+            fet(c, 0),
+            stat(a),
+        ],
+    )
+    assert [i["n"] for i in out[4]["ok"]["items"]] == [1] and out[5]["ok"]["items"] == 1
+
+    out = run(
+        "replay/request-checks-come-before-state",
+        [
+            register(a, b),
+            step(mb_request(a, "status", {}, ts=MBOX_T - 400), MBOX_T),
+            step(mb_request(a, "status", {}), MBOX_T, peer=b.feed),
+            step(
+                mb_request(
+                    a,
+                    "status",
+                    {},
+                    audience=b64url_encode(
+                        crypto.ed25519_public(seed("mailbox/other"))
+                    ),
+                )
+            ),
+            stat(a),
+        ],
+    )
+    assert [r.get("error") for r in out[1:4]] == [
+        "mailbox.stale",
+        "mailbox.wrong_peer",
+        "mailbox.wrong_audience",
+    ]
+    assert out[4]["ok"]["seq"] == 1
+    return s
+
+
 def suites(repin: bool) -> list[Suite]:
     return [
         build_canonical(),
@@ -4850,6 +5688,7 @@ def suites(repin: bool) -> list[Suite]:
         build_surface(),
         build_sync(),
         build_fold(),
+        build_mailbox(),
     ]
 
 

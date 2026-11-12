@@ -40,6 +40,11 @@
       "sha256": "d58b11f8d19aafa52c06d84165e072a1b895263779e1613d4d59d3255d7c7eb4",
       "spec": "contracts/labels.md"
     },
+    "mailbox.json": {
+      "cases": 72,
+      "sha256": "333b89a224a2f08bc87152a1abca611033f4a5bb6a4d713dde67e4ab2f88f5a7",
+      "spec": "contracts/mailbox.md"
+    },
     "pairing.json": {
       "cases": 10,
       "sha256": "de4fa981a1b92a8af6d59687ba2438fb5c8f55d26f9417d1e92c2450aad84d1f",
