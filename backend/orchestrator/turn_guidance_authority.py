@@ -19,6 +19,7 @@ import traceback
 from starlette.websockets import WebSocketState
 
 from astralplane.repositories.history import SessionConsentObservation
+from astralplane import is_lock_contention
 from astralplane.repositories import RepositoryConflictError
 from orchestrator import auth
 from orchestrator.human_request_authority import (
@@ -672,7 +673,7 @@ class TurnGuidanceReader:
                         result = await self._turn.origin.binding.adapter.run_in_transaction(invoke)
                     except RepositoryConflictError as exc:
                         if (attempt == 3 or callback_started or self._turn.voice is None
-                                or getattr(exc.__context__, "pgcode", None) != "55P03"):
+                                or not is_lock_contention(exc)):
                             raise
                         await asyncio.sleep(0.05 * (attempt + 1))
                         self._local(expected_orchestrator)

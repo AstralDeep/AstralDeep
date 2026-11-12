@@ -74,7 +74,7 @@ CURRENT_DEPENDENCY_AUTHORITIES = {
     "backend/tests/fixtures/runtime_reliability_060/runtime-lock-contract.json": (
         "ff84f895f5b8253dff59c9581cc033452ad576a09e40d00da31b5ba7b0f4875e"
     ),
-    "pyproject.toml": "953759380a5ecbdc1138efcd4c1adcf3b0f71f9d28cb5f2c994d2a430d69a6e2",
+    "pyproject.toml": "02d47f731f62ccc62fa7bcfde6b6e8b163e2dbc6c5240c4e4b670687e2d3170f",
     "scripts/openai_agents_example/requirements.in": (
         "470be1f7956648dbc4f439803e8a2c07baf0cd2472279384cf60c60838e66d82"
     ),
