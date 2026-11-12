@@ -1,0 +1,49 @@
+== variant plane-fix ==
+$ issuer mint owner-1 astral-app > /creds/owner.token (token not printed)
+$ curl localhost:18001/healthz
+{"status":"ok"}
+$ curl localhost:18001/readyz
+{"status":"ok","db":"ok","generated_agent_publication":"ok","agents":9,"lets":{"mode":"off","status":"disabled"}}
+$ curl localhost:18001/api/node/descriptor (truncated)
+{"format":"astral.node.descriptor/v1","version":"astral.node/v1","node_id":"astral-node:8ed4038adc158be6783fb7b1fb195caf","node_key":{"kty":"OKP","crv":"Ed25519","alg":"EdDSA","use":"sig","kid":"8ed4038adc158be6783fb7b1fb195caf","x":"k7VXCfyWYOzE2zppJ-UuYPQ9hW
+sqlite tables: 151
+schema_meta: [('revision', '089.022'), ('astralplane_migration_digest', 'e4ae392ed2951f1446cf065185a6b348bbed49c3e8cf37ca81546874887f6ef5'), ('user_agent_policy_revision', 'constitution=0.1.0;analyze=2')]
+$ python e2e.py (inside the node container)
+GET /healthz -> 200 {"status":"ok"}
+GET /api/chats -> 401 {"detail":"Not authenticated"}
+GET /api/chats -> 401 {"detail":"Invalid token"}
+GET /api/chats -> 200 {"chats":[]}
+POST /api/chats -> 201 {"chat_id":"3bd7f672-6c72-4771-a001-a455ff8cf33d","project_id":null,"agent_id":null,"message":"Chat created successfully"}
+PUT /api/agents/general-1/permissions -> 200 {"agent_id":"general-1","agent_name":"General Agent","scopes":{"tools:read":true,"tools:write":false,"tools:search":false,"tools:system":false,"tools:files":fal
+LLM-CONFIG {"type": "llm_config_ack", "ok": true}
+FRAME operation_status {"state": "accepted", "action": "chat_message"}
+FRAME chat_status {"status": "thinking", "message": "Analyzing request and planning actions..."}
+FRAME ui_render {"components": "[{\"type\": \"chat_history\", \"title\": \"Recent chats\", \"items\": []}]"}
+FRAME ui_render {"components": "[{\"type\": \"chat_history\", \"title\": \"Recent chats\", \"items\": []}]"}
+FRAME chat_step {}
+FRAME chat_step {}
+FRAME chat_status {"status": "executing", "message": "Running: generate_dynamic_chart..."}
+FRAME chat_step {}
+FRAME chat_step {}
+FRAME ui_upsert {}
+FRAME chat_status {"status": "thinking", "message": "Analyzing results and writing the response..."}
+FRAME chat_step {}
+FRAME ui_stream_data {}
+FRAME ui_stream_data {}
+FRAME ui_stream_data {}
+FRAME chat_step {}
+FRAME ui_render {"components": "[{\"type\": \"text\", \"content\": \"FAKE-MODEL-OK: tool result received (200 chars)\", \"variant\": \"markdown\"}]"}
+FRAME ui_render {"components": "[{\"type\": \"chat_history\", \"title\": \"Recent chats\", \"items\": [{\"chat_id\": \"3bd7f672-6c72-4771-a001-a455ff8cf33d\", \"title\": \"FAKE-MODEL-OK\", \"preview\": \"FAKE-MODEL-OK: tool result received (200 chars)\","}
+FRAME chat_status {"status": "done", "message": ""}
+FRAME operation_status {"state": "completed", "action": "chat_message"}
+GET /api/chats/3bd7f672-6c72-4771-a001-a455ff8cf33d -> 200 {"chat":{"id":"3bd7f672-6c72-4771-a001-a455ff8cf33d","project_id":null,"title":"FAKE-MODEL-OK","agent_id":null,"updated_at":1794523695286,"messages":[{"role":"u
+MSG user {"role": "user", "content": "Please chart these two values: a is 1 and b is 2.", "timestamp": 1794523695182}
+MSG assistant {"role": "assistant", "content": [{"_source_agent": "general-1", "_source_correlation_id": "e72583e3-f815-490f-869c-07b1b1ff3176", "_source_params": {"data": [{"c": "a", "v": 1}, {"c": "b", "v": 2}], "x_key": "c", "y_key": "v"}, "_source_tool": "
+MSG assistant {"role": "assistant", "content": [{"content": "FAKE-MODEL-OK: tool result received (200 chars)", "type": "text", "variant": "markdown"}], "timestamp": 1794523695287}
+== fake model log ==
+TOOLCALL generate_dynamic_chart
+REQUEST roles= ['user'] tools= 0 stream= False
+REQUEST roles= ['system', 'user'] tools= 0 stream= False
+REQUEST roles= ['system', 'user', 'system'] tools= 74 stream= True
+TOOLCALL generate_dynamic_chart
+REQUEST roles= ['system', 'user', 'system', 'assistant', 'tool'] tools= 74 stream= True
