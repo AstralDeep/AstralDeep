@@ -35,6 +35,8 @@ Limits: at most 64 ranges per `want`, each range from 1, ordered, and at most 51
 ## 3. A session
 
 1. Each side sends `hello`. A side refuses with `error` (`sync.wrong_mesh`) if the mesh differs. It refuses with `sync.not_a_member` if the peer's device is not on its roster after step 2.
+
+**A peer not yet on the roster.** A side that does not list the peer's operations key holds its `hello` back, so it reveals no mesh id, roster version or head ids. It reads the peer's `hello`, and if the peer announces roster heads it lacks, it sends only a `want` for those entry ids (no ranges). The peer answers that `want` with a `roster` message even though it has not yet received a `hello`. The side folds the entries. If the peer's key is then a member, it sends its held `hello` first and the session continues from step 2. Otherwise it closes with `sync.not_a_member`. Until then it accepts only `hello` and `roster` from the peer and bounds their size, number and time. It answers no `want` for events or roster entries.
 2. If a roster head in the peer's `hello` is unknown, the side sends `want` with those entry ids and the peer replies with `roster`. The side folds the entries (`roster.md`) and repeats until it knows every head. A side that sees a higher `stop` than its own does not act on it until the stop entry arrives.
 3. Each side sends `heads`. The receiver computes the ranges it lacks with the rule below, and sends `want`.
 4. The peer replies with `events`. Each is accepted by the pipeline in section 4.
