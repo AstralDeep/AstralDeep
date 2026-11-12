@@ -82,6 +82,23 @@ reachable and the node has no `postgres` database URL. The output is `report-pin
 
 This is a local test observation on one machine, not protected CI.
 
+### Backend groups on the integration branch
+
+Run with the same runner image and PostgreSQL 17 fixture, source root the `feat/105-deep-integration`
+worktree with Plane `f8f2a63` initialized.
+
+| Group | Collected | Skipped | Failed | Passed |
+|---|---|---|---|---|
+| `tests_1` | 11,853 | 3 | 1 | 11,849 |
+| `tests_2` | 11,458 | 13 | 0 | 11,445 |
+| `persistent_agents` | 1,008 | 0 | 0 | 1,008 |
+| `modules` | 9,009 | 17 | 3 | 8,989 |
+
+Root (`tests_1` and `tests_2`) passes 23,294 against 23,293 before the re-pin. The four failures are the
+Windows lock test for `astral-rote`, two `security_benchmark` tests that write to the read-only source
+mount, and `test_local_component_contract`, which reads Plane 0.1.7 installed in the runner image. The
+other six `modules` failures recorded above no longer occur.
+
 ## What blocked a clean SQLite node, now fixed in Plane
 
 Both items were in AstralPlane `feat/105-plane-sqlite` at `cbf621a`, not in Deep.
