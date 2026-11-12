@@ -19,6 +19,7 @@
                   "takeover": false
                 }
               ],
+              "refused": [],
               "rejected": [],
               "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
               "waiting": []
@@ -53,7 +54,14 @@
             "seq": 1,
             "type": "run.lease"
           }
-        ]
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
       },
       "kind": "run_lease_fold",
       "name": "lease/start-gives-one-executor"
@@ -95,6 +103,7 @@
                   "takeover": false
                 }
               ],
+              "refused": [],
               "rejected": [],
               "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
               "waiting": []
@@ -169,7 +178,14 @@
             "seq": 1,
             "type": "run.lease"
           }
-        ]
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
       },
       "kind": "run_lease_fold",
       "name": "lease/handoff-chain-follows-the-executor"
@@ -211,6 +227,7 @@
                   "takeover": false
                 }
               ],
+              "refused": [],
               "rejected": [],
               "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
               "waiting": []
@@ -285,7 +302,14 @@
             "seq": 1,
             "type": "run.lease"
           }
-        ]
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
       },
       "kind": "run_lease_fold",
       "name": "lease/arrival-order-does-not-matter"
@@ -331,6 +355,7 @@
                   "takeover": true
                 }
               ],
+              "refused": [],
               "rejected": [],
               "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
               "waiting": []
@@ -388,6 +413,17 @@
           {
             "after": [],
             "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794441603000,
+                  "n": 0
+                },
+                "device": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+                "digest": "sha256:de17bc2e81a54b3402b158bad54b953f51f7a7075faa82026f08d6af3e53d7cd",
+                "kind": "action",
+                "sig": "DN1fUR6gPQ1twh1I-4b2SzWcM6hSQkbQ_ltefk0q4ZRZj9yeTUwdhYtglrKVqYqa6ae08A9Uftw4fhG79bF1Cg",
+                "v": 1
+              },
               "executor": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
               "reason": "owner-takes-over",
               "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
@@ -405,7 +441,14 @@
             "seq": 1,
             "type": "run.lease"
           }
-        ]
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
       },
       "kind": "run_lease_fold",
       "name": "lease/two-leases-superseding-one-are-contested"
@@ -457,6 +500,7 @@
                   "takeover": true
                 }
               ],
+              "refused": [],
               "rejected": [],
               "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
               "waiting": []
@@ -514,6 +558,17 @@
           {
             "after": [],
             "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794441603000,
+                  "n": 0
+                },
+                "device": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+                "digest": "sha256:de17bc2e81a54b3402b158bad54b953f51f7a7075faa82026f08d6af3e53d7cd",
+                "kind": "action",
+                "sig": "DN1fUR6gPQ1twh1I-4b2SzWcM6hSQkbQ_ltefk0q4ZRZj9yeTUwdhYtglrKVqYqa6ae08A9Uftw4fhG79bF1Cg",
+                "v": 1
+              },
               "executor": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
               "reason": "owner-takes-over",
               "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
@@ -534,6 +589,17 @@
           {
             "after": [],
             "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794441604000,
+                  "n": 0
+                },
+                "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+                "digest": "sha256:6ed05a8b21f2411e64fd2623c9ac8aa3af08c19c30aee41f2a5a8d70bd8cb793",
+                "kind": "action",
+                "sig": "fk3vsFKRw2IuDJ5fiSnwo_0Al7msUxktZa_5y5s5m_U5Ti1AgeFmcQcj0fnal8dl7kImKfqWteC1IE7bdaeGYA",
+                "v": 1
+              },
               "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
               "reason": "owner-resolves",
               "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
@@ -552,7 +618,14 @@
             "seq": 1,
             "type": "run.lease"
           }
-        ]
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
       },
       "kind": "run_lease_fold",
       "name": "lease/a-lease-superseding-every-head-resolves-it"
@@ -576,6 +649,7 @@
                   "takeover": false
                 }
               ],
+              "refused": [],
               "rejected": [
                 "sha256:6e6a04dfa425b5e17c77e25aa6af670c2b66eea00834a0718b22bfcb2244af6c"
               ],
@@ -632,7 +706,14 @@
             "seq": 1,
             "type": "run.lease"
           }
-        ]
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
       },
       "kind": "run_lease_fold",
       "name": "lease/takeover-without-the-owner-flag-is-refused"
@@ -665,6 +746,7 @@
                   "takeover": true
                 }
               ],
+              "refused": [],
               "rejected": [
                 "sha256:6e6a04dfa425b5e17c77e25aa6af670c2b66eea00834a0718b22bfcb2244af6c",
                 "sha256:0177617e14fcbf41d45c858d0e3948a3a886fcae4bb8ee4e6929274f2b9ca780"
@@ -745,6 +827,17 @@
           {
             "after": [],
             "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794441604000,
+                  "n": 0
+                },
+                "device": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+                "digest": "sha256:7432d0cb902bd458cc8b79283e071cba042ed26e57caaa20b75385f3a230e55c",
+                "kind": "action",
+                "sig": "wNvAyh4CI9DSbBcp9PMNfJBhLwqu9r-4T6_gOCZjQZstlhaWjyZymsydrdeAakPaWwf3oxY5oIIvTMhE56iN4g",
+                "v": 1
+              },
               "executor": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
               "reason": "owner-grab",
               "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
@@ -762,10 +855,17 @@
             "seq": 1,
             "type": "run.lease"
           }
-        ]
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
       },
       "kind": "run_lease_fold",
-      "name": "lease/takeover-with-the-flag-is-accepted-and-the-refused-stay-refused"
+      "name": "lease/takeover-with-consent-is-accepted-and-the-refused-stay-refused"
     },
     {
       "expect": {
@@ -776,6 +876,7 @@
               "executor": null,
               "heads": [],
               "leases": [],
+              "refused": [],
               "rejected": [
                 "sha256:625791ae618d7e5114e0b553354056e36bb9948becb5fc78152931dbe45612b3"
               ],
@@ -812,7 +913,14 @@
             "seq": 1,
             "type": "run.lease"
           }
-        ]
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
       },
       "kind": "run_lease_fold",
       "name": "lease/start-written-by-another-device-is-refused"
@@ -836,6 +944,7 @@
                   "takeover": false
                 }
               ],
+              "refused": [],
               "rejected": [],
               "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
               "waiting": [
@@ -892,7 +1001,14 @@
             "seq": 2,
             "type": "run.lease"
           }
-        ]
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
       },
       "kind": "run_lease_fold",
       "name": "lease/a-lease-superseding-an-unknown-lease-waits"
@@ -934,6 +1050,7 @@
                   "takeover": false
                 }
               ],
+              "refused": [],
               "rejected": [],
               "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
               "waiting": []
@@ -1008,7 +1125,14 @@
             "seq": 2,
             "type": "run.lease"
           }
-        ]
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
       },
       "kind": "run_lease_fold",
       "name": "lease/a-lease-may-arrive-before-the-lease-it-supersedes"
@@ -1022,6 +1146,7 @@
               "executor": null,
               "heads": [],
               "leases": [],
+              "refused": [],
               "rejected": [
                 "sha256:3b1448c42c1a0926efa4ca9619623e156c0d3ffc2ede1008573866964bad8c4d"
               ],
@@ -1043,6 +1168,7 @@
                   "takeover": false
                 }
               ],
+              "refused": [],
               "rejected": [],
               "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.fedcba9876543210fedcba98",
               "waiting": []
@@ -1097,7 +1223,14 @@
             "seq": 2,
             "type": "run.lease"
           }
-        ]
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
       },
       "kind": "run_lease_fold",
       "name": "lease/superseding-a-lease-of-another-run-is-refused"
@@ -1121,6 +1254,7 @@
                   "takeover": false
                 }
               ],
+              "refused": [],
               "rejected": [
                 "sha256:878c5a73854aff0602381d121b39d6b7deaa84b3ddc31194a043a62d6d899d73",
                 "sha256:1b717610eaf70f9731d77c2515639038830f97436e16ef838d8b9c47881e4cc5"
@@ -1198,7 +1332,14 @@
             "seq": 2,
             "type": "run.lease"
           }
-        ]
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
       },
       "kind": "run_lease_fold",
       "name": "lease/superseding-a-refused-lease-is-refused"
@@ -1222,6 +1363,7 @@
                   "takeover": false
                 }
               ],
+              "refused": [],
               "rejected": [],
               "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
               "waiting": []
@@ -1379,7 +1521,14 @@
             "seq": 7,
             "type": "run.lease"
           }
-        ]
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
       },
       "kind": "run_lease_fold",
       "name": "lease/malformed-leases-leave-no-trace"
@@ -1403,6 +1552,7 @@
                   "takeover": false
                 }
               ],
+              "refused": [],
               "rejected": [],
               "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
               "waiting": []
@@ -1434,7 +1584,14 @@
             "seq": 1,
             "type": "run.lease"
           }
-        ]
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
       },
       "kind": "run_lease_fold",
       "name": "lease/absent-supersedes-and-takeover-mean-none-and-false"
@@ -1458,6 +1615,7 @@
                   "takeover": false
                 }
               ],
+              "refused": [],
               "rejected": [
                 "sha256:c53445529d953572e2c5f64ff3474fe2915bbe66cb818dcceca95aff1050c33e"
               ],
@@ -1510,7 +1668,14 @@
             "seq": 1,
             "type": "run.lease"
           }
-        ]
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
       },
       "kind": "run_lease_fold",
       "name": "lease/a-feed-that-is-no-device-cannot-hand-off"
@@ -1543,6 +1708,7 @@
                   "takeover": true
                 }
               ],
+              "refused": [],
               "rejected": [
                 "sha256:c53445529d953572e2c5f64ff3474fe2915bbe66cb818dcceca95aff1050c33e"
               ],
@@ -1598,6 +1764,17 @@
           {
             "after": [],
             "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794441603000,
+                  "n": 0
+                },
+                "device": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed",
+                "digest": "sha256:2919b1299d8d93853ec7de6c56ff3129639c26ae3ee0099a307c75bf736ae525",
+                "kind": "action",
+                "sig": "onP4cyqzvvugXTsmnfiSoEKIN0_AmJi2k8qLWmJGxXQGeQ_RXBAJyX2r2i11r0SsqMIlWULqjuMk9htwEwahXw",
+                "v": 1
+              },
               "executor": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed",
               "reason": "takeover-from-unknown",
               "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
@@ -1615,10 +1792,1664 @@
             "seq": 2,
             "type": "run.lease"
           }
-        ]
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
       },
       "kind": "run_lease_fold",
-      "name": "lease/the-owner-flag-needs-no-known-author"
+      "name": "lease/a-takeover-with-consent-needs-no-known-author"
+    },
+    {
+      "expect": {
+        "ok": {
+          "runs": [
+            {
+              "contested": [],
+              "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "heads": [
+                "sha256:32749685bba1b7468b9c5c1c68a391a3e531f6c5ec9cd80a8a1cd7ce7445a366"
+              ],
+              "leases": [
+                {
+                  "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "id": "sha256:32f3ce981405f1e4a7261ba92831bfa6182e6ae0002adf84394205a46dbcdb90",
+                  "supersedes": [],
+                  "takeover": false
+                },
+                {
+                  "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+                  "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+                  "id": "sha256:32749685bba1b7468b9c5c1c68a391a3e531f6c5ec9cd80a8a1cd7ce7445a366",
+                  "supersedes": [
+                    "sha256:32f3ce981405f1e4a7261ba92831bfa6182e6ae0002adf84394205a46dbcdb90"
+                  ],
+                  "takeover": true
+                }
+              ],
+              "refused": [],
+              "rejected": [],
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "waiting": []
+            }
+          ]
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "Z6_u8yYiyOxWR1ycQEHqztZBxJTj4s5CuOJ1HtbNmOA": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+          "nV-K4HujeazQc04IAPAeLi0-aM1gAW3RS_HJVBQE6z4": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+          "zBOT5aazLicHSlYjqAafEJOHihpUL7AwwVtAN6yen_Q": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "reason": "start",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [],
+              "takeover": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:32f3ce981405f1e4a7261ba92831bfa6182e6ae0002adf84394205a46dbcdb90",
+            "seq": 1,
+            "type": "run.lease"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794441690000,
+                  "n": 0
+                },
+                "device": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+                "digest": "sha256:705b645975a61abae02384faed14a4b7a8fafbb1506356a580a75144fa6ea55a",
+                "kind": "action",
+                "sig": "-lt3rI-7_HERiOmnL-JpXJROjteaEUmoBKoLpVK05sctvV1kZGAqTSoDGsFBSy10edUlAiTNOc8CSb46FJFz3g",
+                "v": 1
+              },
+              "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "reason": "grab",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [
+                "sha256:32f3ce981405f1e4a7261ba92831bfa6182e6ae0002adf84394205a46dbcdb90"
+              ],
+              "takeover": true
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:32749685bba1b7468b9c5c1c68a391a3e531f6c5ec9cd80a8a1cd7ce7445a366",
+            "seq": 1,
+            "type": "run.lease"
+          }
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
+      },
+      "kind": "run_lease_fold",
+      "name": "lease/a-takeover-consented-by-another-roster-device-is-accepted"
+    },
+    {
+      "expect": {
+        "ok": {
+          "runs": [
+            {
+              "contested": [],
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "heads": [
+                "sha256:da80e4abce527261a5f2c02b8c5375904dff90300301d094c7c256513ad6d7b0"
+              ],
+              "leases": [
+                {
+                  "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "id": "sha256:da80e4abce527261a5f2c02b8c5375904dff90300301d094c7c256513ad6d7b0",
+                  "supersedes": [],
+                  "takeover": false
+                }
+              ],
+              "refused": [
+                {
+                  "code": "run.takeover.consent_missing",
+                  "id": "sha256:0dc88ca615424c6dbc99e9244849f35cbceb3e291a5e12634e04e647db06b781"
+                }
+              ],
+              "rejected": [
+                "sha256:0dc88ca615424c6dbc99e9244849f35cbceb3e291a5e12634e04e647db06b781"
+              ],
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "waiting": []
+            }
+          ]
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "Z6_u8yYiyOxWR1ycQEHqztZBxJTj4s5CuOJ1HtbNmOA": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+          "nV-K4HujeazQc04IAPAeLi0-aM1gAW3RS_HJVBQE6z4": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+          "zBOT5aazLicHSlYjqAafEJOHihpUL7AwwVtAN6yen_Q": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "reason": "start",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [],
+              "takeover": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:da80e4abce527261a5f2c02b8c5375904dff90300301d094c7c256513ad6d7b0",
+            "seq": 1,
+            "type": "run.lease"
+          },
+          {
+            "after": [],
+            "body": {
+              "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "reason": "grab",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [
+                "sha256:da80e4abce527261a5f2c02b8c5375904dff90300301d094c7c256513ad6d7b0"
+              ],
+              "takeover": true
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:0dc88ca615424c6dbc99e9244849f35cbceb3e291a5e12634e04e647db06b781",
+            "seq": 1,
+            "type": "run.lease"
+          }
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
+      },
+      "kind": "run_lease_fold",
+      "name": "lease/a-takeover-flag-with-no-consent-is-refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "runs": [
+            {
+              "contested": [],
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "heads": [
+                "sha256:d09779361e6fcc2a1d1d420eb5c6c7701154099abdf2ab1e43e7a30d51c23a6d"
+              ],
+              "leases": [
+                {
+                  "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "id": "sha256:d09779361e6fcc2a1d1d420eb5c6c7701154099abdf2ab1e43e7a30d51c23a6d",
+                  "supersedes": [],
+                  "takeover": false
+                }
+              ],
+              "refused": [
+                {
+                  "code": "run.takeover.consent_missing",
+                  "id": "sha256:3a5c1795fb8b1add83eccf3736972342b5ba76e7831c61b1cb2964533071b0b4"
+                }
+              ],
+              "rejected": [
+                "sha256:3a5c1795fb8b1add83eccf3736972342b5ba76e7831c61b1cb2964533071b0b4"
+              ],
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "waiting": []
+            }
+          ]
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "Z6_u8yYiyOxWR1ycQEHqztZBxJTj4s5CuOJ1HtbNmOA": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+          "nV-K4HujeazQc04IAPAeLi0-aM1gAW3RS_HJVBQE6z4": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+          "zBOT5aazLicHSlYjqAafEJOHihpUL7AwwVtAN6yen_Q": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "reason": "start",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [],
+              "takeover": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:d09779361e6fcc2a1d1d420eb5c6c7701154099abdf2ab1e43e7a30d51c23a6d",
+            "seq": 1,
+            "type": "run.lease"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": null,
+              "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "reason": "grab",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [
+                "sha256:d09779361e6fcc2a1d1d420eb5c6c7701154099abdf2ab1e43e7a30d51c23a6d"
+              ],
+              "takeover": true
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:3a5c1795fb8b1add83eccf3736972342b5ba76e7831c61b1cb2964533071b0b4",
+            "seq": 1,
+            "type": "run.lease"
+          }
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
+      },
+      "kind": "run_lease_fold",
+      "name": "lease/a-takeover-flag-with-null-consent-is-refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "runs": [
+            {
+              "contested": [],
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "heads": [
+                "sha256:00053177f211d8ba8b3a659a4f4252812ba30d5ad0bf002440b268db6c9089aa"
+              ],
+              "leases": [
+                {
+                  "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "id": "sha256:00053177f211d8ba8b3a659a4f4252812ba30d5ad0bf002440b268db6c9089aa",
+                  "supersedes": [],
+                  "takeover": false
+                }
+              ],
+              "refused": [
+                {
+                  "code": "run.takeover.wrong_action",
+                  "id": "sha256:9257e5c9efe890dacd00b89a48e4ecddf2600f6a43a80ad982906230e0ee225a"
+                }
+              ],
+              "rejected": [
+                "sha256:9257e5c9efe890dacd00b89a48e4ecddf2600f6a43a80ad982906230e0ee225a"
+              ],
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "waiting": []
+            }
+          ]
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "Z6_u8yYiyOxWR1ycQEHqztZBxJTj4s5CuOJ1HtbNmOA": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+          "nV-K4HujeazQc04IAPAeLi0-aM1gAW3RS_HJVBQE6z4": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+          "zBOT5aazLicHSlYjqAafEJOHihpUL7AwwVtAN6yen_Q": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "reason": "start",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [],
+              "takeover": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:00053177f211d8ba8b3a659a4f4252812ba30d5ad0bf002440b268db6c9089aa",
+            "seq": 1,
+            "type": "run.lease"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794441690000,
+                  "n": 0
+                },
+                "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                "digest": "sha256:99c44ce4fcd5c030f829838cdf19ad3119ae7ce91af1fb02b94a0199155320cf",
+                "kind": "action",
+                "sig": "Pc9XfhxOn7a6Cg1w5LkywC29sOYGIY39PHA6dFC7JW14JU939Uqjec-aml2I7FIdYk8hHX0zvM2czi9-hqcR1A",
+                "v": 1
+              },
+              "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "reason": "grab",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [
+                "sha256:00053177f211d8ba8b3a659a4f4252812ba30d5ad0bf002440b268db6c9089aa"
+              ],
+              "takeover": true
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:9257e5c9efe890dacd00b89a48e4ecddf2600f6a43a80ad982906230e0ee225a",
+            "seq": 1,
+            "type": "run.lease"
+          }
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
+      },
+      "kind": "run_lease_fold",
+      "name": "lease/a-consent-for-another-executor-is-refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "runs": [
+            {
+              "contested": [],
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "heads": [
+                "sha256:55037ca380dd0586685c4ca20a3942860e734a666fd0b9b8e454b6c077d2cc29"
+              ],
+              "leases": [
+                {
+                  "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "id": "sha256:55037ca380dd0586685c4ca20a3942860e734a666fd0b9b8e454b6c077d2cc29",
+                  "supersedes": [],
+                  "takeover": false
+                }
+              ],
+              "refused": [
+                {
+                  "code": "run.takeover.wrong_action",
+                  "id": "sha256:650d6c8af6da6928cc35a4f3b96b788b3eb76f148e5b6baaf9b2823530557e17"
+                }
+              ],
+              "rejected": [
+                "sha256:650d6c8af6da6928cc35a4f3b96b788b3eb76f148e5b6baaf9b2823530557e17"
+              ],
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "waiting": []
+            }
+          ]
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "Z6_u8yYiyOxWR1ycQEHqztZBxJTj4s5CuOJ1HtbNmOA": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+          "nV-K4HujeazQc04IAPAeLi0-aM1gAW3RS_HJVBQE6z4": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+          "zBOT5aazLicHSlYjqAafEJOHihpUL7AwwVtAN6yen_Q": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "reason": "start",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [],
+              "takeover": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:55037ca380dd0586685c4ca20a3942860e734a666fd0b9b8e454b6c077d2cc29",
+            "seq": 1,
+            "type": "run.lease"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794441690000,
+                  "n": 0
+                },
+                "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                "digest": "sha256:7a8f460e0392075b5d930c7275fa8fb00d5715df845d0c655d4d84895587c823",
+                "kind": "action",
+                "sig": "1mXBltv1XpZFc1LLhMBJ8CrpBvTtlWndpNn5oAtdRNZEfnzuwTjcHVX1xLMjube5PHOc3CoaE1jTx2raJq5B3w",
+                "v": 1
+              },
+              "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "reason": "grab",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [
+                "sha256:55037ca380dd0586685c4ca20a3942860e734a666fd0b9b8e454b6c077d2cc29"
+              ],
+              "takeover": true
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:650d6c8af6da6928cc35a4f3b96b788b3eb76f148e5b6baaf9b2823530557e17",
+            "seq": 1,
+            "type": "run.lease"
+          }
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
+      },
+      "kind": "run_lease_fold",
+      "name": "lease/a-consent-naming-other-superseded-leases-is-refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "runs": [
+            {
+              "contested": [],
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "heads": [
+                "sha256:af45764d1070350e7b05c652f1e0232ddd53c7be8dbb368afd974a1eb41a3234"
+              ],
+              "leases": [
+                {
+                  "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "id": "sha256:af45764d1070350e7b05c652f1e0232ddd53c7be8dbb368afd974a1eb41a3234",
+                  "supersedes": [],
+                  "takeover": false
+                }
+              ],
+              "refused": [
+                {
+                  "code": "run.takeover.wrong_action",
+                  "id": "sha256:74d271d3d7705c6a7cf2e100b1eb9dc6a08a610e669cb6343bac59d6132aee9e"
+                }
+              ],
+              "rejected": [
+                "sha256:74d271d3d7705c6a7cf2e100b1eb9dc6a08a610e669cb6343bac59d6132aee9e"
+              ],
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "waiting": []
+            }
+          ]
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "Z6_u8yYiyOxWR1ycQEHqztZBxJTj4s5CuOJ1HtbNmOA": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+          "nV-K4HujeazQc04IAPAeLi0-aM1gAW3RS_HJVBQE6z4": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+          "zBOT5aazLicHSlYjqAafEJOHihpUL7AwwVtAN6yen_Q": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "reason": "start",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [],
+              "takeover": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:af45764d1070350e7b05c652f1e0232ddd53c7be8dbb368afd974a1eb41a3234",
+            "seq": 1,
+            "type": "run.lease"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794441690000,
+                  "n": 0
+                },
+                "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                "digest": "sha256:154a97916d8f1881b0bfee4374898027fa7eca1bc3e521c3e6d232bdb57f26ad",
+                "kind": "action",
+                "sig": "LAjKxB4lG62pdclrd9D_EyesNpdMKcKyCCsqKBkQJZNvYvyMYEirsM_39GOIgoZO14CeRWqHDwbIMIR3I28aAA",
+                "v": 1
+              },
+              "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "reason": "grab",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [
+                "sha256:af45764d1070350e7b05c652f1e0232ddd53c7be8dbb368afd974a1eb41a3234"
+              ],
+              "takeover": true
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:74d271d3d7705c6a7cf2e100b1eb9dc6a08a610e669cb6343bac59d6132aee9e",
+            "seq": 1,
+            "type": "run.lease"
+          }
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
+      },
+      "kind": "run_lease_fold",
+      "name": "lease/a-consent-for-another-run-is-refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "runs": [
+            {
+              "contested": [],
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "heads": [
+                "sha256:0e1427b99cb96a6da645cfac37ce7cd26d6d07283a6a0936ffc4f7b4b0b17eb8"
+              ],
+              "leases": [
+                {
+                  "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "id": "sha256:0e1427b99cb96a6da645cfac37ce7cd26d6d07283a6a0936ffc4f7b4b0b17eb8",
+                  "supersedes": [],
+                  "takeover": false
+                }
+              ],
+              "refused": [
+                {
+                  "code": "run.takeover.wrong_action",
+                  "id": "sha256:e952233bd9e9ec91b56195d2b82a3ad902fd3f3ecb1d8bcdde3fc8f364cb7af5"
+                }
+              ],
+              "rejected": [
+                "sha256:e952233bd9e9ec91b56195d2b82a3ad902fd3f3ecb1d8bcdde3fc8f364cb7af5"
+              ],
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "waiting": []
+            }
+          ]
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "Z6_u8yYiyOxWR1ycQEHqztZBxJTj4s5CuOJ1HtbNmOA": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+          "nV-K4HujeazQc04IAPAeLi0-aM1gAW3RS_HJVBQE6z4": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+          "zBOT5aazLicHSlYjqAafEJOHihpUL7AwwVtAN6yen_Q": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "reason": "start",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [],
+              "takeover": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:0e1427b99cb96a6da645cfac37ce7cd26d6d07283a6a0936ffc4f7b4b0b17eb8",
+            "seq": 1,
+            "type": "run.lease"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794441690000,
+                  "n": 0
+                },
+                "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                "digest": "sha256:65eabe22a8e910208079b3704b28783598a317c27fa14721a50ce454c03255dc",
+                "kind": "policy",
+                "sig": "4IiK89SjtVmTgrQ9AphIT0e9DghHsZdqW-kjB659ePFXP7beH0g_S9socVKUQYI6pJ5etCVDONUlUNaYu23oPw",
+                "v": 1
+              },
+              "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "reason": "grab",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [
+                "sha256:0e1427b99cb96a6da645cfac37ce7cd26d6d07283a6a0936ffc4f7b4b0b17eb8"
+              ],
+              "takeover": true
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:e952233bd9e9ec91b56195d2b82a3ad902fd3f3ecb1d8bcdde3fc8f364cb7af5",
+            "seq": 1,
+            "type": "run.lease"
+          }
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
+      },
+      "kind": "run_lease_fold",
+      "name": "lease/a-consent-of-the-policy-kind-is-refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "runs": [
+            {
+              "contested": [],
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "heads": [
+                "sha256:01ee9bc0f67e82973f94137a810805cba5244d19f46f5012725389b4167d2381"
+              ],
+              "leases": [
+                {
+                  "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "id": "sha256:01ee9bc0f67e82973f94137a810805cba5244d19f46f5012725389b4167d2381",
+                  "supersedes": [],
+                  "takeover": false
+                }
+              ],
+              "refused": [
+                {
+                  "code": "run.takeover.unknown_device",
+                  "id": "sha256:381ea284e99ddaef0503d8eda6dabb483eeddadea83115094dbbc0ad8adc04f2"
+                }
+              ],
+              "rejected": [
+                "sha256:381ea284e99ddaef0503d8eda6dabb483eeddadea83115094dbbc0ad8adc04f2"
+              ],
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "waiting": []
+            }
+          ]
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "Z6_u8yYiyOxWR1ycQEHqztZBxJTj4s5CuOJ1HtbNmOA": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+          "nV-K4HujeazQc04IAPAeLi0-aM1gAW3RS_HJVBQE6z4": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+          "zBOT5aazLicHSlYjqAafEJOHihpUL7AwwVtAN6yen_Q": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "reason": "start",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [],
+              "takeover": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:01ee9bc0f67e82973f94137a810805cba5244d19f46f5012725389b4167d2381",
+            "seq": 1,
+            "type": "run.lease"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794441690000,
+                  "n": 0
+                },
+                "device": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+                "digest": "sha256:1600163b858e9ab3628214fe4b0a6fad5a265d2b1990c941dcea909bdd6907dd",
+                "kind": "action",
+                "sig": "cYfmnd20xBVxvW3vERW1-wL3m_n9WapaUOmlbO3UJ7IdCB6zRKYpeWHDf8g3UC-k5WeTW3-JOIX4s8fyqHzzyA",
+                "v": 1
+              },
+              "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "reason": "grab",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [
+                "sha256:01ee9bc0f67e82973f94137a810805cba5244d19f46f5012725389b4167d2381"
+              ],
+              "takeover": true
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:381ea284e99ddaef0503d8eda6dabb483eeddadea83115094dbbc0ad8adc04f2",
+            "seq": 1,
+            "type": "run.lease"
+          }
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
+      },
+      "kind": "run_lease_fold",
+      "name": "lease/a-consent-from-a-device-off-the-roster-is-refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "runs": [
+            {
+              "contested": [],
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "heads": [
+                "sha256:7b803b0353e64eb35b4bc3922295f52acc1e539eba64805f6b970f7709454d27"
+              ],
+              "leases": [
+                {
+                  "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "id": "sha256:7b803b0353e64eb35b4bc3922295f52acc1e539eba64805f6b970f7709454d27",
+                  "supersedes": [],
+                  "takeover": false
+                }
+              ],
+              "refused": [
+                {
+                  "code": "run.takeover.bad_signature",
+                  "id": "sha256:e1178fe0bb64e6e805d5b2b22350a7404bf720c2969c2d3be1c7bc17246e8408"
+                }
+              ],
+              "rejected": [
+                "sha256:e1178fe0bb64e6e805d5b2b22350a7404bf720c2969c2d3be1c7bc17246e8408"
+              ],
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "waiting": []
+            }
+          ]
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "Z6_u8yYiyOxWR1ycQEHqztZBxJTj4s5CuOJ1HtbNmOA": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+          "nV-K4HujeazQc04IAPAeLi0-aM1gAW3RS_HJVBQE6z4": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+          "zBOT5aazLicHSlYjqAafEJOHihpUL7AwwVtAN6yen_Q": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "reason": "start",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [],
+              "takeover": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:7b803b0353e64eb35b4bc3922295f52acc1e539eba64805f6b970f7709454d27",
+            "seq": 1,
+            "type": "run.lease"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794441690000,
+                  "n": 0
+                },
+                "device": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+                "digest": "sha256:ec47c596b5946ca726ed39259f9118d54c69b4374681601bcdf66115956837dd",
+                "kind": "action",
+                "sig": "VCR1wr0l5Qa3tXwujcLMzySioGsHdvXyzSzeDadk6gVkB4GfUNV6BbGK-janOciq9rE6ph8FaTBfebogpze3VQ",
+                "v": 1
+              },
+              "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "reason": "grab",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [
+                "sha256:7b803b0353e64eb35b4bc3922295f52acc1e539eba64805f6b970f7709454d27"
+              ],
+              "takeover": true
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:e1178fe0bb64e6e805d5b2b22350a7404bf720c2969c2d3be1c7bc17246e8408",
+            "seq": 1,
+            "type": "run.lease"
+          }
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
+      },
+      "kind": "run_lease_fold",
+      "name": "lease/a-consent-signed-by-another-key-is-refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "runs": [
+            {
+              "contested": [],
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "heads": [
+                "sha256:34bfc738c699064f19c84a5b4825da037df41674add8da94819810934001aa38"
+              ],
+              "leases": [
+                {
+                  "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "id": "sha256:34bfc738c699064f19c84a5b4825da037df41674add8da94819810934001aa38",
+                  "supersedes": [],
+                  "takeover": false
+                }
+              ],
+              "refused": [
+                {
+                  "code": "run.takeover.bad_signature",
+                  "id": "sha256:a63878a3b0cdd0a73feff1257f4ff5ea8921534b2e140dd9a4edf8f89d4644f3"
+                }
+              ],
+              "rejected": [
+                "sha256:a63878a3b0cdd0a73feff1257f4ff5ea8921534b2e140dd9a4edf8f89d4644f3"
+              ],
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "waiting": []
+            }
+          ]
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "Z6_u8yYiyOxWR1ycQEHqztZBxJTj4s5CuOJ1HtbNmOA": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+          "nV-K4HujeazQc04IAPAeLi0-aM1gAW3RS_HJVBQE6z4": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+          "zBOT5aazLicHSlYjqAafEJOHihpUL7AwwVtAN6yen_Q": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "reason": "start",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [],
+              "takeover": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:34bfc738c699064f19c84a5b4825da037df41674add8da94819810934001aa38",
+            "seq": 1,
+            "type": "run.lease"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794441690000,
+                  "n": 0
+                },
+                "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                "digest": "sha256:e377450a7b3dfcc52a49fb7c2746d66d11c1798c2004361f4bf85d8a80c1630a",
+                "kind": "action",
+                "sig": "XMw31aUs1u2vOL77DSU7umUxE8x9hxRzhrs4uP7eoQ5PU7veo8N-tNOrCv5TLV0eXK8hhenmly8KgAkwkHzJBA",
+                "v": 1
+              },
+              "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "reason": "grab",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [
+                "sha256:34bfc738c699064f19c84a5b4825da037df41674add8da94819810934001aa38"
+              ],
+              "takeover": true
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:a63878a3b0cdd0a73feff1257f4ff5ea8921534b2e140dd9a4edf8f89d4644f3",
+            "seq": 1,
+            "type": "run.lease"
+          }
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
+      },
+      "kind": "run_lease_fold",
+      "name": "lease/a-consent-signed-by-the-identity-key-is-refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "runs": [
+            {
+              "contested": [],
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "heads": [
+                "sha256:99d7eb143b3347decfc477a4ea6899b6db71e53b08dfe5f233ca110eb0303ca0"
+              ],
+              "leases": [
+                {
+                  "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "id": "sha256:99d7eb143b3347decfc477a4ea6899b6db71e53b08dfe5f233ca110eb0303ca0",
+                  "supersedes": [],
+                  "takeover": false
+                }
+              ],
+              "refused": [
+                {
+                  "code": "run.takeover.malformed",
+                  "id": "sha256:2c5c889a336436a500d76ff306267a5cb671bde5008783d7cce3891b4773eaa5"
+                }
+              ],
+              "rejected": [
+                "sha256:2c5c889a336436a500d76ff306267a5cb671bde5008783d7cce3891b4773eaa5"
+              ],
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "waiting": []
+            }
+          ]
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "Z6_u8yYiyOxWR1ycQEHqztZBxJTj4s5CuOJ1HtbNmOA": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+          "nV-K4HujeazQc04IAPAeLi0-aM1gAW3RS_HJVBQE6z4": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+          "zBOT5aazLicHSlYjqAafEJOHihpUL7AwwVtAN6yen_Q": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "reason": "start",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [],
+              "takeover": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:99d7eb143b3347decfc477a4ea6899b6db71e53b08dfe5f233ca110eb0303ca0",
+            "seq": 1,
+            "type": "run.lease"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": "yes",
+              "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "reason": "grab",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [
+                "sha256:99d7eb143b3347decfc477a4ea6899b6db71e53b08dfe5f233ca110eb0303ca0"
+              ],
+              "takeover": true
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:2c5c889a336436a500d76ff306267a5cb671bde5008783d7cce3891b4773eaa5",
+            "seq": 1,
+            "type": "run.lease"
+          }
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
+      },
+      "kind": "run_lease_fold",
+      "name": "lease/a-consent-that-is-not-an-object-is-refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "runs": [
+            {
+              "contested": [],
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "heads": [
+                "sha256:df7f147edd7ce9e94aade4b9bf6f410657b24365cf38c80d95d906a628420605"
+              ],
+              "leases": [
+                {
+                  "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "id": "sha256:df7f147edd7ce9e94aade4b9bf6f410657b24365cf38c80d95d906a628420605",
+                  "supersedes": [],
+                  "takeover": false
+                }
+              ],
+              "refused": [
+                {
+                  "code": "run.takeover.malformed",
+                  "id": "sha256:64cb3fc467609d44c574e75d5859dabbc259371538ab0bb3af5a13c2cdbd4151"
+                }
+              ],
+              "rejected": [
+                "sha256:64cb3fc467609d44c574e75d5859dabbc259371538ab0bb3af5a13c2cdbd4151"
+              ],
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "waiting": []
+            }
+          ]
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "Z6_u8yYiyOxWR1ycQEHqztZBxJTj4s5CuOJ1HtbNmOA": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+          "nV-K4HujeazQc04IAPAeLi0-aM1gAW3RS_HJVBQE6z4": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+          "zBOT5aazLicHSlYjqAafEJOHihpUL7AwwVtAN6yen_Q": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "reason": "start",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [],
+              "takeover": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:df7f147edd7ce9e94aade4b9bf6f410657b24365cf38c80d95d906a628420605",
+            "seq": 1,
+            "type": "run.lease"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794441690000,
+                  "n": 0
+                },
+                "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                "digest": "sha256:d5d2208457292baf9e6f42e4e82dfabe5dbf378f13fd8a7d15244444f2fb9198",
+                "extra": 1,
+                "kind": "action",
+                "sig": "UTNUK7YgkPESIAvQIR2Zc1oYK-VgrQCMGPzH-BuVIU1cu7OMGpZbFSDz_fL5ZS6lDAW2DMxwYfP7ta56_YdjDg",
+                "v": 1
+              },
+              "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "reason": "grab",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [
+                "sha256:df7f147edd7ce9e94aade4b9bf6f410657b24365cf38c80d95d906a628420605"
+              ],
+              "takeover": true
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:64cb3fc467609d44c574e75d5859dabbc259371538ab0bb3af5a13c2cdbd4151",
+            "seq": 1,
+            "type": "run.lease"
+          }
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
+      },
+      "kind": "run_lease_fold",
+      "name": "lease/a-consent-with-an-extra-field-is-refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "runs": [
+            {
+              "contested": [],
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "heads": [
+                "sha256:8e00b34a169dd3ced4d359a46bae4aecb5e5c57beddaca2514242e9d824b3f1d"
+              ],
+              "leases": [
+                {
+                  "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "id": "sha256:8e00b34a169dd3ced4d359a46bae4aecb5e5c57beddaca2514242e9d824b3f1d",
+                  "supersedes": [],
+                  "takeover": false
+                }
+              ],
+              "refused": [
+                {
+                  "code": "run.takeover.malformed",
+                  "id": "sha256:cb2a9d83ce5b790d42f894a03ca7797f82508ac97ec5aa4023118a8259ac5ca1"
+                }
+              ],
+              "rejected": [
+                "sha256:cb2a9d83ce5b790d42f894a03ca7797f82508ac97ec5aa4023118a8259ac5ca1"
+              ],
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "waiting": []
+            }
+          ]
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "Z6_u8yYiyOxWR1ycQEHqztZBxJTj4s5CuOJ1HtbNmOA": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+          "nV-K4HujeazQc04IAPAeLi0-aM1gAW3RS_HJVBQE6z4": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+          "zBOT5aazLicHSlYjqAafEJOHihpUL7AwwVtAN6yen_Q": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "reason": "start",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [],
+              "takeover": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:8e00b34a169dd3ced4d359a46bae4aecb5e5c57beddaca2514242e9d824b3f1d",
+            "seq": 1,
+            "type": "run.lease"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794441690000,
+                  "n": 0
+                },
+                "device": [
+                  1
+                ],
+                "digest": "sha256:8e119c39c4f90f23710738ef747bf7240d612b4108a3975ecc4f34a279901dad",
+                "kind": "action",
+                "sig": "z5tryv1A2E16p4FE_-RDWYqy8eKbvHy45B1tRNu12bZDd6g3qG7ck3Mtsix0S5_PA8PqcNfgy6MLPjxTI1wJkQ",
+                "v": 1
+              },
+              "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "reason": "grab",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [
+                "sha256:8e00b34a169dd3ced4d359a46bae4aecb5e5c57beddaca2514242e9d824b3f1d"
+              ],
+              "takeover": true
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:cb2a9d83ce5b790d42f894a03ca7797f82508ac97ec5aa4023118a8259ac5ca1",
+            "seq": 1,
+            "type": "run.lease"
+          }
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
+      },
+      "kind": "run_lease_fold",
+      "name": "lease/a-consent-naming-a-device-that-is-not-text-is-refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "runs": [
+            {
+              "contested": [],
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "heads": [
+                "sha256:734ffa930ca25c000ee47df0b10bca36f3c1f4ad4327f428875071fdb9b78944"
+              ],
+              "leases": [
+                {
+                  "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "id": "sha256:734ffa930ca25c000ee47df0b10bca36f3c1f4ad4327f428875071fdb9b78944",
+                  "supersedes": [],
+                  "takeover": false
+                }
+              ],
+              "refused": [
+                {
+                  "code": "run.takeover.consent_missing",
+                  "id": "sha256:1dff36d5359eb38f70da4b1d796f15c842d05632f71cd78c5e224df0893abbe8"
+                }
+              ],
+              "rejected": [
+                "sha256:1dff36d5359eb38f70da4b1d796f15c842d05632f71cd78c5e224df0893abbe8",
+                "sha256:89e833c41b287f09db552979ab058725313709a817247377b992592bcd6f6d3d"
+              ],
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "waiting": []
+            }
+          ]
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "Z6_u8yYiyOxWR1ycQEHqztZBxJTj4s5CuOJ1HtbNmOA": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+          "nV-K4HujeazQc04IAPAeLi0-aM1gAW3RS_HJVBQE6z4": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+          "zBOT5aazLicHSlYjqAafEJOHihpUL7AwwVtAN6yen_Q": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "reason": "start",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [],
+              "takeover": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:734ffa930ca25c000ee47df0b10bca36f3c1f4ad4327f428875071fdb9b78944",
+            "seq": 1,
+            "type": "run.lease"
+          },
+          {
+            "after": [],
+            "body": {
+              "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "reason": "grab",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [
+                "sha256:734ffa930ca25c000ee47df0b10bca36f3c1f4ad4327f428875071fdb9b78944"
+              ],
+              "takeover": true
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:1dff36d5359eb38f70da4b1d796f15c842d05632f71cd78c5e224df0893abbe8",
+            "seq": 1,
+            "type": "run.lease"
+          },
+          {
+            "after": [],
+            "body": {
+              "executor": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+              "reason": "bob-hands-on",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [
+                "sha256:1dff36d5359eb38f70da4b1d796f15c842d05632f71cd78c5e224df0893abbe8"
+              ],
+              "takeover": false
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:89e833c41b287f09db552979ab058725313709a817247377b992592bcd6f6d3d",
+            "seq": 2,
+            "type": "run.lease"
+          }
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
+      },
+      "kind": "run_lease_fold",
+      "name": "lease/a-refused-takeover-cannot-be-built-on"
+    },
+    {
+      "expect": {
+        "ok": {
+          "runs": [
+            {
+              "contested": [],
+              "executor": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+              "heads": [
+                "sha256:f5a5d4b90a94c0913d42af97fc59a55df818de7d8c72a3cc6b73d54ae28fd62c"
+              ],
+              "leases": [
+                {
+                  "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "id": "sha256:442259bd4f639d658c030bbd8107d45d31fe60f42aa3e6d0a8490ae7f14da1a9",
+                  "supersedes": [],
+                  "takeover": false
+                },
+                {
+                  "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                  "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+                  "id": "sha256:e6537f5505ff04d4113776367a3dcabee3ca2f21948c4ed1240464b4a75f995d",
+                  "supersedes": [
+                    "sha256:442259bd4f639d658c030bbd8107d45d31fe60f42aa3e6d0a8490ae7f14da1a9"
+                  ],
+                  "takeover": false
+                },
+                {
+                  "author": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+                  "executor": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+                  "id": "sha256:dbf8544af1dd40873d4c8465a93be6840c460c4cae61a9a7109a258494136c8d",
+                  "supersedes": [
+                    "sha256:442259bd4f639d658c030bbd8107d45d31fe60f42aa3e6d0a8490ae7f14da1a9"
+                  ],
+                  "takeover": true
+                },
+                {
+                  "author": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+                  "executor": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+                  "id": "sha256:f5a5d4b90a94c0913d42af97fc59a55df818de7d8c72a3cc6b73d54ae28fd62c",
+                  "supersedes": [
+                    "sha256:dbf8544af1dd40873d4c8465a93be6840c460c4cae61a9a7109a258494136c8d",
+                    "sha256:e6537f5505ff04d4113776367a3dcabee3ca2f21948c4ed1240464b4a75f995d"
+                  ],
+                  "takeover": true
+                }
+              ],
+              "refused": [],
+              "rejected": [],
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "waiting": []
+            }
+          ]
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "Z6_u8yYiyOxWR1ycQEHqztZBxJTj4s5CuOJ1HtbNmOA": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+          "nV-K4HujeazQc04IAPAeLi0-aM1gAW3RS_HJVBQE6z4": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+          "zBOT5aazLicHSlYjqAafEJOHihpUL7AwwVtAN6yen_Q": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "executor": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "reason": "start",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [],
+              "takeover": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:442259bd4f639d658c030bbd8107d45d31fe60f42aa3e6d0a8490ae7f14da1a9",
+            "seq": 1,
+            "type": "run.lease"
+          },
+          {
+            "after": [],
+            "body": {
+              "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "reason": "to-bob",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [
+                "sha256:442259bd4f639d658c030bbd8107d45d31fe60f42aa3e6d0a8490ae7f14da1a9"
+              ],
+              "takeover": false
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:e6537f5505ff04d4113776367a3dcabee3ca2f21948c4ed1240464b4a75f995d",
+            "seq": 2,
+            "type": "run.lease"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794441603000,
+                  "n": 0
+                },
+                "device": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+                "digest": "sha256:63ce4f351493c78a033ceff20fd9e1a205a6e3ded2d932f9bdedc5e62db73bf1",
+                "kind": "action",
+                "sig": "d6GCGZaKWTo-iku8TuE0c_W-mja8f9TS_j9nqi3DHPppTairo30lcvVqTDKfoaJnch26wCmIUEpyPY7gclsKXQ",
+                "v": 1
+              },
+              "executor": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+              "reason": "grab-carol",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [
+                "sha256:442259bd4f639d658c030bbd8107d45d31fe60f42aa3e6d0a8490ae7f14da1a9"
+              ],
+              "takeover": true
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "feed": "nV-K4HujeazQc04IAPAeLi0-aM1gAW3RS_HJVBQE6z4",
+            "id": "sha256:dbf8544af1dd40873d4c8465a93be6840c460c4cae61a9a7109a258494136c8d",
+            "seq": 1,
+            "type": "run.lease"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794441690000,
+                  "n": 0
+                },
+                "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                "digest": "sha256:085a8461a6f26a6ccad4171eed4a5686878096a4bd83ac4a8e3364df40ffc315",
+                "kind": "action",
+                "sig": "Stusy3BYFo7r38dtMdUxYZ-G_Ob72d5IV9FnUkZ0H8F0MzmQSxKrvBDIh-Skpr8mX9h0k3EpqtBfAK5mmH1Siw",
+                "v": 1
+              },
+              "executor": "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457",
+              "reason": "owner-resolves",
+              "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+              "supersedes": [
+                "sha256:dbf8544af1dd40873d4c8465a93be6840c460c4cae61a9a7109a258494136c8d",
+                "sha256:e6537f5505ff04d4113776367a3dcabee3ca2f21948c4ed1240464b4a75f995d"
+              ],
+              "takeover": true
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "feed": "Z6_u8yYiyOxWR1ycQEHqztZBxJTj4s5CuOJ1HtbNmOA",
+            "id": "sha256:f5a5d4b90a94c0913d42af97fc59a55df818de7d8c72a3cc6b73d54ae28fd62c",
+            "seq": 1,
+            "type": "run.lease"
+          }
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
+      },
+      "kind": "run_lease_fold",
+      "name": "lease/the-consent-digest-does-not-depend-on-the-order-written"
+    },
+    {
+      "expect": {
+        "ok": {
+          "digest": "sha256:86a1f0418b151a35acdac6cdc887fc7b4a01f6d95179f421033b6bb207493e0b"
+        }
+      },
+      "input": {
+        "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+        "supersedes": [
+          "sha256:5c4e66663a870db1c01229fdcedb6ffdd8d984c727073b06809fbce8889042d5",
+          "sha256:7c3ea94701224bf102dccf8a52263e70caa85d685236b2d2d645a93652792270",
+          "sha256:5c4e66663a870db1c01229fdcedb6ffdd8d984c727073b06809fbce8889042d5"
+        ]
+      },
+      "kind": "run_takeover_digest",
+      "name": "digest/takeover-digest-sorts-and-deduplicates-the-superseded-leases"
+    },
+    {
+      "expect": {
+        "ok": {
+          "digest": "sha256:afe2a1f45c0cf9be30d3cfbb0f85b47968ef497bb8f85572c6c16b7e80752b1b"
+        }
+      },
+      "input": {
+        "executor": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
+        "supersedes": []
+      },
+      "kind": "run_takeover_digest",
+      "name": "digest/takeover-digest-of-a-first-lease"
     },
     {
       "expect": {
@@ -1639,6 +3470,7 @@
                   "takeover": false
                 }
               ],
+              "refused": [],
               "rejected": [],
               "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.0123456789abcdef01234567",
               "waiting": []
@@ -1658,6 +3490,7 @@
                   "takeover": false
                 }
               ],
+              "refused": [],
               "rejected": [],
               "run": "sha256:e8c7e126dd6038c03373b52a5104afbc41bcf3de333a2faa4bd44429bc03bdb2.fedcba9876543210fedcba98",
               "waiting": []
@@ -1710,7 +3543,14 @@
             "seq": 1,
             "type": "run.lease"
           }
-        ]
+        ],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
       },
       "kind": "run_lease_fold",
       "name": "lease/runs-are-listed-in-run-id-order"
@@ -1729,7 +3569,14 @@
           "nV-K4HujeazQc04IAPAeLi0-aM1gAW3RS_HJVBQE6z4": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
           "zBOT5aazLicHSlYjqAafEJOHihpUL7AwwVtAN6yen_Q": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed"
         },
-        "events": []
+        "events": [],
+        "presence_keys": {
+          "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99": "BEooPmPJp-t0T475JLpRCjx6rtrVindyCwUiU5D5KA1OIdychQxSZQ8aL9jaTnDXbjHjs4fu4Ejlzx6wnNhtgRg",
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed": "BL6v8eLdYwE2rf4ZxRcDt2ZtHaI8Nfnv3U-xX7D20CvySaf0dUxl4RKZykZ0U3jtPn85dkCe7tTQCBtVVtmdiVI",
+          "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457": "BKkibc5aIewU2bGaOV0Jo15gUWWeg_vXnbBk2MhPwnT6qK2rNarg225hxStZCjQt5Cq7oc32tw4TUXR5FM59N7E",
+          "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4"
+        }
       },
       "kind": "run_lease_fold",
       "name": "lease/no-leases-no-runs"

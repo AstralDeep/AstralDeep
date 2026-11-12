@@ -9,7 +9,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from . import crypto
+from . import consent as consent_mod, crypto
 from .errors import MeshError
 from .fold import order_key
 
@@ -58,6 +58,32 @@ def _blank(text: str) -> bool:
     return all(c in WHITESPACE for c in text)
 
 
+def takeover_digest(run: str, supersedes: list[str], executor: str) -> str:
+    return crypto.object_id(
+        {
+            "executor": executor,
+            "kind": "run.takeover",
+            "run": run,
+            "supersedes": sorted(set(supersedes)),
+            "v": 1,
+        }
+    )
+
+
+def _takeover_refusal(
+    lease: dict[str, Any], presence_keys: dict[str, str]
+) -> str | None:
+    consent = lease["consent"]
+    if consent is None:
+        return "run.takeover.consent_missing"
+    digest = takeover_digest(lease["run"], lease["supersedes"], lease["executor"])
+    try:
+        consent_mod.verify(consent, "action", digest, presence_keys)
+    except MeshError as error:
+        return "run.takeover." + error.code.removeprefix("consent.")
+    return None
+
+
 def _parse_lease(event: dict[str, Any]) -> dict[str, Any] | None:
     body = event["body"]
     if not isinstance(body, dict):
@@ -85,11 +111,14 @@ def _parse_lease(event: dict[str, Any]) -> dict[str, Any] | None:
         "executor": executor,
         "supersedes": supersedes,
         "takeover": takeover,
+        "consent": body.get("consent"),
     }
 
 
 def lease_fold(
-    events: list[dict[str, Any]], device_of_feed: Callable[[str], str | None]
+    events: list[dict[str, Any]],
+    device_of_feed: Callable[[str], str | None],
+    presence_keys: dict[str, str],
 ) -> list[dict[str, Any]]:
     leases = []
     for event in events:
@@ -108,6 +137,14 @@ def lease_fold(
         run_leases = by_run[run]
         valid: set[str] = set()
         rejected: list[str] = []
+        refused: list[dict[str, str]] = []
+        for lease in run_leases:
+            code = (
+                _takeover_refusal(lease, presence_keys) if lease["takeover"] else None
+            )
+            if code is not None:
+                rejected.append(lease["id"])
+                refused.append({"code": code, "id": lease["id"]})
         settled = False
         while not settled:
             settled = True
@@ -181,6 +218,7 @@ def lease_fold(
                     for lease in run_leases
                     if lease["id"] in valid
                 ],
+                "refused": refused,
                 "rejected": rejected,
                 "run": run,
                 "waiting": waiting,
@@ -563,7 +601,11 @@ def register(op: Callable[[str], Callable[[Any], Any]]) -> None:
     @op("run_lease_fold")
     def _lease_fold(i: dict[str, Any]) -> Any:
         devices = i["devices"]
-        return {"runs": lease_fold(i["events"], devices.get)}
+        return {"runs": lease_fold(i["events"], devices.get, i["presence_keys"])}
+
+    @op("run_takeover_digest")
+    def _takeover_digest(i: dict[str, Any]) -> Any:
+        return {"digest": takeover_digest(i["run"], i["supersedes"], i["executor"])}
 
     @op("run_state_fold")
     def _state_fold(i: dict[str, Any]) -> Any:

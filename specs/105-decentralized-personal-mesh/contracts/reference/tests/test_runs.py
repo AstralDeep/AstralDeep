@@ -20,7 +20,9 @@ RUN_ID = re.compile(r"^sha256:[0-9a-f]{64}\.[0-9a-f]{24}$")
 
 def _fold(case: dict) -> list[dict]:
     devices = case["input"]["devices"]
-    return runs.lease_fold(case["input"]["events"], devices.get)
+    return runs.lease_fold(
+        case["input"]["events"], devices.get, case["input"]["presence_keys"]
+    )
 
 
 @pytest.mark.parametrize("case", LEASE_CASES, ids=[c["name"] for c in LEASE_CASES])
@@ -31,7 +33,12 @@ def test_lease_fold_does_not_depend_on_arrival_order(case: dict) -> None:
         events = list(case["input"]["events"])
         rng.shuffle(events)
         shuffled = {**case["input"], "events": events}
-        assert runs.lease_fold(shuffled["events"], shuffled["devices"].get) == expected
+        assert (
+            runs.lease_fold(
+                shuffled["events"], shuffled["devices"].get, shuffled["presence_keys"]
+            )
+            == expected
+        )
 
 
 @pytest.mark.parametrize("case", LEASE_CASES, ids=[c["name"] for c in LEASE_CASES])

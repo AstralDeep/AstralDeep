@@ -5844,22 +5844,35 @@ def build_runs() -> Suite:
             supersedes: list[str] | None = None,
             takeover: bool = False,
             body: dict[str, Any] | None = None,
+            consent: Any = "auto",
         ) -> str:
             self.n += 1
             self.seq[dev.name] = self.seq.get(dev.name, 0) + 1
             eid = _eid("runs", self.tag, name)
+            if body is None:
+                body = {
+                    "executor": executor or dev.id,
+                    "reason": name,
+                    "run": run,
+                    "supersedes": supersedes or [],
+                    "takeover": takeover,
+                }
+                if isinstance(consent, str) and consent == "auto":
+                    consent = (
+                        takeover_consent(
+                            dev, run, supersedes or [], executor or dev.id, self.n
+                        )
+                        if takeover
+                        else None
+                    )
+                if consent is False:
+                    body["consent"] = None
+                elif consent is not None:
+                    body["consent"] = consent
             self.events.append(
                 {
                     "after": [],
-                    "body": body
-                    if body is not None
-                    else {
-                        "executor": executor or dev.id,
-                        "reason": name,
-                        "run": run,
-                        "supersedes": supersedes or [],
-                        "takeover": takeover,
-                    },
+                    "body": body,
                     "clock": hlc(sc.BASE_MS + self.n * 1000),
                     "feed": dev.feed,
                     "id": eid,
@@ -5869,13 +5882,33 @@ def build_runs() -> Suite:
             )
             return eid
 
-    def lease_case(name: str, log: Log, expect: Any = None, devices=None) -> Any:
+    presence = {d.id: b64url_encode(d.presence_public) for d in people}
+
+    def takeover_consent(
+        signer: TestDevice,
+        run: str,
+        supersedes: list[str],
+        executor: str,
+        n: int,
+    ) -> dict[str, Any]:
+        return consent.build(
+            "action",
+            runs_ref.takeover_digest(run, supersedes, executor),
+            signer.id,
+            signer.presence_scalar,
+            hlc(sc.BASE_MS + n * 1000),
+        )
+
+    def lease_case(
+        name: str, log: Log, expect: Any = None, devices=None, keys=None
+    ) -> Any:
         return s.add(
             name,
             "run_lease_fold",
             {
                 "devices": devices if devices is not None else feeds,
                 "events": copy.deepcopy(log.events),
+                "presence_keys": keys if keys is not None else presence,
             },
             expect=expect,
         )["runs"]
@@ -5924,7 +5957,7 @@ def build_runs() -> Suite:
     log.lease("grab-and-name-carol", BOB, executor=CAROL.id, supersedes=[l1])
     log.lease("owner-grab", CAROL, executor=CAROL.id, supersedes=[l1], takeover=True)
     out = lease_case(
-        "lease/takeover-with-the-flag-is-accepted-and-the-refused-stay-refused", log
+        "lease/takeover-with-consent-is-accepted-and-the-refused-stay-refused", log
     )
     assert out[0]["executor"] == CAROL.id and len(out[0]["rejected"]) == 2
 
@@ -6020,8 +6053,197 @@ def build_runs() -> Suite:
         supersedes=[l1],
         takeover=True,
     )
-    out = lease_case("lease/the-owner-flag-needs-no-known-author", log, devices=small)
+    out = lease_case(
+        "lease/a-takeover-with-consent-needs-no-known-author", log, devices=small
+    )
     assert out[0]["leases"][-1]["author"] is None
+
+    def refusal_case(name: str, tag: str, **lease_args: Any) -> None:
+        log = Log(tag)
+        l1 = log.lease("start", ALICE)
+        extra = dict(lease_args)
+        keys = extra.pop("keys", None)
+        make = extra.pop("consent")
+        bid = log.lease(
+            "grab",
+            BOB,
+            executor=BOB.id,
+            supersedes=[l1],
+            takeover=True,
+            consent=make(l1),
+            **extra,
+        )
+        out = lease_case(name, log, keys=keys)
+        return out, bid, l1
+
+    def refused(name: str, tag: str, code: str, make: Any, **extra: Any) -> None:
+        out, bid, l1 = refusal_case(name, tag, consent=make, **extra)
+        assert out[0]["executor"] == ALICE.id and out[0]["rejected"] == [bid]
+        assert out[0]["refused"] == [{"code": code, "id": bid}]
+
+    def sign(signer: TestDevice, executor: str, supersedes=None):
+        return lambda l1: takeover_consent(
+            signer, RUN_A, supersedes if supersedes is not None else [l1], executor, 90
+        )
+
+    log = Log("owner-consent")
+    l1 = log.lease("start", ALICE)
+    log.lease(
+        "grab",
+        BOB,
+        executor=BOB.id,
+        supersedes=[l1],
+        takeover=True,
+        consent=takeover_consent(CAROL, RUN_A, [l1], BOB.id, 90),
+    )
+    out = lease_case(
+        "lease/a-takeover-consented-by-another-roster-device-is-accepted", log
+    )
+    assert out[0]["executor"] == BOB.id and out[0]["refused"] == []
+
+    refused(
+        "lease/a-takeover-flag-with-no-consent-is-refused",
+        "no-consent",
+        "run.takeover.consent_missing",
+        lambda l1: None,
+    )
+    refused(
+        "lease/a-takeover-flag-with-null-consent-is-refused",
+        "null-consent",
+        "run.takeover.consent_missing",
+        lambda l1: False,
+    )
+    refused(
+        "lease/a-consent-for-another-executor-is-refused",
+        "consent-other-executor",
+        "run.takeover.wrong_action",
+        sign(ALICE, CAROL.id),
+    )
+    refused(
+        "lease/a-consent-naming-other-superseded-leases-is-refused",
+        "consent-other-supersedes",
+        "run.takeover.wrong_action",
+        lambda l1: takeover_consent(ALICE, RUN_A, [_eid("runs", "other")], BOB.id, 90),
+    )
+    refused(
+        "lease/a-consent-for-another-run-is-refused",
+        "consent-other-run",
+        "run.takeover.wrong_action",
+        lambda l1: takeover_consent(ALICE, RUN_B, [l1], BOB.id, 90),
+    )
+    refused(
+        "lease/a-consent-of-the-policy-kind-is-refused",
+        "consent-policy-kind",
+        "run.takeover.wrong_action",
+        lambda l1: consent.build(
+            "policy",
+            runs_ref.takeover_digest(RUN_A, [l1], BOB.id),
+            ALICE.id,
+            ALICE.presence_scalar,
+            hlc(sc.BASE_MS + 90_000),
+        ),
+    )
+    refused(
+        "lease/a-consent-from-a-device-off-the-roster-is-refused",
+        "consent-off-roster",
+        "run.takeover.unknown_device",
+        sign(DAVE, BOB.id),
+        keys={d.id: presence[d.id] for d in (ALICE, BOB, CAROL)},
+    )
+    refused(
+        "lease/a-consent-signed-by-another-key-is-refused",
+        "consent-wrong-key",
+        "run.takeover.bad_signature",
+        lambda l1: {
+            **takeover_consent(ALICE, RUN_A, [l1], BOB.id, 90),
+            "device": CAROL.id,
+        },
+    )
+    refused(
+        "lease/a-consent-signed-by-the-identity-key-is-refused",
+        "consent-identity-key",
+        "run.takeover.bad_signature",
+        lambda l1: {
+            **takeover_consent(ALICE, RUN_A, [l1], BOB.id, 90),
+            "sig": crypto.sign_object(
+                "p256",
+                ALICE.identity_scalar,
+                "astral.consent/v1",
+                {
+                    k: v
+                    for k, v in takeover_consent(ALICE, RUN_A, [l1], BOB.id, 90).items()
+                    if k != "sig"
+                },
+            ),
+        },
+    )
+    refused(
+        "lease/a-consent-that-is-not-an-object-is-refused",
+        "consent-text",
+        "run.takeover.malformed",
+        lambda l1: "yes",
+    )
+    refused(
+        "lease/a-consent-with-an-extra-field-is-refused",
+        "consent-extra-field",
+        "run.takeover.malformed",
+        lambda l1: {**takeover_consent(ALICE, RUN_A, [l1], BOB.id, 90), "extra": 1},
+    )
+    refused(
+        "lease/a-consent-naming-a-device-that-is-not-text-is-refused",
+        "consent-device-list",
+        "run.takeover.malformed",
+        lambda l1: {**takeover_consent(ALICE, RUN_A, [l1], BOB.id, 90), "device": [1]},
+    )
+
+    log = Log("refused-takeover-cascade")
+    l1 = log.lease("start", ALICE)
+    l2 = log.lease(
+        "grab", BOB, executor=BOB.id, supersedes=[l1], takeover=True, consent=None
+    )
+    l3 = log.lease("bob-hands-on", BOB, executor=CAROL.id, supersedes=[l2])
+    out = lease_case("lease/a-refused-takeover-cannot-be-built-on", log)
+    assert out[0]["rejected"] == [l2, l3] and out[0]["refused"][0]["id"] == l2
+    assert out[0]["executor"] == ALICE.id
+
+    log = Log("consent-order")
+    l1 = log.lease("start", ALICE)
+    l2 = log.lease("to-bob", ALICE, executor=BOB.id, supersedes=[l1])
+    l3 = log.lease(
+        "grab-carol",
+        CAROL,
+        executor=CAROL.id,
+        supersedes=[l1],
+        takeover=True,
+    )
+    both = [l3, l2]
+    l4 = log.lease(
+        "owner-resolves",
+        DAVE,
+        executor=DAVE.id,
+        supersedes=both,
+        takeover=True,
+        consent=takeover_consent(ALICE, RUN_A, sorted(both), DAVE.id, 90),
+    )
+    out = lease_case(
+        "lease/the-consent-digest-does-not-depend-on-the-order-written", log
+    )
+    assert out[0]["executor"] == DAVE.id and out[0]["heads"] == [l4]
+
+    s.add(
+        "digest/takeover-digest-sorts-and-deduplicates-the-superseded-leases",
+        "run_takeover_digest",
+        {
+            "executor": BOB.id,
+            "run": RUN_A,
+            "supersedes": [_eid("runs", "b"), _eid("runs", "a"), _eid("runs", "b")],
+        },
+    )
+    s.add(
+        "digest/takeover-digest-of-a-first-lease",
+        "run_takeover_digest",
+        {"executor": BOB.id, "run": RUN_A, "supersedes": []},
+    )
 
     log = Log("two-runs")
     log.lease("start-b", BOB, run=RUN_B)
@@ -6032,7 +6254,7 @@ def build_runs() -> Suite:
     s.add(
         "lease/no-leases-no-runs",
         "run_lease_fold",
-        {"devices": feeds, "events": []},
+        {"devices": feeds, "events": [], "presence_keys": presence},
         expect={"runs": []},
     )
 
@@ -7269,7 +7491,12 @@ def build_learning() -> Suite:
         return learning_ref.adoption_event(rec)
 
     def fold(name: str, led: Ledger, error: str | None = None) -> dict[str, Any]:
-        return s.add(name, "learn_ledger_fold", {"events": copy.deepcopy(led.events)}, error=error)
+        return s.add(
+            name,
+            "learn_ledger_fold",
+            {"events": copy.deepcopy(led.events)},
+            error=error,
+        )
 
     def status_of(out: dict[str, Any], sid: str) -> dict[str, Any]:
         return next(p for p in out["proposals"] if p["id"] == sid)["status"]
@@ -7350,10 +7577,71 @@ def build_learning() -> Suite:
     info["labels"] = UNTRUSTED_PRIVATE
     led.add("auto-adopt", adoption_of(info, "auto"))
     out = fold(
-        "fold/untrusted-labels-block-an-automatic-adoption-even-without-owner-reasons",
+        "fold/untrusted-evidence-blocks-an-automatic-adoption-even-without-owner-reasons",
         led,
     )
-    assert out["active"] == [] and reasons(out) == ["learn.fold.untrusted_auto"]
+    assert out["active"] == [] and reasons(out) == ["learn.fold.needs_owner"]
+    assert status_of(out, info["stage"])["name"] == "waiting_owner"
+
+    for tag, kwargs, label in (
+        (
+            "instruction-blanked",
+            {"kind": "instruction_edit", "content": "Prefer short answers."},
+            "an-instruction-edit",
+        ),
+        ("wider-blanked", {"wider": True}, "a-wider-proposal"),
+    ):
+        led = Ledger(tag)
+        info = honest(led, cand(**kwargs))
+        led.events[1]["body"]["owner_reasons"] = []
+        led.add("auto-adopt", adoption_of(info, "auto"))
+        out = fold(
+            f"fold/{label}-needs-the-owner-even-when-the-gate-record-lists-no-reason",
+            led,
+        )
+        assert out["active"] == [] and reasons(out) == ["learn.fold.needs_owner"]
+        assert status_of(out, info["stage"])["name"] == "waiting_owner"
+        led.add(
+            "owner-adopt", adoption_of(info, "owner", wide=bool(kwargs.get("wider")))
+        )
+        out = fold(
+            f"fold/the-owner-can-adopt-{label}-the-gate-record-did-not-flag",
+            led,
+        )
+        assert len(out["active"]) == 1 and out["active"][0]["mode"] == "owner"
+
+    led = Ledger("untrusted-header-owner")
+    info = honest(
+        led, cand(evidence=[ev_owner, ev_untrusted]), gate_step=False, replay_step=False
+    )
+    led.events[0]["labels"] = OWNER_PRIVATE
+    out = fold(
+        "fold/a-stage-header-claiming-more-trust-than-its-evidence-is-refused", led
+    )
+    assert out["proposals"] == [] and reasons(out) == ["learn.fold.label_mismatch"]
+
+    led = Ledger("untrusted-header-demoted")
+    info = honest(led, cand(evidence=[ev_owner]), gate_step=False, replay_step=False)
+    led.events[0]["labels"] = UNTRUSTED_PRIVATE
+    out = fold(
+        "fold/a-stage-header-claiming-less-trust-than-its-evidence-is-refused", led
+    )
+    assert out["proposals"] == [] and reasons(out) == ["learn.fold.label_mismatch"]
+
+    led = Ledger("secret-header")
+    info = honest(led, cand(), gate_step=False, replay_step=False)
+    led.events[0]["labels"] = {"confidentiality": "public", "integrity": "tool-trusted"}
+    out = fold(
+        "fold/a-stage-header-with-another-confidentiality-than-its-evidence-is-refused",
+        led,
+    )
+    assert out["proposals"] == [] and reasons(out) == ["learn.fold.label_mismatch"]
+
+    led = Ledger("no-evidence")
+    info = honest(led, cand(), gate_step=False, replay_step=False)
+    led.events[0]["body"]["evidence"] = []
+    out = fold("fold/a-stage-with-no-evidence-is-refused", led)
+    assert out["proposals"] == [] and reasons(out) == ["learn.fold.no_evidence"]
 
     led = Ledger("untrusted-adoption-label")
     info = honest(led, cand())
@@ -7558,6 +7846,57 @@ def build_learning() -> Suite:
     )
     out = fold("fold/a-late-replay-after-a-decline-is-ignored", led)
     assert status_of(out, info["stage"])["name"] == "declined"
+
+    led = Ledger("declined-terminal")
+    info = honest(led, cand())
+    led.add(
+        "owner-declines",
+        learning_ref.decline_event(
+            info["stage"], OWNER_PRIVATE, "owner_declined", True
+        ),
+    )
+    led.add("late-adoption", adoption_of(info, "owner"))
+    out = fold("fold/an-adoption-after-an-owner-decline-is-ignored", led)
+    assert out["active"] == [] and out["invalid"] == []
+    assert status_of(out, info["stage"])["name"] == "declined"
+
+    led = Ledger("declined-early")
+    info = honest(led, cand(), gate_step=False, replay_step=False)
+    led.add(
+        "system-declines",
+        learning_ref.decline_event(
+            info["stage"], info["labels"], "gate_failed_again", False
+        ),
+    )
+    gate_report = learning_ref.static_gate(cand(), grants)
+    led.add(
+        "late-gate",
+        learning_ref.gate_event(info["stage"], gate_report["labels"], [], [], []),
+    )
+    out = fold("fold/a-gate-record-after-a-decline-is-ignored", led)
+    assert status_of(out, info["stage"])["name"] == "declined"
+    assert out["proposals"][0]["gate"] is None
+
+    led = Ledger("reversed-terminal")
+    info = honest(led, cand())
+    aid = led.add("adopt", adoption_of(info))
+    led.add(
+        "undo",
+        learning_ref.reversal_event(
+            aid, info["stage"], content_hash_of(cand()), "undo", True
+        ),
+    )
+    led.add("readopt", adoption_of(info, "auto", at_ms=sc.BASE_MS + 99_000))
+    out = fold("fold/an-adoption-after-an-undo-is-ignored", led)
+    assert out["active"] == [] and out["invalid"] == []
+    assert status_of(out, info["stage"])["name"] == "reversed"
+    led2 = Ledger("reversed-terminal-again", BOB)
+    again = honest(led2, cand())
+    led.events.extend(led2.events)
+    led.add("adopt-new", adoption_of(again))
+    out = fold("fold/a-reversed-item-comes-back-only-as-a-new-proposal", led)
+    assert [a["proposal"] for a in out["active"]] == [again["stage"]]
+    assert status_of(out, info["stage"])["name"] == "reversed"
 
     led = Ledger("adopted-immutable")
     info = honest(led, cand())

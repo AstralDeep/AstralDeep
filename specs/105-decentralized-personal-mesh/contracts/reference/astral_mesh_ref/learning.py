@@ -152,6 +152,8 @@ HYGIENE_PHRASES = (
 )
 FOLD_REASONS = {
     "malformed proposal": "learn.fold.malformed_proposal",
+    "no evidence": "learn.fold.no_evidence",
+    "labels do not match the evidence": "learn.fold.label_mismatch",
     "names an unknown proposal": "learn.fold.unknown_proposal",
     "no proposal": "learn.fold.no_proposal",
     "no gate record": "learn.fold.no_gate",
@@ -630,6 +632,23 @@ def _valid_labels(label: Any) -> bool:
     )
 
 
+def _closed(proposal: dict[str, Any]) -> bool:
+    status = proposal["status"]
+    return status["name"] == "reversed" or (
+        status["name"] == "declined" and status["reason"] != "replay_failed"
+    )
+
+
+def owner_review_required(proposal: dict[str, Any]) -> bool:
+    item = proposal["item"]
+    return (
+        item["kind"] == "instruction_edit"
+        or item["wider"]
+        or proposal["labels"]["integrity"] == "untrusted"
+        or any(e["labels"]["integrity"] == "untrusted" for e in proposal["evidence"])
+    )
+
+
 def _adoption_problem(proposal: dict[str, Any], event: dict[str, Any]) -> str | None:
     body = event["body"]
     gate, replay = proposal["gate"], proposal["replay"]
@@ -650,7 +669,7 @@ def _adoption_problem(proposal: dict[str, Any], event: dict[str, Any]) -> str | 
         return "the replay report does not match"
     mode = _text(body, "mode")
     if mode == "auto":
-        if gate["owner_reasons"]:
+        if gate["owner_reasons"] or owner_review_required(proposal):
             return "the proposal needs the owner"
         if (
             proposal["labels"]["integrity"] == "untrusted"
@@ -701,11 +720,19 @@ def ledger_fold(events: list[dict[str, Any]]) -> dict[str, Any]:
                 if parsed is not None:
                     parsed["_content"] = body["content"]
                     item = parsed["item"]
-                    if item["content_hash"] == content_hash(
+                    if item["content_hash"] != content_hash(
                         item["kind"], item["name"], body["content"]
                     ):
+                        refuse(event, "malformed proposal")
+                    elif not parsed["evidence"]:
+                        refuse(event, "no evidence")
+                    elif parsed["labels"] != item_labels(
+                        candidate_labels(parsed["evidence"])
+                    ):
+                        refuse(event, "labels do not match the evidence")
+                    else:
                         proposals.append(parsed)
-                        continue
+                    continue
                 refuse(event, "malformed proposal")
                 continue
             pid = _text(body, "proposal")
@@ -715,7 +742,7 @@ def ledger_fold(events: list[dict[str, Any]]) -> dict[str, Any]:
             if proposal is None:
                 refuse(event, "names an unknown proposal")
                 continue
-            if proposal["status"]["name"] in ("adopted", "reversed"):
+            if _closed(proposal) or proposal["status"]["name"] == "adopted":
                 continue
             _apply_step(proposal, op, body)
         elif event["type"] == "learn.adoption":
@@ -726,6 +753,8 @@ def ledger_fold(events: list[dict[str, Any]]) -> dict[str, Any]:
             proposal = find(pid)
             if proposal is None:
                 refuse(event, "names an unknown proposal")
+                continue
+            if _closed(proposal):
                 continue
             problem = _adoption_problem(proposal, event)
             if problem is not None:
@@ -807,7 +836,9 @@ def _apply_step(proposal: dict[str, Any], op: str, body: dict[str, Any]) -> None
             "report_hash": _text(body, "report_hash") or "",
             "suite_hash": _text(body, "suite_hash") or "",
         }
-        needs_owner = bool(proposal["gate"] and proposal["gate"]["owner_reasons"])
+        needs_owner = bool(
+            proposal["gate"] and proposal["gate"]["owner_reasons"]
+        ) or owner_review_required(proposal)
         if not adopt:
             proposal["status"] = {"name": "declined", "reason": "replay_failed"}
         elif needs_owner:

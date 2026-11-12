@@ -38,6 +38,8 @@ def verify(
         or set(consent) != CONSENT_FIELDS
         or consent["v"] != 1
         or consent["kind"] not in CONSENT_KINDS
+        or not isinstance(consent["device"], str)
+        or not isinstance(consent["sig"], str)
     ):
         raise MeshError("consent.malformed", "fields")
     clock = consent["clock"]

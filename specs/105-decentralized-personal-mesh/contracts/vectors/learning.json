@@ -6188,7 +6188,7 @@
           "invalid": [
             {
               "event": "sha256:52fa6c02fb1ca8ebac463162e9016e0c3bc989cbd4cb8bc76cbf44465c6139ca",
-              "reason": "learn.fold.untrusted_auto"
+              "reason": "learn.fold.needs_owner"
             }
           ],
           "proposals": [
@@ -6232,7 +6232,7 @@
                 "suite_hash": "sha256:369d11da0bb43e3922c6bff1c2915f7b4c1153a18f5625efc5577d64b93d8771"
               },
               "status": {
-                "name": "replayed"
+                "name": "waiting_owner"
               }
             }
           ]
@@ -6367,7 +6367,1122 @@
         ]
       },
       "kind": "learn_ledger_fold",
-      "name": "fold/untrusted-labels-block-an-automatic-adoption-even-without-owner-reasons"
+      "name": "fold/untrusted-evidence-blocks-an-automatic-adoption-even-without-owner-reasons"
+    },
+    {
+      "expect": {
+        "ok": {
+          "active": [],
+          "invalid": [
+            {
+              "event": "sha256:479080e4687fc7d7c96019d0d419a7844892182b038124951e61489dd8011c7a",
+              "reason": "learn.fold.needs_owner"
+            }
+          ],
+          "proposals": [
+            {
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "gate": {
+                "codes": [],
+                "hygiene": [],
+                "owner_reasons": [],
+                "passed": true
+              },
+              "id": "sha256:1b6a22c5945140d4362308e42ff8ad87aed7137d8225215b0f8622115f23d83d",
+              "item": {
+                "content_hash": "sha256:3e4e7e8bfe7b0e7b071694953db23c18cf2e5dfde19b881373827408a5fee2a6",
+                "kind": "instruction_edit",
+                "name": "reply-style",
+                "requested_permissions": [],
+                "scope": {
+                  "project": "weekly",
+                  "tool": "search_notes"
+                },
+                "tools": [],
+                "wider": false
+              },
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "tool-trusted"
+              },
+              "replay": {
+                "adopt": true,
+                "candidate_hash": "sha256:3e4e7e8bfe7b0e7b071694953db23c18cf2e5dfde19b881373827408a5fee2a6",
+                "report_hash": "sha256:e9382c93e8aadbb2ec53a4da54a0f6cee1331094fea960e8eadcc206cb973b61",
+                "suite_hash": "sha256:369d11da0bb43e3922c6bff1c2915f7b4c1153a18f5625efc5577d64b93d8771"
+              },
+              "status": {
+                "name": "waiting_owner"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "content": "Prefer short answers.",
+              "content_hash": "sha256:3e4e7e8bfe7b0e7b071694953db23c18cf2e5dfde19b881373827408a5fee2a6",
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "kind": "instruction_edit",
+              "name": "reply-style",
+              "op": "stage",
+              "requested_permissions": [],
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes"
+              },
+              "tools": [],
+              "wider": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:1b6a22c5945140d4362308e42ff8ad87aed7137d8225215b0f8622115f23d83d",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 1,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "hygiene": [],
+              "op": "gate",
+              "owner_reasons": [],
+              "passed": true,
+              "proposal": "sha256:1b6a22c5945140d4362308e42ff8ad87aed7137d8225215b0f8622115f23d83d",
+              "violations": []
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:f67bf3b1548c39b151535cbaa68113b87855744848c889f4f7b42b25839f08f1",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 2,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "adopt": true,
+              "candidate_hash": "sha256:3e4e7e8bfe7b0e7b071694953db23c18cf2e5dfde19b881373827408a5fee2a6",
+              "must_pass_ok": true,
+              "op": "replay",
+              "proposal": "sha256:1b6a22c5945140d4362308e42ff8ad87aed7137d8225215b0f8622115f23d83d",
+              "report_hash": "sha256:e9382c93e8aadbb2ec53a4da54a0f6cee1331094fea960e8eadcc206cb973b61",
+              "suite_hash": "sha256:369d11da0bb43e3922c6bff1c2915f7b4c1153a18f5625efc5577d64b93d8771",
+              "target_improved": true,
+              "target_regressed": false
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:e7018b311cb03176a198ce9321380cbf44996297d161af8e9c01d9a465abe578",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 3,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "at": 1794441650000,
+              "baseline": {
+                "errors": 1,
+                "repeats": 0,
+                "samples": 10
+              },
+              "content_hash": "sha256:3e4e7e8bfe7b0e7b071694953db23c18cf2e5dfde19b881373827408a5fee2a6",
+              "mode": "auto",
+              "policy": {
+                "max_error_rise_permille": 100,
+                "max_repeat_rise_permille": 100,
+                "min_samples": 5
+              },
+              "proposal": "sha256:1b6a22c5945140d4362308e42ff8ad87aed7137d8225215b0f8622115f23d83d",
+              "report_hash": "sha256:e9382c93e8aadbb2ec53a4da54a0f6cee1331094fea960e8eadcc206cb973b61",
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes",
+                "wide": false
+              }
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:479080e4687fc7d7c96019d0d419a7844892182b038124951e61489dd8011c7a",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 4,
+            "type": "learn.adoption"
+          }
+        ]
+      },
+      "kind": "learn_ledger_fold",
+      "name": "fold/an-instruction-edit-needs-the-owner-even-when-the-gate-record-lists-no-reason"
+    },
+    {
+      "expect": {
+        "ok": {
+          "active": [
+            {
+              "adoption": "sha256:1f203d2ef78d9f2c6c3f1f1c7657a20ac811060504fb5446d034b6ab79329f22",
+              "baseline": {
+                "errors": 1,
+                "repeats": 0,
+                "samples": 10
+              },
+              "content_hash": "sha256:3e4e7e8bfe7b0e7b071694953db23c18cf2e5dfde19b881373827408a5fee2a6",
+              "kind": "instruction_edit",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "tool-trusted"
+              },
+              "mode": "owner",
+              "name": "reply-style",
+              "policy": {
+                "max_error_rise_permille": 100,
+                "max_repeat_rise_permille": 100,
+                "min_samples": 5
+              },
+              "proposal": "sha256:1b6a22c5945140d4362308e42ff8ad87aed7137d8225215b0f8622115f23d83d",
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes"
+              },
+              "wide": false
+            }
+          ],
+          "invalid": [
+            {
+              "event": "sha256:479080e4687fc7d7c96019d0d419a7844892182b038124951e61489dd8011c7a",
+              "reason": "learn.fold.needs_owner"
+            }
+          ],
+          "proposals": [
+            {
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "gate": {
+                "codes": [],
+                "hygiene": [],
+                "owner_reasons": [],
+                "passed": true
+              },
+              "id": "sha256:1b6a22c5945140d4362308e42ff8ad87aed7137d8225215b0f8622115f23d83d",
+              "item": {
+                "content_hash": "sha256:3e4e7e8bfe7b0e7b071694953db23c18cf2e5dfde19b881373827408a5fee2a6",
+                "kind": "instruction_edit",
+                "name": "reply-style",
+                "requested_permissions": [],
+                "scope": {
+                  "project": "weekly",
+                  "tool": "search_notes"
+                },
+                "tools": [],
+                "wider": false
+              },
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "tool-trusted"
+              },
+              "replay": {
+                "adopt": true,
+                "candidate_hash": "sha256:3e4e7e8bfe7b0e7b071694953db23c18cf2e5dfde19b881373827408a5fee2a6",
+                "report_hash": "sha256:e9382c93e8aadbb2ec53a4da54a0f6cee1331094fea960e8eadcc206cb973b61",
+                "suite_hash": "sha256:369d11da0bb43e3922c6bff1c2915f7b4c1153a18f5625efc5577d64b93d8771"
+              },
+              "status": {
+                "adoption": "sha256:1f203d2ef78d9f2c6c3f1f1c7657a20ac811060504fb5446d034b6ab79329f22",
+                "name": "adopted"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "content": "Prefer short answers.",
+              "content_hash": "sha256:3e4e7e8bfe7b0e7b071694953db23c18cf2e5dfde19b881373827408a5fee2a6",
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "kind": "instruction_edit",
+              "name": "reply-style",
+              "op": "stage",
+              "requested_permissions": [],
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes"
+              },
+              "tools": [],
+              "wider": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:1b6a22c5945140d4362308e42ff8ad87aed7137d8225215b0f8622115f23d83d",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 1,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "hygiene": [],
+              "op": "gate",
+              "owner_reasons": [],
+              "passed": true,
+              "proposal": "sha256:1b6a22c5945140d4362308e42ff8ad87aed7137d8225215b0f8622115f23d83d",
+              "violations": []
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:f67bf3b1548c39b151535cbaa68113b87855744848c889f4f7b42b25839f08f1",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 2,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "adopt": true,
+              "candidate_hash": "sha256:3e4e7e8bfe7b0e7b071694953db23c18cf2e5dfde19b881373827408a5fee2a6",
+              "must_pass_ok": true,
+              "op": "replay",
+              "proposal": "sha256:1b6a22c5945140d4362308e42ff8ad87aed7137d8225215b0f8622115f23d83d",
+              "report_hash": "sha256:e9382c93e8aadbb2ec53a4da54a0f6cee1331094fea960e8eadcc206cb973b61",
+              "suite_hash": "sha256:369d11da0bb43e3922c6bff1c2915f7b4c1153a18f5625efc5577d64b93d8771",
+              "target_improved": true,
+              "target_regressed": false
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:e7018b311cb03176a198ce9321380cbf44996297d161af8e9c01d9a465abe578",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 3,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "at": 1794441650000,
+              "baseline": {
+                "errors": 1,
+                "repeats": 0,
+                "samples": 10
+              },
+              "content_hash": "sha256:3e4e7e8bfe7b0e7b071694953db23c18cf2e5dfde19b881373827408a5fee2a6",
+              "mode": "auto",
+              "policy": {
+                "max_error_rise_permille": 100,
+                "max_repeat_rise_permille": 100,
+                "min_samples": 5
+              },
+              "proposal": "sha256:1b6a22c5945140d4362308e42ff8ad87aed7137d8225215b0f8622115f23d83d",
+              "report_hash": "sha256:e9382c93e8aadbb2ec53a4da54a0f6cee1331094fea960e8eadcc206cb973b61",
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes",
+                "wide": false
+              }
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:479080e4687fc7d7c96019d0d419a7844892182b038124951e61489dd8011c7a",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 4,
+            "type": "learn.adoption"
+          },
+          {
+            "after": [],
+            "body": {
+              "at": 1794441650000,
+              "baseline": {
+                "errors": 1,
+                "repeats": 0,
+                "samples": 10
+              },
+              "content_hash": "sha256:3e4e7e8bfe7b0e7b071694953db23c18cf2e5dfde19b881373827408a5fee2a6",
+              "mode": "owner",
+              "policy": {
+                "max_error_rise_permille": 100,
+                "max_repeat_rise_permille": 100,
+                "min_samples": 5
+              },
+              "proposal": "sha256:1b6a22c5945140d4362308e42ff8ad87aed7137d8225215b0f8622115f23d83d",
+              "report_hash": "sha256:e9382c93e8aadbb2ec53a4da54a0f6cee1331094fea960e8eadcc206cb973b61",
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes",
+                "wide": false
+              }
+            },
+            "clock": {
+              "ms": 1794441605000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:1f203d2ef78d9f2c6c3f1f1c7657a20ac811060504fb5446d034b6ab79329f22",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 5,
+            "type": "learn.adoption"
+          }
+        ]
+      },
+      "kind": "learn_ledger_fold",
+      "name": "fold/the-owner-can-adopt-an-instruction-edit-the-gate-record-did-not-flag"
+    },
+    {
+      "expect": {
+        "ok": {
+          "active": [],
+          "invalid": [
+            {
+              "event": "sha256:9e6744ffd8aa4a633618d2e0b854cc5f6afa2131f8706e48a30113deb814c442",
+              "reason": "learn.fold.needs_owner"
+            }
+          ],
+          "proposals": [
+            {
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "gate": {
+                "codes": [],
+                "hygiene": [],
+                "owner_reasons": [],
+                "passed": true
+              },
+              "id": "sha256:62618c312ad3228f5f3ea063d59445c9eb70705d1cf61bbe7c40fb1f1d260cfd",
+              "item": {
+                "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+                "kind": "skill",
+                "name": "reply-style",
+                "requested_permissions": [],
+                "scope": {
+                  "project": "weekly",
+                  "tool": "search_notes"
+                },
+                "tools": [],
+                "wider": true
+              },
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "tool-trusted"
+              },
+              "replay": {
+                "adopt": true,
+                "candidate_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+                "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+                "suite_hash": "sha256:369d11da0bb43e3922c6bff1c2915f7b4c1153a18f5625efc5577d64b93d8771"
+              },
+              "status": {
+                "name": "waiting_owner"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "content": "Answer in short sentences and cite the note title.",
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "kind": "skill",
+              "name": "reply-style",
+              "op": "stage",
+              "requested_permissions": [],
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes"
+              },
+              "tools": [],
+              "wider": true
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:62618c312ad3228f5f3ea063d59445c9eb70705d1cf61bbe7c40fb1f1d260cfd",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 1,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "hygiene": [],
+              "op": "gate",
+              "owner_reasons": [],
+              "passed": true,
+              "proposal": "sha256:62618c312ad3228f5f3ea063d59445c9eb70705d1cf61bbe7c40fb1f1d260cfd",
+              "violations": []
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:af56ff1cce560067909b980e95d9357aff13ef6f95263e337ea0f4e876280140",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 2,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "adopt": true,
+              "candidate_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "must_pass_ok": true,
+              "op": "replay",
+              "proposal": "sha256:62618c312ad3228f5f3ea063d59445c9eb70705d1cf61bbe7c40fb1f1d260cfd",
+              "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+              "suite_hash": "sha256:369d11da0bb43e3922c6bff1c2915f7b4c1153a18f5625efc5577d64b93d8771",
+              "target_improved": true,
+              "target_regressed": false
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:d7349654f2ebf62db43ed1129711a1b4ac95f35195f079318ab28ea437bcc739",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 3,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "at": 1794441650000,
+              "baseline": {
+                "errors": 1,
+                "repeats": 0,
+                "samples": 10
+              },
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "mode": "auto",
+              "policy": {
+                "max_error_rise_permille": 100,
+                "max_repeat_rise_permille": 100,
+                "min_samples": 5
+              },
+              "proposal": "sha256:62618c312ad3228f5f3ea063d59445c9eb70705d1cf61bbe7c40fb1f1d260cfd",
+              "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes",
+                "wide": false
+              }
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:9e6744ffd8aa4a633618d2e0b854cc5f6afa2131f8706e48a30113deb814c442",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 4,
+            "type": "learn.adoption"
+          }
+        ]
+      },
+      "kind": "learn_ledger_fold",
+      "name": "fold/a-wider-proposal-needs-the-owner-even-when-the-gate-record-lists-no-reason"
+    },
+    {
+      "expect": {
+        "ok": {
+          "active": [
+            {
+              "adoption": "sha256:a2cf8f428c0a5f8e2a305ff046d1b51dfb60e40eac3c87eed39bc8cfeecc26ee",
+              "baseline": {
+                "errors": 1,
+                "repeats": 0,
+                "samples": 10
+              },
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "kind": "skill",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "tool-trusted"
+              },
+              "mode": "owner",
+              "name": "reply-style",
+              "policy": {
+                "max_error_rise_permille": 100,
+                "max_repeat_rise_permille": 100,
+                "min_samples": 5
+              },
+              "proposal": "sha256:62618c312ad3228f5f3ea063d59445c9eb70705d1cf61bbe7c40fb1f1d260cfd",
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes"
+              },
+              "wide": true
+            }
+          ],
+          "invalid": [
+            {
+              "event": "sha256:9e6744ffd8aa4a633618d2e0b854cc5f6afa2131f8706e48a30113deb814c442",
+              "reason": "learn.fold.needs_owner"
+            }
+          ],
+          "proposals": [
+            {
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "gate": {
+                "codes": [],
+                "hygiene": [],
+                "owner_reasons": [],
+                "passed": true
+              },
+              "id": "sha256:62618c312ad3228f5f3ea063d59445c9eb70705d1cf61bbe7c40fb1f1d260cfd",
+              "item": {
+                "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+                "kind": "skill",
+                "name": "reply-style",
+                "requested_permissions": [],
+                "scope": {
+                  "project": "weekly",
+                  "tool": "search_notes"
+                },
+                "tools": [],
+                "wider": true
+              },
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "tool-trusted"
+              },
+              "replay": {
+                "adopt": true,
+                "candidate_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+                "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+                "suite_hash": "sha256:369d11da0bb43e3922c6bff1c2915f7b4c1153a18f5625efc5577d64b93d8771"
+              },
+              "status": {
+                "adoption": "sha256:a2cf8f428c0a5f8e2a305ff046d1b51dfb60e40eac3c87eed39bc8cfeecc26ee",
+                "name": "adopted"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "content": "Answer in short sentences and cite the note title.",
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "kind": "skill",
+              "name": "reply-style",
+              "op": "stage",
+              "requested_permissions": [],
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes"
+              },
+              "tools": [],
+              "wider": true
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:62618c312ad3228f5f3ea063d59445c9eb70705d1cf61bbe7c40fb1f1d260cfd",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 1,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "hygiene": [],
+              "op": "gate",
+              "owner_reasons": [],
+              "passed": true,
+              "proposal": "sha256:62618c312ad3228f5f3ea063d59445c9eb70705d1cf61bbe7c40fb1f1d260cfd",
+              "violations": []
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:af56ff1cce560067909b980e95d9357aff13ef6f95263e337ea0f4e876280140",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 2,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "adopt": true,
+              "candidate_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "must_pass_ok": true,
+              "op": "replay",
+              "proposal": "sha256:62618c312ad3228f5f3ea063d59445c9eb70705d1cf61bbe7c40fb1f1d260cfd",
+              "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+              "suite_hash": "sha256:369d11da0bb43e3922c6bff1c2915f7b4c1153a18f5625efc5577d64b93d8771",
+              "target_improved": true,
+              "target_regressed": false
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:d7349654f2ebf62db43ed1129711a1b4ac95f35195f079318ab28ea437bcc739",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 3,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "at": 1794441650000,
+              "baseline": {
+                "errors": 1,
+                "repeats": 0,
+                "samples": 10
+              },
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "mode": "auto",
+              "policy": {
+                "max_error_rise_permille": 100,
+                "max_repeat_rise_permille": 100,
+                "min_samples": 5
+              },
+              "proposal": "sha256:62618c312ad3228f5f3ea063d59445c9eb70705d1cf61bbe7c40fb1f1d260cfd",
+              "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes",
+                "wide": false
+              }
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:9e6744ffd8aa4a633618d2e0b854cc5f6afa2131f8706e48a30113deb814c442",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 4,
+            "type": "learn.adoption"
+          },
+          {
+            "after": [],
+            "body": {
+              "at": 1794441650000,
+              "baseline": {
+                "errors": 1,
+                "repeats": 0,
+                "samples": 10
+              },
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "mode": "owner",
+              "policy": {
+                "max_error_rise_permille": 100,
+                "max_repeat_rise_permille": 100,
+                "min_samples": 5
+              },
+              "proposal": "sha256:62618c312ad3228f5f3ea063d59445c9eb70705d1cf61bbe7c40fb1f1d260cfd",
+              "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes",
+                "wide": true
+              }
+            },
+            "clock": {
+              "ms": 1794441605000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:a2cf8f428c0a5f8e2a305ff046d1b51dfb60e40eac3c87eed39bc8cfeecc26ee",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 5,
+            "type": "learn.adoption"
+          }
+        ]
+      },
+      "kind": "learn_ledger_fold",
+      "name": "fold/the-owner-can-adopt-a-wider-proposal-the-gate-record-did-not-flag"
+    },
+    {
+      "expect": {
+        "ok": {
+          "active": [],
+          "invalid": [
+            {
+              "event": "sha256:c2c023bba28b3d8a300a8a7fdb8be435ae63d4e3f784aacebc9c13460337032b",
+              "reason": "learn.fold.label_mismatch"
+            }
+          ],
+          "proposals": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "content": "Answer in short sentences and cite the note title.",
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                },
+                {
+                  "event": "sha256:01c3a2fba44232f046044967d1026f24f75cb67ec238d502b60706f6a153dffd",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "untrusted"
+                  }
+                }
+              ],
+              "kind": "skill",
+              "name": "reply-style",
+              "op": "stage",
+              "requested_permissions": [],
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes"
+              },
+              "tools": [],
+              "wider": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:c2c023bba28b3d8a300a8a7fdb8be435ae63d4e3f784aacebc9c13460337032b",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1,
+            "type": "learn.proposal"
+          }
+        ]
+      },
+      "kind": "learn_ledger_fold",
+      "name": "fold/a-stage-header-claiming-more-trust-than-its-evidence-is-refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "active": [],
+          "invalid": [
+            {
+              "event": "sha256:84bdb17312c11c3dec93ea66f3e8f7a3ae37c31ef8f741b0d13c1024588b6e78",
+              "reason": "learn.fold.label_mismatch"
+            }
+          ],
+          "proposals": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "content": "Answer in short sentences and cite the note title.",
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "kind": "skill",
+              "name": "reply-style",
+              "op": "stage",
+              "requested_permissions": [],
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes"
+              },
+              "tools": [],
+              "wider": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:84bdb17312c11c3dec93ea66f3e8f7a3ae37c31ef8f741b0d13c1024588b6e78",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "untrusted"
+            },
+            "seq": 1,
+            "type": "learn.proposal"
+          }
+        ]
+      },
+      "kind": "learn_ledger_fold",
+      "name": "fold/a-stage-header-claiming-less-trust-than-its-evidence-is-refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "active": [],
+          "invalid": [
+            {
+              "event": "sha256:cb4d4d390fc4858b44f35ebeeecd11ab300c27fb1464037231a2712de2fb447d",
+              "reason": "learn.fold.label_mismatch"
+            }
+          ],
+          "proposals": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "content": "Answer in short sentences and cite the note title.",
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "kind": "skill",
+              "name": "reply-style",
+              "op": "stage",
+              "requested_permissions": [],
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes"
+              },
+              "tools": [],
+              "wider": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:cb4d4d390fc4858b44f35ebeeecd11ab300c27fb1464037231a2712de2fb447d",
+            "labels": {
+              "confidentiality": "public",
+              "integrity": "tool-trusted"
+            },
+            "seq": 1,
+            "type": "learn.proposal"
+          }
+        ]
+      },
+      "kind": "learn_ledger_fold",
+      "name": "fold/a-stage-header-with-another-confidentiality-than-its-evidence-is-refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "active": [],
+          "invalid": [
+            {
+              "event": "sha256:f514ed04892f1b75294a0ed415aca3ebc1acc8218c063654f851ad5e588682ec",
+              "reason": "learn.fold.no_evidence"
+            }
+          ],
+          "proposals": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "content": "Answer in short sentences and cite the note title.",
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "evidence": [],
+              "kind": "skill",
+              "name": "reply-style",
+              "op": "stage",
+              "requested_permissions": [],
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes"
+              },
+              "tools": [],
+              "wider": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:f514ed04892f1b75294a0ed415aca3ebc1acc8218c063654f851ad5e588682ec",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 1,
+            "type": "learn.proposal"
+          }
+        ]
+      },
+      "kind": "learn_ledger_fold",
+      "name": "fold/a-stage-with-no-evidence-is-refused"
     },
     {
       "expect": {
@@ -10909,6 +12024,1027 @@
       },
       "kind": "learn_ledger_fold",
       "name": "fold/a-late-replay-after-a-decline-is-ignored"
+    },
+    {
+      "expect": {
+        "ok": {
+          "active": [],
+          "invalid": [],
+          "proposals": [
+            {
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "gate": {
+                "codes": [],
+                "hygiene": [],
+                "owner_reasons": [],
+                "passed": true
+              },
+              "id": "sha256:b656958a1c9e4843b43aef4878fddd04d62138e1de63329b802b5bf97076d154",
+              "item": {
+                "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+                "kind": "skill",
+                "name": "reply-style",
+                "requested_permissions": [],
+                "scope": {
+                  "project": "weekly",
+                  "tool": "search_notes"
+                },
+                "tools": [],
+                "wider": false
+              },
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "tool-trusted"
+              },
+              "replay": {
+                "adopt": true,
+                "candidate_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+                "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+                "suite_hash": "sha256:369d11da0bb43e3922c6bff1c2915f7b4c1153a18f5625efc5577d64b93d8771"
+              },
+              "status": {
+                "name": "declined",
+                "reason": "owner_declined"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "content": "Answer in short sentences and cite the note title.",
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "kind": "skill",
+              "name": "reply-style",
+              "op": "stage",
+              "requested_permissions": [],
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes"
+              },
+              "tools": [],
+              "wider": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:b656958a1c9e4843b43aef4878fddd04d62138e1de63329b802b5bf97076d154",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 1,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "hygiene": [],
+              "op": "gate",
+              "owner_reasons": [],
+              "passed": true,
+              "proposal": "sha256:b656958a1c9e4843b43aef4878fddd04d62138e1de63329b802b5bf97076d154",
+              "violations": []
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:c23b891f4ec9621e79188c0fc7c856c1296886b3b91a774f98b9806035245695",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 2,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "adopt": true,
+              "candidate_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "must_pass_ok": true,
+              "op": "replay",
+              "proposal": "sha256:b656958a1c9e4843b43aef4878fddd04d62138e1de63329b802b5bf97076d154",
+              "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+              "suite_hash": "sha256:369d11da0bb43e3922c6bff1c2915f7b4c1153a18f5625efc5577d64b93d8771",
+              "target_improved": true,
+              "target_regressed": false
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:e766ba67a99682df4d3ba8da248b6a7f67efe6b04018fcda007b39039c270357",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 3,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "by": "owner",
+              "op": "decline",
+              "proposal": "sha256:b656958a1c9e4843b43aef4878fddd04d62138e1de63329b802b5bf97076d154",
+              "reason": "owner_declined"
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:830a24a3d394ea52717999ab2604ef500f0e05f1dec6138be6be889eda4cce3c",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 4,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "at": 1794441650000,
+              "baseline": {
+                "errors": 1,
+                "repeats": 0,
+                "samples": 10
+              },
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "mode": "owner",
+              "policy": {
+                "max_error_rise_permille": 100,
+                "max_repeat_rise_permille": 100,
+                "min_samples": 5
+              },
+              "proposal": "sha256:b656958a1c9e4843b43aef4878fddd04d62138e1de63329b802b5bf97076d154",
+              "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes",
+                "wide": false
+              }
+            },
+            "clock": {
+              "ms": 1794441605000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:4c1a2f3dfee8330e23135fb145473e147a15f362b03e281d61962f44005dbf62",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 5,
+            "type": "learn.adoption"
+          }
+        ]
+      },
+      "kind": "learn_ledger_fold",
+      "name": "fold/an-adoption-after-an-owner-decline-is-ignored"
+    },
+    {
+      "expect": {
+        "ok": {
+          "active": [],
+          "invalid": [],
+          "proposals": [
+            {
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "gate": null,
+              "id": "sha256:91e6feae73536da7fb8b49918f0491be413162aeba5f9e8341ceb92ea722223a",
+              "item": {
+                "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+                "kind": "skill",
+                "name": "reply-style",
+                "requested_permissions": [],
+                "scope": {
+                  "project": "weekly",
+                  "tool": "search_notes"
+                },
+                "tools": [],
+                "wider": false
+              },
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "tool-trusted"
+              },
+              "replay": null,
+              "status": {
+                "name": "declined",
+                "reason": "gate_failed_again"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "content": "Answer in short sentences and cite the note title.",
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "kind": "skill",
+              "name": "reply-style",
+              "op": "stage",
+              "requested_permissions": [],
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes"
+              },
+              "tools": [],
+              "wider": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:91e6feae73536da7fb8b49918f0491be413162aeba5f9e8341ceb92ea722223a",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 1,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "by": "system",
+              "op": "decline",
+              "proposal": "sha256:91e6feae73536da7fb8b49918f0491be413162aeba5f9e8341ceb92ea722223a",
+              "reason": "gate_failed_again"
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:1bda1f69c3eede69ae39da5249e1b8a90965b8cefa0b252b56f8562819ef4082",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 2,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "hygiene": [],
+              "op": "gate",
+              "owner_reasons": [],
+              "passed": true,
+              "proposal": "sha256:91e6feae73536da7fb8b49918f0491be413162aeba5f9e8341ceb92ea722223a",
+              "violations": []
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:59133db266f71922682616bb1369d5d24ecf8d60967b302b518276a21c31b6c6",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 3,
+            "type": "learn.proposal"
+          }
+        ]
+      },
+      "kind": "learn_ledger_fold",
+      "name": "fold/a-gate-record-after-a-decline-is-ignored"
+    },
+    {
+      "expect": {
+        "ok": {
+          "active": [],
+          "invalid": [],
+          "proposals": [
+            {
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "gate": {
+                "codes": [],
+                "hygiene": [],
+                "owner_reasons": [],
+                "passed": true
+              },
+              "id": "sha256:9728a2b4fd8675b20b5070e19655feb81a5c8a1cfaa5b394ecb6b789d667b589",
+              "item": {
+                "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+                "kind": "skill",
+                "name": "reply-style",
+                "requested_permissions": [],
+                "scope": {
+                  "project": "weekly",
+                  "tool": "search_notes"
+                },
+                "tools": [],
+                "wider": false
+              },
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "tool-trusted"
+              },
+              "replay": {
+                "adopt": true,
+                "candidate_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+                "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+                "suite_hash": "sha256:369d11da0bb43e3922c6bff1c2915f7b4c1153a18f5625efc5577d64b93d8771"
+              },
+              "status": {
+                "adoption": "sha256:a4642c858e15e10fff37af7af3f56eb9411e10d607e4b6e2ac09d31e0f8628b9",
+                "name": "reversed",
+                "reason": "undo"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "content": "Answer in short sentences and cite the note title.",
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "kind": "skill",
+              "name": "reply-style",
+              "op": "stage",
+              "requested_permissions": [],
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes"
+              },
+              "tools": [],
+              "wider": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:9728a2b4fd8675b20b5070e19655feb81a5c8a1cfaa5b394ecb6b789d667b589",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 1,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "hygiene": [],
+              "op": "gate",
+              "owner_reasons": [],
+              "passed": true,
+              "proposal": "sha256:9728a2b4fd8675b20b5070e19655feb81a5c8a1cfaa5b394ecb6b789d667b589",
+              "violations": []
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:d68923a65af652a5efd5bd5f94e0d7d06f0412ac8fd867c63105ffdcb1ea1d66",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 2,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "adopt": true,
+              "candidate_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "must_pass_ok": true,
+              "op": "replay",
+              "proposal": "sha256:9728a2b4fd8675b20b5070e19655feb81a5c8a1cfaa5b394ecb6b789d667b589",
+              "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+              "suite_hash": "sha256:369d11da0bb43e3922c6bff1c2915f7b4c1153a18f5625efc5577d64b93d8771",
+              "target_improved": true,
+              "target_regressed": false
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:9df69c1921dd704f9c930fa1c5579a356189ca39eec569cdbfad169e962461da",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 3,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "at": 1794441650000,
+              "baseline": {
+                "errors": 1,
+                "repeats": 0,
+                "samples": 10
+              },
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "mode": "auto",
+              "policy": {
+                "max_error_rise_permille": 100,
+                "max_repeat_rise_permille": 100,
+                "min_samples": 5
+              },
+              "proposal": "sha256:9728a2b4fd8675b20b5070e19655feb81a5c8a1cfaa5b394ecb6b789d667b589",
+              "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes",
+                "wide": false
+              }
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:a4642c858e15e10fff37af7af3f56eb9411e10d607e4b6e2ac09d31e0f8628b9",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 4,
+            "type": "learn.adoption"
+          },
+          {
+            "after": [],
+            "body": {
+              "adoption": "sha256:a4642c858e15e10fff37af7af3f56eb9411e10d607e4b6e2ac09d31e0f8628b9",
+              "by": "owner",
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "proposal": "sha256:9728a2b4fd8675b20b5070e19655feb81a5c8a1cfaa5b394ecb6b789d667b589",
+              "reason": "undo"
+            },
+            "clock": {
+              "ms": 1794441605000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:9898a80227bc3631b7085e7517b357f05e7dca1edb62e19ae325a785b2b648d6",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 5,
+            "type": "learn.reversal"
+          },
+          {
+            "after": [],
+            "body": {
+              "at": 1794441699000,
+              "baseline": {
+                "errors": 1,
+                "repeats": 0,
+                "samples": 10
+              },
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "mode": "auto",
+              "policy": {
+                "max_error_rise_permille": 100,
+                "max_repeat_rise_permille": 100,
+                "min_samples": 5
+              },
+              "proposal": "sha256:9728a2b4fd8675b20b5070e19655feb81a5c8a1cfaa5b394ecb6b789d667b589",
+              "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes",
+                "wide": false
+              }
+            },
+            "clock": {
+              "ms": 1794441606000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:b928333750d4e382493028c1e664aecb73194e3ce8e84422fee7693bae51421e",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 6,
+            "type": "learn.adoption"
+          }
+        ]
+      },
+      "kind": "learn_ledger_fold",
+      "name": "fold/an-adoption-after-an-undo-is-ignored"
+    },
+    {
+      "expect": {
+        "ok": {
+          "active": [
+            {
+              "adoption": "sha256:e6ce50dc0541f5d0b41124130d000313f16fc5fc68cf4c82fd9c0845a7d9b8ef",
+              "baseline": {
+                "errors": 1,
+                "repeats": 0,
+                "samples": 10
+              },
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "kind": "skill",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "tool-trusted"
+              },
+              "mode": "auto",
+              "name": "reply-style",
+              "policy": {
+                "max_error_rise_permille": 100,
+                "max_repeat_rise_permille": 100,
+                "min_samples": 5
+              },
+              "proposal": "sha256:da9f36afa931d33f2a42032f5b31a380213171a611767b38a7bb0257e37f5743",
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes"
+              },
+              "wide": false
+            }
+          ],
+          "invalid": [],
+          "proposals": [
+            {
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "gate": {
+                "codes": [],
+                "hygiene": [],
+                "owner_reasons": [],
+                "passed": true
+              },
+              "id": "sha256:9728a2b4fd8675b20b5070e19655feb81a5c8a1cfaa5b394ecb6b789d667b589",
+              "item": {
+                "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+                "kind": "skill",
+                "name": "reply-style",
+                "requested_permissions": [],
+                "scope": {
+                  "project": "weekly",
+                  "tool": "search_notes"
+                },
+                "tools": [],
+                "wider": false
+              },
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "tool-trusted"
+              },
+              "replay": {
+                "adopt": true,
+                "candidate_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+                "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+                "suite_hash": "sha256:369d11da0bb43e3922c6bff1c2915f7b4c1153a18f5625efc5577d64b93d8771"
+              },
+              "status": {
+                "adoption": "sha256:a4642c858e15e10fff37af7af3f56eb9411e10d607e4b6e2ac09d31e0f8628b9",
+                "name": "reversed",
+                "reason": "undo"
+              }
+            },
+            {
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "gate": {
+                "codes": [],
+                "hygiene": [],
+                "owner_reasons": [],
+                "passed": true
+              },
+              "id": "sha256:da9f36afa931d33f2a42032f5b31a380213171a611767b38a7bb0257e37f5743",
+              "item": {
+                "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+                "kind": "skill",
+                "name": "reply-style",
+                "requested_permissions": [],
+                "scope": {
+                  "project": "weekly",
+                  "tool": "search_notes"
+                },
+                "tools": [],
+                "wider": false
+              },
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "tool-trusted"
+              },
+              "replay": {
+                "adopt": true,
+                "candidate_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+                "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+                "suite_hash": "sha256:369d11da0bb43e3922c6bff1c2915f7b4c1153a18f5625efc5577d64b93d8771"
+              },
+              "status": {
+                "adoption": "sha256:e6ce50dc0541f5d0b41124130d000313f16fc5fc68cf4c82fd9c0845a7d9b8ef",
+                "name": "adopted"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "content": "Answer in short sentences and cite the note title.",
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "kind": "skill",
+              "name": "reply-style",
+              "op": "stage",
+              "requested_permissions": [],
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes"
+              },
+              "tools": [],
+              "wider": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:9728a2b4fd8675b20b5070e19655feb81a5c8a1cfaa5b394ecb6b789d667b589",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 1,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "hygiene": [],
+              "op": "gate",
+              "owner_reasons": [],
+              "passed": true,
+              "proposal": "sha256:9728a2b4fd8675b20b5070e19655feb81a5c8a1cfaa5b394ecb6b789d667b589",
+              "violations": []
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:d68923a65af652a5efd5bd5f94e0d7d06f0412ac8fd867c63105ffdcb1ea1d66",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 2,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "adopt": true,
+              "candidate_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "must_pass_ok": true,
+              "op": "replay",
+              "proposal": "sha256:9728a2b4fd8675b20b5070e19655feb81a5c8a1cfaa5b394ecb6b789d667b589",
+              "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+              "suite_hash": "sha256:369d11da0bb43e3922c6bff1c2915f7b4c1153a18f5625efc5577d64b93d8771",
+              "target_improved": true,
+              "target_regressed": false
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:9df69c1921dd704f9c930fa1c5579a356189ca39eec569cdbfad169e962461da",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 3,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "at": 1794441650000,
+              "baseline": {
+                "errors": 1,
+                "repeats": 0,
+                "samples": 10
+              },
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "mode": "auto",
+              "policy": {
+                "max_error_rise_permille": 100,
+                "max_repeat_rise_permille": 100,
+                "min_samples": 5
+              },
+              "proposal": "sha256:9728a2b4fd8675b20b5070e19655feb81a5c8a1cfaa5b394ecb6b789d667b589",
+              "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes",
+                "wide": false
+              }
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:a4642c858e15e10fff37af7af3f56eb9411e10d607e4b6e2ac09d31e0f8628b9",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 4,
+            "type": "learn.adoption"
+          },
+          {
+            "after": [],
+            "body": {
+              "adoption": "sha256:a4642c858e15e10fff37af7af3f56eb9411e10d607e4b6e2ac09d31e0f8628b9",
+              "by": "owner",
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "proposal": "sha256:9728a2b4fd8675b20b5070e19655feb81a5c8a1cfaa5b394ecb6b789d667b589",
+              "reason": "undo"
+            },
+            "clock": {
+              "ms": 1794441605000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:9898a80227bc3631b7085e7517b357f05e7dca1edb62e19ae325a785b2b648d6",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 5,
+            "type": "learn.reversal"
+          },
+          {
+            "after": [],
+            "body": {
+              "at": 1794441699000,
+              "baseline": {
+                "errors": 1,
+                "repeats": 0,
+                "samples": 10
+              },
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "mode": "auto",
+              "policy": {
+                "max_error_rise_permille": 100,
+                "max_repeat_rise_permille": 100,
+                "min_samples": 5
+              },
+              "proposal": "sha256:9728a2b4fd8675b20b5070e19655feb81a5c8a1cfaa5b394ecb6b789d667b589",
+              "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes",
+                "wide": false
+              }
+            },
+            "clock": {
+              "ms": 1794441606000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:b928333750d4e382493028c1e664aecb73194e3ce8e84422fee7693bae51421e",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 6,
+            "type": "learn.adoption"
+          },
+          {
+            "after": [],
+            "body": {
+              "content": "Answer in short sentences and cite the note title.",
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "evidence": [
+                {
+                  "event": "sha256:feb1074954c4133e132998850edc6a0a097e062c2b5713fc4b096e8e619add87",
+                  "labels": {
+                    "confidentiality": "private",
+                    "integrity": "owner"
+                  }
+                }
+              ],
+              "kind": "skill",
+              "name": "reply-style",
+              "op": "stage",
+              "requested_permissions": [],
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes"
+              },
+              "tools": [],
+              "wider": false
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:da9f36afa931d33f2a42032f5b31a380213171a611767b38a7bb0257e37f5743",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 1,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "hygiene": [],
+              "op": "gate",
+              "owner_reasons": [],
+              "passed": true,
+              "proposal": "sha256:da9f36afa931d33f2a42032f5b31a380213171a611767b38a7bb0257e37f5743",
+              "violations": []
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:72d6b5e025a544038f1bee603f2144c89ac4525712b08d8668d564f2709f032a",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 2,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "adopt": true,
+              "candidate_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "must_pass_ok": true,
+              "op": "replay",
+              "proposal": "sha256:da9f36afa931d33f2a42032f5b31a380213171a611767b38a7bb0257e37f5743",
+              "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+              "suite_hash": "sha256:369d11da0bb43e3922c6bff1c2915f7b4c1153a18f5625efc5577d64b93d8771",
+              "target_improved": true,
+              "target_regressed": false
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:64eafde5373cc0390229008caf54a56ef77e39f44589a3c30409238862845691",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 3,
+            "type": "learn.proposal"
+          },
+          {
+            "after": [],
+            "body": {
+              "at": 1794441650000,
+              "baseline": {
+                "errors": 1,
+                "repeats": 0,
+                "samples": 10
+              },
+              "content_hash": "sha256:0bfc19c0e43ece2661cf85a30f3acfa423bad4fa26cb8772d2a8c280adf7b529",
+              "mode": "auto",
+              "policy": {
+                "max_error_rise_permille": 100,
+                "max_repeat_rise_permille": 100,
+                "min_samples": 5
+              },
+              "proposal": "sha256:da9f36afa931d33f2a42032f5b31a380213171a611767b38a7bb0257e37f5743",
+              "report_hash": "sha256:217908047cf58f440fddf51267199774cacb0f7afb2debadc89feb70165559a7",
+              "scope": {
+                "project": "weekly",
+                "tool": "search_notes",
+                "wide": false
+              }
+            },
+            "clock": {
+              "ms": 1794441607000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:e6ce50dc0541f5d0b41124130d000313f16fc5fc68cf4c82fd9c0845a7d9b8ef",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "tool-trusted"
+            },
+            "seq": 7,
+            "type": "learn.adoption"
+          }
+        ]
+      },
+      "kind": "learn_ledger_fold",
+      "name": "fold/a-reversed-item-comes-back-only-as-a-new-proposal"
     },
     {
       "expect": {

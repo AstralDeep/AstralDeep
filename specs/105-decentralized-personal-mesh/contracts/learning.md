@@ -49,6 +49,8 @@ A candidate takes the join (`labels.md` section 2) of its evidence labels. The j
 
 The caller never supplies evidence labels. The kernel looks up each evidence event id in its own log and takes that event's header labels. An id the log does not hold stops the proposal with `engine.journal`. The labels in the staged body are therefore the resolved ones.
 
+The labels in a stage event's header must be exactly what this section derives from the evidence in its body. The fold refuses a stage whose header differs (section 8).
+
 A stage, gate, replay, system decline and automatic adoption event takes the join of the candidate labels and the bookkeeping label `{private, tool-trusted}` (`runs.md` section 1.2). An owner adoption keeps that join's confidentiality and sets integrity to `owner`. An owner decline or undo carries exactly `{private, owner}`. A reversal by the trial carries exactly the bookkeeping label.
 
 ## 4. Bodies
@@ -63,9 +65,9 @@ A stage, gate, replay, system decline and automatic adoption event takes the joi
 | `tools`, `requested_permissions` | arrays of strings | |
 | `scope` | object | `{project, tool}` |
 | `wider` | boolean | |
-| `evidence` | array | `{event, labels}` for each piece of evidence. Not empty when written |
+| `evidence` | array | `{event, labels}` for each piece of evidence. Never empty |
 
-A proposal with no evidence is refused with `learn.no_evidence` before anything is written.
+A proposal with no evidence is refused with `learn.no_evidence` before anything is written. The fold refuses a stage with no evidence as well (section 8).
 
 ### 4.2 `learn.proposal`, op `gate`
 
@@ -76,7 +78,7 @@ A proposal with no evidence is refused with `learn.no_evidence` before anything 
 | `passed` | boolean | True exactly when `violations` is empty |
 | `violations` | array of `{code, detail}` | Code from section 5. `detail` is free text for people |
 | `hygiene` | array of strings | Phrases found by the hygiene scan |
-| `owner_reasons` | array of strings | `untrusted_evidence`, `wider_scope`, `instruction_edit`, `suspicious_text`, in that order, only those that apply |
+| `owner_reasons` | array of strings | `untrusted_evidence`, `wider_scope`, `instruction_edit`, `suspicious_text`, in that order, only those that apply. A record of the writer's opinion. The fold never relies on it alone (section 8) |
 
 ### 4.3 `learn.proposal`, op `replay`
 
@@ -210,16 +212,26 @@ Input: the learning events of the `mesh` scope in order key order `(clock.ms, cl
 
 An event is applied by its type.
 
-**`stage`.** Read the body. It is well formed when `scope` is present, `evidence` is an array whose items each have a string `event` and well-formed `labels`, `kind` is an item kind, `name`, `content` and `content_hash` are strings and `wider` is a boolean. `tools` and `requested_permissions` read as the string items of the array, or empty. The stage is accepted when well formed and `content_hash` equals the hash of section 2 for the stage's own kind, name and content. Otherwise the event is invalid with `learn.fold.malformed_proposal`. An accepted proposal starts as `staged`, takes the stage event's header labels as its labels, and has no gate or replay record.
+**`stage`.** Read the body. It is well formed when `scope` is present, `evidence` is an array whose items each have a string `event` and well-formed `labels`, `kind` is an item kind, `name`, `content` and `content_hash` are strings and `wider` is a boolean. `tools` and `requested_permissions` read as the string items of the array, or empty. The checks run in this order and the first failure makes the event invalid:
 
-**Other proposal ops.** An event with no string `proposal` is ignored. One that names no staged proposal is invalid with `learn.fold.unknown_proposal`. One that names a proposal that is already adopted or reversed is ignored. Otherwise by `op`:
+| The stage fails when | Invalid code |
+|---|---|
+| It is not well formed, or `content_hash` differs from the hash of section 2 for the stage's own kind, name and content | `learn.fold.malformed_proposal` |
+| `evidence` is empty | `learn.fold.no_evidence` |
+| The event's header labels differ from the labels section 3 derives from the evidence labels in the body, which is the join of those labels with the bookkeeping label | `learn.fold.label_mismatch` |
+
+An accepted proposal starts as `staged`, takes the stage event's header labels as its labels, and has no gate or replay record.
+
+**Owner review.** The fold decides for itself whether a proposal needs the owner. It never takes that from a gate record. A proposal needs owner review when its kind is `instruction_edit`, or `wider` is true, or its labels have integrity `untrusted`, or any evidence label has integrity `untrusted`. Evidence with no labels, or labels that are not valid, make the stage malformed, so unlabeled evidence never reaches this rule. The gate record's own `owner_reasons` (which include `suspicious_text`) add to this and never remove from it. The reference function is `owner_review_required`.
+
+**Other proposal ops.** An event with no string `proposal` is ignored. One that names no staged proposal is invalid with `learn.fold.unknown_proposal`. One that names a proposal that is already adopted, or closed, is ignored. A proposal is **closed** when it is reversed, or declined for any reason other than `replay_failed`. Closing is final, so a person who wants a closed proposal back proposes it again, which makes a new proposal with a new id. Otherwise by `op`:
 
 - `gate`, if the proposal has no gate record yet: record `passed` (a boolean, false when missing), the `code` of each violation, the string items of `owner_reasons` that are known reasons, and the string items of `hygiene`. The status becomes `gated` when `passed`, otherwise `rejected` with the codes. A second gate record is ignored.
-- `replay`, if the status is `gated`, `replayed` or `waiting_owner`: record `adopt` (false when missing) and the three hash strings (empty when missing). The status becomes `declined` with reason `replay_failed` when `adopt` is false. Else it becomes `waiting_owner` when the gate record has any owner reason, and `replayed` when it has none. A later replay record in these statuses replaces the earlier one.
-- `decline`: the status becomes `declined` with the body's `reason` (empty when missing), from any status except adopted and reversed.
+- `replay`, if the status is `gated`, `replayed` or `waiting_owner`: record `adopt` (false when missing) and the three hash strings (empty when missing). The status becomes `declined` with reason `replay_failed` when `adopt` is false. Else it becomes `waiting_owner` when the proposal needs owner review (above) or the gate record has any owner reason, and `replayed` when neither applies. A later replay record in these statuses replaces the earlier one.
+- `decline`: the status becomes `declined` with the body's `reason` (empty when missing), from any status except adopted and closed. A proposal declined as `replay_failed` can still be declined again by a person, which closes it.
 - any other `op`: ignored.
 
-**`learn.adoption`.** The adoption is invalid when any row below applies. The first row that applies gives the code.
+**`learn.adoption`.** An adoption that names a closed proposal is ignored and is not listed as invalid. Otherwise the adoption is invalid when any row below applies. The first row that applies gives the code.
 
 | The adoption fails when | Invalid code |
 |---|---|
@@ -231,7 +243,7 @@ An event is applied by its type.
 | The replay record has `adopt` false | `learn.fold.replay_failed` |
 | The adoption's `content_hash` differs from the staged one, or the replay's `candidate_hash` differs from the hash of section 2 for the proposal's item | `learn.fold.hash_mismatch` |
 | The adoption's `report_hash` differs from the replay record's | `learn.fold.report_mismatch` |
-| `mode` is `auto` and the gate record lists any owner reason | `learn.fold.needs_owner` |
+| `mode` is `auto` and the proposal needs owner review (above) or the gate record lists any owner reason | `learn.fold.needs_owner` |
 | `mode` is `auto` and the proposal's labels or the adoption event's labels have integrity `untrusted` | `learn.fold.untrusted_auto` |
 | `mode` is `owner` and the adoption event's labels do not have integrity `owner` | `learn.fold.owner_label` |
 | `mode` is anything but `auto` or `owner`, or is missing | `learn.fold.unknown_mode` |
@@ -248,9 +260,9 @@ A valid adoption sets the proposal's status to `adopted` and adds an active item
 
 The status names are `staged`, `gated`, `replayed`, `waiting_owner`, `rejected` (with `codes`), `declined` (with `reason`), `adopted` (with `adoption`) and `reversed` (with `adoption` and `reason`).
 
-Two properties follow. A forged adoption, one written with no gate, a failed gate, no replay, a failed replay, another content hash or report hash, or the wrong label or mode, never becomes active. Evidence labelled untrusted is never adopted automatically. It waits in `waiting_owner` until the owner adopts it with an owner-labelled event.
+Two properties follow. A forged adoption, one written with no gate, a failed gate, no replay, a failed replay, another content hash or report hash, or the wrong label or mode, never becomes active. Evidence labelled untrusted, every instruction edit and every wider proposal is never adopted automatically, whatever its gate record says. They wait in `waiting_owner` until the owner adopts them with an owner-labelled event. A declined or reversed proposal never becomes active again.
 
-The Rust fold writes the invalid reason as English text. The codes of the table are this contract's names for them, and the Rust vector test maps the text to the codes.
+The Rust fold reports the same codes, and its vector test compares them directly.
 
 ## 9. Errors
 
@@ -262,26 +274,21 @@ The Rust fold writes the invalid reason as English text. The codes of the table 
 | `learn.refused` | The proposal was rejected by the gate |
 | `learn.malformed` | A ledger record cannot be read |
 | `learn.gate.*` | The finding codes of section 5 |
-| `learn.fold.*` | The invalid codes of section 8 |
+| `learn.fold.*` | The invalid codes of section 8, including `learn.fold.no_evidence` and `learn.fold.label_mismatch` |
 | `engine.journal` | An evidence event id is not in the log |
 
 `learn.unknown`, `learn.not_ready`, `learn.refused` and `learn.malformed` come from the pipeline and have no vector. The vectors cover the gate, the event builders, the replay digest, the trial and the fold.
 
 ## 10. Open points
 
-These are places where the Rust code is silent or looks weaker than spec section 11.3. The vectors do not pin any of them. Points 2 to 5 were run against the Rust fold and behave as described.
+These are places where the Rust code is silent or looks weaker than spec section 11.3. The vectors do not pin any of them. 
 
 1. **The fold trusts the records it checks.** It re-checks every adoption against the gate and replay records in the ledger, but it cannot re-run either. Any roster device can write a stage, a gate record that says `passed` and a replay record that says `adopt`. The re-check is structural. It does not make a record's claim true.
-2. **Owner reasons are not recomputed from the item.** The fold reads `owner_reasons` from the gate record. An `instruction_edit` or a `wider` proposal whose gate record lists no owner reason can be adopted with mode `auto`. Spec 11.3 step 6 says both need the owner. The fold should derive `instruction_edit` and `wider_scope` from the staged item itself.
-3. **The proposal's labels are the stage event's header labels.** The fold does not compare them with the join of the `evidence` labels in the body. A stage whose header says `owner` but whose body lists untrusted evidence is treated as trusted. The kernel resolves labels from the log when it proposes, but a fold reading the log does not.
-4. **A proposal with empty `evidence` is accepted by the fold.** The kernel refuses to write one. A well-formed stage with an empty array folds as a proposal.
-5. **A declined or reversed proposal can be adopted again.** The fold refuses a second adoption only when the status is `adopted`. After an owner decline or an undo, an adoption record that passes the checks of section 8 makes the item active again. The gate and replay records stay valid, so a stale or forged adoption can undo the owner's decision.
-6. **Reversals are not checked.** Any device's reversal that names a live adoption removes it. The fold does not look at the writer's labels, the body's `by`, or whether `proposal` and `content_hash` match.
-7. **Owner mode needs only an owner label.** The fold cannot tell an owner action from a device that wrote the label for itself. `labels.md` says the kernel assigns labels, which depends on how a header's labels are checked on the receiving side.
-8. **Fold order is clock order, not causal order.** Two concurrent records, such as an adoption and a decline from different devices, resolve by `(clock, feed, seq)`.
-9. **Invalid reasons have no codes in Rust.** They are English strings. Section 8 names the codes. The engine should expose them.
-10. **The replay digest uses Rust's debug spelling of a list of booleans.** That is `[true, false]`, which section 6 writes out. Any other spelling gives another digest.
-11. **Carriage return counts as hidden.** Every `\r` is a control character, so text with Windows line endings never passes the gate.
-12. **Tool mentions are case-sensitive and the rest of the scan is not.** A tool name written in another case is not found by the mention rule.
-13. **A learn event in a chat scope is ignored.** The kernel reads only the `mesh` scope, but header validation accepts any scope for the learning family.
-14. **No dedicated code for an unknown evidence event.** The kernel reports `engine.journal` with free text.
+2. **Reversals are not checked.** Any device's reversal that names a live adoption removes it. The fold does not look at the writer's labels, the body's `by`, or whether `proposal` and `content_hash` match.
+3. **Owner mode needs only an owner label.** The fold cannot tell an owner action from a device that wrote the label for itself. `labels.md` says the kernel assigns labels, which depends on how a header's labels are checked on the receiving side.
+4. **Fold order is clock order, not causal order.** Two concurrent records, such as an adoption and a decline from different devices, resolve by `(clock, feed, seq)`.
+5. **The replay digest uses Rust's debug spelling of a list of booleans.** That is `[true, false]`, which section 6 writes out. Any other spelling gives another digest.
+6. **Carriage return counts as hidden.** Every `\r` is a control character, so text with Windows line endings never passes the gate.
+7. **Tool mentions are case-sensitive and the rest of the scan is not.** A tool name written in another case is not found by the mention rule.
+8. **A learn event in a chat scope is ignored.** The kernel reads only the `mesh` scope, but header validation accepts any scope for the learning family.
+9. **No dedicated code for an unknown evidence event.** The kernel reports `engine.journal` with free text.

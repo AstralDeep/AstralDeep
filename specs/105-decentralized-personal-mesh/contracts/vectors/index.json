@@ -41,8 +41,8 @@
       "spec": "contracts/labels.md"
     },
     "learning.json": {
-      "cases": 126,
-      "sha256": "5c8a56d74cc28d667ce32027ddd01a40beec0e4ee566d837ae9031ba6762a0e9",
+      "cases": 138,
+      "sha256": "63bbb17275ffb0594eea191a67d9817613006f6eba1233c70bf5081b7a7496ac",
       "spec": "contracts/learning.md"
     },
     "mailbox.json": {
@@ -66,8 +66,8 @@
       "spec": "contracts/roster.md"
     },
     "runs.json": {
-      "cases": 87,
-      "sha256": "a261d182654c08d6bb529c7b0ed4e3c91f191ecafaf3b313327f4061388526ba",
+      "cases": 104,
+      "sha256": "4abc984079a9fc2aaefdd4739af28ad2b2c724f9c9423f78b96493149cf5f31c",
       "spec": "contracts/runs.md"
     },
     "surface.json": {

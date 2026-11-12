@@ -56,6 +56,7 @@ The kernel assigns labels (`labels.md`). The run family uses two fixed labels an
 | `executor` | string | Device id that executes the run from this lease on |
 | `supersedes` | array of event ids | The leases this one replaces. Empty for the first lease of a run |
 | `takeover` | boolean | True when the owner continues a run on this device without the executor's consent |
+| `consent` | object or null | The owner's consent to the takeover (section 3.2). Required when `takeover` is true. Ignored otherwise. A reader accepts a missing field as null |
 | `reason` | string | Free text for people: `start`, `handoff`, `takeover` |
 
 `reason` is not read by any fold.
@@ -147,11 +148,13 @@ Every body has a string `op` and a string `run`. The ops are `define`, `fired` a
 
 ## 3. The lease fold
 
-Input: the `run.lease` events of one chat scope, and the roster's map from feed id to device id. A feed with no device maps to nothing. The reference function is `lease_fold`.
+Input: the `run.lease` events of one chat scope, the roster's map from feed id to device id, and the presence keys of the current roster devices (device id to key). A feed with no device maps to nothing. A device that is not a current member has no presence key. The reference function is `lease_fold`.
 
 **Parsing.** A lease is readable when its body is an object with string `run` and `executor`, a `supersedes` that is missing, null, or an array of strings, and a `takeover` that is missing or a boolean. A lease that is not readable is dropped. It appears nowhere in the output.
 
 **Order.** Leases are sorted by the order key `(clock.ms, clock.n, feed, seq)` of `event.md` section 10.4. Arrival order has no effect.
+
+**Takeover consent.** Before any pass, every readable lease of the run with `takeover` true is checked against section 3.2. A lease that fails is rejected at once. Its id goes into `rejected` in lease order and into `refused` with the code of the failure. A takeover that passes is decided by the passes below like any other lease. A plain `takeover` flag is never enough.
 
 **Decision.** Group the readable leases by `run` and handle runs in ascending order of the run id text. For one run, repeat passes over its leases in order until a pass changes nothing. In a pass, take each lease that is neither valid nor rejected. Let `author` be the device of the lease's feed. Look at the ids in `supersedes` in the order written. The first id that decides the lease stops the look:
 
@@ -176,13 +179,33 @@ A lease that is neither valid nor rejected when the passes end is waiting.
 
 A contested run ends when a valid lease supersedes every head. That lease is a takeover by the owner, or a handoff written by a device that is the executor of every head, which only happens when the heads name one executor.
 
-**Output.** For each run, in run id order: `run`, `executor` (string or null), `contested` (array), `heads` (event ids), `leases` (the valid leases in order, each with `id`, `executor`, `author` as device id or null, `supersedes`, `takeover`), `rejected` (ids, in the order the passes rejected them), `waiting` (ids, in order).
+**Output.** For each run, in run id order: `run`, `executor` (string or null), `contested` (array), `heads` (event ids), `leases` (the valid leases in order, each with `id`, `executor`, `author` as device id or null, `supersedes`, `takeover`), `refused` (the takeover leases refused for their consent, each `{id, code}`, in lease order), `rejected` (ids: first the refused takeovers, then the leases the passes rejected, in the order they found them), `waiting` (ids, in order).
+
+### 3.2 Takeover consent
+
+A takeover is an owner action. The owner's device draws a prompt from the takeover action and collects a presence-key signature over it.
+
+The **takeover action** is the canonical JSON object `{"executor": <new executor device id>, "kind": "run.takeover", "run": <run id>, "supersedes": <the superseded lease ids, sorted ascending with duplicates removed>, "v": 1}`. Its **digest** is the hash of those canonical bytes (`sha256:` and 64 hex digits), computed like `ticket.md` computes an action digest. The reference function is `takeover_digest`.
+
+The `consent` is the object of `policy.md` section 2 with `kind` `action` and `digest` the takeover digest. It is signed with the presence key under the consent context. Its `device` must be a current roster member. It need not be the lease's author or its new executor, so the owner can approve a takeover on a device from another device.
+
+The check runs in this order. The first failure gives the code, which is the consent error name with the prefix `run.takeover.`:
+
+| Failure | Code |
+|---|---|
+| `consent` is missing or null | `run.takeover.consent_missing` |
+| Not an object with exactly `v`, `kind`, `digest`, `device`, `clock` and `sig`, or `v` is not 1, or `kind` is unknown, or `device` or `sig` is not text, or `clock` is not `{ms, n}` of non-negative integers | `run.takeover.malformed` |
+| `kind` is not `action`, or `digest` differs from the takeover digest | `run.takeover.wrong_action` |
+| `device` has no presence key among the current roster devices | `run.takeover.unknown_device` |
+| The signature does not verify | `run.takeover.bad_signature` |
+
+Because the digest covers the run, the superseded leases and the new executor, a consent cannot be reused for another run, another set of heads or another executor. The consent has no expiry (section 11).
 
 ### 3.1 Handoff and takeover as written
 
 A handoff is written by the executor: `supersedes` is the current heads, `executor` is the target, `takeover` is false, `reason` is `handoff`. The writer refuses with `run.bad_target` when the target is empty or is itself, `run.not_executor` when it does not hold the lease, `run.contested` when the run is contested, and `run.terminal` when the run has finished.
 
-A takeover is written by the owner's device that is not the executor. `supersedes` is the current heads, `executor` is that device, `takeover` is true, `reason` is `takeover`, and the labels are the owner action label. A device that already holds the lease refuses with `run.bad_target`, and a finished run with `run.terminal`.
+A takeover is written by the owner's device that is not the executor. It first collects the owner's consent (section 3.2). If it cannot, nothing is written and the writer refuses with `run.takeover.consent_unavailable`, or with the signer's own code (such as `consent.declined`) when the owner declines. `supersedes` is the current heads, `executor` is that device, `takeover` is true, `consent` is the signed consent, `reason` is `takeover`, and the labels are the owner action label. The label is informational. The fold decides by the consent. A device that already holds the lease refuses with `run.bad_target`, and a finished run with `run.terminal`.
 
 After the lease the takeover writes one `run.goal` `unknown` event for each open turn that has dispatched calls with no result, then writes a `status` of `active` with the owner label unless the run was already active. No peer takes over by itself.
 
@@ -223,7 +246,7 @@ A `status` event sets `status` as named: `active` has no pause kind and no reaso
 
 **Output.** `run`, `chat`, `kind`, `goal`, `project`, `labels`, `limits`, `schedule`, `rounds`, `stalls`, `tokens_spent`, `status` (`state`, `pause`, `reason`, with null where it has no value), `waiting_since_ms`, `last_text_hash`, `last_slot`, `last_fingerprint`, `notes`, `unknown`, `branches`.
 
-The fold reads no lease. A watcher's round or status event changes the state exactly like the executor's. Who may write them is section 11, point 9.
+The fold reads no lease. A watcher's round or status event changes the state exactly like the executor's. Who may write them is section 11, point 8.
 
 ## 5. Starting a run
 
@@ -322,23 +345,25 @@ A run that waits longer than `max_wait_ms` is stopped with `limit.wait`.
 | `run.terminal` | The run is done or stopped |
 | `run.bad_target` | A handoff names an empty target or the device itself, or a takeover is asked of the executor |
 | `run.busy` | This device is already stepping the run |
+| `run.takeover.consent_unavailable` | The writing device has no way to collect the owner's presence signature |
+| `run.takeover.consent_missing`, `run.takeover.malformed`, `run.takeover.wrong_action`, `run.takeover.unknown_device`, `run.takeover.bad_signature` | The lease fold refused a takeover lease (section 3.2) |
 | `labels.quarantine_schema` | The judge's answer does not match its fixed schema |
 
-`run.not_executor`, `run.contested`, `run.terminal`, `run.bad_target` and `run.busy` come from the writing device's own checks and have no vector. The vectors cover the folds, the start checks, the schedule, the pre-check and the judge.
+`run.not_executor`, `run.contested`, `run.terminal`, `run.bad_target`, `run.busy` and `run.takeover.consent_unavailable` come from the writing device's own checks and have no vector. The vectors cover the folds, the start checks, the schedule, the pre-check and the judge.
 
 ## 11. Open points
 
 These are places where the Rust code is silent or looks weaker than spec section 11. The vectors do not pin any of them.
 
-1. **Takeover is not proved to be the owner's.** The lease fold reads only `takeover`. It does not read the event's integrity label, so any roster device can set the flag and take a run. Spec 11.1 says takeover is always an owner action. A fix would require the owner label on a takeover lease, or a consent event naming it.
-2. **A takeover with no `supersedes` is accepted from any author.** It creates a second root lease, so the run becomes contested and stays so until a lease supersedes both. It cannot silently replace the executor.
-3. **A lease or run event can sit in the wrong scope.** Header validation only keeps chat events out of the `mesh` scope. The fold never checks that a lease's `run` id names the chat of its scope. A reader that wants this must check it.
-4. **A malformed lease disappears.** It is not listed in `rejected` or `waiting`, so a device cannot show the owner that a lease was refused for its shape.
-5. **The order of `rejected` is the order the passes found them.** It is not the order key. Two implementations that follow section 3 exactly agree, but an implementation that sorts by order key would differ.
-6. **The unknown steps of a takeover are separate events.** If the device stops between the lease and the `unknown` events, the run has a takeover with no marker for its open steps.
-7. **A suffix is only checked for being non-empty.** Section 1.1 says what is written. Nothing rejects another suffix.
-8. **Rounds and statuses are not tied to the lease.** The state fold accepts a `round` or `status` from any device and names the executor from the body's own `executor` field. The branch list therefore trusts the writer.
-9. **A watcher can write status events.** The fold does not compare a status event's writer with the lease. The driver refuses to write one unless it holds the lease, but a fold reading the log cannot tell.
-10. **The budget is the device allowance, not the lease.** Spec 11.1 says a run cannot spend more than its lease. A lease body has no budget field. The limits in `define` are per run and are checked by the executor from the folded `tokens_spent`.
-11. **Slot numbers in `skipped`.** When a run fires after missing slots, the `skipped` event stores `slot - 1` of the fired slot, which is not necessarily a slot boundary. The fold only takes the larger value, so it does no harm.
-12. **Leading and trailing white space in a goal.** The rule uses the Unicode White_Space set, which is what the Rust writer uses. A Python implementation must not use `str.strip` unchanged because it also strips a few separator characters outside that set.
+1. **A takeover with no `supersedes` needs the same consent.** With a valid consent it creates a second root lease, so the run becomes contested and stays so until a lease supersedes both. It cannot silently replace the executor.
+2. **A lease or run event can sit in the wrong scope.** Header validation only keeps chat events out of the `mesh` scope. The fold never checks that a lease's `run` id names the chat of its scope. A reader that wants this must check it.
+3. **A malformed lease disappears.** It is not listed in `rejected` or `waiting`, so a device cannot show the owner that a lease was refused for its shape.
+4. **The order of `rejected` is the order the passes found them.** It is not the order key. Two implementations that follow section 3 exactly agree, but an implementation that sorts by order key would differ.
+5. **The unknown steps of a takeover are separate events.** If the device stops between the lease and the `unknown` events, the run has a takeover with no marker for its open steps.
+6. **A suffix is only checked for being non-empty.** Section 1.1 says what is written. Nothing rejects another suffix.
+7. **Rounds and statuses are not tied to the lease.** The state fold accepts a `round` or `status` from any device and names the executor from the body's own `executor` field. The branch list therefore trusts the writer.
+8. **A watcher can write status events.** The fold does not compare a status event's writer with the lease. The driver refuses to write one unless it holds the lease, but a fold reading the log cannot tell.
+9. **The budget is the device allowance, not the lease.** Spec 11.1 says a run cannot spend more than its lease. A lease body has no budget field. The limits in `define` are per run and are checked by the executor from the folded `tokens_spent`.
+10. **Slot numbers in `skipped`.** When a run fires after missing slots, the `skipped` event stores `slot - 1` of the fired slot, which is not necessarily a slot boundary. The fold only takes the larger value, so it does no harm.
+11. **Leading and trailing white space in a goal.** The rule uses the Unicode White_Space set, which is what the Rust writer uses. A Python implementation must not use `str.strip` unchanged because it also strips a few separator characters outside that set.
+12. **A takeover consent has no expiry.** The digest binds the run, the superseded leases and the new executor, so a consent is useful once for that exact action. A consent that is signed and never used stays valid for that action. The fold does not look at its clock.

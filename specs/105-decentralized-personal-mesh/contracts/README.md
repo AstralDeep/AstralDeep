@@ -16,8 +16,8 @@ The formats are the ones fixed in [../tasks.md](../tasks.md). Where a format nee
 | [ticket.md](ticket.md) | `astral.ticket/v1` | Biscuit capability chain, action digest, consent, receipt binding, labels as facts | `ticket.json` | `ticket.py`, `consent.py` |
 | [labels.md](labels.md) | `astral.labels/v1` | Integrity and confidentiality axes, inheritance, quarantined readers, flow rules, gate order | `labels.json` | `labels.py` |
 | [surface.md](surface.md) | `astral.surface/v1` | Surface documents, patches, action events and capabilities, value bindings | `surface.json` | `surface.py` |
-| [runs.md](runs.md) | `astral.runs/v1` | Run ids, lease, goal and schedule bodies, the lease fold (one executor, handoff, takeover flag, contested runs), the state fold, run start checks, schedule arithmetic, the pre-check, the judge's fixed answer | `runs.json` | `runs.py` |
-| [learning.md](learning.md) | `astral.learning/v1` | Candidates and the content hash, evidence labels, proposal, gate, replay, adoption and reversal bodies, the static gate, the replay digest, the trial, the ledger fold that re-checks every adoption | `learning.json` | `learning.py` |
+| [runs.md](runs.md) | `astral.runs/v1` | Run ids, lease, goal and schedule bodies, the lease fold (one executor, handoff, takeover with the owner's presence consent, contested runs), the state fold, run start checks, schedule arithmetic, the pre-check, the judge's fixed answer | `runs.json` | `runs.py` |
+| [learning.md](learning.md) | `astral.learning/v1` | Candidates and the content hash, evidence labels, proposal, gate, replay, adoption and reversal bodies, the static gate, the replay digest, the trial, the ledger fold that re-checks every adoption and recomputes owner review from the proposal itself | `learning.json` | `learning.py` |
 
 A change to a format raises its version. A document, its vectors and its reference module change together.
 
@@ -85,7 +85,7 @@ A harness runs each case by `kind` with `input` and compares the result with `ex
 | `surface.json` | `surface_validate`, `surface_fold`, `surface_action`, `surface_bind` | `vocabulary`, `actionable` |
 | `sync.json` | `sync_plan`, `sync_bodies`, `sync_message`, `sync_frame`, `checkpoint_verify`, `shortened` | `devices` |
 | `fold.json` | `fold_branches`, `fold_authority`, `fold_settings` | none |
-| `runs.json` | `run_lease_fold` (`events`, `devices`: feed id to device id) gives `runs`. `run_state_fold` (`run`, `chat`, `events`) gives `state`. `run_start` (`spec`, `device`, `now_ms`) gives `run` and `events`. `run_schedule_plan` (`schedule`, `now_ms`, `last_slot`). `run_precheck` (`probe`, `last_fingerprint`). `run_judge_answer` (`goal`, `round`, `round_output`, `raw`) gives `verdict`, `progress`, `content` | none |
+| `runs.json` | `run_lease_fold` (`events`, `devices`: feed id to device id, `presence_keys`: device id to presence key of the current roster) gives `runs`. `run_takeover_digest` (`run`, `supersedes`, `executor`) gives `digest`. `run_state_fold` (`run`, `chat`, `events`) gives `state`. `run_start` (`spec`, `device`, `now_ms`) gives `run` and `events`. `run_schedule_plan` (`schedule`, `now_ms`, `last_slot`). `run_precheck` (`probe`, `last_fingerprint`). `run_judge_answer` (`goal`, `round`, `round_output`, `raw`) gives `verdict`, `progress`, `content` | none |
 | `learning.json` | `learn_gate` (`candidate`, `grants`) gives the finding codes, hygiene, owner reasons and labels. `learn_stage`, `learn_gate_record`, `learn_replay_record`, `learn_decline`, `learn_adoption`, `learn_reversal` give the `event` to write. `learn_trial` (`baseline`, `policy`, `samples`). `learn_ledger_fold` (`events`, in any order) gives `proposals`, `active`, `invalid` | none |
 
 In `ticket_verify`, `receipt_valid` stands for the answer of the LETS receipt check. A harness passes it to the verifier's receipt callback.
