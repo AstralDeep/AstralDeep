@@ -15,6 +15,7 @@ import scenarios as sc
 from astral_mesh_ref import (
     attestation,
     consent,
+    credential as credential_ref,
     crypto,
     event,
     keys,
@@ -34,6 +35,7 @@ from astral_mesh_ref.testkit import DetRng, TestDevice, hlc, seed
 mailbox_ref.register(runner.op)
 runs_ref.register(runner.op)
 learning_ref.register(runner.op)
+credential_ref.register(runner.op)
 
 HERE = Path(__file__).resolve().parent
 VECTORS = HERE.parent / "vectors"
@@ -4298,7 +4300,16 @@ def build_sync() -> Suite:
         labels=lab("owner", "secret"),
         body_tag="s",
     )
-    by_body = {h["body"]: h for h in (private, phi, secret)}
+    credential = sc.header(
+        ALICE,
+        4,
+        event.event_id(secret),
+        sc.BASE_MS + 4000,
+        type_="key.credential",
+        labels=lab("owner", "secret"),
+        body_tag="c",
+    )
+    by_body = {h["body"]: h for h in (private, phi, secret, credential)}
     want = [private["body"], phi["body"], secret["body"], crypto.sha256_id(b"unknown")]
     s.add(
         "bodies-to-a-phi-group-member",
@@ -4325,6 +4336,22 @@ def build_sync() -> Suite:
             ],
         },
     )
+    for member_in_phi in (True, False):
+        s.add(
+            "a-sealed-credential-body-goes-to-every-member-"
+            + ("inside" if member_in_phi else "outside")
+            + "-the-phi-group",
+            "sync_bodies",
+            {
+                "headers_by_body": by_body,
+                "peer_in_phi_group": member_in_phi,
+                "requested": [credential["body"], secret["body"]],
+            },
+            expect={
+                "send": [credential["body"]],
+                "withheld": [{"hash": secret["body"], "reason": "secret"}],
+            },
+        )
     hello = {
         "clock": hlc(sc.BASE_MS),
         "device": ALICE.id,
@@ -7997,6 +8024,292 @@ def content_hash_of(candidate: dict[str, Any]) -> str:
     )
 
 
+def build_credential() -> Suite:
+    s = Suite(
+        "credential", "contracts/keys.md#credential-items", devices=secrets_block()
+    )
+    rng = DetRng("credential")
+    name = "model.provider.cloud"
+    value = {
+        "base_url": "https://models.example.com/v1",
+        "keys": ["sk-test-0000"],
+        "models": ["model-a"],
+        "order": 0,
+        "self_hosted": False,
+        "strict_tools": False,
+    }
+    labels_secret = {"confidentiality": "secret", "integrity": "owner"}
+
+    def recipient(device: TestDevice) -> dict[str, Any]:
+        return {
+            "device": device.id,
+            "ephemeral_hex": rng.bytes(32).hex(),
+            "nonce_hex": rng.bytes(24).hex(),
+            "wrap_public_hex": device.wrap_public.hex(),
+        }
+
+    def seal(n: str, v: dict[str, Any], who: list[TestDevice]) -> dict[str, Any]:
+        return s.add(
+            "seal-" + n.replace(".", "-") + "-to-" + "-".join(d.name for d in who),
+            "credential_seal",
+            {"name": n, "recipients": [recipient(d) for d in who], "value": v},
+        )["body"]
+
+    s.add(
+        "default-recipients-are-every-current-device",
+        "credential_recipients",
+        {"members": [BOB.id, ALICE.id]},
+        expect={"recipients": sorted([ALICE.id, BOB.id])},
+    )
+    s.add(
+        "an-explicit-list-narrows-the-recipients",
+        "credential_recipients",
+        {"members": [ALICE.id, BOB.id], "requested": [BOB.id]},
+        expect={"recipients": [BOB.id]},
+    )
+    s.add(
+        "an-explicit-list-naming-a-removed-device-is-refused",
+        "credential_recipients",
+        {"members": [ALICE.id, BOB.id], "requested": [BOB.id, MALLORY.id]},
+        error="credential.bad_recipients",
+    )
+    s.add(
+        "an-empty-explicit-list-is-refused",
+        "credential_recipients",
+        {"members": [ALICE.id, BOB.id], "requested": []},
+        error="credential.bad_recipients",
+    )
+    both = seal(name, value, [ALICE, BOB])
+    only_alice = seal(name, {**value, "keys": ["sk-test-1111"]}, [ALICE])
+    nobody = s.add(
+        "seal-with-no-recipients",
+        "credential_seal",
+        {"name": name, "recipients": [], "value": {"removed": True}},
+    )["body"]
+    for device in (ALICE, BOB):
+        s.add(
+            "open-by-" + device.name,
+            "credential_open",
+            {
+                "body": both,
+                "device": device.id,
+                "wrap_private_hex": device.wrap_private.hex(),
+            },
+            expect={"value": value},
+        )
+    s.add(
+        "a-non-recipient-cannot-open",
+        "credential_open",
+        {
+            "body": both,
+            "device": MALLORY.id,
+            "wrap_private_hex": MALLORY.wrap_private.hex(),
+        },
+        error="credential.not_a_recipient",
+    )
+    s.add(
+        "a-device-with-another-devices-key-cannot-open",
+        "credential_open",
+        {
+            "body": both,
+            "device": ALICE.id,
+            "wrap_private_hex": BOB.wrap_private.hex(),
+        },
+        error="wrap.decrypt_failed",
+    )
+    swapped = copy.deepcopy(both)
+    swapped["boxes"][ALICE.id] = both["boxes"][BOB.id]
+    s.add(
+        "a-box-copied-to-another-recipient-fails",
+        "credential_open",
+        {
+            "body": swapped,
+            "device": ALICE.id,
+            "wrap_private_hex": ALICE.wrap_private.hex(),
+        },
+        error="wrap.decrypt_failed",
+    )
+    renamed = {**both, "name": "model.provider.other"}
+    s.add(
+        "a-box-moved-to-another-credential-name-fails",
+        "credential_open",
+        {
+            "body": renamed,
+            "device": ALICE.id,
+            "wrap_private_hex": ALICE.wrap_private.hex(),
+        },
+        error="wrap.decrypt_failed",
+    )
+    raw = bytearray(b64url_decode(both["boxes"][ALICE.id]["ct"]))
+    raw[0] ^= 1
+    edited = copy.deepcopy(both)
+    edited["boxes"][ALICE.id]["ct"] = b64url_encode(bytes(raw))
+    s.add(
+        "an-edited-box-fails",
+        "credential_open",
+        {
+            "body": edited,
+            "device": ALICE.id,
+            "wrap_private_hex": ALICE.wrap_private.hex(),
+        },
+        error="wrap.decrypt_failed",
+    )
+    s.add(
+        "a-valid-item-passes-the-check",
+        "credential_check",
+        {"body": both, "labels": labels_secret, "type": "key.credential"},
+        expect={"name": name},
+    )
+    s.add(
+        "a-plain-value-under-the-content-key-with-a-secret-label-is-refused",
+        "credential_check",
+        {
+            "body": {"name": name, "value": value},
+            "labels": labels_secret,
+            "type": "key.credential",
+        },
+        error="credential.not_sealed",
+    )
+    s.add(
+        "a-settings-body-with-a-secret-label-is-not-a-credential-item",
+        "credential_check",
+        {
+            "body": {"key": name, "value": value},
+            "labels": labels_secret,
+            "type": "settings.set",
+        },
+        error="credential.malformed",
+    )
+    s.add(
+        "a-credential-item-must-be-labeled-secret",
+        "credential_check",
+        {
+            "body": both,
+            "labels": {"confidentiality": "private", "integrity": "owner"},
+            "type": "key.credential",
+        },
+        error="credential.label",
+    )
+    s.add(
+        "a-box-addressed-to-something-that-is-not-a-device-is-refused",
+        "credential_check",
+        {
+            "body": {"boxes": {"alice": both["boxes"][ALICE.id]}, "name": name},
+            "labels": labels_secret,
+            "type": "key.credential",
+        },
+        error="credential.malformed",
+    )
+    s.add(
+        "an-extra-field-is-refused",
+        "credential_check",
+        {
+            "body": {**both, "value": value},
+            "labels": labels_secret,
+            "type": "key.credential",
+        },
+        error="credential.malformed",
+    )
+    s.add(
+        "a-bad-name-is-refused",
+        "credential_check",
+        {
+            "body": {**both, "name": "Model Provider"},
+            "labels": labels_secret,
+            "type": "key.credential",
+        },
+        error="credential.malformed",
+    )
+    s.add(
+        "a-box-with-a-missing-field-is-refused",
+        "credential_check",
+        {
+            "body": {
+                "boxes": {ALICE.id: {"epk": both["boxes"][ALICE.id]["epk"]}},
+                "name": name,
+            },
+            "labels": labels_secret,
+            "type": "key.credential",
+        },
+        error="credential.malformed",
+    )
+
+    def item(feed: str, ms: int, body: dict[str, Any]) -> dict[str, Any]:
+        return {"body": body, "clock": hlc(ms), "feed": feed}
+
+    older = item(ALICE.feed, 1000, both)
+    newer = item(ALICE.feed, 2000, only_alice)
+    for device in (ALICE, BOB):
+        s.add(
+            "fold-for-" + device.name + "-after-the-credential-moved-to-alice",
+            "credential_fold",
+            {
+                "device": device.id,
+                "events": [newer, older],
+                "wrap_private_hex": device.wrap_private.hex(),
+            },
+            expect=(
+                {"hidden": [], "values": {name: {**value, "keys": ["sk-test-1111"]}}}
+                if device is ALICE
+                else {"hidden": [name], "values": {}}
+            ),
+        )
+    s.add(
+        "fold-uses-the-older-item-when-it-is-the-newest",
+        "credential_fold",
+        {
+            "device": BOB.id,
+            "events": [older],
+            "wrap_private_hex": BOB.wrap_private.hex(),
+        },
+        expect={"hidden": [], "values": {name: value}},
+    )
+    s.add(
+        "fold-breaks-a-clock-tie-by-feed",
+        "credential_fold",
+        {
+            "device": ALICE.id,
+            "events": [
+                item(BOB.feed, 3000, only_alice),
+                item(ALICE.feed, 3000, both),
+            ],
+            "wrap_private_hex": ALICE.wrap_private.hex(),
+        },
+        expect={
+            "hidden": [],
+            "values": {
+                name: {**value, "keys": ["sk-test-1111"]}
+                if BOB.feed > ALICE.feed
+                else value
+            },
+        },
+    )
+    s.add(
+        "fold-an-item-for-nobody-removes-the-credential",
+        "credential_fold",
+        {
+            "device": ALICE.id,
+            "events": [older, item(ALICE.feed, 4000, nobody)],
+            "wrap_private_hex": ALICE.wrap_private.hex(),
+        },
+        expect={"hidden": [name], "values": {}},
+    )
+    s.add(
+        "fold-ignores-a-malformed-item",
+        "credential_fold",
+        {
+            "device": ALICE.id,
+            "events": [
+                older,
+                item(BOB.feed, 9000, {"name": name, "value": value}),
+            ],
+            "wrap_private_hex": ALICE.wrap_private.hex(),
+        },
+        expect={"hidden": [], "values": {name: value}},
+    )
+    return s
+
+
 def suites(repin: bool) -> list[Suite]:
     return [
         build_canonical(),
@@ -8016,6 +8329,7 @@ def suites(repin: bool) -> list[Suite]:
         build_mailbox(),
         build_runs(),
         build_learning(),
+        build_credential(),
     ]
 
 

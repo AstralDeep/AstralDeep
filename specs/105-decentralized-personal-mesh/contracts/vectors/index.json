@@ -10,6 +10,11 @@
       "sha256": "8db7914348c71fbf9fc41693cc5fa5760680996aca06a848173719d66a866651",
       "spec": "contracts/event.md#canonical-json"
     },
+    "credential.json": {
+      "cases": 28,
+      "sha256": "16afa93b702946d661f1d3ba330f1778e04650c93981cfa793020a580214cf69",
+      "spec": "contracts/keys.md#credential-items"
+    },
     "crypto.json": {
       "cases": 26,
       "sha256": "1a8f0161e135974ed6e775173ecbbf4644e4af9447904bf2dc31de10b149cd67",
@@ -76,8 +81,8 @@
       "spec": "contracts/surface.md"
     },
     "sync.json": {
-      "cases": 47,
-      "sha256": "6f61c0597c836dc2792167053b6c32cc4aec2acdf9771dd623c2a1605b9f1b9c",
+      "cases": 49,
+      "sha256": "ed4215fc957105d247995f8192eff184f095bc478cc1a65df98518747d097c6b",
       "spec": "contracts/sync.md"
     },
     "ticket.json": {

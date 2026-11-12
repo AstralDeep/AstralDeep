@@ -69,3 +69,7 @@ One effect passes these steps in order. The first refusal ends it. The input is 
 The output is `{"gate": n, "outcome", "code", "reasons"}`. A consent outcome is not an error. It means the host must draw a prompt from the canonical action and collect a presence-key signature. The signature covers the action digest (`ticket.md`), and the digest is checked again at dispatch. Steps 4 and 5 are on by default in the kernel.
 
 The fixed order matters. A stopped mesh outranks a hard flag, a hard flag outranks permission, and so on. A refusal never waits on consent, and consent comes before the allowance is spent.
+
+## 6. Credentials
+
+A secret value is never an event body that every device can read. It is a credential item (`keys.md` section 4.1), a `key.credential` event with a secret label whose body holds one box per recipient device. The value is opened only on a recipient device and only where the kernel injects it at dispatch. It does not enter any model context, log, error or binding return. A body sealed only under a content key with a secret label is refused (`credential.not_sealed`). Sync sends the body of a credential item to every member and withholds the body of any other secret event (`sync.md` section 5).

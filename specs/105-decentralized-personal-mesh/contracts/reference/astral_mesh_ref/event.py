@@ -46,6 +46,7 @@ EVENT_TYPES = {
     "mem.supersede": "memory",
     "settings.set": "memory",
     "key.content": "key",
+    "key.credential": "key",
 }
 HEADER_FIELDS = {
     "v",

@@ -227,7 +227,7 @@ def bodies_for_peer(
             withheld.append({"hash": digest, "reason": "unknown"})
             continue
         confidentiality = header["labels"]["confidentiality"]
-        if confidentiality == "secret":
+        if confidentiality == "secret" and header["type"] != "key.credential":
             withheld.append({"hash": digest, "reason": "secret"})
         elif confidentiality == "phi" and not peer_in_phi_group:
             withheld.append({"hash": digest, "reason": "phi"})

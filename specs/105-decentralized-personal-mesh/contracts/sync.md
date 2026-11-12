@@ -65,10 +65,11 @@ A ciphertext object, which is an event body or an attachment chunk, is requested
 |---|---|---|
 | `public` or `private` | send | send |
 | `phi` | send | withhold, reason `phi` |
-| `secret` | withhold, reason `secret` | withhold, reason `secret` |
+| `secret`, and the event type is `key.credential` | send | send |
+| `secret`, any other type | withhold, reason `secret` | withhold, reason `secret` |
 | hash unknown | withhold, reason `unknown` | withhold, reason `unknown` |
 
-A peer outside the PHI group holds the header only. It can verify the chain and shows that the content lives on approved devices. The reference result is `{"send": [...], "withheld": [...]}`. A peer verifies that a received `phi` claim in `hello` matches the roster's PHI members and otherwise treats the peer as not in the group.
+The body of a `key.credential` event holds only boxes sealed to single devices (`keys.md` section 4.1), so every member receives it and only a recipient can open its box. A peer outside the PHI group holds the header only. It can verify the chain and shows that the content lives on approved devices. The reference result is `{"send": [...], "withheld": [...]}`. A peer verifies that a received `phi` claim in `hello` matches the roster's PHI members and otherwise treats the peer as not in the group.
 
 ## 6. Checkpoints
 
