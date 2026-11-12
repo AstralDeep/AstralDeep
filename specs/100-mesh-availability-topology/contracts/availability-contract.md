@@ -1,10 +1,10 @@
 # Personal-Mesh Availability Topology — Decision Contract
 
-**Version**: 1.0.0 · **Decided**: 2026-10-21 · **Status**: `specification-decided` — the topology decision below is ratified for review and its conformance cases are executable; **no deployment, release, live-failover, or measured-availability claim is made anywhere in this document.**
+**Version**: 1.1.0 · **Decided**: 2026-10-21 · **Amended**: 2026-11-12 (peer layer, C-14) · **Status**: `specification-decided` — the topology decision below is ratified for review and its conformance cases are executable; **no deployment, release, live-failover, or measured-availability claim is made anywhere in this document.**
 
 This record is the deliverable of tracker child [#283](https://github.com/AstralDeep/AstralDeep/issues/283) ("Select a bounded personal-mesh availability topology") under tracker [#243](https://github.com/AstralDeep/AstralDeep/issues/243), decomposition reference `wishlist-20261005/mesh_topology`. It is limited to selecting a bounded personal-mesh availability topology and producing its implementable failure matrix. Dependency #279 is closed by [`specs/095-cresco-bridge-contract/`](../../095-cresco-bridge-contract/spec.md); AstralPlane #58 is an open external dependency whose status is unverified in this environment. It defers none of the implementation children's required security, coverage, deterministic-CI, staging, or affected-client checks ([Nothing asserted as delivered](#nothing-asserted-as-delivered)).
 
-Every case id below (**C-01** … **C-13**) is bound to an executable test in [`backend/tests/test_mesh_availability_topology.py`](../../../backend/tests/test_mesh_availability_topology.py) and to a machine-readable expectation in [`availability-cases.json`](availability-cases.json). The suite runs in the default backend CI group, is deterministic (no network, no live database, no clock-derived or wall-clock bounds), and fails closed when the repository drifts from this decided posture.
+Every case id below (**C-01** … **C-14**) is bound to an executable test in [`backend/tests/test_mesh_availability_topology.py`](../../../backend/tests/test_mesh_availability_topology.py) and to a machine-readable expectation in [`availability-cases.json`](availability-cases.json). The suite runs in the default backend CI group, is deterministic (no network, no live database, no clock-derived or wall-clock bounds), and fails closed when the repository drifts from this decided posture.
 
 ## 1. Decision
 
@@ -19,6 +19,14 @@ A personal mesh is a federation of independent Astral deployments joined through
 5. Disaster recovery beyond a live node is **operator-managed backup/restore** with explicit attestation; the restore path retires sessions and verifies the restored catalog before admission reopens.
 
 **Why T1 fits the governing boundaries.** AstralPlane's constitution fixes Plane as an embedded library whose only database is PostgreSQL — "MUST NOT add a service port or a second database". AstralDeep's constitution (Principle IX) forbids borrowing connections or a second migration framework. The mesh's host-bound stores (blob root, personal-agent artifacts, the orchestrator's private ephemeral archive and evidence archive) make a second active orchestrator unsafe today, and a distributed database is explicitly left as a design question by the issue. T1 is the strongest availability posture those boundaries permit *without new mechanics*, and it is honest about what it does not promise.
+
+### Peers above a node
+
+**One durable authority per node. Peers above it share a log with the merge rules in spec 105 section 5.3.**
+
+The T1 decision is unchanged for each node. A node is one orchestrator process group over one embedded Plane runtime and one PostgreSQL database, and that database is its only durable authority. What spec 105 adds sits above that line. Devices and nodes that belong to one owner are peers. Each peer writes its own signed event feed and exchanges feeds with the others. The merge rules for those events are the ones in [spec 105 section 5.3](../../105-decentralized-personal-mesh/spec.md#53-event-families), fixed byte for byte in [the event contract](../../105-decentralized-personal-mesh/contracts/event.md).
+
+This does not make the database a distributed store. A node's Plane holds the peer events in its own tables and derives its existing tables from them, as spec 105 section 5.4 says. No second writer, replica or consensus layer is added under Plane. Convergence happens in the log, not in PostgreSQL. A node that is lost still recovers in place as this contract says, and what it had not yet shared with a peer waits in that peer's feed until the node is back. Spec 105 is a design that is being built. Nothing in this paragraph claims it is delivered.
 
 ### Compared options (all within Plane's embedded-PostgreSQL boundary)
 
@@ -111,6 +119,7 @@ Machine-readable expectations: [`availability-cases.json`](availability-cases.js
 - **C-11** — Presence is honest: TTL default 300 s clamped to 30–3600 s (including non-numeric env), with `offline`/`unavailable` states and stated reasons.
 - **C-12** — Recovery promises carry evidence: every promise id appears here, has non-empty required evidence, and is marked `specified`.
 - **C-13** — Failure-matrix completeness: the matrix row set matches the declared failure classes exactly, every row carries all required fields, and each id is referenced in this document.
+- **C-14** — Peers above a node: this contract states that there is one durable authority per node and that peers above it share a log with the merge rules in spec 105 section 5.3, spec 105 and its event contract exist and carry those rules, and this contract makes no delivery claim for the peer layer.
 
 ## 8. Source traceability and specification status
 

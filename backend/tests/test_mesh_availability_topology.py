@@ -56,6 +56,7 @@ KNOWN_KINDS = {
     "presence_honest_staleness",
     "recovery_promise_evidence",
     "failure_matrix_completeness",
+    "peer_log_layer",
 }
 
 CASE_BINDINGS = {
@@ -72,6 +73,7 @@ CASE_BINDINGS = {
     "C-11": "test_c11_presence_is_ttl_bounded_and_honest",
     "C-12": "test_c12_promises_carry_required_evidence",
     "C-13": "test_c13_failure_matrix_is_complete",
+    "C-14": "test_c14_peers_share_a_log_above_one_durable_authority_per_node",
 }
 
 
@@ -384,6 +386,20 @@ def test_c13_failure_matrix_is_complete():
             assert row.get(field), f"{row['id']} missing {field}"
         assert f"**{row['id']}**" in _contract()
     assert len({row["failure"] for row in matrix}) == len(matrix)
+
+
+def test_c14_peers_share_a_log_above_one_durable_authority_per_node():
+    expect = _case("C-14")["expect"]
+    plain = " ".join(_contract_plain().split())
+    assert expect["statement"] in plain
+    assert expect["spec_marker"] in (REPO / expect["spec"]).read_text("utf-8")
+    assert expect["event_contract_marker"] in (REPO / expect["event_contract"]).read_text("utf-8")
+    vectors = json.loads((REPO / expect["fold_vectors"]).read_text("utf-8"))
+    assert vectors["cases"]
+    for claim in expect["forbidden_claims"]:
+        assert claim not in plain.lower()
+    assert "distributed store" in plain
+    assert not (REPO / "backend" / "shared" / "database.py").exists()
 
 
 @pytest.mark.parametrize("case_id", sorted(CASE_BINDINGS))
