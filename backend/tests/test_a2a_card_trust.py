@@ -15,6 +15,11 @@ from orchestrator import a2a_card_trust as trust_module
 from orchestrator.a2a_card_trust import CardRefused, CardTrust, CardTrustRegistry
 from orchestrator.orchestrator import Orchestrator
 from tests.a2a_card_signing import TestSigner
+from tests.test_a2a_card_authority import (
+    bound as bound, fixture as fixture, human as human, registration as registration,
+    request_context, runtime as runtime, service as service, signing_key as signing_key,
+    socket_request as socket_request,
+)
 
 BASE = "https://peer.example"
 JWKS = "https://peer.example/.well-known/jwks.json"
@@ -291,29 +296,30 @@ async def test_discovery_refuses_an_unsigned_card_and_registers_nothing(audit, m
 
 
 @pytest.mark.asyncio
-async def test_register_action_requires_a_pinned_key_and_pins_it(audit):
+async def test_register_action_requires_a_pinned_key_and_pins_it(audit, registration):
     signer = TestSigner()
-    orch = _orchestrator()
-    orch.send_ui_render = AsyncMock()
-    orch._safe_send = AsyncMock()
-    orch.discover_a2a_agent = AsyncMock()
-    orch.send_agent_list = AsyncMock()
-    orch.agent_cards = {}
-    ws = object()
+    orch = registration.orch
+    ws = registration.socket
+    await registration.claims(realm_access={"roles": ["user", "admin"]})
 
-    await orch._register_external_agent(ws, {"url": ""})
-    await orch._register_external_agent(ws, {"url": BASE})
+    async def register(payload):
+        registration.message["payload"] = payload
+        with request_context(registration.capture()):
+            await Orchestrator._register_external_agent(orch, ws, payload)
+
+    await register({"url": ""})
+    await register({"url": BASE})
     assert orch.discover_a2a_agent.await_count == 0
     assert orch.send_ui_render.await_count == 2
     assert "Pin a JWKS URL" in orch.send_ui_render.await_args.args[1][0]["message"]
 
-    await orch._register_external_agent(ws, {"url": BASE + "/", "public_key": signer.public_jwk})
+    await register({"url": BASE + "/", "public_key": signer.public_jwk})
     orch.discover_a2a_agent.assert_awaited_once_with(BASE)
-    assert orch.a2a_card_trust.trust_for(BASE).public_key == signer.public_jwk
+    assert registration.registry.trust_for(BASE).public_key == signer.public_jwk
     assert "Could not discover" in orch.send_ui_render.await_args.args[1][0]["message"]
 
     orch.agent_cards = {"peer": SimpleNamespace(metadata={"a2a_url": BASE})}
-    await orch._register_external_agent(ws, {"url": BASE, "jwks_url": JWKS})
+    await register({"url": BASE, "jwks_url": JWKS})
     orch.send_agent_list.assert_awaited_once()
 
 

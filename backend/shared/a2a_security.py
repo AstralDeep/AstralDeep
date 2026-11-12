@@ -10,22 +10,20 @@ import logging
 from typing import Optional, Dict, List, Any
 
 from shared import node_identity
-from shared.token_verify import TokenRefused, verify_idp_token
+from shared.token_verify import TokenRefused, check_idp_audience, verify_idp_token
 from shared.auth_clients import (
     agent_service_client_id,
     allowed_azps,
-    audience_set,
     is_first_party_user_claims,
 )
 
 logger = logging.getLogger("A2ASecurity")
 
-KEYCLOAK_DEFAULT_AUDIENCE = "account"
-
 ENTRY_ROLES = frozenset({"user", "admin"})
 
 _DEFAULT_MOCK_CLAIMS = {
     "sub": "test_user",
+    "aud": "account",
     "preferred_username": "test_user",
     "email": "test_user@local",
     "realm_access": {"roles": ["admin", "user"]},
@@ -107,6 +105,7 @@ class A2ASecurityValidator:
                 token,
                 extra_azps=self._accepted_azps(),
                 extra_issuers=[self.authority],
+                extra_audiences=() if self.require_first_party_user else [agent_service_client_id()],
                 jwks_getter=self._jwks_for,
             )
         except TokenRefused as exc:
@@ -146,13 +145,10 @@ class A2ASecurityValidator:
         ok, reason = is_first_party_user_claims(payload)
         if not ok:
             return reason
-        aud = audience_set(payload)
-        if aud:
-            accepted = {KEYCLOAK_DEFAULT_AUDIENCE} | set(allowed_azps())
-            if self.client_id:
-                accepted.add(self.client_id)
-            if not (aud & accepted):
-                return "audience_mismatch"
+        try:
+            check_idp_audience(payload)
+        except TokenRefused as refusal:
+            return refusal.reason
         if not ENTRY_ROLES.intersection(token_roles(payload)):
             return "missing_entry_role"
         return ""

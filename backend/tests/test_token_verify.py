@@ -213,3 +213,55 @@ async def test_mcp_tokens_map_to_the_same_owner_and_respect_the_node_binding(idp
     monkeypatch.setenv(ni.OWNER_ENV, ni.canonical_owner_id(AUTHORITY, "someone-else"))
     with pytest.raises(ni.OwnerMismatch):
         await mcp_authz.decode_mcp_token("opaque")
+
+
+async def _verify_path(path, token):
+    if path == "rest":
+        from orchestrator.auth import verify_production_token
+
+        try:
+            return await verify_production_token(token)
+        except HTTPException:
+            return None
+    if path == "websocket":
+        from orchestrator.orchestrator import Orchestrator
+
+        return await Orchestrator.validate_token(object(), token)
+    from shared.a2a_security import A2ASecurityValidator
+
+    return await A2ASecurityValidator(require_first_party_user=True).validate_token(token)
+
+
+@pytest.mark.parametrize("path", ["rest", "websocket", "a2a"])
+@pytest.mark.parametrize("audience", [None, "", [], {}, 42, True, ["account", 42], ["account", False], [""], "unrelated-service", "astral-node:another-node"])
+async def test_all_entry_paths_refuse_missing_malformed_and_unrelated_audiences(idp, path, audience):
+    assert await _verify_path(path, idp.token(aud=audience)) is None
+
+
+@pytest.mark.parametrize("path", ["rest", "websocket", "a2a"])
+@pytest.mark.parametrize("audience", ["account", CLIENT_ID, [CLIENT_ID], ["another-service", "account"]])
+async def test_all_entry_paths_accept_their_explicit_audiences(idp, path, audience):
+    assert await _verify_path(path, idp.token(aud=audience)) is not None
+
+
+@pytest.mark.parametrize("path", ["rest", "websocket", "a2a"])
+async def test_configured_native_client_audience_is_first_party(idp, monkeypatch, path):
+    monkeypatch.setenv("KEYCLOAK_ALLOWED_AZP", "astral-desktop")
+    assert await _verify_path(path, idp.token(azp="astral-desktop", aud="astral-desktop")) is not None
+
+
+async def test_agent_service_audience_does_not_open_human_entry_paths(idp):
+    from shared.a2a_security import A2ASecurityValidator
+
+    token = idp.token(azp="astral-agent-service", aud="astral-agent-service")
+    assert await A2ASecurityValidator().validate_token(token) is not None
+    for path in ("rest", "websocket", "a2a"):
+        assert await _verify_path(path, token) is None
+
+
+@pytest.mark.parametrize("audience", [None, "unrelated-service"])
+async def test_a2a_mock_audience_policy_remains_fail_closed(idp, monkeypatch, audience):
+    from shared.a2a_security import A2ASecurityValidator
+
+    monkeypatch.setenv("USE_MOCK_AUTH", "true")
+    assert await A2ASecurityValidator(require_first_party_user=True).validate_token(idp.token(aud=audience)) is None

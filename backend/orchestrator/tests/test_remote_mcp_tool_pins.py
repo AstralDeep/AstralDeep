@@ -216,3 +216,31 @@ def test_initialize_carries_sanitized_annotations_into_the_catalog(monkeypatch):
     import asyncio
     tools = asyncio.run(service.discover_tools(connector, transport_factory=lambda *_a, **_k: fake))
     assert tools[0]["annotations"] == {"readOnlyHint": True}
+
+
+def test_dispatch_refuses_an_approval_replaced_while_listing_tools(world, monkeypatch):
+    orch, connector_id, _ = world
+    original = _tool("original approval")
+    replacement = _tool("replacement approval")
+    _approve(orch, connector_id, monkeypatch, original)
+    calls = []
+
+    async def initialize(_connector, **_kwargs):
+        current = service.get_connector(orch, "owner-a", connector_id)
+        current["tool_pins"]["echo"] = pins.definition_hash(replacement)
+        current["tools_catalog"] = [replacement]
+        key = service._KEY_PREFIX + connector_id
+        raw = orch.credential_manager.get_credential("owner-a", service._AGENT_ID, key)
+        assert orch.credential_manager.compare_and_set_credential(
+            "owner-a", service._AGENT_ID, key, raw, json.dumps(current))
+        return [original], None
+
+    async def request(_connector, payload, _session, **_kwargs):
+        calls.append(payload)
+        return {"result": {"content": []}}, ""
+
+    monkeypatch.setattr(service, "_initialize", initialize)
+    monkeypatch.setattr(service, "_mcp_request", request)
+    with pytest.raises(service.RemoteMCPError, match="approval changed"):
+        service.call_tool(orch, "owner-a", connector_id, "echo", {})
+    assert calls == []

@@ -382,6 +382,7 @@ async def test_strict_accepts_first_party_user_token(keycloak_env, monkeypatch):
     {"delegation": True},
     {"aud": "astral-mcp"},
     {"aud": ["some-other-api"]},
+    {"aud": None},
     {"realm_access": {"roles": ["viewer"]}},
     {"realm_access": None, "resource_access": None},
 ])
@@ -402,7 +403,6 @@ async def test_strict_refuses_weak_tokens(keycloak_env, monkeypatch, mutation):
     {"azp": "astral-agent-service"},
     {"aud": "account"},
     {"aud": "astral-frontend"},
-    {"aud": None},
     {"iss": "https://iam.example/realms/astral/"},
     {"realm_access": {"roles": []}, "resource_access": {"astral-frontend": {"roles": ["admin"]}}},
 ])

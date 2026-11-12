@@ -391,6 +391,9 @@ def _check_tool_authority(current: dict[str, Any], expected: dict[str, Any], too
         raise RemoteMCPError("This connector is disabled.")
     if current.get("tools", {}).get(tool_name) is not True:
         raise RemoteMCPError("This server tool is not enabled.")
+    expected_pin = expected.get("tool_pins", {}).get(tool_name)
+    if not pins.is_pin(expected_pin) or current.get("tool_pins", {}).get(tool_name) != expected_pin:
+        raise RemoteMCPError("The tool approval changed before the tool call. Try again.")
     if (not _same_oauth_authority(current, expected)
             or any(current.get(field) != expected.get(field) for field in ("access_token", "token"))):
         raise RemoteMCPError("The connector changed before the tool call. Try again.")

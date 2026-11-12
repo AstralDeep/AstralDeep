@@ -32,7 +32,6 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from jose import jwt as jose_jwt
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -6034,8 +6033,10 @@ class Orchestrator:
             logger.debug(f"Discovery attempt to {base_url} skipped: {e}")
 
     async def _register_external_agent(self, websocket, payload: Dict[str, Any]) -> None:
+        from orchestrator.a2a_card_authority import registration_caller
         from orchestrator.a2a_card_trust import CardRefused, CardTrust
 
+        caller = await registration_caller(self, websocket, payload)
         agent_url = str(payload.get("url", "")).strip().rstrip("/")
         if not agent_url:
             await self.send_ui_render(websocket, [
@@ -6043,11 +6044,13 @@ class Orchestrator:
             ])
             return
         try:
-            self._card_trust_registry().pin(agent_url, CardTrust.from_mapping({
+            trust = CardTrust.from_mapping({
                 "jwks_url": payload.get("jwks_url"),
                 "public_key": payload.get("public_key"),
                 "card_sha256": payload.get("card_sha256"),
-            }))
+            })
+            await caller.verify_delivery()
+            self._card_trust_registry().pin(agent_url, trust)
         except CardRefused as refusal:
             await self.send_ui_render(websocket, [Alert(message=refusal.reason, variant="error").to_dict()])
             return

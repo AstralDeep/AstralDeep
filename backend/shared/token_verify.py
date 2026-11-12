@@ -22,6 +22,17 @@ class TokenRefused(Exception):
         self.reason = reason
 
 
+def check_idp_audience(claims: Dict[str, Any], *, extra: Iterable[str] = ()) -> None:
+    audience = claims.get("aud")
+    values = [audience] if type(audience) is str else audience
+    if (type(values) is not list or not values
+            or any(type(value) is not str or not value for value in values)):
+        raise TokenRefused("audience_malformed")
+    accepted = {"account"} | allowed_azps() | {value for value in extra if type(value) is str and value}
+    if not accepted.intersection(values):
+        raise TokenRefused("audience_mismatch")
+
+
 def jwks_url_for(issuer: str) -> str:
     return f"{issuer}/protocol/openid-connect/certs"
 
@@ -40,6 +51,7 @@ async def verify_idp_token(
     *,
     extra_azps: Iterable[str] = (),
     extra_issuers: Iterable[str] = (),
+    extra_audiences: Iterable[str] = (),
     jwks_getter: Optional[Callable[[str, str], Awaitable[Dict[str, Any]]]] = None,
 ) -> Dict[str, Any]:
     if not isinstance(token, str) or not token:
@@ -78,6 +90,7 @@ async def verify_idp_token(
         raise TokenRefused("missing_azp")
     if azp not in allowed_azps() | {a for a in extra_azps if a}:
         raise TokenRefused("azp_not_accepted")
+    check_idp_audience(payload, extra=extra_audiences)
     try:
         stamped = with_owner_identity(payload, claimed)
     except node_identity.NodeIdentityError:

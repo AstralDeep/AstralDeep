@@ -146,5 +146,5 @@ def test_rest_rejects_foreign_issuer(jwks_env):
 
 
 def test_rest_tolerates_trailing_slash_issuer(jwks_env):
-    payload = {"sub": "u1", "azp": "astral-frontend", "iss": AUTHORITY + "/"}
+    payload = {"sub": "u1", "azp": "astral-frontend", "iss": AUTHORITY + "/", "aud": "account"}
     assert _validate(payload, jwks_env)["sub"] == canonical_owner_id(AUTHORITY, "u1")
