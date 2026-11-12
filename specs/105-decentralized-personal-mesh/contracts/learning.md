@@ -224,11 +224,11 @@ An accepted proposal starts as `staged`, takes the stage event's header labels a
 
 **Owner review.** The fold decides for itself whether a proposal needs the owner. It never takes that from a gate record. A proposal needs owner review when its kind is `instruction_edit`, or `wider` is true, or its labels have integrity `untrusted`, or any evidence label has integrity `untrusted`. Evidence with no labels, or labels that are not valid, make the stage malformed, so unlabeled evidence never reaches this rule. The gate record's own `owner_reasons` (which include `suspicious_text`) add to this and never remove from it. The reference function is `owner_review_required`.
 
-**Other proposal ops.** An event with no string `proposal` is ignored. One that names no staged proposal is invalid with `learn.fold.unknown_proposal`. One that names a proposal that is already adopted, or closed, is ignored. A proposal is **closed** when it is reversed, or declined for any reason other than `replay_failed`. Closing is final, so a person who wants a closed proposal back proposes it again, which makes a new proposal with a new id. Otherwise by `op`:
+**Other proposal ops.** An event with no string `proposal` is ignored. One that names no staged proposal is invalid with `learn.fold.unknown_proposal`. One that names a proposal that is already adopted, or closed, is ignored. A proposal is **closed** when it is reversed or declined, for any reason including `replay_failed`. Closing is final, so a person who wants a closed proposal back proposes it again, which makes a new proposal with a new id. Otherwise by `op`:
 
 - `gate`, if the proposal has no gate record yet: record `passed` (a boolean, false when missing), the `code` of each violation, the string items of `owner_reasons` that are known reasons, and the string items of `hygiene`. The status becomes `gated` when `passed`, otherwise `rejected` with the codes. A second gate record is ignored.
 - `replay`, if the status is `gated`, `replayed` or `waiting_owner`: record `adopt` (false when missing) and the three hash strings (empty when missing). The status becomes `declined` with reason `replay_failed` when `adopt` is false. Else it becomes `waiting_owner` when the proposal needs owner review (above) or the gate record has any owner reason, and `replayed` when neither applies. A later replay record in these statuses replaces the earlier one.
-- `decline`: the status becomes `declined` with the body's `reason` (empty when missing), from any status except adopted and closed. A proposal declined as `replay_failed` can still be declined again by a person, which closes it.
+- `decline`: the status becomes `declined` with the body's `reason` (empty when missing), from any status except adopted and closed.
 - any other `op`: ignored.
 
 **`learn.adoption`.** An adoption that names a closed proposal is ignored and is not listed as invalid. Otherwise the adoption is invalid when any row below applies. The first row that applies gives the code.
@@ -240,7 +240,6 @@ An accepted proposal starts as `staged`, takes the stage event's header labels a
 | The proposal has no gate record | `learn.fold.no_gate` |
 | The gate record has `passed` false | `learn.fold.gate_failed` |
 | The proposal has no replay record | `learn.fold.no_replay` |
-| The replay record has `adopt` false | `learn.fold.replay_failed` |
 | The adoption's `content_hash` differs from the staged one, or the replay's `candidate_hash` differs from the hash of section 2 for the proposal's item | `learn.fold.hash_mismatch` |
 | The adoption's `report_hash` differs from the replay record's | `learn.fold.report_mismatch` |
 | `mode` is `auto` and the proposal needs owner review (above) or the gate record lists any owner reason | `learn.fold.needs_owner` |

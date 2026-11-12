@@ -634,9 +634,7 @@ def _valid_labels(label: Any) -> bool:
 
 def _closed(proposal: dict[str, Any]) -> bool:
     status = proposal["status"]
-    return status["name"] == "reversed" or (
-        status["name"] == "declined" and status["reason"] != "replay_failed"
-    )
+    return status["name"] in ("reversed", "declined")
 
 
 def owner_review_required(proposal: dict[str, Any]) -> bool:

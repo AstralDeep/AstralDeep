@@ -8797,12 +8797,7 @@
       "expect": {
         "ok": {
           "active": [],
-          "invalid": [
-            {
-              "event": "sha256:b0015d33c0c854a5a6c17bd971ce190685eddd73ea5603a25b03c5659fd1848b",
-              "reason": "learn.fold.replay_failed"
-            }
-          ],
+          "invalid": [],
           "proposals": [
             {
               "evidence": [

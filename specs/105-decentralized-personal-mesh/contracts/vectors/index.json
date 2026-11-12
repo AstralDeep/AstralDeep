@@ -42,7 +42,7 @@
     },
     "learning.json": {
       "cases": 138,
-      "sha256": "63bbb17275ffb0594eea191a67d9817613006f6eba1233c70bf5081b7a7496ac",
+      "sha256": "7f902b70a896cdb6c5884f7af4a1d76a94ac881cf434a8677e405606db7f4123",
       "spec": "contracts/learning.md"
     },
     "mailbox.json": {

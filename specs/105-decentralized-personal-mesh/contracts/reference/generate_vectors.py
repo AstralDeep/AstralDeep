@@ -7686,7 +7686,7 @@ def build_learning() -> Suite:
     info = honest(led, cand(), report_changes={"must_pass_ok": False})
     led.add("forged", adoption_of(info, "auto"))
     out = fold("fold/a-forged-adoption-after-a-failed-replay-is-ignored", led)
-    assert out["active"] == [] and reasons(out) == ["learn.fold.replay_failed"]
+    assert out["active"] == [] and reasons(out) == []
 
     led = Ledger("wrong-hash")
     info = honest(led, cand())
