@@ -23,7 +23,7 @@ git submodule update --init --recursive
 python scripts/verify_composition.py
 ```
 
-`AstralPlane` and `AstralProjection` are private. An authentication failure is different from a
+`AstralPlane`, `AstralProjection` and `AstralKernel` are private. An authentication failure is different from a
 missing gitlink or incompatible component and must be reported as such. Fix repository access, then
 rerun `git submodule sync --recursive` and `git submodule update --init --recursive`; do not delete a
 partially initialized component or overwrite a dirty component worktree.
@@ -41,8 +41,10 @@ The verifier must reject:
 - a component HEAD or parent gitlink that differs from the manifest commit;
 - a dirty component worktree;
 - a noncanonical `.gitmodules` URL or floating branch selector;
-- a mismatched UI protocol, Plane schema/migration contract, primitive contract, or LETS OpenAPI;
+- a mismatched UI protocol, Plane schema/migration contract, primitive contract, `astral-rote` package version, or LETS OpenAPI;
 - a LETS checkout other than the pinned signed release commit (currently `v1.1.0`).
+
+`components/AstralKernel` is the base library repository. Deep builds and installs only its `python/rote/` package (`astral-rote`, import name `rote`) through the `package-root` field in the local component contract. It installs before AstralProjection, which depends on it.
 
 ## Deliberate component re-pin
 

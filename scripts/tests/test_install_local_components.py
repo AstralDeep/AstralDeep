@@ -105,6 +105,7 @@ def test_real_contract_declarations_are_exact_without_private_checkout() -> None
     )
     assert [component.key for component in contract.components] == [
         "astral-primitives",
+        "astral-kernel",
         "astral-projection",
         "astral-plane",
         "lets",
@@ -118,6 +119,7 @@ def test_real_initialized_sources_match_the_declarations() -> None:
         (REPOSITORY_ROOT / relative / "pyproject.toml").is_file()
         for relative in (
             "components/AstralProjection",
+            "components/AstralKernel/python/rote",
             "components/AstralPlane",
             "components/AstralPrimitives",
             "components/LETS",
@@ -129,7 +131,7 @@ def test_real_initialized_sources_match_the_declarations() -> None:
         require_sources=True,
         require_gitlinks=True,
     )
-    assert len(contract.components) == 4
+    assert len(contract.components) == 5
 
 
 def test_build_and_install_use_offline_no_resolver_commands_in_order(
@@ -442,6 +444,35 @@ def test_contract_mutations_fail_closed(tmp_path: Path) -> None:
 
     with pytest.raises(installer.ComponentInstallError, match="duplicate"):
         installer._string_list(["demo", "demo"], field="install-order")
+
+
+def _kernel_declaration() -> dict:
+    metadata = installer._read_toml(REPOSITORY_ROOT / "pyproject.toml")
+    return dict(metadata["tool"]["astraldeep"]["local-components"]["astral-kernel"])
+
+
+def test_package_root_places_the_wheel_source_below_the_component_path() -> None:
+    spec = installer._component_spec("astral-kernel", _kernel_declaration())
+    assert spec.package_root == "python/rote"
+    assert spec.package_path == "components/AstralKernel/python/rote"
+    assert spec.source_root(Path("/checkout")) == Path("/checkout/components/AstralKernel/python/rote")
+    plain = {key: value for key, value in _kernel_declaration().items() if key != "package-root"}
+    spec = installer._component_spec("astral-kernel", plain)
+    assert spec.package_root == ""
+    assert spec.source_root(Path("/checkout")) == Path("/checkout/components/AstralKernel")
+
+
+@pytest.mark.parametrize("value", ["../escape", "/absolute", "", "a/../../b"])
+def test_package_root_must_stay_inside_the_component(value: str) -> None:
+    declaration = {**_kernel_declaration(), "package-root": value}
+    with pytest.raises(installer.ComponentInstallError):
+        installer._component_spec("astral-kernel", declaration)
+
+
+def test_unknown_component_fields_are_still_rejected() -> None:
+    declaration = {**_kernel_declaration(), "package_root": "python/rote"}
+    with pytest.raises(installer.ComponentInstallError, match="invalid fields"):
+        installer._component_spec("astral-kernel", declaration)
 
 
 @pytest.mark.parametrize(

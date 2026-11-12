@@ -27,13 +27,15 @@ SCHEMA_RELATIVE_PATH = Path(
 
 COMPONENT_ORDER = (
     "astral-projection",
+    "astral-kernel",
     "astral-plane",
     "astral-primitives",
     "lets",
 )
-PRIVATE_COMPONENTS = frozenset({"astral-projection", "astral-plane"})
+PRIVATE_COMPONENTS = frozenset({"astral-projection", "astral-kernel", "astral-plane"})
 EXPECTED_MODULE_NAMES = {
     "astral-projection": "AstralProjection",
+    "astral-kernel": "AstralKernel",
     "astral-plane": "AstralPlane",
     "astral-primitives": "AstralPrimitives",
     "lets": "LETS",
@@ -1007,6 +1009,22 @@ def _verify_projection(
     )
 
 
+def _verify_kernel(
+    component_root: Path,
+    component: dict[str, object],
+    compatibility: dict[str, object],
+    diagnostics: list[Diagnostic],
+) -> None:
+    package_version, _ = _project_metadata(component_root / "python" / "rote", "astral-rote")
+    _compare_contract(
+        diagnostics,
+        "astral-kernel",
+        "components.astral-kernel.contract_version",
+        component.get("contract_version"),
+        package_version,
+    )
+
+
 def _verify_plane(
     component_root: Path,
     component: dict[str, object],
@@ -1191,6 +1209,8 @@ def _verify_component_contract(
     try:
         if component_name == "astral-projection":
             _verify_projection(component_root, component, compatibility, diagnostics)
+        elif component_name == "astral-kernel":
+            _verify_kernel(component_root, component, compatibility, diagnostics)
         elif component_name == "astral-plane":
             _verify_plane(component_root, component, compatibility, diagnostics)
         elif component_name == "astral-primitives":
@@ -1496,7 +1516,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report.to_dict(), sort_keys=True, separators=(",", ":")))
     elif report.ok:
         print(
-            "composition verified: four exact clean component pins and compatibility "
+            "composition verified: five exact clean component pins and compatibility "
             f"contracts ({report.manifest_sha256})"
         )
     else:

@@ -12,6 +12,7 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 COMPONENT_PATHS = (
     "components/AstralProjection",
+    "components/AstralKernel",
     "components/AstralPlane",
     "components/AstralPrimitives",
     "components/LETS",
@@ -165,5 +166,5 @@ def test_clean_checkout_initializes_exact_offline_composition(tmp_path: Path) ->
         timeout=30,
     )
     assert verification.returncode == 0, verification.stderr
-    assert "four exact clean component pins" in verification.stdout
+    assert "five exact clean component pins" in verification.stdout
     assert _git("status", "--porcelain", cwd=checkout, environment=environment) == ""

@@ -39,7 +39,7 @@ The evidence control adapter depends on the orchestrator's private ephemeral arc
   borrow connections or reintroduce `backend/shared/database.py`.
 - `backend/shared/external_http.py`: approved outbound HTTP/egress path.
 - `components/AstralProjection/backend/webrender/`: authoritative primitive rendering, sanitization, accessibility, web shell, reusable chrome, and static resources.
-- `components/AstralProjection/backend/rote/`: authoritative device capabilities and semantic adaptation.
+- `components/AstralKernel/python/rote/`: ROTE (`astral-rote`, import `rote`), the base's authoritative device capabilities and semantic adaptation. Deep and Projection both depend on it, and it imports neither.
 - `backend/orchestrator/projection_surfaces/`: Deep-owned, host-authorized chrome surface adapters; reusable rendering remains in Projection.
 - `backend/agents/`: bundled first-party agents. Generated draft directories can appear here during development; treat unexpected untracked directories as user/generated data, never as files to stage blindly.
 - `backend/tests/` plus module-local `*/tests/`: backend verification. Root pytest discovery does not include every module suite.
