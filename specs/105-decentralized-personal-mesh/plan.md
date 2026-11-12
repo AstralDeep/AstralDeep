@@ -1,6 +1,6 @@
 # Plan for spec 105
 
-**Date:** 2026-11-11. **Status:** proposed. Nothing here has started. This is a program plan: phases,
+**Date:** 2026-11-11. **Status:** implementation in progress locally as of 2026-11-12; see [tasks.md](tasks.md) for verified progress. This is a program plan: phases,
 the work in each repository, and how to tell a phase is finished. A task-level plan for each phase is
 written when that phase is approved, not before.
 

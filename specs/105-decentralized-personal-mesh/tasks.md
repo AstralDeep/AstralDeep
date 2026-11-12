@@ -1,8 +1,8 @@
 # Tasks for spec 105
 
 **Date:** 2026-11-12. **Status:** in progress on branch `feat/105-personal-mesh` in AstralDeep,
-AstralProjection, AstralPlane, AstralPrimitives and LETS, and on `main` in the new local repository
-`AstralKernel`. Nothing is pushed. Read [spec.md](spec.md) and [plan.md](plan.md) first. This file
+AstralProjection, AstralPlane, AstralPrimitives and LETS, and on `codex/105-kernel-integration` in the
+new local repository `AstralKernel`. Product work is not pushed. Read [spec.md](spec.md) and [plan.md](plan.md) first. This file
 fixes the choices every lane shares, so lanes can work in parallel.
 
 ## Owner answers, 2026-11-12
@@ -12,6 +12,7 @@ fixes the choices every lane shares, so lanes can work in parallel.
 | 1. Kernel in Rust (C2) | Yes. rustup is installed through Homebrew with the Apple targets. |
 | 7. Interim relay | The transport's public relays may be used. |
 | Live tests | The owner signs in to Keycloak when asked. Live chat turns use the model endpoint and key already in AstralDeep's `.env`, loaded by a local script. The key is never typed into a form, printed, or committed. |
+| A2UI (2026-11-12) | Use the latest stable protocol. The owner supplied the [A2UI 1.0 announcement](https://developers.googleblog.com/a2ui-10-build-delightful-fast-reliable-agentic-experiences/). Python and Rust adapters are being qualified against the stable 1.0 schemas at upstream `a2ui-project/a2ui@8bf644a37d680a227296b8c0849a7f4b328b8b73`, rather than relying on the earlier release-candidate check. |
 
 | Layering | The base is the kernel, Deep, Plane, LETS and ROTE, shipped as AstralVessel. The UI layer is Projection and Primitives (spec section 16). The kernel stays its own library and Vessel bundles it. Vessel runs Deep's loop and keeps its sandbox and egress as the executor. ROTE moves out of Projection now. |
 | Packaging and storage | Two installations: AstralVessel (the base and command-line tools) and the AstralDeep app (everything in Vessel plus the UI). No PostgreSQL on devices or personal installs: Plane gains a SQLite backend so Deep's Python node runs inside the Mac app and in Vessel. The iPhone runs the kernel only. PostgreSQL stays for institution nodes. |
@@ -134,6 +135,11 @@ The `Kernel` object:
 | Runs and learning | `runs()`, `hand_off_run(run_id, member_id)`, `take_over_run(run_id)`, `learning_proposals()`, `review_proposal(id, adopt)`, `undo_adoption(id)` |
 
 ## Lanes
+
+Local integration and the remaining runtime work are tracked in
+[runtime-composition-plan.md](runtime-composition-plan.md). A merged lane is not a completed phase:
+the facade still has to connect the production log, custody, authorization and engine before a
+client can run a mesh conversation.
 
 Each lane names the files it owns. Two lanes never edit the same file. A lane commits to its own
 branch and reports what is implemented, what tests pass, and what is not done.

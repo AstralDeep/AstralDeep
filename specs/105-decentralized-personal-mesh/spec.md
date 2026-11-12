@@ -1,7 +1,8 @@
 # Spec 105: Astral without a central server
 
-**Date:** 2026-11-11. **Status:** design for owner review. Nothing here is implemented, tested or
-deployed. **Companions:** [plan.md](plan.md) (phases and exit criteria), [research.md](research.md)
+**Date:** 2026-11-11. **Status:** implementation in progress locally as of 2026-11-12. Individual
+implementation and verification results are tracked in [tasks.md](tasks.md); the phase exit criteria
+are not yet met, and this design is not deployed. **Companions:** [plan.md](plan.md) (phases and exit criteria), [research.md](research.md)
 (evidence, with file and source references), [issue-triage.md](issue-triage.md) (open issues and pull
 requests this would close).
 
