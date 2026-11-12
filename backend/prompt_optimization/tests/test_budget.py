@@ -5,6 +5,8 @@ incomplete-usage visibility.
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError, replace
+
 import pytest
 
 from prompt_optimization.budget import (
@@ -248,3 +250,59 @@ def test_a_single_reservation_cannot_hide_multiple_attempts():
                          actual_tokens=10, usage_complete=True)
     assert budget.reserved_tokens == 100
     assert budget.evaluation_calls == 1
+
+
+def test_foreign_reservation_cannot_increase_another_budget_allowance():
+    owner = Budget(_limits(max_total_tokens=100))
+    recipient = Budget(_limits(max_total_tokens=100))
+    reservation = owner.reserve("evaluation", "search", "owner-case", 80)
+    owner_before, recipient_before = owner.to_dict(), recipient.to_dict()
+    with pytest.raises(ValueError, match="foreign"):
+        recipient.reconcile(reservation, outcome="succeeded", attempts=1,
+                            actual_tokens=0, usage_complete=True)
+    assert owner.to_dict() == owner_before
+    assert recipient.to_dict() == recipient_before
+    with pytest.raises(BudgetExhausted):
+        recipient.reserve("evaluation", "search", "recipient-case", 170)
+    owner.reconcile(reservation, outcome="succeeded", attempts=1,
+                    actual_tokens=70, usage_complete=True)
+    assert owner.remaining() == 30
+
+
+def test_copied_reservation_cannot_consume_the_original():
+    budget = Budget(_limits())
+    reservation = budget.reserve("reflection", "search", "round", 80)
+    before = budget.to_dict()
+    with pytest.raises(ValueError, match="foreign"):
+        budget.reconcile(replace(reservation), outcome="succeeded", attempts=1,
+                         actual_tokens=0, usage_complete=True)
+    assert budget.to_dict() == before
+    budget.reconcile(reservation, outcome="succeeded", attempts=1,
+                     actual_tokens=70, usage_complete=True)
+    assert budget.spent_tokens == 70
+
+
+def test_admitted_reservation_fields_are_immutable():
+    budget = Budget(_limits())
+    reservation = budget.reserve("evaluation", "search", "case", 80)
+    with pytest.raises(FrozenInstanceError):
+        reservation.reserved_tokens = 800
+    budget.reconcile(reservation, outcome="succeeded", attempts=1,
+                     actual_tokens=70, usage_complete=True)
+    assert budget.reserved_tokens == 0
+    assert budget.records[0].reserved_tokens == 80
+
+
+def test_invalid_reconciliation_preserves_pending_reservation():
+    budget = Budget(_limits())
+    reservation = budget.reserve("evaluation", "search", "case", 80)
+    with pytest.raises(ValueError, match="unknown call outcome"):
+        budget.reconcile(reservation, outcome="invalid", attempts=1,
+                         actual_tokens=0, usage_complete=True)
+    budget.reconcile(reservation, outcome="succeeded", attempts=1,
+                     actual_tokens=70, usage_complete=True)
+    before = budget.to_dict()
+    with pytest.raises(ValueError, match="already reconciled"):
+        budget.reconcile(reservation, outcome="succeeded", attempts=1,
+                         actual_tokens=70, usage_complete=True)
+    assert budget.to_dict() == before

@@ -217,6 +217,7 @@ def export_artifacts(result: OptimizationResult, out_dir: Path) -> Dict[str, Pat
             + "; ".join(candidate_errors + report_errors)
         )
     candidate_bytes = _serialize(candidate)
+    report["candidate_artifact_sha256"] = hashlib.sha256(candidate_bytes).hexdigest()
     report_bytes = _serialize(report)
     for name, payload in (
         ("candidate_prompt.json", candidate_bytes),
@@ -228,8 +229,7 @@ def export_artifacts(result: OptimizationResult, out_dir: Path) -> Dict[str, Pat
     candidate_path = out_dir / "candidate_prompt.json"
     report_path = out_dir / "optimization_report.json"
     candidate_path.write_bytes(candidate_bytes)
-    report["candidate_artifact_sha256"] = hashlib.sha256(candidate_bytes).hexdigest()
-    report_path.write_bytes(_serialize(report))
+    report_path.write_bytes(report_bytes)
     return {"candidate": candidate_path, "report": report_path}
 
 
