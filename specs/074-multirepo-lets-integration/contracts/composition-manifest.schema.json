@@ -62,7 +62,7 @@
     "compatibility": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ui_protocol", "data_plane", "primitives", "lets"],
+      "required": ["ui_protocol", "data_plane", "data_plane_sqlite", "primitives", "lets"],
       "properties": {
         "ui_protocol": {
           "type": "object",
@@ -89,6 +89,16 @@
             "read_compatible_from": {"$ref": "#/$defs/revision"},
             "migration_sha256": {"$ref": "#/$defs/sha256"},
             "blob_layout_version": {"const": "astralplane.blob-layout/v1"}
+          }
+        },
+        "data_plane_sqlite": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema_revision", "migration_sha256", "structure_sha256"],
+          "properties": {
+            "schema_revision": {"$ref": "#/$defs/revision"},
+            "migration_sha256": {"$ref": "#/$defs/sha256"},
+            "structure_sha256": {"$ref": "#/$defs/sha256"}
           }
         },
         "primitives": {

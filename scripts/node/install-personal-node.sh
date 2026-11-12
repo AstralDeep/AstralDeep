@@ -12,7 +12,7 @@ Usage: install-personal-node.sh --issuer URL --client-id ID [options]
   --home DIR           Node home (default: $ASTRAL_NODE_HOME or ~/.astral-node)
   --owner-subject SUB  Bind the node to this Keycloak subject now instead of at first pairing
   --public-url URL     Origin your devices use to reach the node
-  --database-url DSN   PostgreSQL connection string for the node
+  --database-url URL   Database URL (default: SQLite in the node data directory)
   -h, --help           Show this help
 USAGE
 }
@@ -96,7 +96,7 @@ echo
 echo "Next steps"
 echo "  1. Check the issuer, client id and database settings in $env_file."
 if ! has_key DATABASE_URL; then
-  echo "  2. Add DATABASE_URL for the node's PostgreSQL database to $env_file."
+  echo "  2. The node stores its data in SQLite at $data_dir/plane.sqlite3. Add DATABASE_URL to $env_file to use PostgreSQL instead."
 else
   echo "  2. DATABASE_URL is set."
 fi

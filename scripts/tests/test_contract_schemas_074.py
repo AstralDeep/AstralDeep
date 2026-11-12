@@ -102,6 +102,11 @@ def _composition() -> dict[str, object]:
                 "migration_sha256": SHA256,
                 "blob_layout_version": "astralplane.blob-layout/v1",
             },
+            "data_plane_sqlite": {
+                "schema_revision": "067.001",
+                "migration_sha256": SHA256,
+                "structure_sha256": SHA256,
+            },
             "primitives": {"package_version": "0.4.0", "contract_sha256": SHA256},
             "lets": {
                 "release": "v1.1.0",

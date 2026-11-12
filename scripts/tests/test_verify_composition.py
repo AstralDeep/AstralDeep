@@ -255,6 +255,11 @@ def _manifest(root: Path, commits: dict[str, str]) -> dict[str, Any]:
                 ),
                 "blob_layout_version": "astralplane.blob-layout/v1",
             },
+            "data_plane_sqlite": {
+                "schema_revision": "067.001",
+                "migration_sha256": "0" * 64,
+                "structure_sha256": "1" * 64,
+            },
             "primitives": {
                 "package_version": "0.4.0",
                 "contract_sha256": composition.compute_primitives_digest(

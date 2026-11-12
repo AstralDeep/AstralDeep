@@ -1039,6 +1039,9 @@ def _verify_plane(
     plane = compatibility.get("data_plane")
     if not isinstance(plane, dict):
         raise CompositionError("composition data_plane contract is missing")
+    sqlite_registry = compatibility.get("data_plane_sqlite")
+    if not isinstance(sqlite_registry, dict):
+        raise CompositionError("composition data_plane_sqlite contract is missing")
     observations = {
         "components.astral-plane.contract_version": (
             component.get("contract_version"),
@@ -1063,6 +1066,10 @@ def _verify_plane(
         "compatibility.data_plane.blob_layout_version": (
             plane.get("blob_layout_version"),
             constants.get("BLOB_LAYOUT_VERSION"),
+        ),
+        "compatibility.data_plane_sqlite.schema_revision": (
+            sqlite_registry.get("schema_revision"),
+            revisions.get("SCHEMA_REVISION"),
         ),
         "astralplane package version": (
             package_version,

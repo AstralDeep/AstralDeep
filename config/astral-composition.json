@@ -46,6 +46,11 @@
       "migration_sha256": "dde302967743cf8f6f5d55e82f8355ef405823dfee638909c3a2f11b85f5cb27",
       "blob_layout_version": "astralplane.blob-layout/v1"
     },
+    "data_plane_sqlite": {
+      "schema_revision": "089.022",
+      "migration_sha256": "e4ae392ed2951f1446cf065185a6b348bbed49c3e8cf37ca81546874887f6ef5",
+      "structure_sha256": "5f45079d23dc20e1dc0bb1367e8076c55a582ba7df7a76224fc0cdbe1a2b4d0b"
+    },
     "primitives": {
       "package_version": "0.4.0",
       "contract_sha256": "4ad92393e2aec3686ffb0e9d80d35b29ab6fd9fa32476e6aef564f7a35dc2a0f"
