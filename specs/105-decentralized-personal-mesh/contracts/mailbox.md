@@ -129,7 +129,9 @@ A client shows a request that is waiting on the mailbox as waiting. The path of 
 
 ## 9. Errors
 
-`mailbox.malformed`, `mailbox.too_large`, `mailbox.wrong_audience`, `mailbox.stale`, `mailbox.wrong_peer`, `mailbox.bad_signature`, `mailbox.unknown_mesh`, `mailbox.removed`, `mailbox.not_a_member`, `mailbox.wrong_mesh`, `mailbox.members_seq`, `mailbox.members_unauthorized`, `mailbox.recovery_mismatch`, `mailbox.admission_denied`, `mailbox.quota_exceeded`, `mailbox.cursor_ahead`, `mailbox.notice_type`.
+`mailbox.malformed`, `mailbox.too_large`, `mailbox.wrong_audience`, `mailbox.stale`, `mailbox.wrong_peer`, `mailbox.bad_signature`, `mailbox.unknown_mesh`, `mailbox.removed`, `mailbox.not_a_member`, `mailbox.wrong_mesh`, `mailbox.members_seq`, `mailbox.members_unauthorized`, `mailbox.recovery_mismatch`, `mailbox.admission_denied`, `mailbox.quota_exceeded`, `mailbox.cursor_ahead`, `mailbox.notice_type`, `mailbox.unavailable`.
+
+`mailbox.unavailable` means the mailbox's own store failed. It is an operator fault and no vector produces it.
 
 ## 10. Vectors
 
