@@ -65,6 +65,7 @@ from orchestrator import evidence_context
 from orchestrator import context_engineering
 from orchestrator import datamarking
 from orchestrator import llm_recovery, model_router
+from orchestrator.tool_arguments import ArgumentError, ArgumentResult, model_error_text, prepare_arguments
 from orchestrator import viewport
 from orchestrator.hooks import HookManager, HookEvent, HookContext
 from orchestrator.task_state import TaskManager, TaskState
@@ -204,6 +205,11 @@ class _LLMStreamInterrupted(RuntimeError):
         self.partial = partial
 
 
+_ARGUMENT_REPAIR_PROMPT = (
+    "You repair the arguments of one tool call. Reply with one JSON object that matches the schema. "
+    "Use only values that appear in the original arguments. If a required value is not there, reply with {}."
+)
+_MAX_REGENERATED_ARGUMENT_CHARS = 8000
 _CONTINUE_PROMPT = (
     "Continue your previous message from exactly where it stopped. "
     "Do not repeat any of it and do not restart."
@@ -16538,6 +16544,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         "message": f"Running: {', '.join(tool_names)}..."
                     }))
 
+                    await self._prepare_tool_calls(websocket, llm_msg.tool_calls, tool_to_agent, tool_to_unqualified)
                     history_assistant_message = _history_assistant_message(llm_msg)
                     messages.append(history_assistant_message)
 
@@ -19173,6 +19180,80 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         md = getattr(card, "metadata", {}) or {}
         return tool_name in (md.get("long_running_tools") or [])
 
+    def _tool_input_schema(self, agent_id: Optional[str], tool_name: str) -> Optional[dict]:
+        if not agent_id:
+            return None
+        card = self.agent_cards.get(agent_id)
+        if card is None:
+            return None
+        for skill in card.skills:
+            if tool_name in {getattr(skill, "id", None), getattr(skill, "name", None)}:
+                schema = getattr(skill, "input_schema", None)
+                return schema if isinstance(schema, dict) else None
+        return None
+
+    async def _regenerate_tool_arguments(self, websocket, tool_name: str, schema: Optional[dict],
+                                         raw: Any, error: ArgumentError) -> Optional[dict]:
+        from persistent_agents.dispatch_context import current_dispatch
+        if (not isinstance(schema, dict) or not isinstance(raw, str)
+                or len(raw) > _MAX_REGENERATED_ARGUMENT_CHARS or current_dispatch() is not None):
+            return None
+        try:
+            result = await self._call_llm_json(
+                websocket,
+                [{"role": "system", "content": _ARGUMENT_REPAIR_PROMPT},
+                 {"role": "user", "content": json.dumps(
+                     {"tool": tool_name, "problem": error.message, "original_arguments": raw})}],
+                schema=schema, schema_name="tool_arguments", temperature=0, feature="tool_argument_repair")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("tool_arg_regeneration_failed tool=%s", tool_name, exc_info=True)
+            return None
+        if not isinstance(result, dict):
+            return None
+        checked = prepare_arguments(result, schema)
+        return checked.args if checked.error is None else None
+
+    async def _prepare_tool_calls(self, websocket, tool_calls, tool_to_agent: Dict,
+                                  tool_to_unqualified: Optional[Dict[str, str]]) -> None:
+        for call in tool_calls:
+            llm_tool_name = call.function.name
+            tool_name = (tool_to_unqualified or {}).get(llm_tool_name, llm_tool_name)
+            agent_id = tool_to_agent.get(llm_tool_name)
+            if agent_id is None and tool_to_agent:
+                wanted = llm_tool_name.replace("-", "_").lower()
+                matches = [k for k in tool_to_agent if k.replace("-", "_").lower() == wanted]
+                if len(matches) == 1:
+                    llm_tool_name = matches[0]
+                    tool_name = (tool_to_unqualified or {}).get(llm_tool_name, tool_name)
+                    agent_id = tool_to_agent.get(llm_tool_name)
+            if agent_id == "computer-use-1" and tool_name == "write_file":
+                continue
+            schema = self._tool_input_schema(agent_id, tool_name)
+            raw = call.function.arguments
+            result = prepare_arguments(raw, schema)
+            kind = "repaired"
+            if result.error is not None:
+                regenerated = await self._regenerate_tool_arguments(
+                    websocket, tool_name, schema, raw, result.error)
+                if regenerated is None:
+                    object.__setattr__(call, "_astral_argument_error", result.error)
+                    continue
+                result, kind = ArgumentResult(regenerated, True, None), "regenerated"
+            if result.repaired:
+                call.function.arguments = json.dumps(result.args, ensure_ascii=False)
+                logger.info("tool_arg_repaired tool=%s kind=%s", tool_name, kind)
+
+    def _invalid_arguments_response(self, tool_name: str, error: ArgumentError) -> MCPResponse:
+        return MCPResponse(error={
+            "code": "invalid_tool_arguments",
+            "message": model_error_text(tool_name, error),
+            "retryable": True,
+            "effect_state": "not_started",
+            "data": {"field": error.field, "reason": error.code},
+        })
+
     def _tool_accepts_context_arg(
         self, agent_id: Optional[str], tool_name: str, arg_name: str
     ) -> bool:
@@ -20051,6 +20132,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 agent_id = tool_to_agent.get(llm_tool_name)
         is_computer_write = agent_id == "computer-use-1" and tool_name == "write_file"
         raw_arguments = tool_call.function.arguments
+        argument_error = getattr(tool_call, "_astral_argument_error", None)
+        if argument_error is not None and not is_computer_write:
+            refused = self._invalid_arguments_response(tool_name, argument_error)
+            await self.send_ui_render(websocket, [Alert(message=refused.error["message"], variant="error").to_dict()])
+            return refused
 
         def invalid_write_arguments(message, *, missing_keys=(), limit_bytes=None):
             error_data = {}
@@ -20943,8 +21029,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             else:
                 tool_name = llm_tool_name
             agent_id = tool_to_agent.get(llm_tool_name)
+            argument_error = getattr(tc, "_astral_argument_error", None)
+            if argument_error is not None:
+                async def _arg_refused(response=self._invalid_arguments_response(tool_name, argument_error)):
+                    return response
+                prepared.append((idx, tc, tool_name, agent_id, None, _arg_refused()))
+                continue
             try:
-                args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                args = json.loads(tc.function.arguments, strict=False) if tc.function.arguments else {}
             except json.JSONDecodeError as _json_err:
                 _pj_msg = (f"The arguments for '{tool_name}' were not valid "
                            f"JSON ({str(_json_err).splitlines()[0]}). Re-emit "
