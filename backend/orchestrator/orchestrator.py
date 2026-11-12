@@ -1231,6 +1231,7 @@ class Orchestrator:
         self.a2a_agent_cards: Dict[str, Any] = {}
         self.agent_urls: Dict[str, str] = {}
         self._standard_a2a_agent_cards: Dict[str, Any] = {}
+        self._card_trust_registry()
 
         from llm_config import (
             build_llm_client,
@@ -6032,6 +6033,75 @@ class Orchestrator:
         except Exception as e:
             logger.debug(f"Discovery attempt to {base_url} skipped: {e}")
 
+    async def _register_external_agent(self, websocket, payload: Dict[str, Any]) -> None:
+        from orchestrator.a2a_card_trust import CardRefused, CardTrust
+
+        agent_url = str(payload.get("url", "")).strip().rstrip("/")
+        if not agent_url:
+            await self.send_ui_render(websocket, [
+                Alert(message="Please provide an agent URL", variant="error").to_dict()
+            ])
+            return
+        try:
+            self._card_trust_registry().pin(agent_url, CardTrust.from_mapping({
+                "jwks_url": payload.get("jwks_url"),
+                "public_key": payload.get("public_key"),
+                "card_sha256": payload.get("card_sha256"),
+            }))
+        except CardRefused as refusal:
+            await self.send_ui_render(websocket, [Alert(message=refusal.reason, variant="error").to_dict()])
+            return
+        await self._safe_send(websocket, json.dumps({
+            "type": "chat_status",
+            "status": "thinking",
+            "message": f"Discovering agent at {agent_url}..."
+        }))
+        await self.discover_a2a_agent(agent_url)
+        if any(aid for aid, card in self.agent_cards.items()
+               if card.metadata.get("a2a_url") == agent_url):
+            await self.send_agent_list(websocket)
+            await self._safe_send(websocket, json.dumps({
+                "type": "chat_status", "status": "done",
+                "message": f"External agent registered from {agent_url}"
+            }))
+        else:
+            await self.send_ui_render(websocket, [
+                Alert(message=f"Could not discover A2A agent at {agent_url}", variant="error").to_dict()
+            ])
+            await self._safe_send(websocket, json.dumps({
+                "type": "chat_status", "status": "done",
+                "message": "Discovery failed"
+            }))
+
+    def _card_trust_registry(self):
+        registry = getattr(self, "a2a_card_trust", None)
+        if registry is None:
+            from orchestrator.a2a_card_trust import registry_from_environment
+
+            registry = self.a2a_card_trust = registry_from_environment(
+                os.getenv("A2A_EXTERNAL_AGENT_KEYS", ""))
+        return registry
+
+    async def _admit_a2a_card(self, base_url: str, card, *, owner_id: str = "system:a2a-discovery") -> bool:
+        from audit.hooks import record_generic
+        from orchestrator.a2a_card_trust import CardRefused
+
+        outcome, code, detail = "success", "admitted", ""
+        try:
+            digest = await asyncio.to_thread(self._card_trust_registry().admit, base_url, card)
+        except CardRefused as refusal:
+            digest, outcome, code, detail = "", "failure", refusal.code, refusal.reason
+            logger.warning("Refusing A2A agent at %s: %s", base_url, refusal.reason)
+        await record_generic(
+            claims={"sub": owner_id}, event_class="agent_external_call",
+            action_type="a2a.agent_card.admitted" if outcome == "success" else "a2a.agent_card.refused",
+            description="External A2A agent card verified against the owner-pinned key"
+            if outcome == "success" else "External A2A agent card refused",
+            inputs_meta={"agent_url": base_url}, outputs_meta={"result": code, "card_sha256": digest},
+            outcome=outcome, outcome_detail=detail or None,
+        )
+        return outcome == "success"
+
     async def discover_a2a_agent(self, base_url: str, notify_ui: bool = True):
         try:
             await self.discover_agent(base_url)
@@ -6061,6 +6131,9 @@ class Orchestrator:
                                          timeout=5.0) as http_client:
                 resolver = A2ACardResolver(http_client, base_url)
                 a2a_card = await resolver.get_agent_card()
+
+            if not await self._admit_a2a_card(base_url, a2a_card):
+                return
 
             try:
                 resolve_request_interface(a2a_card, base_url)
@@ -6114,6 +6187,10 @@ class Orchestrator:
                                          timeout=5.0) as http_client:
                 resolver = A2ACardResolver(http_client, a2a_url)
                 a2a_card = await resolver.get_agent_card()
+
+            if (self._card_trust_registry().trust_for(base_url) is not None
+                    and not await self._admit_a2a_card(base_url, a2a_card)):
+                return
 
             try:
                 resolve_request_interface(a2a_card, base_url)
@@ -11300,33 +11377,7 @@ class Orchestrator:
                     await self.send_agent_list(websocket)
 
                 elif msg.action == "register_external_agent":
-                    agent_url = msg.payload.get("url", "").strip().rstrip("/")
-                    if not agent_url:
-                        await self.send_ui_render(websocket, [
-                            Alert(message="Please provide an agent URL", variant="error").to_dict()
-                        ])
-                    else:
-                        await self._safe_send(websocket, json.dumps({
-                            "type": "chat_status",
-                            "status": "thinking",
-                            "message": f"Discovering agent at {agent_url}..."
-                        }))
-                        await self.discover_a2a_agent(agent_url)
-                        if any(aid for aid, card in self.agent_cards.items()
-                               if card.metadata.get("a2a_url") == agent_url):
-                            await self.send_agent_list(websocket)
-                            await self._safe_send(websocket, json.dumps({
-                                "type": "chat_status", "status": "done",
-                                "message": f"External agent registered from {agent_url}"
-                            }))
-                        else:
-                            await self.send_ui_render(websocket, [
-                                Alert(message=f"Could not discover A2A agent at {agent_url}", variant="error").to_dict()
-                            ])
-                            await self._safe_send(websocket, json.dumps({
-                                "type": "chat_status", "status": "done",
-                                "message": "Discovery failed"
-                            }))
+                    await self._register_external_agent(websocket, msg.payload)
 
                 elif msg.action == "agent_tunnel":
                     await self._handle_agent_tunnel(websocket, msg)
