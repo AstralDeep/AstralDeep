@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
+from orchestrator import push_wake
 from orchestrator.node_mesh import MeshUnavailable, NodeMesh, NodeMeshError, StepRecord
 from orchestrator.node_mesh_calls import CallRefused, OrchestratorCalls, dotted
 
@@ -670,6 +671,7 @@ class BridgeSet:
 
 
 _bridge: Optional[Any] = None
+_wake: Optional[Any] = None
 _bridge_lock = threading.Lock()
 
 
@@ -740,6 +742,11 @@ async def start_for(orch: Any) -> None:
     )
     await bridge.start()
     install(bridge)
+    gateway = push_wake.gateway_for(orch)
+    if gateway is not None:
+        global _wake
+        _wake = push_wake.WakeTriggers(gateway)
+        _wake.attach(mesh, node_identity.bound_owner)
 
 
 async def stop_all() -> None:
@@ -747,9 +754,12 @@ async def stop_all() -> None:
 
     from orchestrator import institution_runtime
 
-    bridge = _bridge
+    global _wake
+    bridge, wake, _wake = _bridge, _wake, None
     install(None)
     try:
+        if wake is not None:
+            await wake.stop()
         if bridge is not None:
             await bridge.stop()
     finally:

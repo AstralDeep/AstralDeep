@@ -11,6 +11,7 @@ from typing import Any, Callable, Optional
 from orchestrator import node_mesh
 from orchestrator.institution_meshes import InstitutionMeshes, Owner
 from orchestrator.institution_policy import InstitutionPolicy
+from orchestrator.push_wake import WakeTriggers, gateway_for
 from orchestrator.node_mesh_chat import (
     STATE_FILE,
     BridgeSet,
@@ -23,8 +24,6 @@ from orchestrator.node_mesh_calls import OrchestratorCalls
 from shared import institution_profile, node_identity
 
 logger = logging.getLogger("Orchestrator.InstitutionRuntime")
-
-OwnerAttach = Callable[[Owner, node_mesh.NodeMesh], Any]
 
 
 class InstitutionRuntime:
@@ -40,7 +39,7 @@ class InstitutionRuntime:
         settings: Optional[node_mesh.MeshSettings] = None,
         issuers: Optional[node_mesh.IssuerLoader] = None,
         binding: Any = None,
-        attach: Optional[OwnerAttach] = None,
+        wake: Optional[WakeTriggers] = None,
         policy: Optional[NodePolicy] = None,
         phi_active: Optional[Callable[[str], bool]] = None,
     ):
@@ -50,7 +49,7 @@ class InstitutionRuntime:
         self._history = history
         self._runner = runner
         self._calls = calls
-        self._attach = attach
+        self._wake = wake
         self._policy = policy
         self._phi_active = phi_active
         mesh_settings = settings or node_mesh.MeshSettings.from_env()
@@ -96,10 +95,12 @@ class InstitutionRuntime:
         )
         await bridge.start()
         self.bridges.add(owner.subject, bridge)
-        if self._attach is not None:
-            self._attach(owner, mesh)
+        if self._wake is not None:
+            self._wake.attach(mesh, lambda: owner.subject)
 
     async def stop(self) -> None:
+        if self._wake is not None:
+            await self._wake.stop()
         await self.bridges.stop()
         await self.meshes.stop()
 
@@ -116,7 +117,7 @@ def set_current(runtime: Optional[InstitutionRuntime]) -> None:
     _current = runtime
 
 
-async def start_for(orch: Any, *, attach: Optional[OwnerAttach] = None) -> Optional[InstitutionRuntime]:
+async def start_for(orch: Any) -> Optional[InstitutionRuntime]:
     config = institution_profile.enforce()
     try:
         node_mesh.load_binding()
@@ -129,7 +130,7 @@ async def start_for(orch: Any, *, attach: Optional[OwnerAttach] = None) -> Optio
         history=orch.history,
         runner=orchestrator_runner(orch),
         calls=OrchestratorCalls(orch),
-        attach=attach,
+        wake=WakeTriggers(gateway) if (gateway := gateway_for(orch)) is not None else None,
     )
     await runtime.start()
     set_current(runtime)
