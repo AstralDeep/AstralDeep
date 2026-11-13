@@ -1,0 +1,75 @@
+{
+  "source_commit": "a49905544244c79dd0f5b847ac4c1618e4a055e5",
+  "artifacts": [
+    {
+      "path": "apple/AstralKernelFFI.xcframework/Info.plist",
+      "sha256": "e068e86e5a1c0a7498f77fefe20f5361c722cc5f62ffc7ad5e54687bd9c7f2cd",
+      "bytes": 1750
+    },
+    {
+      "path": "apple/AstralKernelFFI.xcframework/ios-arm64/Headers/AstralKernelFFI.h",
+      "sha256": "851bdaaacd438edd65c185324fed29a1ebce4a17c9847a9653d2734259a8c8d8",
+      "bytes": 112100
+    },
+    {
+      "path": "apple/AstralKernelFFI.xcframework/ios-arm64/Headers/module.modulemap",
+      "sha256": "7305bb5f626b5569993c24c73d8c1cae45a26b5fa70cc1b30d3051d5d7495056",
+      "bytes": 140
+    },
+    {
+      "path": "apple/AstralKernelFFI.xcframework/ios-arm64/libastral_kernel_ffi.a",
+      "sha256": "8b3c421d8063baedb1ea8abd06a1f7313c2557057185d18f15c504e6bfbe1d0e",
+      "bytes": 288076272
+    },
+    {
+      "path": "apple/AstralKernelFFI.xcframework/ios-arm64_x86_64-simulator/Headers/AstralKernelFFI.h",
+      "sha256": "851bdaaacd438edd65c185324fed29a1ebce4a17c9847a9653d2734259a8c8d8",
+      "bytes": 112100
+    },
+    {
+      "path": "apple/AstralKernelFFI.xcframework/ios-arm64_x86_64-simulator/Headers/module.modulemap",
+      "sha256": "7305bb5f626b5569993c24c73d8c1cae45a26b5fa70cc1b30d3051d5d7495056",
+      "bytes": 140
+    },
+    {
+      "path": "apple/AstralKernelFFI.xcframework/ios-arm64_x86_64-simulator/libastral_kernel_ffi.a",
+      "sha256": "20481d7b48a8769c1d8d2c081bad5be972e48a1dd98fc2d894f0ee1e45531a59",
+      "bytes": 572715648
+    },
+    {
+      "path": "apple/AstralKernelFFI.xcframework/macos-arm64_x86_64/Headers/AstralKernelFFI.h",
+      "sha256": "851bdaaacd438edd65c185324fed29a1ebce4a17c9847a9653d2734259a8c8d8",
+      "bytes": 112100
+    },
+    {
+      "path": "apple/AstralKernelFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+      "sha256": "7305bb5f626b5569993c24c73d8c1cae45a26b5fa70cc1b30d3051d5d7495056",
+      "bytes": 140
+    },
+    {
+      "path": "apple/AstralKernelFFI.xcframework/macos-arm64_x86_64/libastral_kernel_ffi.a",
+      "sha256": "5aef4d68a19b4c77ea2dc52a92b64ade08aef6f0837d1fd9d6379f4a95cbdad5",
+      "bytes": 579934944
+    },
+    {
+      "path": "apple/Bindings/AstralKernelBindings.swift",
+      "sha256": "765e980712d88bc759753b79ab4e86620a381cbfabb161807ae013e861f4405e",
+      "bytes": 467493
+    },
+    {
+      "path": "astral-kernel-macos-aarch64",
+      "sha256": "d934757b0e1b9f5c524623e0dd814c309b30518d032bf00021c3524e857f502e",
+      "bytes": 27737088
+    },
+    {
+      "path": "astral-mailbox-linux-aarch64",
+      "sha256": "86f6e873bba8f2c601bc1ec2abe2a59190bcd049c3e54b20d088b8d3ccdc61c3",
+      "bytes": 19309920
+    },
+    {
+      "path": "astral_kernel-0.1.0-py3-none-manylinux_2_36_aarch64.whl",
+      "sha256": "4fc2f5beeafbbf8d425fcc33c9e44715e3809e12282f00da46246254c4c6de34",
+      "bytes": 12817312
+    }
+  ]
+}

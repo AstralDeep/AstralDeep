@@ -1,0 +1,125 @@
+{
+  "status": "stopped_at_owner_request",
+  "qualification": "incomplete; no production-readiness, merge, deployment or release claim",
+  "tested_backend_candidate": "6d5307b1d1dbd4a4bd5fa6dd4a8af1fef6289483",
+  "projection_feature": "5529983f5ad78d17883c566d99bbbd5293d0ca2d",
+  "projection_unqualified_ax_branch": "codex/105-stopped-ax-readiness",
+  "projection_unqualified_ax_commit": "e255ee8324711415b7168edf28c9b129199b0a3b",
+  "kernel_local_only": "a49905544244c79dd0f5b847ac4c1618e4a055e5",
+  "kernel_local_bundle": "/Users/sam/Desktop/Work/AstralKernel-wt/spec105-stop-20261113.bundle",
+  "kernel_artifact_manifest_sha256": "c7803a378f588af0c3cc519f00d39f9344e65db124fe635b23788362e3c7c6f9",
+  "vessel": "936dc1ff38c6f605a9506b94b3045883d7d27d7c",
+  "backend_agent_at_stop": {
+    "status": "stopped_by_user",
+    "stopped_at": "2026-11-13T19:48:34.575000+00:00",
+    "deep_commit": "6d5307b1d1dbd4a4bd5fa6dd4a8af1fef6289483",
+    "kernel_commit": "a49905544244c79dd0f5b847ac4c1618e4a055e5",
+    "projection_commit": "fb5de54fd5fb0193bf72e2e6a7975e2f7d212114",
+    "vessel_commit": "936dc1ff38c6f605a9506b94b3045883d7d27d7c",
+    "vessel_tests": {
+      "passed": 150,
+      "failed": 0,
+      "skipped": 0,
+      "evidence": "/tmp/ad105-a499-vessel-evidence/qualification.json"
+    },
+    "images": {
+      "production": "sha256:c72240b26754bcf61f226c1641b4be1e146050607e57e7027527b9b7febf6781",
+      "tests": "sha256:53474de5dcea3adc21f7030eca5a068101def72c2de9c5e1cfb341b719dfc80a"
+    },
+    "tests_2": {
+      "status": "failed",
+      "passed": 11693,
+      "failed": 1,
+      "skipped": 13,
+      "subtests_passed": 39,
+      "seconds": 873.67,
+      "failure": "test_completed_result_requires_current_read_identity_without_reusing_execution_authority[logout_during_delivery-operation0]",
+      "assertion": "expected model_calls1 got0",
+      "root_cause": "unproven; no claim operation succeeded",
+      "evidence": "/tmp/ad105-resume-evidence/frozen-6d5307b1/tests_2"
+    },
+    "tests_1": {
+      "status": "interrupted",
+      "session_id": 38768
+    },
+    "persistent_agents": {
+      "status": "interrupted",
+      "session_id": 21226
+    },
+    "tests_2_session_id": 1760,
+    "modules": {
+      "status": "not_started"
+    },
+    "voice_worker": {
+      "passed": 382,
+      "skipped": 2,
+      "failed": 0,
+      "evidence": "/tmp/ad105-resume-evidence/frozen-6d5307b1/voice/qualification-summary.json"
+    },
+    "coverage": {
+      "strict_both_bases": "not_run; qualification incomplete"
+    },
+    "task_pg_containers_to_stop": [
+      "ad105-final-pg",
+      "ad105-final-persistent-pg"
+    ],
+    "no_push": true,
+    "source_edits_after_freeze": false,
+    "session_exit_codes": {
+      "tests_2": 1,
+      "tests_1": 143,
+      "persistent_agents": 143
+    },
+    "task_pg_status": "both stopped after all task test containers exited; persistent PG was --rm; main task PG retained stopped",
+    "completed_tests_2_artifacts": [
+      "tooling-python.xml",
+      "suite-plan.json",
+      "runtime-image-id.txt",
+      "backend-tests-2.xml",
+      "test-results.json",
+      "runner.log",
+      "backend-python.xml",
+      ".coverage",
+      "xdist-coverage.rc",
+      "backend-tests-2.log",
+      "backend-tests-2.inventory.json"
+    ],
+    "all4_qualified": false
+  },
+  "kernel_tests": {
+    "passed": 1186,
+    "failed": 0,
+    "ignored": 1,
+    "strict_clippy": true,
+    "formatting": true
+  },
+  "projection_python": {
+    "passed": 4487,
+    "skipped": 7,
+    "subtests_passed": 33,
+    "source_equivalent_python_range": "5f2a730..44f00a9",
+    "coverage_full_feature": "616/628=98.09%",
+    "coverage_resume": "134/137=97.81%"
+  },
+  "windows_python": {
+    "passed": 2567,
+    "skipped": 20
+  },
+  "native_expiry_mapping": {
+    "commit": "3e60af8",
+    "passed": 14
+  },
+  "native_consent_fix": {
+    "commit": "c9229601041119e7700b845a72b51ef183be0c31",
+    "status": "unfinished; green/build explicitly interrupted"
+  },
+  "live": {
+    "Mac_transcription": "Owner and native journal verified correct numeric question/answer; original duplicate audible acknowledgement reproduced, neutral catalogue fix tested but not installed on canonical Mac",
+    "physical_entry": "Normal account-menu mesh entry passed 1 physical UI test; existing node credentials retained",
+    "pairing": "Owner scanned QR and approved; no separate security confirmation appeared; Mac later reported not approved; no new membership committed",
+    "installed_Mac": "Last staged native44f00a9/Kernelc015; no final replacement installed; previously observed PID no longer running at stop",
+    "installed_phone": "Nativefb5de54/Kernel a499; last observed waiting for approval",
+    "consent_cause": "Actual Add Device modal hides root consent sheet; no-modal synthetic control passed and modal failed with SwiftUI single-sheet warning"
+  },
+  "preservation": "Private data, keys, invitations, backups, binaries and raw diagnostic artifacts remain outside Git. No Kernel push. Other repositories are saved on topic branches only."
+}
