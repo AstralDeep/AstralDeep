@@ -2,8 +2,8 @@
 
 **Date:** 2026-11-13. **Status:** design only, not implemented (O7). It starts after spec 105 merges.
 Nothing here is built, tested or deployed. The owner answered twelve open questions on 2026-11-13
-(O8 to O19). **Companions:** [research.md](research.md) (evidence, with
-file and source references). **Builds on:**
+(O8 to O19). **Companions:** [plan.md](plan.md) (phases and exit criteria),
+[tasks.md](tasks.md), [research.md](research.md) (evidence, with file and source references). **Builds on:**
 [spec 105](../105-decentralized-personal-mesh/spec.md) and its
 [contracts](../105-decentralized-personal-mesh/contracts/README.md).
 
@@ -794,11 +794,15 @@ spec 105 merges.
 
 ## 16. Questions for the owner
 
-The owner answered twelve questions on 2026-11-13. They are O8 to O19 in section 4.1. Two remain.
+The owner answered twelve questions on 2026-11-13. They are O8 to O19 in section 4.1. Three remain.
 
 1. **The Mac sandbox default.** Which backend is the Mac default if Apple removes `sandbox-exec`
    (C29)? Phase 0 tests the Virtualization.framework fallback and brings a recommendation.
 2. **Where a pasted key goes by default.** Every device in the mesh, or only the devices picked when
    the key is entered (O11)?
+3. **The watch, and the paused clients.** The watch signs in today through a Keycloak device grant
+   (`backend/orchestrator/device_login.py`), and this spec never says what it does after the cut.
+   Does it pair as a device of the mesh, or work only through its iPhone? And what should the paused
+   Android and Windows apps show once their sign-in code is deleted in phase 7 (O9)?
 
 Every C call that no O row names is still this design's own and unreviewed.
