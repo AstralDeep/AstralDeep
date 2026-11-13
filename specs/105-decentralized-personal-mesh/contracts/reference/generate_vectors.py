@@ -41,6 +41,7 @@ learning_ref.register(runner.op)
 credential_ref.register(runner.op)
 transfer_ref.register(runner.op)
 requests_ref.register(runner.op)
+ticket.register(runner.op)
 tools_ref.register(runner.op)
 
 HERE = Path(__file__).resolve().parent
@@ -3411,6 +3412,65 @@ def build_ticket(repin: bool = False) -> Suite:
             "presence_keys": presence,
         },
         error="consent.wrong_action",
+    )
+    s.add(
+        "expiry-is-the-earliest-block-expiry",
+        "ticket_expiry",
+        {"capability": good},
+        expect={"expires_s": now_s + 1800},
+    )
+    s.add(
+        "expiry-of-a-token-that-is-not-biscuit",
+        "ticket_expiry",
+        {"capability": "AAAA"},
+        error="ticket.malformed",
+    )
+    grant_action = {"agent": "kernel", "tool": "mail.send", "tool_def": action["tool_def"]}
+    named = ticket.grant_name("mail.send", action["tool_def"])
+
+    def grant_case(name: str, grants: list[str], revokes: list[str], error: str | None = None) -> None:
+        s.add(
+            name,
+            "ticket_grant_check",
+            {
+                "action": grant_action,
+                "effect_kind": "outside_effect",
+                "grants": grants,
+                "revokes": revokes,
+            },
+            error=error,
+            expect=None if error else {"valid": True},
+        )
+
+    grant_case("grant-held-and-never-revoked", [f"kernel/{named}/*"], [])
+    grant_case("nothing-granted-and-nothing-revoked-stays-offline-valid", [], [])
+    grant_case(
+        "grant-revoked-is-refused",
+        [],
+        [f"kernel/{named}/*"],
+        "ticket.grant_revoked",
+    )
+    grant_case(
+        "revoked-and-granted-again-is-valid",
+        [f"kernel/{named}/outside_effect"],
+        [f"kernel/{named}/*"],
+    )
+    grant_case(
+        "revoke-of-the-bare-name-counts",
+        [],
+        ["kernel/mail.send/*"],
+        "ticket.grant_revoked",
+    )
+    grant_case(
+        "revoke-of-another-tool-or-scope-does-not-count",
+        [],
+        ["kernel/mail.read/*", f"kernel/{named}/mesh_read", "other/mail.send/*"],
+    )
+    grant_case(
+        "wildcard-revoke-counts",
+        [],
+        ["*/*/*"],
+        "ticket.grant_revoked",
     )
     s.doc["tokens"] = dict(sorted(tokens.items()))
     s.doc["tokens_note"] = (

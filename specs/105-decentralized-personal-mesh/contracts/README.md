@@ -83,7 +83,7 @@ A harness runs each case by `kind` with `input` and compares the result with `ex
 | `pairing.json` | `pairing_invite` (`invite`, `inviter_identity`, `mesh`, `now_s`). `pairing_request` (`request`, `mesh`, `nonce`) gives `device` | `devices` |
 | `keys.json` | `wrap`, `unwrap`, `epoch_open`, `recovery_encode` (gives words and derived keys), `recovery_decode`, `backup_seal`, `backup_open` | `devices` |
 | `policy.json` | `policy_verify`, `policy_effective` (`wrappers`, `members`, `mesh`), `budget_input` (`effective`, `members`, `mesh`, `now_s`, `stop`) | `devices`, `budget_input_note` |
-| `ticket.json` | `action_digest`. `ticket_verify` (`ticket`, `action`, `effect_kind`, `mesh`, `roster_feeds`, `presence_keys`, `stop`, `now_s`, `consent_required`, `receipt_valid`) gives the claims. `consent_verify` | `devices`, `tokens`, `tokens_note` |
+| `ticket.json` | `action_digest`. `ticket_verify` (`ticket`, `action`, `effect_kind`, `mesh`, `roster_feeds`, `presence_keys`, `stop`, `now_s`, `consent_required`, `receipt_valid`) gives the claims. `consent_verify`. `ticket_expiry` (`capability`) gives `expires_s`. `ticket_grant_check` (`action`, `effect_kind`, `grants`, `revokes`) | `devices`, `tokens`, `tokens_note` |
 | `labels.json` | `labels_join`, `labels_quarantine`, `labels_flow`, `labels_gate` | none |
 | `surface.json` | `surface_validate`, `surface_fold`, `surface_action`, `surface_act`, `surface_bind` | `vocabulary`, `actionable` |
 | `credential.json` | `credential_check`, `credential_recipients`, `credential_seal`, `credential_open`, `credential_fold`, `credential_reseal` | `devices` |

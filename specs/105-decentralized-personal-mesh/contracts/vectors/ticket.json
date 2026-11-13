@@ -2900,6 +2900,171 @@
       },
       "kind": "consent_verify",
       "name": "consent-verify-wrong-kind"
+    },
+    {
+      "expect": {
+        "ok": {
+          "expires_s": 1794443500
+        }
+      },
+      "input": {
+        "capability": "EvwECpEECgRtZXNoCkdzaGEyNTY6Y2NhODJhZDZkZTM5NDk0YjlmM2ZhODYxMWQ1NDBlNjY3NTYxYzk0ZTA4YjJiY2VlY2M1ODcwN2UzMzBlODExYQoGZGV2aWNlCkdzaGEyNTY6MzFlNWZkOWRjYTAzM2ExMDhiZDQ3ZjVlNDQ3ZTcwMjBlMmMxMGE0MTU2Y2VjNjlmNTZiNDBlMmY5ZDJjY2UwMwoEZmVlZAorQS1iT2c1SkVOSDJyb0ptN1U4Z1NPQzNnZGZ5T2V3Z2N4TUxPajJFR3VGUQoFYWN0b3IKTmRldmljZTpzaGEyNTY6MzFlNWZkOWRjYTAzM2ExMDhiZDQ3ZjVlNDQ3ZTcwMjBlMmMxMGE0MTU2Y2VjNjlmNTZiNDBlMmY5ZDJjY2UwMwoMc3RvcF9jb3VudGVyCghtZXNoX2N0eAoBbQoMc3RvcF9jdXJyZW50CgFuCgFjCgF0GAMiCgoICIAIEgMYgQgiCgoICIIIEgMYgwgiCgoICIQIEgMYhQgiCgoICIYIEgMYhwgiCQoHCIgIEgIQADIaChgKAggbEggIiQgSAwiKCBIICIAIEgMIiggyMAouCgIIGxIICIsIEgMIjAgSCAiICBIDCI0IGhQKBQoDCIwICgUKAwiNCAoEGgIIAjIoCiYKAggbEgcIBRIDCI4IGhcKBQoDCI4ICggKBiD0n9TXBgoEGgIIABIkCAASICi7bl383CIGlO-zpvsfvMiz8_dOmuX8fQUEdEqr1k0FGkAaq7q6X-ua7zYInJvja3_yMORLonmsM50Kr1LeLCnru-dAkXvyPvzZItrwiuQhViGpGB-EQYKRz8QZCTUjpY8DGpoDCq8CCkx0dXJuOnNoYTI1Njo5NzRjYWQyZGQ2MDM4MjdiMDZlOWU2YWZmYTNkZTAzZGI1YWYyYzEyYzA0NWRiNjc5YTdiMWJlZjQyYjQxYTFjCgR0dXJuCkdzaGEyNTY6OTc0Y2FkMmRkNjAzODI3YjA2ZTllNmFmZmEzZGUwM2RiNWFmMmMxMmMwNDVkYjY3OWE3YjFiZWY0MmI0MWExYwoEdG9vbAoJbWFpbC5zZW5kCgpub3Rlcy5yZWFkGAMiCgoICIYIEgMYjwgiCgoICJAIEgMYkQgyLwotCgIIGxIICJIIEgMIjggaHQoOCgw6CgoDGJMICgMYlAgKBQoDCI4ICgQaAggFMigKJgoCCBsSBwgFEgMIjggaFwoFCgMIjggKCAoGIOyR1NcGCgQaAggAEiQIABIgG3-1529LwjEdnz8YMSOliudw64qTWb0Oeb1RZKZ0cvcaQDld7uuNNdTKSugEbuWf6nbI-g9jrziHbtSa0AFVeygo0v9Pmk4RDdVGnW_xA7HPe_V0DacXFKOogCtPAKypdA4aygEKXgoQYWdlbnQ6YWdlbnQubWFpbAoFYWdlbnQKAWEKCmFnZW50Lm1haWwYBiIKCggIhggSAxiVCDImCiQKAggbEggIlggSAwiXCBoUCgUKAwiXCAoFCgMYmAgKBBoCCBUSJAgAEiBVx2SYxYBry0_v6saYfbTn-VksRQTwJlS7awkCVmUKhRpAnapE4C2hQb12mGy70EiZ0jfA2TN0X-gW9vCAl3I3PP66naCUw_oBDt1GxbFHAJZOhV5LFLE_oaFE5XpHkv3HBSgBGqgFCrsECkxjYWxsOnNoYTI1NjplYmRlZDFkOTI4ZDEyZmI4NmNjM2JhODRjNTM5ZDA5OGMwN2ZkMGIxMzY2YmU1ODE3ZDE0ZjI0NTE0YjJhMWFkCgVsYWJlbAoJaW50ZWdyaXR5Cgl1bnRydXN0ZWQKD2NvbmZpZGVudGlhbGl0eQoHcHJpdmF0ZQoGc291cmNlCkdzaGEyNTY6MWExMTkwOTVkMDE4NDlkZThjOTc5MGU4Y2E2MmQ2ZjY4OGJlNTc5MjVjZDkyMzhlMmFlY2RiYzNkMDZjYzI0NwoLYXJnc19kaWdlc3QKAWQKR3NoYTI1NjpiMjJkMjU0OTFkOTIwNDcwNjNhMTBlNzJjYWEzMTgwZWQyMWZkZDY0OWI1ZTg4MzYxM2ZkOTIxNTIyMDMxM2M2Cg1hY3Rpb25fZGlnZXN0CkdzaGEyNTY6ZWJkZWQxZDkyOGQxMmZiODZjYzNiYTg0YzUzOWQwOThjMDdmZDBiMTM2NmJlNTgxN2QxNGYyNDUxNGIyYTFhZBgGIgoKCAiGCBIDGJkIIg8KDQiaCBIDGJsIEgMYnAgiDwoNCJoIEgMYnQgSAxieCCIKCggInwgSAxigCDImCiQKAggbEggIkggSAwiOCBoUCgUKAwiOCAoFCgMYkwgKBBoCCBUyJgokCgIIGxIICKEIEgMIoggaFAoFCgMIoggKBQoDGKMICgQaAggVMiYKJAoCCBsSCAikCBIDCKIIGhQKBQoDCKIICgUKAxilCAoEGgIIFRIkCAASIP0RLqnIBxLJPnl7onmjESdl2aKhuL3zwzUYwJz-n06bGkAQusqV26nTjfPhbSY-P07Ee_1vKgk0T2_vUB4ozLcvCXic-4RNFMli7NJitR4fSIFT5pmynORiHvTxP8J0uBYMKAEiIgogcgQXZ03c7op3So__pxLs15FhyHICxbvG97i1fdpXRBc"
+      },
+      "kind": "ticket_expiry",
+      "name": "expiry-is-the-earliest-block-expiry"
+    },
+    {
+      "expect": {
+        "error": "ticket.malformed"
+      },
+      "input": {
+        "capability": "AAAA"
+      },
+      "kind": "ticket_expiry",
+      "name": "expiry-of-a-token-that-is-not-biscuit"
+    },
+    {
+      "expect": {
+        "ok": {
+          "valid": true
+        }
+      },
+      "input": {
+        "action": {
+          "agent": "kernel",
+          "tool": "mail.send",
+          "tool_def": "sha256:83f0f0da3cf5cafac7ad95c101733d63922d19a2713447fd5a24d319d6136825"
+        },
+        "effect_kind": "outside_effect",
+        "grants": [
+          "kernel/mail.send@83f0f0da/*"
+        ],
+        "revokes": []
+      },
+      "kind": "ticket_grant_check",
+      "name": "grant-held-and-never-revoked"
+    },
+    {
+      "expect": {
+        "ok": {
+          "valid": true
+        }
+      },
+      "input": {
+        "action": {
+          "agent": "kernel",
+          "tool": "mail.send",
+          "tool_def": "sha256:83f0f0da3cf5cafac7ad95c101733d63922d19a2713447fd5a24d319d6136825"
+        },
+        "effect_kind": "outside_effect",
+        "grants": [],
+        "revokes": []
+      },
+      "kind": "ticket_grant_check",
+      "name": "nothing-granted-and-nothing-revoked-stays-offline-valid"
+    },
+    {
+      "expect": {
+        "error": "ticket.grant_revoked"
+      },
+      "input": {
+        "action": {
+          "agent": "kernel",
+          "tool": "mail.send",
+          "tool_def": "sha256:83f0f0da3cf5cafac7ad95c101733d63922d19a2713447fd5a24d319d6136825"
+        },
+        "effect_kind": "outside_effect",
+        "grants": [],
+        "revokes": [
+          "kernel/mail.send@83f0f0da/*"
+        ]
+      },
+      "kind": "ticket_grant_check",
+      "name": "grant-revoked-is-refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "valid": true
+        }
+      },
+      "input": {
+        "action": {
+          "agent": "kernel",
+          "tool": "mail.send",
+          "tool_def": "sha256:83f0f0da3cf5cafac7ad95c101733d63922d19a2713447fd5a24d319d6136825"
+        },
+        "effect_kind": "outside_effect",
+        "grants": [
+          "kernel/mail.send@83f0f0da/outside_effect"
+        ],
+        "revokes": [
+          "kernel/mail.send@83f0f0da/*"
+        ]
+      },
+      "kind": "ticket_grant_check",
+      "name": "revoked-and-granted-again-is-valid"
+    },
+    {
+      "expect": {
+        "error": "ticket.grant_revoked"
+      },
+      "input": {
+        "action": {
+          "agent": "kernel",
+          "tool": "mail.send",
+          "tool_def": "sha256:83f0f0da3cf5cafac7ad95c101733d63922d19a2713447fd5a24d319d6136825"
+        },
+        "effect_kind": "outside_effect",
+        "grants": [],
+        "revokes": [
+          "kernel/mail.send/*"
+        ]
+      },
+      "kind": "ticket_grant_check",
+      "name": "revoke-of-the-bare-name-counts"
+    },
+    {
+      "expect": {
+        "ok": {
+          "valid": true
+        }
+      },
+      "input": {
+        "action": {
+          "agent": "kernel",
+          "tool": "mail.send",
+          "tool_def": "sha256:83f0f0da3cf5cafac7ad95c101733d63922d19a2713447fd5a24d319d6136825"
+        },
+        "effect_kind": "outside_effect",
+        "grants": [],
+        "revokes": [
+          "kernel/mail.read/*",
+          "kernel/mail.send@83f0f0da/mesh_read",
+          "other/mail.send/*"
+        ]
+      },
+      "kind": "ticket_grant_check",
+      "name": "revoke-of-another-tool-or-scope-does-not-count"
+    },
+    {
+      "expect": {
+        "error": "ticket.grant_revoked"
+      },
+      "input": {
+        "action": {
+          "agent": "kernel",
+          "tool": "mail.send",
+          "tool_def": "sha256:83f0f0da3cf5cafac7ad95c101733d63922d19a2713447fd5a24d319d6136825"
+        },
+        "effect_kind": "outside_effect",
+        "grants": [],
+        "revokes": [
+          "*/*/*"
+        ]
+      },
+      "kind": "ticket_grant_check",
+      "name": "wildcard-revoke-counts"
     }
   ],
   "devices": {

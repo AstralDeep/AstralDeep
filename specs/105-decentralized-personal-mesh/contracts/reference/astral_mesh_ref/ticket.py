@@ -376,3 +376,62 @@ def verify_ticket(
                 "ticket.consent_stale", "consent is too old or from the future"
             )
     return claims
+
+
+_EXPIRY = re.compile(r"\$t < (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ);")
+
+
+def expiry(token: bytes) -> int:
+    """The latest instant at which the ticket is still valid: the earliest expiry check of the device and turn blocks."""
+    biscuit = _unverified(token)
+    if biscuit.block_count() < 4:
+        raise MeshError("ticket.wrong_block_shape", "blocks")
+    found = []
+    for i in (0, 1):
+        match = _EXPIRY.search(biscuit.block_source(i))
+        if not match:
+            raise MeshError("ticket.wrong_block_shape", "expiry")
+        found.append(
+            int(
+                dt.datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%SZ")
+                .replace(tzinfo=dt.timezone.utc)
+                .timestamp()
+            )
+        )
+    return min(found)
+
+
+def grant_name(tool: str, tool_def: str) -> str:
+    return f"{tool}@{tool_def.removeprefix('sha256:')[:8]}"
+
+
+def _covers(key: str, agent: str, names: tuple[str, str], scope: str) -> bool:
+    parts = key.split("/", 2)
+    if len(parts) != 3:
+        return False
+    a, t, sc = parts
+    return a in ("*", agent) and t in ("*", *names) and sc in ("*", scope)
+
+
+def grant_check(
+    action: dict[str, Any],
+    effect_kind: str,
+    grants: list[str],
+    revokes: list[str],
+) -> None:
+    """A verifier that holds the mesh's authority refuses a ticket whose grant was revoked and not granted again."""
+    names = (action["tool"], grant_name(action["tool"], action["tool_def"]))
+    covers = lambda key: _covers(key, action["agent"], names, effect_kind)  # noqa: E731
+    if any(covers(k) for k in revokes) and not any(covers(k) for k in grants):
+        raise MeshError("ticket.grant_revoked", action["tool"])
+
+
+def register(op: Callable[[str], Callable[[Any], Any]]) -> None:
+    @op("ticket_expiry")
+    def _expiry(i: dict[str, Any]) -> Any:
+        return {"expires_s": expiry(b64url_decode(i["capability"]))}
+
+    @op("ticket_grant_check")
+    def _grant(i: dict[str, Any]) -> Any:
+        grant_check(i["action"], i["effect_kind"], i["grants"], i["revokes"])
+        return {"valid": True}

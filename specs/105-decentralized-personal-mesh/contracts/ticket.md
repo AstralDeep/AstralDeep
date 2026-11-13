@@ -75,7 +75,16 @@ The executor knows its mesh id, the roster's feed statuses, the stop counter, th
 10. The receipt, by the effect's kind (section 6). For a kind with a budget, the receipt is an object (`ticket.receipt_missing`). Its `type` is `lets.receipt/v1` and its `evidence_digest` is the action digest (`ticket.receipt_mismatch`). The LETS callback accepts it (`ticket.receipt_invalid`). The receipt's signature and budget are LETS's to check. For a kind without one, the receipt is null (`ticket.receipt_unexpected`) and LETS is not consulted.
 11. Consent. If the consent is null and policy requires it, `ticket.consent_required`. If a consent is given, whether required or not, it must verify with kind `action` and the action digest (`ticket.consent_wrong_action` for a different action, `ticket.consent_invalid` for other failures) and its clock must be within 600000 milliseconds of the executor's time in either direction (`ticket.consent_stale`).
 
-The result is the claims: `mesh`, `device`, `feed`, `stop_counter`, `turn`, `agents` (in order), `action`, and `labels` (`integrity`, `confidentiality` and `sources`). The executor applies its own flow rules to the labels. An institution's node never trusts a device's gates. It verifies the ticket and then runs its own.
+The result is the claims: `mesh`, `device`, `feed`, `stop_counter`, `turn`, `agents` (in order), `action`, and `labels` (`integrity`, `confidentiality` and `sources`). A verifier also reports `expires_s` (section 4.1). The executor applies its own flow rules to the labels. An institution's node never trusts a device's gates. It verifies the ticket and then runs its own.
+
+### 4.1 Expiry and the verifier's own fold
+
+**Expiry.** A ticket expires at the earliest of the expiry checks of its device block and its turn block. A verifier reads it from the two blocks (the check `$t < <RFC 3339>` of section 3) and reports it as `expires_s`, in whole seconds. An executor that remembers spent tickets keeps each one until `expires_s` and no longer. The ticket carries no issue time, so there is no `issued_s`. Vector kind `ticket_expiry`.
+
+**Revoked grants and removed members.** A verifier that is itself a member of the mesh holds the roster and the grants of the mesh. It adds two refusals after step 11 and before it returns the claims. It never needs them to be current. A verifier that has not yet seen a revocation verifies offline as before.
+
+- The device that minted the ticket is no longer a member in the verifier's roster. Step 4 already refuses this as `ticket.device_removed`, so a removed member's tickets are refused outright and no second code exists.
+- A revoke in the verifier's authority fold covers the action's agent, its tool (the bare name or `<name>@<first 8 hex digits of tool_def>`) and the scope of its effect kind, and no consented grant in the same fold covers them. The error is `ticket.grant_revoked`. A key covers an action when each of its three parts is `*` or equal. A tool that was never granted and never revoked is not refused here, because the grant may live on a device the verifier has not synced with. Vector kind `ticket_grant_check` (`action`, `effect_kind`, `grants`, `revokes`).
 
 ## 5. Consent
 
