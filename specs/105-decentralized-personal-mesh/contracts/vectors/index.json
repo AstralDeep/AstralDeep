@@ -81,8 +81,8 @@
       "spec": "contracts/runs.md"
     },
     "surface.json": {
-      "cases": 64,
-      "sha256": "de79cb88218890a8dfbb821235ae8fe3b7027350dbc99798fc90eea731a2a5e2",
+      "cases": 69,
+      "sha256": "f1ae11b3eedeee9d3489f8e54e58fd0188725eded427b08c0d0c8506fddd8da0",
       "spec": "contracts/surface.md"
     },
     "sync.json": {

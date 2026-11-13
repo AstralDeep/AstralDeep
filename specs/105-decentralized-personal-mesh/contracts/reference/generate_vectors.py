@@ -4352,6 +4352,32 @@ def build_surface() -> Suite:
         ],
         error="surface.unknown_component",
     )
+    no_cap = {k: v for k, v in use_action.items() if k != "capability"}
+    act_case("act-without-a-capability-field-takes-the-documents", [put], no_cap)
+    act_case(
+        "act-with-a-capability-field-that-differs",
+        [put],
+        {**use_action, "capability": "cap.other"},
+        error="surface.unknown_capability",
+    )
+    act_case(
+        "act-cannot-dodge-an-exhausted-capability-with-a-forged-field",
+        [put, pressed(2, 2000), pressed(3, 3000)],
+        {**use_action, "capability": "cap.other"},
+        error="surface.unknown_capability",
+    )
+    act_case(
+        "act-cannot-dodge-an-exhausted-capability-with-no-field",
+        [put, pressed(2, 2000), pressed(3, 3000)],
+        no_cap,
+        error="surface.capability_exhausted",
+    )
+    act_case(
+        "act-with-no-resolvable-capability",
+        [put],
+        {"args": {}, "component": "title"},
+        error="surface.unknown_component",
+    )
     act_case(
         "act-cannot-widen-a-pinned-argument",
         [put],

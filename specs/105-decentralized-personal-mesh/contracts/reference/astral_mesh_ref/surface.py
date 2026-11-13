@@ -294,7 +294,15 @@ def act(
             rejected[0]["code"] if rejected else "surface.unknown_surface",
             "no accepted document",
         )
-    return validate_action(doc, action, used.get(action["capability"], 0))
+    comp = doc["components"].get(action["component"])
+    if comp is None or "action" not in comp["props"]:
+        raise MeshError("surface.unknown_component", str(action["component"]))
+    declared = comp["props"]["action"]["capability"]
+    if "capability" in action and action["capability"] != declared:
+        raise MeshError("surface.unknown_capability", str(action["capability"]))
+    return validate_action(
+        doc, {**action, "capability": declared}, used.get(declared, 0)
+    )
 
 
 def validate_action(
