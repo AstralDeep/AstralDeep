@@ -92,7 +92,7 @@ class Listener(ak.KernelListener):
         pass
 
 
-def open_device(directory, label: str, marker: int, mailbox: str):
+def open_device(directory, label: str, marker: int, mailbox: str, peer_tools=None):
     config = ak.KernelConfig(
         data_dir=str(directory),
         operations_secret=ak.new_operations_secret(),
@@ -110,7 +110,7 @@ def open_device(directory, label: str, marker: int, mailbox: str):
             mailbox=mailbox,
         ),
     )
-    return ak.Kernel.open(config, Signer(), None, None, Listener())
+    return ak.Kernel.open(config, Signer(), None, None, Listener(), peer_tools=peer_tools)
 
 
 async def until(condition, what, seconds=40):
@@ -255,7 +255,7 @@ def canonical(value) -> str:
 
 
 @asynccontextmanager
-async def paired(tmp_path, monkeypatch, *, phi_protected=False, calls=None):
+async def paired(tmp_path, monkeypatch, *, phi_protected=False, calls=None, peer_tools=None, history=None):
     monkeypatch.setenv("ASTRAL_NODE_PROFILE", "personal")
     monkeypatch.setenv("ASTRAL_NODE_DATA_DIR", str(tmp_path / "node"))
     settings = node_mesh.MeshSettings(
@@ -268,7 +268,9 @@ async def paired(tmp_path, monkeypatch, *, phi_protected=False, calls=None):
     laptop = None
     try:
         status = await node.status()
-        laptop = open_device(tmp_path / "laptop", "laptop", 1, status["mailbox"]["address"])
+        node_device = (await node.kernel.mesh_status()).device_id
+        tools = peer_tools(node_device) if peer_tools else None
+        laptop = open_device(tmp_path / "laptop", "laptop", 1, status["mailbox"]["address"], tools)
         request = laptop.begin_mesh_creation()
         laptop.complete_mesh_creation(token(request.nonce))
         await laptop.start_network()
@@ -276,7 +278,7 @@ async def paired(tmp_path, monkeypatch, *, phi_protected=False, calls=None):
         await laptop.approve_pairing(offer["payload"], ak.HistoryGrant.ALL)
         await until(lambda: enrolled(node), "the node to join")
         bridge = node_mesh_chat.MeshChatBridge(
-            node, owner_id=OWNER, history=History(), runner=model_turn, calls=calls, state_path=tmp_path / "chats.json",
+            node, owner_id=OWNER, history=history or History(), runner=model_turn, calls=calls, state_path=tmp_path / "chats.json",
             phi_active=lambda owner: phi_protected, poll_seconds=0.2,
         )
         node_mesh_chat.install(bridge)
@@ -320,7 +322,7 @@ async def test_a_request_with_a_forged_ticket_is_refused_and_never_run(tmp_path,
         async def resolve(self, owner_id, tool):
             from orchestrator.node_mesh_calls import ResolvedTool
 
-            return ResolvedTool("agent-1", tool, "tools:read")
+            return ResolvedTool("agent-1", tool, "tools:read", "sha256:" + "2" * 64)
 
         async def authorize(self, owner_id, resolved):
             return "authority"
