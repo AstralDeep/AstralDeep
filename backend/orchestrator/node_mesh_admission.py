@@ -94,7 +94,7 @@ def _binding_code(admission, ticket, owner):
 async def check(orch, websocket, owner, chat, agent, tool, args, *, physical=False):
     admission = _CURRENT.get()
     ticket = vessel_executor.current_ticket()
-    if admission is None and ticket is None and not getattr(websocket, "_node_mesh_peer_call", False):
+    if admission is None and ticket is None and getattr(websocket, "_node_mesh_peer_call", False) is not True:
         return None
     code = "node.mesh_admission_unavailable"
     try:

@@ -8,6 +8,7 @@ import asyncio
 from contextlib import contextmanager
 import hashlib
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -72,9 +73,23 @@ def runtime():
     return SimpleNamespace(**locals())
 
 
-async def test_ordinary_dispatch_without_mesh_context_is_unchanged(runtime):
-    assert await runtime.check() is None
+@pytest.mark.parametrize("socket", [SimpleNamespace, MagicMock, AsyncMock])
+async def test_ordinary_dispatch_without_mesh_context_is_unchanged(runtime, socket):
+    assert await admission.check(runtime.orch, socket(), "owner", "chat", "agent", "lookup", runtime.original,
+                                 physical=True) is None
     assert runtime.events == []
+
+
+@pytest.mark.parametrize("context", ["admission", "ticket"])
+async def test_partial_authority_is_not_ignored_when_the_peer_marker_is_false(runtime, context):
+    bound = (admission.binding(runtime.mesh, lambda: "owner", "owner", "chat", runtime.resolved, runtime.ticket)
+             if context == "admission" else vessel_executor.carrying(runtime.ticket))
+    with bound:
+        result = await admission.check(runtime.orch, MagicMock(_node_mesh_peer_call=False), "owner", "chat",
+                                       "agent", "lookup", runtime.original, physical=True)
+    assert result is not None and result.error["code"] == "node.mesh_admission_unavailable"
+    assert runtime.events[-1]["detail"] == result.error["code"]
+    assert runtime.mesh.calls == 0
 
 
 async def test_a_carried_ticket_requires_a_live_trusted_binding(runtime):
