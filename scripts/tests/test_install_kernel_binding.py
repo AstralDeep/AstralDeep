@@ -120,3 +120,34 @@ def test_main_reports_a_failed_pip_install(staged, monkeypatch, capsys):
     monkeypatch.setattr(ikb.subprocess, "run", failing)
     assert ikb.main(["install", "--artifacts", str(artifacts)]) == 1
     assert "kernel binding" in capsys.readouterr().err
+
+
+def test_pin_records_the_digests_of_the_staged_artifacts(staged):
+    artifacts, manifest, path = staged
+    (artifacts / "k2.whl").write_bytes(b"newer wheel")
+    (artifacts / "mb2").write_bytes(b"newer mailbox")
+    pinned = ikb.pin(artifacts, "linux-aarch64", "k2.whl", "mb2", "abc1234", manifest)
+    entries = pinned["artifacts"]["linux-aarch64"]
+    assert entries["wheel"] == {"file": "k2.whl", "sha256": digest(b"newer wheel")}
+    assert entries["mailbox"] == {"file": "mb2", "sha256": digest(b"newer mailbox")}
+    assert pinned["source"]["commit"] == "abc1234"
+    assert ikb.verify(artifacts, "linux-aarch64", pinned)
+
+
+def test_pin_refuses_missing_artifacts(staged):
+    artifacts, manifest, _ = staged
+    with pytest.raises(ikb.BindingError, match="missing artifact"):
+        ikb.pin(artifacts, "linux-aarch64", "absent.whl", "mb", "abc1234", manifest)
+
+
+def test_main_pin_rewrites_the_manifest(staged, monkeypatch, capsys):
+    artifacts, manifest, path = staged
+    (artifacts / "k2.whl").write_bytes(b"newer wheel")
+    monkeypatch.setattr(ikb, "MANIFEST", path)
+    monkeypatch.setattr(ikb, "platform_key", lambda: "linux-aarch64")
+    arguments = ["pin", "--artifacts", str(artifacts), "--wheel", "k2.whl", "--mailbox", "mb", "--commit", "abc1234"]
+    assert ikb.main(arguments) == 0
+    written = json.loads(path.read_text())
+    assert written["artifacts"]["linux-aarch64"]["wheel"]["sha256"] == digest(b"newer wheel")
+    assert ikb.main(["pin", "--artifacts", str(artifacts), "--commit", "abc1234"]) == 1
+    assert "--wheel and --mailbox" in capsys.readouterr().err
