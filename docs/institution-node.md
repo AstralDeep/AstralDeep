@@ -28,7 +28,7 @@ The wake push uses the existing `PUSH_APNS_*` credentials. Without them the node
 
 ## Signing approvals
 
-The institution signs with its own key, offline. The node never holds the private key.
+The institution signs with its own key, offline. The node never holds the private key. Run these from the `backend` directory.
 
 ```
 python -m shared.institution_profile public-key --key institution.pem
