@@ -1,15 +1,11 @@
 # Tasks for spec 105
 
-**Date:** 2026-11-12. **Status:** resumed by the owner after two stops; not complete. The resume
-point is the "Second stop" section of [local-integration-handoff.md](local-integration-handoff.md).
-Kernel lanes are on `k/runtime` and `k/turns`, cut from `codex/105-kernel-integration`. The Apple mesh
-app is on Projection `feat/105-mesh-app`. The Deep SQLite node is on `feat/105-sqlite-node`. Product
-work is not pushed. Read [spec.md](spec.md) and [plan.md](plan.md) for intent. This file
-fixes the choices every lane shares, so lanes can work in parallel.
+**Date:** 2026-11-13. **Status:** resumed by the owner after the third stop; qualification is in progress. Current work uses Deep `feat/105-integration`, Kernel `k/integration`, Projection `feat/105-mesh-final` and Vessel `feat/105-vessel-final`. The third-stop anchors and subsequent evidence are in [local-integration-handoff.md](local-integration-handoff.md). Prior product branches were pushed except the Kernel; new resume commits are local. No default-branch merge, deployment or release is claimed. Read [spec.md](spec.md) and [plan.md](plan.md) for intent.
 
 ## Owner answers, 2026-11-12
 
 | Spec question | Answer |
+| Section 17 rule changes (2026-11-13) | The owner explicitly approved the shared Rust kernel and peer model, ROTE in the base, offline-verifiable tool tickets with Keycloak proving identity, and on-device voice. The repository guide now reflects those rules. |
 |---|---|
 | 1. Kernel in Rust (C2) | Yes. rustup is installed through Homebrew with the Apple targets. |
 | 7. Interim relay | The transport's public relays may be used. |

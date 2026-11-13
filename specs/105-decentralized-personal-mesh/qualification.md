@@ -30,7 +30,7 @@ Owner live results so far (2026-11-12): Mac localtest app, iPhone simulator and 
 | 0.1 | Every contract has Python-reference vectors verified in a second language | Proven by automated test | 22 vector files under `contracts/vectors`, 1177+ reference tests. Rust checks them in `astral-core/src/vector_tests.rs`, `astral-mesh/src/vector_tests.rs`, `astral-authz/tests/authz_vectors.rs`, `astral-log/tests/vectors_*.rs`, `astral-ui/tests/surface_vectors.rs`, `astral-mailbox/tests/vectors.rs`, `astral-engine/tests/vectors_{learning,runs}.rs`. Note: the gate order has no vector file of its own (see 3.11). |
 | 0.2 | Spike builds for macOS, iOS, Android, Windows, Linux inside the CI limit and each binding round-trips an event | Partly covered | Apple targets build (clean 467 s) and the Swift wrapper tests pass. A Linux arm64 wheel builds (122 s) and `python/smoke/runtime_smoke.py` passes. Gap: no Android binding, no Windows binding, no x86_64 Linux wheel, and the kernel repo has no CI workflow that measures time. Belongs in the kernel repo (build scripts plus a CI job). |
 | 0.3 | LETS vectors verify in Python reference and the spike | Proven by automated test | LETS `protocol/vectors` run by the Python reference. Rust: `astral-authz/tests/lets_wire_vectors.rs` (receipts, leases, vouchers, acks) and `lets_period_vectors.rs::{period_index_vectors,derivation_vectors_are_byte_identical_to_the_python,device_scenarios}`. |
-| 0.4 | Owner signed off the rule changes | Not covered | Owner decision. The owner must read the contract rule changes and AGENTS.md amendment and say yes in chat. |
+| 0.4 | Owner signed off the rule changes | Owner approved | On 2026-11-13 the owner explicitly approved spec section 17 in chat; `AGENTS.md` and `tasks.md` record the authorized architecture, identity, ticket and voice rules. This is an owner decision, not a test result. |
 
 Phase 0 checks against real systems: the Keycloak sign-in with the kernel nonce worked live on the Mac. A silent refresh carrying the nonce is unchecked. The Kotlin transport on Android is unchecked.
 
@@ -124,7 +124,8 @@ Total 58 criteria.
 
 - Proven by automated test: 39
 - Partly covered: 11 (0.2, 1.1, 2.7, 3.2, 3.8, 3.9, 4.6, 5.6, 6.6, 6.7, 7.1)
-- Not covered: 2 (0.4, 3.11)
+- Owner approved: 1 (0.4)
+- Not covered: 1 (3.11)
 - Live only: 6 (3.1, 3.10, 4.1, 4.4, 6.2, 7.2)
 
 ## Automated tests to write next, smallest first
