@@ -56,7 +56,7 @@ One effect passes these steps in order. The first refusal ends it. The input is 
 
 | Step | Gate | Refusal |
 |---|---|---|
-| 1 | The mesh is not stopped and the proposing device is on the roster | `gate.mesh_stopped`, `gate.device_not_on_roster` |
+| 1 | The mesh is not halted (its stop counter is above its resumed counter, `roster.md` section 5) and the proposing device is on the roster | `gate.mesh_stopped`, `gate.device_not_on_roster` |
 | 2 | No hard security flag, and the tool definition hash matches the one pinned at approval | `gate.hard_flag`, `gate.tool_def_changed` |
 | 3 | Permission: the tool is allowed for this owner, agent and scope | `gate.permission_denied` |
 | 4 | Policy rules, merged by narrowing only. Result `allow`, `consent` or `deny` | `gate.policy_denied` for `deny`. `consent` adds the reason `policy` |
@@ -68,7 +68,7 @@ One effect passes these steps in order. The first refusal ends it. The input is 
 
 The output is `{"gate": n, "outcome", "code", "reasons"}`. A consent outcome is not an error. It means the host must draw a prompt from the canonical action and collect a presence-key signature. The signature covers the action digest (`ticket.md`), and the digest is checked again at dispatch. Steps 4 and 5 are on by default in the kernel.
 
-The fixed order matters. A stopped mesh outranks a hard flag, a hard flag outranks permission, and so on. A refusal never waits on consent, and consent comes before the allowance is spent.
+The fixed order matters. A halted mesh refuses every new effect, reads included, and outranks a hard flag, a hard flag outranks permission, and so on. A refusal never waits on consent, and consent comes before the allowance is spent.
 
 ## 6. Credentials
 

@@ -63,6 +63,7 @@ An entry with unknown type, fields or encodings raises `roster.malformed`. A rec
 | `epoch` | no | yes, personal group only | `group`, `wraps`, `recovery_wrap` (see `keys.md`) |
 | `wrap` | no | yes | `group`, `device`, `grants` (see `keys.md`) |
 | `stop` | no | yes | `counter` (integer, at least 1) |
+| `resume` | yes | yes | `counter` (integer, at least 1): the stop counter it resumes |
 
 Details.
 
@@ -74,6 +75,7 @@ Details.
 - **phi_authority.** Names an institution key that may sign PHI approvals for this mesh. An owner cannot approve their own device for institutional PHI, so a mesh with no authority has no PHI members. No build ships an authority.
 - **phi_approval.** A grant carries a PHI approval attestation (section 7). A revoke removes the approval for a subject.
 - **stop.** The stop counter only rises. An entry is valid only if its counter is above the highest counter in its ancestors. The mesh's stop counter is the maximum over valid stop entries. A peer that sees a counter higher than a ticket's counter refuses the ticket (`ticket.md`).
+- **resume.** Lifts a stop. It names the stop counter it resumes and carries the author's presence signature, so a thief holding a device and its passcode cannot lift the owner's stop. The recovery key may write it, without presence like its other entries. An entry is valid only if its counter is at most the highest stop counter in its ancestors. The mesh's resumed counter is the maximum over valid resume entries. The mesh is **halted** while the stop counter is above the resumed counter. A resume that names an older counter than the current stop leaves the mesh halted. A stop and a resume written concurrently resolve toward halted, because a resume cannot name a counter it has not seen. A resume never lowers the stop counter, so a ticket from before a stop stays refused after the resume (`ticket.md`). Halting refuses new effects only. Reads, chat and sync keep working (`labels.md` section 5, step 1). A resume is not a mailbox notice, so a device that was offline stays halted until it syncs with a peer that holds the resume. That is the safe side.
 
 ## 4. Validity of one entry
 
@@ -96,6 +98,7 @@ An entry is checked against the state computed from its own ancestors only (the 
 | `epoch` | Every wrapped device is a member (personal group) or a PHI member (phi group), otherwise `roster.epoch_wrong_members`. A phi epoch is written by a PHI member (`roster.not_phi_member`). Recovery cannot write a phi epoch |
 | `wrap` | The device is a member or PHI member of the group. Every grant names a known epoch of that group (`roster.unknown_epoch`) |
 | `stop` | The counter is above the ancestors' maximum (`roster.stop_not_rising`) |
+| `resume` | The counter is at most the ancestors' stop maximum (`roster.resume_not_stopped`) |
 
 ## 5. Merge into state
 
@@ -116,9 +119,9 @@ Consequences, all covered by vectors.
 - **An accepted issuer** is in force if no active removal for it is concurrent with or later than every add. An add that comes after a removal restores it. Among several adds of one issuer, the newest by `(clock, id)` supplies the keys.
 - **A PHI authority** and **a PHI approval** follow the same rule as issuers. A revoke beats a concurrent grant, and a grant written after the revoke stands. An approval counts only while its institution is an authority and, when a time is supplied, while `not_after_s` is at least the time. Membership does not look at `issued_s`. Only the check of a single approval in section 7 does.
 - **Epochs.** Every active `epoch` entry is valid, so two devices that start epochs while apart both succeed. The **current epoch** of a group is the newest, by `(clock, id)`, among epochs that no other epoch of the group follows. A later epoch that follows both replaces them.
-- **Stop counter.** The maximum over active stop entries.
+- **Stop counter.** The maximum over active stop entries. The **resumed counter** is the maximum over active resume entries. `stopped` is true when the stop counter is above the resumed counter.
 
-The state has these parts: `members` (device id to kind, label and feeds), `removed` (device id to cutoff and removing entry), `unattested`, `stale_attestation`, `principal`, `issuers`, `phi_authorities`, `phi_members`, `epochs`, `current_epoch`, `stop`, `recovery`, `feeds`, `void`, `rejected` (entry id to error), `pending`, `heads` and `count`. `heads` is the set of entries no other present entry follows. A new entry follows all current heads.
+The state has these parts: `members` (device id to kind, label and feeds), `removed` (device id to cutoff and removing entry), `unattested`, `stale_attestation`, `principal`, `issuers`, `phi_authorities`, `phi_members`, `epochs`, `current_epoch`, `stop`, `resumed`, `stopped`, `recovery`, `feeds`, `void`, `rejected` (entry id to error), `pending`, `heads` and `count`. `heads` is the set of entries no other present entry follows. A new entry follows all current heads.
 
 **Feed status.** For a feed id: `member` if its device is a member, `removed` with the cutoff for that feed if the device was removed, `unknown` otherwise. `event.md` uses this to accept or refuse events.
 
@@ -170,7 +173,7 @@ A device that shows its own QR code first (the other direction) uses the same re
 
 ## 9. Errors
 
-`roster.malformed`, `roster.bad_device_cert`, `roster.recovery_not_allowed`, `roster.wrong_mesh`, `roster.extra_genesis`, `roster.no_genesis`, `roster.ambiguous_genesis`, `roster.unauthorized_author`, `roster.author_removed`, `roster.bad_signature`, `roster.bad_presence_signature`, `roster.already_member`, `roster.device_removed`, `roster.duplicate_key`, `roster.unknown_device`, `roster.cutoff_incomplete`, `roster.unknown_issuer`, `roster.unknown_authority`, `roster.epoch_wrong_members`, `roster.not_phi_member`, `roster.unknown_epoch`, `roster.stop_not_rising`, `attestation.*` (sections 6 and 7) and `pairing.*` (section 8).
+`roster.malformed`, `roster.bad_device_cert`, `roster.recovery_not_allowed`, `roster.wrong_mesh`, `roster.extra_genesis`, `roster.no_genesis`, `roster.ambiguous_genesis`, `roster.unauthorized_author`, `roster.author_removed`, `roster.bad_signature`, `roster.bad_presence_signature`, `roster.already_member`, `roster.device_removed`, `roster.duplicate_key`, `roster.unknown_device`, `roster.cutoff_incomplete`, `roster.unknown_issuer`, `roster.unknown_authority`, `roster.epoch_wrong_members`, `roster.not_phi_member`, `roster.unknown_epoch`, `roster.stop_not_rising`, `roster.resume_not_stopped`, `attestation.*` (sections 6 and 7) and `pairing.*` (section 8).
 
 Entry-level errors are recorded in `rejected` and do not stop the merge. `roster.no_genesis` and `roster.ambiguous_genesis` are raised.
 

@@ -1068,6 +1068,84 @@ def build_roster() -> Suite:
     s3 = m.stop(ALICE, [s1, s2], 2)
     R("stop-counter-must-rise", m, stop=2, rejected={s3: "roster.stop_not_rising"})
 
+    m = sc.Mesh("s7a", ALICE)
+    g = m.mesh
+    ab = m.add(ALICE, BOB, [g])
+    R("never-stopped-is-not-halted", m, stop=0, resumed=0, stopped=False)
+    t1 = m.stop(ALICE, [ab], 1)
+    R("a-stop-halts-the-mesh", m, stop=1, resumed=0, stopped=True)
+    r1 = m.resume(BOB, [t1], 1)
+    R("resume-naming-the-counter-clears-the-halt", m, stop=1, resumed=1, stopped=False)
+    t2 = m.stop(ALICE, [r1], 2)
+    R("a-later-stop-halts-again", m, stop=2, resumed=1, stopped=True)
+    r2 = m.resume(ALICE, [t2], 2)
+    R("resume-after-a-second-stop-clears", m, stop=2, resumed=2, stopped=False)
+    assert r2
+
+    m = sc.Mesh("s7b", ALICE)
+    g = m.mesh
+    ab = m.add(ALICE, BOB, [g])
+    t1 = m.stop(ALICE, [ab], 1)
+    t2 = m.stop(ALICE, [t1], 2)
+    r_old = m.resume(BOB, [t2], 1)
+    R(
+        "resume-naming-an-older-counter-does-not-clear",
+        m,
+        stop=2,
+        resumed=1,
+        stopped=True,
+        rejected={},
+    )
+    assert r_old
+
+    m = sc.Mesh("s7c", ALICE)
+    g = m.mesh
+    ab = m.add(ALICE, BOB, [g])
+    t1 = m.stop(ALICE, [ab], 1)
+    r1 = m.resume(BOB, [t1], 1)
+    t_concurrent = m.stop(ALICE, [t1], 2)
+    R(
+        "concurrent-stop-and-resume-resolve-to-stopped",
+        m,
+        stop=2,
+        resumed=1,
+        stopped=True,
+        rejected={},
+    )
+    r2 = m.resume(BOB, [r1, t_concurrent], 2)
+    R("a-resume-that-follows-both-clears", m, stop=2, resumed=2, stopped=False)
+    assert r2
+
+    m = sc.Mesh("s7d", ALICE)
+    g = m.mesh
+    ab = m.add(ALICE, BOB, [g])
+    bad = m.resume(ALICE, [ab], 1)
+    R(
+        "resume-without-a-stop-rejected",
+        m,
+        stop=0,
+        resumed=0,
+        stopped=False,
+        rejected={bad: "roster.resume_not_stopped"},
+    )
+    t1 = m.stop(ALICE, [ab], 1)
+    above = m.resume(BOB, [t1], 2)
+    R(
+        "resume-above-the-ancestors-stop-rejected",
+        m,
+        stop=1,
+        resumed=0,
+        stopped=True,
+        rejected={bad: "roster.resume_not_stopped", above: "roster.resume_not_stopped"},
+    )
+
+    m = sc.Mesh("s7e", ALICE)
+    g = m.mesh
+    ab = m.add(ALICE, BOB, [g])
+    t1 = m.stop(ALICE, [ab], 1)
+    m.resume("recovery", [t1], 1)
+    R("recovery-resumes-without-presence", m, stop=1, resumed=1, stopped=False)
+
     m = sc.Mesh("s8", ALICE)
     g = m.mesh
     e1 = m.put(m.entry("issuer", ALICE, [g], {"action": "add", "issuer": NEW_ISSUER}))
@@ -1490,6 +1568,32 @@ def build_roster() -> Suite:
         "shape-stop-counter-zero",
         "roster_shape",
         {"entry": full.entry("stop", ALICE, [full.mesh], {"counter": 0})},
+        error="roster.malformed",
+    )
+    s.add(
+        "shape-resume-counter-zero",
+        "roster_shape",
+        {"entry": full.entry("resume", ALICE, [full.mesh], {"counter": 0})},
+        error="roster.malformed",
+    )
+    s.add(
+        "shape-resume-without-presence-signature",
+        "roster_shape",
+        {
+            "entry": full.entry(
+                "resume", ALICE, [full.mesh], {"counter": 1}, presence=False
+            )
+        },
+        error="roster.malformed",
+    )
+    s.add(
+        "shape-stop-with-presence-signature",
+        "roster_shape",
+        {
+            "entry": full.entry(
+                "stop", ALICE, [full.mesh], {"counter": 1}, presence=True
+            )
+        },
         error="roster.malformed",
     )
     s.add(
@@ -2833,6 +2937,12 @@ def build_ticket(repin: bool = False) -> Suite:
         error="ticket.unauthorized",
     )
     s.add("issued-before-a-stop", "ticket_verify", base(stop=1), error="ticket.stopped")
+    s.add(
+        "issued-before-a-stop-stays-refused-after-a-resume",
+        "ticket_verify",
+        base(stop=1),
+        error="ticket.stopped",
+    )
     removed = {
         **feeds,
         ALICE.feed: {"cutoff": 4, "device": ALICE.id, "state": "removed"},
@@ -3444,6 +3554,26 @@ def build_labels() -> Suite:
 
     gate("gate-all-clear-dispatches", state(), 8, "allow")
     gate("gate-1-mesh-stopped", state(stopped=True), 1, "refuse", "gate.mesh_stopped")
+    gate(
+        "gate-1-halted-mesh-refuses-a-read-effect",
+        state(stopped=True, effect=effect("mesh_read")),
+        1,
+        "refuse",
+        "gate.mesh_stopped",
+    )
+    gate(
+        "gate-1-halted-mesh-refuses-a-write-effect",
+        state(stopped=True, effect=effect("mesh_write")),
+        1,
+        "refuse",
+        "gate.mesh_stopped",
+    )
+    gate(
+        "gate-1-resumed-mesh-dispatches",
+        state(stopped=False, effect=effect("mesh_write")),
+        8,
+        "allow",
+    )
     gate(
         "gate-1-device-not-on-roster",
         state(device_on_roster=False),

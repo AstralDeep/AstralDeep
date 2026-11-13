@@ -305,6 +305,11 @@ class Mesh:
     def stop(self, author: TestDevice, follows: list[str], counter: int) -> str:
         return self.put(self.entry("stop", author, follows, {"counter": counter}))
 
+    def resume(
+        self, author: TestDevice | str, follows: list[str], counter: int
+    ) -> str:
+        return self.put(self.entry("resume", author, follows, {"counter": counter}))
+
 
 def header(
     device: TestDevice,

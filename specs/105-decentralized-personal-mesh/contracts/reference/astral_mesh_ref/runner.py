@@ -212,6 +212,8 @@ def _roster_fold(i: dict[str, Any]) -> Any:
         "epochs",
         "current_epoch",
         "stop",
+        "resumed",
+        "stopped",
         "void",
         "rejected",
         "pending",

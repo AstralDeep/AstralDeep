@@ -896,6 +896,126 @@
     {
       "expect": {
         "ok": {
+          "code": "gate.mesh_stopped",
+          "gate": 1,
+          "outcome": "refuse",
+          "reasons": []
+        }
+      },
+      "input": {
+        "state": {
+          "allowance": "ok",
+          "consent": false,
+          "device_on_roster": true,
+          "effect": {
+            "argument_integrity": [],
+            "endpoint_phi_approved": false,
+            "kind": "mesh_read",
+            "target": "local_tool"
+          },
+          "hard_flag": false,
+          "permission": true,
+          "policy": "allow",
+          "stopped": true,
+          "tool_def_matches": true,
+          "turn": {
+            "context": [
+              {
+                "confidentiality": "private",
+                "integrity": "owner"
+              }
+            ],
+            "private_access": false,
+            "secret_in_context": false
+          }
+        }
+      },
+      "kind": "labels_gate",
+      "name": "gate-1-halted-mesh-refuses-a-read-effect"
+    },
+    {
+      "expect": {
+        "ok": {
+          "code": "gate.mesh_stopped",
+          "gate": 1,
+          "outcome": "refuse",
+          "reasons": []
+        }
+      },
+      "input": {
+        "state": {
+          "allowance": "ok",
+          "consent": false,
+          "device_on_roster": true,
+          "effect": {
+            "argument_integrity": [],
+            "endpoint_phi_approved": false,
+            "kind": "mesh_write",
+            "target": "local_tool"
+          },
+          "hard_flag": false,
+          "permission": true,
+          "policy": "allow",
+          "stopped": true,
+          "tool_def_matches": true,
+          "turn": {
+            "context": [
+              {
+                "confidentiality": "private",
+                "integrity": "owner"
+              }
+            ],
+            "private_access": false,
+            "secret_in_context": false
+          }
+        }
+      },
+      "kind": "labels_gate",
+      "name": "gate-1-halted-mesh-refuses-a-write-effect"
+    },
+    {
+      "expect": {
+        "ok": {
+          "code": null,
+          "gate": 8,
+          "outcome": "allow",
+          "reasons": []
+        }
+      },
+      "input": {
+        "state": {
+          "allowance": "ok",
+          "consent": false,
+          "device_on_roster": true,
+          "effect": {
+            "argument_integrity": [],
+            "endpoint_phi_approved": false,
+            "kind": "mesh_write",
+            "target": "local_tool"
+          },
+          "hard_flag": false,
+          "permission": true,
+          "policy": "allow",
+          "stopped": false,
+          "tool_def_matches": true,
+          "turn": {
+            "context": [
+              {
+                "confidentiality": "private",
+                "integrity": "owner"
+              }
+            ],
+            "private_access": false,
+            "secret_in_context": false
+          }
+        }
+      },
+      "kind": "labels_gate",
+      "name": "gate-1-resumed-mesh-dispatches"
+    },
+    {
+      "expect": {
+        "ok": {
           "code": "gate.device_not_on_roster",
           "gate": 1,
           "outcome": "refuse",

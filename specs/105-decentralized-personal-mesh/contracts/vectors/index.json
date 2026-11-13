@@ -41,8 +41,8 @@
       "spec": "contracts/keys.md"
     },
     "labels.json": {
-      "cases": 52,
-      "sha256": "d58b11f8d19aafa52c06d84165e072a1b895263779e1613d4d59d3255d7c7eb4",
+      "cases": 55,
+      "sha256": "1285e1449f9418a7c3299a677dcf5b4687001df888efe7116a7beaa490d334db",
       "spec": "contracts/labels.md"
     },
     "learning.json": {
@@ -71,8 +71,8 @@
       "spec": "contracts/requests.md"
     },
     "roster.json": {
-      "cases": 58,
-      "sha256": "85644279c3a3bc6579d68c892dd74055465718fe9a6b86d48e1bbe199abf4ccc",
+      "cases": 72,
+      "sha256": "7bfc26c173dec6bb90c32a3fee83621359cb44abe02f002833c0c8e99ff6a12f",
       "spec": "contracts/roster.md"
     },
     "runs.json": {
@@ -91,8 +91,8 @@
       "spec": "contracts/sync.md"
     },
     "ticket.json": {
-      "cases": 53,
-      "sha256": "03ba467bf82c742d89a2d8949531fc2ea8cf2d11ade603ea29533a218a197eaf",
+      "cases": 54,
+      "sha256": "fb9452055e84ec643a9cce410ab3a4adafee5c9832ad77f1d60620eddb99a4b1",
       "spec": "contracts/ticket.md"
     },
     "transfer.json": {
