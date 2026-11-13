@@ -80,9 +80,6 @@ def definition_hash(name: str, description: str, input_schema: Any, annotations:
 
 
 def skill_definition(skill: Any) -> str:
-    pinned = (getattr(skill, "metadata", None) or {}).get(vessel_executor.DEFINITION_KEY)
-    if isinstance(pinned, str) and pinned:
-        return pinned
     schema = getattr(skill, "input_schema", None)
     metadata = getattr(skill, "metadata", None) or {}
     return definition_hash(
@@ -113,7 +110,8 @@ class OrchestratorCalls:
             raise CallRefused("node.tool_ambiguous")
         agent_id, skill = matches[0]
         scope = self._orch.tool_permissions.get_tool_scope(agent_id, skill.id)
-        return ResolvedTool(agent_id, skill.id, scope, skill_definition(skill))
+        pinned = vessel_executor.pinned_definition(self._orch, agent_id, skill.id)
+        return ResolvedTool(agent_id, skill.id, scope, pinned or skill_definition(skill))
 
     async def authorize(self, owner_id: str, resolved: ResolvedTool) -> Any:
         from orchestrator.chain_authority import AuthoritySkip

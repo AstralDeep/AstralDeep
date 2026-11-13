@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Tuple
 
 import websockets
 import websockets.exceptions
@@ -1163,6 +1163,7 @@ class Orchestrator:
         self.agents: Dict[str, websockets.WebSocketServerProtocol] = {}
         self.local_agents: Dict[str, Any] = {}
         self.vessel_executor: Optional[Any] = None
+        self.vessel_definitions: Dict[Tuple[str, str], str] = {}
         self.ui_clients: List[websockets.WebSocketServerProtocol] = []
         self.ui_sessions: Dict[websockets.WebSocketServerProtocol, Dict] = {}
         self.agent_cards: Dict[str, AgentCard] = {}
@@ -5703,9 +5704,18 @@ class Orchestrator:
                     logger.debug("close after invalid tool schema failed", exc_info=True)
             return
 
+        if _vessel_executor.is_sandboxed(self, card.agent_id):
+            logger.error("registration refused: %s is a sandboxed agent", card.agent_id)
+            if websocket is not None:
+                try:
+                    await websocket.close(code=1008, reason="agent id reserved")
+                except Exception:
+                    logger.debug("close after reserved agent id failed", exc_info=True)
+            return
         if websocket is not None:
             self.agents[card.agent_id] = websocket
         card.metadata = dict(getattr(card, "metadata", {}) or {})
+        _vessel_executor.strip_foreign_metadata(card)
         _dispatch_runtime = getattr(self, "_governed_dispatch_runtimes", {}).get(
             card.agent_id
         )
@@ -21830,7 +21840,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 }
             )
 
-        if _vessel_executor.is_sandboxed(identity_card):
+        if _vessel_executor.is_sandboxed(self, agent_id):
             sandbox = getattr(self, "vessel_executor", None)
             if sandbox is None:
                 return MCPResponse(
@@ -25753,7 +25763,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if (
                 agent_id not in self.agents
                 and agent_id not in self.local_agents
-                and not _vessel_executor.is_sandboxed(card)
+                and not _vessel_executor.is_sandboxed(self, agent_id)
             ):
                 continue
             if draft_agent_id and agent_id != draft_agent_id:

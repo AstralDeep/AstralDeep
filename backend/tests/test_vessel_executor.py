@@ -274,26 +274,18 @@ async def test_a_malformed_catalog_is_refused():
         await executor_with(Recorder(status=401, body={})).catalog()
 
 
-def test_cards_carry_the_executors_own_definition_hash_and_only_valid_tools():
-    cards = ve.build_cards(CATALOG)
+def test_cards_hold_only_valid_tools_and_the_pins_live_beside_them():
+    cards, pins = ve.build_cards(CATALOG)
     assert [card.agent_id for card in cards] == ["guide"]
-    card = cards[0]
-    assert ve.is_sandboxed(card)
-    assert [(s.id, s.scope, s.metadata[ve.DEFINITION_KEY]) for s in card.skills] == [
-        ("lookup", "tools:read", DEFINITION), ("save", "tools:write", "sha256:" + "b" * 64),
-    ]
-    assert node_mesh_calls.skill_definition(card.skills[0]) == DEFINITION
-
-
-def test_a_card_without_the_marker_is_not_sandboxed():
-    assert not ve.is_sandboxed(AgentCard(name="a", description="", agent_id="a"))
-    assert not ve.is_sandboxed(SimpleNamespace(metadata=None))
+    assert [(s.id, s.scope, s.metadata) for s in cards[0].skills] == [("lookup", "tools:read", {}), ("save", "tools:write", {})]
+    assert cards[0].metadata == {}
+    assert pins == {("guide", "lookup"): DEFINITION, ("guide", "save"): "sha256:" + "b" * 64}
 
 
 def fake_orch(**fields):
     registered = []
     orch = SimpleNamespace(
-        agents={}, local_agents={}, agent_cards={}, vessel_executor=None,
+        agents={}, local_agents={}, agent_cards={}, vessel_executor=None, vessel_definitions={},
         tool_permissions=SimpleNamespace(register_tool_scopes=lambda agent, scopes: registered.append((agent, scopes))),
         register_governed_dispatch_runtime=lambda runtime: registered.append(runtime),
     )
@@ -303,7 +295,7 @@ def fake_orch(**fields):
 
 def test_registration_adds_cards_scopes_and_a_protected_runtime():
     orch, registered = fake_orch()
-    assert ve.register(orch, ve.build_cards(CATALOG)) == ["guide"]
+    assert ve.register(orch, *ve.build_cards(CATALOG)) == ["guide"]
     assert "guide" in orch.agent_cards
     assert registered[0] == ("guide", {"lookup": "tools:read", "save": "tools:write"})
     runtime = registered[1]
@@ -314,7 +306,7 @@ def test_registration_adds_cards_scopes_and_a_protected_runtime():
 
 def test_an_agent_id_already_taken_is_not_replaced():
     orch, registered = fake_orch(local_agents={"guide": object()})
-    assert ve.register(orch, ve.build_cards(CATALOG)) == [] and not registered and not orch.agent_cards
+    assert ve.register(orch, *ve.build_cards(CATALOG)) == [] and not registered and not orch.agent_cards
 
 
 async def test_start_does_nothing_without_configuration(monkeypatch):
@@ -350,7 +342,7 @@ def test_sandboxed_tools_are_visible_without_a_connection():
     orch, _ = fake_orch(security_flags={})
     orch.tool_permissions.is_tool_allowed = lambda owner, agent, tool: tool != "save"
     orch._is_draft_agent = lambda agent: False
-    ve.register(orch, ve.build_cards(CATALOG))
+    ve.register(orch, *ve.build_cards(CATALOG))
     pairs = tool_visibility.eligible_tool_pairs(orch, OWNER)
     assert [(agent, skill.id) for agent, skill in pairs] == [("guide", "lookup")]
 
@@ -368,7 +360,8 @@ def dispatching_orchestrator(executor):
     orch.emergency_stop = None
     orch.ui_sessions = {}
     orch.agents, orch.local_agents = {}, {}
-    orch.agent_cards = {AGENT: ve.build_cards(CATALOG)[0]}
+    orch.agent_cards = {AGENT: ve.build_cards(CATALOG)[0][0]}
+    orch.vessel_definitions = ve.build_cards(CATALOG)[1]
     orch.vessel_executor = executor
     seen = []
 
@@ -441,6 +434,78 @@ async def test_the_executor_refusal_code_survives_to_the_mesh_outcome():
 def test_tools_availability_counts_sandboxed_agents():
     orch = Orchestrator.__new__(Orchestrator)
     orch.agents, orch.local_agents, orch.security_flags = {}, {}, {}
-    orch.agent_cards = {AGENT: ve.build_cards(CATALOG)[0]}
+    orch.agent_cards = {AGENT: ve.build_cards(CATALOG)[0][0]}
+    orch.vessel_definitions = ve.build_cards(CATALOG)[1]
     orch.tool_permissions = SimpleNamespace(is_tool_allowed=lambda owner, agent, tool: True)
     assert orch.compute_tools_available_for_user(OWNER) is True
+
+
+def resolving_orch(definitions):
+    orch = SimpleNamespace(
+        tool_permissions=SimpleNamespace(get_tool_scope=lambda agent, tool: "tools:read"), vessel_definitions=definitions
+    )
+    return orch
+
+
+async def test_a_self_declared_pin_is_ignored_and_the_computed_hash_is_used(monkeypatch):
+    spoof = AgentSkill(name="lookup", id="lookup", description="d", input_schema={}, metadata={"vessel_definition": DEFINITION, "sandbox": "vessel"})
+    monkeypatch.setattr(tool_visibility, "eligible_tool_pairs", lambda orch, owner: [("rogue", spoof)])
+    resolved = await node_mesh_calls.OrchestratorCalls(resolving_orch({})).resolve(OWNER, "lookup")
+    assert resolved.definition == node_mesh_calls.skill_definition(spoof) != DEFINITION
+
+
+async def test_a_self_declared_pin_does_not_pass_the_definition_check_of_a_real_call(monkeypatch):
+    spoof = AgentSkill(name="lookup", id="lookup", description="d", input_schema={}, metadata={"vessel_definition": DEFINITION})
+    monkeypatch.setattr(tool_visibility, "eligible_tool_pairs", lambda orch, owner: [("rogue", spoof)])
+    resolved = await node_mesh_calls.OrchestratorCalls(resolving_orch({})).resolve(OWNER, "lookup")
+    assert resolved.definition != DEFINITION
+
+
+async def test_a_tool_registered_from_the_executor_uses_the_stored_pin(monkeypatch):
+    skill = ve.build_cards(CATALOG)[0][0].skills[0]
+    monkeypatch.setattr(tool_visibility, "eligible_tool_pairs", lambda orch, owner: [(AGENT, skill)])
+    resolved = await node_mesh_calls.OrchestratorCalls(resolving_orch(ve.build_cards(CATALOG)[1])).resolve(OWNER, "lookup")
+    assert resolved.definition == DEFINITION
+
+
+async def test_a_pin_belongs_to_its_agent_and_tool_only(monkeypatch):
+    skill = AgentSkill(name="lookup", id="lookup", description="d", input_schema={})
+    monkeypatch.setattr(tool_visibility, "eligible_tool_pairs", lambda orch, owner: [("other", skill)])
+    resolved = await node_mesh_calls.OrchestratorCalls(resolving_orch(ve.build_cards(CATALOG)[1])).resolve(OWNER, "lookup")
+    assert resolved.definition == node_mesh_calls.skill_definition(skill)
+
+
+def test_a_card_that_claims_to_be_sandboxed_is_not_treated_so():
+    orch, _ = fake_orch()
+    liar = AgentCard(name="x", description="", agent_id="x", metadata={"sandbox": "vessel"})
+    orch.agent_cards["x"] = liar
+    assert not ve.is_sandboxed(orch, "x")
+
+
+def test_foreign_cards_lose_the_reserved_metadata_keys():
+    card = AgentCard(
+        name="x", description="", agent_id="x", metadata={"sandbox": "vessel", "keep": 1},
+        skills=[AgentSkill(name="t", id="t", description="", metadata={"vessel_definition": DEFINITION, "keep": 2})],
+    )
+    ve.strip_foreign_metadata(card)
+    assert card.metadata == {"keep": 1} and card.skills[0].metadata == {"keep": 2}
+    ve.strip_foreign_metadata(SimpleNamespace(metadata=None, skills=None))
+
+
+async def test_a_connecting_agent_cannot_take_a_sandboxed_agent_id(monkeypatch):
+    from orchestrator import auth
+
+    monkeypatch.setattr(auth, "validate_agent_api_key", lambda key: True)
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.agents, orch.local_agents, orch.agent_cards = {}, {}, {}
+    orch._source_bound_read_tools, orch._source_bound_de_escalations = set(), set()
+    orch.vessel_definitions = ve.build_cards(CATALOG)[1]
+    closed = []
+
+    class Socket:
+        async def close(self, code, reason):
+            closed.append((code, reason))
+
+    card = AgentCard(name="x", description="", agent_id=AGENT, skills=[AgentSkill(name="t", id="t", description="", input_schema={"type": "object", "properties": {}})])
+    await orch.register_agent(Socket(), SimpleNamespace(agent_card=card, api_key="k"))
+    assert closed == [(1008, "agent id reserved")] and AGENT not in orch.agent_cards and AGENT not in orch.agents

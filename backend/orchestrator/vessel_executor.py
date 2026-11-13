@@ -10,7 +10,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 import httpx
@@ -24,9 +24,7 @@ TOKEN_ENV = "ASTRAL_VESSEL_EXECUTOR_TOKEN"
 TIMEOUT_ENV = "ASTRAL_VESSEL_EXECUTOR_TIMEOUT_SECONDS"
 DEFAULT_TIMEOUT = 120.0
 CONNECT_TIMEOUT = 5.0
-SANDBOX_KEY = "sandbox"
-SANDBOX_VALUE = "vessel"
-DEFINITION_KEY = "vessel_definition"
+FOREIGN_METADATA_KEYS = ("sandbox", "vessel_definition")
 POPULATION = "sandboxed"
 VALID_SCOPES = frozenset(
     {"tools:read", "tools:write", "tools:search", "tools:system", "tools:files", "tools:execute"}
@@ -88,9 +86,29 @@ def current_ticket() -> Optional[CallTicket]:
     return _ticket.get()
 
 
-def is_sandboxed(card: Any) -> bool:
+def definitions(orch: Any) -> Dict[Tuple[str, str], str]:
+    found = getattr(orch, "vessel_definitions", None)
+    return found if isinstance(found, dict) else {}
+
+
+def is_sandboxed(orch: Any, agent_id: str) -> bool:
+    return any(agent == agent_id for agent, _ in definitions(orch))
+
+
+def pinned_definition(orch: Any, agent_id: str, tool: str) -> Optional[str]:
+    return definitions(orch).get((agent_id, tool))
+
+
+def strip_foreign_metadata(card: Any) -> None:
     metadata = getattr(card, "metadata", None)
-    return isinstance(metadata, dict) and metadata.get(SANDBOX_KEY) == SANDBOX_VALUE
+    if isinstance(metadata, dict):
+        for key in FOREIGN_METADATA_KEYS:
+            metadata.pop(key, None)
+    for skill in getattr(card, "skills", None) or []:
+        skill_metadata = getattr(skill, "metadata", None)
+        if isinstance(skill_metadata, dict):
+            for key in FOREIGN_METADATA_KEYS:
+                skill_metadata.pop(key, None)
 
 
 def _failure(code: str, message: str, *, retryable: bool = False) -> MCPResponse:
@@ -229,8 +247,9 @@ def _covers(arguments_json: str, arguments: Dict[str, Any], action: Dict[str, An
     return sent == arguments and action.get("args_digest") == digest
 
 
-def build_cards(catalog: Dict[str, Any]) -> List[AgentCard]:
+def build_cards(catalog: Dict[str, Any]) -> Tuple[List[AgentCard], Dict[Tuple[str, str], str]]:
     cards: List[AgentCard] = []
+    pins: Dict[Tuple[str, str], str] = {}
     for agent_id, entry in sorted(catalog.items()):
         if not isinstance(entry, dict) or not isinstance(agent_id, str) or not agent_id:
             continue
@@ -249,28 +268,22 @@ def build_cards(catalog: Dict[str, Any]) -> List[AgentCard]:
                     description=str(tool.get("description") or ""),
                     input_schema=schema if isinstance(schema, dict) else {},
                     scope=tool["scope"],
-                    metadata={DEFINITION_KEY: definition},
                 )
             )
+            pins[(agent_id, name)] = definition
         if skills:
             cards.append(
-                AgentCard(
-                    name=agent_id,
-                    description=str(entry.get("description") or ""),
-                    agent_id=agent_id,
-                    skills=skills,
-                    metadata={SANDBOX_KEY: SANDBOX_VALUE},
-                )
+                AgentCard(name=agent_id, description=str(entry.get("description") or ""), agent_id=agent_id, skills=skills)
             )
-    return cards
+    return cards, pins
 
 
-def register(orch: Any, cards: List[AgentCard]) -> List[str]:
+def register(orch: Any, cards: List[AgentCard], pins: Dict[Tuple[str, str], str]) -> List[str]:
     from orchestrator.governed_dispatch import DispatchRuntime
 
     registered: List[str] = []
     for card in cards:
-        if card.agent_id in orch.agents or card.agent_id in orch.local_agents:
+        if card.agent_id in orch.agents or card.agent_id in orch.local_agents or is_sandboxed(orch, card.agent_id):
             logger.error("vessel_sandbox_agent_id_taken: %s", card.agent_id)
             continue
         orch.agent_cards[card.agent_id] = card
@@ -278,6 +291,8 @@ def register(orch: Any, cards: List[AgentCard]) -> List[str]:
         orch.register_governed_dispatch_runtime(
             DispatchRuntime(None, card.agent_id, POPULATION, None, None, None, True, "protected_executor")
         )
+        for skill in card.skills:
+            orch.vessel_definitions[(card.agent_id, skill.id)] = pins[(card.agent_id, skill.id)]
         registered.append(card.agent_id)
     return registered
 
@@ -288,13 +303,13 @@ async def start_for(orch: Any) -> Optional[VesselExecutor]:
         return None
     executor = VesselExecutor(settings)
     try:
-        cards = build_cards(await executor.catalog())
+        cards, pins = build_cards(await executor.catalog())
     except (httpx.HTTPError, ValueError):
         logger.warning("vessel_executor_catalog_unavailable")
         await executor.close()
         return None
     orch.vessel_executor = executor
-    register(orch, cards)
+    register(orch, cards, pins)
     return executor
 
 

@@ -55,7 +55,7 @@ def eligible_tool_pairs(
         if (
             agent_id not in orchestrator.agents
             and agent_id not in orchestrator.local_agents
-            and not vessel_executor.is_sandboxed(card)
+            and not vessel_executor.is_sandboxed(orchestrator, agent_id)
         ):
             excluded(agent_id, None, "not_connected")
             continue
