@@ -158,8 +158,11 @@ class FakeOngoingStreamingAgent:
         self.values = asyncio.Queue()
         self.finish = asyncio.Event()
         self.cancels = []
+        self.handled_values = asyncio.Queue()
+        self.run_task = None
 
     async def handle_mcp_request(self, ws, msg):
+        self.run_task = asyncio.current_task()
         sid = msg.params["_stream_id"]
         seq = 0
         while not self.finish.is_set():
@@ -171,6 +174,7 @@ class FakeOngoingStreamingAgent:
                 request_id=msg.request_id, stream_id=sid, agent_id=AGENT, tool_name=msg.params["name"], seq=seq,
                 components=[{"type": "metric", "title": "M", "value": value, "id": sid}],
             ).to_json())
+            self.handled_values.put_nowait(value)
         await ws.send_text(ToolStreamEnd(request_id=msg.request_id, stream_id=sid).to_json())
 
     async def _handle_stream_cancel(self, msg):
@@ -207,24 +211,24 @@ async def test_progress_persists_while_the_stream_is_still_running(ongoing):
     orch, ws, chat_id, user_id, agent = ongoing
     sub = await _start(orch, ws, chat_id, user_id)
     await agent.values.put(1)
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(agent.handled_values.get(), 30)
     assert await _persisted_values(orch, chat_id, user_id) == [1]
     assert sub.persist_done is False and sub.progress_persisted_at > 0
     await agent.values.put(2)
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(agent.handled_values.get(), 30)
     assert await _persisted_values(orch, chat_id, user_id) == [1], "a second save inside the interval must wait"
     sub.progress_persisted_at -= 6
     await agent.values.put(2)
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(agent.handled_values.get(), 30)
     assert await _persisted_values(orch, chat_id, user_id) == [2]
     saved_at = sub.progress_persisted_at
     sub.progress_persisted_at -= 6
     await agent.values.put(2)
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(agent.handled_values.get(), 30)
     assert sub.progress_persisted_at == saved_at - 6, "unchanged content must not be saved again"
     await agent.values.put(3)
     await agent.values.put(None)
-    await asyncio.sleep(0.25)
+    await asyncio.wait_for(asyncio.shield(agent.run_task), 30)
     assert await _persisted_values(orch, chat_id, user_id) == [3]
     assert sub.persist_done is True
 
