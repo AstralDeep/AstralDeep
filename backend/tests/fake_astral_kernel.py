@@ -236,6 +236,7 @@ class Kernel:
         self.ticket_labels = peer_labels()
         self.record_error: Optional[str] = None
         self.floor = ("PUBLIC", "OWNER")
+        self.phi_member = False
         self.sent: List[tuple] = []
         self.created: List[tuple] = []
         self.address_error: Optional[Exception] = None
@@ -313,6 +314,12 @@ class Kernel:
         message_id = f"msg-{next(self._ids)}"
         self.sent.append((chat_id, text, continues, message_id))
         return message_id
+
+    def roster(self):
+        return SimpleNamespace(
+            members=[SimpleNamespace(device_id=self.device_id, is_local=True, phi=self.phi_member),
+                     SimpleNamespace(device_id="dev-phone", is_local=False, phi=True)]
+        )
 
     def add_request(self, request_id, chat_id, text="do the thing", *, to=None, author="dev-phone", state="PENDING",
                     continues=None, call=None, labels=None):

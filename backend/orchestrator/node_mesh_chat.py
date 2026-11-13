@@ -1,5 +1,5 @@
 """Moves chat activity between the node's own Python turn loop and the owner's mesh log: a request addressed to the node is claimed, run through the node's own gates and answered with a recorded turn, and a turn the node runs for a thin client is recorded into the owner's chat.
-The node computes the labels of what it records, refuses PHI work unless the operator approved this node for it, and trusts nothing a requesting device's gates decided."""
+The node computes the labels of what it records, refuses PHI work unless the roster lists it as a PHI member, and trusts nothing a requesting device's gates decided."""
 
 from __future__ import annotations
 
@@ -21,7 +21,6 @@ from orchestrator.node_mesh_calls import CallRefused, OrchestratorCalls, dotted
 logger = logging.getLogger("Orchestrator.NodeMeshChat")
 
 REQUESTS_ENV = "ASTRAL_NODE_MESH_REQUESTS"
-PHI_ENV = "ASTRAL_NODE_PHI_APPROVED"
 POLL_SECONDS = 15.0
 TURN_SECONDS = 600.0
 ANSWER_GRACE_SECONDS = 5.0
@@ -36,7 +35,6 @@ CONFIDENTIALITY = ("public", "private", "phi", "secret")
 INTEGRITY = ("owner", "tool_trusted", "untrusted")
 BASE_LABELS = ("private", "tool_trusted")
 OFF_VALUES = {"0", "false", "no", "off"}
-ON_VALUES = {"1", "true", "yes", "on"}
 
 Labels = Tuple[str, str]
 TurnRunner = Callable[[str, str, str], Awaitable[None]]
@@ -52,15 +50,11 @@ class Refusal(Exception):
 @dataclass(frozen=True)
 class NodePolicy:
     serve_requests: bool = True
-    phi_approved: bool = False
 
     @classmethod
     def from_env(cls, env: Optional[Dict[str, str]] = None) -> "NodePolicy":
         values = os.environ if env is None else env
-        return cls(
-            serve_requests=values.get(REQUESTS_ENV, "").strip().lower() not in OFF_VALUES,
-            phi_approved=values.get(PHI_ENV, "").strip().lower() in ON_VALUES,
-        )
+        return cls(serve_requests=values.get(REQUESTS_ENV, "").strip().lower() not in OFF_VALUES)
 
 
 def _name(value: Any) -> str:
@@ -432,16 +426,16 @@ class MeshChatBridge:
         floor = join_labels(BASE_LABELS, labels_of(request.labels), _chat_floor(view))
         if await asyncio.to_thread(self._phi_active, self._owner):
             floor = join_labels(floor, ("phi", "owner"))
-        self._check_floor(floor)
+        await self._check_floor(floor)
         admitted = _Admitted(floor, view)
         if request.call is not None:
             await self._admit_call(request, admitted)
         return admitted
 
-    def _check_floor(self, floor: Labels) -> None:
+    async def _check_floor(self, floor: Labels) -> None:
         if floor[0] == "secret":
             raise Refusal("node.secret_label")
-        if floor[0] == "phi" and not self._policy.phi_approved:
+        if floor[0] == "phi" and not await self._mesh.phi_member():
             raise Refusal("node.phi_not_approved")
 
     async def _admit_call(self, request: Any, admitted: _Admitted) -> None:
@@ -474,7 +468,7 @@ class MeshChatBridge:
         ):
             raise Refusal("ticket.unauthorized")
         admitted.floor = join_labels(admitted.floor, labels_of(verified.labels))
-        self._check_floor(admitted.floor)
+        await self._check_floor(admitted.floor)
         try:
             admitted.authority = await self._calls.authorize(self._owner, resolved)
         except CallRefused as exc:
@@ -569,10 +563,11 @@ class MeshChatBridge:
             local = await asyncio.to_thread(self._history.create_chat, user_id=self._owner)
             self._state.link(view.chat_id, local)
         known = self._state.imported(view.chat_id)
+        phi_ready = await self._mesh.phi_member()
         fresh = [
             m for m in view.messages
             if m.id not in known and m.text and m.role.name in {"USER", "ASSISTANT"}
-            and m.status.name == "COMPLETE" and self._importable(m)
+            and m.status.name == "COMPLETE" and _importable(m, phi_ready)
         ]
         if fresh:
             self._suppressed.add(local)
@@ -585,9 +580,10 @@ class MeshChatBridge:
             self._state.mark_imported(view.chat_id, [m.id for m in fresh])
         return local
 
-    def _importable(self, message: Any) -> bool:
-        confidentiality = labels_of(message.labels)[0]
-        return confidentiality != "secret" and (confidentiality != "phi" or self._policy.phi_approved)
+
+def _importable(message: Any, phi_ready: bool) -> bool:
+    confidentiality = labels_of(message.labels)[0]
+    return confidentiality != "secret" and (confidentiality != "phi" or phi_ready)
 
 
 def _chat_floor(view: Any) -> Labels:

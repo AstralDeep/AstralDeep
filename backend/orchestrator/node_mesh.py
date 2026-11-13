@@ -386,6 +386,10 @@ class NodeMesh:
     async def send_message(self, chat_id: str, text: str, continues: Optional[str] = None) -> str:
         return await asyncio.to_thread(self.kernel.send_message, chat_id, text, continues)
 
+    async def phi_member(self) -> bool:
+        roster = await asyncio.to_thread(self.kernel.roster)
+        return any(device.is_local and device.phi for device in roster.members)
+
     async def pending_requests(self) -> List[Any]:
         return await asyncio.to_thread(self.kernel.pending_requests_for_me)
 

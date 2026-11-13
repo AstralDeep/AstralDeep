@@ -80,8 +80,12 @@ The node's mesh keys live in `<node data>/mesh` at mode 0600 and are created onc
 
 To join, call `POST /api/node/pairing` as the owner. The response carries a `mesh` block with a code, a payload, the node's endpoint address and its mailbox address. Approve the offer on the Mac or iPhone. After that, `GET /api/node/descriptor` reports `mesh.mesh_id`, `mesh.member_id` and the mailbox address.
 
-The node supervises one mailbox for its own mesh and holds at most one mesh. Devices of the mesh set that mailbox address and exchange events through it when they are never online together.
+The node supervises one mailbox for its own mesh and holds at most one mesh. The node's own kernel uses that mailbox, and devices of the mesh set its address and exchange events through it when they are never online together.
 
-Settings: `ASTRAL_NODE_MESH=0` turns the peer off, `ASTRAL_NODE_MESH_LABEL`, `ASTRAL_NODE_MESH_RELAY` (`default`, `none` or URLs), `ASTRAL_NODE_MAILBOX=0`, `ASTRAL_MAILBOX_BIN`, `ASTRAL_NODE_MAILBOX_BIND`, and `ASTRAL_NODE_MESH_REQUESTS` (`addressed`, `all` or `off`).
+Settings: `ASTRAL_NODE_MESH=0` turns the peer off, `ASTRAL_NODE_MESH_LABEL`, `ASTRAL_NODE_MESH_RELAY` (`default`, `none` or URLs), `ASTRAL_NODE_MAILBOX=0`, `ASTRAL_MAILBOX_BIN`, `ASTRAL_NODE_MAILBOX_BIND`, and and `ASTRAL_NODE_MESH_REQUESTS=off` to stop serving requests.
 
-A request a device leaves in a mesh chat that starts with `@node` is run on the node's own loop under machine authority with no tool scopes. An owner under PHI protection is neither mirrored nor served. Writing the node's turns into the log needs the kernel export `append_chat_events`.
+A device that cannot do something itself sends a request addressed to the node. The node claims it, runs it on its own loop through its own gate stack and machine authority, and records the turn it ran with `answers` set to the request. When it cannot serve, it refuses the request with a dotted code, such as `node.phi_not_approved` or a `ticket.*` code. Turns the node runs for thin clients are recorded into the owner's chat the same way.
+
+A request that carries a tool call comes with a ticket. The node derives the effect kind from its own record of the tool, verifies the ticket with its own roster, stop counter and clock, checks the action against the call, and then runs its own gates. A forged ticket, a different device or tool, or arguments that do not match the action are refused before anything runs.
+
+The node labels what it records. The labels are at least the join of the request, the chat and the ticket, and at least private. PHI work, including any work for an owner under PHI protection, is refused unless the roster lists the node as a PHI member. Secret content is always refused. A request claimed before a crash and never answered is refused with `node.interrupted` on the next start.

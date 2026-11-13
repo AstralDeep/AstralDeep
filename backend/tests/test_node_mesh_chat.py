@@ -78,10 +78,11 @@ def clean():
     node_mesh.install(None)
 
 
-async def build(tmp_path, runner=None, *, policy=None, phi=False, start=True, turn_seconds=5.0, owner=OWNER, joined=True, calls=None):
+async def build(tmp_path, runner=None, *, policy=None, phi=False, start=True, turn_seconds=5.0, owner=OWNER, joined=True, calls=None, phi_member=False):
     mesh = node_mesh.NodeMesh(data_dir=tmp_path, binding=fake, issuers=no_issuers, mailbox=StubMailbox())
     await mesh.start()
     kernel = fake.Kernel.instances[-1]
+    kernel.phi_member = phi_member
     if joined:
         kernel.join()
     history = History()
@@ -291,7 +292,7 @@ async def test_phi_work_is_refused_by_a_node_that_is_not_approved(tmp_path, sour
 async def test_an_approved_node_runs_phi_work_and_labels_the_answer_phi(tmp_path, source):
     mesh, kernel, history, bridge = await build(
         tmp_path, answering(steps=[{"name": "t", "args": "{}", "status": "completed", "result": "r", "error": None}]),
-        phi=source == "owner", policy=nmc.NodePolicy(phi_approved=True),
+        phi=source == "owner", phi_member=True,
     )
     nmc.install(bridge)
     kernel.add_chat("c", [fake.message("m1", "chart note", confidentiality="phi" if source == "chat" else "private")])
@@ -311,15 +312,14 @@ async def test_phi_history_is_not_imported_by_an_unapproved_node_and_secret_is_n
     kernel.add_request("r1", "c")
     await serve(bridge, kernel, "r1")
     assert kernel.refused == [("r1", "node.phi_not_approved")]
-    approved = nmc.MeshChatBridge(mesh, owner_id=OWNER, history=history, runner=answering(), state_path=tmp_path / "other.json", policy=nmc.NodePolicy(phi_approved=True), phi_active=lambda o: False)
-    assert approved._importable(fake.message("m3", "x", confidentiality="phi")) is True
-    assert approved._importable(fake.message("m4", "x", confidentiality="secret")) is False
-    assert bridge._importable(fake.message("m5", "x", confidentiality="phi")) is False
+    assert nmc._importable(fake.message("m3", "x", confidentiality="phi"), True) is True
+    assert nmc._importable(fake.message("m4", "x", confidentiality="secret"), True) is False
+    assert nmc._importable(fake.message("m5", "x", confidentiality="phi"), False) is False
     await bridge.stop()
 
 
 async def test_a_secret_request_is_refused(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path, answering(), policy=nmc.NodePolicy(phi_approved=True))
+    mesh, kernel, history, bridge = await build(tmp_path, answering(), phi_member=True)
     kernel.add_chat("c", [])
     kernel.add_request("r1", "c", labels=fake.peer_labels("SECRET", "OWNER"))
     await serve(bridge, kernel, "r1")
@@ -616,7 +616,7 @@ async def test_phi_labels_on_a_ticket_need_an_approved_node(tmp_path):
     await serve(bridge, kernel, "r1")
     assert kernel.refused == [("r1", "node.phi_not_approved")] and not calls.ran and not kernel.claimed
     await bridge.stop()
-    mesh, kernel, history, bridge = await build(tmp_path / "ok", calls=calls, policy=nmc.NodePolicy(phi_approved=True))
+    mesh, kernel, history, bridge = await build(tmp_path / "ok", calls=calls, phi_member=True)
     kernel.add_chat("c", [])
     kernel.ticket_labels = fake.peer_labels("PHI", "TOOL_TRUSTED")
     kernel.add_request("r1", "c", call=call_for())
@@ -690,9 +690,8 @@ def test_message_text_extraction():
 
 
 def test_policy_from_environment():
-    assert nmc.NodePolicy.from_env({}) == nmc.NodePolicy(serve_requests=True, phi_approved=False)
-    assert nmc.NodePolicy.from_env({nmc.REQUESTS_ENV: "OFF", nmc.PHI_ENV: "yes"}) == nmc.NodePolicy(False, True)
-    assert nmc.NodePolicy.from_env({nmc.PHI_ENV: "maybe"}).phi_approved is False
+    assert nmc.NodePolicy.from_env({}) == nmc.NodePolicy(serve_requests=True)
+    assert nmc.NodePolicy.from_env({nmc.REQUESTS_ENV: "OFF"}) == nmc.NodePolicy(serve_requests=False)
 
 
 def test_labels_join_to_the_most_restrictive_and_unknown_values_fail_closed():
