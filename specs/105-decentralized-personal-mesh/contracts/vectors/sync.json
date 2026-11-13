@@ -807,6 +807,26 @@
             "type": "settings.set",
             "v": 1
           },
+          "sha256:2b9b42b144f8f79697601448e56c01b488fedf4e01a28106a167ba45a6a33807": {
+            "after": [],
+            "body": "sha256:2b9b42b144f8f79697601448e56c01b488fedf4e01a28106a167ba45a6a33807",
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+            "labels": {
+              "confidentiality": "secret",
+              "integrity": "owner"
+            },
+            "prev": "sha256:096d656282c06961fabffe923e24a6587b4ff540b5e689dd9daefb9befbd8020",
+            "scope": "mesh",
+            "seq": 4,
+            "sig": "ndjwMf964Nbn59cs-nB_B7R-aXiQyyzK9FA2Jo3mIVf43kdrH6VA4TTH9t-0U8gvfcagnE2SFnlPTJJ5zeoGCQ",
+            "type": "key.credential",
+            "v": 1
+          },
           "sha256:867b81514bac345533f71860bd2ac809cdc944ef20b12ae6f838f3faf36b9c44": {
             "after": [],
             "body": "sha256:867b81514bac345533f71860bd2ac809cdc944ef20b12ae6f838f3faf36b9c44",
@@ -903,6 +923,26 @@
             "type": "settings.set",
             "v": 1
           },
+          "sha256:2b9b42b144f8f79697601448e56c01b488fedf4e01a28106a167ba45a6a33807": {
+            "after": [],
+            "body": "sha256:2b9b42b144f8f79697601448e56c01b488fedf4e01a28106a167ba45a6a33807",
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+            "labels": {
+              "confidentiality": "secret",
+              "integrity": "owner"
+            },
+            "prev": "sha256:096d656282c06961fabffe923e24a6587b4ff540b5e689dd9daefb9befbd8020",
+            "scope": "mesh",
+            "seq": 4,
+            "sig": "ndjwMf964Nbn59cs-nB_B7R-aXiQyyzK9FA2Jo3mIVf43kdrH6VA4TTH9t-0U8gvfcagnE2SFnlPTJJ5zeoGCQ",
+            "type": "key.credential",
+            "v": 1
+          },
           "sha256:867b81514bac345533f71860bd2ac809cdc944ef20b12ae6f838f3faf36b9c44": {
             "after": [],
             "body": "sha256:867b81514bac345533f71860bd2ac809cdc944ef20b12ae6f838f3faf36b9c44",
@@ -954,6 +994,218 @@
       },
       "kind": "sync_bodies",
       "name": "phi-body-withheld-from-a-non-phi-peer"
+    },
+    {
+      "expect": {
+        "ok": {
+          "send": [
+            "sha256:2b9b42b144f8f79697601448e56c01b488fedf4e01a28106a167ba45a6a33807"
+          ],
+          "withheld": [
+            {
+              "hash": "sha256:8d17866305300751d0d4342caba8b499435ffcbe5c834c0a88a1ed9e136bcdeb",
+              "reason": "secret"
+            }
+          ]
+        }
+      },
+      "input": {
+        "headers_by_body": {
+          "sha256:16c03d11882eb180f374ae2f08849eba300acdfeba30522e0ed268e8b81bec5b": {
+            "after": [],
+            "body": "sha256:16c03d11882eb180f374ae2f08849eba300acdfeba30522e0ed268e8b81bec5b",
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+            "labels": {
+              "confidentiality": "phi",
+              "integrity": "tool-trusted"
+            },
+            "prev": "sha256:e224f89aa5d3ea3970472577b81ab6612b7ae9d6b6c5695dcb05a04de60c5076",
+            "scope": "mesh",
+            "seq": 2,
+            "sig": "lm-UgWnwGkDmMkhvpE6OzMY1nZiY8pxKNPXgaf328_OfUB-4poARQORlwyTa2kFUfgrOZiozteKb6W5rk0iGDA",
+            "type": "settings.set",
+            "v": 1
+          },
+          "sha256:2b9b42b144f8f79697601448e56c01b488fedf4e01a28106a167ba45a6a33807": {
+            "after": [],
+            "body": "sha256:2b9b42b144f8f79697601448e56c01b488fedf4e01a28106a167ba45a6a33807",
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+            "labels": {
+              "confidentiality": "secret",
+              "integrity": "owner"
+            },
+            "prev": "sha256:096d656282c06961fabffe923e24a6587b4ff540b5e689dd9daefb9befbd8020",
+            "scope": "mesh",
+            "seq": 4,
+            "sig": "ndjwMf964Nbn59cs-nB_B7R-aXiQyyzK9FA2Jo3mIVf43kdrH6VA4TTH9t-0U8gvfcagnE2SFnlPTJJ5zeoGCQ",
+            "type": "key.credential",
+            "v": 1
+          },
+          "sha256:867b81514bac345533f71860bd2ac809cdc944ef20b12ae6f838f3faf36b9c44": {
+            "after": [],
+            "body": "sha256:867b81514bac345533f71860bd2ac809cdc944ef20b12ae6f838f3faf36b9c44",
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "prev": null,
+            "scope": "mesh",
+            "seq": 1,
+            "sig": "O3JuHIiuvifIaF1TEoMVZfepOe5Lg0ARkUuGl-R4NI_iC0vpiJUhg2Kou2xWGGnOMRRKUrTEyciHVjLcKJz3BA",
+            "type": "settings.set",
+            "v": 1
+          },
+          "sha256:8d17866305300751d0d4342caba8b499435ffcbe5c834c0a88a1ed9e136bcdeb": {
+            "after": [],
+            "body": "sha256:8d17866305300751d0d4342caba8b499435ffcbe5c834c0a88a1ed9e136bcdeb",
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+            "labels": {
+              "confidentiality": "secret",
+              "integrity": "owner"
+            },
+            "prev": "sha256:71323f2f316571877e1aee0fc37005840ceecf0ac0fb864e47f747a77fc3856c",
+            "scope": "mesh",
+            "seq": 3,
+            "sig": "2ivzW_1BM0mOjUv5fYivPMV5_6SP0J6Si13_VEJEsHp8tPzLdY4ADwle3PqyjYATEE455tl2AaGq5YK5Pa1ABA",
+            "type": "settings.set",
+            "v": 1
+          }
+        },
+        "peer_in_phi_group": true,
+        "requested": [
+          "sha256:2b9b42b144f8f79697601448e56c01b488fedf4e01a28106a167ba45a6a33807",
+          "sha256:8d17866305300751d0d4342caba8b499435ffcbe5c834c0a88a1ed9e136bcdeb"
+        ]
+      },
+      "kind": "sync_bodies",
+      "name": "a-sealed-credential-body-goes-to-every-member-inside-the-phi-group"
+    },
+    {
+      "expect": {
+        "ok": {
+          "send": [
+            "sha256:2b9b42b144f8f79697601448e56c01b488fedf4e01a28106a167ba45a6a33807"
+          ],
+          "withheld": [
+            {
+              "hash": "sha256:8d17866305300751d0d4342caba8b499435ffcbe5c834c0a88a1ed9e136bcdeb",
+              "reason": "secret"
+            }
+          ]
+        }
+      },
+      "input": {
+        "headers_by_body": {
+          "sha256:16c03d11882eb180f374ae2f08849eba300acdfeba30522e0ed268e8b81bec5b": {
+            "after": [],
+            "body": "sha256:16c03d11882eb180f374ae2f08849eba300acdfeba30522e0ed268e8b81bec5b",
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+            "labels": {
+              "confidentiality": "phi",
+              "integrity": "tool-trusted"
+            },
+            "prev": "sha256:e224f89aa5d3ea3970472577b81ab6612b7ae9d6b6c5695dcb05a04de60c5076",
+            "scope": "mesh",
+            "seq": 2,
+            "sig": "lm-UgWnwGkDmMkhvpE6OzMY1nZiY8pxKNPXgaf328_OfUB-4poARQORlwyTa2kFUfgrOZiozteKb6W5rk0iGDA",
+            "type": "settings.set",
+            "v": 1
+          },
+          "sha256:2b9b42b144f8f79697601448e56c01b488fedf4e01a28106a167ba45a6a33807": {
+            "after": [],
+            "body": "sha256:2b9b42b144f8f79697601448e56c01b488fedf4e01a28106a167ba45a6a33807",
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+            "labels": {
+              "confidentiality": "secret",
+              "integrity": "owner"
+            },
+            "prev": "sha256:096d656282c06961fabffe923e24a6587b4ff540b5e689dd9daefb9befbd8020",
+            "scope": "mesh",
+            "seq": 4,
+            "sig": "ndjwMf964Nbn59cs-nB_B7R-aXiQyyzK9FA2Jo3mIVf43kdrH6VA4TTH9t-0U8gvfcagnE2SFnlPTJJ5zeoGCQ",
+            "type": "key.credential",
+            "v": 1
+          },
+          "sha256:867b81514bac345533f71860bd2ac809cdc944ef20b12ae6f838f3faf36b9c44": {
+            "after": [],
+            "body": "sha256:867b81514bac345533f71860bd2ac809cdc944ef20b12ae6f838f3faf36b9c44",
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "prev": null,
+            "scope": "mesh",
+            "seq": 1,
+            "sig": "O3JuHIiuvifIaF1TEoMVZfepOe5Lg0ARkUuGl-R4NI_iC0vpiJUhg2Kou2xWGGnOMRRKUrTEyciHVjLcKJz3BA",
+            "type": "settings.set",
+            "v": 1
+          },
+          "sha256:8d17866305300751d0d4342caba8b499435ffcbe5c834c0a88a1ed9e136bcdeb": {
+            "after": [],
+            "body": "sha256:8d17866305300751d0d4342caba8b499435ffcbe5c834c0a88a1ed9e136bcdeb",
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+            "labels": {
+              "confidentiality": "secret",
+              "integrity": "owner"
+            },
+            "prev": "sha256:71323f2f316571877e1aee0fc37005840ceecf0ac0fb864e47f747a77fc3856c",
+            "scope": "mesh",
+            "seq": 3,
+            "sig": "2ivzW_1BM0mOjUv5fYivPMV5_6SP0J6Si13_VEJEsHp8tPzLdY4ADwle3PqyjYATEE455tl2AaGq5YK5Pa1ABA",
+            "type": "settings.set",
+            "v": 1
+          }
+        },
+        "peer_in_phi_group": false,
+        "requested": [
+          "sha256:2b9b42b144f8f79697601448e56c01b488fedf4e01a28106a167ba45a6a33807",
+          "sha256:8d17866305300751d0d4342caba8b499435ffcbe5c834c0a88a1ed9e136bcdeb"
+        ]
+      },
+      "kind": "sync_bodies",
+      "name": "a-sealed-credential-body-goes-to-every-member-outside-the-phi-group"
     },
     {
       "expect": {

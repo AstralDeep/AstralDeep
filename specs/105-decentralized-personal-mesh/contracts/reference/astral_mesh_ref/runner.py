@@ -212,6 +212,8 @@ def _roster_fold(i: dict[str, Any]) -> Any:
         "epochs",
         "current_epoch",
         "stop",
+        "resumed",
+        "stopped",
         "void",
         "rejected",
         "pending",
@@ -366,6 +368,11 @@ def _surface_action(i: dict[str, Any]) -> Any:
     return surface.validate_action(i["document"], i["action"], i["used"])
 
 
+@op("surface_act")
+def _surface_act(i: dict[str, Any]) -> Any:
+    return surface.act(i["events"], i["action"], **_surface_args(i))
+
+
 @op("surface_bind")
 def _surface_bind(i: dict[str, Any]) -> Any:
     return {"value": surface.resolve_binding(i["binding"], i["events"])}
@@ -442,6 +449,21 @@ def _pairing_invite(i: dict[str, Any]) -> Any:
 @op("pairing_request")
 def _pairing_request(i: dict[str, Any]) -> Any:
     return {"device": pairing.verify_request(i["request"], i["mesh"], i["nonce"])}
+
+
+@op("pairing_code")
+def _pairing_code(i: dict[str, Any]) -> Any:
+    nonce = b64url_decode(i["nonce"])
+    if i["which"] == "invitation":
+        return {"code": pairing.invitation_code(nonce, b64url_decode(i["identity"]))}
+    return {
+        "code": pairing.comparison_code(
+            nonce,
+            b64url_decode(i["identity"]),
+            b64url_decode(i["ops"]),
+            b64url_decode(i["wrap"]),
+        )
+    }
 
 
 @op("backup_seal")

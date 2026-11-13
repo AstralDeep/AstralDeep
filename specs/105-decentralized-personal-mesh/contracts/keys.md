@@ -66,6 +66,36 @@ A content key reaches peers as a `key.content` event with scope `mesh`. Its body
 
 A content key for a chat that holds PHI is introduced by a `key.content` event under a `phi` epoch. The rule is: **an event whose confidentiality label is `phi` must use a content key that was introduced under a phi epoch key.** A device outside the phi group sees the event header and the ciphertext hash. It cannot decrypt the body, and it is never sent the body (`sync.md`).
 
+### 4.1 Credential items
+
+A credential, such as a model provider's API keys, must sync to every member yet open only on the devices the owner chose. It travels as a `key.credential` event with scope `mesh`. The header label is `{"confidentiality": "secret", "integrity": "owner"}`. The header's `key` is the mesh content key like any other mesh event.
+
+The body has the fields `name` and `boxes`, and optionally `audience`. `name` is the credential's name, 1 to 128 characters of `a-z`, `0-9`, `.`, `_` and `-`, starting with a letter or digit. `boxes` maps a device id to a box, at most 64 of them. The value is never in the body in the clear. A body with no `boxes` is `credential.not_sealed` and any other wrong shape is `credential.malformed`. A `key.credential` event whose label is not secret is `credential.label`.
+
+**A box** is the wrap of section 3 with a different payload and associated data. The payload is the canonical JSON of the credential's value, which is an object of at most 65536 bytes, so `ct` is longer than 48 bytes. The associated data is `{"name": <name>, "purpose": "credential", "recipient": <device id>}`. A box is useless for another device or another name. Each box is sealed to the X25519 wrap key of one device from the roster.
+
+**Audience.** `audience` is `all` when the writer chose the default, every current device at the time of writing, and `list` when the writer named an explicit list. A body without `audience` is read as `list`. Any other value is `credential.malformed`.
+
+**Recipients.** The default is every current device. A caller may name an explicit list, which must be non-empty and made only of current devices (`credential.bad_recipients`). A removed device is not current, so it receives nothing new. It keeps what it opened before, and the owner must rotate the credential itself at its provider when a device is lost. A writer that has a box for itself keeps the plain value only in memory and in its own keystore.
+
+**Late devices.** A device paired after an item was written has no box in it. When a device approves a pairing, it writes one new item for every credential whose winning item has the audience `all`, that it can open, and that lacks a box for some current device. The new item has the same name, value and audience and a box for every current device. The rule is idempotent, because the new item covers every current device and the next approver finds nothing to write. An item with the audience `list`, an item with no `audience` and a removed credential are never re-sealed. The reference function is `credential.reseal_names`.
+
+**Fold.** For each `name` the winner is the item with the greatest `(clock.ms, clock.n, feed)` among accepted items with a valid body (section 10.4 of `event.md` uses the same order). A device opens its own box in the winner. If the winner has no box for the device, or the box does not open, the credential is absent on that device, and an older item is never used instead. An item with no boxes removes the credential everywhere. The reference function is `credential.fold`.
+
+**Never in a model context.** The opened value is used only where the kernel injects it at dispatch. It is not put in an event body in the clear, a log line, an error text, a return value of the binding surface, or any model input. Flow rules refuse any turn that has a secret label in its context (`labels.md` section 4).
+
+| Failure | Error |
+|---|---|
+| A body with no `boxes` (for example a plain value) | `credential.not_sealed` |
+| Wrong fields, a bad name, a box that is not an `epk`, `nonce`, `ct` object, or a recipient that is not a device id | `credential.malformed` |
+| The label is not secret | `credential.label` |
+| An explicit recipient list that is empty or names a device that is not current | `credential.bad_recipients` |
+| The value or the number of recipients is too large | `credential.too_large` |
+| The device has no box in the winning item | `credential.not_a_recipient` |
+| The box does not open (wrong key, name or recipient, or an edited box) | `wrap.decrypt_failed` |
+
+Vectors: `credential.json`.
+
 ## 5. The recovery key
 
 The recovery key is 32 random bytes that the owner holds. It is shown once, when the mesh is created, as 24 words. Nothing escrows it.

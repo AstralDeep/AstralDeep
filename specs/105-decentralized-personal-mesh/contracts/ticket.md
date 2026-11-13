@@ -67,7 +67,7 @@ The executor knows its mesh id, the roster's feed statuses, the stop counter, th
 2. The token parses as a Biscuit and its blocks follow the grammar and the layout of section 3 (`ticket.malformed`, `ticket.wrong_block_shape`). The call block carries exactly the two labels with valid values and valid source ids (`ticket.label_missing`).
 3. The `mesh` fact is this mesh (`ticket.mesh_mismatch`).
 4. The `feed` fact is an operations key on the roster (`ticket.bad_root`). Its device is a member (`ticket.device_removed` if removed, with the device's tickets refused outright). That device is the `device` fact (`ticket.bad_root`).
-5. The `stop_counter` fact is at least the mesh's stop counter (`ticket.stopped`).
+5. The `stop_counter` fact is at least the mesh's stop counter (`ticket.stopped`). A resume does not lower the stop counter, so a ticket issued before a stop stays refused after the resume.
 6. The action digest equals the one pinned in the call block (`ticket.unauthorized`).
 7. The token's signature chain verifies under that operations key (`ticket.bad_root`), with no third-party blocks (`ticket.wrong_block_shape`).
 8. The authorizer runs with the facts `time`, `tool`, `args_digest`, `action_digest`, `agent`, `mesh_ctx` and `stop_current` taken from the request and not from the token, and a single `allow if true` policy. Any failed check is `ticket.unauthorized`. This is where an expired capability, a tool outside the turn's set, or different arguments are refused. The executor sets generous run limits. The reference retries when the library's one-millisecond default is hit and raises `ticket.limits` if it never completes.

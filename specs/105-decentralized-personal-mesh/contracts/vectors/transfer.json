@@ -1,0 +1,147 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "ok": {
+          "id": "transfer-a-0-1",
+          "kind": "voucher"
+        }
+      },
+      "input": {
+        "body": {
+          "kind": "voucher",
+          "transfer": {
+            "amount": [
+              200000,
+              4,
+              2
+            ],
+            "transfer_id": "transfer-a-0-1",
+            "type": "lets.transfer-voucher/v1"
+          }
+        }
+      },
+      "kind": "transfer_check",
+      "name": "a-voucher-is-carried"
+    },
+    {
+      "expect": {
+        "ok": {
+          "id": "transfer-a-0-1",
+          "kind": "ack"
+        }
+      },
+      "input": {
+        "body": {
+          "kind": "ack",
+          "transfer": {
+            "transfer_id": "transfer-a-0-1",
+            "type": "lets.transfer-ack/v1"
+          }
+        }
+      },
+      "kind": "transfer_check",
+      "name": "an-ack-is-carried"
+    },
+    {
+      "expect": {
+        "error": "transfer.type_mismatch"
+      },
+      "input": {
+        "body": {
+          "kind": "voucher",
+          "transfer": {
+            "transfer_id": "transfer-a-0-1",
+            "type": "lets.transfer-ack/v1"
+          }
+        }
+      },
+      "kind": "transfer_check",
+      "name": "an-ack-object-under-the-voucher-kind-is-refused"
+    },
+    {
+      "expect": {
+        "error": "transfer.malformed"
+      },
+      "input": {
+        "body": {
+          "kind": "offer",
+          "transfer": {
+            "amount": [
+              200000,
+              4,
+              2
+            ],
+            "transfer_id": "transfer-a-0-1",
+            "type": "lets.transfer-voucher/v1"
+          }
+        }
+      },
+      "kind": "transfer_check",
+      "name": "an-unknown-kind-is-refused"
+    },
+    {
+      "expect": {
+        "error": "transfer.malformed"
+      },
+      "input": {
+        "body": {
+          "kind": "voucher",
+          "to": "x",
+          "transfer": {
+            "amount": [
+              200000,
+              4,
+              2
+            ],
+            "transfer_id": "transfer-a-0-1",
+            "type": "lets.transfer-voucher/v1"
+          }
+        }
+      },
+      "kind": "transfer_check",
+      "name": "an-extra-field-is-refused"
+    },
+    {
+      "expect": {
+        "error": "transfer.malformed"
+      },
+      "input": {
+        "body": {
+          "kind": "voucher",
+          "transfer": {
+            "type": "lets.transfer-voucher/v1"
+          }
+        }
+      },
+      "kind": "transfer_check",
+      "name": "a-transfer-without-an-id-is-refused"
+    },
+    {
+      "expect": {
+        "error": "transfer.malformed"
+      },
+      "input": {
+        "body": {
+          "kind": "ack",
+          "transfer": "ack"
+        }
+      },
+      "kind": "transfer_check",
+      "name": "a-transfer-that-is-not-an-object-is-refused"
+    },
+    {
+      "expect": {
+        "error": "transfer.malformed"
+      },
+      "input": {
+        "body": []
+      },
+      "kind": "transfer_check",
+      "name": "a-body-that-is-not-an-object-is-refused"
+    }
+  ],
+  "format": "astral.vectors/v1",
+  "name": "transfer",
+  "spec": "contracts/policy.md#carrying-a-transfer"
+}

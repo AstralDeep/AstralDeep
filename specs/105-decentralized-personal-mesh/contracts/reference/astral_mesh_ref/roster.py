@@ -24,6 +24,8 @@ TYPES = (
     "epoch",
     "wrap",
     "stop",
+    "resume",
+    "rename",
 )
 PRESENCE_REQUIRED = {
     "genesis",
@@ -32,8 +34,18 @@ PRESENCE_REQUIRED = {
     "issuer",
     "phi_authority",
     "phi_approval",
+    "resume",
 }
-RECOVERY_ALLOWED = {"add", "remove", "epoch", "wrap", "issuer", "stop", "phi_authority"}
+RECOVERY_ALLOWED = {
+    "add",
+    "remove",
+    "epoch",
+    "wrap",
+    "issuer",
+    "stop",
+    "resume",
+    "phi_authority",
+}
 ENTRY_FIELDS = {"v", "type", "mesh", "follows", "clock", "author", "body", "sig"}
 DEVICE_FIELDS = {"cert", "identity", "kind", "label", "ops", "presence", "wrap"}
 WRAP_FIELDS = {"ct", "epk", "nonce"}
@@ -221,11 +233,16 @@ def check_entry_shape(entry: Any) -> None:
             )
     elif not crypto.is_id(author):
         raise MeshError("roster.malformed", "author")
-    elif (kind in PRESENCE_REQUIRED) != ("presence_sig" in entry):
-        raise MeshError("roster.malformed", "presence signature presence")
     body = entry["body"]
     if not isinstance(body, dict):
         raise MeshError("roster.malformed", "body")
+    if author != "recovery" and crypto.is_id(author):
+        if kind == "rename":
+            needs_presence = body.get("device") != author
+        else:
+            needs_presence = kind in PRESENCE_REQUIRED
+        if needs_presence != ("presence_sig" in entry):
+            raise MeshError("roster.malformed", "presence signature presence")
     fields = set(body)
     if kind == "genesis":
         if fields != {"device", "epoch", "issuers", "recovery"}:
@@ -326,13 +343,21 @@ def check_entry_shape(entry: Any) -> None:
             ):
                 raise MeshError("roster.malformed", "wrap grant")
             check_wrap(grant["wrap"])
-    elif kind == "stop":
+    elif kind == "rename":
+        if (
+            fields != {"device", "label"}
+            or not crypto.is_id(body["device"])
+            or not isinstance(body["label"], str)
+            or not 0 < len(body["label"]) <= 64
+        ):
+            raise MeshError("roster.malformed", "rename body")
+    elif kind in ("stop", "resume"):
         if (
             fields != {"counter"}
             or type(body["counter"]) is not int
             or body["counter"] < 1
         ):
-            raise MeshError("roster.malformed", "stop body")
+            raise MeshError("roster.malformed", f"{kind} body")
 
 
 class _Projection:
@@ -345,6 +370,7 @@ class _Projection:
         self.phi_subjects: dict[str, dict[str, Any]] = {}
         self.epochs: dict[str, dict[str, Any]] = {}
         self.stop = 0
+        self.resumed = 0
         self.attested: dict[str, list[dict[str, Any]]] = {}
 
     @property
@@ -464,6 +490,7 @@ class _Fold:
         auth_removes: dict[str, list[str]] = {}
         grants: dict[str, list[str]] = {}
         revokes: dict[str, list[str]] = {}
+        renames: dict[str, list[str]] = {}
         for eid in ordered:
             e = self.entries[eid]
             body = e["body"]
@@ -522,8 +549,12 @@ class _Fold:
                     "clock": e["clock"],
                     "entry": eid,
                 }
+            elif kind == "rename":
+                renames.setdefault(body["device"], []).append(eid)
             elif kind == "stop":
                 p.stop = max(p.stop, body["counter"])
+            elif kind == "resume":
+                p.resumed = max(p.resumed, body["counter"])
 
         def effective(adds: list[str], removes: list[str]) -> list[str]:
             return [a for a in adds if all(r in self.anc[a] for r in removes)]
@@ -538,6 +569,12 @@ class _Fold:
                 ),
             )
 
+        for device, named in renames.items():
+            if device in p.admitted:
+                p.admitted[device] = {
+                    **p.admitted[device],
+                    "label": self.entries[newest(named)]["body"]["label"],
+                }
         for iss, adds in issuer_adds.items():
             live = effective(adds, issuer_removes.get(iss, []))
             if live:
@@ -698,8 +735,12 @@ class _Fold:
                     return "roster.unknown_epoch"
             if group == "phi" and e["author"] not in phi:
                 return "roster.not_phi_member"
+        elif kind == "rename" and body["device"] not in p.members:
+            return "roster.unknown_device"
         elif kind == "stop" and body["counter"] <= p.stop:
             return "roster.stop_not_rising"
+        elif kind == "resume" and body["counter"] > p.stop:
+            return "roster.resume_not_stopped"
         return None
 
     @staticmethod
@@ -815,6 +856,8 @@ class _Fold:
             "epochs": {e: info["group"] for e, info in sorted(p.epochs.items())},
             "current_epoch": {g: p.current_epoch(g, self.anc) for g in GROUPS},
             "stop": p.stop,
+            "resumed": p.resumed,
+            "stopped": p.stop > p.resumed,
             "recovery": p.recovery,
             "feeds": feeds,
             "void": sorted(void),

@@ -10,6 +10,11 @@
       "sha256": "8db7914348c71fbf9fc41693cc5fa5760680996aca06a848173719d66a866651",
       "spec": "contracts/event.md#canonical-json"
     },
+    "credential.json": {
+      "cases": 47,
+      "sha256": "1a05ce8186f4cfe963a9ea3cb81d0f424e744a383e8de1fa7da3fee36c947f8d",
+      "spec": "contracts/keys.md#credential-items"
+    },
     "crypto.json": {
       "cases": 26,
       "sha256": "1a8f0161e135974ed6e775173ecbbf4644e4af9447904bf2dc31de10b149cd67",
@@ -26,8 +31,8 @@
       "spec": "contracts/event.md#feeds-and-chains"
     },
     "fold.json": {
-      "cases": 22,
-      "sha256": "20be9a77033448a202deb0860e63e236073aa036bffb57d05355e63d41b9b1ac",
+      "cases": 26,
+      "sha256": "723e0f07a2a579fbd166bf4412229ffc9d8806dcda14b791deed4016efb2b0d2",
       "spec": "contracts/event.md#merge-rules"
     },
     "keys.json": {
@@ -36,9 +41,14 @@
       "spec": "contracts/keys.md"
     },
     "labels.json": {
-      "cases": 52,
-      "sha256": "d58b11f8d19aafa52c06d84165e072a1b895263779e1613d4d59d3255d7c7eb4",
+      "cases": 55,
+      "sha256": "1285e1449f9418a7c3299a677dcf5b4687001df888efe7116a7beaa490d334db",
       "spec": "contracts/labels.md"
+    },
+    "learning.json": {
+      "cases": 138,
+      "sha256": "7f902b70a896cdb6c5884f7af4a1d76a94ac881cf434a8677e405606db7f4123",
+      "spec": "contracts/learning.md"
     },
     "mailbox.json": {
       "cases": 72,
@@ -46,8 +56,8 @@
       "spec": "contracts/mailbox.md"
     },
     "pairing.json": {
-      "cases": 10,
-      "sha256": "de4fa981a1b92a8af6d59687ba2438fb5c8f55d26f9417d1e92c2450aad84d1f",
+      "cases": 14,
+      "sha256": "831107e2c587f90fd297b2c4806dac2c31b48304681a25f0218c3249a0e9c7c9",
       "spec": "contracts/roster.md#pairing"
     },
     "policy.json": {
@@ -55,25 +65,45 @@
       "sha256": "1d239ac6920045fc870112d3894d54aa37888915fbdcaf816db4663b4d4f76b3",
       "spec": "contracts/policy.md"
     },
+    "requests.json": {
+      "cases": 47,
+      "sha256": "8c631bc940b057dd45d11e74b4aca6bc9e88b61acf5d0279adc2f7890e839f8c",
+      "spec": "contracts/requests.md"
+    },
     "roster.json": {
-      "cases": 58,
-      "sha256": "85644279c3a3bc6579d68c892dd74055465718fe9a6b86d48e1bbe199abf4ccc",
+      "cases": 82,
+      "sha256": "b57a23746b8f2c6925b702a62812ad4c593b54b5758380c102f524bec8cf3505",
       "spec": "contracts/roster.md"
     },
+    "runs.json": {
+      "cases": 104,
+      "sha256": "4abc984079a9fc2aaefdd4739af28ad2b2c724f9c9423f78b96493149cf5f31c",
+      "spec": "contracts/runs.md"
+    },
     "surface.json": {
-      "cases": 55,
-      "sha256": "da7fb3dd2c0abba8f563e6a7665d28795cf62e1e4cff87ead300b9a7dc161855",
+      "cases": 69,
+      "sha256": "f1ae11b3eedeee9d3489f8e54e58fd0188725eded427b08c0d0c8506fddd8da0",
       "spec": "contracts/surface.md"
     },
     "sync.json": {
-      "cases": 47,
-      "sha256": "6f61c0597c836dc2792167053b6c32cc4aec2acdf9771dd623c2a1605b9f1b9c",
+      "cases": 49,
+      "sha256": "ed4215fc957105d247995f8192eff184f095bc478cc1a65df98518747d097c6b",
       "spec": "contracts/sync.md"
     },
     "ticket.json": {
-      "cases": 53,
-      "sha256": "03ba467bf82c742d89a2d8949531fc2ea8cf2d11ade603ea29533a218a197eaf",
+      "cases": 54,
+      "sha256": "fb9452055e84ec643a9cce410ab3a4adafee5c9832ad77f1d60620eddb99a4b1",
       "spec": "contracts/ticket.md"
+    },
+    "tools.json": {
+      "cases": 25,
+      "sha256": "276e06ad49bb95ee18bddee37daec0a93d892030be75ffd583a4d39cf940bed2",
+      "spec": "contracts/tools.md"
+    },
+    "transfer.json": {
+      "cases": 8,
+      "sha256": "f9e241cbbc7d204fb8b80b4572d060d94a7c6b7ecea8314823ffce450540874e",
+      "spec": "contracts/policy.md#carrying-a-transfer"
     }
   },
   "format": "astral.vectors/v1"

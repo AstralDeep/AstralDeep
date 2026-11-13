@@ -1,0 +1,2790 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "ok": {
+          "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0"
+        }
+      },
+      "input": {
+        "annotations": {
+          "readOnlyHint": false
+        },
+        "description": "turns the lights on",
+        "input_schema": {
+          "properties": {
+            "level": {
+              "minimum": {
+                "$num": "0.5"
+              }
+            },
+            "room": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "name": "lights_on"
+      },
+      "kind": "tools_hash",
+      "name": "hash-of-a-definition"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 1,
+          "names": [
+            "lights_on"
+          ]
+        }
+      },
+      "input": {
+        "body": {
+          "tools": [
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "lights_on"
+            }
+          ]
+        }
+      },
+      "kind": "tools_check",
+      "name": "one-tool"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 0,
+          "names": []
+        }
+      },
+      "input": {
+        "body": {
+          "tools": []
+        }
+      },
+      "kind": "tools_check",
+      "name": "an-empty-catalog-is-valid"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 2,
+          "names": [
+            "lights_off",
+            "lights_on"
+          ]
+        }
+      },
+      "input": {
+        "body": {
+          "tools": [
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "lights_on"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:0de0f8b5b20575db824c7fe5ff626f1e604b5196c1f57bb4e9b3af34e0abb47f",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "lights_off"
+            }
+          ]
+        }
+      },
+      "kind": "tools_check",
+      "name": "two-tools"
+    },
+    {
+      "expect": {
+        "error": "tools.malformed"
+      },
+      "input": {
+        "body": {
+          "tools": [],
+          "x": 1
+        }
+      },
+      "kind": "tools_check",
+      "name": "extra-field"
+    },
+    {
+      "expect": {
+        "error": "tools.malformed"
+      },
+      "input": {
+        "body": []
+      },
+      "kind": "tools_check",
+      "name": "not-an-object"
+    },
+    {
+      "expect": {
+        "error": "tools.malformed"
+      },
+      "input": {
+        "body": {
+          "tools": [
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "lights_on",
+              "x": 1
+            }
+          ]
+        }
+      },
+      "kind": "tools_check",
+      "name": "tool-extra-field"
+    },
+    {
+      "expect": {
+        "error": "tools.malformed"
+      },
+      "input": {
+        "body": {
+          "tools": [
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "lights_on"
+            }
+          ]
+        }
+      },
+      "kind": "tools_check",
+      "name": "tool-missing-field"
+    },
+    {
+      "expect": {
+        "error": "tools.malformed"
+      },
+      "input": {
+        "body": {
+          "tools": [
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "lights_on"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "lights_on"
+            }
+          ]
+        }
+      },
+      "kind": "tools_check",
+      "name": "duplicate-name"
+    },
+    {
+      "expect": {
+        "error": "tools.malformed"
+      },
+      "input": {
+        "body": {
+          "tools": [
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:638befb6884a48c6f6536ed7032c5d10cdc61dfd146fbcfb45d3ae3e3325634d",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "1bad"
+            }
+          ]
+        }
+      },
+      "kind": "tools_check",
+      "name": "bad-name"
+    },
+    {
+      "expect": {
+        "error": "tools.malformed"
+      },
+      "input": {
+        "body": {
+          "tools": [
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:45aed208dd07fa0d55f44547c80cff4c7c10353a61bb261ed4a222a0156190fb",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ]
+        }
+      },
+      "kind": "tools_check",
+      "name": "name-too-long"
+    },
+    {
+      "expect": {
+        "error": "tools.malformed"
+      },
+      "input": {
+        "body": {
+          "tools": [
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "delete_everything",
+              "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "lights_on"
+            }
+          ]
+        }
+      },
+      "kind": "tools_check",
+      "name": "bad-effect"
+    },
+    {
+      "expect": {
+        "error": "tools.malformed"
+      },
+      "input": {
+        "body": {
+          "tools": [
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "effect": "outside_effect",
+              "hash": "sha256:c0e11c792cb8d3ace679652ce360be704627b979ee40550c27c5df7c237c23c2",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "lights_on"
+            }
+          ]
+        }
+      },
+      "kind": "tools_check",
+      "name": "description-too-long"
+    },
+    {
+      "expect": {
+        "error": "tools.malformed"
+      },
+      "input": {
+        "body": {
+          "tools": [
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:673bd01169189bfeb129f23965954932db5972f8fd72961e6ec1635a1a522cd8",
+              "input_schema": [],
+              "name": "lights_on"
+            }
+          ]
+        }
+      },
+      "kind": "tools_check",
+      "name": "schema-not-an-object"
+    },
+    {
+      "expect": {
+        "error": "tools.malformed"
+      },
+      "input": {
+        "body": {
+          "tools": [
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+              "input_schema": {
+                "minimum": 0.5
+              },
+              "name": "lights_on"
+            }
+          ]
+        }
+      },
+      "kind": "tools_check",
+      "name": "float-in-schema"
+    },
+    {
+      "expect": {
+        "error": "tools.malformed"
+      },
+      "input": {
+        "body": {
+          "tools": [
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:50a56b65c56b7f2e50628f0ea0d07e078fde3205ca48a9d1f11feb2d777af057",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t0"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:57b9b2a3ec6f7137ab8a7d2fae551d8c2d3367da12adf8f36541be90f3d459eb",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t1"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:3318282bc863b4ceb1bf8c286df722e2522312aa737de0bd983e764e1bc86102",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t2"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:16cd9dfb9e469511c3710d2821859ac254320239d00bdcd2af338a24af9df9db",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t3"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:ff913ea18378e4de5c0c375439a55d7310b9f679978b228b0d2fd496d483f7f3",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t4"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:f5b20dee530eebe730c04e02188b81949225982d84385ca2430af14f7a631791",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t5"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:d4b73d43b7023431bf2a9fb112b2798dfbb4e5798d6e3e6312f3ef2cb1b2af2e",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t6"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:4539c3c663c4c4c1f116d0ed6b152faa8f3e7991fa44e9a5a7e03abb5146cc2e",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t7"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:cbb17e1ffde81bc23cc40e8c441ed96ee8ed71e8ae7151fb4060e83603fd27e0",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t8"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:a96a9b0913f22920af2fb8f31c41c7a78953cb5c56f1f467278aeee6c90026f9",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t9"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:c34bbe6da8c6157527e2f7fee9e1e0b68aacf5d816d1aa17539ba97713a0fc80",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t10"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:b3e5d4cb38e763a5526bff7e122090a68d9719ff22650ee18a54f2b712fd224e",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t11"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:a04060c5f3362d156b91be92bf32158fe2bc2d53f5d211aee23945eb969effd8",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t12"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:033bf0d729732a61dfaee7158cbd1443190ffe62947fbaefad22e82ac61b31e1",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t13"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:359128b52be69d84e16500db379a9329a5ca0d6da0929ec7defb6c84e718ac3b",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t14"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:e0f9f89f7de3266e37294272b22f120094581e7969db3b68c0d956983feccf62",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t15"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:953520a6b6abec4993ecfd0fbd66dd20252699833fd534edadd77b32deed801b",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t16"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:ec65b8613396dd50417bc6bea11f3fb71562082696cccc0acfe59b752b22d22a",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t17"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:83405090715451ac1f135e4d289e79816f54b0d3c227f61709c24b616eacc4f4",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t18"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:4211942d11bd25b8703e35b1bc0fc1ba7a19007bedf94e4c18f761da537d1b51",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t19"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:f9b8487fb14f459d8ead63edd7a1a622a842975b7e14fd40c756f35748f868d8",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t20"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:8008102570ac18a190b608b93e1073d8a493628fb88416d1d038fd1ca38acfb0",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t21"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:77d0a7458dda6c31291138110eeecc8236ee56cb80caa94c1f8e48492dc0675f",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t22"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:2909fa42224d3e41b1d1754f402b74394dbe8da13ab275a228f5dd91615a5957",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t23"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:a36b7236373be2958b197d621338023c96e2609f6a2dde53d6060e65a2c2acfe",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t24"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:0777b7b143ce2f6ff535f3f34e57fb1d0abc25f4431339812b7b3eada0dae2d9",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t25"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:029e6d34202f9d4c499a2253747d3776d819d05157ba1ff3e67dc8a59ae3927b",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t26"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:72552f01cf467ca16dbbcd66022bf70b7a282b32b86c1d8f447772a4f1dcecb2",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t27"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:f13623591bbdf89da09b1d940be36f0c2b6ae3977bf40c0e0cc3d79f495c995a",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t28"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:8aec6b472728d71c55d2c8e342fe27c61cc08b2d8cbc6aa0af544071ee6f27ad",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t29"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:a740a123305a48a73e74b3266d9f86e736784b306d839da728960ae39d0373c2",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t30"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:208f959deeab430c0f772a349b3c819ec163c77740a158e10d96c8e53478ab31",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t31"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:8846b91d819f5c25a34334247cea9ae418411ab1bd7c74aa4db7f4fb69fe68b3",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t32"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:ff325191bcfbc2bc48bd3bfda974867a2f7b53efc854505802a537bcc0297280",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t33"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:c0ca465f94371122fad381395a5912364d3987e3f17cbc7495fcfb26acdb0d1e",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t34"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:1f8c5807027c21c69b750c8dd59756fbd5454a7bf200f1d8d83e4ea0551b2c15",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t35"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:07c4697ff6f5a4fe44a7edc078be3de3b065d067e5dc5f4735a86f5119d3c9ce",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t36"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:2bd82157d556ce6a84fd6fb00689189faf1c51e71b9a50d8f8425fbc185936bb",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t37"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:0307f3b3e65cf6128518ffb59459c57d4b6ddd2b2aa93edf0a01cf2ce5ced644",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t38"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:2794906ec2bdcf5fc9a178f6d858a788103ddd7458903638470bbafc67592f98",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t39"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:3b9d83af289405136d1a49b83b6bdcef26a31f455bd23cd96bcd41cbfc856f13",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t40"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:0ca75fd624e928da16c3189ca32648f4f046d7cb625e7a7e5329a77336183433",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t41"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:cc377d55764f3021337bd5dd1e7fae1df6ad0c89af0545baa8dff48aeac69f93",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t42"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:2ba720d088c05b616568897569629853949df8656948b84473191f6f97420946",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t43"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:73432588f3d90a8c65e2d23ef78da5fdf48198a06de8a68028d6cd7b354114b7",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t44"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:8aa818ac857c0a56961e0d02c97b2670bdfabdefed4268f1b45ef393abeb941b",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t45"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:b3a2ec05c2205cca9d5ec2ca9b508810ad871da9ba2243e505c5155d74f082f5",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t46"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:0858c21f0bde059ea00a6171ec3cce4a58759833fcdf363755bbc13a2b24bb10",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t47"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:305cfae85978ea6fb4de7b466ac144f278db99100b4326f1ec44b0f8d6ec9bf5",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t48"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:3cf92fda5679e25feb88e6d3d6376065762ec42e7b9b02896e6bc503f0aeff7d",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t49"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:a58ef3b417e4285a3d927673e709ac2c8b16b8c47ae5024b0c1d1de5f7d2d0fd",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t50"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:e56c897b1fc443bf8b08cd66bb631bbe70c8e5c79698c5c25aa3ac4bc097d459",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t51"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:ccf7ac6f354c8d188d280c4614fcd0bd3a44a4b8276d2c5445ab1eae5436075a",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t52"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:53021d4e4d39c32d6f17c7edeae76ce71af603e5a1ee638b9da4a399a62e7fa1",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t53"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:06e9373d12bb32e180a6f3f9af0d178e073ecef66608fb62d61f9f1ad61cbfcf",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t54"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:9f66a2ec3a42327345d8c5f35fd032d7923a78f6a33ecd719ba1645114ad1933",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t55"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:67701c062a5d298062f8bb8927527275b343e0c6f5d1e9fd69b81adcd258fead",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t56"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:f9c95a88adf46643fcc084fb41fd103fc0bdbb4d3fa984d68e64d97497368a88",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t57"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:f3d2c776a30b3c1170e32e13a68dbbd9295adbb2c901375af68476c6c867fcd2",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t58"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:4a64e2e49413e4469997502ba9fbcb9a9f58ffe54866ed714f599e326543ffd0",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t59"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:2e9a4a5409fc30073b01e270926eb0f2ecbc57e0bcd357ca186e22ef2fe91b4f",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t60"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:2fa8de0a69c8ca790e7de09f5a59a465045a7929d58cbc2eec501c5e39a5d6ec",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t61"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:94b578fa3e56bda0da00a95463c25eba2bd9208c98384d2c4a2bdb3a6f0e2222",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t62"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:74cdacc762ab07f38bf3a43d72a0ab9794186fa0de92afb50e22daa7270ba098",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t63"
+            },
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:4e8ede6ec06b1b795d5c85eb9d724460ae44794472aec912841ec6d4692d8683",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "t64"
+            }
+          ]
+        }
+      },
+      "kind": "tools_check",
+      "name": "too-many-tools"
+    },
+    {
+      "expect": {
+        "error": "tools.hash_mismatch"
+      },
+      "input": {
+        "body": {
+          "tools": [
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights off",
+              "effect": "outside_effect",
+              "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "lights_on"
+            }
+          ]
+        }
+      },
+      "kind": "tools_check",
+      "name": "hash-does-not-match"
+    },
+    {
+      "expect": {
+        "error": "tools.hash_mismatch"
+      },
+      "input": {
+        "body": {
+          "tools": [
+            {
+              "annotations": {
+                "readOnlyHint": false
+              },
+              "description": "turns the lights on",
+              "effect": "outside_effect",
+              "hash": "sha256:22b6cc84f525f52f2164c6031d94fbb6ade46aa3d0e72967e52293d09fa28a56",
+              "input_schema": {
+                "properties": {
+                  "level": {
+                    "minimum": {
+                      "$num": "0.5"
+                    }
+                  },
+                  "room": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "lights_on"
+            }
+          ]
+        }
+      },
+      "kind": "tools_check",
+      "name": "hash-of-another-tool"
+    },
+    {
+      "expect": {
+        "ok": {
+          "catalogs": [],
+          "ignored": []
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "events": []
+      },
+      "kind": "tools_fold",
+      "name": "no-catalogs"
+    },
+    {
+      "expect": {
+        "ok": {
+          "catalogs": [
+            {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "event": "sha256:a70120a03a75b62d1bad3feb7098ab6668960957345a52e1eb2da157d396f3c9",
+              "tools": [
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on",
+                  "effect": "outside_effect",
+                  "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "lights_on"
+                }
+              ]
+            }
+          ],
+          "ignored": []
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "tools": [
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on",
+                  "effect": "outside_effect",
+                  "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "lights_on"
+                }
+              ]
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:a70120a03a75b62d1bad3feb7098ab6668960957345a52e1eb2da157d396f3c9",
+            "seq": 1,
+            "type": "tools.catalog"
+          }
+        ]
+      },
+      "kind": "tools_fold",
+      "name": "one-catalog"
+    },
+    {
+      "expect": {
+        "ok": {
+          "catalogs": [
+            {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "event": "sha256:b1998b9133c69d1de033441b9d6f149e03d5abd4f1aa633fd517b084c6122a45",
+              "tools": [
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on",
+                  "effect": "outside_effect",
+                  "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "lights_on"
+                },
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on",
+                  "effect": "outside_effect",
+                  "hash": "sha256:0de0f8b5b20575db824c7fe5ff626f1e604b5196c1f57bb4e9b3af34e0abb47f",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "lights_off"
+                }
+              ]
+            }
+          ],
+          "ignored": [
+            "sha256:a70120a03a75b62d1bad3feb7098ab6668960957345a52e1eb2da157d396f3c9"
+          ]
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "tools": [
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on",
+                  "effect": "outside_effect",
+                  "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "lights_on"
+                },
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on",
+                  "effect": "outside_effect",
+                  "hash": "sha256:0de0f8b5b20575db824c7fe5ff626f1e604b5196c1f57bb4e9b3af34e0abb47f",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "lights_off"
+                }
+              ]
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:b1998b9133c69d1de033441b9d6f149e03d5abd4f1aa633fd517b084c6122a45",
+            "seq": 2,
+            "type": "tools.catalog"
+          },
+          {
+            "after": [],
+            "body": {
+              "tools": [
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on",
+                  "effect": "outside_effect",
+                  "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "lights_on"
+                }
+              ]
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:a70120a03a75b62d1bad3feb7098ab6668960957345a52e1eb2da157d396f3c9",
+            "seq": 1,
+            "type": "tools.catalog"
+          }
+        ]
+      },
+      "kind": "tools_fold",
+      "name": "the-latest-catalog-of-a-device-wins"
+    },
+    {
+      "expect": {
+        "ok": {
+          "catalogs": [
+            {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "event": "sha256:a70120a03a75b62d1bad3feb7098ab6668960957345a52e1eb2da157d396f3c9",
+              "tools": [
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on",
+                  "effect": "outside_effect",
+                  "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "lights_on"
+                }
+              ]
+            },
+            {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "event": "sha256:7d57023f0a87f95af819ea8cb7608348b68b0836a0f1b1459b85d24210ee0991",
+              "tools": [
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on",
+                  "effect": "outside_effect",
+                  "hash": "sha256:8d2480d646e2b7db1ddb505129b9e16684bedb0f82a68a4228e06bd3f76b9591",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "scan"
+                }
+              ]
+            }
+          ],
+          "ignored": []
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "tools": [
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on",
+                  "effect": "outside_effect",
+                  "hash": "sha256:8d2480d646e2b7db1ddb505129b9e16684bedb0f82a68a4228e06bd3f76b9591",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "scan"
+                }
+              ]
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:7d57023f0a87f95af819ea8cb7608348b68b0836a0f1b1459b85d24210ee0991",
+            "seq": 1,
+            "type": "tools.catalog"
+          },
+          {
+            "after": [],
+            "body": {
+              "tools": [
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on",
+                  "effect": "outside_effect",
+                  "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "lights_on"
+                }
+              ]
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:a70120a03a75b62d1bad3feb7098ab6668960957345a52e1eb2da157d396f3c9",
+            "seq": 1,
+            "type": "tools.catalog"
+          }
+        ]
+      },
+      "kind": "tools_fold",
+      "name": "each-member-has-its-own-catalog"
+    },
+    {
+      "expect": {
+        "ok": {
+          "catalogs": [
+            {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "event": "sha256:a70120a03a75b62d1bad3feb7098ab6668960957345a52e1eb2da157d396f3c9",
+              "tools": [
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on",
+                  "effect": "outside_effect",
+                  "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "lights_on"
+                }
+              ]
+            }
+          ],
+          "ignored": [
+            "sha256:7d57023f0a87f95af819ea8cb7608348b68b0836a0f1b1459b85d24210ee0991"
+          ]
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "tools": [
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on",
+                  "effect": "outside_effect",
+                  "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "lights_on"
+                }
+              ]
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:a70120a03a75b62d1bad3feb7098ab6668960957345a52e1eb2da157d396f3c9",
+            "seq": 1,
+            "type": "tools.catalog"
+          },
+          {
+            "after": [],
+            "body": {
+              "tools": [
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on",
+                  "effect": "outside_effect",
+                  "hash": "sha256:8d2480d646e2b7db1ddb505129b9e16684bedb0f82a68a4228e06bd3f76b9591",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "scan"
+                }
+              ]
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+            "id": "sha256:7d57023f0a87f95af819ea8cb7608348b68b0836a0f1b1459b85d24210ee0991",
+            "seq": 1,
+            "type": "tools.catalog"
+          }
+        ]
+      },
+      "kind": "tools_fold",
+      "name": "a-removed-member-is-ignored"
+    },
+    {
+      "expect": {
+        "ok": {
+          "catalogs": [
+            {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "event": "sha256:a70120a03a75b62d1bad3feb7098ab6668960957345a52e1eb2da157d396f3c9",
+              "tools": [
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on",
+                  "effect": "outside_effect",
+                  "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "lights_on"
+                }
+              ]
+            }
+          ],
+          "ignored": [
+            "sha256:d0bc6fa3da64dcbf12b2504bf32b61dcedf63cf09b3e9f8fb0f106bd19473efb"
+          ]
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "tools": [
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on",
+                  "effect": "outside_effect",
+                  "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "lights_on"
+                }
+              ]
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:a70120a03a75b62d1bad3feb7098ab6668960957345a52e1eb2da157d396f3c9",
+            "seq": 1,
+            "type": "tools.catalog"
+          },
+          {
+            "after": [],
+            "body": {
+              "tools": [
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on",
+                  "effect": "outside_effect",
+                  "hash": "sha256:22b6cc84f525f52f2164c6031d94fbb6ade46aa3d0e72967e52293d09fa28a56",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "lights_on"
+                }
+              ]
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:d0bc6fa3da64dcbf12b2504bf32b61dcedf63cf09b3e9f8fb0f106bd19473efb",
+            "seq": 3,
+            "type": "tools.catalog"
+          }
+        ]
+      },
+      "kind": "tools_fold",
+      "name": "an-invalid-later-catalog-leaves-the-earlier-one"
+    },
+    {
+      "expect": {
+        "ok": {
+          "catalogs": [
+            {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "event": "sha256:737152b79f25e478d2d6333c61814ab1e8acb7b5be589fe633de46451aca6193",
+              "tools": [
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on, slowly",
+                  "effect": "outside_effect",
+                  "hash": "sha256:6618661321e63de003bd5e902db274e7690b7ef360a3c535fedf7a5d61ea6872",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "lights_on"
+                }
+              ]
+            }
+          ],
+          "ignored": [
+            "sha256:a70120a03a75b62d1bad3feb7098ab6668960957345a52e1eb2da157d396f3c9"
+          ]
+        }
+      },
+      "input": {
+        "devices": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "tools": [
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on",
+                  "effect": "outside_effect",
+                  "hash": "sha256:39fb6c4d2e65a36a54d2119f3ca2b6ef31c7933482dd9d243d21345f68e2dab0",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "lights_on"
+                }
+              ]
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:a70120a03a75b62d1bad3feb7098ab6668960957345a52e1eb2da157d396f3c9",
+            "seq": 1,
+            "type": "tools.catalog"
+          },
+          {
+            "after": [],
+            "body": {
+              "tools": [
+                {
+                  "annotations": {
+                    "readOnlyHint": false
+                  },
+                  "description": "turns the lights on, slowly",
+                  "effect": "outside_effect",
+                  "hash": "sha256:6618661321e63de003bd5e902db274e7690b7ef360a3c535fedf7a5d61ea6872",
+                  "input_schema": {
+                    "properties": {
+                      "level": {
+                        "minimum": {
+                          "$num": "0.5"
+                        }
+                      },
+                      "room": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "name": "lights_on"
+                }
+              ]
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "id": "sha256:737152b79f25e478d2d6333c61814ab1e8acb7b5be589fe633de46451aca6193",
+            "seq": 4,
+            "type": "tools.catalog"
+          }
+        ]
+      },
+      "kind": "tools_fold",
+      "name": "a-changed-definition-has-a-new-hash"
+    }
+  ],
+  "format": "astral.vectors/v1",
+  "name": "tools",
+  "spec": "contracts/tools.md"
+}

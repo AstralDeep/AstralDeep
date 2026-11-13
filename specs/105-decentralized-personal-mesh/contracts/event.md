@@ -95,7 +95,7 @@ Any other field makes the header malformed. The event id is the hash of the cano
 |---|---|
 | Wrong fields, version, types, `prev`/`seq` pairing, unsorted `after`, bad scope, bad labels, bad key reference, bad body hash | `event.malformed` |
 | `type` not in section 9 | `event.unknown_type` |
-| `chat.create` with a scope other than `new`, or a chat type with scope `mesh` | `event.malformed` |
+| `chat.create` with a scope other than `new`, or a chat or request type with scope `mesh` | `event.malformed` |
 | Signature does not verify under `astral.event/v1` with the feed key | `event.bad_signature` |
 | Clock too far ahead | `event.future_clock` |
 
@@ -154,27 +154,31 @@ The family decides the merge rule. The body of every type is a canonical JSON ob
 | `chat.model_request`, `chat.model_response` | chat | chat id | none |
 | `chat.tool_proposed`, `chat.tool_authorized` | chat | chat id | none |
 | `chat.tool_result` | chat | chat id | the whole body is addressable by surface bindings |
-| `chat.turn_start` | chat | chat id | `continues` (turn id or null), `message` (user message id or null) |
+| `chat.turn_start` | chat | chat id | `continues` (turn id or null), `message` (user message id or null). Optional `request`: the request this turn answers (`requests.md`) |
 | `chat.turn_end`, `chat.turn_outcome_unknown` | chat | chat id | none |
 | `chat.spoken` | chat | chat id | none. `kind` is `answer` or `acknowledgement`, `text` is the assistant text a device actually played aloud, and `turn` is optional |
-| `ui.surface_put` | ui | chat id | `document` (see `surface.md`) |
+| `request.send`, `request.claim`, `request.refuse`, `request.cancel` | request | chat id | see `requests.md`. The request fold reads `to`, `request`, `code`. `chat.turn_start` may also carry `request` |
+| `ui.surface_put` | ui | chat id | `document`, `turn` (see `surface.md`) |
 | `ui.patch` | ui | chat id | `surface`, `ops` |
 | `ui.action` | ui | chat id | `surface`, `component`, `capability`, `args` |
-| `auth.grant` | authority | `mesh` or chat id | `agent`, `tool`, `scope`, `widening` |
+| `auth.grant` | authority | `mesh` or chat id | `agent`, `tool`, `scope`. Needs a consent (section 10.3). `widening` is accepted and ignored |
 | `auth.revoke` | authority | `mesh` or chat id | `agent`, `tool`, `scope` |
 | `auth.narrow` | authority | `mesh` or chat id | `key`, `rule` |
 | `auth.policy` | authority | `mesh` | `policy`, `consent` (see `policy.md`) |
 | `auth.consent` | authority | `mesh` or chat id | `grant`, `consent` |
 | `auth.receipt` | authority | `mesh` or chat id | `receipt` (a LETS receipt) |
-| `run.lease`, `run.goal`, `run.schedule` | run | `mesh` or chat id | reserved for the runs contract |
-| `learn.proposal`, `learn.adoption`, `learn.reversal` | learning | `mesh` | reserved for the learning contract |
+| `auth.transfer` | authority | `mesh` | `kind`, `transfer` (a LETS voucher or acknowledgement, see `policy.md` section 6) |
+| `run.lease`, `run.goal`, `run.schedule` | run | `mesh` or chat id | see `runs.md`. The lease fold reads `run`, `executor`, `supersedes`, `takeover` |
+| `learn.proposal`, `learn.adoption`, `learn.reversal` | learning | `mesh` | see `learning.md`. The ledger fold reads `op`, `proposal`, `adoption`, `mode`, `content_hash`, `report_hash` |
 | `mem.remember`, `settings.set` | memory | `mesh` | `key`, `value` |
 | `mem.supersede` | memory | `mesh` | `key`, `value`, `supersedes` |
 | `key.content` | key | `mesh` | `id`, `key`, `scope` (see `keys.md`) |
+| `tools.catalog` | tools | `mesh` | `tools` (see `tools.md`). A chat scope is `event.malformed` |
+| `key.credential` | key | `mesh` | `name`, `boxes`, optional `audience` (see `keys.md` section 4.1). The label is always secret |
 
 A `chat.spoken` event records what the person heard in voice mode. It is visible to the owner like an assistant message and carries labels from the chat it was spoken in. A reader that builds model context for a later turn uses the spoken text of a turn in place of that turn's final model text, because the person heard only the spoken text. The complete model output stays in its `chat.model_response` events for audit and is never rewritten.
 
-The mesh family of spec section 5.3 (add or remove a device, a new key epoch, stop) is carried by roster entries, not by feeds. See `roster.md`. A run or learning event is accepted and chained like any other. This version defines no merge function for those two families. Their rules arrive with their own contracts and need no change to this one.
+The mesh family of spec section 5.3 (add or remove a device, a new key epoch, stop) is carried by roster entries, not by feeds. See `roster.md`. A run or learning event is accepted and chained like any other. The merge rules of those two families are in `runs.md` and `learning.md`.
 
 ## 10. Merge rules
 
@@ -193,7 +197,7 @@ A `chat.user_message` that no turn names in its `message` field is queued. It is
 ### 10.3 Authority
 
 - A grant is keyed by `(agent, tool, scope)`. A grant is in effect only if every revoke with the same key is an ancestor of the grant. A revoke that is concurrent with the grant, or later, wins. A grant written after the revoke is a new grant and stands.
-- A grant whose `widening` is true is in effect only if some `auth.consent` event names it in `grant` and carries a valid consent signature (`consent.kind` is `grant`, `digest` is the grant's event id, signed by the presence key of a roster member). Until then it is listed as waiting for consent.
+- **Every grant needs consent.** A grant is in effect only if some `auth.consent` event names it in `grant` and carries a valid consent signature (`consent.kind` is `grant`, `digest` is the grant's event id, signed by the presence key of a roster member). The grant's event id covers its agent, tool and scope, so the signature covers exactly what the owner was shown. The host draws the prompt from the grant's tool and scope. A grant without a valid consent is ignored and listed in `waiting_for_consent`, and `refusals` maps its id to a dotted code: `grant.consent_missing` when no consent names it, otherwise `grant.consent_` plus the reason the earliest consent failed (`malformed`, `wrong_action`, `unknown_device`, `bad_signature`). The `widening` field of a grant body is no longer read, so a writer that skips the prompt cannot widen anything. A revoke is narrowing and needs no consent.
 - `auth.narrow` events give a rule per key from `allow`, `consent`, `deny`. The strictest rule across all narrow events applies. Narrowing needs no consent and applies the moment a peer sees it. Any other rule value raises `fold.bad_rule`.
 - The budget policy is merged by `policy.md`.
 

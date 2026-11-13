@@ -42,8 +42,10 @@
           },
           "rejected": {},
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -177,8 +179,10 @@
           },
           "rejected": {},
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [],
           "void": []
         }
@@ -346,8 +350,10 @@
           },
           "rejected": {},
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [],
           "void": []
         }
@@ -573,8 +579,10 @@
           },
           "rejected": {},
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
@@ -736,10 +744,12 @@
           },
           "rejected": {},
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
           "stop": 0,
+          "stopped": false,
           "unattested": [],
           "void": []
         }
@@ -893,8 +903,10 @@
             "sha256:8d061d63584f2a4320c02ccbd32d6fea49f6640e14700b140ebc1d9fc8c37925": "attestation.wrong_nonce"
           },
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -1050,8 +1062,10 @@
             "sha256:2eb3d73d5e6e61a031ca244d725ab1bb6c380245251932bd788ffde3c22efa4c": "attestation.token_expired"
           },
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -1207,8 +1221,10 @@
             "sha256:179bdd4377f691024331041edbc8bef43d53f128df2fcb691f7ad3d34c7ede8b": "attestation.token_not_yet_valid"
           },
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -1364,8 +1380,10 @@
             "sha256:a27b3abb12bda0e3926f5cec67c7cbfa7af16569083fcce24db77f2e2bf0748f": "attestation.wrong_audience"
           },
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -1533,8 +1551,10 @@
               "entry": "sha256:f57167dfea1a108c0fce2b1947c8deb5e6f8e9e72c1493ed8c7a2035c5fa94cc"
             }
           },
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -1751,8 +1771,10 @@
               "entry": "sha256:d57af11f61da2660c955acb8eab3ffb0c1e4f1b4fa194f1c5e0e7269555f9578"
             }
           },
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -1981,8 +2003,10 @@
               "entry": "sha256:12c3fc779fde390cd7d846894b21eab3fba16e7dd000d25e93e0b7c1b4282657"
             }
           },
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
             "sha256:8ad412ca1f0e7fd2f9b2a635296b4ea95e139da8a06232500e70c603b2c76457"
@@ -2200,8 +2224,10 @@
               "entry": "sha256:3626a8957399979e4f1f4f030d0e770cf394599d1df001b05445b3938ee47e03"
             }
           },
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [],
           "void": []
         }
@@ -2420,8 +2446,10 @@
               "entry": "sha256:3626a8957399979e4f1f4f030d0e770cf394599d1df001b05445b3938ee47e03"
             }
           },
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99"
           ],
@@ -2657,8 +2685,10 @@
           },
           "rejected": {},
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
             "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
@@ -2826,8 +2856,10 @@
           },
           "rejected": {},
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 2,
+          "stopped": true,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
             "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
@@ -3031,8 +3063,10 @@
             "sha256:bf9090d97a5a224fa3687824728e44b4f8ce3887e1cd4f9136d8f7117256bf76": "roster.stop_not_rising"
           },
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 2,
+          "stopped": true,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
             "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
@@ -3204,6 +3238,2348 @@
         "ok": {
           "count": 2,
           "current_epoch": {
+            "personal": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "state": "member"
+            }
+          },
+          "heads": [
+            "sha256:296f7985136fe4ddd2fc8a654061217066a204d73928182112f22f8c6c8408b5"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            },
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+              "feeds": [
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA"
+              ],
+              "kind": "pocket",
+              "label": "bob"
+            }
+          },
+          "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578"
+          },
+          "rejected": {},
+          "removed": {},
+          "resumed": 0,
+          "stale_attestation": [],
+          "stop": 0,
+          "stopped": false,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+          ],
+          "void": []
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "k8GxAmURDe2DeyNhcSEqylXSbhhrSYikpYlmjAWy41t4Q4w6tKwZqW7AURvyrZHX",
+                  "epk": "SajkRrjbXbwzY-ggSZnckTpabPzuvTD3UZLN33noD24",
+                  "nonce": "reLNkRInh-jZuf_dAXnz8iTjBqsRIDsy"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "3ToGZv0trbFNA8ZAfvmpBcAsFxO1uJYDFLr7jvCB-CTK1eIfeIcDi9UZgMF3r4R4",
+                      "epk": "NTvp1VNx4Xnb6t8uwncV7Tc7CanW0v2vZRll5eyZ_Fk",
+                      "nonce": "xkrPYSlRCHxrOjrLJpda3IUQtvMQefuE"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "HX33H43r3DkmqbekzkJGk0H-bcdzn9xWFkfUbu13pJ0",
+                "wrap": "8YGZrwohSCxTgUfYwfRMeUS69tol7Je3p8oEE7qqiU0"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "UYW3GyRpvmVg3SSHGk4uFrP4YwR-R9RYqXB_YZlkVuxu_z7DqLB7fxOVoK4VDOvYk680-Azivs5HxwkOrpNW4w",
+            "sig": "2y1bgUCgcALBa0lu4xsc-H8wppIwcQn-4NKovPdqez1LHLeM-u083hQNnow3jJmnMSvjONGzz_JU0-I6MwE2eA",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "attestation": null,
+              "device": {
+                "cert": "X7o5ao79O9vzZjZ2RXcE-TdAwXXeAYLHml_acN1xeSVcs0IU1pjAuqPXbx70kJESQpysgnbEo11r03bqdSLmWQ",
+                "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+                "kind": "pocket",
+                "label": "bob",
+                "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+                "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+                "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+              }
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578"
+            ],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "presence_sig": "wg7AU_mNelqi6c1vvRDM5Ynhd9sNxl07Klzk12WrOIMG4d-AS4MaKkTdRgU2WJDcEFBrLsk7ibsbV8i2l-F4kA",
+            "sig": "TsC_ZBY0yVkjywyG_JYo7OuFokcfOgbl_vC2erRSBPJT6n5KvvMrqz0cV92E_tINUIJg1k_4f5hQBPQsJJghJQ",
+            "type": "add",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "never-stopped-is-not-halted"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 3,
+          "current_epoch": {
+            "personal": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "state": "member"
+            }
+          },
+          "heads": [
+            "sha256:a770266d50d7699288fcaac3ce666e7c7af8c4aecb0073767b0719da12f32211"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            },
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+              "feeds": [
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA"
+              ],
+              "kind": "pocket",
+              "label": "bob"
+            }
+          },
+          "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578"
+          },
+          "rejected": {},
+          "removed": {},
+          "resumed": 0,
+          "stale_attestation": [],
+          "stop": 1,
+          "stopped": true,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+          ],
+          "void": []
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "k8GxAmURDe2DeyNhcSEqylXSbhhrSYikpYlmjAWy41t4Q4w6tKwZqW7AURvyrZHX",
+                  "epk": "SajkRrjbXbwzY-ggSZnckTpabPzuvTD3UZLN33noD24",
+                  "nonce": "reLNkRInh-jZuf_dAXnz8iTjBqsRIDsy"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "3ToGZv0trbFNA8ZAfvmpBcAsFxO1uJYDFLr7jvCB-CTK1eIfeIcDi9UZgMF3r4R4",
+                      "epk": "NTvp1VNx4Xnb6t8uwncV7Tc7CanW0v2vZRll5eyZ_Fk",
+                      "nonce": "xkrPYSlRCHxrOjrLJpda3IUQtvMQefuE"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "HX33H43r3DkmqbekzkJGk0H-bcdzn9xWFkfUbu13pJ0",
+                "wrap": "8YGZrwohSCxTgUfYwfRMeUS69tol7Je3p8oEE7qqiU0"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "UYW3GyRpvmVg3SSHGk4uFrP4YwR-R9RYqXB_YZlkVuxu_z7DqLB7fxOVoK4VDOvYk680-Azivs5HxwkOrpNW4w",
+            "sig": "2y1bgUCgcALBa0lu4xsc-H8wppIwcQn-4NKovPdqez1LHLeM-u083hQNnow3jJmnMSvjONGzz_JU0-I6MwE2eA",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "attestation": null,
+              "device": {
+                "cert": "X7o5ao79O9vzZjZ2RXcE-TdAwXXeAYLHml_acN1xeSVcs0IU1pjAuqPXbx70kJESQpysgnbEo11r03bqdSLmWQ",
+                "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+                "kind": "pocket",
+                "label": "bob",
+                "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+                "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+                "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+              }
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578"
+            ],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "presence_sig": "wg7AU_mNelqi6c1vvRDM5Ynhd9sNxl07Klzk12WrOIMG4d-AS4MaKkTdRgU2WJDcEFBrLsk7ibsbV8i2l-F4kA",
+            "sig": "TsC_ZBY0yVkjywyG_JYo7OuFokcfOgbl_vC2erRSBPJT6n5KvvMrqz0cV92E_tINUIJg1k_4f5hQBPQsJJghJQ",
+            "type": "add",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:296f7985136fe4ddd2fc8a654061217066a204d73928182112f22f8c6c8408b5"
+            ],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "sig": "9TrYOt-jmZS-HfdlEJN5t90sSQRQpwiHzvFiCgq4WsReNH6szsLOzPIgKAFTrxg_QBAy0AtmK4z9TKGKNjKWUA",
+            "type": "stop",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "a-stop-halts-the-mesh"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 4,
+          "current_epoch": {
+            "personal": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "state": "member"
+            }
+          },
+          "heads": [
+            "sha256:18925550294547e4ca8769316fde0bc542199871c90c6fb921967344de5bfdf5"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            },
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+              "feeds": [
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA"
+              ],
+              "kind": "pocket",
+              "label": "bob"
+            }
+          },
+          "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578"
+          },
+          "rejected": {},
+          "removed": {},
+          "resumed": 1,
+          "stale_attestation": [],
+          "stop": 1,
+          "stopped": false,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+          ],
+          "void": []
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "k8GxAmURDe2DeyNhcSEqylXSbhhrSYikpYlmjAWy41t4Q4w6tKwZqW7AURvyrZHX",
+                  "epk": "SajkRrjbXbwzY-ggSZnckTpabPzuvTD3UZLN33noD24",
+                  "nonce": "reLNkRInh-jZuf_dAXnz8iTjBqsRIDsy"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "3ToGZv0trbFNA8ZAfvmpBcAsFxO1uJYDFLr7jvCB-CTK1eIfeIcDi9UZgMF3r4R4",
+                      "epk": "NTvp1VNx4Xnb6t8uwncV7Tc7CanW0v2vZRll5eyZ_Fk",
+                      "nonce": "xkrPYSlRCHxrOjrLJpda3IUQtvMQefuE"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "HX33H43r3DkmqbekzkJGk0H-bcdzn9xWFkfUbu13pJ0",
+                "wrap": "8YGZrwohSCxTgUfYwfRMeUS69tol7Je3p8oEE7qqiU0"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "UYW3GyRpvmVg3SSHGk4uFrP4YwR-R9RYqXB_YZlkVuxu_z7DqLB7fxOVoK4VDOvYk680-Azivs5HxwkOrpNW4w",
+            "sig": "2y1bgUCgcALBa0lu4xsc-H8wppIwcQn-4NKovPdqez1LHLeM-u083hQNnow3jJmnMSvjONGzz_JU0-I6MwE2eA",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "attestation": null,
+              "device": {
+                "cert": "X7o5ao79O9vzZjZ2RXcE-TdAwXXeAYLHml_acN1xeSVcs0IU1pjAuqPXbx70kJESQpysgnbEo11r03bqdSLmWQ",
+                "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+                "kind": "pocket",
+                "label": "bob",
+                "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+                "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+                "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+              }
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578"
+            ],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "presence_sig": "wg7AU_mNelqi6c1vvRDM5Ynhd9sNxl07Klzk12WrOIMG4d-AS4MaKkTdRgU2WJDcEFBrLsk7ibsbV8i2l-F4kA",
+            "sig": "TsC_ZBY0yVkjywyG_JYo7OuFokcfOgbl_vC2erRSBPJT6n5KvvMrqz0cV92E_tINUIJg1k_4f5hQBPQsJJghJQ",
+            "type": "add",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:296f7985136fe4ddd2fc8a654061217066a204d73928182112f22f8c6c8408b5"
+            ],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "sig": "9TrYOt-jmZS-HfdlEJN5t90sSQRQpwiHzvFiCgq4WsReNH6szsLOzPIgKAFTrxg_QBAy0AtmK4z9TKGKNjKWUA",
+            "type": "stop",
+            "v": 1
+          },
+          {
+            "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:a770266d50d7699288fcaac3ce666e7c7af8c4aecb0073767b0719da12f32211"
+            ],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "presence_sig": "BjKl-MSSxd7Z4LfJG29OIqauie3-uc1UvjMoKUnyq4UOS30FRKp_YO7HDIGEInur-Cuh78UQsQ_V9TT9aHqLZQ",
+            "sig": "F4z0aR7JekpOtXKrPIbTt7LccO_hc-lFkFmispMAMTcpOm-ZQ8RW7lomhXp8ZD4aBSuqplqHBFtlwPUsZ43qpQ",
+            "type": "resume",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "resume-naming-the-counter-clears-the-halt"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 5,
+          "current_epoch": {
+            "personal": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "state": "member"
+            }
+          },
+          "heads": [
+            "sha256:ac9cdf3eb884c39136c2cc2e5edf4d62fe005af133cff96e86116d4b8ddaf19a"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            },
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+              "feeds": [
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA"
+              ],
+              "kind": "pocket",
+              "label": "bob"
+            }
+          },
+          "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578"
+          },
+          "rejected": {},
+          "removed": {},
+          "resumed": 1,
+          "stale_attestation": [],
+          "stop": 2,
+          "stopped": true,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+          ],
+          "void": []
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "k8GxAmURDe2DeyNhcSEqylXSbhhrSYikpYlmjAWy41t4Q4w6tKwZqW7AURvyrZHX",
+                  "epk": "SajkRrjbXbwzY-ggSZnckTpabPzuvTD3UZLN33noD24",
+                  "nonce": "reLNkRInh-jZuf_dAXnz8iTjBqsRIDsy"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "3ToGZv0trbFNA8ZAfvmpBcAsFxO1uJYDFLr7jvCB-CTK1eIfeIcDi9UZgMF3r4R4",
+                      "epk": "NTvp1VNx4Xnb6t8uwncV7Tc7CanW0v2vZRll5eyZ_Fk",
+                      "nonce": "xkrPYSlRCHxrOjrLJpda3IUQtvMQefuE"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "HX33H43r3DkmqbekzkJGk0H-bcdzn9xWFkfUbu13pJ0",
+                "wrap": "8YGZrwohSCxTgUfYwfRMeUS69tol7Je3p8oEE7qqiU0"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "UYW3GyRpvmVg3SSHGk4uFrP4YwR-R9RYqXB_YZlkVuxu_z7DqLB7fxOVoK4VDOvYk680-Azivs5HxwkOrpNW4w",
+            "sig": "2y1bgUCgcALBa0lu4xsc-H8wppIwcQn-4NKovPdqez1LHLeM-u083hQNnow3jJmnMSvjONGzz_JU0-I6MwE2eA",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "attestation": null,
+              "device": {
+                "cert": "X7o5ao79O9vzZjZ2RXcE-TdAwXXeAYLHml_acN1xeSVcs0IU1pjAuqPXbx70kJESQpysgnbEo11r03bqdSLmWQ",
+                "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+                "kind": "pocket",
+                "label": "bob",
+                "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+                "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+                "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+              }
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578"
+            ],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "presence_sig": "wg7AU_mNelqi6c1vvRDM5Ynhd9sNxl07Klzk12WrOIMG4d-AS4MaKkTdRgU2WJDcEFBrLsk7ibsbV8i2l-F4kA",
+            "sig": "TsC_ZBY0yVkjywyG_JYo7OuFokcfOgbl_vC2erRSBPJT6n5KvvMrqz0cV92E_tINUIJg1k_4f5hQBPQsJJghJQ",
+            "type": "add",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:296f7985136fe4ddd2fc8a654061217066a204d73928182112f22f8c6c8408b5"
+            ],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "sig": "9TrYOt-jmZS-HfdlEJN5t90sSQRQpwiHzvFiCgq4WsReNH6szsLOzPIgKAFTrxg_QBAy0AtmK4z9TKGKNjKWUA",
+            "type": "stop",
+            "v": 1
+          },
+          {
+            "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:a770266d50d7699288fcaac3ce666e7c7af8c4aecb0073767b0719da12f32211"
+            ],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "presence_sig": "BjKl-MSSxd7Z4LfJG29OIqauie3-uc1UvjMoKUnyq4UOS30FRKp_YO7HDIGEInur-Cuh78UQsQ_V9TT9aHqLZQ",
+            "sig": "F4z0aR7JekpOtXKrPIbTt7LccO_hc-lFkFmispMAMTcpOm-ZQ8RW7lomhXp8ZD4aBSuqplqHBFtlwPUsZ43qpQ",
+            "type": "resume",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "counter": 2
+            },
+            "clock": {
+              "ms": 1794441605000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:18925550294547e4ca8769316fde0bc542199871c90c6fb921967344de5bfdf5"
+            ],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "sig": "CYx7m5Exw1lx4qqfhsv--7mSuYymgygrDqmL8J7MZpNo-bFXjwVqp9IRaFOk8fy9IuWdMiiAcLGCamFOrGvXTQ",
+            "type": "stop",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "a-later-stop-halts-again"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 6,
+          "current_epoch": {
+            "personal": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "state": "member"
+            }
+          },
+          "heads": [
+            "sha256:9df79a37285b48e7b62e3b8882ee96f21d72996be228133d1b91a10e50ab3bfe"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            },
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+              "feeds": [
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA"
+              ],
+              "kind": "pocket",
+              "label": "bob"
+            }
+          },
+          "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578"
+          },
+          "rejected": {},
+          "removed": {},
+          "resumed": 2,
+          "stale_attestation": [],
+          "stop": 2,
+          "stopped": false,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+          ],
+          "void": []
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "k8GxAmURDe2DeyNhcSEqylXSbhhrSYikpYlmjAWy41t4Q4w6tKwZqW7AURvyrZHX",
+                  "epk": "SajkRrjbXbwzY-ggSZnckTpabPzuvTD3UZLN33noD24",
+                  "nonce": "reLNkRInh-jZuf_dAXnz8iTjBqsRIDsy"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "3ToGZv0trbFNA8ZAfvmpBcAsFxO1uJYDFLr7jvCB-CTK1eIfeIcDi9UZgMF3r4R4",
+                      "epk": "NTvp1VNx4Xnb6t8uwncV7Tc7CanW0v2vZRll5eyZ_Fk",
+                      "nonce": "xkrPYSlRCHxrOjrLJpda3IUQtvMQefuE"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "HX33H43r3DkmqbekzkJGk0H-bcdzn9xWFkfUbu13pJ0",
+                "wrap": "8YGZrwohSCxTgUfYwfRMeUS69tol7Je3p8oEE7qqiU0"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "UYW3GyRpvmVg3SSHGk4uFrP4YwR-R9RYqXB_YZlkVuxu_z7DqLB7fxOVoK4VDOvYk680-Azivs5HxwkOrpNW4w",
+            "sig": "2y1bgUCgcALBa0lu4xsc-H8wppIwcQn-4NKovPdqez1LHLeM-u083hQNnow3jJmnMSvjONGzz_JU0-I6MwE2eA",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "attestation": null,
+              "device": {
+                "cert": "X7o5ao79O9vzZjZ2RXcE-TdAwXXeAYLHml_acN1xeSVcs0IU1pjAuqPXbx70kJESQpysgnbEo11r03bqdSLmWQ",
+                "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+                "kind": "pocket",
+                "label": "bob",
+                "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+                "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+                "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+              }
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578"
+            ],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "presence_sig": "wg7AU_mNelqi6c1vvRDM5Ynhd9sNxl07Klzk12WrOIMG4d-AS4MaKkTdRgU2WJDcEFBrLsk7ibsbV8i2l-F4kA",
+            "sig": "TsC_ZBY0yVkjywyG_JYo7OuFokcfOgbl_vC2erRSBPJT6n5KvvMrqz0cV92E_tINUIJg1k_4f5hQBPQsJJghJQ",
+            "type": "add",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:296f7985136fe4ddd2fc8a654061217066a204d73928182112f22f8c6c8408b5"
+            ],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "sig": "9TrYOt-jmZS-HfdlEJN5t90sSQRQpwiHzvFiCgq4WsReNH6szsLOzPIgKAFTrxg_QBAy0AtmK4z9TKGKNjKWUA",
+            "type": "stop",
+            "v": 1
+          },
+          {
+            "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:a770266d50d7699288fcaac3ce666e7c7af8c4aecb0073767b0719da12f32211"
+            ],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "presence_sig": "BjKl-MSSxd7Z4LfJG29OIqauie3-uc1UvjMoKUnyq4UOS30FRKp_YO7HDIGEInur-Cuh78UQsQ_V9TT9aHqLZQ",
+            "sig": "F4z0aR7JekpOtXKrPIbTt7LccO_hc-lFkFmispMAMTcpOm-ZQ8RW7lomhXp8ZD4aBSuqplqHBFtlwPUsZ43qpQ",
+            "type": "resume",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "counter": 2
+            },
+            "clock": {
+              "ms": 1794441605000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:18925550294547e4ca8769316fde0bc542199871c90c6fb921967344de5bfdf5"
+            ],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "sig": "CYx7m5Exw1lx4qqfhsv--7mSuYymgygrDqmL8J7MZpNo-bFXjwVqp9IRaFOk8fy9IuWdMiiAcLGCamFOrGvXTQ",
+            "type": "stop",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "counter": 2
+            },
+            "clock": {
+              "ms": 1794441606000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:ac9cdf3eb884c39136c2cc2e5edf4d62fe005af133cff96e86116d4b8ddaf19a"
+            ],
+            "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+            "presence_sig": "HBCDdz8uxd3FCnuano_LQqDKzHee9-MrHXCQK1aYG7oP_AH3cHydwMgLFsdQKko1-ZblH3hHQf60he4_t6XVGQ",
+            "sig": "anEeczDjAS1BF1gP28bJthwMapx6IkwWXrKds2paHrACjrPAEigMVQSDcVATSs8OiImi6lLFdMg1YGy2VbAkVw",
+            "type": "resume",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:151a471f938f829a796f40bf923b8b9de2fbb301ddb34cb220356a687dcbd578",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "resume-after-a-second-stop-clears"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 5,
+          "current_epoch": {
+            "personal": "sha256:ef3df6273a0e91ac26e9bbaf489a59b8730a3149bd583a252cc2ea64e9fe981b",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:ef3df6273a0e91ac26e9bbaf489a59b8730a3149bd583a252cc2ea64e9fe981b": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "state": "member"
+            }
+          },
+          "heads": [
+            "sha256:78dbd91e680b5b55dc2fc71d1eb288fd6be4038c66d8f2845f03d66e51fa91e0"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            },
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+              "feeds": [
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA"
+              ],
+              "kind": "pocket",
+              "label": "bob"
+            }
+          },
+          "mesh": "sha256:ef3df6273a0e91ac26e9bbaf489a59b8730a3149bd583a252cc2ea64e9fe981b",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:ef3df6273a0e91ac26e9bbaf489a59b8730a3149bd583a252cc2ea64e9fe981b"
+          },
+          "rejected": {},
+          "removed": {},
+          "resumed": 1,
+          "stale_attestation": [],
+          "stop": 2,
+          "stopped": true,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+          ],
+          "void": []
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "ondcm2ibS0xVooLk1S3hCx2ThImQXACsoSJemfRaMRREX8xEBPhKA55u4z8_Tvk4",
+                  "epk": "ITtO9cnsmku4pPfIr5mX7wvr5ZsNPCalnl80xfWOiQo",
+                  "nonce": "t8gYLu---ELpshzpBva6-7pUGT-Td8Nm"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "fuevY2NeeqBFiA11PRngEyqpR1tmnAs2tqEMefVGem_chppAT_64QL9snsenptok",
+                      "epk": "Sgqm4pBpnoLOB7Oc8rRTmPceGo8L_hf2mJ-AJDqhMR4",
+                      "nonce": "5JMnkrxmnoodSfkVFJXi79LFrRbY0R2d"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "55SBcRZISNyK2bRAs8FkdzCKGJqR9gEJ7OaOP-BXMaM",
+                "wrap": "622TtMZiY6V4AIfPAhBPK-Xlsk5quHxAkh9hMOB9Xhw"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "LVkxO4Giea_n0s4D8omdX7nHhYoFTpjBBWTyd2SIKQoss9Vm1zhl7336mF-B66uDLn5DHYZ3-IU-9xCc8Yerqw",
+            "sig": "caKtx7MZGT2kbIWUVECDIJAHx6Kf0GAdvvynHyTk_dRHmua_U-5seZSabhnKkg_jC5-sNsXad457kHUIc1U9NA",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "attestation": null,
+              "device": {
+                "cert": "le7gT7D8AFP6JvDkZiWrSIkepAm8aHBhHRUDxZ7hBwABypH01DFoBVrJR8wzHyLXFMdE4Ch5F-0ifGN-xu_PPg",
+                "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+                "kind": "pocket",
+                "label": "bob",
+                "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+                "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+                "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+              }
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:ef3df6273a0e91ac26e9bbaf489a59b8730a3149bd583a252cc2ea64e9fe981b"
+            ],
+            "mesh": "sha256:ef3df6273a0e91ac26e9bbaf489a59b8730a3149bd583a252cc2ea64e9fe981b",
+            "presence_sig": "y2Wqz1a8q93SsNRqdNfDEHN226AnKAruYiCCfjQMk91v_pczTmWLpkd6w10QCCs9rL5H3u_kv4nFDBezCFixuA",
+            "sig": "MnLiYB88eft8t_fzzKrmXnp3xd6vGrl7jd6lapF1pCcnykDZpHnqhrsuLggZvriSenlTl2lBrYRFBOnY84ieQw",
+            "type": "add",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:b61e36a61cc3b22950fc55792a713c1198f99eb6f3e3722977a99d9a9d733360"
+            ],
+            "mesh": "sha256:ef3df6273a0e91ac26e9bbaf489a59b8730a3149bd583a252cc2ea64e9fe981b",
+            "sig": "HzXQxxSO6GK_hs6Y8a6ubT-L8jdzQ9NQtxTOf3TNvpES_Jlv4dsFs0CZ_8E6qYH9NYzPeR7IlgXxtgOozM_-RQ",
+            "type": "stop",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "counter": 2
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:3bba32edc037dc8588b2dea571413c92556bd8088443bc2a2afb3944a0561f82"
+            ],
+            "mesh": "sha256:ef3df6273a0e91ac26e9bbaf489a59b8730a3149bd583a252cc2ea64e9fe981b",
+            "sig": "f6Cz-pJABEXCvpFR6jE2fnXz9HG-gWtI9ukqmVmSyFklo97EL-SttfTJ5g1f5vCSUfQ36h4poT6__StZOeQuWQ",
+            "type": "stop",
+            "v": 1
+          },
+          {
+            "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441605000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:0f0b627901ffe716205e5ffd221d72bb2acdc7fd532f4ef7199477c01e50fdd2"
+            ],
+            "mesh": "sha256:ef3df6273a0e91ac26e9bbaf489a59b8730a3149bd583a252cc2ea64e9fe981b",
+            "presence_sig": "xq71rwtE98otPFV6JRrlLKTlso_zhVMO1JBJEJhcsasPppTnvmYNdg6TvCJ4X22LeDZkzsO6BzdvxW7wnoR2LQ",
+            "sig": "YxmrSBsf9doO-mqjwZxioO3AAvf3tO6wjGRKaDz7KWkPuBQPuC0V-uxj5vDTl05vqxOG-AORJJj6W3e0nl_rBA",
+            "type": "resume",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:ef3df6273a0e91ac26e9bbaf489a59b8730a3149bd583a252cc2ea64e9fe981b",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "resume-naming-an-older-counter-does-not-clear"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 5,
+          "current_epoch": {
+            "personal": "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "state": "member"
+            }
+          },
+          "heads": [
+            "sha256:3ea307897602f3340a136565d08dc09c9be005bc0490764257b6d83ebe71e916",
+            "sha256:c7544839cf1a124d3ae173beacfe98c3b32a6018bbd6eac15180e65767e0c75f"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            },
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+              "feeds": [
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA"
+              ],
+              "kind": "pocket",
+              "label": "bob"
+            }
+          },
+          "mesh": "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675"
+          },
+          "rejected": {},
+          "removed": {},
+          "resumed": 1,
+          "stale_attestation": [],
+          "stop": 2,
+          "stopped": true,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+          ],
+          "void": []
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "krwcKbg-hMEk_kSetEZqt6_3v3HKFvRdhh8RwwLX0c924_8A4YI9DLR8InNzcvOa",
+                  "epk": "BzBehC5hWjl_LrO690WYjwY10EHBFch8-Grr_KCrcC4",
+                  "nonce": "dkGuAx68aCeNwy_vGhCoZ63UytL2ZQfE"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "wsuoX-YmobjHOqaGjnWiB4O6NhhJkhykR7yOw368vUCLMcxqLL7AawYKz53hFeLT",
+                      "epk": "rNoESCoucYLY9ieK2Aki1M1sS2GcS_Bp0qB2qRys9k8",
+                      "nonce": "ekorJ3JOZTH2kki6MM4CqhUIRgYrIfJ_"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "zQZbhPxC-mVZp3hNJ6rhPYhZlqsmLD3V1PYljf9z_2Q",
+                "wrap": "AadLGBvd6dgPkdo-a030MplP1vqmEF-lQ_M_EJc8eCg"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "80wAmatQgIrwgO2nMPqAEK7HCkX6syXFaLQeTwkzUssGROVGyBDKEFmUzrJTwXfwSniFJCYr1K7MNE68gjKfZA",
+            "sig": "yrVIFypGv5uFtRfYFptqQF-5XsLGu_iv_a0wMfZ_uh8999jfkpnHOQZ6ew8bzctdf9BfUxPwEnuqvRnD61Wpeg",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "attestation": null,
+              "device": {
+                "cert": "iNFFIUfaxezWNHJ7y1Ebr7Ro8aW90-c4Rn9eDJkZUbUU5m9Nx3tWAX_ApQVmcgmgSQ4mSr0hxLe2a-EGiQUr2Q",
+                "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+                "kind": "pocket",
+                "label": "bob",
+                "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+                "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+                "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+              }
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675"
+            ],
+            "mesh": "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675",
+            "presence_sig": "9rbMNJg5hgH3S8MjufGmWlvs_qv6WiSl05Em2AyVE3ADMIkd8soiPGw4X6gyvnKD_fRgasblP6_LEQhQoL_8ow",
+            "sig": "4ucGorwWXUoln67Hv8-av5Uu8lVqhYxxDOW3y-L4F3IuPS7l7s7jMzWhGcVMo4nyDraqJM-eqQEudPEpAt8c8Q",
+            "type": "add",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:2f647697140a267d42435450422abb2e94f132ded2cc2fa6ad579c2af2798a33"
+            ],
+            "mesh": "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675",
+            "sig": "xnJs4-E-DrA3hobL9CfmX0giLpAR3t_FQ6GE5nztpEoUbDWGpK1DQHkxRJO7t0HEpdbPYXS08Qm0GH9cquuwdg",
+            "type": "stop",
+            "v": 1
+          },
+          {
+            "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:9d54b786e9782c6fe4c9f82807dab9235f6f0d89e9f938ff2ff4324c5aeeafd8"
+            ],
+            "mesh": "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675",
+            "presence_sig": "psUrDA4WWnXX9lEcbMYqE6CAkIYWj0f_-QSD7WuzT8lvJqQcD328gXBEnMGfIUPmip0yXtEVPkI72gl0yR6eoQ",
+            "sig": "VV5pdQY7yERlcViITKL22_szNpYVsJEyZFha2KkAlV5hKi-wkPkEHyY4RiZbV1IytgrdXCx2PEM0c4kZhpJz6g",
+            "type": "resume",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "counter": 2
+            },
+            "clock": {
+              "ms": 1794441605000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:9d54b786e9782c6fe4c9f82807dab9235f6f0d89e9f938ff2ff4324c5aeeafd8"
+            ],
+            "mesh": "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675",
+            "sig": "mt2O44LOMTXqEEB_eNSIG333ZE_TexG3mGAt4FW2xEtAcW9zF6vxOb1UOJmt8CdR5ZqrtG4YgW9jyn1jbAlPSw",
+            "type": "stop",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "concurrent-stop-and-resume-resolve-to-stopped"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 6,
+          "current_epoch": {
+            "personal": "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "state": "member"
+            }
+          },
+          "heads": [
+            "sha256:45a1783511ab7ff51d181ff1510c93ec4d402b0bda8b837b0757f4929c48694c"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            },
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+              "feeds": [
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA"
+              ],
+              "kind": "pocket",
+              "label": "bob"
+            }
+          },
+          "mesh": "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675"
+          },
+          "rejected": {},
+          "removed": {},
+          "resumed": 2,
+          "stale_attestation": [],
+          "stop": 2,
+          "stopped": false,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+          ],
+          "void": []
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "krwcKbg-hMEk_kSetEZqt6_3v3HKFvRdhh8RwwLX0c924_8A4YI9DLR8InNzcvOa",
+                  "epk": "BzBehC5hWjl_LrO690WYjwY10EHBFch8-Grr_KCrcC4",
+                  "nonce": "dkGuAx68aCeNwy_vGhCoZ63UytL2ZQfE"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "wsuoX-YmobjHOqaGjnWiB4O6NhhJkhykR7yOw368vUCLMcxqLL7AawYKz53hFeLT",
+                      "epk": "rNoESCoucYLY9ieK2Aki1M1sS2GcS_Bp0qB2qRys9k8",
+                      "nonce": "ekorJ3JOZTH2kki6MM4CqhUIRgYrIfJ_"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "zQZbhPxC-mVZp3hNJ6rhPYhZlqsmLD3V1PYljf9z_2Q",
+                "wrap": "AadLGBvd6dgPkdo-a030MplP1vqmEF-lQ_M_EJc8eCg"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "80wAmatQgIrwgO2nMPqAEK7HCkX6syXFaLQeTwkzUssGROVGyBDKEFmUzrJTwXfwSniFJCYr1K7MNE68gjKfZA",
+            "sig": "yrVIFypGv5uFtRfYFptqQF-5XsLGu_iv_a0wMfZ_uh8999jfkpnHOQZ6ew8bzctdf9BfUxPwEnuqvRnD61Wpeg",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "attestation": null,
+              "device": {
+                "cert": "iNFFIUfaxezWNHJ7y1Ebr7Ro8aW90-c4Rn9eDJkZUbUU5m9Nx3tWAX_ApQVmcgmgSQ4mSr0hxLe2a-EGiQUr2Q",
+                "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+                "kind": "pocket",
+                "label": "bob",
+                "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+                "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+                "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+              }
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675"
+            ],
+            "mesh": "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675",
+            "presence_sig": "9rbMNJg5hgH3S8MjufGmWlvs_qv6WiSl05Em2AyVE3ADMIkd8soiPGw4X6gyvnKD_fRgasblP6_LEQhQoL_8ow",
+            "sig": "4ucGorwWXUoln67Hv8-av5Uu8lVqhYxxDOW3y-L4F3IuPS7l7s7jMzWhGcVMo4nyDraqJM-eqQEudPEpAt8c8Q",
+            "type": "add",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:2f647697140a267d42435450422abb2e94f132ded2cc2fa6ad579c2af2798a33"
+            ],
+            "mesh": "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675",
+            "sig": "xnJs4-E-DrA3hobL9CfmX0giLpAR3t_FQ6GE5nztpEoUbDWGpK1DQHkxRJO7t0HEpdbPYXS08Qm0GH9cquuwdg",
+            "type": "stop",
+            "v": 1
+          },
+          {
+            "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:9d54b786e9782c6fe4c9f82807dab9235f6f0d89e9f938ff2ff4324c5aeeafd8"
+            ],
+            "mesh": "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675",
+            "presence_sig": "psUrDA4WWnXX9lEcbMYqE6CAkIYWj0f_-QSD7WuzT8lvJqQcD328gXBEnMGfIUPmip0yXtEVPkI72gl0yR6eoQ",
+            "sig": "VV5pdQY7yERlcViITKL22_szNpYVsJEyZFha2KkAlV5hKi-wkPkEHyY4RiZbV1IytgrdXCx2PEM0c4kZhpJz6g",
+            "type": "resume",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "counter": 2
+            },
+            "clock": {
+              "ms": 1794441605000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:9d54b786e9782c6fe4c9f82807dab9235f6f0d89e9f938ff2ff4324c5aeeafd8"
+            ],
+            "mesh": "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675",
+            "sig": "mt2O44LOMTXqEEB_eNSIG333ZE_TexG3mGAt4FW2xEtAcW9zF6vxOb1UOJmt8CdR5ZqrtG4YgW9jyn1jbAlPSw",
+            "type": "stop",
+            "v": 1
+          },
+          {
+            "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+            "body": {
+              "counter": 2
+            },
+            "clock": {
+              "ms": 1794441606000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:3ea307897602f3340a136565d08dc09c9be005bc0490764257b6d83ebe71e916",
+              "sha256:c7544839cf1a124d3ae173beacfe98c3b32a6018bbd6eac15180e65767e0c75f"
+            ],
+            "mesh": "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675",
+            "presence_sig": "I3msDC4AVqBUHGncLpI4JIkSRQYQTJtc-FD0TfQklgFXf8UJhtoEChU5lblUFZL7fn2OAr4y7_k-tuoSs65-yg",
+            "sig": "y0cD6BnyxyJ5IZ6TIX6fA35aSCSfaF0dyfQsoPupmCcCRdOPyEOdp01qcljsfpHxTTmqIX8xDOl7D4g4EbnT8A",
+            "type": "resume",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:647e7fb56704db99ab520ea6cd810b85699e9c88ecb4aca43f4fdccc7b87e675",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "a-resume-that-follows-both-clears"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 3,
+          "current_epoch": {
+            "personal": "sha256:389249cdfb7464b573f3bf391ad899b79b324bfc262be858f7920c3f3c9e1f8d",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:389249cdfb7464b573f3bf391ad899b79b324bfc262be858f7920c3f3c9e1f8d": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "state": "member"
+            }
+          },
+          "heads": [
+            "sha256:e6451d30dcabdbd74011dc6482e68cb7ef9edfc37045d6b06698aea2a1f34301"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            },
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+              "feeds": [
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA"
+              ],
+              "kind": "pocket",
+              "label": "bob"
+            }
+          },
+          "mesh": "sha256:389249cdfb7464b573f3bf391ad899b79b324bfc262be858f7920c3f3c9e1f8d",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:389249cdfb7464b573f3bf391ad899b79b324bfc262be858f7920c3f3c9e1f8d"
+          },
+          "rejected": {
+            "sha256:e6451d30dcabdbd74011dc6482e68cb7ef9edfc37045d6b06698aea2a1f34301": "roster.resume_not_stopped"
+          },
+          "removed": {},
+          "resumed": 0,
+          "stale_attestation": [],
+          "stop": 0,
+          "stopped": false,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+          ],
+          "void": []
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "N_vmgv0lNSm022NtEAog7JIjbea1q0Jj8IM1Dh0t9vlu3deWJlo3R6QFUzPghxQo",
+                  "epk": "bAAUj8K0y_FEmLaSIw5IqM3Cu6rMUQxmO6yQZOp3-kI",
+                  "nonce": "cQPVgpyinOoQdsHcWwihko7b8DIgEwDV"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "gLrIcMcp26vC3_i2B65NX90fVzYKwYT4TpX1D-z6SfxEDMQjYcMwtJVNkEw-4YPN",
+                      "epk": "V6_icsWme7HYIGOA6u3UozQtkb872xcjzJkyv8MYUUc",
+                      "nonce": "V-6JOlM6zF4tYjQjQGo5DnnGaN73J7Cl"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "CQ5XE2UH_vh8h-HYUoS3l8elcmc37C5_cawi6LSewX4",
+                "wrap": "fq6ii7elQ122AQGnzG_ZeKHcppQd0fR-aOd1X2PxmCM"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "TWCNkrtDymMsGv7xq9uXIIenKlKFZpVDdeZ3Ktp_ZogagGHaYgp6eNqtmaFPk0ZQ6e-eCcR-jUPXSefbs7PRNQ",
+            "sig": "D7IQ4-tEIHYVUqbB-OXY1QAsTBLYq0OHcYSkEa6LO8N73CmOUaZvuok2q9grRzIWnr0eeADAlBdFOv9wJYuYLA",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "attestation": null,
+              "device": {
+                "cert": "XAWpRUEIn53ZsPycUiUNEr0mFnsiV7Qenc2_uESPQRc3BnYUJcTSNWs4m6DS2Yt89RpgWQony2PIqSx12mi4pw",
+                "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+                "kind": "pocket",
+                "label": "bob",
+                "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+                "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+                "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+              }
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:389249cdfb7464b573f3bf391ad899b79b324bfc262be858f7920c3f3c9e1f8d"
+            ],
+            "mesh": "sha256:389249cdfb7464b573f3bf391ad899b79b324bfc262be858f7920c3f3c9e1f8d",
+            "presence_sig": "RopB1u9yaf0GiBlgjPW3xVPgt2dryn5tLixirpVnizkRmecqB3bRBt7IOjqq0nGZwkje74xvYOskugUOql5c9A",
+            "sig": "cKpyjZ9OLck2GYE1LPHqr9mgPaH5CZhTwXJNq2AXIpdkSveyTk6vmohMBftfnibpgPs6n8Ynpp7xDIooK7Gfyg",
+            "type": "add",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:4cdde838321a488427ce06fb91962d9bfe28ba5f78017301fc6a69eb9af08269"
+            ],
+            "mesh": "sha256:389249cdfb7464b573f3bf391ad899b79b324bfc262be858f7920c3f3c9e1f8d",
+            "presence_sig": "WP8HjKEzWQSsvL_KhnQkWUWZ3LFdH5LPCUL6XbTGcn1TlDkd848RkM9eNbeh7qjFiLxTgvbamk4xtlH1PZNnlA",
+            "sig": "wO5MPazHeiWnB1SyPqAp9qD9pMW493zy9iqBF9IZWjRgdQTKDQh2JfzR8i9RmAjtolE2v3NGow7C6K1f74M-jQ",
+            "type": "resume",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:389249cdfb7464b573f3bf391ad899b79b324bfc262be858f7920c3f3c9e1f8d",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "resume-without-a-stop-rejected"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 5,
+          "current_epoch": {
+            "personal": "sha256:389249cdfb7464b573f3bf391ad899b79b324bfc262be858f7920c3f3c9e1f8d",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:389249cdfb7464b573f3bf391ad899b79b324bfc262be858f7920c3f3c9e1f8d": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "state": "member"
+            }
+          },
+          "heads": [
+            "sha256:0809b9f93c33ff1a530f463fe1f855221c97c3b54c2354a25a2b81448c403a02",
+            "sha256:e6451d30dcabdbd74011dc6482e68cb7ef9edfc37045d6b06698aea2a1f34301"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            },
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+              "feeds": [
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA"
+              ],
+              "kind": "pocket",
+              "label": "bob"
+            }
+          },
+          "mesh": "sha256:389249cdfb7464b573f3bf391ad899b79b324bfc262be858f7920c3f3c9e1f8d",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:389249cdfb7464b573f3bf391ad899b79b324bfc262be858f7920c3f3c9e1f8d"
+          },
+          "rejected": {
+            "sha256:0809b9f93c33ff1a530f463fe1f855221c97c3b54c2354a25a2b81448c403a02": "roster.resume_not_stopped",
+            "sha256:e6451d30dcabdbd74011dc6482e68cb7ef9edfc37045d6b06698aea2a1f34301": "roster.resume_not_stopped"
+          },
+          "removed": {},
+          "resumed": 0,
+          "stale_attestation": [],
+          "stop": 1,
+          "stopped": true,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+          ],
+          "void": []
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "N_vmgv0lNSm022NtEAog7JIjbea1q0Jj8IM1Dh0t9vlu3deWJlo3R6QFUzPghxQo",
+                  "epk": "bAAUj8K0y_FEmLaSIw5IqM3Cu6rMUQxmO6yQZOp3-kI",
+                  "nonce": "cQPVgpyinOoQdsHcWwihko7b8DIgEwDV"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "gLrIcMcp26vC3_i2B65NX90fVzYKwYT4TpX1D-z6SfxEDMQjYcMwtJVNkEw-4YPN",
+                      "epk": "V6_icsWme7HYIGOA6u3UozQtkb872xcjzJkyv8MYUUc",
+                      "nonce": "V-6JOlM6zF4tYjQjQGo5DnnGaN73J7Cl"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "CQ5XE2UH_vh8h-HYUoS3l8elcmc37C5_cawi6LSewX4",
+                "wrap": "fq6ii7elQ122AQGnzG_ZeKHcppQd0fR-aOd1X2PxmCM"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "TWCNkrtDymMsGv7xq9uXIIenKlKFZpVDdeZ3Ktp_ZogagGHaYgp6eNqtmaFPk0ZQ6e-eCcR-jUPXSefbs7PRNQ",
+            "sig": "D7IQ4-tEIHYVUqbB-OXY1QAsTBLYq0OHcYSkEa6LO8N73CmOUaZvuok2q9grRzIWnr0eeADAlBdFOv9wJYuYLA",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "attestation": null,
+              "device": {
+                "cert": "XAWpRUEIn53ZsPycUiUNEr0mFnsiV7Qenc2_uESPQRc3BnYUJcTSNWs4m6DS2Yt89RpgWQony2PIqSx12mi4pw",
+                "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+                "kind": "pocket",
+                "label": "bob",
+                "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+                "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+                "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+              }
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:389249cdfb7464b573f3bf391ad899b79b324bfc262be858f7920c3f3c9e1f8d"
+            ],
+            "mesh": "sha256:389249cdfb7464b573f3bf391ad899b79b324bfc262be858f7920c3f3c9e1f8d",
+            "presence_sig": "RopB1u9yaf0GiBlgjPW3xVPgt2dryn5tLixirpVnizkRmecqB3bRBt7IOjqq0nGZwkje74xvYOskugUOql5c9A",
+            "sig": "cKpyjZ9OLck2GYE1LPHqr9mgPaH5CZhTwXJNq2AXIpdkSveyTk6vmohMBftfnibpgPs6n8Ynpp7xDIooK7Gfyg",
+            "type": "add",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:4cdde838321a488427ce06fb91962d9bfe28ba5f78017301fc6a69eb9af08269"
+            ],
+            "mesh": "sha256:389249cdfb7464b573f3bf391ad899b79b324bfc262be858f7920c3f3c9e1f8d",
+            "presence_sig": "WP8HjKEzWQSsvL_KhnQkWUWZ3LFdH5LPCUL6XbTGcn1TlDkd848RkM9eNbeh7qjFiLxTgvbamk4xtlH1PZNnlA",
+            "sig": "wO5MPazHeiWnB1SyPqAp9qD9pMW493zy9iqBF9IZWjRgdQTKDQh2JfzR8i9RmAjtolE2v3NGow7C6K1f74M-jQ",
+            "type": "resume",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:4cdde838321a488427ce06fb91962d9bfe28ba5f78017301fc6a69eb9af08269"
+            ],
+            "mesh": "sha256:389249cdfb7464b573f3bf391ad899b79b324bfc262be858f7920c3f3c9e1f8d",
+            "sig": "v6RH7ue8QSQLDftyGQsGPRp5fokPEgcT1HGm-y0uww8VJQB4LE_yPEc3H5_lOPDayjnn96LELA-tgt2R7pPuXA",
+            "type": "stop",
+            "v": 1
+          },
+          {
+            "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+            "body": {
+              "counter": 2
+            },
+            "clock": {
+              "ms": 1794441605000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:f05607ba22fa302e74b680142f4a8b43431b0bbe60b0412a79b8e423c74804a7"
+            ],
+            "mesh": "sha256:389249cdfb7464b573f3bf391ad899b79b324bfc262be858f7920c3f3c9e1f8d",
+            "presence_sig": "qIAZ5vwuc_zvwNnF3ozJUDK8NNU0Oko3UJY1pdypnR0jNJMsDrXwmrqZoSxS5mTTHt7xppDoIC85SJVDNy9R2w",
+            "sig": "7422zedNKURQXnlwv6WpBG2C8pfKCvpQ3XsomFuof7MDkIaL1tpzxEd_6vIM29IDNnITVCSXb3qD00xF-gyShg",
+            "type": "resume",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:389249cdfb7464b573f3bf391ad899b79b324bfc262be858f7920c3f3c9e1f8d",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "resume-above-the-ancestors-stop-rejected"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 4,
+          "current_epoch": {
+            "personal": "sha256:4d223e2eca0518d64d5089457c03a9de36d583e6e262d25a30eb5147b4168aca",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:4d223e2eca0518d64d5089457c03a9de36d583e6e262d25a30eb5147b4168aca": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "state": "member"
+            }
+          },
+          "heads": [
+            "sha256:9da131b39e867bf988d9b61de67052cc5abd19b6f522ec6b55106531234bfe55"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            },
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+              "feeds": [
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA"
+              ],
+              "kind": "pocket",
+              "label": "bob"
+            }
+          },
+          "mesh": "sha256:4d223e2eca0518d64d5089457c03a9de36d583e6e262d25a30eb5147b4168aca",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:4d223e2eca0518d64d5089457c03a9de36d583e6e262d25a30eb5147b4168aca"
+          },
+          "rejected": {},
+          "removed": {},
+          "resumed": 1,
+          "stale_attestation": [],
+          "stop": 1,
+          "stopped": false,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+          ],
+          "void": []
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "t_sM348_xDZpIGIZMSxXbprJ4hHhUuJLtcoCJRL9NHWDdu0dheH5eGOVA7hXWgdM",
+                  "epk": "nFdc_eVgakmOWlO-zmIiemi9zLrBg7twB1UpzadqWhY",
+                  "nonce": "_QNajyQRQ8QGlEVXvgi8LcLsQpNMLoMg"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "nQIjZi7bCaPNRW4YDt9lec9BY18eB9YYw2HQoHDMc_KhZ2t-kjXVcXz1KEdQqYsX",
+                      "epk": "NI8VO6tdQAtPNGrmITkMDf2kIoos0MVDssOiQRUDZHc",
+                      "nonce": "HkkbOPyO0Jfu4Hg73iPenOxwkwDlY8le"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "o2FlnatJBx5_1OUf7vBk-bXVQAy8yr1OfKTr5lpy8c0",
+                "wrap": "-xdTcCXMWqGJlcyGGbvsCt07pMDyaMPHA9SC8-O3B3M"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "HwQMZYC0BsZZEKcpvhBnwk2-ggJZSpXQVBqR_qtM1nZli_7sC19IkmGO6CloZPe5n6P0QHb--f1RALKVKR_1Ew",
+            "sig": "H1dyeF6KcRPudSwa9ltlcFblg3EROYW1pnU8NEcV82lPv_-J5z1OEzYvH6X5JLC1dSaF354eV_ZnJ3oR-Qf_iA",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "attestation": null,
+              "device": {
+                "cert": "aMk0a6BbMsRpwL4Cz8QqQgVCcLTgXWOGzttW5qEmxbh3ZrgZx-QMALiFOl92O9mGTh9QVz9JAd0av3Btwl27zQ",
+                "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+                "kind": "pocket",
+                "label": "bob",
+                "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+                "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+                "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+              }
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:4d223e2eca0518d64d5089457c03a9de36d583e6e262d25a30eb5147b4168aca"
+            ],
+            "mesh": "sha256:4d223e2eca0518d64d5089457c03a9de36d583e6e262d25a30eb5147b4168aca",
+            "presence_sig": "quepbUjNDU9iGBfQW-b8W0uE9lDdCRUS7ASMwRSkAMsfudZEcuaONDoxMZqRh9u278ycoHN6hnGtazGY1h-_iQ",
+            "sig": "IZhMiP5eTXwPOQDdzAjz1se0qGil53EnjSUS-pS15oZWek6sWZ_yb-1XW67u8j2uZcJ3zSS0yUAmkxnkRtS_gQ",
+            "type": "add",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:7266fc919d086a9703e68f180f9b310b08e21acd6062b61e75e0866dd4fceab3"
+            ],
+            "mesh": "sha256:4d223e2eca0518d64d5089457c03a9de36d583e6e262d25a30eb5147b4168aca",
+            "sig": "iO6G1Io21ZtKgp4sdBzsZnHdCD3Upt89bBG1O5ZrA4V-oifuPndbFELeOpZKEZZgn8wY06CTL91XtVo-OKqd3g",
+            "type": "stop",
+            "v": 1
+          },
+          {
+            "author": "recovery",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:e36a7e3c000076c0119edb8a0f561afff00b4d28a9c5bdc876eadb025c0ad030"
+            ],
+            "mesh": "sha256:4d223e2eca0518d64d5089457c03a9de36d583e6e262d25a30eb5147b4168aca",
+            "sig": "5mmZ42DCOeIl1bDASeM3rcp1EQykUZrNznhETsmajs8ZkjwNHd0vSZWn9YOb8Dg8R9YoXuunrjy2DvGeQ6cFAg",
+            "type": "resume",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:4d223e2eca0518d64d5089457c03a9de36d583e6e262d25a30eb5147b4168aca",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "recovery-resumes-without-presence"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 2,
+          "current_epoch": {
             "personal": "sha256:32ecdac11552b62dfdb0f762b37fc5544b29dba975b17e41ec811c5bf526c8d2",
             "phi": null
           },
@@ -3242,8 +5618,10 @@
           },
           "rejected": {},
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -3414,8 +5792,10 @@
           },
           "rejected": {},
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -3647,8 +6027,10 @@
           },
           "rejected": {},
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -3934,8 +6316,10 @@
           },
           "rejected": {},
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
             "sha256:e0d807a001a1c59d96f10ccb7c4fa8afa29a57f88ccfcd52b885983e220cd8af"
@@ -4157,8 +6541,10 @@
           },
           "rejected": {},
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
             "sha256:e0d807a001a1c59d96f10ccb7c4fa8afa29a57f88ccfcd52b885983e220cd8af"
@@ -4407,8 +6793,10 @@
             "sha256:56069f1d3f072f2bf5e86f15743893b72474c114b6dfc27acfb5c938d5101868": "roster.epoch_wrong_members"
           },
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
             "sha256:e0d807a001a1c59d96f10ccb7c4fa8afa29a57f88ccfcd52b885983e220cd8af"
@@ -4658,8 +7046,10 @@
           },
           "rejected": {},
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
             "sha256:e0d807a001a1c59d96f10ccb7c4fa8afa29a57f88ccfcd52b885983e220cd8af"
@@ -4957,8 +7347,10 @@
           },
           "rejected": {},
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
             "sha256:e0d807a001a1c59d96f10ccb7c4fa8afa29a57f88ccfcd52b885983e220cd8af"
@@ -5278,8 +7670,10 @@
             "sha256:e1edfdd8f762753e0ffca5df0e5b5de7a80f3c9067dd6923c5c44cb4aaaf01b5": "attestation.unknown_authority"
           },
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
             "sha256:e0d807a001a1c59d96f10ccb7c4fa8afa29a57f88ccfcd52b885983e220cd8af"
@@ -5476,8 +7870,10 @@
             "sha256:4212ea2baa124ba61f9376a6fd3f2bb66a6bc6e7982c401088eb96baff78a2cc": "roster.recovery_not_allowed"
           },
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
             "sha256:e0d807a001a1c59d96f10ccb7c4fa8afa29a57f88ccfcd52b885983e220cd8af"
@@ -5676,8 +8072,10 @@
           },
           "rejected": {},
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
             "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
@@ -5928,8 +8326,10 @@
           },
           "rejected": {},
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
             "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
@@ -6221,8 +8621,10 @@
               "entry": "sha256:4c56f10674ea2d520b0c7c9ec6ce633ddedcddc05a30136f4e2c100d4103c422"
             }
           },
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -6433,8 +8835,10 @@
             "sha256:c4b3c10627df185ffa6395c4c7f5c7ee5d3e886191f972f2f964981e98b5bd2d": "roster.unknown_epoch"
           },
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -6607,8 +9011,10 @@
           },
           "rejected": {},
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
             "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
@@ -6808,8 +9214,10 @@
               "entry": "sha256:8fd99c7a3f1d83372a1ed3490c65b202a767a20bd90780224cc5f9fd06ac485f"
             }
           },
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -7030,8 +9438,10 @@
             "sha256:768912f0333c550e398f1907dc86ef4e65cd45af57f497903dc403777a3dfdb9": "roster.cutoff_incomplete"
           },
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
             "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
@@ -7236,8 +9646,10 @@
             "sha256:70b308af233636994316c45dd28edacac76c80c6e8104418152b65182ba49639": "roster.bad_signature"
           },
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -7395,8 +9807,10 @@
             "sha256:fbb0269578f6f8a212ef158ff0534467db5eddaa910fa025871d0ecf9f677dea": "roster.bad_presence_signature"
           },
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -7554,8 +9968,10 @@
             "sha256:34dd09e549758e6e1259eef110d25e31eaf16b23d016787b6e415545ccb104d0": "roster.wrong_mesh"
           },
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -7703,8 +10119,10 @@
           },
           "rejected": {},
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -7864,8 +10282,10 @@
               "entry": "sha256:e7660d99c3ab9f38cfc8dedda6529ebfe07d4049609b636f8c24ae15bb62aeb0"
             }
           },
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -8082,8 +10502,10 @@
             "sha256:6379d7b604ef1a02793d5059921a78b18516704e9692d424ba6df62861a0ff1a": "roster.already_member"
           },
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
             "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
@@ -8280,8 +10702,10 @@
             "sha256:44bd7776dd0aeb75eee84b9d17de9edc76c6b82d1f85c3f77d15a09c390b805f": "roster.duplicate_key"
           },
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
             "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
@@ -8467,8 +10891,10 @@
             "sha256:55469beb924273773a094e470e107008291da13b43236888fef7606d3d3906bf": "roster.unauthorized_author"
           },
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -8628,8 +11054,10 @@
             "sha256:59ac0d3a6012339ae2fcbfb49ea089fde41677cc14dcc386c25fe87f31c56568": "roster.unknown_device"
           },
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -8808,8 +11236,10 @@
             "sha256:a369600f72ace392c1947593a2851f5bb8461cda00a44675cc9087b8ef8bf2ef": "roster.bad_signature"
           },
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -8966,8 +11396,10 @@
             "sha256:6a8e53f21b75119220ee0b138a277e90376e22b654a0e1d2c937b09ce03bb2ce": "roster.extra_genesis"
           },
           "removed": {},
+          "resumed": 0,
           "stale_attestation": [],
           "stop": 0,
+          "stopped": false,
           "unattested": [
             "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
           ],
@@ -9589,6 +12021,86 @@
       },
       "input": {
         "entry": {
+          "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "body": {
+            "counter": 0
+          },
+          "clock": {
+            "ms": 1794441604000,
+            "n": 0
+          },
+          "follows": [
+            "sha256:c55e450d92917b0df41f0a1005511563dfe6838500a1720bc8ed8d4b70d39c7a"
+          ],
+          "mesh": "sha256:c55e450d92917b0df41f0a1005511563dfe6838500a1720bc8ed8d4b70d39c7a",
+          "presence_sig": "NIVlxAfV2ss0yBO10AwITvwhAwgfEk81tZx-GY4eElYPitux1_ITZoxvBxpzp4O5h3lljBe2fP0gUKLpVuAICw",
+          "sig": "Gf4qolJN6kDVg8Xbb239mUY2VLhPD9W5GQXIPYSzhOsNQhLILC1dWJESCY63NeeRkQX0l0IN857fA2hb7uwslQ",
+          "type": "resume",
+          "v": 1
+        }
+      },
+      "kind": "roster_shape",
+      "name": "shape-resume-counter-zero"
+    },
+    {
+      "expect": {
+        "error": "roster.malformed"
+      },
+      "input": {
+        "entry": {
+          "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "body": {
+            "counter": 1
+          },
+          "clock": {
+            "ms": 1794441605000,
+            "n": 0
+          },
+          "follows": [
+            "sha256:c55e450d92917b0df41f0a1005511563dfe6838500a1720bc8ed8d4b70d39c7a"
+          ],
+          "mesh": "sha256:c55e450d92917b0df41f0a1005511563dfe6838500a1720bc8ed8d4b70d39c7a",
+          "sig": "UdHrgL9N1rzgJz_K2CPNiXJ1BpyCut56PmmPMOgzcYd9bCbbTHfKK8D7Suw4epufzB0Z6DnaDdtrcF3T48fBnw",
+          "type": "resume",
+          "v": 1
+        }
+      },
+      "kind": "roster_shape",
+      "name": "shape-resume-without-presence-signature"
+    },
+    {
+      "expect": {
+        "error": "roster.malformed"
+      },
+      "input": {
+        "entry": {
+          "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "body": {
+            "counter": 1
+          },
+          "clock": {
+            "ms": 1794441606000,
+            "n": 0
+          },
+          "follows": [
+            "sha256:c55e450d92917b0df41f0a1005511563dfe6838500a1720bc8ed8d4b70d39c7a"
+          ],
+          "mesh": "sha256:c55e450d92917b0df41f0a1005511563dfe6838500a1720bc8ed8d4b70d39c7a",
+          "presence_sig": "jCgPixTeTf22QCyjjX4e_YD_uOxAzfTLdGRONlJil_ImWP-MygNUfQXa00wSQgiU46KoXevEIJB3rHpHvkJk5Q",
+          "sig": "MNDYMRLI6vDYbwdQByzsOODk7fjhye4_Vgw05QiWqEsB3KKPAca_xKrGbRKt_mTflTWipGmyO8VKlxsPzoKEUA",
+          "type": "stop",
+          "v": 1
+        }
+      },
+      "kind": "roster_shape",
+      "name": "shape-stop-with-presence-signature"
+    },
+    {
+      "expect": {
+        "error": "roster.malformed"
+      },
+      "input": {
+        "entry": {
           "author": "recovery",
           "body": {
             "attestation": null,
@@ -9717,6 +12229,1114 @@
       },
       "kind": "roster_shape",
       "name": "shape-device-cert-bound-to-mesh"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 3,
+          "current_epoch": {
+            "personal": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "state": "member"
+            }
+          },
+          "heads": [
+            "sha256:dd1f8febbb815ff2f6c3956ceb2bae799ca3d813b2685e2e336a67d6ff0b1fa0"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            },
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+              "feeds": [
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA"
+              ],
+              "kind": "pocket",
+              "label": "Bob's phone"
+            }
+          },
+          "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d"
+          },
+          "rejected": {},
+          "removed": {},
+          "resumed": 0,
+          "stale_attestation": [],
+          "stop": 0,
+          "stopped": false,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+          ],
+          "void": []
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "H_oLzUZ0P1h-1TafpOkF1m_o_KAroEZboMDKxBSpflVCRAXWTdfuanyWvOnwjSZS",
+                  "epk": "pINfperShRwBPnd0ez95taDWYpWLuYNdlzJqm98pnC0",
+                  "nonce": "6JDbLaoF16WjI5XEUZYyNO8Fku8HL14i"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "aTVzu-Rla6XLC7ZuR3TuoSAbkDXe3dH0PgNUzXdd6aPQfN3HF-UxNhh0G8s83coI",
+                      "epk": "f9KVkgp1TTPPxsWvNRag-INFfNYrIACAni85LfPZuUo",
+                      "nonce": "1bppbNeZ38XCr1D1NTOUg9DJVcSkFhjo"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "DummvhWkUKYV17brmm7jyZQ4VJxNsYNRh-LScIiLppw",
+                "wrap": "mhPASUS-Uhu6nYPp7zCF5-abVaLsMfBtK2qxLBIdwzg"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "MmSCg_xRj5GNoE3FQMJezj5HSty_pg5SI_Rday-yHERwdyTdKd1eSEHUsxB0J2c7Tvm5oMHo8E8H3wQ5V0cSAQ",
+            "sig": "MQzY29b9OiLWTwKr1ns_sKbnRyKrrJJoXHXoRDL9T3pVZm4r-zxkOZfCDLm3PgOugtbjbQqXYJt6PAqXtyn8aA",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "attestation": null,
+              "device": {
+                "cert": "NnNxVmEBxp4Vce9uvgZqzd9KoFOc1hI7GPg7VW1X_btBlj481RaMTQXSUYx3UlJBpgKmw-OjTUX_m2S0Tgdt_Q",
+                "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+                "kind": "pocket",
+                "label": "bob",
+                "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+                "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+                "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+              }
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d"
+            ],
+            "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+            "presence_sig": "eoviOnC1yQJ-sRh_fgiMiQqsAL_OCXG2OwPx-_zG-Ox6BOawamAHfP7RSZcBcwlwF12MtpktkMkhIBOtqM18JQ",
+            "sig": "wQpODoCume5njI-AvEFcK3if6J1N5aISukNKI2PgG3Z7df9m-abpFmft1TdIKT8QGP5CuaiscWcVYDA5TFpJMQ",
+            "type": "add",
+            "v": 1
+          },
+          {
+            "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+            "body": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "label": "Bob's phone"
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:b0e3b705becf28a8c163cb647cbeee798607e1385931a710ed9a613e1c5c23d0"
+            ],
+            "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+            "sig": "ViaPbtI4K9gPBw5F9QGLc-xtUz21k1qnVoeh0zO2v_54iGopnmbQJZm3XnX3p5atxdIK9EY86UTQR0zFkT9X6Q",
+            "type": "rename",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "rename-self-needs-no-presence"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 4,
+          "current_epoch": {
+            "personal": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "state": "member"
+            }
+          },
+          "heads": [
+            "sha256:de23e4b9e63d4255f9eba65f3ff7f28fb2e1355d88034aaee62f861b859035ac"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            },
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+              "feeds": [
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA"
+              ],
+              "kind": "pocket",
+              "label": "Kitchen tablet"
+            }
+          },
+          "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d"
+          },
+          "rejected": {},
+          "removed": {},
+          "resumed": 0,
+          "stale_attestation": [],
+          "stop": 0,
+          "stopped": false,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+          ],
+          "void": []
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "H_oLzUZ0P1h-1TafpOkF1m_o_KAroEZboMDKxBSpflVCRAXWTdfuanyWvOnwjSZS",
+                  "epk": "pINfperShRwBPnd0ez95taDWYpWLuYNdlzJqm98pnC0",
+                  "nonce": "6JDbLaoF16WjI5XEUZYyNO8Fku8HL14i"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "aTVzu-Rla6XLC7ZuR3TuoSAbkDXe3dH0PgNUzXdd6aPQfN3HF-UxNhh0G8s83coI",
+                      "epk": "f9KVkgp1TTPPxsWvNRag-INFfNYrIACAni85LfPZuUo",
+                      "nonce": "1bppbNeZ38XCr1D1NTOUg9DJVcSkFhjo"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "DummvhWkUKYV17brmm7jyZQ4VJxNsYNRh-LScIiLppw",
+                "wrap": "mhPASUS-Uhu6nYPp7zCF5-abVaLsMfBtK2qxLBIdwzg"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "MmSCg_xRj5GNoE3FQMJezj5HSty_pg5SI_Rday-yHERwdyTdKd1eSEHUsxB0J2c7Tvm5oMHo8E8H3wQ5V0cSAQ",
+            "sig": "MQzY29b9OiLWTwKr1ns_sKbnRyKrrJJoXHXoRDL9T3pVZm4r-zxkOZfCDLm3PgOugtbjbQqXYJt6PAqXtyn8aA",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "attestation": null,
+              "device": {
+                "cert": "NnNxVmEBxp4Vce9uvgZqzd9KoFOc1hI7GPg7VW1X_btBlj481RaMTQXSUYx3UlJBpgKmw-OjTUX_m2S0Tgdt_Q",
+                "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+                "kind": "pocket",
+                "label": "bob",
+                "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+                "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+                "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+              }
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d"
+            ],
+            "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+            "presence_sig": "eoviOnC1yQJ-sRh_fgiMiQqsAL_OCXG2OwPx-_zG-Ox6BOawamAHfP7RSZcBcwlwF12MtpktkMkhIBOtqM18JQ",
+            "sig": "wQpODoCume5njI-AvEFcK3if6J1N5aISukNKI2PgG3Z7df9m-abpFmft1TdIKT8QGP5CuaiscWcVYDA5TFpJMQ",
+            "type": "add",
+            "v": 1
+          },
+          {
+            "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+            "body": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "label": "Bob's phone"
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:b0e3b705becf28a8c163cb647cbeee798607e1385931a710ed9a613e1c5c23d0"
+            ],
+            "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+            "sig": "ViaPbtI4K9gPBw5F9QGLc-xtUz21k1qnVoeh0zO2v_54iGopnmbQJZm3XnX3p5atxdIK9EY86UTQR0zFkT9X6Q",
+            "type": "rename",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "label": "Kitchen tablet"
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:dd1f8febbb815ff2f6c3956ceb2bae799ca3d813b2685e2e336a67d6ff0b1fa0"
+            ],
+            "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+            "presence_sig": "NNL_DoDhO9w9RAJDUzxxrmLTe6cehrgwb-mgBABKuph6xWQsQ0OHtXadj_jsqf6r_Pjmf4zgcgzEI3SClN6nOw",
+            "sig": "GKop5i-43TGiLItHFpWmDqAn19fc7a5ucBWVKH-AOkUBzN25BIIQEt0W3048qpvdAfZ2lsPXY1xMJxvBszuXhA",
+            "type": "rename",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "rename-another-device-with-presence"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 4,
+          "current_epoch": {
+            "personal": "sha256:8481c15d306f037ea6e5786fc43e359b374350811ecf92fab3c1d565fa3f8882",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:8481c15d306f037ea6e5786fc43e359b374350811ecf92fab3c1d565fa3f8882": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "state": "member"
+            }
+          },
+          "heads": [
+            "sha256:5c3e8d1042be45c0bdcafba27057c4cafaeae6bb07066b2aa3e7c661c3e8f4fe",
+            "sha256:6b6b9e3c5432a5f80be981ce2bc4ed0c81b2417e86f7e57dd07bc169f50a91c3"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            },
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+              "feeds": [
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA"
+              ],
+              "kind": "pocket",
+              "label": "Second"
+            }
+          },
+          "mesh": "sha256:8481c15d306f037ea6e5786fc43e359b374350811ecf92fab3c1d565fa3f8882",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:8481c15d306f037ea6e5786fc43e359b374350811ecf92fab3c1d565fa3f8882"
+          },
+          "rejected": {},
+          "removed": {},
+          "resumed": 0,
+          "stale_attestation": [],
+          "stop": 0,
+          "stopped": false,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+          ],
+          "void": []
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "4CX_Md2m9TjMvV9VgmTQs9XvMhfSxES1HvMeb7zF2iIWmlxwyfgmHWFFeB11QvSn",
+                  "epk": "jbckZ4iRnA_-6sLzcJVXWPG-CW3NV2LTFJMYTKRf008",
+                  "nonce": "5vxEK4AVemOGZxPm4VMX-QIpVEMEUJXc"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "O2YOHiOMyqu2JXGgxDXdRRcEBXXah8U-FPdtddJB7eYz3STdElAqtHbntVsm1H1R",
+                      "epk": "BRwMeiNLazmADNkj3wzPgREI36GOgzOWaDBPTVUgfUY",
+                      "nonce": "R9vUYmqMLW7W8uKM9yUJ5oeDFU2ngrjD"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "2oBDN8m-3xMXPS1IFvvdQP679O3PlIaZWPCrM29k8kQ",
+                "wrap": "unLRRhau73JzI2LXENxxZjDQtFcXTWhMrcw8h04KKDA"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "K5KaQY-VC4wPST2PQWcNQzg1rHLpwHRYZI-58vrEEFV0cCdNzSQDzaTxCz0gYlEbGlLdGNrGBBiihWb1wy2TFg",
+            "sig": "eXdn-ASyovNvGXnhBKzdg2OycZSqMEXveLWDrc4JubYYsWTBq3z9TJXsofEMQAmzE09Gu1BeMbwmy3qESN7neA",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "attestation": null,
+              "device": {
+                "cert": "AlDe_4qoMGbwMifKstUuVQzkoP0Y_dEkbILVZtkXM_FDFLbxHDGxrq87VTNhxCS6e2SERoeXiWoS-l_26sMthg",
+                "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+                "kind": "pocket",
+                "label": "bob",
+                "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+                "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+                "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+              }
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:8481c15d306f037ea6e5786fc43e359b374350811ecf92fab3c1d565fa3f8882"
+            ],
+            "mesh": "sha256:8481c15d306f037ea6e5786fc43e359b374350811ecf92fab3c1d565fa3f8882",
+            "presence_sig": "dNfta4_Hwyi8Hs4PdK03up46lu-QU5JXEsoHiI-NS2oX1h30kjXTLf2tfbM_G5X9-uV9gq-YBwZhYR6Mq2cTdg",
+            "sig": "geSZlrxsmBl2IPIQPoOemBa1KahkV5EdKDH5B8YVx2hmFC5lbm0LBNjUGji18VnkcOkgtyHQeXteviuE0aLo8w",
+            "type": "add",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "label": "First"
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:89bfbbac97e4c728300e5a68bb925d0eb1c095566ce6a39c3d9f8fbc7f2f1df0"
+            ],
+            "mesh": "sha256:8481c15d306f037ea6e5786fc43e359b374350811ecf92fab3c1d565fa3f8882",
+            "presence_sig": "qHoiO97-FOSpD5Mcc8c-uQJzYvKTyfWNxS8rbligyoNjctsGSVjxiY3Qmr022fa51LL-CvvGEiNDH-aHiLcgFQ",
+            "sig": "fO7gflf7F48UNKGN4StDA9DFdNVukgM82HaNsPzxt9cTmegE-OOcvkqhiRiaSoT2zuQTSLhbDfKuT1DETT5Q1g",
+            "type": "rename",
+            "v": 1
+          },
+          {
+            "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+            "body": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "label": "Second"
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:89bfbbac97e4c728300e5a68bb925d0eb1c095566ce6a39c3d9f8fbc7f2f1df0"
+            ],
+            "mesh": "sha256:8481c15d306f037ea6e5786fc43e359b374350811ecf92fab3c1d565fa3f8882",
+            "sig": "LMFhyj3-equEyQ912KyCSrVAlpvnUCg5gIRzFcDgG_U3Slj2G-HavgcKJE4Hm1Nj-gSynaGIClRNlryEV-MtMQ",
+            "type": "rename",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:8481c15d306f037ea6e5786fc43e359b374350811ecf92fab3c1d565fa3f8882",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "rename-concurrent-newest-clock-wins"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 2,
+          "current_epoch": {
+            "personal": "sha256:66361f709a22e7fe801143a9b316e2491d7dc62e525257601631226332d30610",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:66361f709a22e7fe801143a9b316e2491d7dc62e525257601631226332d30610": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            }
+          },
+          "heads": [
+            "sha256:dc1c308f3214ec7b6fa7c0d53145241add86ecf6c7da396344df5d5a0b88841e"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            }
+          },
+          "mesh": "sha256:66361f709a22e7fe801143a9b316e2491d7dc62e525257601631226332d30610",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:66361f709a22e7fe801143a9b316e2491d7dc62e525257601631226332d30610"
+          },
+          "rejected": {
+            "sha256:dc1c308f3214ec7b6fa7c0d53145241add86ecf6c7da396344df5d5a0b88841e": "roster.unknown_device"
+          },
+          "removed": {},
+          "resumed": 0,
+          "stale_attestation": [],
+          "stop": 0,
+          "stopped": false,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
+          ],
+          "void": []
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "8PzIKwx6weew2cM8Xy_wbvGkrOxRuQDuLwbBnSLu7zk4nA5iPkjTzuwPRWz9iYsw",
+                  "epk": "oz8z9iU2p1-4m7nn-ED4BmRWSxDrk_2KcKlhz0B2zHI",
+                  "nonce": "4siQXnkk2LoJ0eAexHP5-THYHERJ7J5G"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "0jIUpmiaVZUpuJtkiGL7J5RKD3i8MJNWb_K4aenE7-JB4TBqwC7O4Hvlb17QC3he",
+                      "epk": "yaeLEt3pW3Xc8S5O0VYUFWWerpZ54OEjPdO-fBq6hlg",
+                      "nonce": "F_Wv5T4K0cagiIq8Qw5x5gP04mTX1WUV"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "pe6V-Vb5hNYssPJClszTyhSrbUYZpjoKBP8gG1kqKb4",
+                "wrap": "A_qAmnfE3wNEr25Txs8NxT7Eg5Y7PWHJjjm8C5TtdCY"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "SSQUi-_zSdcXMJuCYLo8ZdPPcHiGvb2tHzTXm1Eb4LUgWkXQd8P8zf_5lpv4-if_m3_pB4UlzghcmREIpG1kMA",
+            "sig": "b1tYr54k2HjNK88ShD2W5SaAoJ6YMkr2oMivsMq3l1V1BafIwoYSuclVIy1xG2T7z8WxANQfisHMqRx3sA8oTA",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+              "label": "Nobody"
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:66361f709a22e7fe801143a9b316e2491d7dc62e525257601631226332d30610"
+            ],
+            "mesh": "sha256:66361f709a22e7fe801143a9b316e2491d7dc62e525257601631226332d30610",
+            "presence_sig": "OEISgvjWyLSqCv7Y5xCeFdr7BMoMWjUqwadS01K1VwUoPRP45H7g04g6-zJ5FfhaUPCKGA0-4QNbAc-ioytB5w",
+            "sig": "4JvKrOLZ6AvNFmgrhRCeJvKyAy_S3zrXb5cyO9IRMPts62JVDXpc1cdb-LmvYkqdWlPPGaxwctknYjOPDWdYMw",
+            "type": "rename",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:66361f709a22e7fe801143a9b316e2491d7dc62e525257601631226332d30610",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "rename-of-a-non-member-rejected"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 4,
+          "current_epoch": {
+            "personal": "sha256:f48b4f0b0d7b20a1e88928411a98989a6bf6b02a495dc216700cc5bf6a605e13",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:f48b4f0b0d7b20a1e88928411a98989a6bf6b02a495dc216700cc5bf6a605e13": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "cutoff": 0,
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "state": "removed"
+            }
+          },
+          "heads": [
+            "sha256:6f8dcf02badc3e1927dbee96a735ad866d32a55b26d35d92a376ed80f9e81753",
+            "sha256:beda566d8e9ca7c39855d0a4b378366b3520fdadc88b976a630cc7e25431b0d1"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            }
+          },
+          "mesh": "sha256:f48b4f0b0d7b20a1e88928411a98989a6bf6b02a495dc216700cc5bf6a605e13",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:f48b4f0b0d7b20a1e88928411a98989a6bf6b02a495dc216700cc5bf6a605e13"
+          },
+          "rejected": {},
+          "removed": {
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+              "cutoff": {
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": 0
+              },
+              "entry": "sha256:6f8dcf02badc3e1927dbee96a735ad866d32a55b26d35d92a376ed80f9e81753"
+            }
+          },
+          "resumed": 0,
+          "stale_attestation": [],
+          "stop": 0,
+          "stopped": false,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
+          ],
+          "void": [
+            "sha256:beda566d8e9ca7c39855d0a4b378366b3520fdadc88b976a630cc7e25431b0d1"
+          ]
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "MFcOofxJwzWGJEa7hlSxTHjT1ymLwgpEVWYOpgI0e0G9US46Tp7dPh2-udZy0KDK",
+                  "epk": "hGmwMQoJ1iIyPHulQfsZQqmUEib4EzYQpNSdk2SrdlU",
+                  "nonce": "OeG_ubR6FJJcdZmBkoJIoPUZeg5NSG_t"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "Y19mqBHAMky5UuzxeA_LvUTYtwFtrIWbjpVhgA5Fr1vgHiWCTWZVugTwnNvtcUDH",
+                      "epk": "XoifLrKvkWe7B3vV6WS74Km0_cmtyQ9OM0Wg8bl3MXA",
+                      "nonce": "EQx5m6CVFcRBYn0Jeb6RHSY7vb2MAmMR"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "cjXMt3DPbZy5rWqL7zb7C-C70cUl-cqsP_bVzsmPiiw",
+                "wrap": "DJqN8Mw9HypfuygNWpboa0HVnEg00M_NZILB93fEsxM"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "J-a-14yEoSwRorfhNj0hPnGDU3zBj_Zv8SybT_iK0j8SQMgunF6fn95Jt0psYfmP5ibQg9lczW-hsxXwRdGBUA",
+            "sig": "0UTDv1vs8JAQE-gN4U8A3-l1CpVA6tHn5ViOPsC88LJtwjXDrXptq4ziDlaJ00rjnNbuN51W9U11-ETL_VAQ2A",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "attestation": null,
+              "device": {
+                "cert": "2uA5BIxTOIwHU6X2sY_uImI2Makl3-kEqGfqqik3H_t14vqzwj_zdgolrKv2mHUBscaooFE9xK7j9QeU8fh-zQ",
+                "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+                "kind": "pocket",
+                "label": "bob",
+                "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+                "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+                "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+              }
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:f48b4f0b0d7b20a1e88928411a98989a6bf6b02a495dc216700cc5bf6a605e13"
+            ],
+            "mesh": "sha256:f48b4f0b0d7b20a1e88928411a98989a6bf6b02a495dc216700cc5bf6a605e13",
+            "presence_sig": "E7afjJClqWm5Xff4AfcwDA_ZYRyw2teu64LMr-Y_pONT1mIw-ItmjjorHQ2FuB1Q8hmuGAakqU704fr__vzl0Q",
+            "sig": "SeyeFxdmMlqBIBQBbrptz3NR-J2KcY0cahU3LFPxZ2wcIXaatnlTvKiI1K_TJmSo9BdxwgRtug6T2ABjQN-7TQ",
+            "type": "add",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "cutoff": {
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": 0
+              },
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:dd54b664b37f740e23a42afa4ab45aa8bc4e62ae4b743fd7343451ba245ee42e"
+            ],
+            "mesh": "sha256:f48b4f0b0d7b20a1e88928411a98989a6bf6b02a495dc216700cc5bf6a605e13",
+            "presence_sig": "O7WCis9GPjpP7wG5gPnyoENWgQ01Nu_uHIkeMccPMhJfLx2TFK5qriGG9-yRVr117Ls-ZcEwn6JW0lcOHam20w",
+            "sig": "tg3WH1rQua9GFi-pI4GSgiCDa5qRCNuRJ31deHX8nuwK4ZzzfkYxg-Ohv8BKxseFeBqkXM1h9jtkLLSndHG7Wg",
+            "type": "remove",
+            "v": 1
+          },
+          {
+            "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+            "body": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "label": "Too late"
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:dd54b664b37f740e23a42afa4ab45aa8bc4e62ae4b743fd7343451ba245ee42e"
+            ],
+            "mesh": "sha256:f48b4f0b0d7b20a1e88928411a98989a6bf6b02a495dc216700cc5bf6a605e13",
+            "sig": "nTC31wgKyoSGTPnmm0pFxYMMCy5T43dXMTUhAWxR0FgJSjYnzyDWM9no10QBN3U80suREW7Tv8vdCbJVPeupAg",
+            "type": "rename",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:f48b4f0b0d7b20a1e88928411a98989a6bf6b02a495dc216700cc5bf6a605e13",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "rename-by-a-device-removed-concurrently-is-void"
+    },
+    {
+      "expect": {
+        "error": "roster.malformed"
+      },
+      "input": {
+        "entry": {
+          "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "body": {
+            "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+            "label": "x"
+          },
+          "clock": {
+            "ms": 1794441604000,
+            "n": 0
+          },
+          "follows": [
+            "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df"
+          ],
+          "mesh": "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df",
+          "sig": "3eOfAgHeGe8BTXZEF0ptTqQ9vxJwzsRuFJYNVjnS8ok_oI2CfSQcZOSwgcFHFxQJD_tju-6ESVjxBcTnj03qug",
+          "type": "rename",
+          "v": 1
+        }
+      },
+      "kind": "roster_shape",
+      "name": "shape-rename-another-device-without-presence-signature"
+    },
+    {
+      "expect": {
+        "error": "roster.malformed"
+      },
+      "input": {
+        "entry": {
+          "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "body": {
+            "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "label": "x"
+          },
+          "clock": {
+            "ms": 1794441605000,
+            "n": 0
+          },
+          "follows": [
+            "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df"
+          ],
+          "mesh": "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df",
+          "presence_sig": "0VbwvDXGAiRzSkY7ygZtjuAelq3-xbRwAZ60TiGdjLUJuXDuwYE9eWVDehyCCX91HvCJ872FKhx-S6VyDel3rw",
+          "sig": "YPtDD4W13JdwNJSnBgZqXiJqjsBlulWDCLV7gByxrn5DTCrnf-RaPRAKsgTkU2_PfLZ7fpuc9Bk1CROttfb0lQ",
+          "type": "rename",
+          "v": 1
+        }
+      },
+      "kind": "roster_shape",
+      "name": "shape-rename-self-with-presence-signature"
+    },
+    {
+      "expect": {
+        "error": "roster.malformed"
+      },
+      "input": {
+        "entry": {
+          "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "body": {
+            "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "label": ""
+          },
+          "clock": {
+            "ms": 1794441606000,
+            "n": 0
+          },
+          "follows": [
+            "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df"
+          ],
+          "mesh": "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df",
+          "sig": "YwzO_CxiEG0kVJMzJ81X7BNFfw3NKDukfySoIEHUDTg7yYPh5bmLCTYt8ZudnWKmgWZjpK48xpMrE55PzoxSrw",
+          "type": "rename",
+          "v": 1
+        }
+      },
+      "kind": "roster_shape",
+      "name": "shape-rename-label-empty"
+    },
+    {
+      "expect": {
+        "error": "roster.malformed"
+      },
+      "input": {
+        "entry": {
+          "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "body": {
+            "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "label": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          },
+          "clock": {
+            "ms": 1794441607000,
+            "n": 0
+          },
+          "follows": [
+            "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df"
+          ],
+          "mesh": "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df",
+          "sig": "_8GFP0adx_dm30vJhj3sdTr6X3EzZSQFxNGFjptL5Dx8K4n3o6F8xmacwl2kNM19rKoVjf42Mpo0rgmgYu8F0Q",
+          "type": "rename",
+          "v": 1
+        }
+      },
+      "kind": "roster_shape",
+      "name": "shape-rename-label-too-long"
+    },
+    {
+      "expect": {
+        "error": "roster.recovery_not_allowed"
+      },
+      "input": {
+        "entry": {
+          "author": "recovery",
+          "body": {
+            "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "label": "x"
+          },
+          "clock": {
+            "ms": 1,
+            "n": 0
+          },
+          "follows": [
+            "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df"
+          ],
+          "mesh": "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df",
+          "sig": "qpTIR-_UcVpmzeg5odbjZgPsXMsn6XPM7RkBaC2TSE2lf_Uq4dC3aBgqfp3B_yVwHAsCjvO2RBkrUebUBSyqDw",
+          "type": "rename",
+          "v": 1
+        }
+      },
+      "kind": "roster_shape",
+      "name": "shape-rename-by-recovery-not-allowed"
     }
   ],
   "devices": {

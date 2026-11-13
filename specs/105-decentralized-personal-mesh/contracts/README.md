@@ -11,11 +11,16 @@ The formats are the ones fixed in [../tasks.md](../tasks.md). Where a format nee
 | [event.md](event.md) | `astral.event/v1` | Canonical JSON `LETS-CJ/1`, ids, signature contexts, clock, header, body, wire envelope, feeds, chains, event types, merge rules of the families | `canonical-json.json`, `crypto.json`, `event.json`, `feed.json`, `fold.json` | `cj.py`, `crypto.py`, `event.py`, `fold.py` |
 | [sync.md](sync.md) | `astral.sync/v1` (ALPN `astral/sync/1`) | Messages, session, event acceptance, bodies by hash, PHI withholding, checkpoints, fork and shortened-feed evidence, restored device | `sync.json`, `feed.json` | `sync.py` |
 | [roster.md](roster.md) | `astral.roster/v1` | Genesis, add, remove, rotate, attest, accepted issuer, PHI authority and approval, epoch, wrap, stop, the merge, identity attestation, unattested devices, pairing | `roster.json`, `attestation.json`, `pairing.json` | `roster.py`, `attestation.py`, `pairing.py` |
-| [keys.md](keys.md) | `astral.keys/v1`, wrap `astral.wrap/v1`, backup `astral.backup/v1` | Device keys, key groups and epochs, wrapping, content keys, recovery key and its 24 words, encrypted backup | `keys.json`, `crypto.json` | `keys.py`, `crypto.py` |
-| [policy.md](policy.md) | `astral.policy/v1` | Budget policy, consent for widening, narrowing-only merge, input to LETS | `policy.json` | `policy.py`, `consent.py` |
+| [keys.md](keys.md) | `astral.keys/v1`, wrap `astral.wrap/v1`, backup `astral.backup/v1` | Device keys, key groups and epochs, wrapping, content keys, recovery key and its 24 words, encrypted backup | `keys.json`, `crypto.json`, `credential.json` | `keys.py`, `crypto.py`, `credential.py` |
+| [policy.md](policy.md) | `astral.policy/v1` | Budget policy, consent for widening, narrowing-only merge, input to LETS | `policy.json`, `transfer.json` | `policy.py`, `consent.py`, `transfer.py` |
 | [ticket.md](ticket.md) | `astral.ticket/v1` | Biscuit capability chain, action digest, consent, receipt binding, labels as facts | `ticket.json` | `ticket.py`, `consent.py` |
 | [labels.md](labels.md) | `astral.labels/v1` | Integrity and confidentiality axes, inheritance, quarantined readers, flow rules, gate order | `labels.json` | `labels.py` |
 | [surface.md](surface.md) | `astral.surface/v1` | Surface documents, patches, action events and capabilities, value bindings | `surface.json` | `surface.py` |
+| [runs.md](runs.md) | `astral.runs/v1` | Run ids, lease, goal and schedule bodies, the lease fold (one executor, handoff, takeover with the owner's presence consent, contested runs), the state fold, run start checks, schedule arithmetic, the pre-check, the judge's fixed answer | `runs.json` | `runs.py` |
+| [requests.md](requests.md) | `astral.requests/v1` | Requests addressed to one member, the tool call and ticket a request carries, claim, refusal and cancel, and the fold that gives each request one state | `requests.json` | `requests.py` |
+| [tools.md](tools.md) | `astral.tools/v1` | The `tools.catalog` event with the tools a member serves, the definition hash, the fold that picks each current member's catalog, and how a changed definition is a new tool | `tools.json` | `tools.py` |
+| [learning.md](learning.md) | `astral.learning/v1` | Candidates and the content hash, evidence labels, proposal, gate, replay, adoption and reversal bodies, the static gate, the replay digest, the trial, the ledger fold that re-checks every adoption and recomputes owner review from the proposal itself | `tools.json` | `tools_check` (`body`) gives `count` and `names`. `tools_hash` (`name`, `description`, `input_schema`, `annotations`) gives `hash`. `tools_fold` (`events`, `devices`: feed to device for current members) gives `catalogs` and `ignored` | none |
+| `learning.json` | `learning.py` |
 
 A change to a format raises its version. A document, its vectors and its reference module change together.
 
@@ -25,7 +30,6 @@ A change to a format raises its version. A document, its vectors and its referen
 - The mailbox protocol and the removal notice. A later contract adds them and a signing context for mailbox requests.
 - The component vocabulary. It comes from the primitives schema. The surface validator takes it as input.
 - The transport itself (iroh) and the FFI surface of the kernel.
-- Merge rules for the run and learning families. Their events are accepted and chained, and their rules arrive with their own contracts.
 
 ## Additions to the shared choices
 
@@ -74,16 +78,21 @@ A harness runs each case by `kind` with `input` and compares the result with `ex
 | `crypto.json` | `keypair` (the four secrets). `sign` (`alg`, `context`, `object`, `secret_hex`) gives `sig`. `verify` (`alg`, `context`, `object`, `public`, `sig`) gives `valid`. `aead_seal`, `aead_open`. `hkdf` | `devices` (test secrets), `contexts` |
 | `event.json` | `seal_event` (header fields, keys, nonces) gives `envelope`, `event_id`, `header`. `open_event` (`envelope`, `epoch_keys`, `content_keys`, `now_ms`) gives `header`, `body`, `event_id` | `devices` |
 | `feed.json` | `feed_replay` (`steps`: headers, `statuses`: feed to roster status, `now_ms`) gives `results` (per step: `accepted`, `duplicate`, or an error code), `heads`, `forked` | `devices` |
-| `roster.json` | `roster_fold` (`entries`, `mesh`, `now_s`) gives `members`, `removed`, `unattested`, `stale_attestation`, `principal`, `issuers`, `phi_authorities`, `phi_members`, `epochs`, `current_epoch`, `stop`, `void`, `rejected`, `pending`, `feeds`, `heads`, `count`, `mesh`. `roster_shape` (`entry`) gives `id` | `devices`, `names` (device id to name), `issuer_secrets` |
+| `roster.json` | `roster_fold` (`entries`, `mesh`, `now_s`) gives `members`, `removed`, `unattested`, `stale_attestation`, `principal`, `issuers`, `phi_authorities`, `phi_members`, `epochs`, `current_epoch`, `stop`, `resumed`, `stopped`, `void`, `rejected`, `pending`, `feeds`, `heads`, `count`, `mesh`. `roster_shape` (`entry`) gives `id` | `devices`, `names` (device id to name), `issuer_secrets` |
 | `attestation.json` | `attestation_verify`. For identity: `att`, `identity`, `issuers`, `mesh`, `now_s`. For PHI: `att`, `authorities`, `now_s` | `devices`, `issuer_secrets`, `nonce_hex` (the nonce of the first case) |
 | `pairing.json` | `pairing_invite` (`invite`, `inviter_identity`, `mesh`, `now_s`). `pairing_request` (`request`, `mesh`, `nonce`) gives `device` | `devices` |
 | `keys.json` | `wrap`, `unwrap`, `epoch_open`, `recovery_encode` (gives words and derived keys), `recovery_decode`, `backup_seal`, `backup_open` | `devices` |
 | `policy.json` | `policy_verify`, `policy_effective` (`wrappers`, `members`, `mesh`), `budget_input` (`effective`, `members`, `mesh`, `now_s`, `stop`) | `devices`, `budget_input_note` |
 | `ticket.json` | `action_digest`. `ticket_verify` (`ticket`, `action`, `effect_kind`, `mesh`, `roster_feeds`, `presence_keys`, `stop`, `now_s`, `consent_required`, `receipt_valid`) gives the claims. `consent_verify` | `devices`, `tokens`, `tokens_note` |
 | `labels.json` | `labels_join`, `labels_quarantine`, `labels_flow`, `labels_gate` | none |
-| `surface.json` | `surface_validate`, `surface_fold`, `surface_action`, `surface_bind` | `vocabulary`, `actionable` |
+| `surface.json` | `surface_validate`, `surface_fold`, `surface_action`, `surface_act`, `surface_bind` | `vocabulary`, `actionable` |
+| `credential.json` | `credential_check`, `credential_recipients`, `credential_seal`, `credential_open`, `credential_fold`, `credential_reseal` | `devices` |
+| `requests.json` | `request_check` (`type`, `body`) gives the summary of the body. `request_fold` (`events`, `devices`: feed to device) gives `requests` and `ignored` | none |
+| `transfer.json` | `transfer_check` | none |
 | `sync.json` | `sync_plan`, `sync_bodies`, `sync_message`, `sync_frame`, `checkpoint_verify`, `shortened` | `devices` |
 | `fold.json` | `fold_branches`, `fold_authority`, `fold_settings` | none |
+| `runs.json` | `run_lease_fold` (`events`, `devices`: feed id to device id, `presence_keys`: device id to presence key of the current roster) gives `runs`. `run_takeover_digest` (`run`, `supersedes`, `executor`) gives `digest`. `run_state_fold` (`run`, `chat`, `events`) gives `state`. `run_start` (`spec`, `device`, `now_ms`) gives `run` and `events`. `run_schedule_plan` (`schedule`, `now_ms`, `last_slot`). `run_precheck` (`probe`, `last_fingerprint`). `run_judge_answer` (`goal`, `round`, `round_output`, `raw`) gives `verdict`, `progress`, `content` | none |
+| `learning.json` | `learn_gate` (`candidate`, `grants`) gives the finding codes, hygiene, owner reasons and labels. `learn_stage`, `learn_gate_record`, `learn_replay_record`, `learn_decline`, `learn_adoption`, `learn_reversal` give the `event` to write. `learn_trial` (`baseline`, `policy`, `samples`). `learn_ledger_fold` (`events`, in any order) gives `proposals`, `active`, `invalid` | none |
 
 In `ticket_verify`, `receipt_valid` stands for the answer of the LETS receipt check. A harness passes it to the verifier's receipt callback.
 
