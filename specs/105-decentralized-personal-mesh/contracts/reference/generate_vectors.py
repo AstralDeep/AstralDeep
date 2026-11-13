@@ -9414,6 +9414,146 @@ def build_requests() -> Suite:
             ],
         },
     )
+
+    mint_args = canonical({"path": "notes/today.md"}).decode()
+    mint_hash = _eid("requests", "mint-tool-def")
+    owner_private = {"confidentiality": "private", "integrity": "owner"}
+
+    def mint_input(**over: Any) -> dict[str, Any]:
+        base: dict[str, Any] = {
+            "call": {
+                "arguments": mint_args,
+                "call_id": "call_0001",
+                "effect": "mesh_read",
+                "tool": "files_read",
+                "tool_def": mint_hash,
+            },
+            "catalog": [
+                {"effect": "mesh_read", "hash": mint_hash, "name": "files_read"}
+            ],
+            "local": BOB.id,
+            "minted": 0,
+            "phi_member": False,
+            "request": {
+                "has_call": False,
+                "labels": owner_private,
+                "state": "claimed",
+                "to": BOB.id,
+            },
+            "running": None,
+        }
+        for key, value in over.items():
+            if isinstance(value, dict) and key in ("call", "request"):
+                base[key] = {**base[key], **value}
+            else:
+                base[key] = value
+        return base
+
+    def mint(name: str, error: str | None = None, **over: Any) -> None:
+        case = mint_input(**over)
+        s.add(
+            name,
+            "request_mint",
+            case,
+            error=error,
+        )
+
+    mint("mint-a-claimed-request-mints-for-a-cataloged-tool")
+    mint(
+        "mint-an-untrusted-running-label-joins-the-request-label",
+        running={"confidentiality": "public", "integrity": "untrusted"},
+    )
+    mint(
+        "mint-a-phi-request-mints-for-a-phi-member",
+        request={"labels": {"confidentiality": "phi", "integrity": "owner"}},
+        phi_member=True,
+    )
+    mint(
+        "mint-a-pending-request-is-not-minted-for",
+        "request.not_claimed",
+        request={"state": "pending"},
+    )
+    mint(
+        "mint-an-answered-request-is-not-minted-for",
+        "request.answered",
+        request={"state": "answered"},
+    )
+    mint(
+        "mint-a-refused-request-is-not-minted-for",
+        "request.refused",
+        request={"state": "refused"},
+    )
+    mint(
+        "mint-a-cancelled-request-is-not-minted-for",
+        "request.cancelled",
+        request={"state": "cancelled"},
+    )
+    mint(
+        "mint-a-request-for-another-member-is-not-minted-for",
+        "request.not_target",
+        request={"to": CAROL.id},
+    )
+    mint(
+        "mint-a-request-that-carries-a-call-is-not-minted-for",
+        "mint.call_request",
+        request={"has_call": True},
+    )
+    mint("mint-limit-is-reached", "mint.limit", minted=64)
+    mint(
+        "mint-a-tool-outside-the-catalog-is-refused",
+        "mint.unknown_tool",
+        call={"tool": "files_write"},
+    )
+    mint(
+        "mint-a-changed-definition-is-refused",
+        "gate.tool_def_changed",
+        call={"tool_def": _eid("requests", "mint-other-def")},
+    )
+    mint(
+        "mint-an-effect-that-differs-from-the-catalog-is-refused",
+        "mint.effect_mismatch",
+        call={"effect": "outside_effect"},
+    )
+    mint(
+        "mint-an-unknown-effect-kind-is-refused",
+        "labels.invalid",
+        call={"effect": "delete_everything"},
+    )
+    mint(
+        "mint-arguments-that-are-not-canonical-are-refused",
+        "mint.malformed",
+        call={"arguments": '{ "path": "notes/today.md" }'},
+    )
+    mint(
+        "mint-arguments-that-are-not-an-object-are-refused",
+        "mint.malformed",
+        call={"arguments": "[]"},
+    )
+    mint(
+        "mint-a-call-id-with-a-space-is-refused",
+        "mint.malformed",
+        call={"call_id": "call 1"},
+    )
+    mint(
+        "mint-a-tool-definition-that-is-not-a-hash-is-refused",
+        "mint.malformed",
+        call={"tool_def": "abc"},
+    )
+    mint(
+        "mint-a-secret-label-is-refused",
+        "mint.secret_label",
+        running={"confidentiality": "secret", "integrity": "owner"},
+    )
+    mint(
+        "mint-a-phi-request-is-refused-without-phi-approval",
+        "mint.phi_not_approved",
+        request={"labels": {"confidentiality": "phi", "integrity": "owner"}},
+    )
+    mint(
+        "mint-a-phi-running-label-is-refused-without-phi-approval",
+        "mint.phi_not_approved",
+        running={"confidentiality": "phi", "integrity": "owner"},
+    )
     return s
 
 

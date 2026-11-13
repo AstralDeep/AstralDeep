@@ -26,7 +26,7 @@ The host draws a consent prompt from the **action**, never from model output. Th
 | `v` | `1` |
 | `mesh` | The mesh id |
 | `device` | Device id of the proposing device |
-| `turn` | Event id of the `chat.turn_start` event |
+| `turn` | Event id of the `chat.turn_start` event. A member that runs a request outside the engine uses the id of the `request.send` event (`requests.md` section 5) |
 | `agent` | The id of the agent that makes the call. With sub-agents, the last in the chain |
 | `tool` | The tool name |
 | `tool_def` | Hash of the tool's definition as pinned at approval |

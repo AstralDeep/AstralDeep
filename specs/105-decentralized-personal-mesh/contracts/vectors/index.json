@@ -66,8 +66,8 @@
       "spec": "contracts/policy.md"
     },
     "requests.json": {
-      "cases": 47,
-      "sha256": "8c631bc940b057dd45d11e74b4aca6bc9e88b61acf5d0279adc2f7890e839f8c",
+      "cases": 68,
+      "sha256": "60c0ab9ad0ac357c0a5022e3eea41533e13b6571d7a4a46cf830cf4161a0cad3",
       "spec": "contracts/requests.md"
     },
     "roster.json": {

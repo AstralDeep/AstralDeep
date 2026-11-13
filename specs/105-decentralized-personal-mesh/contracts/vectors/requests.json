@@ -1994,6 +1994,792 @@
       },
       "kind": "request_fold",
       "name": "requests-are-independent-and-listed-in-order"
+    },
+    {
+      "expect": {
+        "ok": {
+          "args_digest": "sha256:739710eb585c746754e6458d076c5f2c2bce59c585ba9c9c3d2b1b3b5afb7396",
+          "grant": "files_read@2117af69",
+          "label": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          }
+        }
+      },
+      "input": {
+        "call": {
+          "arguments": "{\"path\":\"notes/today.md\"}",
+          "call_id": "call_0001",
+          "effect": "mesh_read",
+          "tool": "files_read",
+          "tool_def": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": false,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          },
+          "state": "claimed",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": null
+      },
+      "kind": "request_mint",
+      "name": "mint-a-claimed-request-mints-for-a-cataloged-tool"
+    },
+    {
+      "expect": {
+        "ok": {
+          "args_digest": "sha256:739710eb585c746754e6458d076c5f2c2bce59c585ba9c9c3d2b1b3b5afb7396",
+          "grant": "files_read@2117af69",
+          "label": {
+            "confidentiality": "private",
+            "integrity": "untrusted"
+          }
+        }
+      },
+      "input": {
+        "call": {
+          "arguments": "{\"path\":\"notes/today.md\"}",
+          "call_id": "call_0001",
+          "effect": "mesh_read",
+          "tool": "files_read",
+          "tool_def": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": false,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          },
+          "state": "claimed",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": {
+          "confidentiality": "public",
+          "integrity": "untrusted"
+        }
+      },
+      "kind": "request_mint",
+      "name": "mint-an-untrusted-running-label-joins-the-request-label"
+    },
+    {
+      "expect": {
+        "ok": {
+          "args_digest": "sha256:739710eb585c746754e6458d076c5f2c2bce59c585ba9c9c3d2b1b3b5afb7396",
+          "grant": "files_read@2117af69",
+          "label": {
+            "confidentiality": "phi",
+            "integrity": "owner"
+          }
+        }
+      },
+      "input": {
+        "call": {
+          "arguments": "{\"path\":\"notes/today.md\"}",
+          "call_id": "call_0001",
+          "effect": "mesh_read",
+          "tool": "files_read",
+          "tool_def": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": true,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "phi",
+            "integrity": "owner"
+          },
+          "state": "claimed",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": null
+      },
+      "kind": "request_mint",
+      "name": "mint-a-phi-request-mints-for-a-phi-member"
+    },
+    {
+      "expect": {
+        "error": "request.not_claimed"
+      },
+      "input": {
+        "call": {
+          "arguments": "{\"path\":\"notes/today.md\"}",
+          "call_id": "call_0001",
+          "effect": "mesh_read",
+          "tool": "files_read",
+          "tool_def": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": false,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          },
+          "state": "pending",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": null
+      },
+      "kind": "request_mint",
+      "name": "mint-a-pending-request-is-not-minted-for"
+    },
+    {
+      "expect": {
+        "error": "request.answered"
+      },
+      "input": {
+        "call": {
+          "arguments": "{\"path\":\"notes/today.md\"}",
+          "call_id": "call_0001",
+          "effect": "mesh_read",
+          "tool": "files_read",
+          "tool_def": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": false,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          },
+          "state": "answered",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": null
+      },
+      "kind": "request_mint",
+      "name": "mint-an-answered-request-is-not-minted-for"
+    },
+    {
+      "expect": {
+        "error": "request.refused"
+      },
+      "input": {
+        "call": {
+          "arguments": "{\"path\":\"notes/today.md\"}",
+          "call_id": "call_0001",
+          "effect": "mesh_read",
+          "tool": "files_read",
+          "tool_def": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": false,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          },
+          "state": "refused",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": null
+      },
+      "kind": "request_mint",
+      "name": "mint-a-refused-request-is-not-minted-for"
+    },
+    {
+      "expect": {
+        "error": "request.cancelled"
+      },
+      "input": {
+        "call": {
+          "arguments": "{\"path\":\"notes/today.md\"}",
+          "call_id": "call_0001",
+          "effect": "mesh_read",
+          "tool": "files_read",
+          "tool_def": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": false,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          },
+          "state": "cancelled",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": null
+      },
+      "kind": "request_mint",
+      "name": "mint-a-cancelled-request-is-not-minted-for"
+    },
+    {
+      "expect": {
+        "error": "request.not_target"
+      },
+      "input": {
+        "call": {
+          "arguments": "{\"path\":\"notes/today.md\"}",
+          "call_id": "call_0001",
+          "effect": "mesh_read",
+          "tool": "files_read",
+          "tool_def": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": false,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          },
+          "state": "claimed",
+          "to": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99"
+        },
+        "running": null
+      },
+      "kind": "request_mint",
+      "name": "mint-a-request-for-another-member-is-not-minted-for"
+    },
+    {
+      "expect": {
+        "error": "mint.call_request"
+      },
+      "input": {
+        "call": {
+          "arguments": "{\"path\":\"notes/today.md\"}",
+          "call_id": "call_0001",
+          "effect": "mesh_read",
+          "tool": "files_read",
+          "tool_def": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": false,
+        "request": {
+          "has_call": true,
+          "labels": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          },
+          "state": "claimed",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": null
+      },
+      "kind": "request_mint",
+      "name": "mint-a-request-that-carries-a-call-is-not-minted-for"
+    },
+    {
+      "expect": {
+        "error": "mint.limit"
+      },
+      "input": {
+        "call": {
+          "arguments": "{\"path\":\"notes/today.md\"}",
+          "call_id": "call_0001",
+          "effect": "mesh_read",
+          "tool": "files_read",
+          "tool_def": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 64,
+        "phi_member": false,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          },
+          "state": "claimed",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": null
+      },
+      "kind": "request_mint",
+      "name": "mint-limit-is-reached"
+    },
+    {
+      "expect": {
+        "error": "mint.unknown_tool"
+      },
+      "input": {
+        "call": {
+          "arguments": "{\"path\":\"notes/today.md\"}",
+          "call_id": "call_0001",
+          "effect": "mesh_read",
+          "tool": "files_write",
+          "tool_def": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": false,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          },
+          "state": "claimed",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": null
+      },
+      "kind": "request_mint",
+      "name": "mint-a-tool-outside-the-catalog-is-refused"
+    },
+    {
+      "expect": {
+        "error": "gate.tool_def_changed"
+      },
+      "input": {
+        "call": {
+          "arguments": "{\"path\":\"notes/today.md\"}",
+          "call_id": "call_0001",
+          "effect": "mesh_read",
+          "tool": "files_read",
+          "tool_def": "sha256:0e84a50532227df2b1d8f66a2a982244b2745b9fb0ec464a3967a4d39e79f923"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": false,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          },
+          "state": "claimed",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": null
+      },
+      "kind": "request_mint",
+      "name": "mint-a-changed-definition-is-refused"
+    },
+    {
+      "expect": {
+        "error": "mint.effect_mismatch"
+      },
+      "input": {
+        "call": {
+          "arguments": "{\"path\":\"notes/today.md\"}",
+          "call_id": "call_0001",
+          "effect": "outside_effect",
+          "tool": "files_read",
+          "tool_def": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": false,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          },
+          "state": "claimed",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": null
+      },
+      "kind": "request_mint",
+      "name": "mint-an-effect-that-differs-from-the-catalog-is-refused"
+    },
+    {
+      "expect": {
+        "error": "labels.invalid"
+      },
+      "input": {
+        "call": {
+          "arguments": "{\"path\":\"notes/today.md\"}",
+          "call_id": "call_0001",
+          "effect": "delete_everything",
+          "tool": "files_read",
+          "tool_def": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": false,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          },
+          "state": "claimed",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": null
+      },
+      "kind": "request_mint",
+      "name": "mint-an-unknown-effect-kind-is-refused"
+    },
+    {
+      "expect": {
+        "error": "mint.malformed"
+      },
+      "input": {
+        "call": {
+          "arguments": "{ \"path\": \"notes/today.md\" }",
+          "call_id": "call_0001",
+          "effect": "mesh_read",
+          "tool": "files_read",
+          "tool_def": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": false,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          },
+          "state": "claimed",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": null
+      },
+      "kind": "request_mint",
+      "name": "mint-arguments-that-are-not-canonical-are-refused"
+    },
+    {
+      "expect": {
+        "error": "mint.malformed"
+      },
+      "input": {
+        "call": {
+          "arguments": "[]",
+          "call_id": "call_0001",
+          "effect": "mesh_read",
+          "tool": "files_read",
+          "tool_def": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": false,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          },
+          "state": "claimed",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": null
+      },
+      "kind": "request_mint",
+      "name": "mint-arguments-that-are-not-an-object-are-refused"
+    },
+    {
+      "expect": {
+        "error": "mint.malformed"
+      },
+      "input": {
+        "call": {
+          "arguments": "{\"path\":\"notes/today.md\"}",
+          "call_id": "call 1",
+          "effect": "mesh_read",
+          "tool": "files_read",
+          "tool_def": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": false,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          },
+          "state": "claimed",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": null
+      },
+      "kind": "request_mint",
+      "name": "mint-a-call-id-with-a-space-is-refused"
+    },
+    {
+      "expect": {
+        "error": "mint.malformed"
+      },
+      "input": {
+        "call": {
+          "arguments": "{\"path\":\"notes/today.md\"}",
+          "call_id": "call_0001",
+          "effect": "mesh_read",
+          "tool": "files_read",
+          "tool_def": "abc"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": false,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          },
+          "state": "claimed",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": null
+      },
+      "kind": "request_mint",
+      "name": "mint-a-tool-definition-that-is-not-a-hash-is-refused"
+    },
+    {
+      "expect": {
+        "error": "mint.secret_label"
+      },
+      "input": {
+        "call": {
+          "arguments": "{\"path\":\"notes/today.md\"}",
+          "call_id": "call_0001",
+          "effect": "mesh_read",
+          "tool": "files_read",
+          "tool_def": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": false,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          },
+          "state": "claimed",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": {
+          "confidentiality": "secret",
+          "integrity": "owner"
+        }
+      },
+      "kind": "request_mint",
+      "name": "mint-a-secret-label-is-refused"
+    },
+    {
+      "expect": {
+        "error": "mint.phi_not_approved"
+      },
+      "input": {
+        "call": {
+          "arguments": "{\"path\":\"notes/today.md\"}",
+          "call_id": "call_0001",
+          "effect": "mesh_read",
+          "tool": "files_read",
+          "tool_def": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": false,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "phi",
+            "integrity": "owner"
+          },
+          "state": "claimed",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": null
+      },
+      "kind": "request_mint",
+      "name": "mint-a-phi-request-is-refused-without-phi-approval"
+    },
+    {
+      "expect": {
+        "error": "mint.phi_not_approved"
+      },
+      "input": {
+        "call": {
+          "arguments": "{\"path\":\"notes/today.md\"}",
+          "call_id": "call_0001",
+          "effect": "mesh_read",
+          "tool": "files_read",
+          "tool_def": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a"
+        },
+        "catalog": [
+          {
+            "effect": "mesh_read",
+            "hash": "sha256:2117af69658f9824751724cf5a7c55a78975c7d57e9a525a6d45e5a9d460c50a",
+            "name": "files_read"
+          }
+        ],
+        "local": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+        "minted": 0,
+        "phi_member": false,
+        "request": {
+          "has_call": false,
+          "labels": {
+            "confidentiality": "private",
+            "integrity": "owner"
+          },
+          "state": "claimed",
+          "to": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+        },
+        "running": {
+          "confidentiality": "phi",
+          "integrity": "owner"
+        }
+      },
+      "kind": "request_mint",
+      "name": "mint-a-phi-running-label-is-refused-without-phi-approval"
     }
   ],
   "format": "astral.vectors/v1",
