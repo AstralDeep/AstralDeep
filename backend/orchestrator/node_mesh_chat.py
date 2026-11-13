@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from orchestrator import push_wake
 from orchestrator.node_mesh import MeshUnavailable, NodeMesh, NodeMeshError, StepRecord
+from orchestrator import vessel_executor
 from orchestrator.node_mesh_calls import CallRefused, OrchestratorCalls, dotted
 
 logger = logging.getLogger("Orchestrator.NodeMeshChat")
@@ -505,7 +506,14 @@ class MeshChatBridge:
     async def _run_call(self, request: Any, admitted: _Admitted, local: str) -> List[Any]:
         call = request.call
         outcome = await asyncio.wait_for(
-            self._calls.run(self._owner, local, admitted.resolved, admitted.authority, admitted.arguments),
+            self._calls.run(
+                self._owner,
+                local,
+                admitted.resolved,
+                admitted.authority,
+                admitted.arguments,
+                vessel_executor.CallTicket(call.ticket_json, call.action_json, call.arguments_json),
+            ),
             self._turn_seconds,
         )
         return [

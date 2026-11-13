@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from orchestrator import vessel_executor
 from orchestrator.remote_mcp_pins import sanitize_annotations
 
 logger = logging.getLogger("Orchestrator.NodeMeshCalls")
@@ -79,6 +80,9 @@ def definition_hash(name: str, description: str, input_schema: Any, annotations:
 
 
 def skill_definition(skill: Any) -> str:
+    pinned = (getattr(skill, "metadata", None) or {}).get(vessel_executor.DEFINITION_KEY)
+    if isinstance(pinned, str) and pinned:
+        return pinned
     schema = getattr(skill, "input_schema", None)
     metadata = getattr(skill, "metadata", None) or {}
     return definition_hash(
@@ -122,7 +126,13 @@ class OrchestratorCalls:
         return authority
 
     async def run(
-        self, owner_id: str, local_chat: str, resolved: ResolvedTool, authority: Any, arguments: Dict[str, Any]
+        self,
+        owner_id: str,
+        local_chat: str,
+        resolved: ResolvedTool,
+        authority: Any,
+        arguments: Dict[str, Any],
+        ticket: Optional[vessel_executor.CallTicket] = None,
     ) -> CallOutcome:
         from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
 
@@ -130,16 +140,17 @@ class OrchestratorCalls:
         vws = VirtualWebSocket(task)
         self._orch._bind_machine_turn(vws, authority)
         try:
-            response = await self._orch.execute_authorized_tool(
-                claims=None,
-                user_id=owner_id,
-                agent_id=resolved.agent_id,
-                tool_name=resolved.tool,
-                arguments=dict(arguments),
-                channel="background",
-                chat_id=local_chat,
-                websocket=vws,
-            )
+            with vessel_executor.carrying(ticket):
+                response = await self._orch.execute_authorized_tool(
+                    claims=None,
+                    user_id=owner_id,
+                    agent_id=resolved.agent_id,
+                    tool_name=resolved.tool,
+                    arguments=dict(arguments),
+                    channel="background",
+                    chat_id=local_chat,
+                    websocket=vws,
+                )
         except Exception as exc:
             logger.warning("node_mesh_call_failed: %s", type(exc).__name__)
             return CallOutcome("error", "The node could not run the tool.", "node.tool_failed")

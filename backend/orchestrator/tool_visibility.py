@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from orchestrator import vessel_executor
 from orchestrator.agent_identity import identity_requirement_satisfied
 from orchestrator.plane_repository_context import plane_source_from_orchestrator
 
@@ -51,7 +52,11 @@ def eligible_tool_pairs(
         return machineless
 
     for agent_id, card in list(orchestrator.agent_cards.items()):
-        if agent_id not in orchestrator.agents and agent_id not in orchestrator.local_agents:
+        if (
+            agent_id not in orchestrator.agents
+            and agent_id not in orchestrator.local_agents
+            and not vessel_executor.is_sandboxed(card)
+        ):
             excluded(agent_id, None, "not_connected")
             continue
         if draft_agent_id and agent_id != draft_agent_id:

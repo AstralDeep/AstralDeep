@@ -63,6 +63,7 @@ from llm_config.tool_continuation import (
 from orchestrator import evidence_context
 from orchestrator import context_engineering
 from orchestrator import datamarking
+from orchestrator import vessel_executor as _vessel_executor
 from orchestrator import llm_recovery, model_router, repeat_guard
 from orchestrator.tool_arguments import ArgumentError, ArgumentResult, model_error_text, prepare_arguments
 from orchestrator import viewport
@@ -1161,6 +1162,7 @@ class Orchestrator:
         self.async_task_manager = BackgroundTaskManager()
         self.agents: Dict[str, websockets.WebSocketServerProtocol] = {}
         self.local_agents: Dict[str, Any] = {}
+        self.vessel_executor: Optional[Any] = None
         self.ui_clients: List[websockets.WebSocketServerProtocol] = []
         self.ui_sessions: Dict[websockets.WebSocketServerProtocol, Dict] = {}
         self.agent_cards: Dict[str, AgentCard] = {}
@@ -21828,6 +21830,19 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 }
             )
 
+        if _vessel_executor.is_sandboxed(identity_card):
+            sandbox = getattr(self, "vessel_executor", None)
+            if sandbox is None:
+                return MCPResponse(
+                    request_id=f"req_{tool_name}_{_uuid.uuid4().hex}",
+                    error={"code": _vessel_executor.UNAVAILABLE,
+                           "message": "No sandbox executor is configured, so this tool cannot run.",
+                           "retryable": False})
+            return await guarded(
+                args,
+                lambda capabilities: sandbox.invoke(
+                    agent_id, tool_name, args, owner=tool_owner, timeout=timeout),
+            )
         if agent_id not in self.agents and agent_id not in self.local_agents:
             try:
                 from orchestrator import user_agents as _ua
@@ -25735,7 +25750,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         self, user_id: str, draft_agent_id: Optional[str] = None
     ) -> bool:
         for agent_id, card in list(self.agent_cards.items()):
-            if agent_id not in self.agents and agent_id not in self.local_agents:
+            if (
+                agent_id not in self.agents
+                and agent_id not in self.local_agents
+                and not _vessel_executor.is_sandboxed(card)
+            ):
                 continue
             if draft_agent_id and agent_id != draft_agent_id:
                 continue
@@ -26698,14 +26717,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 self._external_agent_discovery_task = asyncio.create_task(
                     _discover_external())
 
+        bind_host = "0.0.0.0"
         config = uvicorn.Config(
-            app, host="0.0.0.0", port=PORT,
+            app, host=bind_host, port=PORT,
             log_level=os.getenv("LOG_LEVEL", "info").lower(),
             proxy_headers=True,
             forwarded_allow_ips=os.getenv("FORWARDED_ALLOW_IPS", "127.0.0.1"),
         )
         server = uvicorn.Server(config)
-        logger.info(f"Consolidated server (Gateway) listening on http://0.0.0.0:{PORT}")
+        logger.info(f"Consolidated server (Gateway) listening on http://{bind_host}:{PORT}")
         logger.info(f"API docs available at http://localhost:{PORT}/docs")
         logger.info(f"A2A endpoint: http://localhost:{PORT}/a2a/")
         retention_interval = float(
@@ -26729,6 +26749,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             evidence_service.start()
         from orchestrator import node_mesh_chat
 
+        try:
+            await _vessel_executor.start_for(self)
+        except Exception:
+            logger.exception("vessel_executor_start_failed")
         try:
             await node_mesh_chat.start_for(self)
         except Exception:
@@ -26764,6 +26788,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             await node_mesh_chat.stop_all()
         except Exception:
             logger.exception("node_mesh_shutdown_failed")
+        try:
+            await _vessel_executor.stop_for(self)
+        except Exception:
+            logger.exception("vessel_executor_shutdown_failed")
         qualification_agent = getattr(self, "local_agents", {}).get("sandbox-qualification-runner")
         if qualification_agent is not None:
             from agents.sandbox_qualification.sandbox_qualification_agent import SandboxQualificationAgent

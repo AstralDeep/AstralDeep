@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from orchestrator import node_mesh, node_mesh_calls as calls_module, node_mesh_chat as nmc
+from orchestrator import vessel_executor, node_mesh, node_mesh_calls as calls_module, node_mesh_chat as nmc
 from tests import fake_astral_kernel as fake
 
 OWNER = "oidc.abc.owner"
@@ -54,6 +54,7 @@ class FakeCalls:
         self.resolve_error = resolve_error
         self.authorize_error = authorize_error
         self.ran = []
+        self.tickets = []
         self.delay = 0
 
     async def resolve(self, owner_id, tool):
@@ -66,10 +67,11 @@ class FakeCalls:
             raise calls_module.CallRefused(self.authorize_error)
         return "authority"
 
-    async def run(self, owner_id, local_chat, resolved, authority, arguments):
+    async def run(self, owner_id, local_chat, resolved, authority, arguments, ticket=None):
         if self.delay:
             await asyncio.sleep(self.delay)
         self.ran.append((owner_id, local_chat, resolved, authority, arguments))
+        self.tickets.append(ticket)
         return self.outcome
 
 
@@ -498,6 +500,7 @@ async def test_a_tool_call_is_verified_run_through_the_nodes_gates_and_recorded(
     await serve(bridge, kernel, "r1")
     assert kernel.verified == [("{}", call.action_json, "outward_read")]
     assert calls.ran == [(OWNER, "local-1", calls.resolved, "authority", {"q": "weather"})]
+    assert calls.tickets == [vessel_executor.CallTicket("{}", call.action_json, call.arguments_json)]
     chat, turn = only_turn(kernel)
     assert (turn.answers, turn.continues, turn.text, turn.reason) == ("r1", "turn-0", "", "completed")
     step = turn.steps[0]
