@@ -127,7 +127,7 @@ async def test_start_opens_the_kernel_as_a_node_with_software_custody(tmp_path):
     await mesh.start()
     kernel = fake.Kernel.instances[0]
     assert kernel.config.device_kind == fake.DeviceKind.NODE
-    assert kernel.config.network.mailbox is None
+    assert kernel.config.network.mailbox == '{"id":"mb"}'
     assert kernel.config.issuers[0].client_id == "c"
     assert kernel.network and mesh.started
     signer = kernel.signer
@@ -153,7 +153,7 @@ async def test_status_before_and_after_joining(tmp_path):
     await mesh.start()
     status = await mesh.status()
     assert status["state"] == "not_enrolled" and status["mesh_id"] is None and status["member_id"] is None
-    assert status["hardware_backed"] is False and status["turn_events"] is True
+    assert status["hardware_backed"] is False and status["requests"] is True
     assert status["mailbox"]["address"] == '{"id":"mb"}'
     fake.Kernel.instances[0].join("mesh-9")
     status = await mesh.status()
@@ -259,19 +259,113 @@ async def test_chat_operations_delegate_to_the_kernel(tmp_path):
     assert (await mesh.send_message(chat, "hi")).startswith("msg-")
     assert [c.chat_id for c in await mesh.list_chats()] == [chat]
     assert (await mesh.chat(chat)).view.chat_id == chat
-    ids = await mesh.append_chat_events(chat, [{"kind": "chat.turn_end", "body": {"b": 1, "a": 2}}])
-    assert ids and fake.Kernel.instances[0].appended[0][1] == [("chat.turn_end", '{"a":2,"b":1}')]
     await mesh.sync_now()
 
 
-async def test_turn_events_require_the_kernel_export(tmp_path, monkeypatch):
+async def test_the_kernel_opens_with_no_mailbox_address_when_the_mailbox_fails(tmp_path):
+    mesh = make(tmp_path, mailbox=StubMailbox(fail=True))
+    await mesh.start()
+    assert fake.Kernel.instances[0].config.network.mailbox is None
+    await mesh.stop()
+
+
+async def test_the_mailbox_runs_before_the_kernel_opens_and_stops_after_it(tmp_path):
+    order = []
+
+    class Ordered(StubMailbox):
+        async def start(self):
+            order.append("mailbox up")
+            await super().start()
+
+        async def stop(self):
+            order.append("mailbox down")
+            await super().stop()
+
+    mesh = make(tmp_path, mailbox=Ordered())
+    original = fake.Kernel.open.__func__
+
+    def opening(cls, *args, **kwargs):
+        order.append("kernel open")
+        return original(cls, *args, **kwargs)
+
+    fake.Kernel.open = classmethod(opening)
+    try:
+        await mesh.start()
+        kernel = fake.Kernel.instances[0]
+        original_stop = kernel.stop_network
+
+        async def stopping():
+            order.append("kernel down")
+            await original_stop()
+
+        kernel.stop_network = stopping
+        await mesh.stop()
+    finally:
+        fake.Kernel.open = classmethod(original)
+    assert order == ["mailbox up", "kernel open", "kernel down", "mailbox down"]
+
+
+async def test_a_failed_network_start_stops_the_kernel_and_the_mailbox(tmp_path):
+    mesh = make(tmp_path)
+    original = fake.Kernel.start_network
+
+    async def failing(self):
+        raise RuntimeError("no network")
+
+    fake.Kernel.start_network = failing
+    try:
+        with pytest.raises(RuntimeError):
+            await mesh.start()
+    finally:
+        fake.Kernel.start_network = original
+    assert mesh._mailbox.stopped and not fake.Kernel.instances[0].network and not mesh.started
+
+
+async def test_request_operations_delegate_to_the_kernel_and_name_refusals(tmp_path):
     mesh = make(tmp_path)
     await mesh.start()
-    monkeypatch.delattr(fake.Kernel, "append_chat_events")
-    assert mesh.turn_events_supported is False
-    with pytest.raises(node_mesh.MeshUnavailable) as caught:
-        await mesh.append_chat_events("c", [])
-    assert caught.value.code == "turn_events_unsupported"
+    kernel = fake.Kernel.instances[0]
+    kernel.join()
+    kernel.add_request("req-1", "chat-1", "summarize")
+    assert [r.id for r in await mesh.pending_requests()] == ["req-1"]
+    assert [r.id for r in await mesh.chat_requests("chat-1")] == ["req-1"]
+    claim = await mesh.claim_request("req-1")
+    assert claim == await mesh.claim_request("req-1")
+    assert await mesh.pending_requests() == []
+    step = node_mesh.StepRecord(
+        call_id="c1", tool="lookup", arguments_json="{}", tool_def="sha256:" + "a" * 64, status="ok",
+        content="found", labels=("private", "tool_trusted"),
+    )
+    turn_id = await mesh.record_turn(
+        "chat-1", continues=None, message=None, answers="req-1", provider="node", model="m",
+        labels=("phi", "untrusted"), steps=[step], text="done", reason="completed",
+    )
+    assert turn_id == kernel.request("req-1").turn
+    _, turn = kernel.recorded[0]
+    assert turn.labels == fake.peer_labels("PHI", "UNTRUSTED") and turn.steps[0].labels == fake.peer_labels("PRIVATE", "TOOL_TRUSTED")
+    assert (turn.answers, turn.text, turn.steps[0].tool, turn.steps[0].consent) == ("req-1", "done", "lookup", None)
+    with pytest.raises(node_mesh.NodeMeshError) as closed:
+        await mesh.refuse_request("req-1", "node.late")
+    assert closed.value.code == "request.answered"
+    kernel.add_request("req-2", "chat-1")
+    with pytest.raises(node_mesh.NodeMeshError) as unclaimed:
+        await mesh.record_turn(
+            "chat-1", continues=None, message=None, answers="req-2", provider="node", model="m",
+            labels=("private", "owner"), steps=[], text="x", reason="completed",
+        )
+    assert unclaimed.value.code == "request.not_claimed"
+    assert await mesh.refuse_request("req-2", "node.busy")
+    kernel.ticket_error = "ticket.bad_root"
+    with pytest.raises(node_mesh.NodeMeshError) as forged:
+        await mesh.verify_ticket("{}", "{}", "mesh_read")
+    assert forged.value.code == "ticket.bad_root"
+
+
+async def test_requests_require_the_kernel_export(tmp_path, monkeypatch):
+    mesh = make(tmp_path)
+    await mesh.start()
+    monkeypatch.delattr(fake.Kernel, "record_peer_turn")
+    assert mesh.requests_supported is False
 
 
 async def test_listener_dispatches_and_survives_a_failing_subscriber(tmp_path):

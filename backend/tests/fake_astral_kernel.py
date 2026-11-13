@@ -1,5 +1,5 @@
-"""A fake of the kernel's Python binding that keeps chats in memory and lets a test join the node to a mesh, so node mesh code is tested without the native library.
-It mirrors the names and shapes of the generated binding used by orchestrator/node_mesh.py and implements append_chat_events as the node's turn writer needs it."""
+"""A fake of the kernel's Python binding that keeps chats and requests in memory and lets a test join the node to a mesh, so node mesh code is tested without the native library.
+It mirrors the names and shapes of the generated binding used by orchestrator/node_mesh.py, including the request states, peer turn recording rules and ticket verification errors."""
 
 from __future__ import annotations
 
@@ -47,14 +47,117 @@ class KernelError(Exception):
     pass
 
 
-class _State(KernelError):
-    def __init__(self, code, message=""):
-        super().__init__(code)
+def _variant(name):
+    def init(self, code, message=""):
+        KernelError.__init__(self, code)
         self.code = code
         self.message = message
 
+    return type(name, (KernelError,), {"__init__": init})
 
-KernelError.State = _State
+
+for _name in ("State", "InvalidInput", "Verification", "Store", "Network", "Custody", "Denied", "Mesh"):
+    setattr(KernelError, _name, _variant(_name))
+
+
+class PeerConfidentiality(enum.Enum):
+    PUBLIC = 0
+    PRIVATE = 1
+    PHI = 2
+    SECRET = 3
+
+
+class PeerIntegrity(enum.Enum):
+    OWNER = 0
+    TOOL_TRUSTED = 1
+    UNTRUSTED = 2
+
+
+class RequestState(enum.Enum):
+    PENDING = 0
+    CLAIMED = 1
+    ANSWERED = 2
+    REFUSED = 3
+    CANCELLED = 4
+
+
+@dataclass
+class PeerLabels:
+    confidentiality: Any
+    integrity: Any
+
+
+@dataclass
+class PeerCall:
+    call_id: str
+    tool: str
+    arguments_json: str
+    action_json: str
+    ticket_json: str
+
+
+@dataclass
+class PeerToolStep:
+    call_id: str
+    tool: str
+    arguments_json: str
+    tool_def: str
+    reasons: List[str]
+    receipt: Optional[str]
+    consent: Any
+    status: str
+    content: str
+    code: Optional[str]
+    labels: Any
+
+
+@dataclass
+class PeerTurn:
+    continues: Optional[str]
+    message: Optional[str]
+    answers: Optional[str]
+    provider: str
+    model: str
+    labels: Any
+    steps: List[Any]
+    text: str
+    reason: str
+    code: Optional[str]
+
+
+@dataclass
+class RequestView:
+    id: str
+    chat_id: str
+    from_device: Optional[str]
+    to_device: str
+    state: Any
+    claim: Optional[str]
+    turn: Optional[str]
+    code: Optional[str]
+    text: str
+    continues: Optional[str]
+    call: Optional[Any]
+    labels: Any
+    clock: Any = None
+
+
+@dataclass
+class VerifiedTicket:
+    mesh: str
+    device: str
+    feed: str
+    stop_counter: int
+    turn: str
+    agents: List[str]
+    action_digest: str
+    labels: Any
+    sources: List[str]
+    consented: bool
+
+
+def peer_labels(confidentiality="PRIVATE", integrity="OWNER"):
+    return PeerLabels(PeerConfidentiality[confidentiality], PeerIntegrity[integrity])
 
 
 class RelayChoice:
@@ -98,12 +201,6 @@ class KernelConfig:
     network: Any
 
 
-@dataclass
-class NewChatEvent:
-    kind: str
-    body_json: str
-
-
 class CHAT_CHANGED:
     pass
 
@@ -130,7 +227,15 @@ class Kernel:
         self.offers = 0
         self.cancelled = 0
         self.chats: dict = {}
-        self.appended: List[tuple] = []
+        self.recorded: List[tuple] = []
+        self.requests: dict = {}
+        self.refused: List[tuple] = []
+        self.claimed: List[str] = []
+        self.verified: List[tuple] = []
+        self.ticket_error: Optional[str] = None
+        self.ticket_labels = peer_labels()
+        self.record_error: Optional[str] = None
+        self.floor = ("PUBLIC", "OWNER")
         self.sent: List[tuple] = []
         self.created: List[tuple] = []
         self.address_error: Optional[Exception] = None
@@ -209,13 +314,88 @@ class Kernel:
         self.sent.append((chat_id, text, continues, message_id))
         return message_id
 
-    def append_chat_events(self, chat_id, events):
-        ids = [f"ev-{next(self._ids)}" for _ in events]
-        self.appended.append((chat_id, [(e.kind, e.body_json) for e in events]))
-        return ids
+    def add_request(self, request_id, chat_id, text="do the thing", *, to=None, author="dev-phone", state="PENDING",
+                    continues=None, call=None, labels=None):
+        view = RequestView(
+            id=request_id, chat_id=chat_id, from_device=author, to_device=to or self.device_id,
+            state=RequestState[state], claim=None, turn=None, code=None, text=text, continues=continues,
+            call=call, labels=labels or peer_labels(),
+        )
+        self.requests[request_id] = view
+        return view
+
+    def pending_requests_for_me(self):
+        return [r for r in self.requests.values() if r.state == RequestState.PENDING and r.to_device == self.device_id]
+
+    def chat_requests(self, chat_id):
+        return [r for r in self.requests.values() if r.chat_id == chat_id]
+
+    def request(self, request_id):
+        if request_id not in self.requests:
+            raise KernelError.InvalidInput("request.unknown", "no such request")
+        return self.requests[request_id]
+
+    def claim_request(self, request_id):
+        view = self.request(request_id)
+        if view.state == RequestState.CLAIMED:
+            return view.claim
+        if view.state != RequestState.PENDING:
+            raise KernelError.State(f"request.{view.state.name.lower()}", "closed")
+        view.state = RequestState.CLAIMED
+        view.claim = f"claim-{next(self._ids)}"
+        self.claimed.append(request_id)
+        return view.claim
+
+    def refuse_request(self, request_id, code):
+        view = self.request(request_id)
+        if view.state not in (RequestState.PENDING, RequestState.CLAIMED):
+            raise KernelError.State(f"request.{view.state.name.lower()}", "closed")
+        view.state = RequestState.REFUSED
+        view.code = code
+        self.refused.append((request_id, code))
+        return f"ev-{next(self._ids)}"
+
+    def verify_ticket(self, ticket_json, action_json, effect_kind):
+        self.verified.append((ticket_json, action_json, effect_kind))
+        if self.ticket_error is not None:
+            raise KernelError.Verification(self.ticket_error, "refused")
+        import json
+
+        action = json.loads(action_json)
+        return VerifiedTicket(
+            mesh=action.get("mesh", self.mesh_id), device=action.get("device", "dev-phone"), feed="feed", stop_counter=0,
+            turn=action.get("turn", "turn-x"), agents=["kernel"], action_digest="sha256:" + "0" * 64,
+            labels=self.ticket_labels, sources=[], consented=False,
+        )
+
+    def record_peer_turn(self, chat_id, turn):
+        if self.record_error is not None:
+            raise KernelError.InvalidInput(self.record_error, "refused")
+        floor_c, floor_i = self.floor
+        rank_c = [c.name for c in PeerConfidentiality]
+        rank_i = [i.name for i in PeerIntegrity]
+        if rank_c.index(turn.labels.confidentiality.name) < rank_c.index(floor_c) or rank_i.index(turn.labels.integrity.name) < rank_i.index(floor_i):
+            raise KernelError.InvalidInput("peer_turn.labels_too_low", "too low")
+        if turn.labels.confidentiality == PeerConfidentiality.SECRET:
+            raise KernelError.InvalidInput("peer_turn.secret_label", "secret")
+        if turn.answers is not None:
+            view = self.request(turn.answers)
+            if view.state != RequestState.CLAIMED:
+                raise KernelError.State("request.not_claimed", "claim first")
+            view.state = RequestState.ANSWERED
+        turn_id = f"turn-{next(self._ids)}"
+        if turn.answers is not None:
+            view.turn = turn_id
+        entry = self.chats.setdefault(chat_id, SimpleNamespace(messages=[], turns=[]))
+        entry.turns.append(SimpleNamespace(id=turn_id, status=SimpleNamespace(name="COMPLETE"), author=self.device_id, branch=None))
+        if turn.text:
+            entry.messages.append(message(f"asst-{turn_id}", turn.text, role="ASSISTANT", status="COMPLETE", author=self.device_id, turn=turn_id))
+        self.recorded.append((chat_id, turn))
+        return turn_id
 
 
-def message(message_id, text, *, role="USER", status="QUEUED", author="dev-phone", branch=None, kind="chat.user_message"):
+def message(message_id, text, *, role="USER", status="COMPLETE", author="dev-phone", branch=None, kind="chat.user_message",
+            turn=None, confidentiality="private", integrity="owner"):
     return SimpleNamespace(
         id=message_id,
         text=text,
@@ -224,6 +404,8 @@ def message(message_id, text, *, role="USER", status="QUEUED", author="dev-phone
         author=author,
         branch=branch,
         kind=kind,
+        turn=turn,
+        labels=SimpleNamespace(confidentiality=confidentiality, integrity=integrity),
     )
 
 

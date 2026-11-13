@@ -31,7 +31,7 @@ async def test_descriptor_reports_the_endpoint_before_joining_but_not_the_mailbo
     async with client(env) as http:
         body = (await http.get("/api/node/descriptor")).json()
     assert body["transport_addresses"] == [{"kind": "iroh", "address": '{"id":"endpoint-1","addrs":["127.0.0.1:1"]}'}]
-    assert body["mesh"] == {"state": "not_enrolled", "mesh_id": None, "member_id": None, "hardware_backed": False, "turn_events": True}
+    assert body["mesh"] == {"state": "not_enrolled", "mesh_id": None, "member_id": None, "hardware_backed": False, "requests": True}
     assert "mailbox" not in body and "mesh-peer" in body["capabilities"] and "mesh-mailbox" not in body["capabilities"]
 
 

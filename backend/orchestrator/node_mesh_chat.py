@@ -1,62 +1,101 @@
-"""Moves chat activity between the node's own Python turn loop and the owner's mesh log: a turn the node runs for a thin client is written as signed events, and a request a device leaves in a mesh chat is run here.
-Requests run through the node's own machine-authority and gate stack, never the device's gates, and chats of an owner under PHI protection are neither mirrored nor picked up because the log write carries no label.
-"""
+"""Moves chat activity between the node's own Python turn loop and the owner's mesh log: a request addressed to the node is claimed, run through the node's own gates and answered with a recorded turn, and a turn the node runs for a thin client is recorded into the owner's chat.
+The node computes the labels of what it records, refuses PHI work unless the operator approved this node for it, and trusts nothing a requesting device's gates decided."""
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
-import re
 import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
-from orchestrator.node_mesh import MeshUnavailable, NodeMesh, NodeMeshError
+from orchestrator.node_mesh import MeshUnavailable, NodeMesh, NodeMeshError, StepRecord
+from orchestrator.node_mesh_calls import CallRefused, OrchestratorCalls, dotted
 
 logger = logging.getLogger("Orchestrator.NodeMeshChat")
 
 REQUESTS_ENV = "ASTRAL_NODE_MESH_REQUESTS"
+PHI_ENV = "ASTRAL_NODE_PHI_APPROVED"
 POLL_SECONDS = 15.0
 TURN_SECONDS = 600.0
-MAX_CLAIMS = 5000
+ANSWER_GRACE_SECONDS = 5.0
 MAX_TEXT = 32768
-MAX_STEP_TEXT = 4096
+MAX_STEP_TEXT = 16384
+MAX_STEPS = 64
 STATE_FILE = "mesh-chats.json"
-NODE_MARKER = re.compile(r"^\s*@node\b[:,]?\s*", re.IGNORECASE)
 MAX_CONCURRENT_TURNS = 2
+PROVIDER = "node"
+MODEL = "node-turn-loop"
+CONFIDENTIALITY = ("public", "private", "phi", "secret")
+INTEGRITY = ("owner", "tool_trusted", "untrusted")
+BASE_LABELS = ("private", "tool_trusted")
+OFF_VALUES = {"0", "false", "no", "off"}
+ON_VALUES = {"1", "true", "yes", "on"}
 
+Labels = Tuple[str, str]
 TurnRunner = Callable[[str, str, str], Awaitable[None]]
 PhiCheck = Callable[[str], bool]
 
 
+class Refusal(Exception):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
 @dataclass(frozen=True)
-class RequestPolicy:
-    mode: str = "addressed"
+class NodePolicy:
+    serve_requests: bool = True
+    phi_approved: bool = False
 
     @classmethod
-    def from_env(cls) -> "RequestPolicy":
-        mode = os.getenv(REQUESTS_ENV, "addressed").strip().lower()
-        return cls(mode if mode in {"addressed", "all", "off"} else "addressed")
+    def from_env(cls, env: Optional[Dict[str, str]] = None) -> "NodePolicy":
+        values = os.environ if env is None else env
+        return cls(
+            serve_requests=values.get(REQUESTS_ENV, "").strip().lower() not in OFF_VALUES,
+            phi_approved=values.get(PHI_ENV, "").strip().lower() in ON_VALUES,
+        )
 
-    def accepts(self, text: str) -> bool:
-        if self.mode == "off":
-            return False
-        return self.mode == "all" or NODE_MARKER.match(text) is not None
 
-    def prompt(self, text: str) -> str:
-        return NODE_MARKER.sub("", text, count=1).strip() if self.mode != "off" else text
+def _name(value: Any) -> str:
+    return str(getattr(value, "name", value)).strip().lower()
+
+
+def labels_of(source: Any) -> Labels:
+    confidentiality = _name(source.confidentiality)
+    integrity = _name(source.integrity)
+    return (
+        confidentiality if confidentiality in CONFIDENTIALITY else "secret",
+        integrity if integrity in INTEGRITY else "untrusted",
+    )
+
+
+def join_labels(*items: Labels) -> Labels:
+    return (
+        max((item[0] for item in items), key=CONFIDENTIALITY.index),
+        max((item[1] for item in items), key=INTEGRITY.index),
+    )
+
+
+def args_digest(arguments_json: str) -> str:
+    return "sha256:" + hashlib.sha256(arguments_json.encode("utf-8")).hexdigest()
+
+
+def _tool_def(name: str) -> str:
+    return "sha256:" + hashlib.sha256(json.dumps({"tool": name}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 class ChatState:
     def __init__(self, path: Path):
         self._path = Path(path)
         self._lock = threading.Lock()
-        self._data: Dict[str, Any] = {"mesh_to_local": {}, "imported": {}, "claims": {}}
+        self._data: Dict[str, Any] = {"mesh_to_local": {}, "imported": {}}
         if self._path.exists():
             try:
                 loaded = json.loads(self._path.read_text())
@@ -107,26 +146,6 @@ class ChatState:
             known.extend(item for item in event_ids if item not in known)
             self._save()
 
-    def claim(self, message_id: str, turn_id: str) -> bool:
-        with self._lock:
-            claims = self._data["claims"]
-            if message_id in claims:
-                return False
-            claims[message_id] = turn_id
-            while len(claims) > MAX_CLAIMS:
-                claims.pop(next(iter(claims)))
-            self._save()
-            return True
-
-    def claimed(self, message_id: str) -> bool:
-        with self._lock:
-            return message_id in self._data["claims"]
-
-    def release(self, message_id: str) -> None:
-        with self._lock:
-            if self._data["claims"].pop(message_id, None) is not None:
-                self._save()
-
 
 def _clip(value: Any, limit: int) -> str:
     text = value if isinstance(value, str) else json.dumps(value, sort_keys=True, default=str)
@@ -161,11 +180,20 @@ class _Session:
     local_chat: str
     mesh_chat: Optional[str] = None
     user_text: Optional[str] = None
-    request_message: Optional[str] = None
-    turn_id: Optional[str] = None
+    request: Optional[Any] = None
     steps: List[Dict[str, Any]] = field(default_factory=list)
     answer: Optional[str] = None
     done: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+@dataclass
+class _Admitted:
+    floor: Labels
+    view: Any
+    resolved: Optional[Any] = None
+    authority: Optional[Any] = None
+    arguments: Optional[Dict[str, Any]] = None
+    action: Optional[Dict[str, Any]] = None
 
 
 class MeshChatBridge:
@@ -177,7 +205,8 @@ class MeshChatBridge:
         history: Any,
         runner: TurnRunner,
         state_path: Path,
-        policy: Optional[RequestPolicy] = None,
+        calls: Optional[Any] = None,
+        policy: Optional[NodePolicy] = None,
         phi_active: Optional[PhiCheck] = None,
         poll_seconds: float = POLL_SECONDS,
         turn_seconds: float = TURN_SECONDS,
@@ -186,8 +215,9 @@ class MeshChatBridge:
         self._owner_of = owner_id if callable(owner_id) else (lambda: owner_id)
         self._history = history
         self._runner = runner
+        self._calls = calls
         self._state = ChatState(state_path)
-        self._policy = policy or RequestPolicy.from_env()
+        self._policy = policy or NodePolicy.from_env()
         self._phi_active = phi_active or _protection_enabled
         self._poll_seconds = poll_seconds
         self._turn_seconds = turn_seconds
@@ -199,6 +229,7 @@ class MeshChatBridge:
         self._tasks: List[asyncio.Task] = []
         self._turn_slots = asyncio.Semaphore(MAX_CONCURRENT_TURNS)
         self._running: set = set()
+        self._recovered = False
 
     @property
     def _owner(self) -> Optional[str]:
@@ -209,9 +240,9 @@ class MeshChatBridge:
         return self._state
 
     async def start(self) -> None:
-        if not self._mesh.turn_events_supported:
-            logger.warning("node_mesh_chat_disabled: turn_events_unsupported")
-            raise MeshUnavailable("turn_events_unsupported")
+        if not self._mesh.requests_supported:
+            logger.warning("node_mesh_chat_disabled: requests_unsupported")
+            raise MeshUnavailable("requests_unsupported")
         self._loop = asyncio.get_running_loop()
         self._mesh.subscribe(self._on_change)
         self._tasks = [
@@ -259,7 +290,7 @@ class MeshChatBridge:
         text = message_text(content)
         if role == "user":
             previous = self._sessions.get(chat_id)
-            if previous is not None and previous.request_message is not None and previous.user_text is not None:
+            if previous is not None and previous.request is not None:
                 return
             if await asyncio.to_thread(self._phi_active, owner_id):
                 self._sessions.pop(chat_id, None)
@@ -276,11 +307,14 @@ class MeshChatBridge:
 
     def _handle_step(self, owner_id: str, chat_id: str, step: Dict[str, Any]) -> None:
         session = self._sessions.get(chat_id)
-        if session is None or len(session.steps) >= 256:
+        if session is None or len(session.steps) >= MAX_STEPS:
             return
         session.steps.append(step)
 
     async def _finish(self, session: _Session) -> None:
+        if session.request is not None:
+            session.done.set()
+            return
         self._sessions.pop(session.local_chat, None)
         try:
             await self._write_turn(session)
@@ -291,26 +325,22 @@ class MeshChatBridge:
         mesh = self._mesh
         mesh_chat = session.mesh_chat
         if mesh_chat is None:
-            title = _clip((session.user_text or "Node chat").strip().splitlines()[0] if session.user_text else "Node chat", 80)
-            mesh_chat = await mesh.create_chat(title or "Node chat")
+            first = (session.user_text or "").strip().splitlines()
+            mesh_chat = await mesh.create_chat(_clip(first[0] if first else "Node chat", 80) or "Node chat")
             self._state.link(mesh_chat, session.local_chat)
-        message = session.request_message
-        imported: List[str] = []
-        if message is None:
-            message = await mesh.send_message(mesh_chat, _clip(session.user_text or "", MAX_TEXT), None)
-            imported.append(message)
-        events: List[Dict[str, Any]] = []
-        if session.turn_id is None:
-            events.append({"kind": "chat.turn_start", "body": {"continues": None, "message": message}})
-        for step in session.steps:
-            events.extend(_step_events(step))
-        events.append({"kind": "chat.assistant_message", "body": {"text": _clip(session.answer or "", MAX_TEXT)}})
-        events.append({"kind": "chat.turn_end", "body": {}})
-        written = await mesh.append_chat_events(mesh_chat, events)
-        for event, event_id in zip(events, written):
-            if event["kind"] == "chat.assistant_message":
-                imported.append(event_id)
-        self._state.mark_imported(mesh_chat, imported)
+        message = await mesh.send_message(mesh_chat, _clip(session.user_text or "", MAX_TEXT), None)
+        view = (await mesh.chat(mesh_chat)).view
+        floor = join_labels(BASE_LABELS, _chat_floor(view))
+        await self._record(
+            mesh_chat,
+            continues=view.turns[-1].id if view.turns else None,
+            message=message,
+            answers=None,
+            floor=floor,
+            steps=session.steps,
+            text=session.answer or "",
+        )
+        self._state.mark_imported(mesh_chat, [message])
 
     async def _pickup_loop(self) -> None:
         while True:
@@ -327,111 +357,213 @@ class MeshChatBridge:
             self._wake.clear()
 
     async def scan(self) -> int:
-        if self._policy.mode == "off":
+        if not self._policy.serve_requests:
             return 0
-        started = 0
         own = (await self._mesh.status()).get("member_id")
         if own is None or self._owner is None:
             return 0
-        for summary in await self._mesh.list_chats():
-            view = (await self._mesh.chat(summary.chat_id)).view
-            await self._recover(view, own)
-            for message in view.messages:
-                if not self._requestable(message, own):
-                    continue
-                if message.id in self._running or self._state.claimed(message.id):
-                    continue
-                if await asyncio.to_thread(self._phi_active, self._owner):
-                    logger.info("node_mesh_request_skipped: phi_protection_active")
-                    return started
-                self._running.add(message.id)
-                self._tasks.append(asyncio.create_task(self._serve(view, message), name="node-mesh-request"))
-                started += 1
+        if not self._recovered:
+            await self._recover(own)
+            self._recovered = True
+        started = 0
+        for request in await self._mesh.pending_requests():
+            if request.id in self._running:
+                continue
+            self._running.add(request.id)
+            self._tasks.append(asyncio.create_task(self._serve(request), name="node-mesh-request"))
+            started += 1
         self._tasks = [task for task in self._tasks if not task.done()]
         return started
 
-    def _requestable(self, message: Any, own: str) -> bool:
-        return (
-            message.role.name == "USER"
-            and message.status.name == "QUEUED"
-            and message.author != own
-            and bool(message.text)
-            and self._policy.accepts(message.text)
-        )
+    async def _recover(self, own: str) -> None:
+        for summary in await self._mesh.list_chats():
+            for request in await self._mesh.chat_requests(summary.chat_id):
+                if request.state.name == "CLAIMED" and request.to_device == own and request.id not in self._running:
+                    await self._refuse(request, "node.interrupted")
 
-    async def _recover(self, view: Any, own: str) -> None:
-        for turn in view.turns:
-            if turn.status.name == "RUNNING" and turn.author == own and turn.id not in self._active_turns():
-                await self._mesh.append_chat_events(
-                    view.chat_id, [{"kind": "chat.turn_outcome_unknown", "body": {"turn": turn.id}}]
-                )
-
-    def _active_turns(self) -> set:
-        return {session.turn_id for session in self._sessions.values() if session.turn_id}
-
-    async def _serve(self, view: Any, message: Any) -> None:
-        session: Optional[_Session] = None
+    async def _serve(self, request: Any) -> None:
         try:
             async with self._turn_slots:
-                local = await self._local_chat(view, message)
-                continues = next((t.id for t in reversed(view.turns) if t.branch == message.branch), None)
-                written = await self._mesh.append_chat_events(
-                    view.chat_id,
-                    [{"kind": "chat.turn_start", "body": {"continues": continues, "message": message.id}}],
-                )
-                turn_id = written[0]
-                if not self._state.claim(message.id, turn_id):
-                    return
-                session = _Session(
-                    self._owner, local, mesh_chat=view.chat_id, user_text=message.text,
-                    request_message=message.id, turn_id=turn_id,
-                )
-                self._sessions[local] = session
-                try:
-                    await asyncio.wait_for(
-                        self._runner(self._owner, local, self._policy.prompt(message.text)),
-                        self._turn_seconds,
-                    )
-                    await asyncio.wait_for(session.done.wait(), 5.0)
-                except asyncio.TimeoutError:
-                    await self._abandon(session, "turn_timeout")
-                except asyncio.CancelledError:
-                    raise
-                except NodeMeshError as exc:
-                    await self._refuse(session, exc.code)
-                except Exception as exc:
-                    logger.warning("node_mesh_request_failed: %s", type(exc).__name__)
-                    await self._abandon(session, "turn_failed")
+                await self._answer(request)
+        except asyncio.CancelledError:
+            raise
         except (NodeMeshError, MeshUnavailable) as exc:
             logger.warning("node_mesh_request_unwritten: %s", exc.code)
+        except Exception:
+            logger.exception("node_mesh_request_failed")
         finally:
-            self._running.discard(message.id)
+            self._running.discard(request.id)
 
-    async def _refuse(self, session: _Session, code: str) -> None:
-        self._sessions.pop(session.local_chat, None)
-        if session.done.is_set() or session.mesh_chat is None:
+    async def _answer(self, request: Any) -> None:
+        try:
+            admitted = await self._admit(request)
+        except Refusal as denial:
+            await self._refuse(request, denial.code)
             return
-        session.done.set()
-        text = "The node did not run this request."
-        await self._mesh.append_chat_events(
-            session.mesh_chat,
-            [
-                {"kind": "chat.assistant_message", "body": {"text": text, "refused": code}},
-                {"kind": "chat.turn_end", "body": {}},
-            ],
-        )
-
-    async def _abandon(self, session: _Session, reason: str) -> None:
-        self._sessions.pop(session.local_chat, None)
-        if session.done.is_set() or session.mesh_chat is None:
+        try:
+            await self._mesh.claim_request(request.id)
+        except NodeMeshError as exc:
+            logger.info("node_mesh_request_not_claimed: %s", exc.code)
             return
-        session.done.set()
-        await self._mesh.append_chat_events(
-            session.mesh_chat,
-            [{"kind": "chat.turn_outcome_unknown", "body": {"turn": session.turn_id, "reason": reason}}],
-        )
+        try:
+            await self._execute(request, admitted)
+        except asyncio.CancelledError:
+            raise
+        except Refusal as denial:
+            await self._refuse(request, denial.code)
+        except asyncio.TimeoutError:
+            await self._refuse(request, "node.turn_timeout")
+        except NodeMeshError as exc:
+            await self._refuse(request, exc.code)
+        except Exception as exc:
+            logger.warning("node_mesh_request_failed: %s", type(exc).__name__)
+            await self._refuse(request, "node.turn_failed")
 
-    async def _local_chat(self, view: Any, request: Any) -> str:
+    async def _refuse(self, request: Any, code: str) -> None:
+        try:
+            await self._mesh.refuse_request(request.id, dotted(code))
+        except NodeMeshError as exc:
+            logger.warning("node_mesh_request_unrefused: %s", exc.code)
+
+    async def _admit(self, request: Any) -> _Admitted:
+        if not request.from_device:
+            raise Refusal("request.malformed")
+        view = (await self._mesh.chat(request.chat_id)).view
+        floor = join_labels(BASE_LABELS, labels_of(request.labels), _chat_floor(view))
+        if await asyncio.to_thread(self._phi_active, self._owner):
+            floor = join_labels(floor, ("phi", "owner"))
+        self._check_floor(floor)
+        admitted = _Admitted(floor, view)
+        if request.call is not None:
+            await self._admit_call(request, admitted)
+        return admitted
+
+    def _check_floor(self, floor: Labels) -> None:
+        if floor[0] == "secret":
+            raise Refusal("node.secret_label")
+        if floor[0] == "phi" and not self._policy.phi_approved:
+            raise Refusal("node.phi_not_approved")
+
+    async def _admit_call(self, request: Any, admitted: _Admitted) -> None:
+        call = request.call
+        if self._calls is None:
+            raise Refusal("node.calls_unavailable")
+        try:
+            action = json.loads(call.action_json)
+            arguments = json.loads(call.arguments_json)
+        except ValueError:
+            raise Refusal("request.malformed") from None
+        if not isinstance(action, dict) or not isinstance(arguments, dict):
+            raise Refusal("request.malformed")
+        if action.get("tool") != call.tool or action.get("args_digest") != args_digest(call.arguments_json):
+            raise Refusal("request.call_mismatch")
+        if action.get("device") != request.from_device:
+            raise Refusal("ticket.device_mismatch")
+        try:
+            resolved = await self._calls.resolve(self._owner, call.tool)
+        except CallRefused as exc:
+            raise Refusal(exc.code) from None
+        try:
+            verified = await self._mesh.verify_ticket(call.ticket_json, call.action_json, resolved.effect_kind)
+        except NodeMeshError as exc:
+            raise Refusal(exc.code) from None
+        if (
+            verified.device != request.from_device
+            or verified.turn != action.get("turn")
+            or verified.mesh != action.get("mesh")
+        ):
+            raise Refusal("ticket.unauthorized")
+        admitted.floor = join_labels(admitted.floor, labels_of(verified.labels))
+        self._check_floor(admitted.floor)
+        try:
+            admitted.authority = await self._calls.authorize(self._owner, resolved)
+        except CallRefused as exc:
+            raise Refusal(exc.code) from None
+        admitted.resolved, admitted.arguments, admitted.action = resolved, arguments, action
+
+    async def _execute(self, request: Any, admitted: _Admitted) -> None:
+        local = await self._local_chat(admitted.view)
+        if request.call is not None:
+            steps, text = await self._run_call(request, admitted, local), ""
+        else:
+            steps, text = await self._run_turn(request, local)
+        try:
+            await self._record(
+                request.chat_id,
+                continues=request.continues,
+                message=None,
+                answers=request.id,
+                floor=admitted.floor,
+                steps=steps,
+                text=text,
+            )
+        except NodeMeshError as exc:
+            raise Refusal(exc.code) from None
+
+    async def _run_call(self, request: Any, admitted: _Admitted, local: str) -> List[Any]:
+        call = request.call
+        outcome = await asyncio.wait_for(
+            self._calls.run(self._owner, local, admitted.resolved, admitted.authority, admitted.arguments),
+            self._turn_seconds,
+        )
+        return [
+            {
+                "call_id": call.call_id,
+                "tool": call.tool,
+                "arguments_json": call.arguments_json,
+                "tool_def": admitted.action["tool_def"],
+                "status": outcome.status,
+                "content": outcome.content,
+                "code": outcome.code,
+            }
+        ]
+
+    async def _run_turn(self, request: Any, local: str) -> Tuple[List[Dict[str, Any]], str]:
+        session = _Session(self._owner, local, mesh_chat=request.chat_id, user_text=request.text, request=request)
+        self._sessions[local] = session
+        try:
+            await asyncio.wait_for(self._runner(self._owner, local, request.text), self._turn_seconds)
+            try:
+                await asyncio.wait_for(session.done.wait(), ANSWER_GRACE_SECONDS)
+            except asyncio.TimeoutError:
+                pass
+        finally:
+            self._sessions.pop(local, None)
+        if not (session.answer or "").strip():
+            raise Refusal("node.no_answer")
+        return session.steps, session.answer
+
+    async def _record(
+        self,
+        chat_id: str,
+        *,
+        continues: Optional[str],
+        message: Optional[str],
+        answers: Optional[str],
+        floor: Labels,
+        steps: List[Any],
+        text: str,
+    ) -> str:
+        turn_id = await self._mesh.record_turn(
+            chat_id,
+            continues=continues,
+            message=message,
+            answers=answers,
+            provider=PROVIDER,
+            model=MODEL,
+            labels=floor,
+            steps=_step_records(steps, floor),
+            text=_clip(text, MAX_TEXT),
+            reason="completed",
+        )
+        try:
+            view = (await self._mesh.chat(chat_id)).view
+            self._state.mark_imported(chat_id, [m.id for m in view.messages if getattr(m, "turn", None) == turn_id])
+        except Exception:
+            logger.warning("node_mesh_chat_mark_failed")
+        return turn_id
+
+    async def _local_chat(self, view: Any) -> str:
         local = self._state.local_for(view.chat_id)
         if local is None:
             local = await asyncio.to_thread(self._history.create_chat, user_id=self._owner)
@@ -439,8 +571,8 @@ class MeshChatBridge:
         known = self._state.imported(view.chat_id)
         fresh = [
             m for m in view.messages
-            if m.id != request.id and m.id not in known and m.text and m.role.name in {"USER", "ASSISTANT"}
-            and m.status.name == "COMPLETE"
+            if m.id not in known and m.text and m.role.name in {"USER", "ASSISTANT"}
+            and m.status.name == "COMPLETE" and self._importable(m)
         ]
         if fresh:
             self._suppressed.add(local)
@@ -453,16 +585,54 @@ class MeshChatBridge:
             self._state.mark_imported(view.chat_id, [m.id for m in fresh])
         return local
 
+    def _importable(self, message: Any) -> bool:
+        confidentiality = labels_of(message.labels)[0]
+        return confidentiality != "secret" and (confidentiality != "phi" or self._policy.phi_approved)
 
-def _step_events(step: Dict[str, Any]) -> List[Dict[str, Any]]:
-    name = _clip(step.get("name") or "tool", 128)
-    proposed = {"tool": name, "arguments": _clip(step.get("args") or "", MAX_STEP_TEXT)}
-    result: Dict[str, Any] = {"tool": name, "status": step.get("status") or "completed"}
-    if step.get("error"):
-        result["error"] = _clip(step["error"], MAX_STEP_TEXT)
-    else:
-        result["result"] = _clip(step.get("result") or "", MAX_STEP_TEXT)
-    return [{"kind": "chat.tool_proposed", "body": proposed}, {"kind": "chat.tool_result", "body": result}]
+
+def _chat_floor(view: Any) -> Labels:
+    return join_labels(("public", "owner"), *(labels_of(m.labels) for m in view.messages))
+
+
+def _step_records(steps: List[Any], floor: Labels) -> List[StepRecord]:
+    records: List[StepRecord] = []
+    for index, step in enumerate(steps[:MAX_STEPS]):
+        if not isinstance(step, dict):
+            continue
+        if "call_id" in step:
+            records.append(
+                StepRecord(
+                    call_id=step["call_id"], tool=step["tool"], arguments_json=step["arguments_json"],
+                    tool_def=step["tool_def"], status="ok" if step["status"] == "ok" else "error",
+                    content=step["content"], labels=floor, code=step["code"],
+                )
+            )
+            continue
+        name = _clip(step.get("name") or "tool", 128)
+        failed = bool(step.get("error")) or step.get("status") != "completed"
+        records.append(
+            StepRecord(
+                call_id=f"node-step-{index + 1}",
+                tool=name,
+                arguments_json=_arguments(step.get("args")),
+                tool_def=_tool_def(name),
+                status="error" if failed else "ok",
+                content=_clip(step.get("error") if failed and step.get("error") else step.get("result") or "", MAX_STEP_TEXT),
+                labels=floor,
+                code="node.tool_failed" if failed else None,
+            )
+        )
+    return records
+
+
+def _arguments(raw: Any) -> str:
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        parsed = {"text": _clip(raw, MAX_STEP_TEXT)}
+    if not isinstance(parsed, dict):
+        parsed = {} if parsed is None else {"value": parsed}
+    return json.dumps(parsed, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def _protection_enabled(owner_id: str) -> bool:
@@ -525,13 +695,14 @@ async def start_for(orch: Any) -> None:
     from shared import node_identity
 
     mesh = await node_mesh.start_configured()
-    if mesh is None or not mesh.turn_events_supported:
+    if mesh is None or not mesh.requests_supported:
         return
     bridge = MeshChatBridge(
         mesh,
         owner_id=node_identity.bound_owner,
         history=orch.history,
         runner=orchestrator_runner(orch),
+        calls=OrchestratorCalls(orch),
         state_path=node_identity.data_dir() / STATE_FILE,
     )
     await bridge.start()

@@ -32,8 +32,7 @@ KERNEL_DIR = "kernel"
 DEFAULT_SYNC_MS = 5000
 MIN_SYNC_MS = 200
 MAX_SYNC_MS = 600_000
-TURN_EVENTS_EXPORT = "append_chat_events"
-TURN_EVENT_RECORD = "NewChatEvent"
+REQUEST_EXPORT = "record_peer_turn"
 ENROLLED_STATES = frozenset({"ENROLLED", "RESTORED"})
 
 
@@ -163,6 +162,20 @@ def _relay(binding: Any, relay: Sequence[str]) -> Any:
     return binding.RelayChoice.CUSTOM(urls=list(relay))
 
 
+@dataclass(frozen=True)
+class StepRecord:
+    call_id: str
+    tool: str
+    arguments_json: str
+    tool_def: str
+    status: str
+    content: str
+    labels: tuple
+    code: Optional[str] = None
+    reasons: tuple = ()
+    receipt: Optional[str] = None
+
+
 IssuerLoader = Callable[[], Awaitable[List[Dict[str, str]]]]
 
 
@@ -220,8 +233,8 @@ class NodeMesh:
         return self._mailbox
 
     @property
-    def turn_events_supported(self) -> bool:
-        return hasattr(self._binding, TURN_EVENT_RECORD) and hasattr(self._kernel, TURN_EVENTS_EXPORT)
+    def requests_supported(self) -> bool:
+        return hasattr(self._kernel, REQUEST_EXPORT)
 
     def subscribe(self, callback: Callable[[Any], None]) -> None:
         if self._listener is None:
@@ -241,6 +254,7 @@ class NodeMesh:
             issuers = await self._issuers()
             self._keys = keys
             self._listener = _Listener(binding)
+            await self._start_mailbox()
             config = binding.KernelConfig(
                 data_dir=str(self._data_dir / KERNEL_DIR),
                 operations_secret=keys.operations_secret,
@@ -255,30 +269,40 @@ class NodeMesh:
                     internet_lookup=self._settings.internet_lookup,
                     loopback_only=self._settings.loopback_only,
                     sync_interval_ms=self._settings.sync_interval_ms,
-                    mailbox=None,
+                    mailbox=self._mailbox.snapshot()["address"] if self._mailbox is not None else None,
                 ),
             )
             (self._data_dir / KERNEL_DIR).mkdir(mode=0o700, parents=True, exist_ok=True)
-            self._kernel = await asyncio.to_thread(
-                binding.Kernel.open, config, _signer(binding, keys), None, None, self._listener.bridge
-            )
             try:
-                await self._kernel.start_network()
-                if self._mailbox is None and self._settings.mailbox.enabled:
-                    self._mailbox = MailboxProcess(
-                        self._settings.mailbox, data_dir=self._data_dir / "mailbox"
-                    )
-                if self._mailbox is not None:
-                    try:
-                        await self._mailbox.start()
-                    except MailboxError as exc:
-                        logger.warning("node_mailbox_unavailable: %s", exc)
-                        self._mailbox_error = str(exc)
+                self._kernel = await asyncio.to_thread(
+                    binding.Kernel.open, config, _signer(binding, keys), None, None, self._listener.bridge
+                )
+                try:
+                    await self._kernel.start_network()
+                except BaseException:
+                    await self._kernel.stop_network()
+                    raise
             except BaseException:
-                await self._kernel.stop_network()
+                await self._stop_mailbox()
                 self._kernel = None
                 raise
             self._started = True
+
+    async def _start_mailbox(self) -> None:
+        if self._mailbox is None and self._settings.mailbox.enabled:
+            self._mailbox = MailboxProcess(self._settings.mailbox, data_dir=self._data_dir / "mailbox")
+        if self._mailbox is None:
+            return
+        try:
+            await self._mailbox.start()
+        except MailboxError as exc:
+            logger.warning("node_mailbox_unavailable: %s", exc)
+            self._mailbox_error = str(exc)
+            self._mailbox = None
+
+    async def _stop_mailbox(self) -> None:
+        if self._mailbox is not None:
+            await self._mailbox.stop()
 
     async def stop(self) -> None:
         async with self._lock:
@@ -286,10 +310,9 @@ class NodeMesh:
                 return
             self._started = False
             try:
-                if self._mailbox is not None:
-                    await self._mailbox.stop()
-            finally:
                 await self._kernel.stop_network()
+            finally:
+                await self._stop_mailbox()
 
     async def _state(self) -> Any:
         return await self.kernel.mesh_status()
@@ -321,7 +344,7 @@ class NodeMesh:
             "pairing_open": bool(status.pairing_open),
             "endpoint_address": address,
             "mailbox": mailbox,
-            "turn_events": self.turn_events_supported,
+            "requests": self.requests_supported,
         }
 
     async def pairing_offer(self) -> Dict[str, Any]:
@@ -363,15 +386,78 @@ class NodeMesh:
     async def send_message(self, chat_id: str, text: str, continues: Optional[str] = None) -> str:
         return await asyncio.to_thread(self.kernel.send_message, chat_id, text, continues)
 
-    async def append_chat_events(self, chat_id: str, events: Sequence[Dict[str, Any]]) -> List[str]:
-        if not self.turn_events_supported:
-            raise MeshUnavailable("turn_events_unsupported")
-        record = getattr(self._binding, TURN_EVENT_RECORD)
-        built = [
-            record(kind=item["kind"], body_json=json.dumps(item["body"], sort_keys=True, separators=(",", ":")))
-            for item in events
-        ]
-        return list(await asyncio.to_thread(self.kernel.append_chat_events, chat_id, built))
+    async def pending_requests(self) -> List[Any]:
+        return await asyncio.to_thread(self.kernel.pending_requests_for_me)
+
+    async def chat_requests(self, chat_id: str) -> List[Any]:
+        return await asyncio.to_thread(self.kernel.chat_requests, chat_id)
+
+    async def claim_request(self, request_id: str) -> str:
+        return await self._request_call(self.kernel.claim_request, request_id)
+
+    async def refuse_request(self, request_id: str, code: str) -> str:
+        return await self._request_call(self.kernel.refuse_request, request_id, code)
+
+    async def verify_ticket(self, ticket_json: str, action_json: str, effect_kind: str) -> Any:
+        return await self._request_call(self.kernel.verify_ticket, ticket_json, action_json, effect_kind)
+
+    async def record_turn(
+        self,
+        chat_id: str,
+        *,
+        continues: Optional[str],
+        message: Optional[str],
+        answers: Optional[str],
+        provider: str,
+        model: str,
+        labels: tuple,
+        steps: Sequence[StepRecord],
+        text: str,
+        reason: str,
+        code: Optional[str] = None,
+    ) -> str:
+        binding = self._binding
+        turn = binding.PeerTurn(
+            continues=continues,
+            message=message,
+            answers=answers,
+            provider=provider,
+            model=model,
+            labels=self._peer_labels(labels),
+            steps=[
+                binding.PeerToolStep(
+                    call_id=step.call_id,
+                    tool=step.tool,
+                    arguments_json=step.arguments_json,
+                    tool_def=step.tool_def,
+                    reasons=list(step.reasons),
+                    receipt=step.receipt,
+                    consent=None,
+                    status=step.status,
+                    content=step.content,
+                    code=step.code,
+                    labels=self._peer_labels(step.labels),
+                )
+                for step in steps
+            ],
+            text=text,
+            reason=reason,
+            code=code,
+        )
+        return await self._request_call(self.kernel.record_peer_turn, chat_id, turn)
+
+    def _peer_labels(self, labels: tuple) -> Any:
+        confidentiality, integrity = labels
+        return self._binding.PeerLabels(
+            confidentiality=getattr(self._binding.PeerConfidentiality, confidentiality.upper()),
+            integrity=getattr(self._binding.PeerIntegrity, integrity.upper()),
+        )
+
+    async def _request_call(self, function: Callable[..., Any], *arguments: Any) -> Any:
+        try:
+            return await asyncio.to_thread(function, *arguments)
+        except self._binding.KernelError as exc:
+            raise NodeMeshError(_code_of(exc)) from exc
 
     async def sync_now(self) -> None:
         await self.kernel.sync_now()
