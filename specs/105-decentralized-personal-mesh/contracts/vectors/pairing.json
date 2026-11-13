@@ -253,6 +253,68 @@
       },
       "kind": "pairing_request",
       "name": "request-device-cert-for-another-mesh"
+    },
+    {
+      "expect": {
+        "ok": {
+          "code": "2123 1449"
+        }
+      },
+      "input": {
+        "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+        "nonce": "qbCi0EuyiPKzTCXqoBx9yA",
+        "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+        "which": "comparison",
+        "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+      },
+      "kind": "pairing_code",
+      "name": "comparison-code"
+    },
+    {
+      "expect": {
+        "ok": {
+          "code": "0981 4446"
+        }
+      },
+      "input": {
+        "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+        "nonce": "AQEBAQEBAQEBAQEBAQEBAQ",
+        "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+        "which": "comparison",
+        "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+      },
+      "kind": "pairing_code",
+      "name": "comparison-code-other-nonce"
+    },
+    {
+      "expect": {
+        "ok": {
+          "code": "0981 4446"
+        }
+      },
+      "input": {
+        "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+        "nonce": "AQEBAQEBAQEBAQEBAQEBAQ",
+        "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+        "which": "comparison",
+        "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+      },
+      "kind": "pairing_code",
+      "name": "comparison-code-keeps-leading-zeros"
+    },
+    {
+      "expect": {
+        "ok": {
+          "code": "0950 9491"
+        }
+      },
+      "input": {
+        "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "nonce": "qbCi0EuyiPKzTCXqoBx9yA",
+        "which": "invitation"
+      },
+      "kind": "pairing_code",
+      "name": "invitation-code"
     }
   ],
   "devices": {

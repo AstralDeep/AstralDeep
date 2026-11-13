@@ -25,6 +25,7 @@ TYPES = (
     "wrap",
     "stop",
     "resume",
+    "rename",
 )
 PRESENCE_REQUIRED = {
     "genesis",
@@ -232,11 +233,16 @@ def check_entry_shape(entry: Any) -> None:
             )
     elif not crypto.is_id(author):
         raise MeshError("roster.malformed", "author")
-    elif (kind in PRESENCE_REQUIRED) != ("presence_sig" in entry):
-        raise MeshError("roster.malformed", "presence signature presence")
     body = entry["body"]
     if not isinstance(body, dict):
         raise MeshError("roster.malformed", "body")
+    if author != "recovery" and crypto.is_id(author):
+        if kind == "rename":
+            needs_presence = body.get("device") != author
+        else:
+            needs_presence = kind in PRESENCE_REQUIRED
+        if needs_presence != ("presence_sig" in entry):
+            raise MeshError("roster.malformed", "presence signature presence")
     fields = set(body)
     if kind == "genesis":
         if fields != {"device", "epoch", "issuers", "recovery"}:
@@ -337,6 +343,14 @@ def check_entry_shape(entry: Any) -> None:
             ):
                 raise MeshError("roster.malformed", "wrap grant")
             check_wrap(grant["wrap"])
+    elif kind == "rename":
+        if (
+            fields != {"device", "label"}
+            or not crypto.is_id(body["device"])
+            or not isinstance(body["label"], str)
+            or not 0 < len(body["label"]) <= 64
+        ):
+            raise MeshError("roster.malformed", "rename body")
     elif kind in ("stop", "resume"):
         if (
             fields != {"counter"}
@@ -476,6 +490,7 @@ class _Fold:
         auth_removes: dict[str, list[str]] = {}
         grants: dict[str, list[str]] = {}
         revokes: dict[str, list[str]] = {}
+        renames: dict[str, list[str]] = {}
         for eid in ordered:
             e = self.entries[eid]
             body = e["body"]
@@ -534,6 +549,8 @@ class _Fold:
                     "clock": e["clock"],
                     "entry": eid,
                 }
+            elif kind == "rename":
+                renames.setdefault(body["device"], []).append(eid)
             elif kind == "stop":
                 p.stop = max(p.stop, body["counter"])
             elif kind == "resume":
@@ -552,6 +569,12 @@ class _Fold:
                 ),
             )
 
+        for device, named in renames.items():
+            if device in p.admitted:
+                p.admitted[device] = {
+                    **p.admitted[device],
+                    "label": self.entries[newest(named)]["body"]["label"],
+                }
         for iss, adds in issuer_adds.items():
             live = effective(adds, issuer_removes.get(iss, []))
             if live:
@@ -712,6 +735,8 @@ class _Fold:
                     return "roster.unknown_epoch"
             if group == "phi" and e["author"] not in phi:
                 return "roster.not_phi_member"
+        elif kind == "rename" and body["device"] not in p.members:
+            return "roster.unknown_device"
         elif kind == "stop" and body["counter"] <= p.stop:
             return "roster.stop_not_rising"
         elif kind == "resume" and body["counter"] > p.stop:

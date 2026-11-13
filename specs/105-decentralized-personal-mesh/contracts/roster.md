@@ -64,6 +64,7 @@ An entry with unknown type, fields or encodings raises `roster.malformed`. A rec
 | `wrap` | no | yes | `group`, `device`, `grants` (see `keys.md`) |
 | `stop` | no | yes | `counter` (integer, at least 1) |
 | `resume` | yes | yes | `counter` (integer, at least 1): the stop counter it resumes |
+| `rename` | when `device` is not the author | no | `device` (device id), `label` (1 to 64 characters) |
 
 Details.
 
@@ -74,6 +75,7 @@ Details.
 - **attest.** Adds an identity attestation after the fact. The creating device uses it right after genesis, once its Keycloak sign-in has returned.
 - **phi_authority.** Names an institution key that may sign PHI approvals for this mesh. An owner cannot approve their own device for institutional PHI, so a mesh with no authority has no PHI members. No build ships an authority.
 - **phi_approval.** A grant carries a PHI approval attestation (section 7). A revoke removes the approval for a subject.
+- **rename.** Changes the label shown for a member. A device renames itself without presence. Renaming another device needs the author's `presence_sig`, so the owner's biometric consent covers it. The `presence_sig` is present exactly when `device` is not the author, and an entry that breaks this raises `roster.malformed`. The device record's own label never changes, only the label the roster reports. The label of a member is the label of the newest active `rename` for it, by `(clock, id)`, so the last writer by clock wins, and the record's label when there is none. A key rotation does not undo a rename.
 - **stop.** The stop counter only rises. An entry is valid only if its counter is above the highest counter in its ancestors. The mesh's stop counter is the maximum over valid stop entries. A peer that sees a counter higher than a ticket's counter refuses the ticket (`ticket.md`).
 - **resume.** Lifts a stop. It names the stop counter it resumes and carries the author's presence signature, so a thief holding a device and its passcode cannot lift the owner's stop. The recovery key may write it, without presence like its other entries. An entry is valid only if its counter is at most the highest stop counter in its ancestors. The mesh's resumed counter is the maximum over valid resume entries. The mesh is **halted** while the stop counter is above the resumed counter. A resume that names an older counter than the current stop leaves the mesh halted. A stop and a resume written concurrently resolve toward halted, because a resume cannot name a counter it has not seen. A resume never lowers the stop counter, so a ticket from before a stop stays refused after the resume (`ticket.md`). Halting refuses new effects only. Reads, chat and sync keep working (`labels.md` section 5, step 1). A resume is not a mailbox notice, so a device that was offline stays halted until it syncs with a peer that holds the resume. That is the safe side.
 
@@ -97,6 +99,7 @@ An entry is checked against the state computed from its own ancestors only (the 
 | `phi_approval` (grant) | The attestation passes section 7. A `device` subject is a member (`roster.unknown_device`) |
 | `epoch` | Every wrapped device is a member (personal group) or a PHI member (phi group), otherwise `roster.epoch_wrong_members`. A phi epoch is written by a PHI member (`roster.not_phi_member`). Recovery cannot write a phi epoch |
 | `wrap` | The device is a member or PHI member of the group. Every grant names a known epoch of that group (`roster.unknown_epoch`) |
+| `rename` | The target is a member (`roster.unknown_device`) |
 | `stop` | The counter is above the ancestors' maximum (`roster.stop_not_rising`) |
 | `resume` | The counter is at most the ancestors' stop maximum (`roster.resume_not_stopped`) |
 
@@ -121,7 +124,7 @@ Consequences, all covered by vectors.
 - **Epochs.** Every active `epoch` entry is valid, so two devices that start epochs while apart both succeed. The **current epoch** of a group is the newest, by `(clock, id)`, among epochs that no other epoch of the group follows. A later epoch that follows both replaces them.
 - **Stop counter.** The maximum over active stop entries. The **resumed counter** is the maximum over active resume entries. `stopped` is true when the stop counter is above the resumed counter.
 
-The state has these parts: `members` (device id to kind, label and feeds), `removed` (device id to cutoff and removing entry), `unattested`, `stale_attestation`, `principal`, `issuers`, `phi_authorities`, `phi_members`, `epochs`, `current_epoch`, `stop`, `resumed`, `stopped`, `recovery`, `feeds`, `void`, `rejected` (entry id to error), `pending`, `heads` and `count`. `heads` is the set of entries no other present entry follows. A new entry follows all current heads.
+The state has these parts: `members` (device id to kind, label and feeds, where the label follows the `rename` rule), `removed` (device id to cutoff and removing entry), `unattested`, `stale_attestation`, `principal`, `issuers`, `phi_authorities`, `phi_members`, `epochs`, `current_epoch`, `stop`, `resumed`, `stopped`, `recovery`, `feeds`, `void`, `rejected` (entry id to error), `pending`, `heads` and `count`. `heads` is the set of entries no other present entry follows. A new entry follows all current heads.
 
 **Feed status.** For a feed id: `member` if its device is a member, `removed` with the cutoff for that feed if the device was removed, `unknown` otherwise. `event.md` uses this to accept or refuse events.
 
@@ -169,11 +172,22 @@ Pairing adds a device. It copies Signal's flow.
 3. It connects to `addr` and sends a **request**: exactly `v`, `kind` (`request`), `mesh`, `nonce` (the invite's), `addr` (its own address), `device` (a record whose cert is bound to this mesh) and `sig`, by the new identity key under the pairing context. The inviter checks it (`pairing.wrong_mesh`, `pairing.wrong_nonce`, `roster.bad_device_cert`, `pairing.bad_signature`).
 4. The owner approves on the inviter with biometrics. The inviter writes an `add` entry with the attestation, then an `epoch` or `wrap` entry giving the new device the epoch keys. By default it grants every earlier epoch of the personal group. The owner may grant only the current one. It sends the roster and its entries over the encrypted channel.
 
-A device that shows its own QR code first (the other direction) uses the same request object with a nonce it chose. The inviter signs nothing in that case, and step 4 is the same.
+A device that shows its own QR code first uses an **offer**. It is an object with exactly `v`, `kind` (`offer`), `device` (a record with a null mesh in its cert), `addr`, `nonce`, `expires_s` and `sig`, signed by the new identity key under the pairing context. The approving device scans it, then dials `addr`, sends the invite, and the new device answers with the request (steps 3 and 4 follow). The **comparison code** both screens show is the first four bytes of `sha256("astral.pairing.code/v1" || nonce || identity || ops || wrap)` as a big-endian integer modulo 100000000, written as eight digits in two groups of four (`0123 4567`). The nonce is the 16 raw bytes and the three keys are the raw 65, 32 and 32 bytes of the device record.
+
+### 8.1 Invitation first
+
+When the new device cannot scan, the existing device shows the QR code. This is the same invite and request, started from the other end.
+
+1. The existing device creates an **invitation**: an invite (step 1) with a single-use nonce, bound to its identity key and the mesh id, with the identity key attached so the scanner can verify the signature: the canonical JSON of `{"identity": <inviter identity key>, "invite": <invite>}`. This is the payload shown as a QR code. The **invitation code** is the comparison code formula with the label `astral.pairing.invitation/v1`, the nonce and the inviter's identity key only, so both screens can show it before any joiner exists.
+2. The new device scans it and checks it exactly as step 2 says, with the mesh id taken from the invite. It generates its keys, signs in to Keycloak with the nonce rule of section 6, and opens its own pairing gate keyed by the nonce.
+3. It dials the invite's `addr` and sends a request (step 3). The inviter answers that it received the request, and shows the joiner's label, kind and comparison code to the owner.
+4. The owner approves with biometrics. The inviter writes the `add` entry and its follow-up entries, then dials the request's `addr` and sends the roster as in step 4. The joiner admits itself from that bundle.
+
+An invitation is used once. A request after the first, even an identical copy of it, is refused with `pairing.used`. An invitation that is past `expires_s` is refused with `pairing.expired`, and one the inviter withdrew with `pairing.cancelled`. Offers and invitations last 600 seconds unless the host sets another lifetime. Every record the host shows (offer, preview, invitation) carries `expires_s` so the app can count down.
 
 ## 9. Errors
 
-`roster.malformed`, `roster.bad_device_cert`, `roster.recovery_not_allowed`, `roster.wrong_mesh`, `roster.extra_genesis`, `roster.no_genesis`, `roster.ambiguous_genesis`, `roster.unauthorized_author`, `roster.author_removed`, `roster.bad_signature`, `roster.bad_presence_signature`, `roster.already_member`, `roster.device_removed`, `roster.duplicate_key`, `roster.unknown_device`, `roster.cutoff_incomplete`, `roster.unknown_issuer`, `roster.unknown_authority`, `roster.epoch_wrong_members`, `roster.not_phi_member`, `roster.unknown_epoch`, `roster.stop_not_rising`, `roster.resume_not_stopped`, `attestation.*` (sections 6 and 7) and `pairing.*` (section 8).
+`roster.malformed`, `roster.bad_device_cert`, `roster.recovery_not_allowed`, `roster.wrong_mesh`, `roster.extra_genesis`, `roster.no_genesis`, `roster.ambiguous_genesis`, `roster.unauthorized_author`, `roster.author_removed`, `roster.bad_signature`, `roster.bad_presence_signature`, `roster.already_member`, `roster.device_removed`, `roster.duplicate_key`, `roster.unknown_device`, `roster.cutoff_incomplete`, `roster.unknown_issuer`, `roster.unknown_authority`, `roster.epoch_wrong_members`, `roster.not_phi_member`, `roster.unknown_epoch`, `roster.stop_not_rising`, `roster.resume_not_stopped`, `attestation.*` (sections 6 and 7) and `pairing.*` (section 8): the codes of the checks above and `pairing.used`, `pairing.cancelled`, `pairing.wrong_offer`.
 
 Entry-level errors are recorded in `rejected` and do not stop the merge. `roster.no_genesis` and `roster.ambiguous_genesis` are raised.
 

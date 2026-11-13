@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import hashlib
+
 from . import crypto
 from .cj import b64url_decode
 from .errors import MeshError
@@ -93,3 +95,19 @@ def verify_request(request: Any, mesh: str, nonce: str) -> str:
     ):
         raise MeshError("pairing.bad_signature", "request signature")
     return device
+
+
+def _code(label: bytes, *parts: bytes) -> str:
+    digest = hashlib.sha256(label + b"".join(parts)).digest()
+    number = int.from_bytes(digest[:4], "big") % 100_000_000
+    return f"{number // 10_000:04d} {number % 10_000:04d}"
+
+
+def comparison_code(
+    nonce: bytes, identity: bytes, ops: bytes, wrap: bytes
+) -> str:
+    return _code(b"astral.pairing.code/v1", nonce, identity, ops, wrap)
+
+
+def invitation_code(nonce: bytes, inviter_identity: bytes) -> str:
+    return _code(b"astral.pairing.invitation/v1", nonce, inviter_identity)

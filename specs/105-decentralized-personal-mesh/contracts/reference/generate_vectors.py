@@ -1639,6 +1639,107 @@ def build_roster() -> Suite:
         },
         error="roster.bad_device_cert",
     )
+
+    m = sc.Mesh("rn1", ALICE)
+    ab = m.add(ALICE, BOB, [m.mesh])
+    own = m.rename(BOB, BOB, [ab], "Bob's phone")
+    out = R("rename-self-needs-no-presence", m, members=[A, B], rejected={})
+    assert out["members"][B]["label"] == "Bob's phone"
+    m.rename(ALICE, BOB, [own], "Kitchen tablet")
+    out = R("rename-another-device-with-presence", m, members=[A, B], rejected={})
+    assert out["members"][B]["label"] == "Kitchen tablet"
+    m = sc.Mesh("rn2", ALICE)
+    ab = m.add(ALICE, BOB, [m.mesh])
+    first = m.rename(ALICE, BOB, [ab], "First")
+    second = m.rename(BOB, BOB, [ab], "Second")
+    out = R("rename-concurrent-newest-clock-wins", m, members=[A, B], rejected={})
+    assert out["members"][B]["label"] == "Second"
+    assert first and second
+    m = sc.Mesh("rn3", ALICE)
+    ghost = m.put(
+        m.entry(
+            "rename",
+            ALICE,
+            [m.mesh],
+            {"device": CAROL.id, "label": "Nobody"},
+            presence=True,
+        )
+    )
+    R(
+        "rename-of-a-non-member-rejected",
+        m,
+        members=[A],
+        rejected={ghost: "roster.unknown_device"},
+    )
+    m = sc.Mesh("rn4", ALICE)
+    ab = m.add(ALICE, BOB, [m.mesh])
+    rem = m.remove(ALICE, BOB, [ab], {BOB.feed: 0})
+    late = m.rename(BOB, BOB, [ab], "Too late")
+    out = R(
+        "rename-by-a-device-removed-concurrently-is-void",
+        m,
+        members=[A],
+        void=[late],
+        rejected={},
+    )
+    assert rem and out["members"][A]["label"] == ALICE.name
+    m = sc.Mesh("rn5", ALICE)
+    ab = m.add(ALICE, BOB, [m.mesh])
+    m.rename(BOB, BOB, [ab], "Bob's phone")
+    rename_other = m.entry(
+        "rename", ALICE, [m.mesh], {"device": BOB.id, "label": "x"}, presence=False
+    )
+    s.add(
+        "shape-rename-another-device-without-presence-signature",
+        "roster_shape",
+        {"entry": rename_other},
+        error="roster.malformed",
+    )
+    s.add(
+        "shape-rename-self-with-presence-signature",
+        "roster_shape",
+        {
+            "entry": m.entry(
+                "rename",
+                ALICE,
+                [m.mesh],
+                {"device": ALICE.id, "label": "x"},
+                presence=True,
+            )
+        },
+        error="roster.malformed",
+    )
+    for case, label in (("empty", ""), ("too-long", "x" * 65)):
+        s.add(
+            f"shape-rename-label-{case}",
+            "roster_shape",
+            {
+                "entry": m.entry(
+                    "rename",
+                    ALICE,
+                    [m.mesh],
+                    {"device": ALICE.id, "label": label},
+                    presence=False,
+                )
+            },
+            error="roster.malformed",
+        )
+    s.add(
+        "shape-rename-by-recovery-not-allowed",
+        "roster_shape",
+        {
+            "entry": roster.build_entry(
+                "rename",
+                m.mesh,
+                [m.mesh],
+                hlc(1),
+                "recovery",
+                {"device": ALICE.id, "label": "x"},
+                recovery_seed=seed("r"),
+            )
+        },
+        error="roster.recovery_not_allowed",
+    )
     names.update({A: "alice", B: "bob", C: "carol", D: "dave", N: "node1"})
     s.doc["names"] = dict(sorted(names.items()))
     return s
@@ -2006,6 +2107,43 @@ def build_pairing() -> Suite:
             ),
         },
         error="roster.bad_device_cert",
+    )
+    bob_keys = {
+        "identity": b64url_encode(BOB.identity_public),
+        "ops": b64url_encode(BOB.ops_public),
+        "wrap": b64url_encode(BOB.wrap_public),
+    }
+    code = s.add(
+        "comparison-code",
+        "pairing_code",
+        {"which": "comparison", "nonce": nonce, **bob_keys},
+    )
+    other = s.add(
+        "comparison-code-other-nonce",
+        "pairing_code",
+        {"which": "comparison", "nonce": b64url_encode(b"\x01" * 16), **bob_keys},
+    )
+    assert code != other
+    padded = next(
+        n
+        for n in (b64url_encode(bytes([i]) * 16) for i in range(256))
+        if pairing.comparison_code(
+            b64url_decode(n), BOB.identity_public, BOB.ops_public, BOB.wrap_public
+        ).startswith("0")
+    )
+    s.add(
+        "comparison-code-keeps-leading-zeros",
+        "pairing_code",
+        {"which": "comparison", "nonce": padded, **bob_keys},
+    )
+    s.add(
+        "invitation-code",
+        "pairing_code",
+        {
+            "which": "invitation",
+            "nonce": nonce,
+            "identity": b64url_encode(ALICE.identity_public),
+        },
     )
     return s
 

@@ -12229,6 +12229,1114 @@
       },
       "kind": "roster_shape",
       "name": "shape-device-cert-bound-to-mesh"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 3,
+          "current_epoch": {
+            "personal": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "state": "member"
+            }
+          },
+          "heads": [
+            "sha256:dd1f8febbb815ff2f6c3956ceb2bae799ca3d813b2685e2e336a67d6ff0b1fa0"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            },
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+              "feeds": [
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA"
+              ],
+              "kind": "pocket",
+              "label": "Bob's phone"
+            }
+          },
+          "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d"
+          },
+          "rejected": {},
+          "removed": {},
+          "resumed": 0,
+          "stale_attestation": [],
+          "stop": 0,
+          "stopped": false,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+          ],
+          "void": []
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "H_oLzUZ0P1h-1TafpOkF1m_o_KAroEZboMDKxBSpflVCRAXWTdfuanyWvOnwjSZS",
+                  "epk": "pINfperShRwBPnd0ez95taDWYpWLuYNdlzJqm98pnC0",
+                  "nonce": "6JDbLaoF16WjI5XEUZYyNO8Fku8HL14i"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "aTVzu-Rla6XLC7ZuR3TuoSAbkDXe3dH0PgNUzXdd6aPQfN3HF-UxNhh0G8s83coI",
+                      "epk": "f9KVkgp1TTPPxsWvNRag-INFfNYrIACAni85LfPZuUo",
+                      "nonce": "1bppbNeZ38XCr1D1NTOUg9DJVcSkFhjo"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "DummvhWkUKYV17brmm7jyZQ4VJxNsYNRh-LScIiLppw",
+                "wrap": "mhPASUS-Uhu6nYPp7zCF5-abVaLsMfBtK2qxLBIdwzg"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "MmSCg_xRj5GNoE3FQMJezj5HSty_pg5SI_Rday-yHERwdyTdKd1eSEHUsxB0J2c7Tvm5oMHo8E8H3wQ5V0cSAQ",
+            "sig": "MQzY29b9OiLWTwKr1ns_sKbnRyKrrJJoXHXoRDL9T3pVZm4r-zxkOZfCDLm3PgOugtbjbQqXYJt6PAqXtyn8aA",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "attestation": null,
+              "device": {
+                "cert": "NnNxVmEBxp4Vce9uvgZqzd9KoFOc1hI7GPg7VW1X_btBlj481RaMTQXSUYx3UlJBpgKmw-OjTUX_m2S0Tgdt_Q",
+                "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+                "kind": "pocket",
+                "label": "bob",
+                "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+                "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+                "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+              }
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d"
+            ],
+            "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+            "presence_sig": "eoviOnC1yQJ-sRh_fgiMiQqsAL_OCXG2OwPx-_zG-Ox6BOawamAHfP7RSZcBcwlwF12MtpktkMkhIBOtqM18JQ",
+            "sig": "wQpODoCume5njI-AvEFcK3if6J1N5aISukNKI2PgG3Z7df9m-abpFmft1TdIKT8QGP5CuaiscWcVYDA5TFpJMQ",
+            "type": "add",
+            "v": 1
+          },
+          {
+            "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+            "body": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "label": "Bob's phone"
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:b0e3b705becf28a8c163cb647cbeee798607e1385931a710ed9a613e1c5c23d0"
+            ],
+            "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+            "sig": "ViaPbtI4K9gPBw5F9QGLc-xtUz21k1qnVoeh0zO2v_54iGopnmbQJZm3XnX3p5atxdIK9EY86UTQR0zFkT9X6Q",
+            "type": "rename",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "rename-self-needs-no-presence"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 4,
+          "current_epoch": {
+            "personal": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "state": "member"
+            }
+          },
+          "heads": [
+            "sha256:de23e4b9e63d4255f9eba65f3ff7f28fb2e1355d88034aaee62f861b859035ac"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            },
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+              "feeds": [
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA"
+              ],
+              "kind": "pocket",
+              "label": "Kitchen tablet"
+            }
+          },
+          "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d"
+          },
+          "rejected": {},
+          "removed": {},
+          "resumed": 0,
+          "stale_attestation": [],
+          "stop": 0,
+          "stopped": false,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+          ],
+          "void": []
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "H_oLzUZ0P1h-1TafpOkF1m_o_KAroEZboMDKxBSpflVCRAXWTdfuanyWvOnwjSZS",
+                  "epk": "pINfperShRwBPnd0ez95taDWYpWLuYNdlzJqm98pnC0",
+                  "nonce": "6JDbLaoF16WjI5XEUZYyNO8Fku8HL14i"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "aTVzu-Rla6XLC7ZuR3TuoSAbkDXe3dH0PgNUzXdd6aPQfN3HF-UxNhh0G8s83coI",
+                      "epk": "f9KVkgp1TTPPxsWvNRag-INFfNYrIACAni85LfPZuUo",
+                      "nonce": "1bppbNeZ38XCr1D1NTOUg9DJVcSkFhjo"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "DummvhWkUKYV17brmm7jyZQ4VJxNsYNRh-LScIiLppw",
+                "wrap": "mhPASUS-Uhu6nYPp7zCF5-abVaLsMfBtK2qxLBIdwzg"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "MmSCg_xRj5GNoE3FQMJezj5HSty_pg5SI_Rday-yHERwdyTdKd1eSEHUsxB0J2c7Tvm5oMHo8E8H3wQ5V0cSAQ",
+            "sig": "MQzY29b9OiLWTwKr1ns_sKbnRyKrrJJoXHXoRDL9T3pVZm4r-zxkOZfCDLm3PgOugtbjbQqXYJt6PAqXtyn8aA",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "attestation": null,
+              "device": {
+                "cert": "NnNxVmEBxp4Vce9uvgZqzd9KoFOc1hI7GPg7VW1X_btBlj481RaMTQXSUYx3UlJBpgKmw-OjTUX_m2S0Tgdt_Q",
+                "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+                "kind": "pocket",
+                "label": "bob",
+                "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+                "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+                "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+              }
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d"
+            ],
+            "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+            "presence_sig": "eoviOnC1yQJ-sRh_fgiMiQqsAL_OCXG2OwPx-_zG-Ox6BOawamAHfP7RSZcBcwlwF12MtpktkMkhIBOtqM18JQ",
+            "sig": "wQpODoCume5njI-AvEFcK3if6J1N5aISukNKI2PgG3Z7df9m-abpFmft1TdIKT8QGP5CuaiscWcVYDA5TFpJMQ",
+            "type": "add",
+            "v": 1
+          },
+          {
+            "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+            "body": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "label": "Bob's phone"
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:b0e3b705becf28a8c163cb647cbeee798607e1385931a710ed9a613e1c5c23d0"
+            ],
+            "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+            "sig": "ViaPbtI4K9gPBw5F9QGLc-xtUz21k1qnVoeh0zO2v_54iGopnmbQJZm3XnX3p5atxdIK9EY86UTQR0zFkT9X6Q",
+            "type": "rename",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "label": "Kitchen tablet"
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:dd1f8febbb815ff2f6c3956ceb2bae799ca3d813b2685e2e336a67d6ff0b1fa0"
+            ],
+            "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+            "presence_sig": "NNL_DoDhO9w9RAJDUzxxrmLTe6cehrgwb-mgBABKuph6xWQsQ0OHtXadj_jsqf6r_Pjmf4zgcgzEI3SClN6nOw",
+            "sig": "GKop5i-43TGiLItHFpWmDqAn19fc7a5ucBWVKH-AOkUBzN25BIIQEt0W3048qpvdAfZ2lsPXY1xMJxvBszuXhA",
+            "type": "rename",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:54ac75125ae2394442c55aba76e8d2a0cd2cfaeac5720fb7a9e7baf9d05b608d",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "rename-another-device-with-presence"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 4,
+          "current_epoch": {
+            "personal": "sha256:8481c15d306f037ea6e5786fc43e359b374350811ecf92fab3c1d565fa3f8882",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:8481c15d306f037ea6e5786fc43e359b374350811ecf92fab3c1d565fa3f8882": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "state": "member"
+            }
+          },
+          "heads": [
+            "sha256:5c3e8d1042be45c0bdcafba27057c4cafaeae6bb07066b2aa3e7c661c3e8f4fe",
+            "sha256:6b6b9e3c5432a5f80be981ce2bc4ed0c81b2417e86f7e57dd07bc169f50a91c3"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            },
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+              "feeds": [
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA"
+              ],
+              "kind": "pocket",
+              "label": "Second"
+            }
+          },
+          "mesh": "sha256:8481c15d306f037ea6e5786fc43e359b374350811ecf92fab3c1d565fa3f8882",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:8481c15d306f037ea6e5786fc43e359b374350811ecf92fab3c1d565fa3f8882"
+          },
+          "rejected": {},
+          "removed": {},
+          "resumed": 0,
+          "stale_attestation": [],
+          "stop": 0,
+          "stopped": false,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+          ],
+          "void": []
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "4CX_Md2m9TjMvV9VgmTQs9XvMhfSxES1HvMeb7zF2iIWmlxwyfgmHWFFeB11QvSn",
+                  "epk": "jbckZ4iRnA_-6sLzcJVXWPG-CW3NV2LTFJMYTKRf008",
+                  "nonce": "5vxEK4AVemOGZxPm4VMX-QIpVEMEUJXc"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "O2YOHiOMyqu2JXGgxDXdRRcEBXXah8U-FPdtddJB7eYz3STdElAqtHbntVsm1H1R",
+                      "epk": "BRwMeiNLazmADNkj3wzPgREI36GOgzOWaDBPTVUgfUY",
+                      "nonce": "R9vUYmqMLW7W8uKM9yUJ5oeDFU2ngrjD"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "2oBDN8m-3xMXPS1IFvvdQP679O3PlIaZWPCrM29k8kQ",
+                "wrap": "unLRRhau73JzI2LXENxxZjDQtFcXTWhMrcw8h04KKDA"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "K5KaQY-VC4wPST2PQWcNQzg1rHLpwHRYZI-58vrEEFV0cCdNzSQDzaTxCz0gYlEbGlLdGNrGBBiihWb1wy2TFg",
+            "sig": "eXdn-ASyovNvGXnhBKzdg2OycZSqMEXveLWDrc4JubYYsWTBq3z9TJXsofEMQAmzE09Gu1BeMbwmy3qESN7neA",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "attestation": null,
+              "device": {
+                "cert": "AlDe_4qoMGbwMifKstUuVQzkoP0Y_dEkbILVZtkXM_FDFLbxHDGxrq87VTNhxCS6e2SERoeXiWoS-l_26sMthg",
+                "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+                "kind": "pocket",
+                "label": "bob",
+                "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+                "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+                "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+              }
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:8481c15d306f037ea6e5786fc43e359b374350811ecf92fab3c1d565fa3f8882"
+            ],
+            "mesh": "sha256:8481c15d306f037ea6e5786fc43e359b374350811ecf92fab3c1d565fa3f8882",
+            "presence_sig": "dNfta4_Hwyi8Hs4PdK03up46lu-QU5JXEsoHiI-NS2oX1h30kjXTLf2tfbM_G5X9-uV9gq-YBwZhYR6Mq2cTdg",
+            "sig": "geSZlrxsmBl2IPIQPoOemBa1KahkV5EdKDH5B8YVx2hmFC5lbm0LBNjUGji18VnkcOkgtyHQeXteviuE0aLo8w",
+            "type": "add",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "label": "First"
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:89bfbbac97e4c728300e5a68bb925d0eb1c095566ce6a39c3d9f8fbc7f2f1df0"
+            ],
+            "mesh": "sha256:8481c15d306f037ea6e5786fc43e359b374350811ecf92fab3c1d565fa3f8882",
+            "presence_sig": "qHoiO97-FOSpD5Mcc8c-uQJzYvKTyfWNxS8rbligyoNjctsGSVjxiY3Qmr022fa51LL-CvvGEiNDH-aHiLcgFQ",
+            "sig": "fO7gflf7F48UNKGN4StDA9DFdNVukgM82HaNsPzxt9cTmegE-OOcvkqhiRiaSoT2zuQTSLhbDfKuT1DETT5Q1g",
+            "type": "rename",
+            "v": 1
+          },
+          {
+            "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+            "body": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "label": "Second"
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:89bfbbac97e4c728300e5a68bb925d0eb1c095566ce6a39c3d9f8fbc7f2f1df0"
+            ],
+            "mesh": "sha256:8481c15d306f037ea6e5786fc43e359b374350811ecf92fab3c1d565fa3f8882",
+            "sig": "LMFhyj3-equEyQ912KyCSrVAlpvnUCg5gIRzFcDgG_U3Slj2G-HavgcKJE4Hm1Nj-gSynaGIClRNlryEV-MtMQ",
+            "type": "rename",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:8481c15d306f037ea6e5786fc43e359b374350811ecf92fab3c1d565fa3f8882",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "rename-concurrent-newest-clock-wins"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 2,
+          "current_epoch": {
+            "personal": "sha256:66361f709a22e7fe801143a9b316e2491d7dc62e525257601631226332d30610",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:66361f709a22e7fe801143a9b316e2491d7dc62e525257601631226332d30610": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            }
+          },
+          "heads": [
+            "sha256:dc1c308f3214ec7b6fa7c0d53145241add86ecf6c7da396344df5d5a0b88841e"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            }
+          },
+          "mesh": "sha256:66361f709a22e7fe801143a9b316e2491d7dc62e525257601631226332d30610",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:66361f709a22e7fe801143a9b316e2491d7dc62e525257601631226332d30610"
+          },
+          "rejected": {
+            "sha256:dc1c308f3214ec7b6fa7c0d53145241add86ecf6c7da396344df5d5a0b88841e": "roster.unknown_device"
+          },
+          "removed": {},
+          "resumed": 0,
+          "stale_attestation": [],
+          "stop": 0,
+          "stopped": false,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
+          ],
+          "void": []
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "8PzIKwx6weew2cM8Xy_wbvGkrOxRuQDuLwbBnSLu7zk4nA5iPkjTzuwPRWz9iYsw",
+                  "epk": "oz8z9iU2p1-4m7nn-ED4BmRWSxDrk_2KcKlhz0B2zHI",
+                  "nonce": "4siQXnkk2LoJ0eAexHP5-THYHERJ7J5G"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "0jIUpmiaVZUpuJtkiGL7J5RKD3i8MJNWb_K4aenE7-JB4TBqwC7O4Hvlb17QC3he",
+                      "epk": "yaeLEt3pW3Xc8S5O0VYUFWWerpZ54OEjPdO-fBq6hlg",
+                      "nonce": "F_Wv5T4K0cagiIq8Qw5x5gP04mTX1WUV"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "pe6V-Vb5hNYssPJClszTyhSrbUYZpjoKBP8gG1kqKb4",
+                "wrap": "A_qAmnfE3wNEr25Txs8NxT7Eg5Y7PWHJjjm8C5TtdCY"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "SSQUi-_zSdcXMJuCYLo8ZdPPcHiGvb2tHzTXm1Eb4LUgWkXQd8P8zf_5lpv4-if_m3_pB4UlzghcmREIpG1kMA",
+            "sig": "b1tYr54k2HjNK88ShD2W5SaAoJ6YMkr2oMivsMq3l1V1BafIwoYSuclVIy1xG2T7z8WxANQfisHMqRx3sA8oTA",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": "sha256:10ff634787522acd89ecf9fa791ca4245718e694c7a8bf5ef59045895cc51e99",
+              "label": "Nobody"
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:66361f709a22e7fe801143a9b316e2491d7dc62e525257601631226332d30610"
+            ],
+            "mesh": "sha256:66361f709a22e7fe801143a9b316e2491d7dc62e525257601631226332d30610",
+            "presence_sig": "OEISgvjWyLSqCv7Y5xCeFdr7BMoMWjUqwadS01K1VwUoPRP45H7g04g6-zJ5FfhaUPCKGA0-4QNbAc-ioytB5w",
+            "sig": "4JvKrOLZ6AvNFmgrhRCeJvKyAy_S3zrXb5cyO9IRMPts62JVDXpc1cdb-LmvYkqdWlPPGaxwctknYjOPDWdYMw",
+            "type": "rename",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:66361f709a22e7fe801143a9b316e2491d7dc62e525257601631226332d30610",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "rename-of-a-non-member-rejected"
+    },
+    {
+      "expect": {
+        "ok": {
+          "count": 4,
+          "current_epoch": {
+            "personal": "sha256:f48b4f0b0d7b20a1e88928411a98989a6bf6b02a495dc216700cc5bf6a605e13",
+            "phi": null
+          },
+          "epochs": {
+            "sha256:f48b4f0b0d7b20a1e88928411a98989a6bf6b02a495dc216700cc5bf6a605e13": "personal"
+          },
+          "feeds": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+              "state": "member"
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "cutoff": 0,
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "state": "removed"
+            }
+          },
+          "heads": [
+            "sha256:6f8dcf02badc3e1927dbee96a735ad866d32a55b26d35d92a376ed80f9e81753",
+            "sha256:beda566d8e9ca7c39855d0a4b378366b3520fdadc88b976a630cc7e25431b0d1"
+          ],
+          "issuers": [
+            "https://auth.example.test/realms/astral"
+          ],
+          "members": {
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": {
+              "feeds": [
+                "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+              ],
+              "kind": "desktop",
+              "label": "alice"
+            }
+          },
+          "mesh": "sha256:f48b4f0b0d7b20a1e88928411a98989a6bf6b02a495dc216700cc5bf6a605e13",
+          "pending": [],
+          "phi_authorities": [],
+          "phi_members": [],
+          "principal": {
+            "attested": [],
+            "mesh": "sha256:f48b4f0b0d7b20a1e88928411a98989a6bf6b02a495dc216700cc5bf6a605e13"
+          },
+          "rejected": {},
+          "removed": {
+            "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341": {
+              "cutoff": {
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": 0
+              },
+              "entry": "sha256:6f8dcf02badc3e1927dbee96a735ad866d32a55b26d35d92a376ed80f9e81753"
+            }
+          },
+          "resumed": 0,
+          "stale_attestation": [],
+          "stop": 0,
+          "stopped": false,
+          "unattested": [
+            "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03"
+          ],
+          "void": [
+            "sha256:beda566d8e9ca7c39855d0a4b378366b3520fdadc88b976a630cc7e25431b0d1"
+          ]
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "device": {
+                "cert": "UNEltJbNr8pacgvXzb3TGdTQ8B-yptFDW_vO-wIGshgWBoERQOKbtetNNxEzGxv2iKBRR9KuzrTYOVoulK7oMQ",
+                "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+                "kind": "desktop",
+                "label": "alice",
+                "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+                "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+                "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "MFcOofxJwzWGJEa7hlSxTHjT1ymLwgpEVWYOpgI0e0G9US46Tp7dPh2-udZy0KDK",
+                  "epk": "hGmwMQoJ1iIyPHulQfsZQqmUEib4EzYQpNSdk2SrdlU",
+                  "nonce": "OeG_ubR6FJJcdZmBkoJIoPUZeg5NSG_t"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                    "wrap": {
+                      "ct": "Y19mqBHAMky5UuzxeA_LvUTYtwFtrIWbjpVhgA5Fr1vgHiWCTWZVugTwnNvtcUDH",
+                      "epk": "XoifLrKvkWe7B3vV6WS74Km0_cmtyQ9OM0Wg8bl3MXA",
+                      "nonce": "EQx5m6CVFcRBYn0Jeb6RHSY7vb2MAmMR"
+                    }
+                  }
+                ]
+              },
+              "issuers": [
+                {
+                  "clients": [
+                    "astral-desktop",
+                    "astral-mobile",
+                    "astral-watch"
+                  ],
+                  "iss": "https://auth.example.test/realms/astral",
+                  "keys": [
+                    {
+                      "crv": "P-256",
+                      "kid": "es-1",
+                      "kty": "EC",
+                      "x": "lCyGQKGbkslZCnrlYZv_9j88a53IF87623Qw1N4fcQA",
+                      "y": "rM4le4Cu3wGb09yAAwiDEjrzh2cBTgb2KK9jLNEVHjU"
+                    },
+                    {
+                      "e": "AQAB",
+                      "kid": "rs-1",
+                      "kty": "RSA",
+                      "n": "0GYv9ziUREcm78eLaoPj9jwsX5WxHsbJcU2_MIg1uf_cCaB9TwGYolWRPdvht6KqNLZQAkwfh8zex5IYGulcWO02kALGiQ8hZ7xzGJZClvhINPlqjq92Z-XzIEX-Gg-OsgPBDM8kmg1s1kXOxW9afdCuqtY3vHLhz5SU5GJs9j_j_kKWBiPzH3p2aA7SSehp8XFCy0cP8ExEgprmKJZA7Ug_Il5g0_xBgy0rtLRlmA8b_itr73FoDcknBo4BjKhPyxaRdFuXZPOLPlvmy_kuLEoKqDWWy4uUf67x03ACZhq95nRqQz66yMJc8l_4phTXrjyIN3o26v81NZIhQoYhxQ"
+                    }
+                  ]
+                }
+              ],
+              "recovery": {
+                "sign": "cjXMt3DPbZy5rWqL7zb7C-C70cUl-cqsP_bVzsmPiiw",
+                "wrap": "DJqN8Mw9HypfuygNWpboa0HVnEg00M_NZILB93fEsxM"
+              }
+            },
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "J-a-14yEoSwRorfhNj0hPnGDU3zBj_Zv8SybT_iK0j8SQMgunF6fn95Jt0psYfmP5ibQg9lczW-hsxXwRdGBUA",
+            "sig": "0UTDv1vs8JAQE-gN4U8A3-l1CpVA6tHn5ViOPsC88LJtwjXDrXptq4ziDlaJ00rjnNbuN51W9U11-ETL_VAQ2A",
+            "type": "genesis",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "attestation": null,
+              "device": {
+                "cert": "2uA5BIxTOIwHU6X2sY_uImI2Makl3-kEqGfqqik3H_t14vqzwj_zdgolrKv2mHUBscaooFE9xK7j9QeU8fh-zQ",
+                "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+                "kind": "pocket",
+                "label": "bob",
+                "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+                "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+                "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+              }
+            },
+            "clock": {
+              "ms": 1794441602000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:f48b4f0b0d7b20a1e88928411a98989a6bf6b02a495dc216700cc5bf6a605e13"
+            ],
+            "mesh": "sha256:f48b4f0b0d7b20a1e88928411a98989a6bf6b02a495dc216700cc5bf6a605e13",
+            "presence_sig": "E7afjJClqWm5Xff4AfcwDA_ZYRyw2teu64LMr-Y_pONT1mIw-ItmjjorHQ2FuB1Q8hmuGAakqU704fr__vzl0Q",
+            "sig": "SeyeFxdmMlqBIBQBbrptz3NR-J2KcY0cahU3LFPxZ2wcIXaatnlTvKiI1K_TJmSo9BdxwgRtug6T2ABjQN-7TQ",
+            "type": "add",
+            "v": 1
+          },
+          {
+            "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "body": {
+              "cutoff": {
+                "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": 0
+              },
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341"
+            },
+            "clock": {
+              "ms": 1794441603000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:dd54b664b37f740e23a42afa4ab45aa8bc4e62ae4b743fd7343451ba245ee42e"
+            ],
+            "mesh": "sha256:f48b4f0b0d7b20a1e88928411a98989a6bf6b02a495dc216700cc5bf6a605e13",
+            "presence_sig": "O7WCis9GPjpP7wG5gPnyoENWgQ01Nu_uHIkeMccPMhJfLx2TFK5qriGG9-yRVr117Ls-ZcEwn6JW0lcOHam20w",
+            "sig": "tg3WH1rQua9GFi-pI4GSgiCDa5qRCNuRJ31deHX8nuwK4ZzzfkYxg-Ohv8BKxseFeBqkXM1h9jtkLLSndHG7Wg",
+            "type": "remove",
+            "v": 1
+          },
+          {
+            "author": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+            "body": {
+              "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+              "label": "Too late"
+            },
+            "clock": {
+              "ms": 1794441604000,
+              "n": 0
+            },
+            "follows": [
+              "sha256:dd54b664b37f740e23a42afa4ab45aa8bc4e62ae4b743fd7343451ba245ee42e"
+            ],
+            "mesh": "sha256:f48b4f0b0d7b20a1e88928411a98989a6bf6b02a495dc216700cc5bf6a605e13",
+            "sig": "nTC31wgKyoSGTPnmm0pFxYMMCy5T43dXMTUhAWxR0FgJSjYnzyDWM9no10QBN3U80suREW7Tv8vdCbJVPeupAg",
+            "type": "rename",
+            "v": 1
+          }
+        ],
+        "mesh": "sha256:f48b4f0b0d7b20a1e88928411a98989a6bf6b02a495dc216700cc5bf6a605e13",
+        "now_s": 1794441600
+      },
+      "kind": "roster_fold",
+      "name": "rename-by-a-device-removed-concurrently-is-void"
+    },
+    {
+      "expect": {
+        "error": "roster.malformed"
+      },
+      "input": {
+        "entry": {
+          "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "body": {
+            "device": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+            "label": "x"
+          },
+          "clock": {
+            "ms": 1794441604000,
+            "n": 0
+          },
+          "follows": [
+            "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df"
+          ],
+          "mesh": "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df",
+          "sig": "3eOfAgHeGe8BTXZEF0ptTqQ9vxJwzsRuFJYNVjnS8ok_oI2CfSQcZOSwgcFHFxQJD_tju-6ESVjxBcTnj03qug",
+          "type": "rename",
+          "v": 1
+        }
+      },
+      "kind": "roster_shape",
+      "name": "shape-rename-another-device-without-presence-signature"
+    },
+    {
+      "expect": {
+        "error": "roster.malformed"
+      },
+      "input": {
+        "entry": {
+          "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "body": {
+            "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "label": "x"
+          },
+          "clock": {
+            "ms": 1794441605000,
+            "n": 0
+          },
+          "follows": [
+            "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df"
+          ],
+          "mesh": "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df",
+          "presence_sig": "0VbwvDXGAiRzSkY7ygZtjuAelq3-xbRwAZ60TiGdjLUJuXDuwYE9eWVDehyCCX91HvCJ872FKhx-S6VyDel3rw",
+          "sig": "YPtDD4W13JdwNJSnBgZqXiJqjsBlulWDCLV7gByxrn5DTCrnf-RaPRAKsgTkU2_PfLZ7fpuc9Bk1CROttfb0lQ",
+          "type": "rename",
+          "v": 1
+        }
+      },
+      "kind": "roster_shape",
+      "name": "shape-rename-self-with-presence-signature"
+    },
+    {
+      "expect": {
+        "error": "roster.malformed"
+      },
+      "input": {
+        "entry": {
+          "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "body": {
+            "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "label": ""
+          },
+          "clock": {
+            "ms": 1794441606000,
+            "n": 0
+          },
+          "follows": [
+            "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df"
+          ],
+          "mesh": "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df",
+          "sig": "YwzO_CxiEG0kVJMzJ81X7BNFfw3NKDukfySoIEHUDTg7yYPh5bmLCTYt8ZudnWKmgWZjpK48xpMrE55PzoxSrw",
+          "type": "rename",
+          "v": 1
+        }
+      },
+      "kind": "roster_shape",
+      "name": "shape-rename-label-empty"
+    },
+    {
+      "expect": {
+        "error": "roster.malformed"
+      },
+      "input": {
+        "entry": {
+          "author": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "body": {
+            "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "label": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          },
+          "clock": {
+            "ms": 1794441607000,
+            "n": 0
+          },
+          "follows": [
+            "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df"
+          ],
+          "mesh": "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df",
+          "sig": "_8GFP0adx_dm30vJhj3sdTr6X3EzZSQFxNGFjptL5Dx8K4n3o6F8xmacwl2kNM19rKoVjf42Mpo0rgmgYu8F0Q",
+          "type": "rename",
+          "v": 1
+        }
+      },
+      "kind": "roster_shape",
+      "name": "shape-rename-label-too-long"
+    },
+    {
+      "expect": {
+        "error": "roster.recovery_not_allowed"
+      },
+      "input": {
+        "entry": {
+          "author": "recovery",
+          "body": {
+            "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+            "label": "x"
+          },
+          "clock": {
+            "ms": 1,
+            "n": 0
+          },
+          "follows": [
+            "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df"
+          ],
+          "mesh": "sha256:f246f22f1588f4c153c2cd595af9467a94bc6787385f3382f9d1ba6d80d9e5df",
+          "sig": "qpTIR-_UcVpmzeg5odbjZgPsXMsn6XPM7RkBaC2TSE2lf_Uq4dC3aBgqfp3B_yVwHAsCjvO2RBkrUebUBSyqDw",
+          "type": "rename",
+          "v": 1
+        }
+      },
+      "kind": "roster_shape",
+      "name": "shape-rename-by-recovery-not-allowed"
     }
   ],
   "devices": {

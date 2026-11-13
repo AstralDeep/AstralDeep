@@ -56,8 +56,8 @@
       "spec": "contracts/mailbox.md"
     },
     "pairing.json": {
-      "cases": 10,
-      "sha256": "de4fa981a1b92a8af6d59687ba2438fb5c8f55d26f9417d1e92c2450aad84d1f",
+      "cases": 14,
+      "sha256": "831107e2c587f90fd297b2c4806dac2c31b48304681a25f0218c3249a0e9c7c9",
       "spec": "contracts/roster.md#pairing"
     },
     "policy.json": {
@@ -71,8 +71,8 @@
       "spec": "contracts/requests.md"
     },
     "roster.json": {
-      "cases": 72,
-      "sha256": "7bfc26c173dec6bb90c32a3fee83621359cb44abe02f002833c0c8e99ff6a12f",
+      "cases": 82,
+      "sha256": "b57a23746b8f2c6925b702a62812ad4c593b54b5758380c102f524bec8cf3505",
       "spec": "contracts/roster.md"
     },
     "runs.json": {

@@ -451,6 +451,21 @@ def _pairing_request(i: dict[str, Any]) -> Any:
     return {"device": pairing.verify_request(i["request"], i["mesh"], i["nonce"])}
 
 
+@op("pairing_code")
+def _pairing_code(i: dict[str, Any]) -> Any:
+    nonce = b64url_decode(i["nonce"])
+    if i["which"] == "invitation":
+        return {"code": pairing.invitation_code(nonce, b64url_decode(i["identity"]))}
+    return {
+        "code": pairing.comparison_code(
+            nonce,
+            b64url_decode(i["identity"]),
+            b64url_decode(i["ops"]),
+            b64url_decode(i["wrap"]),
+        )
+    }
+
+
 @op("backup_seal")
 def _backup_seal(i: dict[str, Any]) -> Any:
     return {

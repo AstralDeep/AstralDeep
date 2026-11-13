@@ -302,6 +302,23 @@ class Mesh:
         )
         return self.put(self.entry("epoch", author, follows, body))
 
+    def rename(
+        self,
+        author: TestDevice | str,
+        target: TestDevice,
+        follows: list[str],
+        label: str,
+    ) -> str:
+        return self.put(
+            self.entry(
+                "rename",
+                author,
+                follows,
+                {"device": target.id, "label": label},
+                presence=author != target,
+            )
+        )
+
     def stop(self, author: TestDevice, follows: list[str], counter: int) -> str:
         return self.put(self.entry("stop", author, follows, {"counter": counter}))
 
