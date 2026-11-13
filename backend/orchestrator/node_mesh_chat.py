@@ -457,6 +457,8 @@ class MeshChatBridge:
             resolved = await self._calls.resolve(self._owner, call.tool)
         except CallRefused as exc:
             raise Refusal(exc.code) from None
+        if action.get("tool_def") != resolved.definition:
+            raise Refusal("gate.tool_def_changed")
         try:
             verified = await self._mesh.verify_ticket(call.ticket_json, call.action_json, resolved.effect_kind)
         except NodeMeshError as exc:

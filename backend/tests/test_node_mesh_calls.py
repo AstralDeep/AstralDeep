@@ -10,10 +10,11 @@ from orchestrator import node_mesh_calls as nmcalls, tool_visibility
 from shared.protocol import MCPResponse
 
 OWNER = "oidc.abc.owner"
+DEFINITION = "sha256:" + "d" * 64
 
 
-def skill(skill_id):
-    return SimpleNamespace(id=skill_id)
+def skill(skill_id, **fields):
+    return SimpleNamespace(id=skill_id, **fields)
 
 
 class Orch:
@@ -73,7 +74,7 @@ async def test_unknown_and_ambiguous_tools_are_refused(pairs, requested, code):
 
 async def test_authority_is_derived_for_the_one_scope_of_the_tool():
     orch = Orch()
-    resolved = nmcalls.ResolvedTool("agent-1", "write_note", "tools:write")
+    resolved = nmcalls.ResolvedTool("agent-1", "write_note", "tools:write", DEFINITION)
     assert await nmcalls.OrchestratorCalls(orch).authorize(OWNER, resolved) == "authority"
     assert orch.events[0][1] == {"user_id": OWNER, "agent_id": "agent-1", "turn_class": "mesh_request", "consented_scopes": ["tools:write"]}
 
@@ -83,11 +84,11 @@ async def test_missing_authority_is_refused_with_a_dotted_code():
 
     orch = Orch(authority=AuthoritySkip("empty_scopes", "gone"))
     with pytest.raises(nmcalls.CallRefused) as caught:
-        await nmcalls.OrchestratorCalls(orch).authorize(OWNER, nmcalls.ResolvedTool("a", "t", "tools:read"))
+        await nmcalls.OrchestratorCalls(orch).authorize(OWNER, nmcalls.ResolvedTool("a", "t", "tools:read", DEFINITION))
     assert caught.value.code == "node.authority_empty_scopes"
 
 
-RESOLVED = nmcalls.ResolvedTool("agent-1", "lookup", "tools:read")
+RESOLVED = nmcalls.ResolvedTool("agent-1", "lookup", "tools:read", DEFINITION)
 
 
 async def run(orch):
@@ -135,3 +136,47 @@ async def test_a_missing_response_or_a_dispatch_failure_is_an_error_outcome_and_
 )
 def test_dotted_codes_are_always_valid(raw, expected):
     assert nmcalls.dotted(raw) == expected
+
+
+def test_the_definition_hash_covers_every_field_and_ignores_key_order():
+    base = nmcalls.definition_hash("t", "d", {"type": "object", "a": 1, "b": 2}, {"readOnlyHint": True})
+    assert base == nmcalls.definition_hash("t", "d", {"b": 2, "a": 1, "type": "object"}, {"readOnlyHint": True})
+    assert base.startswith("sha256:") and len(base) == 71
+    for changed in (
+        nmcalls.definition_hash("u", "d", {"type": "object", "a": 1, "b": 2}, {"readOnlyHint": True}),
+        nmcalls.definition_hash("t", "e", {"type": "object", "a": 1, "b": 2}, {"readOnlyHint": True}),
+        nmcalls.definition_hash("t", "d", {"type": "object", "a": 1, "b": 3}, {"readOnlyHint": True}),
+        nmcalls.definition_hash("t", "d", {"type": "object", "a": 1, "b": 2}, {"readOnlyHint": False}),
+    ):
+        assert changed != base
+
+
+def test_the_definition_hash_follows_the_kernel_canonical_form():
+    import hashlib
+    from pathlib import PurePosixPath
+
+    expected = (
+        '{"annotations":{},"description":"café \\"q\\"","input_schema":{"big":{"$num":"9223372036854775808"},'
+        '"flag":true,"half":{"$num":"0.5"},"list":[1,null,"x"]},"name":"t"}'
+    )
+    schema = {"list": [1, None, "x"], "half": 0.5, "big": 2**63, "flag": True}
+    assert nmcalls.definition_hash("t", 'café "q"', schema, {}) == "sha256:" + hashlib.sha256(expected.encode()).hexdigest()
+    control = '{"annotations":{},"description":"\\u0001\\n","input_schema":{},"name":"t"}'
+    assert nmcalls.definition_hash("t", "\x01\n", {}, {}) == "sha256:" + hashlib.sha256(control.encode()).hexdigest()
+    assert nmcalls._portable(PurePosixPath("odd")) == "odd"
+
+
+async def test_a_resolved_tool_carries_the_hash_of_the_nodes_own_definition(monkeypatch):
+    described = skill(
+        "lookup",
+        description="Find a thing",
+        input_schema={"type": "object", "properties": {"q": {"type": "string"}}},
+        metadata={"annotations": {"readOnlyHint": True, "junk": 1}},
+    )
+    bare = skill("bare", input_schema="nope", metadata=None)
+    monkeypatch.setattr(tool_visibility, "eligible_tool_pairs", lambda orch, owner: [("agent-1", described), ("agent-1", bare)])
+    calls = nmcalls.OrchestratorCalls(Orch())
+    assert (await calls.resolve(OWNER, "lookup")).definition == nmcalls.definition_hash(
+        "lookup", "Find a thing", {"type": "object", "properties": {"q": {"type": "string"}}}, {"readOnlyHint": True}
+    )
+    assert (await calls.resolve(OWNER, "bare")).definition == nmcalls.definition_hash("bare", "", {}, {})

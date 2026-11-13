@@ -44,9 +44,12 @@ class History:
         self.added.append((chat_id, role, content, user_id))
 
 
+DEFINITION = "sha256:" + "d" * 64
+
+
 class FakeCalls:
     def __init__(self, *, scope="tools:read", outcome=None, resolve_error=None, authorize_error=None):
-        self.resolved = calls_module.ResolvedTool("agent-1", "lookup", scope)
+        self.resolved = calls_module.ResolvedTool("agent-1", "lookup", scope, DEFINITION)
         self.outcome = outcome or calls_module.CallOutcome("ok", "sunny")
         self.resolve_error = resolve_error
         self.authorize_error = authorize_error
@@ -125,11 +128,11 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def call_for(*, tool="lookup", arguments=None, device=PHONE, digest=None, action_tool=None, turn="turn-9"):
+def call_for(*, tool="lookup", arguments=None, device=PHONE, digest=None, action_tool=None, turn="turn-9", tool_def=None):
     text = canonical(arguments if arguments is not None else {"q": "weather"})
     action = {
         "v": 1, "mesh": "mesh-1", "device": device, "turn": turn, "agent": "kernel", "tool": action_tool or tool,
-        "tool_def": "sha256:" + "d" * 64,
+        "tool_def": DEFINITION if tool_def is None else tool_def,
         "args_digest": digest or "sha256:" + hashlib.sha256(text.encode()).hexdigest(), "influence": [],
     }
     return fake.PeerCall(call_id="call-1", tool=tool, arguments_json=text, action_json=canonical(action), ticket_json="{}")
@@ -532,6 +535,8 @@ async def test_a_gate_refusal_is_recorded_as_an_error_step(tmp_path):
         (lambda: call_for(action_tool="other"), "request.call_mismatch"),
         (lambda: call_for(digest="sha256:" + "0" * 64), "request.call_mismatch"),
         (lambda: call_for(device="dev-other"), "ticket.device_mismatch"),
+        (lambda: call_for(tool_def="sha256:" + "e" * 64), "gate.tool_def_changed"),
+        (lambda: call_for(tool_def=""), "gate.tool_def_changed"),
         (lambda: fake.PeerCall("call-1", "lookup", "[]", "{}", "{}"), "request.malformed"),
         (lambda: fake.PeerCall("call-1", "lookup", "{}", "[]", "{}"), "request.malformed"),
         (lambda: fake.PeerCall("call-1", "lookup", "{not json", "{}", "{}"), "request.malformed"),

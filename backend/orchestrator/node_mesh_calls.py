@@ -4,11 +4,14 @@ node_mesh_chat.py calls it after the kernel has verified the request's ticket, a
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+
+from orchestrator.remote_mcp_pins import sanitize_annotations
 
 logger = logging.getLogger("Orchestrator.NodeMeshCalls")
 
@@ -28,6 +31,7 @@ class ResolvedTool:
     agent_id: str
     tool: str
     scope: str
+    definition: str
 
     @property
     def effect_kind(self) -> str:
@@ -49,6 +53,42 @@ def dotted(code: str) -> str:
     return cleaned[:80]
 
 
+def _portable(value: Any) -> Any:
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return value
+    if isinstance(value, int):
+        return value if -(2**63) <= value < 2**63 else {"$num": str(value)}
+    if isinstance(value, float):
+        return {"$num": repr(value)}
+    if isinstance(value, (list, tuple)):
+        return [_portable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _portable(item) for key, item in value.items()}
+    return str(value)
+
+
+def definition_hash(name: str, description: str, input_schema: Any, annotations: Any) -> str:
+    document = {
+        "name": name,
+        "description": description,
+        "input_schema": _portable(input_schema),
+        "annotations": _portable(annotations),
+    }
+    canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def skill_definition(skill: Any) -> str:
+    schema = getattr(skill, "input_schema", None)
+    metadata = getattr(skill, "metadata", None) or {}
+    return definition_hash(
+        str(skill.id),
+        str(getattr(skill, "description", "") or ""),
+        schema if isinstance(schema, dict) else {},
+        sanitize_annotations(metadata.get("annotations") if isinstance(metadata, dict) else None),
+    )
+
+
 def _text(value: Any) -> str:
     text = value if isinstance(value, str) else json.dumps(value, sort_keys=True, default=str)
     return text[:MAX_CONTENT]
@@ -62,14 +102,14 @@ class OrchestratorCalls:
         from orchestrator.tool_visibility import eligible_tool_pairs
 
         pairs: List[Tuple[str, Any]] = await asyncio.to_thread(eligible_tool_pairs, self._orch, owner_id)
-        matches = [(agent, skill.id) for agent, skill in pairs if _matches(tool, agent, skill.id)]
+        matches = [(agent, skill) for agent, skill in pairs if _matches(tool, agent, skill.id)]
         if not matches:
             raise CallRefused("node.tool_unknown")
         if len(matches) > 1:
             raise CallRefused("node.tool_ambiguous")
-        agent_id, skill_id = matches[0]
-        scope = self._orch.tool_permissions.get_tool_scope(agent_id, skill_id)
-        return ResolvedTool(agent_id, skill_id, scope)
+        agent_id, skill = matches[0]
+        scope = self._orch.tool_permissions.get_tool_scope(agent_id, skill.id)
+        return ResolvedTool(agent_id, skill.id, scope, skill_definition(skill))
 
     async def authorize(self, owner_id: str, resolved: ResolvedTool) -> Any:
         from orchestrator.chain_authority import AuthoritySkip
