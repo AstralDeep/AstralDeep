@@ -67,14 +67,14 @@ CURRENT_DEPENDENCY_AUTHORITIES = {
     **FEATURE_075_DEPENDENCY_AUTHORITIES,
     "backend/security_benchmark/requirements-eval.txt": "a169ef53f35c4d4516e256eb160c3033a0d7d05ea7329f86b633eae756059f69",
     "backend/requirements-document-worker.txt": "28383cb135800b5415ca4c9504ea83e1514fa3e6f1d89257ab06fd5e8116508a",
-    "Dockerfile": "0600c3c90671b363ee65daff6173e30750e29333b131633fa3883e2a51ef543f",
+    "Dockerfile": "0c34c104cded3504b4012efba85141f04322d0f92d8a1b717235bd7ddde42bf8",
     "Dockerfile.voice": "82ffc56ab274790ea60e280852eb49608e9e8f7dbc3432fc16b4a1f3bcd21b84",
-    "backend/requirements.txt": "783b9dc29989b89df8ba816c1121dd6396e45d44710d090de59fa771689dedae",
+    "backend/requirements.txt": "54ca1ab0277575f4c833a5437fb4e3f9defb49c9382be6b6a6828608ddc3671c",
     "backend/requirements-gaiakeep.txt": "87ea5ed066e8aa376f355df70a4efac295d331c7c77601d277a05c8acb37feea",
     "backend/tests/fixtures/runtime_reliability_060/runtime-lock-contract.json": (
         "ff84f895f5b8253dff59c9581cc033452ad576a09e40d00da31b5ba7b0f4875e"
     ),
-    "pyproject.toml": "bb078e1bf5cd98b468bba9e44771c8dbb1f1aa0c45f86f68feeb4c6914aa1532",
+    "pyproject.toml": "c3b2cf99a06d653be76035e63de05bcadb7a2ed2616bb51e0ec0e96c3afbc495",
     "scripts/openai_agents_example/requirements.in": (
         "470be1f7956648dbc4f439803e8a2c07baf0cd2472279384cf60c60838e66d82"
     ),

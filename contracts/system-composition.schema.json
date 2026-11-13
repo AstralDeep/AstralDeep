@@ -179,7 +179,7 @@
           ],
           "properties": {
             "release": {
-              "const": "v1.1.0"
+              "const": "v1.1.2"
             },
             "api_version": {
               "const": "v1"
@@ -339,7 +339,7 @@
               "const": "components/AstralPrimitives"
             },
             "contract_version": {
-              "const": "0.4.0"
+              "const": "0.13.0"
             }
           }
         }
@@ -363,10 +363,10 @@
               "const": "components/LETS"
             },
             "ref": {
-              "const": "v1.1.0"
+              "const": "v1.1.2"
             },
             "contract_version": {
-              "const": "1.1.0"
+              "const": "1.1.2"
             }
           }
         }

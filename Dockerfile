@@ -11,7 +11,7 @@ RUN python -m pip install --no-cache-dir \
         setuptools==83.0.0 \
         wheel==0.45.1 \
         hatchling==1.27.0 \
-        uv_build==0.12.23
+        uv_build==0.13.6
 
 COPY pyproject.toml .gitmodules ./
 COPY config/astral-composition.json ./config/astral-composition.json

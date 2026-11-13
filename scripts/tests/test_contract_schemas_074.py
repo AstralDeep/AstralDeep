@@ -63,9 +63,9 @@ def _composition() -> dict[str, object]:
     lets = component(
         "https://github.com/AstralDeep/LETS.git",
         "components/LETS",
-        "1.1.0",
+        "1.1.2",
     )
-    lets["ref"] = "v1.1.0"
+    lets["ref"] = "v1.1.2"
     return {
         "format": "astral.composition/v1",
         "astraldeep_contract_version": "astraldeep.composition/v1",
@@ -88,7 +88,7 @@ def _composition() -> dict[str, object]:
             "astral-primitives": component(
                 "https://github.com/AstralDeep/AstralPrimitives.git",
                 "components/AstralPrimitives",
-                "0.4.0",
+                "0.13.0",
             ),
             "lets": lets,
         },
@@ -113,9 +113,9 @@ def _composition() -> dict[str, object]:
                 "migration_sha256": SHA256,
                 "structure_sha256": SHA256,
             },
-            "primitives": {"package_version": "0.4.0", "contract_sha256": SHA256},
+            "primitives": {"package_version": "0.13.0", "contract_sha256": SHA256},
             "lets": {
-                "release": "v1.1.0",
+                "release": "v1.1.2",
                 "api_version": "v1",
                 "openapi_sha256": SHA256,
                 "receipt_wire_type": "lets.receipt/v1",

@@ -5,7 +5,7 @@
     "astral-projection": {
       "repository": "https://github.com/AstralDeep/AstralProjection.git",
       "path": "components/AstralProjection",
-      "commit": "1dd06b88f133761c0d4ee2eaa6ab732f5df445cc",
+      "commit": "41ee3304b360cfde8b53fdf46d555ca7fe052267",
       "contract_version": "astralprojection.contract/v1"
     },
     "astral-kernel": {
@@ -23,15 +23,15 @@
     "astral-primitives": {
       "repository": "https://github.com/AstralDeep/AstralPrimitives.git",
       "path": "components/AstralPrimitives",
-      "commit": "d7b454105ec910cb1734fab6f7e318ac29185873",
-      "contract_version": "0.4.0"
+      "commit": "f4314c8258c09383f9474a8c9f1ce35df44d62b9",
+      "contract_version": "0.13.0"
     },
     "lets": {
       "repository": "https://github.com/AstralDeep/LETS.git",
       "path": "components/LETS",
-      "commit": "ed5c1e4bd61a6b11625d265aeb77229b7c2c017b",
-      "ref": "v1.1.0",
-      "contract_version": "1.1.0"
+      "commit": "13213061b6ebfc5fa1c81d0c65046b60fa1b7e3e",
+      "ref": "v1.1.2",
+      "contract_version": "1.1.2"
     }
   },
   "availability": {
@@ -59,13 +59,13 @@
       "structure_sha256": "5f45079d23dc20e1dc0bb1367e8076c55a582ba7df7a76224fc0cdbe1a2b4d0b"
     },
     "primitives": {
-      "package_version": "0.4.0",
-      "contract_sha256": "4ad92393e2aec3686ffb0e9d80d35b29ab6fd9fa32476e6aef564f7a35dc2a0f"
+      "package_version": "0.13.0",
+      "contract_sha256": "82caa4bc9abecc7ebf774521ff6b66d9d5273fa71bb8af62e0872205823d84ba"
     },
     "lets": {
-      "release": "v1.1.0",
+      "release": "v1.1.2",
       "api_version": "v1",
-      "openapi_sha256": "7c69e181d0d941ddb97c3934c8376e0c2d59eaa74ef8f7a1109bd7016251fb29",
+      "openapi_sha256": "2ff24674d8f5db7e93f5d36e43a6307b088d878a59d7a3dca9cbc595e549e268",
       "receipt_wire_type": "lets.receipt/v1",
       "scope_profile_version": "astral.tools/v1"
     }

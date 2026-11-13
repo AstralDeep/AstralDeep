@@ -130,7 +130,7 @@
             "scope_profile_version"
           ],
           "properties": {
-            "release": {"const": "v1.1.0"},
+            "release": {"const": "v1.1.2"},
             "api_version": {"const": "v1"},
             "openapi_sha256": {"$ref": "#/$defs/sha256"},
             "receipt_wire_type": {"const": "lets.receipt/v1"},
@@ -238,7 +238,7 @@
               "const": "https://github.com/AstralDeep/AstralPrimitives.git"
             },
             "path": {"const": "components/AstralPrimitives"},
-            "contract_version": {"const": "0.4.0"}
+            "contract_version": {"const": "0.13.0"}
           }
         }
       ]
@@ -254,8 +254,8 @@
               "const": "https://github.com/AstralDeep/LETS.git"
             },
             "path": {"const": "components/LETS"},
-            "ref": {"const": "v1.1.0"},
-            "contract_version": {"const": "1.1.0"}
+            "ref": {"const": "v1.1.2"},
+            "contract_version": {"const": "1.1.2"}
           }
         }
       ]
