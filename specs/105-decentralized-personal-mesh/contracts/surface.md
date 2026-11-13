@@ -53,7 +53,7 @@ A surface cannot grant itself more than the turn that created it had. The valida
 
 ## 4. Patches
 
-`ui.surface_put` has body `{"document": <document>}`. `ui.patch` has body `{"surface": <id>, "ops": [...]}`. An op is one of:
+`ui.surface_put` has body `{"document": <document>, "turn": <id>}`. `turn` is the id of the `chat.turn_start` event of the turn that made the surface. The fold ignores it and section 6 uses it. `ui.patch` has body `{"surface": <id>, "ops": [...]}`. An op is one of:
 
 | Op | Fields | Effect |
 |---|---|---|
@@ -85,10 +85,21 @@ Concurrent patches to one property end with the later clock, then the greater fe
 
 The result is the tool, the consent mode and the arguments. The executing peer then runs the gates of `labels.md` and verifies or asks for a ticket as for any call. Pressing a control writes a signed action event. It never executes anything by itself.
 
+### Acting on a surface
+
+A kernel that is asked to press a control, given the surface id, the component and the arguments, does these steps in order.
+
+1. It finds the surface. The log must hold a `ui.surface_put` whose event id is the surface id (`surface.unknown_surface`). The surface's events are that put, later puts whose document names the surface, and the patches and actions that name it. They fold under the turn rules of section 3, and the four checks above run against the folded document with `used` set to the number of earlier actions with this capability that passed, counted in clock order. If the fold holds no accepted document, the refusal is the code of the first rejected put, so a surface that was wider than its turn refuses with `surface.capability_exceeds_turn`. Vectors: `surface_act`.
+2. The first put names the originating turn in `turn`. It must be a turn of the same chat (`surface.no_origin_turn`).
+3. It writes a signed `ui.action` event. A use of the capability is spent when this event is written, whatever the gates then decide.
+4. It runs the capability's tool as a new turn that continues the originating turn. The start event is `{"continues": <originating turn>, "message": null, "action": {"event": <ui.action id>, "consent": <capability consent>}}`. The turn has one step, the call, which passes the gates of `labels.md` like any call. Consent is asked when policy requires it and also when the capability says `required`. The turn starts from the labels of the turn it continues, so it carries no less caution than that turn.
+
+The turn rules of section 3 are taken from the executing device: `tools` is what it has granted to the agent, `max_uses` is its limit on rounds in one turn, and `tool_consent` is `required` for a tool that a narrowing rule sends to consent.
+
 ## 7. Resolving a binding
 
 The event named must be a `chat.tool_result` that the peer holds (`surface.bind_unknown_event`, `surface.bind_not_tool_result`). The path is a JSON pointer into the event's body, with `~1` for a slash and `~0` for a tilde. The empty path is the whole body. A path that does not resolve raises `surface.bind_path`. The value must be a string, boolean, integer or null (`surface.bind_not_scalar`). Numbers are shown exactly as returned.
 
 ## 8. Errors
 
-`surface.malformed`, `surface.unknown_type`, `surface.false_provenance`, `surface.raw_url`, `surface.incomplete`, `surface.unknown_capability`, `surface.capability_exceeds_turn`, `surface.patch_invalid`, `surface.unknown_component`, `surface.action_args`, `surface.capability_exhausted`, `surface.bind_unknown_event`, `surface.bind_not_tool_result`, `surface.bind_path`, `surface.bind_not_scalar`.
+`surface.malformed`, `surface.unknown_type`, `surface.false_provenance`, `surface.raw_url`, `surface.incomplete`, `surface.unknown_capability`, `surface.capability_exceeds_turn`, `surface.patch_invalid`, `surface.unknown_component`, `surface.action_args`, `surface.capability_exhausted`, `surface.bind_unknown_event`, `surface.bind_not_tool_result`, `surface.bind_path`, `surface.bind_not_scalar`, `surface.unknown_surface`, `surface.no_origin_turn`.

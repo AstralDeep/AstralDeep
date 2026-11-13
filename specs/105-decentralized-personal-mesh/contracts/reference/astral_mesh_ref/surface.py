@@ -217,15 +217,16 @@ def order_key(item: dict[str, Any]) -> tuple[int, int, str, int]:
     return (item["clock"]["ms"], item["clock"]["n"], item["feed"], item["seq"])
 
 
-def fold(
+def _replay(
     events: list[dict[str, Any]],
     *,
     vocabulary: set[str],
     actionable: set[str],
     turn: dict[str, Any],
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, int]]:
     doc: dict[str, Any] | None = None
     rejected: list[dict[str, Any]] = []
+    used: dict[str, int] = {}
     for item in sorted(events, key=order_key):
         body = item["body"]
         if item["type"] == "ui.surface_put":
@@ -254,7 +255,46 @@ def fold(
                 )
                 continue
             doc = patched
+        elif item["type"] == "ui.action" and doc is not None:
+            capability = body["capability"]
+            try:
+                validate_action(doc, body, used.get(capability, 0))
+            except MeshError:
+                continue
+            used[capability] = used.get(capability, 0) + 1
+    return doc, rejected, used
+
+
+def fold(
+    events: list[dict[str, Any]],
+    *,
+    vocabulary: set[str],
+    actionable: set[str],
+    turn: dict[str, Any],
+) -> dict[str, Any]:
+    doc, rejected, _ = _replay(
+        events, vocabulary=vocabulary, actionable=actionable, turn=turn
+    )
     return {"document": doc, "rejected": rejected}
+
+
+def act(
+    events: list[dict[str, Any]],
+    action: dict[str, Any],
+    *,
+    vocabulary: set[str],
+    actionable: set[str],
+    turn: dict[str, Any],
+) -> dict[str, Any]:
+    doc, rejected, used = _replay(
+        events, vocabulary=vocabulary, actionable=actionable, turn=turn
+    )
+    if doc is None:
+        raise MeshError(
+            rejected[0]["code"] if rejected else "surface.unknown_surface",
+            "no accepted document",
+        )
+    return validate_action(doc, action, used.get(action["capability"], 0))
 
 
 def validate_action(

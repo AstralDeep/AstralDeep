@@ -158,7 +158,7 @@ The family decides the merge rule. The body of every type is a canonical JSON ob
 | `chat.turn_end`, `chat.turn_outcome_unknown` | chat | chat id | none |
 | `chat.spoken` | chat | chat id | none. `kind` is `answer` or `acknowledgement`, `text` is the assistant text a device actually played aloud, and `turn` is optional |
 | `request.send`, `request.claim`, `request.refuse`, `request.cancel` | request | chat id | see `requests.md`. The request fold reads `to`, `request`, `code`. `chat.turn_start` may also carry `request` |
-| `ui.surface_put` | ui | chat id | `document` (see `surface.md`) |
+| `ui.surface_put` | ui | chat id | `document`, `turn` (see `surface.md`) |
 | `ui.patch` | ui | chat id | `surface`, `ops` |
 | `ui.action` | ui | chat id | `surface`, `component`, `capability`, `args` |
 | `auth.grant` | authority | `mesh` or chat id | `agent`, `tool`, `scope`. Needs a consent (section 10.3). `widening` is accepted and ignored |

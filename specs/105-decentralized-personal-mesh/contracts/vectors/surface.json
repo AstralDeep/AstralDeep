@@ -6115,6 +6115,1286 @@
     {
       "expect": {
         "ok": {
+          "args": {
+            "list": "todo",
+            "text": "milk"
+          },
+          "consent": "policy",
+          "tool": "notes.add"
+        }
+      },
+      "input": {
+        "action": {
+          "args": {
+            "list": "todo",
+            "text": "milk"
+          },
+          "capability": "cap.add",
+          "component": "add"
+        },
+        "actionable": [
+          "button",
+          "input"
+        ],
+        "events": [
+          {
+            "body": {
+              "document": {
+                "capabilities": {
+                  "cap.add": {
+                    "args": {
+                      "list": "todo"
+                    },
+                    "consent": "policy",
+                    "free": [
+                      "text"
+                    ],
+                    "max_uses": 2,
+                    "tool": "notes.add"
+                  }
+                },
+                "components": {
+                  "add": {
+                    "children": [],
+                    "id": "add",
+                    "props": {
+                      "action": {
+                        "capability": "cap.add"
+                      },
+                      "compact": "+",
+                      "label": "Add",
+                      "name": "Add note",
+                      "spoken": "add a note"
+                    },
+                    "prov": "model",
+                    "type": "button"
+                  },
+                  "bar": {
+                    "children": [],
+                    "id": "bar",
+                    "props": {
+                      "value": 40
+                    },
+                    "prov": "model",
+                    "type": "progress"
+                  },
+                  "pic": {
+                    "children": [],
+                    "id": "pic",
+                    "props": {
+                      "alt": "logo",
+                      "src": {
+                        "$handle": "h_logo"
+                      }
+                    },
+                    "prov": "model",
+                    "type": "image"
+                  },
+                  "root": {
+                    "children": [
+                      "title",
+                      "bar",
+                      "add",
+                      "pic"
+                    ],
+                    "id": "root",
+                    "props": {},
+                    "prov": "model",
+                    "type": "column"
+                  },
+                  "title": {
+                    "children": [],
+                    "id": "title",
+                    "props": {
+                      "text": "Todo"
+                    },
+                    "prov": "model",
+                    "type": "text"
+                  }
+                },
+                "root": "root",
+                "surface": "s1",
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "seq": 1,
+            "type": "ui.surface_put"
+          }
+        ],
+        "turn": {
+          "max_uses": 3,
+          "tool_consent": {
+            "mail.send": "required"
+          },
+          "tools": [
+            "mail.send",
+            "notes.add"
+          ]
+        },
+        "vocabulary": [
+          "button",
+          "chart",
+          "column",
+          "image",
+          "input",
+          "link",
+          "progress",
+          "row",
+          "text"
+        ]
+      },
+      "kind": "surface_act",
+      "name": "act-on-a-fresh-surface"
+    },
+    {
+      "expect": {
+        "ok": {
+          "args": {
+            "list": "todo",
+            "text": "milk"
+          },
+          "consent": "policy",
+          "tool": "notes.add"
+        }
+      },
+      "input": {
+        "action": {
+          "args": {
+            "list": "todo",
+            "text": "milk"
+          },
+          "capability": "cap.add",
+          "component": "add"
+        },
+        "actionable": [
+          "button",
+          "input"
+        ],
+        "events": [
+          {
+            "body": {
+              "document": {
+                "capabilities": {
+                  "cap.add": {
+                    "args": {
+                      "list": "todo"
+                    },
+                    "consent": "policy",
+                    "free": [
+                      "text"
+                    ],
+                    "max_uses": 2,
+                    "tool": "notes.add"
+                  }
+                },
+                "components": {
+                  "add": {
+                    "children": [],
+                    "id": "add",
+                    "props": {
+                      "action": {
+                        "capability": "cap.add"
+                      },
+                      "compact": "+",
+                      "label": "Add",
+                      "name": "Add note",
+                      "spoken": "add a note"
+                    },
+                    "prov": "model",
+                    "type": "button"
+                  },
+                  "bar": {
+                    "children": [],
+                    "id": "bar",
+                    "props": {
+                      "value": 40
+                    },
+                    "prov": "model",
+                    "type": "progress"
+                  },
+                  "pic": {
+                    "children": [],
+                    "id": "pic",
+                    "props": {
+                      "alt": "logo",
+                      "src": {
+                        "$handle": "h_logo"
+                      }
+                    },
+                    "prov": "model",
+                    "type": "image"
+                  },
+                  "root": {
+                    "children": [
+                      "title",
+                      "bar",
+                      "add",
+                      "pic"
+                    ],
+                    "id": "root",
+                    "props": {},
+                    "prov": "model",
+                    "type": "column"
+                  },
+                  "title": {
+                    "children": [],
+                    "id": "title",
+                    "props": {
+                      "text": "Todo"
+                    },
+                    "prov": "model",
+                    "type": "text"
+                  }
+                },
+                "root": "root",
+                "surface": "s1",
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "seq": 1,
+            "type": "ui.surface_put"
+          },
+          {
+            "body": {
+              "args": {
+                "list": "todo",
+                "text": "milk"
+              },
+              "capability": "cap.add",
+              "component": "add",
+              "surface": "s1"
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "bbb",
+            "seq": 2,
+            "type": "ui.action"
+          }
+        ],
+        "turn": {
+          "max_uses": 3,
+          "tool_consent": {
+            "mail.send": "required"
+          },
+          "tools": [
+            "mail.send",
+            "notes.add"
+          ]
+        },
+        "vocabulary": [
+          "button",
+          "chart",
+          "column",
+          "image",
+          "input",
+          "link",
+          "progress",
+          "row",
+          "text"
+        ]
+      },
+      "kind": "surface_act",
+      "name": "act-with-one-use-left"
+    },
+    {
+      "expect": {
+        "error": "surface.capability_exhausted"
+      },
+      "input": {
+        "action": {
+          "args": {
+            "list": "todo",
+            "text": "milk"
+          },
+          "capability": "cap.add",
+          "component": "add"
+        },
+        "actionable": [
+          "button",
+          "input"
+        ],
+        "events": [
+          {
+            "body": {
+              "document": {
+                "capabilities": {
+                  "cap.add": {
+                    "args": {
+                      "list": "todo"
+                    },
+                    "consent": "policy",
+                    "free": [
+                      "text"
+                    ],
+                    "max_uses": 2,
+                    "tool": "notes.add"
+                  }
+                },
+                "components": {
+                  "add": {
+                    "children": [],
+                    "id": "add",
+                    "props": {
+                      "action": {
+                        "capability": "cap.add"
+                      },
+                      "compact": "+",
+                      "label": "Add",
+                      "name": "Add note",
+                      "spoken": "add a note"
+                    },
+                    "prov": "model",
+                    "type": "button"
+                  },
+                  "bar": {
+                    "children": [],
+                    "id": "bar",
+                    "props": {
+                      "value": 40
+                    },
+                    "prov": "model",
+                    "type": "progress"
+                  },
+                  "pic": {
+                    "children": [],
+                    "id": "pic",
+                    "props": {
+                      "alt": "logo",
+                      "src": {
+                        "$handle": "h_logo"
+                      }
+                    },
+                    "prov": "model",
+                    "type": "image"
+                  },
+                  "root": {
+                    "children": [
+                      "title",
+                      "bar",
+                      "add",
+                      "pic"
+                    ],
+                    "id": "root",
+                    "props": {},
+                    "prov": "model",
+                    "type": "column"
+                  },
+                  "title": {
+                    "children": [],
+                    "id": "title",
+                    "props": {
+                      "text": "Todo"
+                    },
+                    "prov": "model",
+                    "type": "text"
+                  }
+                },
+                "root": "root",
+                "surface": "s1",
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "seq": 1,
+            "type": "ui.surface_put"
+          },
+          {
+            "body": {
+              "args": {
+                "list": "todo",
+                "text": "milk"
+              },
+              "capability": "cap.add",
+              "component": "add",
+              "surface": "s1"
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "bbb",
+            "seq": 2,
+            "type": "ui.action"
+          },
+          {
+            "body": {
+              "args": {
+                "list": "todo",
+                "text": "milk"
+              },
+              "capability": "cap.add",
+              "component": "add",
+              "surface": "s1"
+            },
+            "clock": {
+              "ms": 3000,
+              "n": 0
+            },
+            "feed": "bbb",
+            "seq": 3,
+            "type": "ui.action"
+          }
+        ],
+        "turn": {
+          "max_uses": 3,
+          "tool_consent": {
+            "mail.send": "required"
+          },
+          "tools": [
+            "mail.send",
+            "notes.add"
+          ]
+        },
+        "vocabulary": [
+          "button",
+          "chart",
+          "column",
+          "image",
+          "input",
+          "link",
+          "progress",
+          "row",
+          "text"
+        ]
+      },
+      "kind": "surface_act",
+      "name": "act-after-the-capability-is-used-up-by-earlier-actions"
+    },
+    {
+      "expect": {
+        "ok": {
+          "args": {
+            "list": "todo",
+            "text": "milk"
+          },
+          "consent": "policy",
+          "tool": "notes.add"
+        }
+      },
+      "input": {
+        "action": {
+          "args": {
+            "list": "todo",
+            "text": "milk"
+          },
+          "capability": "cap.add",
+          "component": "add"
+        },
+        "actionable": [
+          "button",
+          "input"
+        ],
+        "events": [
+          {
+            "body": {
+              "document": {
+                "capabilities": {
+                  "cap.add": {
+                    "args": {
+                      "list": "todo"
+                    },
+                    "consent": "policy",
+                    "free": [
+                      "text"
+                    ],
+                    "max_uses": 2,
+                    "tool": "notes.add"
+                  }
+                },
+                "components": {
+                  "add": {
+                    "children": [],
+                    "id": "add",
+                    "props": {
+                      "action": {
+                        "capability": "cap.add"
+                      },
+                      "compact": "+",
+                      "label": "Add",
+                      "name": "Add note",
+                      "spoken": "add a note"
+                    },
+                    "prov": "model",
+                    "type": "button"
+                  },
+                  "bar": {
+                    "children": [],
+                    "id": "bar",
+                    "props": {
+                      "value": 40
+                    },
+                    "prov": "model",
+                    "type": "progress"
+                  },
+                  "pic": {
+                    "children": [],
+                    "id": "pic",
+                    "props": {
+                      "alt": "logo",
+                      "src": {
+                        "$handle": "h_logo"
+                      }
+                    },
+                    "prov": "model",
+                    "type": "image"
+                  },
+                  "root": {
+                    "children": [
+                      "title",
+                      "bar",
+                      "add",
+                      "pic"
+                    ],
+                    "id": "root",
+                    "props": {},
+                    "prov": "model",
+                    "type": "column"
+                  },
+                  "title": {
+                    "children": [],
+                    "id": "title",
+                    "props": {
+                      "text": "Todo"
+                    },
+                    "prov": "model",
+                    "type": "text"
+                  }
+                },
+                "root": "root",
+                "surface": "s1",
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "seq": 1,
+            "type": "ui.surface_put"
+          },
+          {
+            "body": {
+              "args": {
+                "list": "work"
+              },
+              "capability": "cap.add",
+              "component": "add",
+              "surface": "s1"
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "bbb",
+            "seq": 2,
+            "type": "ui.action"
+          },
+          {
+            "body": {
+              "args": {
+                "list": "todo",
+                "text": "milk"
+              },
+              "capability": "cap.add",
+              "component": "ghost",
+              "surface": "s1"
+            },
+            "clock": {
+              "ms": 3000,
+              "n": 0
+            },
+            "feed": "bbb",
+            "seq": 3,
+            "type": "ui.action"
+          },
+          {
+            "body": {
+              "args": {
+                "list": "todo",
+                "text": "milk"
+              },
+              "capability": "cap.add",
+              "component": "add",
+              "surface": "s1"
+            },
+            "clock": {
+              "ms": 4000,
+              "n": 0
+            },
+            "feed": "bbb",
+            "seq": 4,
+            "type": "ui.action"
+          }
+        ],
+        "turn": {
+          "max_uses": 3,
+          "tool_consent": {
+            "mail.send": "required"
+          },
+          "tools": [
+            "mail.send",
+            "notes.add"
+          ]
+        },
+        "vocabulary": [
+          "button",
+          "chart",
+          "column",
+          "image",
+          "input",
+          "link",
+          "progress",
+          "row",
+          "text"
+        ]
+      },
+      "kind": "surface_act",
+      "name": "act-ignores-earlier-actions-that-did-not-pass"
+    },
+    {
+      "expect": {
+        "error": "surface.capability_exhausted"
+      },
+      "input": {
+        "action": {
+          "args": {
+            "list": "todo",
+            "text": "milk"
+          },
+          "capability": "cap.add",
+          "component": "add"
+        },
+        "actionable": [
+          "button",
+          "input"
+        ],
+        "events": [
+          {
+            "body": {
+              "args": {
+                "list": "todo",
+                "text": "milk"
+              },
+              "capability": "cap.add",
+              "component": "add",
+              "surface": "s1"
+            },
+            "clock": {
+              "ms": 3000,
+              "n": 0
+            },
+            "feed": "bbb",
+            "seq": 3,
+            "type": "ui.action"
+          },
+          {
+            "body": {
+              "args": {
+                "list": "todo",
+                "text": "milk"
+              },
+              "capability": "cap.add",
+              "component": "add",
+              "surface": "s1"
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "bbb",
+            "seq": 2,
+            "type": "ui.action"
+          },
+          {
+            "body": {
+              "document": {
+                "capabilities": {
+                  "cap.add": {
+                    "args": {
+                      "list": "todo"
+                    },
+                    "consent": "policy",
+                    "free": [
+                      "text"
+                    ],
+                    "max_uses": 2,
+                    "tool": "notes.add"
+                  }
+                },
+                "components": {
+                  "add": {
+                    "children": [],
+                    "id": "add",
+                    "props": {
+                      "action": {
+                        "capability": "cap.add"
+                      },
+                      "compact": "+",
+                      "label": "Add",
+                      "name": "Add note",
+                      "spoken": "add a note"
+                    },
+                    "prov": "model",
+                    "type": "button"
+                  },
+                  "bar": {
+                    "children": [],
+                    "id": "bar",
+                    "props": {
+                      "value": 40
+                    },
+                    "prov": "model",
+                    "type": "progress"
+                  },
+                  "pic": {
+                    "children": [],
+                    "id": "pic",
+                    "props": {
+                      "alt": "logo",
+                      "src": {
+                        "$handle": "h_logo"
+                      }
+                    },
+                    "prov": "model",
+                    "type": "image"
+                  },
+                  "root": {
+                    "children": [
+                      "title",
+                      "bar",
+                      "add",
+                      "pic"
+                    ],
+                    "id": "root",
+                    "props": {},
+                    "prov": "model",
+                    "type": "column"
+                  },
+                  "title": {
+                    "children": [],
+                    "id": "title",
+                    "props": {
+                      "text": "Todo"
+                    },
+                    "prov": "model",
+                    "type": "text"
+                  }
+                },
+                "root": "root",
+                "surface": "s1",
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "seq": 1,
+            "type": "ui.surface_put"
+          }
+        ],
+        "turn": {
+          "max_uses": 3,
+          "tool_consent": {
+            "mail.send": "required"
+          },
+          "tools": [
+            "mail.send",
+            "notes.add"
+          ]
+        },
+        "vocabulary": [
+          "button",
+          "chart",
+          "column",
+          "image",
+          "input",
+          "link",
+          "progress",
+          "row",
+          "text"
+        ]
+      },
+      "kind": "surface_act",
+      "name": "act-counts-actions-in-clock-order-whatever-the-listing-order"
+    },
+    {
+      "expect": {
+        "error": "surface.unknown_surface"
+      },
+      "input": {
+        "action": {
+          "args": {
+            "list": "todo",
+            "text": "milk"
+          },
+          "capability": "cap.add",
+          "component": "add"
+        },
+        "actionable": [
+          "button",
+          "input"
+        ],
+        "events": [],
+        "turn": {
+          "max_uses": 3,
+          "tool_consent": {
+            "mail.send": "required"
+          },
+          "tools": [
+            "mail.send",
+            "notes.add"
+          ]
+        },
+        "vocabulary": [
+          "button",
+          "chart",
+          "column",
+          "image",
+          "input",
+          "link",
+          "progress",
+          "row",
+          "text"
+        ]
+      },
+      "kind": "surface_act",
+      "name": "act-with-no-surface-in-the-log"
+    },
+    {
+      "expect": {
+        "error": "surface.capability_exceeds_turn"
+      },
+      "input": {
+        "action": {
+          "args": {
+            "list": "todo",
+            "text": "milk"
+          },
+          "capability": "cap.add",
+          "component": "add"
+        },
+        "actionable": [
+          "button",
+          "input"
+        ],
+        "events": [
+          {
+            "body": {
+              "document": {
+                "capabilities": {
+                  "cap.add": {
+                    "args": {
+                      "list": "todo"
+                    },
+                    "consent": "policy",
+                    "free": [
+                      "text"
+                    ],
+                    "max_uses": 2,
+                    "tool": "files.delete"
+                  }
+                },
+                "components": {
+                  "add": {
+                    "children": [],
+                    "id": "add",
+                    "props": {
+                      "action": {
+                        "capability": "cap.add"
+                      },
+                      "compact": "+",
+                      "label": "Add",
+                      "name": "Add note",
+                      "spoken": "add a note"
+                    },
+                    "prov": "model",
+                    "type": "button"
+                  },
+                  "bar": {
+                    "children": [],
+                    "id": "bar",
+                    "props": {
+                      "value": 40
+                    },
+                    "prov": "model",
+                    "type": "progress"
+                  },
+                  "pic": {
+                    "children": [],
+                    "id": "pic",
+                    "props": {
+                      "alt": "logo",
+                      "src": {
+                        "$handle": "h_logo"
+                      }
+                    },
+                    "prov": "model",
+                    "type": "image"
+                  },
+                  "root": {
+                    "children": [
+                      "title",
+                      "bar",
+                      "add",
+                      "pic"
+                    ],
+                    "id": "root",
+                    "props": {},
+                    "prov": "model",
+                    "type": "column"
+                  },
+                  "title": {
+                    "children": [],
+                    "id": "title",
+                    "props": {
+                      "text": "Todo"
+                    },
+                    "prov": "model",
+                    "type": "text"
+                  }
+                },
+                "root": "root",
+                "surface": "s1",
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 3000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "seq": 3,
+            "type": "ui.surface_put"
+          }
+        ],
+        "turn": {
+          "max_uses": 3,
+          "tool_consent": {
+            "mail.send": "required"
+          },
+          "tools": [
+            "mail.send",
+            "notes.add"
+          ]
+        },
+        "vocabulary": [
+          "button",
+          "chart",
+          "column",
+          "image",
+          "input",
+          "link",
+          "progress",
+          "row",
+          "text"
+        ]
+      },
+      "kind": "surface_act",
+      "name": "act-on-a-surface-whose-put-was-too-wide"
+    },
+    {
+      "expect": {
+        "error": "surface.unknown_component"
+      },
+      "input": {
+        "action": {
+          "args": {
+            "list": "todo",
+            "text": "milk"
+          },
+          "capability": "cap.add",
+          "component": "add"
+        },
+        "actionable": [
+          "button",
+          "input"
+        ],
+        "events": [
+          {
+            "body": {
+              "document": {
+                "capabilities": {
+                  "cap.add": {
+                    "args": {
+                      "list": "todo"
+                    },
+                    "consent": "policy",
+                    "free": [
+                      "text"
+                    ],
+                    "max_uses": 2,
+                    "tool": "notes.add"
+                  }
+                },
+                "components": {
+                  "add": {
+                    "children": [],
+                    "id": "add",
+                    "props": {
+                      "action": {
+                        "capability": "cap.add"
+                      },
+                      "compact": "+",
+                      "label": "Add",
+                      "name": "Add note",
+                      "spoken": "add a note"
+                    },
+                    "prov": "model",
+                    "type": "button"
+                  },
+                  "bar": {
+                    "children": [],
+                    "id": "bar",
+                    "props": {
+                      "value": 40
+                    },
+                    "prov": "model",
+                    "type": "progress"
+                  },
+                  "pic": {
+                    "children": [],
+                    "id": "pic",
+                    "props": {
+                      "alt": "logo",
+                      "src": {
+                        "$handle": "h_logo"
+                      }
+                    },
+                    "prov": "model",
+                    "type": "image"
+                  },
+                  "root": {
+                    "children": [
+                      "title",
+                      "bar",
+                      "add",
+                      "pic"
+                    ],
+                    "id": "root",
+                    "props": {},
+                    "prov": "model",
+                    "type": "column"
+                  },
+                  "title": {
+                    "children": [],
+                    "id": "title",
+                    "props": {
+                      "text": "Todo"
+                    },
+                    "prov": "model",
+                    "type": "text"
+                  }
+                },
+                "root": "root",
+                "surface": "s1",
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "seq": 1,
+            "type": "ui.surface_put"
+          },
+          {
+            "body": {
+              "ops": [
+                {
+                  "id": "add",
+                  "op": "remove"
+                }
+              ],
+              "surface": "s1"
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "seq": 2,
+            "type": "ui.patch"
+          }
+        ],
+        "turn": {
+          "max_uses": 3,
+          "tool_consent": {
+            "mail.send": "required"
+          },
+          "tools": [
+            "mail.send",
+            "notes.add"
+          ]
+        },
+        "vocabulary": [
+          "button",
+          "chart",
+          "column",
+          "image",
+          "input",
+          "link",
+          "progress",
+          "row",
+          "text"
+        ]
+      },
+      "kind": "surface_act",
+      "name": "act-on-a-component-a-patch-removed"
+    },
+    {
+      "expect": {
+        "error": "surface.action_args"
+      },
+      "input": {
+        "action": {
+          "args": {
+            "list": "work"
+          },
+          "capability": "cap.add",
+          "component": "add"
+        },
+        "actionable": [
+          "button",
+          "input"
+        ],
+        "events": [
+          {
+            "body": {
+              "document": {
+                "capabilities": {
+                  "cap.add": {
+                    "args": {
+                      "list": "todo"
+                    },
+                    "consent": "policy",
+                    "free": [
+                      "text"
+                    ],
+                    "max_uses": 2,
+                    "tool": "notes.add"
+                  }
+                },
+                "components": {
+                  "add": {
+                    "children": [],
+                    "id": "add",
+                    "props": {
+                      "action": {
+                        "capability": "cap.add"
+                      },
+                      "compact": "+",
+                      "label": "Add",
+                      "name": "Add note",
+                      "spoken": "add a note"
+                    },
+                    "prov": "model",
+                    "type": "button"
+                  },
+                  "bar": {
+                    "children": [],
+                    "id": "bar",
+                    "props": {
+                      "value": 40
+                    },
+                    "prov": "model",
+                    "type": "progress"
+                  },
+                  "pic": {
+                    "children": [],
+                    "id": "pic",
+                    "props": {
+                      "alt": "logo",
+                      "src": {
+                        "$handle": "h_logo"
+                      }
+                    },
+                    "prov": "model",
+                    "type": "image"
+                  },
+                  "root": {
+                    "children": [
+                      "title",
+                      "bar",
+                      "add",
+                      "pic"
+                    ],
+                    "id": "root",
+                    "props": {},
+                    "prov": "model",
+                    "type": "column"
+                  },
+                  "title": {
+                    "children": [],
+                    "id": "title",
+                    "props": {
+                      "text": "Todo"
+                    },
+                    "prov": "model",
+                    "type": "text"
+                  }
+                },
+                "root": "root",
+                "surface": "s1",
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "seq": 1,
+            "type": "ui.surface_put"
+          }
+        ],
+        "turn": {
+          "max_uses": 3,
+          "tool_consent": {
+            "mail.send": "required"
+          },
+          "tools": [
+            "mail.send",
+            "notes.add"
+          ]
+        },
+        "vocabulary": [
+          "button",
+          "chart",
+          "column",
+          "image",
+          "input",
+          "link",
+          "progress",
+          "row",
+          "text"
+        ]
+      },
+      "kind": "surface_act",
+      "name": "act-cannot-widen-a-pinned-argument"
+    },
+    {
+      "expect": {
+        "ok": {
           "value": 42
         }
       },

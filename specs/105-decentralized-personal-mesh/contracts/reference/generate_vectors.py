@@ -4282,6 +4282,83 @@ def build_surface() -> Suite:
         {"args": {"list": "todo"}, "capability": "cap.other", "component": "add"},
         error="surface.unknown_capability",
     )
+    use_action = {
+        "args": {"list": "todo", "text": "milk"},
+        "capability": "cap.add",
+        "component": "add",
+    }
+
+    def pressed(seq: int, ms: int, body: dict[str, Any] | None = None) -> dict[str, Any]:
+        return ev("bbb", seq, ms, "ui.action", {"surface": "s1", **(body or use_action)})
+
+    def act_case(
+        name: str,
+        events: list[dict[str, Any]],
+        action: dict[str, Any] = use_action,
+        error: str | None = None,
+    ) -> None:
+        s.add(
+            name,
+            "surface_act",
+            {"action": action, "events": events, **base},
+            error=error,
+            expect=None
+            if error
+            else {"args": action["args"], "consent": "policy", "tool": "notes.add"},
+        )
+
+    act_case("act-on-a-fresh-surface", [put])
+    act_case("act-with-one-use-left", [put, pressed(2, 2000)])
+    act_case(
+        "act-after-the-capability-is-used-up-by-earlier-actions",
+        [put, pressed(2, 2000), pressed(3, 3000)],
+        error="surface.capability_exhausted",
+    )
+    act_case(
+        "act-ignores-earlier-actions-that-did-not-pass",
+        [
+            put,
+            pressed(2, 2000, {**use_action, "args": {"list": "work"}}),
+            pressed(3, 3000, {**use_action, "component": "ghost"}),
+            pressed(4, 4000),
+        ],
+    )
+    act_case(
+        "act-counts-actions-in-clock-order-whatever-the-listing-order",
+        [pressed(3, 3000), pressed(2, 2000), put],
+        error="surface.capability_exhausted",
+    )
+    act_case(
+        "act-with-no-surface-in-the-log",
+        [],
+        error="surface.unknown_surface",
+    )
+    act_case(
+        "act-on-a-surface-whose-put-was-too-wide",
+        [bad_put],
+        error="surface.capability_exceeds_turn",
+    )
+    act_case(
+        "act-on-a-component-a-patch-removed",
+        [
+            put,
+            ev(
+                "aaa",
+                2,
+                2000,
+                "ui.patch",
+                {"surface": "s1", "ops": [{"op": "remove", "id": "add"}]},
+            ),
+        ],
+        error="surface.unknown_component",
+    )
+    act_case(
+        "act-cannot-widen-a-pinned-argument",
+        [put],
+        {**use_action, "args": {"list": "work"}},
+        error="surface.action_args",
+    )
+
     result_id = crypto.sha256_id(b"tool-result")
     events = {
         result_id: {
