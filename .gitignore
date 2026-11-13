@@ -143,3 +143,5 @@ docker-compose.override.yml
 
 # Local qualification-run evidence written by controller/tooling gates -- generated, never committed.
 .pi-evidence/
+
+.presentation-sources/
