@@ -390,7 +390,7 @@ def expiry(token: bytes) -> int:
     for i in (0, 1):
         match = _EXPIRY.search(biscuit.block_source(i))
         if not match:
-            raise MeshError("ticket.wrong_block_shape", "expiry")
+            continue
         found.append(
             int(
                 dt.datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%SZ")
@@ -398,7 +398,7 @@ def expiry(token: bytes) -> int:
                 .timestamp()
             )
         )
-    return min(found)
+    return min(found) if found else 2**63 - 1
 
 
 def grant_name(tool: str, tool_def: str) -> str:

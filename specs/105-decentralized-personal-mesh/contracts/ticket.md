@@ -79,7 +79,7 @@ The result is the claims: `mesh`, `device`, `feed`, `stop_counter`, `turn`, `age
 
 ### 4.1 Expiry and the verifier's own fold
 
-**Expiry.** A ticket expires at the earliest of the expiry checks of its device block and its turn block. A verifier reads it from the two blocks (the check `$t < <RFC 3339>` of section 3) and reports it as `expires_s`, in whole seconds. An executor that remembers spent tickets keeps each one until `expires_s` and no longer. The ticket carries no issue time, so there is no `issued_s`. Vector kind `ticket_expiry`.
+**Expiry.** A ticket expires at the earliest of the expiry checks of its device block and its turn block. A verifier reads it from the two blocks (the check `$t < <RFC 3339>` of section 3) and reports it as `expires_s`, in whole seconds. An executor that remembers spent tickets keeps each one until `expires_s` and no longer. A token with no expiry check in either block never expires and is reported as 9223372036854775807. The ticket carries no issue time, so there is no `issued_s`. Vector kind `ticket_expiry`.
 
 **Revoked grants and removed members.** A verifier that is itself a member of the mesh holds the roster and the grants of the mesh. It adds two refusals after step 11 and before it returns the claims. It never needs them to be current. A verifier that has not yet seen a revocation verifies offline as before.
 
