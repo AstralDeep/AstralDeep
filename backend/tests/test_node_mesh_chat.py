@@ -130,6 +130,10 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def test_recorded_arguments_keep_non_ascii_paths_in_canonical_utf8():
+    assert nmc._arguments({"path": "notes/café.md"}) == '{"path":"notes/café.md"}'
+
+
 def call_for(*, tool="lookup", arguments=None, device=PHONE, digest=None, action_tool=None, turn="turn-9", tool_def=None):
     text = canonical(arguments if arguments is not None else {"q": "weather"})
     action = {
@@ -639,11 +643,13 @@ async def test_unrelated_tool_steps_never_inherit_a_minted_calls_receipt(tmp_pat
     await bridge.stop()
 
 
-async def test_parallel_node_calls_get_distinct_ids_and_keep_their_exact_receipts(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cap,count,receipts,errors", [(1, 1, ["receipt-1"], ["mint.limit"]), (64, 2, ["receipt-2", "receipt-1"], [])])
+async def test_parallel_node_calls_get_distinct_ids_and_keep_their_exact_receipts(tmp_path, monkeypatch, cap, count, receipts, errors):
     import httpx
 
     issued = []
     responses = []
+    monkeypatch.setattr(nmc, "MAX_STEPS", cap)
 
     async def mint(request, **call):
         await asyncio.sleep(0)
@@ -659,7 +665,9 @@ async def test_parallel_node_calls_get_distinct_ids_and_keep_their_exact_receipt
 
     async def runner(owner, local, prompt):
         responses.extend(await asyncio.gather(*(executor.invoke("agent-1", "lookup", {"q": n}, owner=owner) for n in [1, 2])))
-        for n in [2, 1]:
+        for n, response in reversed(list(zip([1, 2], responses))):
+            if response.error is not None:
+                continue
             nmc.observe_step(owner, local, {"name": "agent-1__lookup", "args": canonical({"q": n}), "status": "completed", "result": "done"})
         nmc.observe_message(owner, local, "assistant", "Both done.")
 
@@ -668,11 +676,12 @@ async def test_parallel_node_calls_get_distinct_ids_and_keep_their_exact_receipt
     kernel.add_chat("c", [])
     kernel.add_request("r1", "c")
     await serve(bridge, kernel, "r1")
-    assert len({call["call_id"] for call in issued}) == 2
-    assert all(response.result == "done" for response in responses)
+    assert len(issued) == count and len({call["call_id"] for call in issued}) == count
+    assert [response.error["code"] for response in responses if response.error is not None] == errors
+    assert sum(response.result == "done" for response in responses) == count
     steps = only_turn(kernel)[1].steps
-    assert [step.receipt for step in steps] == ["receipt-2", "receipt-1"]
-    assert len({step.call_id for step in steps}) == 2
+    assert [step.receipt for step in steps] == receipts
+    assert len({step.call_id for step in steps}) == count
     await bridge.stop()
     await executor.close()
 

@@ -713,7 +713,7 @@ def _arguments(raw: Any) -> str:
         parsed = {"text": _clip(raw, MAX_STEP_TEXT)}
     if not isinstance(parsed, dict):
         parsed = {} if parsed is None else {"value": parsed}
-    return json.dumps(parsed, sort_keys=True, separators=(",", ":"), default=str)
+    return json.dumps(parsed, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
 
 
 def _protection_enabled(owner_id: str) -> bool:
