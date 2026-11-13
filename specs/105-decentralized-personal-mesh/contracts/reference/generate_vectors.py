@@ -13,6 +13,7 @@ from typing import Any
 
 import scenarios as sc
 from astral_mesh_ref import (
+    attachments as attachments_ref,
     attestation,
     consent,
     credential as credential_ref,
@@ -43,6 +44,7 @@ transfer_ref.register(runner.op)
 requests_ref.register(runner.op)
 ticket.register(runner.op)
 tools_ref.register(runner.op)
+attachments_ref.register(runner.op)
 
 HERE = Path(__file__).resolve().parent
 VECTORS = HERE.parent / "vectors"
@@ -4194,6 +4196,25 @@ def build_surface() -> Suite:
                 "title": comp("title", "text", {"text": "x"}, prov="tool"),
             }
         ),
+    )
+    val(
+        "agent-provenance-allowed",
+        surface_doc(
+            components={
+                **doc["components"],
+                "title": comp("title", "text", {"text": "x"}, prov="agent"),
+            }
+        ),
+    )
+    val(
+        "unknown-provenance-refused",
+        surface_doc(
+            components={
+                **doc["components"],
+                "title": comp("title", "text", {"text": "x"}, prov="robot"),
+            }
+        ),
+        "surface.false_provenance",
     )
     val(
         "action-names-an-unknown-capability",
@@ -9788,6 +9809,146 @@ def build_tools() -> Suite:
     return s
 
 
+def build_attachments() -> Suite:
+    s = Suite("attachments", "contracts/attachments.md")
+    chat = crypto.sha256_id(b"attachment/chat")
+    key_ref = "ck:" + b64url_encode(seed("attachment/key-ref")[:16])
+    key_hex = seed("attachment/key").hex()
+    other_key_hex = seed("attachment/other-key").hex()
+    private = {"confidentiality": "private", "integrity": "owner"}
+    phi = {"confidentiality": "phi", "integrity": "owner"}
+
+    def sealed_input(label: str, length: int, **over: Any) -> dict[str, Any]:
+        case = {
+            "chat": chat,
+            "content": {"label": label, "length": length},
+            "key": key_ref,
+            "key_hex": key_hex,
+            "nonces": label,
+        }
+        case.update(over)
+        return case
+
+    def seal(case: str, length: int, error: str | None = None, **over: Any) -> Any:
+        return s.add(
+            case, "attachment_seal", sealed_input(case, length, **over), error=error
+        )
+
+    one = seal("seal-one-small-chunk", 1000)
+    exact = seal("seal-exactly-one-chunk", attachments_ref.CHUNK_SIZE)
+    seal("seal-one-byte-over-a-chunk", attachments_ref.CHUNK_SIZE + 1)
+    three = seal("seal-three-chunks", 2 * attachments_ref.CHUNK_SIZE + 5000, mime="application/pdf", name="report.pdf")
+    seal("seal-a-single-byte", 1, mime="text/plain", name="note.txt")
+    seal("seal-empty-content", 0, error="attachment.empty")
+    seal("seal-refuses-a-mime-type-outside-the-list", 10, error="attachment.mime_not_allowed", mime="application/x-msdownload")
+    seal("seal-refuses-a-mime-type-with-parameters", 10, error="attachment.mime_not_allowed", mime="text/plain; charset=utf-8")
+    seal("seal-refuses-a-path-as-a-name", 10, error="attachment.bad_name", name="../etc/passwd")
+    seal("seal-refuses-a-secret-label", 10, error="attachment.label", labels={"confidentiality": "secret", "integrity": "owner"})
+    assert exact["lengths"] == [attachments_ref.CHUNK_SIZE + 40]
+    assert len(three["lengths"]) == 3 and one["lengths"] == [1040]
+
+    def check(name: str, body: Any, labels: Any = private, error: str | None = None, **ok: Any) -> None:
+        s.add(name, "attachment_check", {"body": body, "labels": labels}, error=error, expect=ok or None)
+
+    good = three["body"]
+    check("a-sealed-body-is-valid", good, chunks=3, mime="application/pdf", size=good["size"])
+    check("a-phi-attachment-is-valid", good, labels=phi, chunks=3, mime="application/pdf", size=good["size"])
+    check("the-largest-attachment-is-valid", {**good, "size": attachments_ref.MAX_SIZE, "chunks": [crypto.sha256_id(b"c%d" % n) for n in range(64)]}, chunks=64, mime="application/pdf", size=attachments_ref.MAX_SIZE)
+    check("extra-field", {**good, "x": 1}, error="attachment.malformed")
+    check("missing-field", {k: v for k, v in good.items() if k != "sha256"}, error="attachment.malformed")
+    check("not-an-object", [], error="attachment.malformed")
+    check("size-is-a-float", {**good, "size": 1.5}, error="attachment.malformed")
+    check("size-is-a-string", {**good, "size": "10"}, error="attachment.malformed")
+    check("size-is-a-boolean", {**good, "size": True}, error="attachment.malformed")
+    check("sha256-is-malformed", {**good, "sha256": "sha256:ABC"}, error="attachment.malformed")
+    check("chunks-is-not-a-list", {**good, "chunks": "x"}, error="attachment.malformed")
+    check("a-chunk-hash-is-malformed", {**good, "chunks": good["chunks"][:2] + ["sha256:zz"]}, error="attachment.malformed")
+    check("a-chunk-hash-repeats", {**good, "chunks": [good["chunks"][0]] * 3}, error="attachment.malformed")
+    check("one-chunk-too-few", {**good, "chunks": good["chunks"][:2]}, error="attachment.chunk_count")
+    check("one-chunk-too-many", {**good, "chunks": good["chunks"] + [crypto.sha256_id(b"extra")]}, error="attachment.chunk_count")
+    check("empty-size", {**good, "size": 0, "chunks": []}, error="attachment.empty")
+    check("negative-size", {**good, "size": -1}, error="attachment.empty")
+    check("size-over-the-limit", {**good, "size": attachments_ref.MAX_SIZE + 1, "chunks": [crypto.sha256_id(b"c%d" % n) for n in range(65)]}, error="attachment.too_large")
+    check("mime-outside-the-list", {**good, "mime": "text/html"}, error="attachment.mime_not_allowed")
+    check("mime-in-upper-case", {**good, "mime": "IMAGE/PNG"}, error="attachment.mime_not_allowed")
+    check("mime-is-not-text", {**good, "mime": 3}, error="attachment.mime_not_allowed")
+    check("empty-name", {**good, "name": ""}, error="attachment.bad_name")
+    check("name-with-a-slash", {**good, "name": "a/b.pdf"}, error="attachment.bad_name")
+    check("name-with-a-backslash", {**good, "name": "a\\b.pdf"}, error="attachment.bad_name")
+    check("name-with-a-control-character", {**good, "name": "a\u0000b.pdf"}, error="attachment.bad_name")
+    check("name-is-dot-dot", {**good, "name": ".."}, error="attachment.bad_name")
+    check("name-too-long", {**good, "name": "n" * 256}, error="attachment.bad_name")
+    check("name-at-the-limit", {**good, "name": "n" * 255}, chunks=3, mime="application/pdf", size=good["size"])
+    check("secret-label", good, labels={"confidentiality": "secret", "integrity": "owner"}, error="attachment.label")
+
+    def message(name: str, body: Any, error: str | None = None, **ok: Any) -> None:
+        s.add(name, "attachment_message_check", {"body": body}, error=error, expect=ok or None)
+
+    ids = [crypto.sha256_id(b"attachment/%d" % n) for n in range(9)]
+    message("a-message-without-attachments", {"text": "hi", "base": None}, attachments=0)
+    message("a-message-with-two-attachments", {"text": "hi", "base": None, "attachments": ids[:2]}, attachments=2)
+    message("a-message-with-eight-attachments", {"text": "hi", "attachments": ids[:8]}, attachments=8)
+    message("an-empty-attachment-list", {"text": "hi", "attachments": []}, attachments=0)
+    message("nine-attachments", {"text": "hi", "attachments": ids}, error="attachment.too_many")
+    message("a-repeated-attachment", {"text": "hi", "attachments": [ids[0], ids[0]]}, error="attachment.malformed")
+    message("an-attachment-id-is-malformed", {"text": "hi", "attachments": ["x"]}, error="attachment.malformed")
+    message("attachments-is-not-a-list", {"text": "hi", "attachments": ids[0]}, error="attachment.malformed")
+    message("a-message-body-that-is-not-an-object", [], error="attachment.malformed")
+
+    def receive(name: str, length: int, index: int, error: str | None = None, **over: Any) -> None:
+        case = sealed_input(name, length, index=index, **over)
+        s.add(name, "attachment_receive", case, error=error)
+
+    receive("receive-the-first-chunk", 600000, 0)
+    receive("receive-the-short-last-chunk", 600000, 2)
+    receive("receive-a-chunk-without-the-key", 600000, 1, key_held=False)
+    receive("receive-refuses-a-flipped-byte", 600000, 0, error="attachment.chunk_hash", tamper=[{"op": "flip", "chunk": 0, "offset": 100}])
+    receive("receive-refuses-a-truncated-chunk", 600000, 1, error="attachment.chunk_hash", tamper=[{"op": "truncate", "chunk": 1, "to": 5000}])
+    receive("receive-refuses-a-wrong-length-with-the-right-hash", 600000, 1, error="attachment.chunk_size", tamper=[{"op": "truncate", "chunk": 1, "to": 5000, "rehash": True}])
+    receive("receive-refuses-a-chunk-from-another-position", 600000, 0, error="attachment.chunk_hash", tamper=[{"op": "swap", "chunks": [0, 1]}])
+    receive("receive-refuses-an-edited-chunk-the-body-names", 600000, 0, error="attachment.chunk_decrypt", tamper=[{"op": "flip", "chunk": 0, "offset": 100, "rehash": True}])
+    receive("receive-refuses-the-wrong-key", 600000, 0, error="attachment.chunk_decrypt", wrong_key=other_key_hex)
+    receive("receive-refuses-the-wrong-chat", 600000, 0, error="attachment.chunk_decrypt", open_chat=crypto.sha256_id(b"attachment/other-chat"))
+    receive("receive-refuses-a-missing-chunk", 600000, 1, error="attachment.chunk_missing", tamper=[{"op": "drop", "chunk": 1}])
+
+    def open_all(name: str, length: int, error: str | None = None, **over: Any) -> None:
+        s.add(name, "attachment_open", sealed_input(name, length, **over), error=error)
+
+    open_all("open-one-chunk", 1000)
+    open_all("open-three-chunks", 2 * attachments_ref.CHUNK_SIZE + 5000)
+    open_all("open-exactly-two-chunks", 2 * attachments_ref.CHUNK_SIZE)
+    open_all("open-refuses-a-missing-chunk", 600000, error="attachment.chunk_missing", tamper=[{"op": "drop", "chunk": 2}])
+    open_all("open-refuses-chunks-out-of-order", 600000, error="attachment.chunk_hash", tamper=[{"op": "swap", "chunks": [0, 2]}])
+    open_all("open-refuses-an-edited-chunk", 600000, error="attachment.chunk_hash", tamper=[{"op": "flip", "chunk": 1, "offset": 7}])
+    open_all("open-refuses-a-resealed-edit", 600000, error="attachment.chunk_decrypt", tamper=[{"op": "flip", "chunk": 1, "offset": 7, "rehash": True}])
+    open_all("open-refuses-a-forged-content-hash", 600000, error="attachment.content_mismatch", tamper=[{"op": "forge_sha256"}])
+    open_all("open-refuses-the-wrong-key", 1000, error="attachment.chunk_decrypt", wrong_key=other_key_hex)
+
+    held = {
+        ids[0]: {"labels": private, "chunks": [crypto.sha256_id(b"p0"), crypto.sha256_id(b"p1")]},
+        ids[1]: {"labels": phi, "chunks": [crypto.sha256_id(b"h0")]},
+        ids[2]: {"labels": {"confidentiality": "secret", "integrity": "owner"}, "chunks": [crypto.sha256_id(b"s0")]},
+        ids[3]: {"labels": {"confidentiality": "public", "integrity": "untrusted"}, "chunks": [crypto.sha256_id(b"u0"), crypto.sha256_id(b"h0")]},
+    }
+
+    def serve(name: str, requested: list[str], in_phi: bool, **expect: Any) -> None:
+        s.add(
+            name,
+            "attachment_serve",
+            {"attachments": held, "peer_in_phi_group": in_phi, "requested": [crypto.sha256_id(r) for r in requested]},
+            expect={"send": [crypto.sha256_id(r) for r in expect["send"]], "withheld": [{"hash": crypto.sha256_id(h), "reason": why} for h, why in expect["withheld"]]},
+        )
+
+    serve("a-private-chunk-goes-to-any-member", [b"p0", b"p1"], False, send=[b"p0", b"p1"], withheld=[])
+    serve("a-phi-chunk-is-withheld-from-a-non-phi-peer", [b"h0"], False, send=[], withheld=[(b"h0", "phi")])
+    serve("a-phi-chunk-goes-to-a-phi-peer", [b"h0"], True, send=[b"h0"], withheld=[])
+    serve("a-chunk-shared-with-a-phi-attachment-is-withheld", [b"u0", b"h0"], False, send=[b"u0"], withheld=[(b"h0", "phi")])
+    serve("a-secret-chunk-is-never-sent", [b"s0"], True, send=[], withheld=[(b"s0", "secret")])
+    serve("an-unknown-chunk-is-withheld", [b"nope"], True, send=[], withheld=[(b"nope", "unknown")])
+    serve("the-answer-keeps-the-order-asked", [b"u0", b"nope", b"p1", b"h0"], False, send=[b"u0", b"p1"], withheld=[(b"nope", "unknown"), (b"h0", "phi")])
+    return s
+
+
 def suites(repin: bool) -> list[Suite]:
     return [
         build_canonical(),
@@ -9811,6 +9972,7 @@ def suites(repin: bool) -> list[Suite]:
         build_transfer(),
         build_requests(),
         build_tools(),
+        build_attachments(),
     ]
 
 
