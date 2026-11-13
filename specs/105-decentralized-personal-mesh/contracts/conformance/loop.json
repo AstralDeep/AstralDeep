@@ -1,0 +1,644 @@
+{
+  "format": "astral.loop-conformance/v1",
+  "arguments": [
+    {
+      "name": "an-object-passes-unchanged",
+      "raw": "{\"city\":\"Rome\"}",
+      "schema": null,
+      "expect": {
+        "args": {
+          "city": "Rome"
+        },
+        "repaired": false,
+        "code": null
+      }
+    },
+    {
+      "name": "blank-arguments-are-an-empty-object",
+      "raw": "  ",
+      "schema": null,
+      "expect": {
+        "args": {},
+        "repaired": false,
+        "code": null
+      }
+    },
+    {
+      "name": "raw-control-characters-remain-data",
+      "raw": "{\"city\":\"a\nb\"}",
+      "schema": null,
+      "expect": {
+        "args": {
+          "city": "a\nb"
+        },
+        "repaired": false,
+        "code": null
+      }
+    },
+    {
+      "name": "a-trailing-comma-is-repaired",
+      "raw": "{\"city\":\"Rome\",}",
+      "schema": null,
+      "expect": {
+        "args": {
+          "city": "Rome"
+        },
+        "repaired": true,
+        "code": null
+      }
+    },
+    {
+      "name": "a-json-fence-is-removed",
+      "raw": "```json\n{\"city\":\"Rome\"}\n```",
+      "schema": null,
+      "expect": {
+        "args": {
+          "city": "Rome"
+        },
+        "repaired": true,
+        "code": null
+      }
+    },
+    {
+      "name": "prose-around-an-object-is-removed",
+      "raw": "Here: {\"city\":\"Rome\"} thanks",
+      "schema": null,
+      "expect": {
+        "args": {
+          "city": "Rome"
+        },
+        "repaired": true,
+        "code": null
+      }
+    },
+    {
+      "name": "a-json-string-containing-an-object-is-unwrapped",
+      "raw": "\"{\\\"city\\\":\\\"Rome\\\"}\"",
+      "schema": null,
+      "expect": {
+        "args": {
+          "city": "Rome"
+        },
+        "repaired": true,
+        "code": null
+      }
+    },
+    {
+      "name": "python-literals-are-repaired",
+      "raw": "{\"metric\":True,\"filters\":None}",
+      "schema": null,
+      "expect": {
+        "args": {
+          "metric": true,
+          "filters": null
+        },
+        "repaired": true,
+        "code": null
+      }
+    },
+    {
+      "name": "a-truncated-string-is-refused",
+      "raw": "{\"city\":\"Ro",
+      "schema": null,
+      "expect": {
+        "args": null,
+        "repaired": false,
+        "code": "invalid_json"
+      }
+    },
+    {
+      "name": "an-array-is-refused",
+      "raw": "[1,2]",
+      "schema": null,
+      "expect": {
+        "args": null,
+        "repaired": false,
+        "code": "not_an_object"
+      }
+    },
+    {
+      "name": "a-null-is-refused",
+      "raw": "null",
+      "schema": null,
+      "expect": {
+        "args": null,
+        "repaired": false,
+        "code": "not_an_object"
+      }
+    },
+    {
+      "name": "numeric-strings-follow-the-schema",
+      "raw": "{\"city\":\"Rome\",\"days\":\"3\",\"metric\":\"true\"}",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          },
+          "days": {
+            "type": "integer"
+          },
+          "metric": {
+            "type": "boolean"
+          },
+          "filters": {
+            "type": "object"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "additionalProperties": false
+      },
+      "expect": {
+        "args": {
+          "city": "Rome",
+          "days": 3,
+          "metric": true
+        },
+        "repaired": true,
+        "code": null
+      }
+    },
+    {
+      "name": "an-integer-becomes-a-schema-string",
+      "raw": "{\"city\":40506}",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          },
+          "days": {
+            "type": "integer"
+          },
+          "metric": {
+            "type": "boolean"
+          },
+          "filters": {
+            "type": "object"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "additionalProperties": false
+      },
+      "expect": {
+        "args": {
+          "city": "40506"
+        },
+        "repaired": true,
+        "code": null
+      }
+    },
+    {
+      "name": "containers-follow-the-schema",
+      "raw": "{\"city\":\"Rome\",\"filters\":\"{\\\"a\\\":1}\",\"items\":\"[1,2]\"}",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          },
+          "days": {
+            "type": "integer"
+          },
+          "metric": {
+            "type": "boolean"
+          },
+          "filters": {
+            "type": "object"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "additionalProperties": false
+      },
+      "expect": {
+        "args": {
+          "city": "Rome",
+          "filters": {
+            "a": 1
+          },
+          "items": [
+            1,
+            2
+          ]
+        },
+        "repaired": true,
+        "code": null
+      }
+    },
+    {
+      "name": "undeclared-fields-are-dropped-only-by-a-closed-schema",
+      "raw": "{\"city\":\"Rome\",\"extra\":\"x\"}",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          },
+          "days": {
+            "type": "integer"
+          },
+          "metric": {
+            "type": "boolean"
+          },
+          "filters": {
+            "type": "object"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "additionalProperties": false
+      },
+      "expect": {
+        "args": {
+          "city": "Rome"
+        },
+        "repaired": true,
+        "code": null
+      }
+    },
+    {
+      "name": "a-missing-required-field-is-refused",
+      "raw": "{}",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          },
+          "days": {
+            "type": "integer"
+          },
+          "metric": {
+            "type": "boolean"
+          },
+          "filters": {
+            "type": "object"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "additionalProperties": false
+      },
+      "expect": {
+        "args": null,
+        "repaired": false,
+        "code": "schema_mismatch"
+      }
+    },
+    {
+      "name": "a-fraction-does-not-become-an-integer",
+      "raw": "{\"city\":\"Rome\",\"days\":\"3.5\"}",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          },
+          "days": {
+            "type": "integer"
+          },
+          "metric": {
+            "type": "boolean"
+          },
+          "filters": {
+            "type": "object"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "additionalProperties": false
+      },
+      "expect": {
+        "args": null,
+        "repaired": false,
+        "code": "schema_mismatch"
+      }
+    },
+    {
+      "name": "a-boolean-is-not-an-integer",
+      "raw": "{\"city\":\"Rome\",\"days\":true}",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          },
+          "days": {
+            "type": "integer"
+          },
+          "metric": {
+            "type": "boolean"
+          },
+          "filters": {
+            "type": "object"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "additionalProperties": false
+      },
+      "expect": {
+        "args": null,
+        "repaired": false,
+        "code": "schema_mismatch"
+      }
+    }
+  ],
+  "repeats": [
+    {
+      "name": "two-failures-block-dispatch-and-six-stop-the-turn",
+      "steps": [
+        {
+          "tool": "lookup",
+          "raw": "{}",
+          "failed": true,
+          "expect": {
+            "verdict": "ok",
+            "blocked": false
+          }
+        },
+        {
+          "tool": "lookup",
+          "raw": "{}",
+          "failed": true,
+          "expect": {
+            "verdict": "warn",
+            "blocked": true
+          }
+        },
+        {
+          "tool": "lookup",
+          "raw": "{}",
+          "failed": true,
+          "expect": {
+            "verdict": "block",
+            "blocked": true
+          }
+        },
+        {
+          "tool": "lookup",
+          "raw": "{}",
+          "failed": true,
+          "expect": {
+            "verdict": "block",
+            "blocked": true
+          }
+        },
+        {
+          "tool": "lookup",
+          "raw": "{}",
+          "failed": true,
+          "expect": {
+            "verdict": "block",
+            "blocked": true
+          }
+        },
+        {
+          "tool": "lookup",
+          "raw": "{}",
+          "failed": true,
+          "expect": {
+            "verdict": "stop",
+            "blocked": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "success-restores-dispatch",
+      "steps": [
+        {
+          "tool": "lookup",
+          "raw": "{}",
+          "failed": true,
+          "expect": {
+            "verdict": "ok",
+            "blocked": false
+          }
+        },
+        {
+          "tool": "lookup",
+          "raw": "{}",
+          "failed": true,
+          "expect": {
+            "verdict": "warn",
+            "blocked": true
+          }
+        },
+        {
+          "tool": "lookup",
+          "raw": "{}",
+          "failed": false,
+          "expect": {
+            "verdict": "ok",
+            "blocked": false
+          }
+        },
+        {
+          "tool": "lookup",
+          "raw": "{}",
+          "failed": true,
+          "expect": {
+            "verdict": "ok",
+            "blocked": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "object-order-and-whitespace-do-not-reset-failures",
+      "steps": [
+        {
+          "tool": "lookup",
+          "raw": "{\"b\":2,\"a\":{\"y\":1,\"x\":2}}",
+          "failed": true,
+          "expect": {
+            "verdict": "ok",
+            "blocked": false
+          }
+        },
+        {
+          "tool": "lookup",
+          "raw": " { \"a\": {\"x\":2,\"y\":1},\"b\":2 }",
+          "failed": true,
+          "expect": {
+            "verdict": "warn",
+            "blocked": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "blank-and-empty-object-arguments-are-the-same-call",
+      "steps": [
+        {
+          "tool": "lookup",
+          "raw": "",
+          "failed": true,
+          "expect": {
+            "verdict": "ok",
+            "blocked": false
+          }
+        },
+        {
+          "tool": "lookup",
+          "raw": "{}",
+          "failed": true,
+          "expect": {
+            "verdict": "warn",
+            "blocked": true
+          }
+        },
+        {
+          "tool": "lookup",
+          "raw": "  ",
+          "failed": true,
+          "expect": {
+            "verdict": "block",
+            "blocked": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "invalid-arguments-still-count",
+      "steps": [
+        {
+          "tool": "lookup",
+          "raw": " city=Rome ",
+          "failed": true,
+          "expect": {
+            "verdict": "ok",
+            "blocked": false
+          }
+        },
+        {
+          "tool": "lookup",
+          "raw": "city=Rome",
+          "failed": true,
+          "expect": {
+            "verdict": "warn",
+            "blocked": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "escaped-and-raw-controls-are-the-same-call",
+      "steps": [
+        {
+          "tool": "lookup",
+          "raw": "{\"text\":\"a\nb\"}",
+          "failed": true,
+          "expect": {
+            "verdict": "ok",
+            "blocked": false
+          }
+        },
+        {
+          "tool": "lookup",
+          "raw": "{\"text\":\"a\\nb\"}",
+          "failed": true,
+          "expect": {
+            "verdict": "warn",
+            "blocked": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "another-value-or-tool-starts-its-own-count",
+      "steps": [
+        {
+          "tool": "lookup",
+          "raw": "{\"city\":\"Rome\"}",
+          "failed": true,
+          "expect": {
+            "verdict": "ok",
+            "blocked": false
+          }
+        },
+        {
+          "tool": "lookup",
+          "raw": "{\"city\":\"Rome\"}",
+          "failed": true,
+          "expect": {
+            "verdict": "warn",
+            "blocked": true
+          }
+        },
+        {
+          "tool": "lookup",
+          "raw": "{\"city\":\"Paris\"}",
+          "failed": true,
+          "expect": {
+            "verdict": "ok",
+            "blocked": false
+          }
+        },
+        {
+          "tool": "other",
+          "raw": "{\"city\":\"Rome\"}",
+          "failed": true,
+          "expect": {
+            "verdict": "ok",
+            "blocked": false
+          }
+        }
+      ]
+    }
+  ],
+  "gate_vectors": "../vectors/labels.json#labels_gate"
+}
