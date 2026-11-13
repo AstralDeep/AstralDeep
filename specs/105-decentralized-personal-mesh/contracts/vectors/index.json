@@ -1,5 +1,10 @@
 {
   "files": {
+    "attachments.json": {
+      "cases": 75,
+      "sha256": "f4ee4a5e0a91a77227dfcd1728c8677ad4e627e7fccf1606205dab2d8b46d81e",
+      "spec": "contracts/attachments.md"
+    },
     "attestation.json": {
       "cases": 32,
       "sha256": "6264949e45ed2a9fc4b324fb60f3a0a4a635ce84284a044e08077c8ca3fea231",
@@ -66,8 +71,8 @@
       "spec": "contracts/policy.md"
     },
     "requests.json": {
-      "cases": 47,
-      "sha256": "8c631bc940b057dd45d11e74b4aca6bc9e88b61acf5d0279adc2f7890e839f8c",
+      "cases": 68,
+      "sha256": "60c0ab9ad0ac357c0a5022e3eea41533e13b6571d7a4a46cf830cf4161a0cad3",
       "spec": "contracts/requests.md"
     },
     "roster.json": {
@@ -81,8 +86,8 @@
       "spec": "contracts/runs.md"
     },
     "surface.json": {
-      "cases": 69,
-      "sha256": "f1ae11b3eedeee9d3489f8e54e58fd0188725eded427b08c0d0c8506fddd8da0",
+      "cases": 71,
+      "sha256": "15765296987b33e3715fda9f520f642a5037d7bbbc84ba3614309ad22df74f58",
       "spec": "contracts/surface.md"
     },
     "sync.json": {
@@ -91,8 +96,8 @@
       "spec": "contracts/sync.md"
     },
     "ticket.json": {
-      "cases": 54,
-      "sha256": "fb9452055e84ec643a9cce410ab3a4adafee5c9832ad77f1d60620eddb99a4b1",
+      "cases": 69,
+      "sha256": "247abfb1b9b9c428826b829e5e23bff4e0e4faa4a719f2de31f08acd18cb5990",
       "spec": "contracts/ticket.md"
     },
     "tools.json": {

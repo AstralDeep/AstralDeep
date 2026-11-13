@@ -12,6 +12,7 @@ from . import crypto, ticket
 from .cj import canonical, strict_loads
 from .errors import MeshError
 from .fold import ancestors, order_key
+from .labels import EFFECT_KINDS, join
 
 SEND = "request.send"
 CLAIM = "request.claim"
@@ -215,10 +216,85 @@ def fold(
     return {"ignored": sorted(ignored), "requests": views}
 
 
+MAX_MINTS = 64
+MINT_STATES = ("pending", "claimed", "answered", "refused", "cancelled")
+
+
+def grant_name(name: str, tool_def: str) -> str:
+    digits = tool_def.removeprefix("sha256:")
+    return f"{name}@{digits[:8]}"
+
+
+def _mint_call(call: dict[str, Any]) -> str:
+    tool = call["tool"]
+    if (
+        not isinstance(call["call_id"], str)
+        or not CALL_ID.fullmatch(call["call_id"])
+        or not isinstance(tool, str)
+        or not 1 <= len(tool) <= 200
+        or any(ord(c) < 32 or ord(c) == 127 for c in tool)
+        or not crypto.is_id(call["tool_def"])
+    ):
+        raise MeshError("mint.malformed", "call")
+    if call["effect"] not in EFFECT_KINDS:
+        raise MeshError("labels.invalid", str(call["effect"]))
+    arguments = call["arguments"]
+    raw = arguments.encode("utf-8") if isinstance(arguments, str) else b""
+    try:
+        parsed = strict_loads(arguments)
+    except (MeshError, TypeError) as exc:
+        raise MeshError("mint.malformed", "arguments") from exc
+    if (
+        len(raw) > MAX_ARGUMENT_BYTES
+        or not isinstance(parsed, dict)
+        or canonical(parsed) != raw
+    ):
+        raise MeshError("mint.malformed", "arguments")
+    return crypto.sha256_id(raw)
+
+
+def mint_check(i: dict[str, Any]) -> dict[str, Any]:
+    args_digest = _mint_call(i["call"])
+    request = i["request"]
+    if request["to"] != i["local"]:
+        raise MeshError("request.not_target", request["to"])
+    if request["state"] == "pending":
+        raise MeshError("request.not_claimed", request["state"])
+    if request["state"] != "claimed":
+        raise MeshError(f"request.{request['state']}", request["state"])
+    if request["has_call"]:
+        raise MeshError("mint.call_request", "the request carries a call")
+    if i["minted"] >= MAX_MINTS:
+        raise MeshError("mint.limit", str(i["minted"]))
+    call = i["call"]
+    own = next((t for t in i["catalog"] if t["name"] == call["tool"]), None)
+    if own is None:
+        raise MeshError("mint.unknown_tool", call["tool"])
+    if own["hash"] != call["tool_def"]:
+        raise MeshError("gate.tool_def_changed", call["tool"])
+    if own["effect"] != call["effect"]:
+        raise MeshError("mint.effect_mismatch", call["tool"])
+    running = i["running"] if i["running"] is not None else request["labels"]
+    label = join([request["labels"], running])
+    if label["confidentiality"] == "secret":
+        raise MeshError("mint.secret_label", "secret")
+    if label["confidentiality"] == "phi" and not i["phi_member"]:
+        raise MeshError("mint.phi_not_approved", "phi")
+    return {
+        "args_digest": args_digest,
+        "grant": grant_name(call["tool"], call["tool_def"]),
+        "label": label,
+    }
+
+
 def register(op: Callable[[str], Callable[[Any], Any]]) -> None:
     @op("request_check")
     def _check(i: dict[str, Any]) -> Any:
         return check_body(i["type"], i["body"])
+
+    @op("request_mint")
+    def _mint(i: dict[str, Any]) -> Any:
+        return mint_check(i)
 
     @op("request_fold")
     def _fold(i: dict[str, Any]) -> Any:

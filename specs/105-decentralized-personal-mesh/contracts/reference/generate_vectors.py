@@ -13,6 +13,7 @@ from typing import Any
 
 import scenarios as sc
 from astral_mesh_ref import (
+    attachments as attachments_ref,
     attestation,
     consent,
     credential as credential_ref,
@@ -41,7 +42,9 @@ learning_ref.register(runner.op)
 credential_ref.register(runner.op)
 transfer_ref.register(runner.op)
 requests_ref.register(runner.op)
+ticket.register(runner.op)
 tools_ref.register(runner.op)
+attachments_ref.register(runner.op)
 
 HERE = Path(__file__).resolve().parent
 VECTORS = HERE.parent / "vectors"
@@ -3218,11 +3221,14 @@ def build_ticket(repin: bool = False) -> Suite:
 
         return tok(label, make)
 
+    expiry_check = f"check if time($t), $t < {ticket.rfc3339(now_s + 1800)};"
     head = (
         f'mesh("{mesh}"); device("{ALICE.id}"); feed("{ALICE.feed}"); actor("device:{ALICE.id}"); stop_counter(0); '
-        f"check if mesh_ctx($m), mesh($m); check if stop_current($n), stop_counter($c), $n <= $c;"
+        f"check if mesh_ctx($m), mesh($m); check if stop_current($n), stop_counter($c), $n <= $c; {expiry_check}"
     )
-    turn_block = f'actor("turn:{turn}"); turn("{turn}"); check if tool($t), {{"mail.send"}}.contains($t);'
+    turn_block = f'actor("turn:{turn}"); turn("{turn}"); check if tool($t), {{"mail.send"}}.contains($t); {expiry_check}'
+    head_no_expiry = head.replace(expiry_check, "")
+    turn_no_expiry = turn_block.replace(expiry_check, "")
     agent_block = 'actor("agent:agent.mail"); check if agent($a), $a == "agent.mail";'
     call_block = (
         f'actor("call:{digest}"); label("integrity", "owner"); label("confidentiality", "private"); '
@@ -3234,7 +3240,20 @@ def build_ticket(repin: bool = False) -> Suite:
     plain_digest = ticket.action_digest(plain_action)
     plain_call = call_block.replace(digest, plain_digest)
     plain_receipt = {**receipt, "evidence_digest": plain_digest}
-    ok_custom = custom("hand-built-valid", [head, turn_block, agent_block, plain_call])
+    ok_custom = custom(
+        "hand-built-valid-with-expiry", [head, turn_block, agent_block, plain_call]
+    )
+    no_expiry_token = custom(
+        "hand-built-valid", [head_no_expiry, turn_no_expiry, agent_block, plain_call]
+    )
+    turn_only_expiry = custom(
+        "hand-built-without-device-expiry",
+        [head_no_expiry, turn_block, agent_block, plain_call],
+    )
+    device_only_expiry = custom(
+        "hand-built-without-turn-expiry",
+        [head, turn_no_expiry, agent_block, plain_call],
+    )
     owner = {
         **claims,
         "action": plain_digest,
@@ -3249,6 +3268,26 @@ def build_ticket(repin: bool = False) -> Suite:
         ),
         expect=owner,
     )
+    for name, token in (
+        ("hand-built-token-without-any-expiry-check-is-refused", no_expiry_token),
+        ("hand-built-token-without-a-device-expiry-is-refused", turn_only_expiry),
+        ("hand-built-token-without-a-turn-expiry-is-refused", device_only_expiry),
+    ):
+        s.add(
+            name,
+            "ticket_verify",
+            base(
+                action=plain_action,
+                ticket=with_ticket(capability=token, receipt=plain_receipt),
+            ),
+            error="ticket.wrong_block_shape",
+        )
+        s.add(
+            name.replace("-is-refused", "-has-no-expiry"),
+            "ticket_expiry",
+            {"capability": token},
+            error="ticket.wrong_block_shape",
+        )
     s.add(
         "block-with-a-rule-refused",
         "ticket_verify",
@@ -3411,6 +3450,65 @@ def build_ticket(repin: bool = False) -> Suite:
             "presence_keys": presence,
         },
         error="consent.wrong_action",
+    )
+    s.add(
+        "expiry-is-the-earliest-block-expiry",
+        "ticket_expiry",
+        {"capability": good},
+        expect={"expires_s": now_s + 1800},
+    )
+    s.add(
+        "expiry-of-a-token-that-is-not-biscuit",
+        "ticket_expiry",
+        {"capability": "AAAA"},
+        error="ticket.malformed",
+    )
+    grant_action = {"agent": "kernel", "tool": "mail.send", "tool_def": action["tool_def"]}
+    named = ticket.grant_name("mail.send", action["tool_def"])
+
+    def grant_case(name: str, grants: list[str], revokes: list[str], error: str | None = None) -> None:
+        s.add(
+            name,
+            "ticket_grant_check",
+            {
+                "action": grant_action,
+                "effect_kind": "outside_effect",
+                "grants": grants,
+                "revokes": revokes,
+            },
+            error=error,
+            expect=None if error else {"valid": True},
+        )
+
+    grant_case("grant-held-and-never-revoked", [f"kernel/{named}/*"], [])
+    grant_case("nothing-granted-and-nothing-revoked-stays-offline-valid", [], [])
+    grant_case(
+        "grant-revoked-is-refused",
+        [],
+        [f"kernel/{named}/*"],
+        "ticket.grant_revoked",
+    )
+    grant_case(
+        "revoked-and-granted-again-is-valid",
+        [f"kernel/{named}/outside_effect"],
+        [f"kernel/{named}/*"],
+    )
+    grant_case(
+        "revoke-of-the-bare-name-counts",
+        [],
+        ["kernel/mail.send/*"],
+        "ticket.grant_revoked",
+    )
+    grant_case(
+        "revoke-of-another-tool-or-scope-does-not-count",
+        [],
+        ["kernel/mail.read/*", f"kernel/{named}/mesh_read", "other/mail.send/*"],
+    )
+    grant_case(
+        "wildcard-revoke-counts",
+        [],
+        ["*/*/*"],
+        "ticket.grant_revoked",
     )
     s.doc["tokens"] = dict(sorted(tokens.items()))
     s.doc["tokens_note"] = (
@@ -4098,6 +4196,25 @@ def build_surface() -> Suite:
                 "title": comp("title", "text", {"text": "x"}, prov="tool"),
             }
         ),
+    )
+    val(
+        "agent-provenance-allowed",
+        surface_doc(
+            components={
+                **doc["components"],
+                "title": comp("title", "text", {"text": "x"}, prov="agent"),
+            }
+        ),
+    )
+    val(
+        "unknown-provenance-refused",
+        surface_doc(
+            components={
+                **doc["components"],
+                "title": comp("title", "text", {"text": "x"}, prov="robot"),
+            }
+        ),
+        "surface.false_provenance",
     )
     val(
         "action-names-an-unknown-capability",
@@ -9414,6 +9531,146 @@ def build_requests() -> Suite:
             ],
         },
     )
+
+    mint_args = canonical({"path": "notes/today.md"}).decode()
+    mint_hash = _eid("requests", "mint-tool-def")
+    owner_private = {"confidentiality": "private", "integrity": "owner"}
+
+    def mint_input(**over: Any) -> dict[str, Any]:
+        base: dict[str, Any] = {
+            "call": {
+                "arguments": mint_args,
+                "call_id": "call_0001",
+                "effect": "mesh_read",
+                "tool": "files_read",
+                "tool_def": mint_hash,
+            },
+            "catalog": [
+                {"effect": "mesh_read", "hash": mint_hash, "name": "files_read"}
+            ],
+            "local": BOB.id,
+            "minted": 0,
+            "phi_member": False,
+            "request": {
+                "has_call": False,
+                "labels": owner_private,
+                "state": "claimed",
+                "to": BOB.id,
+            },
+            "running": None,
+        }
+        for key, value in over.items():
+            if isinstance(value, dict) and key in ("call", "request"):
+                base[key] = {**base[key], **value}
+            else:
+                base[key] = value
+        return base
+
+    def mint(name: str, error: str | None = None, **over: Any) -> None:
+        case = mint_input(**over)
+        s.add(
+            name,
+            "request_mint",
+            case,
+            error=error,
+        )
+
+    mint("mint-a-claimed-request-mints-for-a-cataloged-tool")
+    mint(
+        "mint-an-untrusted-running-label-joins-the-request-label",
+        running={"confidentiality": "public", "integrity": "untrusted"},
+    )
+    mint(
+        "mint-a-phi-request-mints-for-a-phi-member",
+        request={"labels": {"confidentiality": "phi", "integrity": "owner"}},
+        phi_member=True,
+    )
+    mint(
+        "mint-a-pending-request-is-not-minted-for",
+        "request.not_claimed",
+        request={"state": "pending"},
+    )
+    mint(
+        "mint-an-answered-request-is-not-minted-for",
+        "request.answered",
+        request={"state": "answered"},
+    )
+    mint(
+        "mint-a-refused-request-is-not-minted-for",
+        "request.refused",
+        request={"state": "refused"},
+    )
+    mint(
+        "mint-a-cancelled-request-is-not-minted-for",
+        "request.cancelled",
+        request={"state": "cancelled"},
+    )
+    mint(
+        "mint-a-request-for-another-member-is-not-minted-for",
+        "request.not_target",
+        request={"to": CAROL.id},
+    )
+    mint(
+        "mint-a-request-that-carries-a-call-is-not-minted-for",
+        "mint.call_request",
+        request={"has_call": True},
+    )
+    mint("mint-limit-is-reached", "mint.limit", minted=64)
+    mint(
+        "mint-a-tool-outside-the-catalog-is-refused",
+        "mint.unknown_tool",
+        call={"tool": "files_write"},
+    )
+    mint(
+        "mint-a-changed-definition-is-refused",
+        "gate.tool_def_changed",
+        call={"tool_def": _eid("requests", "mint-other-def")},
+    )
+    mint(
+        "mint-an-effect-that-differs-from-the-catalog-is-refused",
+        "mint.effect_mismatch",
+        call={"effect": "outside_effect"},
+    )
+    mint(
+        "mint-an-unknown-effect-kind-is-refused",
+        "labels.invalid",
+        call={"effect": "delete_everything"},
+    )
+    mint(
+        "mint-arguments-that-are-not-canonical-are-refused",
+        "mint.malformed",
+        call={"arguments": '{ "path": "notes/today.md" }'},
+    )
+    mint(
+        "mint-arguments-that-are-not-an-object-are-refused",
+        "mint.malformed",
+        call={"arguments": "[]"},
+    )
+    mint(
+        "mint-a-call-id-with-a-space-is-refused",
+        "mint.malformed",
+        call={"call_id": "call 1"},
+    )
+    mint(
+        "mint-a-tool-definition-that-is-not-a-hash-is-refused",
+        "mint.malformed",
+        call={"tool_def": "abc"},
+    )
+    mint(
+        "mint-a-secret-label-is-refused",
+        "mint.secret_label",
+        running={"confidentiality": "secret", "integrity": "owner"},
+    )
+    mint(
+        "mint-a-phi-request-is-refused-without-phi-approval",
+        "mint.phi_not_approved",
+        request={"labels": {"confidentiality": "phi", "integrity": "owner"}},
+    )
+    mint(
+        "mint-a-phi-running-label-is-refused-without-phi-approval",
+        "mint.phi_not_approved",
+        running={"confidentiality": "phi", "integrity": "owner"},
+    )
     return s
 
 
@@ -9552,6 +9809,146 @@ def build_tools() -> Suite:
     return s
 
 
+def build_attachments() -> Suite:
+    s = Suite("attachments", "contracts/attachments.md")
+    chat = crypto.sha256_id(b"attachment/chat")
+    key_ref = "ck:" + b64url_encode(seed("attachment/key-ref")[:16])
+    key_hex = seed("attachment/key").hex()
+    other_key_hex = seed("attachment/other-key").hex()
+    private = {"confidentiality": "private", "integrity": "owner"}
+    phi = {"confidentiality": "phi", "integrity": "owner"}
+
+    def sealed_input(label: str, length: int, **over: Any) -> dict[str, Any]:
+        case = {
+            "chat": chat,
+            "content": {"label": label, "length": length},
+            "key": key_ref,
+            "key_hex": key_hex,
+            "nonces": label,
+        }
+        case.update(over)
+        return case
+
+    def seal(case: str, length: int, error: str | None = None, **over: Any) -> Any:
+        return s.add(
+            case, "attachment_seal", sealed_input(case, length, **over), error=error
+        )
+
+    one = seal("seal-one-small-chunk", 1000)
+    exact = seal("seal-exactly-one-chunk", attachments_ref.CHUNK_SIZE)
+    seal("seal-one-byte-over-a-chunk", attachments_ref.CHUNK_SIZE + 1)
+    three = seal("seal-three-chunks", 2 * attachments_ref.CHUNK_SIZE + 5000, mime="application/pdf", name="report.pdf")
+    seal("seal-a-single-byte", 1, mime="text/plain", name="note.txt")
+    seal("seal-empty-content", 0, error="attachment.empty")
+    seal("seal-refuses-a-mime-type-outside-the-list", 10, error="attachment.mime_not_allowed", mime="application/x-msdownload")
+    seal("seal-refuses-a-mime-type-with-parameters", 10, error="attachment.mime_not_allowed", mime="text/plain; charset=utf-8")
+    seal("seal-refuses-a-path-as-a-name", 10, error="attachment.bad_name", name="../etc/passwd")
+    seal("seal-refuses-a-secret-label", 10, error="attachment.label", labels={"confidentiality": "secret", "integrity": "owner"})
+    assert exact["lengths"] == [attachments_ref.CHUNK_SIZE + 40]
+    assert len(three["lengths"]) == 3 and one["lengths"] == [1040]
+
+    def check(name: str, body: Any, labels: Any = private, error: str | None = None, **ok: Any) -> None:
+        s.add(name, "attachment_check", {"body": body, "labels": labels}, error=error, expect=ok or None)
+
+    good = three["body"]
+    check("a-sealed-body-is-valid", good, chunks=3, mime="application/pdf", size=good["size"])
+    check("a-phi-attachment-is-valid", good, labels=phi, chunks=3, mime="application/pdf", size=good["size"])
+    check("the-largest-attachment-is-valid", {**good, "size": attachments_ref.MAX_SIZE, "chunks": [crypto.sha256_id(b"c%d" % n) for n in range(64)]}, chunks=64, mime="application/pdf", size=attachments_ref.MAX_SIZE)
+    check("extra-field", {**good, "x": 1}, error="attachment.malformed")
+    check("missing-field", {k: v for k, v in good.items() if k != "sha256"}, error="attachment.malformed")
+    check("not-an-object", [], error="attachment.malformed")
+    check("size-is-a-float", {**good, "size": 1.5}, error="attachment.malformed")
+    check("size-is-a-string", {**good, "size": "10"}, error="attachment.malformed")
+    check("size-is-a-boolean", {**good, "size": True}, error="attachment.malformed")
+    check("sha256-is-malformed", {**good, "sha256": "sha256:ABC"}, error="attachment.malformed")
+    check("chunks-is-not-a-list", {**good, "chunks": "x"}, error="attachment.malformed")
+    check("a-chunk-hash-is-malformed", {**good, "chunks": good["chunks"][:2] + ["sha256:zz"]}, error="attachment.malformed")
+    check("a-chunk-hash-repeats", {**good, "chunks": [good["chunks"][0]] * 3}, error="attachment.malformed")
+    check("one-chunk-too-few", {**good, "chunks": good["chunks"][:2]}, error="attachment.chunk_count")
+    check("one-chunk-too-many", {**good, "chunks": good["chunks"] + [crypto.sha256_id(b"extra")]}, error="attachment.chunk_count")
+    check("empty-size", {**good, "size": 0, "chunks": []}, error="attachment.empty")
+    check("negative-size", {**good, "size": -1}, error="attachment.empty")
+    check("size-over-the-limit", {**good, "size": attachments_ref.MAX_SIZE + 1, "chunks": [crypto.sha256_id(b"c%d" % n) for n in range(65)]}, error="attachment.too_large")
+    check("mime-outside-the-list", {**good, "mime": "text/html"}, error="attachment.mime_not_allowed")
+    check("mime-in-upper-case", {**good, "mime": "IMAGE/PNG"}, error="attachment.mime_not_allowed")
+    check("mime-is-not-text", {**good, "mime": 3}, error="attachment.mime_not_allowed")
+    check("empty-name", {**good, "name": ""}, error="attachment.bad_name")
+    check("name-with-a-slash", {**good, "name": "a/b.pdf"}, error="attachment.bad_name")
+    check("name-with-a-backslash", {**good, "name": "a\\b.pdf"}, error="attachment.bad_name")
+    check("name-with-a-control-character", {**good, "name": "a\u0000b.pdf"}, error="attachment.bad_name")
+    check("name-is-dot-dot", {**good, "name": ".."}, error="attachment.bad_name")
+    check("name-too-long", {**good, "name": "n" * 256}, error="attachment.bad_name")
+    check("name-at-the-limit", {**good, "name": "n" * 255}, chunks=3, mime="application/pdf", size=good["size"])
+    check("secret-label", good, labels={"confidentiality": "secret", "integrity": "owner"}, error="attachment.label")
+
+    def message(name: str, body: Any, error: str | None = None, **ok: Any) -> None:
+        s.add(name, "attachment_message_check", {"body": body}, error=error, expect=ok or None)
+
+    ids = [crypto.sha256_id(b"attachment/%d" % n) for n in range(9)]
+    message("a-message-without-attachments", {"text": "hi", "base": None}, attachments=0)
+    message("a-message-with-two-attachments", {"text": "hi", "base": None, "attachments": ids[:2]}, attachments=2)
+    message("a-message-with-eight-attachments", {"text": "hi", "attachments": ids[:8]}, attachments=8)
+    message("an-empty-attachment-list", {"text": "hi", "attachments": []}, attachments=0)
+    message("nine-attachments", {"text": "hi", "attachments": ids}, error="attachment.too_many")
+    message("a-repeated-attachment", {"text": "hi", "attachments": [ids[0], ids[0]]}, error="attachment.malformed")
+    message("an-attachment-id-is-malformed", {"text": "hi", "attachments": ["x"]}, error="attachment.malformed")
+    message("attachments-is-not-a-list", {"text": "hi", "attachments": ids[0]}, error="attachment.malformed")
+    message("a-message-body-that-is-not-an-object", [], error="attachment.malformed")
+
+    def receive(name: str, length: int, index: int, error: str | None = None, **over: Any) -> None:
+        case = sealed_input(name, length, index=index, **over)
+        s.add(name, "attachment_receive", case, error=error)
+
+    receive("receive-the-first-chunk", 600000, 0)
+    receive("receive-the-short-last-chunk", 600000, 2)
+    receive("receive-a-chunk-without-the-key", 600000, 1, key_held=False)
+    receive("receive-refuses-a-flipped-byte", 600000, 0, error="attachment.chunk_hash", tamper=[{"op": "flip", "chunk": 0, "offset": 100}])
+    receive("receive-refuses-a-truncated-chunk", 600000, 1, error="attachment.chunk_hash", tamper=[{"op": "truncate", "chunk": 1, "to": 5000}])
+    receive("receive-refuses-a-wrong-length-with-the-right-hash", 600000, 1, error="attachment.chunk_size", tamper=[{"op": "truncate", "chunk": 1, "to": 5000, "rehash": True}])
+    receive("receive-refuses-a-chunk-from-another-position", 600000, 0, error="attachment.chunk_hash", tamper=[{"op": "swap", "chunks": [0, 1]}])
+    receive("receive-refuses-an-edited-chunk-the-body-names", 600000, 0, error="attachment.chunk_decrypt", tamper=[{"op": "flip", "chunk": 0, "offset": 100, "rehash": True}])
+    receive("receive-refuses-the-wrong-key", 600000, 0, error="attachment.chunk_decrypt", wrong_key=other_key_hex)
+    receive("receive-refuses-the-wrong-chat", 600000, 0, error="attachment.chunk_decrypt", open_chat=crypto.sha256_id(b"attachment/other-chat"))
+    receive("receive-refuses-a-missing-chunk", 600000, 1, error="attachment.chunk_missing", tamper=[{"op": "drop", "chunk": 1}])
+
+    def open_all(name: str, length: int, error: str | None = None, **over: Any) -> None:
+        s.add(name, "attachment_open", sealed_input(name, length, **over), error=error)
+
+    open_all("open-one-chunk", 1000)
+    open_all("open-three-chunks", 2 * attachments_ref.CHUNK_SIZE + 5000)
+    open_all("open-exactly-two-chunks", 2 * attachments_ref.CHUNK_SIZE)
+    open_all("open-refuses-a-missing-chunk", 600000, error="attachment.chunk_missing", tamper=[{"op": "drop", "chunk": 2}])
+    open_all("open-refuses-chunks-out-of-order", 600000, error="attachment.chunk_hash", tamper=[{"op": "swap", "chunks": [0, 2]}])
+    open_all("open-refuses-an-edited-chunk", 600000, error="attachment.chunk_hash", tamper=[{"op": "flip", "chunk": 1, "offset": 7}])
+    open_all("open-refuses-a-resealed-edit", 600000, error="attachment.chunk_decrypt", tamper=[{"op": "flip", "chunk": 1, "offset": 7, "rehash": True}])
+    open_all("open-refuses-a-forged-content-hash", 600000, error="attachment.content_mismatch", tamper=[{"op": "forge_sha256"}])
+    open_all("open-refuses-the-wrong-key", 1000, error="attachment.chunk_decrypt", wrong_key=other_key_hex)
+
+    held = {
+        ids[0]: {"labels": private, "chunks": [crypto.sha256_id(b"p0"), crypto.sha256_id(b"p1")]},
+        ids[1]: {"labels": phi, "chunks": [crypto.sha256_id(b"h0")]},
+        ids[2]: {"labels": {"confidentiality": "secret", "integrity": "owner"}, "chunks": [crypto.sha256_id(b"s0")]},
+        ids[3]: {"labels": {"confidentiality": "public", "integrity": "untrusted"}, "chunks": [crypto.sha256_id(b"u0"), crypto.sha256_id(b"h0")]},
+    }
+
+    def serve(name: str, requested: list[str], in_phi: bool, **expect: Any) -> None:
+        s.add(
+            name,
+            "attachment_serve",
+            {"attachments": held, "peer_in_phi_group": in_phi, "requested": [crypto.sha256_id(r) for r in requested]},
+            expect={"send": [crypto.sha256_id(r) for r in expect["send"]], "withheld": [{"hash": crypto.sha256_id(h), "reason": why} for h, why in expect["withheld"]]},
+        )
+
+    serve("a-private-chunk-goes-to-any-member", [b"p0", b"p1"], False, send=[b"p0", b"p1"], withheld=[])
+    serve("a-phi-chunk-is-withheld-from-a-non-phi-peer", [b"h0"], False, send=[], withheld=[(b"h0", "phi")])
+    serve("a-phi-chunk-goes-to-a-phi-peer", [b"h0"], True, send=[b"h0"], withheld=[])
+    serve("a-chunk-shared-with-a-phi-attachment-is-withheld", [b"u0", b"h0"], False, send=[b"u0"], withheld=[(b"h0", "phi")])
+    serve("a-secret-chunk-is-never-sent", [b"s0"], True, send=[], withheld=[(b"s0", "secret")])
+    serve("an-unknown-chunk-is-withheld", [b"nope"], True, send=[], withheld=[(b"nope", "unknown")])
+    serve("the-answer-keeps-the-order-asked", [b"u0", b"nope", b"p1", b"h0"], False, send=[b"u0", b"p1"], withheld=[(b"nope", "unknown"), (b"h0", "phi")])
+    return s
+
+
 def suites(repin: bool) -> list[Suite]:
     return [
         build_canonical(),
@@ -9575,6 +9972,7 @@ def suites(repin: bool) -> list[Suite]:
         build_transfer(),
         build_requests(),
         build_tools(),
+        build_attachments(),
     ]
 
 

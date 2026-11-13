@@ -1934,6 +1934,230 @@
     },
     {
       "expect": {
+        "ok": {
+          "valid": true
+        }
+      },
+      "input": {
+        "actionable": [
+          "button",
+          "input"
+        ],
+        "document": {
+          "capabilities": {
+            "cap.add": {
+              "args": {
+                "list": "todo"
+              },
+              "consent": "policy",
+              "free": [
+                "text"
+              ],
+              "max_uses": 2,
+              "tool": "notes.add"
+            }
+          },
+          "components": {
+            "add": {
+              "children": [],
+              "id": "add",
+              "props": {
+                "action": {
+                  "capability": "cap.add"
+                },
+                "compact": "+",
+                "label": "Add",
+                "name": "Add note",
+                "spoken": "add a note"
+              },
+              "prov": "model",
+              "type": "button"
+            },
+            "bar": {
+              "children": [],
+              "id": "bar",
+              "props": {
+                "value": 40
+              },
+              "prov": "model",
+              "type": "progress"
+            },
+            "pic": {
+              "children": [],
+              "id": "pic",
+              "props": {
+                "alt": "logo",
+                "src": {
+                  "$handle": "h_logo"
+                }
+              },
+              "prov": "model",
+              "type": "image"
+            },
+            "root": {
+              "children": [
+                "title",
+                "bar",
+                "add",
+                "pic"
+              ],
+              "id": "root",
+              "props": {},
+              "prov": "model",
+              "type": "column"
+            },
+            "title": {
+              "children": [],
+              "id": "title",
+              "props": {
+                "text": "x"
+              },
+              "prov": "agent",
+              "type": "text"
+            }
+          },
+          "root": "root",
+          "surface": "s1",
+          "v": 1
+        },
+        "turn": {
+          "max_uses": 3,
+          "tool_consent": {
+            "mail.send": "required"
+          },
+          "tools": [
+            "mail.send",
+            "notes.add"
+          ]
+        },
+        "vocabulary": [
+          "button",
+          "chart",
+          "column",
+          "image",
+          "input",
+          "link",
+          "progress",
+          "row",
+          "text"
+        ]
+      },
+      "kind": "surface_validate",
+      "name": "agent-provenance-allowed"
+    },
+    {
+      "expect": {
+        "error": "surface.false_provenance"
+      },
+      "input": {
+        "actionable": [
+          "button",
+          "input"
+        ],
+        "document": {
+          "capabilities": {
+            "cap.add": {
+              "args": {
+                "list": "todo"
+              },
+              "consent": "policy",
+              "free": [
+                "text"
+              ],
+              "max_uses": 2,
+              "tool": "notes.add"
+            }
+          },
+          "components": {
+            "add": {
+              "children": [],
+              "id": "add",
+              "props": {
+                "action": {
+                  "capability": "cap.add"
+                },
+                "compact": "+",
+                "label": "Add",
+                "name": "Add note",
+                "spoken": "add a note"
+              },
+              "prov": "model",
+              "type": "button"
+            },
+            "bar": {
+              "children": [],
+              "id": "bar",
+              "props": {
+                "value": 40
+              },
+              "prov": "model",
+              "type": "progress"
+            },
+            "pic": {
+              "children": [],
+              "id": "pic",
+              "props": {
+                "alt": "logo",
+                "src": {
+                  "$handle": "h_logo"
+                }
+              },
+              "prov": "model",
+              "type": "image"
+            },
+            "root": {
+              "children": [
+                "title",
+                "bar",
+                "add",
+                "pic"
+              ],
+              "id": "root",
+              "props": {},
+              "prov": "model",
+              "type": "column"
+            },
+            "title": {
+              "children": [],
+              "id": "title",
+              "props": {
+                "text": "x"
+              },
+              "prov": "robot",
+              "type": "text"
+            }
+          },
+          "root": "root",
+          "surface": "s1",
+          "v": 1
+        },
+        "turn": {
+          "max_uses": 3,
+          "tool_consent": {
+            "mail.send": "required"
+          },
+          "tools": [
+            "mail.send",
+            "notes.add"
+          ]
+        },
+        "vocabulary": [
+          "button",
+          "chart",
+          "column",
+          "image",
+          "input",
+          "link",
+          "progress",
+          "row",
+          "text"
+        ]
+      },
+      "kind": "surface_validate",
+      "name": "unknown-provenance-refused"
+    },
+    {
+      "expect": {
         "error": "surface.unknown_capability"
       },
       "input": {
