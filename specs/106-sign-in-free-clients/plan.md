@@ -61,8 +61,8 @@ AstralVessel (Landlock), AstralDeep (bundle, MCP and A2A spikes), `astraldeep.gi
    `ComputerSandboxProfile.swift` and `MacComputerEgressProxy.swift`. **Today** the default is shadow
    mode, which allows everything. Test the Virtualization.framework fallback, set the minimum Landlock
    version and read MXC as a policy layer.
-2. Build the Python bundle, measure it, sign and notarize it inside the Mac app, and test whether the
-   App Sandboxed build can host it.
+2. Build the Python bundle, measure it, sign it, download it into the Mac app from a release asset and
+   run it under the hardened runtime (O24). Test whether the App Sandboxed build can host it.
 3. Run the MCP adapter against a fixture OAuth server, test the HTTPS callback on macOS and iOS and
    check the A2A reader against a card with each scheme.
 4. Publish the metadata document and app-link files on `astraldeep.github.io` once the owner approves
@@ -76,7 +76,7 @@ with resource metadata, no `S256` and no registration endpoint.
 - The Seatbelt spike refuses a write outside the workspace and any connection except to the proxy.
 - The HTTPS callback returns to the app on a real Mac and iPhone *(live)*.
 
-**Live.** The HTTPS callback, and the notarized bundle launching on a clean Mac account.
+**Live.** The HTTPS callback, and the downloaded bundle launching on a clean Mac account.
 **If a spike fails.**
 
 | Spike | Fallback the spec gives |
@@ -97,7 +97,7 @@ the `issuers` field of genesis, the `attestation` field of add, and the state fi
 `ticket.md` gains the owner-minted ticket for callers that are not mesh devices (O13).
 
 **Work.**
-1. Contract changes, vectors and reference code. No compatibility reader, since 105 is not deployed (C2).
+1. Contract changes, vectors and reference code. No compatibility reader, since 105 is not deployed (C2, O28).
 2. Kernel: mesh creation as one local call. `begin_mesh_creation`, `complete_mesh_creation(id_token)`,
    `reattest` and `attestation.rs` go. A seeded test mesh with software keys, accepted only when
    `ASTRAL_ENV=development`.
@@ -219,7 +219,8 @@ T4.1 decides its name and place.
    backend on Landlock and seccomp from `confine.py` plus bubblewrap. Below the Landlock minimum,
    untrusted code is refused. A loopback egress proxy with a hostname allowlist, and the sandbox denies
    every other network path (C28).
-2. The node bundle, signed and notarized in the Mac app, supervised by launchd or a systemd user unit.
+2. The node bundle, downloaded on first launch from GitHub Releases and checked against a hash in the
+   app (O24), supervised by launchd or a systemd user unit.
    **Today** the Apple clients have no Python node supervisor (research C82).
 3. `astralvessel up`, `check` and `down` stop calling `docker compose`. **Today**
    `astralvessel/stack.py` and `operate.py` drive Docker for all three. Vessel's isolation probes
@@ -254,7 +255,7 @@ exclusion). Detector vectors are shared between Python and the kernel.
 
 **Work.**
 1. Port the rules of `backend/personalization/phi_gate.py` and `backend/shared/phi_redactor.py` to the
-   kernel. Fail closed, and uncertain means PHI (C17).
+   kernel. A clear match is PHI, an uncertain one asks the owner (O23) and a failed detector means PHI.
 2. The on-device model where hardware allows, starting with the contextual filter in Deep #318.
 3. The PHI destination entry, signed with the presence key, one destination at a time, with the warning
    card from 8.3. No wildcard.
@@ -268,6 +269,7 @@ Failures: the detector missing or erroring.
 **Exit criteria.**
 - The same vectors pass in Python and in the kernel.
 - A failed or missing detector labels content PHI.
+- An uncertain match asks the owner, and is PHI when nobody can be asked.
 - PHI to a model endpoint is refused until the owner approves it by name.
 - An iPhone with no node labels and gates its own content *(live)*.
 
@@ -286,8 +288,9 @@ revocation). `sync.md` gains the second session kind that admits a contact's dev
 names the new documents.
 
 **Work.**
-1. Contacts by one-time invitation, with the comparison code over both mesh ids and roster heads. A
-   roster change returns the contact to `unverified`.
+1. Contacts by one-time invitation, with the comparison code over both mesh ids and roster heads.
+   Only a verified contact can receive a grant (O25). A valid roster change keeps the contact
+   verified (O26).
 2. `view` grants signed by the presence key, replicated item by item over the second session kind.
    The sender follows the contact's roster. Revocation rotates the item key.
 3. PHI items need a contact marked as a PHI destination, confirmed each time (C25). Contact events carry
@@ -301,6 +304,7 @@ a contact event treated as an owner instruction. Failure: a contact offline at r
 - Two meshes exchange a `view` grant and the contact reads the item live *(live)*.
 - A contact's new device receives the item and a removed one does not.
 - After revocation the contact cannot read new events.
+- A grant to an unverified contact is refused.
 - A PHI item is refused for a contact that is not a PHI destination.
 - A contact's event is labeled untrusted.
 

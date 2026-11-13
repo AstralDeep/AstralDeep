@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-13. **Status:** design only, not implemented (O7). It starts after spec 105 merges.
 Nothing here is built, tested or deployed. The owner answered this spec's open questions on 2026-11-13
-(O8 to O22) and deferred one until phase 0 reports. **Companions:** [plan.md](plan.md) (phases and exit criteria),
+(O8 to O29), reviewed the design calls, and deferred one question until phase 0 reports. **Companions:** [plan.md](plan.md) (phases and exit criteria),
 [tasks.md](tasks.md), [research.md](research.md) (evidence, with file and source references). **Builds on:**
 [spec 105](../105-decentralized-personal-mesh/spec.md) and its
 [contracts](../105-decentralized-personal-mesh/contracts/README.md).
@@ -21,7 +21,8 @@ anything a user installs.
   repository that owns them. Every reference into spec 105 was checked against its files.
 - A sentence marked **proposed** describes this design. Nothing proposed exists.
 - O is the owner's decision. C is this design's call, with the alternative that lost. The owner has
-  reviewed the calls that O8 to O22 name and no others.
+  reviewed the calls. O8 to O29 record the answers, and section 16 lists the few details not looked
+  at one by one.
 
 | Word | Meaning |
 |---|---|
@@ -126,8 +127,16 @@ same mesh then asks for its own sign-in.
 | O20 | A pasted key is sealed to every device in the mesh by default. The owner may narrow the list when entering it. |
 | O21 | The watch works through its paired iPhone. It holds no mesh keys and is not on the roster. |
 | O22 | Once their sign-in code is deleted, the paused Android and Windows apps open to a plain "not available yet" screen. |
+| O23 | A clear detector match is PHI. An uncertain one asks the owner each time: send, or treat as PHI. |
+| O24 | The Mac app downloads the node bundle on first launch from GitHub Releases and checks it against a hash built into the app. |
+| O25 | Only a verified contact can receive a grant. |
+| O26 | A verified contact's new device receives shared items automatically. |
+| O27 | Mock auth is removed. Tests and local runs use the seeded test mesh. |
+| O28 | A mesh made under the 105 roster format is created again. No upgrade reader is written. |
+| O29 | C1, C3, C5, C6, C8, C10, C11, C12, C13, C14, C25, C26, C29 and C30 are accepted as written. |
 
-O8 to O22 are the owner's answers to this spec's questions, given the same day.
+O8 to O22 are the owner's answers to this spec's questions. O23 to O29 come from the owner's review
+of the design calls. All were given the same day.
 
 O1 answers 105 question 3, "a mesh with no identity provider at all", with "in". It also ends a
 contradiction in 105. Section 15 item 1 says a new device "can join unattested with reduced rights"
@@ -140,9 +149,9 @@ line 156). Both go.
 | # | Call | Alternative that lost, and why |
 |---|---|---|
 | C1 | The principal is the mesh id, the hash of the first roster entry as in 105. The owner id used for isolation everywhere becomes the mesh id. It replaces ids derived from issuer and subject (`backend/shared/node_identity.py`, Vessel's `oidc.<sha256(issuer)>.<sub>` in `astralvessel/deployment.py`). | Keep an optional attested issuer pair. It keeps an identity server in the contract. |
-| C2 | Creating a mesh needs only the device: generate keys, write the first roster entry, show the recovery key. No network call. The roster contract gets a new version that drops attestation entries, accepted issuers, re-attestation and the unattested state. 105 is not deployed, so there is no compatibility reader. | Tolerate old entries. It keeps dead code for data that does not exist. |
+| C2 | Creating a mesh needs only the device: generate keys, write the first roster entry, show the recovery key. No network call. The roster contract gets a new version that drops attestation entries, accepted issuers, re-attestation and the unattested state. 105 is not deployed, so there is no compatibility reader and a mesh made under the old format is created again (O28). | Tolerate old entries. It keeps dead code for data that does not exist. |
 | C3 | One allowance per policy. The "smaller allowance for unattested devices" rule goes. 105's policy contract never had an attestation input. | A smaller allowance for devices with no platform check. It brings back two classes of device. |
-| C4 | A node authenticates every caller by a roster-listed device key plus a ticket, never by a bearer JWT from an identity server. The Keycloak JWKS path, the client PKCE sign-in screens (Apple, Android, Windows) and mock auth are removed. Development uses a seeded test mesh with software keys, allowed only when `ASTRAL_ENV=development`. Production still fails closed (exit 78) on placeholder or missing secrets. Android and Windows are paused until their kernel port (O9). | Keep a bearer path beside the keys for thin clients. It leaves an identity server on the critical path. |
+| C4 | A node authenticates every caller by a roster-listed device key plus a ticket, never by a bearer JWT from an identity server. The Keycloak JWKS path, the client PKCE sign-in screens (Apple, Android, Windows) and mock auth are removed (O27). Development uses a seeded test mesh with software keys, allowed only when `ASTRAL_ENV=development`. Production still fails closed (exit 78) on placeholder or missing secrets. Android and Windows are paused until their kernel port (O9). | Keep a bearer path beside the keys for thin clients. It leaves an identity server on the critical path. |
 | C5 | RFC 8693 token exchange leaves Astral's core. Delegation is by 105 tickets only. If an institution's resource wants token exchange, it happens between the connection's OAuth client and the institution's own authorization server. | Keep RFC 8693 at the edge, as 105 section 8.2 says. It keeps Keycloak-shaped code for a case the adapters now cover. |
 | C6 | Names of people are self-asserted and unverified. Two people verify each other with the 105 comparison codes. | Verified names through a directory or domain proof. It needs an operator. |
 | C7 | Blind shared services (relay, mailbox, push gateway) admit by mesh key with rate limits and quotas. An operator may add a silent platform check (App Attest, Android Key Attestation) or run invite-only. The check is off by default (O17). No account either way. | Admit by account. It rebuilds the identity server one layer down. |
@@ -155,17 +164,17 @@ line 156). Both go.
 | C14 | Discovery and metadata fetches go through the approved egress path (`backend/shared/external_http.py` on a node, the kernel's equivalent on a device). HTTPS only. Private addresses only when the owner adds a local server on purpose. | Each adapter fetches directly. Every adapter would need its own SSRF guard. |
 | C15 | A token obtained by a sign-in stays on its device and never syncs (O5). A pasted API key or model key syncs as a 105 `key.credential` item, sealed to every device of the owner by default, and the owner may narrow the list at entry (O11, O20). | One rule for every secret, per device. The first draft said so and the owner chose to sync pasted keys. |
 | C16 | A Client ID Metadata Document and the app-link association files are static HTTPS files on `astraldeep.github.io` (O16). They join the list of things that stay centralized. | Dynamic client registration only. The MCP revision deprecates it. |
-| C17 | The kernel sets the PHI label on the device from two sources: the connection's flow class (the owner marks a connection as a PHI source and a server hint may only tighten) and the on-device detector (the rules of `backend/personalization/phi_gate.py` as the floor, an on-device model where hardware allows). Uncertain means PHI. No large model on a node is required. | PHI checks that need a large model on a node (105 section 16.2). A phone with no node would have no check. |
+| C17 | The kernel sets the PHI label on the device from two sources: the connection's flow class (the owner marks a connection as a PHI source and a server hint may only tighten) and the on-device detector (the rules of `backend/personalization/phi_gate.py` as the floor, an on-device model where hardware allows). A clear match is PHI. An uncertain one asks the owner, send or treat as PHI (O23). A detector that fails or cannot run labels the content PHI. No large model on a node is required. | PHI checks that need a large model on a node (105 section 16.2). A phone with no node would have no check. |
 | C18 | Where PHI may go is an owner decision, signed with the presence key into mesh policy as a "PHI destination" entry. The owner's own devices and on-device models qualify by default. Every model endpoint and outside service is off until the owner approves it by name, with a plain warning. The institution signing key from 105 `roster.md` line 162 is removed. | Keep institution-signed approvals. 105 never named an institution that would sign. |
 | C19 | Astral's PHI gate protects the owner from accidental leaks. An institution's compliance duty is enforced at the institution's own server, through its own auth and terms. Section 8.4 says so. | Present the gate as meeting an institution's rules. The institution cannot see the device. |
 | C20 | Device-side gates stay on by default (105 C7). The hash-chained audit stays in the event log. | Relax device gates because no server reviews them. |
-| C21 | A person is a mesh. A contact is another mesh id plus that mesh's roster head, added by a one-time invitation (link or QR) and verified by comparison code. Contacts are events in the owner's log with a state: unverified or verified. | A shared directory of people. It is a server. |
+| C21 | A person is a mesh. A contact is another mesh id plus that mesh's roster head, added by a one-time invitation (link or QR) and verified by comparison code. Contacts are events in the owner's log with a state: unverified or verified. Only a verified contact can receive a grant (O25). | A shared directory of people. It is a server. |
 | C22 | A grant is signed by the owner's presence key. It names a contact, one item (a chat, a surface or artifact, a file) and a kind. The item's key is wrapped to the contact's current device keys. The item's events replicate to the contact's mesh over the same sync protocol, limited to that item. | A bearer link, as `backend/orchestrator/artifact_share.py` mints today. It says nothing about who reads. |
 | C23 | One kind in this spec: `view`, live and read-only (O10). `contribute`, where the contact appends events, moves to a later spec. Anything that arrives from a contact carries untrusted integrity, so an agent never treats it as the owner's instructions. | Ship `contribute` here too. A chat with two humans changes the turn engine and carries most of the risk. |
-| C24 | The sender follows the contact's signed roster changes, wraps to new devices and stops wrapping to removed ones. Revoking writes a revocation and rotates the item key. Data already copied cannot be recalled. | Wrap once to the devices known at grant time. A new phone of the contact would never see the item. |
+| C24 | The sender follows the contact's signed roster changes, wraps to new devices automatically (O26) and stops wrapping to removed ones. Revoking writes a revocation and rotates the item key. Data already copied cannot be recalled. | Wrap once to the devices known at grant time. A new phone of the contact would never see the item. |
 | C25 | Sharing a PHI-labeled item needs the contact marked as a PHI destination, confirmed with the presence key each time. Labels travel with the shared events. | A standing PHI flag on a contact. One tap would cover every later item. |
 | C26 | Connections and credentials are never shared. A contact connects for themselves. | Share a connection record so the contact skips setup. It hands over the owner's relationship with a service. |
-| C27 | The node ships as a self-contained bundle: a relocatable Python 3.11, locked wheels and the native libraries (poppler, libmagic, ripgrep, the spaCy model). One artifact per OS and architecture. Inside the Mac app it is signed and notarized. Supervision is launchd on macOS, a systemd user unit on Linux, a Windows service later. Storage is Plane on SQLite. 105 plans it and Deep does not enable it yet, so it is a dependency. | Ask the user to install Python and run `pip`. Native libraries and models would fail in ways nobody could support. |
+| C27 | The node ships as a self-contained bundle: a relocatable Python 3.11, locked wheels and the native libraries (poppler, libmagic, ripgrep, the spaCy model). One artifact per OS and architecture. The Mac app downloads it on first launch from GitHub Releases and checks it against a hash built into the app (O24). Supervision is launchd on macOS, a systemd user unit on Linux, a Windows service later. Storage is Plane on SQLite. 105 plans it and Deep does not enable it yet, so it is a dependency. | Ask the user to install Python and run `pip`. Native libraries and models would fail in ways nobody could support. |
 | C28 | Vessel's four containers become processes. Node: a process. Executor: a sandboxed child per tool call or agent. Egress: a loopback proxy with a hostname allowlist, and the sandbox denies every other network path. `astralvessel up`, `check` and `down` stop shelling out to `docker compose`. | Keep the four services and have the app start Docker. It is still Docker. |
 | C29 | One executor interface, one policy document (file reads, writable workspace, hosts, limits, time), three backends. Section 10.3 gives the rules. | A Virtualization.framework Linux VM on the Mac. It runs Linux binaries only and is heavier. It stays a phase 0 fallback behind the same interface. |
 | C30 | Vessel's isolation probes become a conformance suite that every backend passes with no containers. A new CI job installs and runs the node on runners with no Docker on the path, using local fixture OAuth, MCP and A2A servers so required gates stay deterministic and inside the 30-minute budget. | Run the probes only inside containers. "No Docker" would go untested. |
@@ -528,8 +537,9 @@ contract takes `endpoint_phi_approved` as a boolean and never says where that co
 | The connection's flow class | The owner marks a connection `phi` when approving it. A server hint may raise the class and never lower it |
 | The on-device detector | The rules of `phi_gate.py` and `phi_redactor.py` are the floor, ported to the kernel and checked against shared vectors. An on-device model adds to the floor where hardware allows |
 
-Uncertain means PHI. A detector that fails or cannot run labels the content PHI, which matches the
-existing fail-closed behavior. No large model on a node is required, so a phone with no node still
+A clear match is PHI. An uncertain match asks the owner each time, send it or treat it as PHI
+(O23). When nobody can be asked, as in an unattended run, an uncertain match is PHI. A detector that
+fails or cannot run labels the content PHI, which matches the existing fail-closed behavior. No large model on a node is required, so a phone with no node still
 labels its own content. 105's issue triage names a local contextual filter as the way to run these
 checks without Presidio (Deep #318). That is the first job for the on-device model.
 
@@ -584,8 +594,10 @@ like 105's but over both mesh ids and both roster heads, sorted so each side see
 That sorting follows Signal's safety numbers. Two people compare it by voice or in person.
 
 A contact is an event in the owner's log with a state, `unverified` or `verified`. Verifying needs
-the presence key. A change in the contact's roster raises a notice and returns the contact to
-`unverified`. Names are what the contact typed (C6).
+the presence key. Only a verified contact can receive a grant (O25). A valid signed change to
+the contact's roster raises a notice and the contact stays verified, so a new device of theirs gets
+access with no second check (O26). A roster that does not follow from the verified head returns the
+contact to `unverified`. Names are what the contact typed (C6).
 
 ### 9.3 A grant
 
@@ -644,7 +656,11 @@ are never shared (C26).
 **Proposed (C27).** One artifact per OS and architecture holds a relocatable Python 3.11 (the
 production image and Ruff's target are 3.11), the locked wheels of the node and its components, the
 native libraries the images install today (poppler, libmagic, ripgrep), and the spaCy model Deep
-downloads at image build. Inside the Mac app it is signed and notarized with the app. Storage is
+downloads at image build. The Mac app downloads it on first launch from GitHub
+Releases, checks it against a hash built into the app and only then runs it (O24). The bundle is
+signed with the app's Developer ID. Creating a mesh and using remote connections work before the
+node arrives. This covers the direct-download build, since App Store guideline 2.5.2 limits
+downloaded code. AstralVessel's installer fetches the same bundle. Storage is
 Plane on SQLite. Deep still calls `create_postgres_runtime`, so Plane on SQLite is a dependency of
 this work. Supervision is launchd on macOS, a systemd user unit on Linux and a Windows service later.
 No Python node supervisor exists in the Apple clients today.
@@ -727,7 +743,7 @@ The delta against [105 section 15](../105-decentralized-personal-mesh/spec.md).
 |---|---|
 | 1, Identity proof | Removed. No identity server is needed |
 | 2 to 4, Relay, mailbox, push gateway | Unchanged. They admit by mesh key with rate limits and quotas (C7). An operator may add a platform check |
-| 5, App distribution and signing | Wider. The Mac bundle and its nested binaries are signed and notarized |
+| 5, App distribution and signing | Wider. The node bundle is a signed download from GitHub Releases, checked against a hash in the app (O24). A first launch of the node needs that download |
 | 6, Model endpoints | Unchanged. The owner approves each for PHI by name |
 | 11, Names and certificates | Wider. Every outside server and authorization server is reached by DNS and TLS |
 | 13, Institution nodes | Becomes an outside service with its own auth (section 11) |
@@ -769,13 +785,13 @@ spec 105 merges.
 
 | Phase | Work | Exit criteria |
 |---|---|---|
-| 0. Spikes | Seatbelt `enforce` runs a bundled Python tool whose only route is a loopback proxy. Test the Virtualization.framework fallback, set the minimum Landlock version, read MXC. Build the Python bundle, measure it, sign and notarize it in the Mac app, test whether the App Sandboxed build can host it. Run the MCP adapter against a fixture OAuth server and test the HTTPS callback on macOS and iOS. Check the A2A reader against a card with each scheme. Publish the metadata document and app-link files on `astraldeep.github.io` (O16) | A written result for each item with the call it supports or reverses. The Seatbelt spike refuses a write outside the workspace and any connection except to the proxy. The HTTPS callback returns to the app on a real Mac and iPhone *(live)* |
+| 0. Spikes | Seatbelt `enforce` runs a bundled Python tool whose only route is a loopback proxy. Test the Virtualization.framework fallback, set the minimum Landlock version, read MXC. Build the Python bundle, measure it, sign it, download it into the Mac app and run it under the hardened runtime, test whether the App Sandboxed build can host it. Run the MCP adapter against a fixture OAuth server and test the HTTPS callback on macOS and iOS. Check the A2A reader against a card with each scheme. Publish the metadata document and app-link files on `astraldeep.github.io` (O16) | A written result for each item with the call it supports or reverses. The Seatbelt spike refuses a write outside the workspace and any connection except to the proxy. The HTTPS callback returns to the app on a real Mac and iPhone *(live)* |
 | 1. Identity cut | Roster contract, vectors and reference code at the new version. Kernel local mesh creation, with the nonce, `complete_mesh_creation(id_token)` and `reattest` dropped. In Deep, Plane and Vessel the owner id is the mesh id and a node authenticates by device key and ticket. The seeded test mesh. The owner-minted ticket for callers that are not mesh devices (O13). The `AGENTS.md` wording in section 13 (O19). The watch as a companion of its iPhone (O21) | A Mac and an iPhone each create a mesh and pair with the network blocked *(live)*. A request with only a bearer JWT is refused. A production boot with a placeholder secret exits 78 and `ASTRAL_ENV` unset means production. No test uses mock auth. A script holding an owner-minted ticket calls a named tool and is refused for any other. The watch holds no credential and reaches nothing except through its iPhone |
 | 2. Connections with MCP over HTTP | The connection event family, its contract and the per-device state events. The keystore layer on Apple platforms and for headless Linux. Adapter 1 on the kernel and the node, on the stateless revision. First-connect card, sign-in, step-up, refresh, failure states. Fixture OAuth and MCP servers | Against the fixture: discovery, required `S256`, `resource`, the `iss` check, step-up, refresh, a refused refresh, the dynamic registration fallback and a refused token passthrough all pass. A changed tool definition is refused until approved again. No token appears in an event, a log line or a model context. The section 7.8 example works end to end against a fixture server: add on the Mac, sign in on the iPhone, let a token expire, sign in again *(live)* |
 | 3. A2A, stdio, key connections | The A2A adapter with schemes, extended card, signed card with pinned signer, unsigned card pinned by hash and origin, and `AUTH_REQUIRED`. The stdio client on the existing macOS Seatbelt path, never on iOS. Key connections for HTTP APIs and models in native secure fields, synced as sealed credential items | A fixture A2A agent signs a device in for each supported scheme. A stdio server runs under enforce mode and reaches no network except through the proxy. A pasted key opens only on the owner's devices it was sealed to and never appears in the clear in an event. A changed unsigned card is refused until approved again |
 | 4. Docker-free node, after Plane on SQLite is enabled in Deep | The bundle, supervision, the executor interface, the macOS and Linux backends, the egress proxy, `astralvessel up`, `check` and `down` without `docker compose`, the conformance suite, the no-Docker CI job, the C32 removals | `astralvessel up` runs on a Mac and a Linux host with no Docker on the path *(live)*. Every backend passes the conformance suite. The no-Docker CI job finishes inside 30 minutes. Untrusted code is refused where no enforcing backend exists |
-| 5. PHI on the device | The detector rules ported with shared vectors, the on-device model where hardware allows, the PHI destination entry, the warning card, the flow input, the PHI group following the owner's devices | The same vectors pass in Python and in the kernel. A failed or missing detector labels content PHI. PHI to a model endpoint is refused until the owner approves it by name. An iPhone with no node labels and gates its own content *(live)* |
-| 6. Sharing | Contacts, the comparison code, `view` grants, revocation with key rotation, the second sync session kind | Two meshes exchange a `view` grant and the contact reads the item live *(live)*. A contact's new device receives the item and a removed one does not. After revocation the contact cannot read new events. A PHI item is refused for a contact that is not a PHI destination. A contact's event is labeled untrusted |
+| 5. PHI on the device | The detector rules ported with shared vectors, the on-device model where hardware allows, the PHI destination entry, the warning card, the flow input, the PHI group following the owner's devices | The same vectors pass in Python and in the kernel. A failed or missing detector labels content PHI. An uncertain match asks the owner and is PHI when nobody can be asked. PHI to a model endpoint is refused until the owner approves it by name. An iPhone with no node labels and gates its own content *(live)* |
+| 6. Sharing | Contacts, the comparison code, `view` grants, revocation with key rotation, the second sync session kind | Two meshes exchange a `view` grant and the contact reads the item live *(live)*. A contact's new device receives the item and a removed one does not. After revocation the contact cannot read new events. A grant to an unverified contact is refused. A PHI item is refused for a contact that is not a PHI destination. A contact's event is labeled untrusted |
 | 7. Keycloak removal | Delete the modules in 6.4 and the Keycloak parts of the clients. Android and Windows open to a "not available yet" screen (O22) | A search for Keycloak in non-test product code finds nothing. Every earlier exit criterion still passes |
 
 ---
@@ -797,6 +813,9 @@ spec 105 merges.
 | An unsigned A2A card proves nothing about its author | A2A makes signing optional and the owner allowed unsigned cards (O12) | Pinned by hash and HTTPS origin, shown as unsigned, and any change needs approval again |
 | A synced pasted key sits on several devices | The owner allowed pasted keys to sync (O11) | Sealed per device as a 105 credential item. After removing a device the owner rotates the key at the service |
 | Android and Windows cannot reach a node until ported | No Keycloak path and no kernel yet (O9) | Accepted by the owner. The 105 port order stands. The apps say so plainly (O22) |
+| The node's first launch needs a network and GitHub | The bundle is a download (O24) | Mesh creation and remote connections work without it. The hash in the app guards the download |
+| A device added to a contact's mesh receives the owner's shared items | A verified contact's new devices get access automatically (O26) | Adding a device needs the contact's own presence key. The owner sees a notice and can revoke |
+| An owner may tap through PHI prompts | An uncertain match asks each time (O23) | A clear match is still PHI. The prompt names what was detected |
 | The watch works only while its iPhone is reachable | It holds no mesh keys (O21) | Accepted by the owner. A watch with its own keys is a later decision |
 | The website domain is part of the app's OAuth client identity | Servers know the app by the URL of its metadata document (O16) | Moving the domain means every device signs in again |
 | Redirect hijack on a shared machine | A metadata document cannot stop another local program using the port | The first-connect card shows the redirect host |
@@ -806,11 +825,17 @@ spec 105 merges.
 
 ## 16. Questions for the owner
 
-The owner answered fifteen questions on 2026-11-13. They are O8 to O22 in section 4.1. One remains,
-and the owner deferred it until phase 0 reports.
+The owner answered fifteen questions and reviewed the design calls on 2026-11-13. The answers are O8
+to O29 in section 4.1. One question remains, and the owner deferred it until phase 0 reports.
 
 1. **The Mac sandbox default.** Which backend is the Mac default if Apple removes `sandbox-exec`
    (C29)? Phase 0 builds and measures the Virtualization.framework fallback and brings a
    recommendation with numbers. Nothing depends on the answer before phase 4.
 
-Every C call that no O row names is still this design's own and unreviewed.
+**Details not looked at one by one.** Each follows from a decision above: the keystore list (C9),
+device gates on by default (C20), how a grant wraps and replicates an item (C22), key rotation at
+revocation (C24) and the four containers becoming processes (C28).
+
+**This design's reading of three answers.** The owner should check them. An uncertain match is PHI
+when nobody can be asked (8.2). A valid roster change keeps a contact verified (9.2). The downloaded
+bundle covers the direct-download Mac build only (10.2).

@@ -19,7 +19,7 @@ is AstralProjection, `Kernel` is AstralKernel, `Site` is `astraldeep.github.io`.
 | ID | Task | Needed by |
 |---|---|---|
 | TO.1 | Answer question 1, the Mac sandbox default if `sandbox-exec` goes, after phase 0 brings evidence | End of phase 0 |
-| TO.3 | Review the C calls that no O row names (the spec says they are unreviewed) | Before phase 1 |
+| TO.3 | Check the three readings listed at the end of spec section 16 | Before phase 1 |
 | TO.4 | Approve publishing the metadata document and app-link files on `astraldeep.github.io` | T0.13, T2.15 |
 | TO.6 | Complete every live sign-in and key entry, and every Touch ID prompt, during verification | Each *(live)* task |
 | TO.7 | Approve the PHI accuracy measure proposed in T5.3 | Phase 5 |
@@ -33,7 +33,7 @@ is AstralProjection, `Kernel` is AstralKernel, `Site` is `astraldeep.github.io`.
 | T0.3 | Vessel | Set the minimum Landlock version and say what happens below it | `astralvessel/confine.py` (`REQUIRED_ABI`) | Written result naming the minimum |
 | T0.4 | Vessel | Read Microsoft Execution Containers as a policy layer over three platforms | Result written in this folder, name decided in this task | Written result with the call it supports or reverses |
 | T0.5 | Deep | Build the relocatable Python 3.11 bundle with locked wheels, poppler, libmagic, ripgrep and the spaCy model | `scripts/install_local_components.py` and `config/astral-composition.json` are the inputs, output decided in this task | Bundle builds and a node module imports. Size and build time recorded |
-| T0.6 | Projection | Sign and notarize the bundle inside the Mac app | `AstralApp/AstralApp.xcodeproj/project.pbxproj` and the entitlements files | Notarization accepted. Written result *(live)* |
+| T0.6 | Projection | Sign the bundle, download it into the Mac app from a release asset and run it under the hardened runtime (O24) | `AstralApp/AstralApp.xcodeproj/project.pbxproj` and the entitlements files | The downloaded bundle runs on a clean account. Written result *(live)* |
 | T0.7 | Projection | Test whether the App Sandboxed build can host the node and apply profiles to its children | `AstralApp-macOS.entitlements` and `AstralApp-DirectDownload.entitlements` | Written result with a yes or no |
 | T0.8 | Deep | MCP over HTTP adapter spike against a fixture OAuth server on revision `2026-07-28` | Spike folder decided in this task. Compare `backend/orchestrator/remote_mcp_oauth.py` | Discovery, `S256` refusal and registration order shown. Written result |
 | T0.9 | Projection | Test the HTTPS callback with `ASWebAuthenticationSession` on macOS and iOS | Spike target decided in this task | Callback returns to the app on a real Mac and iPhone *(live)* |
@@ -118,7 +118,7 @@ is AstralProjection, `Kernel` is AstralKernel, `Site` is `astraldeep.github.io`.
 | T4.5 | Vessel | Executor verifies the ticket before it runs anything | `astralvessel/executor.py` | A call with a bad ticket is refused |
 | T4.6 | Deep | Enable Plane on SQLite for the node. Confirm the precondition | `backend/orchestrator/plane_composition.py` | A node boots on SQLite and the Plane suite passes |
 | T4.7 | Deep | Bundle build per OS and architecture | Output decided in T0.5 | Bundle runs the node with no Python on the host |
-| T4.8 | Projection | Embed, sign and notarize the bundle in the Mac app. launchd supervision | `AstralApp/AstralApp.xcodeproj/project.pbxproj` | Notarized app launches the node on a clean account *(live)* |
+| T4.8 | Projection | Download the bundle on first launch from GitHub Releases, check it against the hash in the app, then run it. launchd supervision (O24) | `apple-clients/AstralApp/AstralApp/`, files decided in this task | A wrong hash is refused. The app launches the node on a clean account *(live)* |
 | T4.9 | Vessel | systemd user unit for Linux | Location decided in this task | Unit starts and stops the node |
 | T4.10 | Vessel | `astralvessel up`, `check` and `down` as processes. Remove `docker compose` | `astralvessel/stack.py`, `operate.py`, `cli.py` | Commands run with no Docker on the path |
 | T4.11 | Vessel | Isolation probes become the conformance suite | `astralvessel/probes.py`, `conformance.py` | Every backend passes with no containers |
@@ -127,13 +127,14 @@ is AstralProjection, `Kernel` is AstralKernel, `Site` is `astraldeep.github.io`.
 | T4.14 | Deep | New CI job that installs and runs the node with no Docker on the path | `.github/workflows/` file decided in this task | Job runs the conformance suite and the fixtures, under 30 minutes |
 | T4.15 | Deep | Move phase 3 stdio servers onto the executor interface | Node stdio module from T3.7 | Phase 3 tests still pass |
 | T4.16 | Vessel | `astralvessel up` on a Mac and a Linux host with no Docker | Verification report | Recorded *(live)* |
+| T4.17 | Deep | Publish the bundle as a release asset and pin its hash in the app build | Release workflow under `.github/workflows/`, decided in this task | The asset's hash matches the pin. The owner approves each publish |
 
 ## Phase 5: PHI on the device
 
 | ID | Repo | Work | Lands | Closes with |
 |---|---|---|---|---|
 | T5.1 | Deep | Shared detector vectors from `phi_gate.py` and `phi_redactor.py` rules | `backend/tests/` and a vectors folder decided in this task | Vectors pass in Python |
-| T5.2 | Kernel | Port the detector rules. Fail closed, uncertain means PHI | Crate decided in this task | Same vectors pass in the kernel. Missing detector labels PHI |
+| T5.2 | Kernel | Port the detector rules. A clear match is PHI, an uncertain one asks the owner (O23), a failed detector means PHI | Crate decided in this task | Same vectors pass in the kernel. Missing detector labels PHI |
 | T5.3 | Deep | Propose a measure for the contextual filter against Presidio | This folder, decided in this task | Proposal written for TO.7 |
 | T5.4 | Projection | On-device model adapter for the filter where hardware allows | `apple-clients/AstralApp/AstralApp/OnDevice/` | Adapter adds to the floor and never lowers a label |
 | T5.5 | Deep | PHI destination entry in policy, signed with the presence key | `105 contracts` `policy.md`, vectors and reference | One destination per entry. A wildcard is refused |
@@ -141,6 +142,7 @@ is AstralProjection, `Kernel` is AstralKernel, `Site` is `astraldeep.github.io`.
 | T5.7 | Projection | Warning card for a destination, no wildcard | `apple-clients/AstralApp/AstralApp/Mesh/` | Card test on macOS and iOS |
 | T5.8 | Kernel | PHI group follows the owner's devices, with an exclusion | `105 contracts` `keys.md` and the kernel | An excluded device gets no PHI body |
 | T5.9 | Projection | An iPhone with no node labels and gates its own content | Verification report | Recorded *(live)* |
+| T5.10 | Projection | The prompt for an uncertain match: send, or treat as PHI | `apple-clients/AstralApp/AstralApp/Mesh/` | Prompt test on macOS and iOS. An unattended run treats the match as PHI |
 
 ## Phase 6: sharing
 
@@ -148,9 +150,9 @@ is AstralProjection, `Kernel` is AstralKernel, `Site` is `astraldeep.github.io`.
 |---|---|---|---|---|
 | T6.1 | Deep | Contacts and grants contract. Invitation, comparison code, states, grant, revocation | Folder from T1.1, vectors and reference | Reference tests pass. Code matches on both sides |
 | T6.2 | Deep | Second sync session kind admitting a contact's device by roster head | `105 contracts` `sync.md`, vectors | Vectors pass. A contact reads only the granted item |
-| T6.3 | Kernel | Contacts as events with `unverified` and `verified`. Roster change returns to `unverified` | Crate decided in this task | Fold tests |
+| T6.3 | Kernel | Contacts as events with `unverified` and `verified`. A valid roster change keeps the contact verified (O26). A roster that does not follow returns it to `unverified` | Crate decided in this task | Fold tests |
 | T6.4 | Projection | Invitation by link or QR and the comparison code screen | `apple-clients/AstralApp/AstralApp/Mesh/` | Both screens show one string on macOS and iOS |
-| T6.5 | Kernel | `view` grant signed by the presence key. Item key wrapped to the contact's devices | Same crate | Contact reads the item. A third mesh cannot |
+| T6.5 | Kernel | `view` grant signed by the presence key. Item key wrapped to the contact's devices. Refused for an unverified contact (O25) | Same crate | Contact reads the item. A third mesh cannot |
 | T6.6 | Kernel | Item-scoped replication to the contact's mesh | Same crate | Only the item's events replicate |
 | T6.7 | Kernel | Follow the contact's roster. Wrap to new devices, stop for removed ones | Same crate | A new device receives the item and a removed one does not |
 | T6.8 | Kernel | Revocation event with item key rotation | Same crate | Contact cannot read new events. The app says copied data cannot be recalled |
