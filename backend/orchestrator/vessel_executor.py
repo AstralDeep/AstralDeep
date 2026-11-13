@@ -13,7 +13,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterator, List, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
 import httpx
@@ -124,6 +124,23 @@ class CallTicket:
 
 
 _ticket: contextvars.ContextVar[Optional[CallTicket]] = contextvars.ContextVar("vessel_call_ticket", default=None)
+TicketIssuer = Callable[[str, str, Dict[str, Any], Optional[str]], Awaitable[CallTicket]]
+_issuer: contextvars.ContextVar[Optional[TicketIssuer]] = contextvars.ContextVar("vessel_ticket_issuer", default=None)
+
+
+class TicketRefused(Exception):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+@contextlib.contextmanager
+def minting(issuer: TicketIssuer) -> Iterator[None]:
+    token = _issuer.set(issuer)
+    try:
+        yield
+    finally:
+        _issuer.reset(token)
 
 
 @contextlib.contextmanager
@@ -227,6 +244,11 @@ class VesselExecutor:
         timeout: Optional[float] = None,
     ) -> MCPResponse:
         ticket = current_ticket()
+        if ticket is None and (issuer := _issuer.get()) is not None:
+            try:
+                ticket = await issuer(agent_id, tool, arguments, owner)
+            except TicketRefused as exc:
+                return _failure(exc.code, f"The kernel refused this call: {exc.code}")
         if ticket is None:
             return _failure("executor.ticket_required", "A sandboxed tool needs a ticket for this exact call.")
         agent_token = self._settings.agent_tokens.get(agent_id)

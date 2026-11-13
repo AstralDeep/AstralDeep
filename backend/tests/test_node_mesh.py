@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+from types import SimpleNamespace
 
 import pytest
 
@@ -427,6 +428,49 @@ async def test_start_configured_installs_and_shutdown_clears(tmp_path, monkeypat
     assert mesh is not None and node_mesh.current() is mesh
     await node_mesh.shutdown()
     assert node_mesh.current() is None and not mesh.started
+
+
+async def test_mint_passes_the_exact_call_and_running_labels_to_the_binding(tmp_path, monkeypatch):
+    mesh = make(tmp_path)
+    await mesh.start()
+    captured = []
+    monkeypatch.setattr(fake, "MintCall", lambda **kwargs: SimpleNamespace(**kwargs), raising=False)
+
+    def mint(request_id, call):
+        captured.append((request_id, call))
+        return SimpleNamespace(ticket_json="ticket", action_json="action", receipt_event="receipt")
+
+    monkeypatch.setattr(mesh.kernel, "mint_ticket_for_request", mint, raising=False)
+    result = await mesh.mint_ticket(
+        "request", call_id="call-1", tool="lookup", arguments_json='{"q":"x"}',
+        tool_def="sha256:" + "a" * 64, effect_kind="outward_read", labels=("private", "untrusted"), untrusted_arguments=True,
+    )
+    request_id, call = captured[0]
+    assert result.receipt_event == "receipt" and request_id == "request"
+    assert (call.call_id, call.tool, call.arguments_json) == ("call-1", "lookup", '{"q":"x"}')
+    assert call.tool_def_hash == "sha256:" + "a" * 64 and call.effect_kind == "outward_read"
+    assert call.labels == fake.peer_labels("PRIVATE", "UNTRUSTED")
+    assert call.untrusted_arguments and call.influence == [] and call.consent_json is None
+    await mesh.stop()
+
+
+async def test_mint_refuses_old_bindings_and_keeps_kernel_denial_codes(tmp_path, monkeypatch):
+    mesh = make(tmp_path)
+    await mesh.start()
+    args = dict(call_id="call", tool="lookup", arguments_json="{}", tool_def="hash", effect_kind="outward_read", labels=("private", "owner"), untrusted_arguments=False)
+    with pytest.raises(node_mesh.MeshUnavailable) as unavailable:
+        await mesh.mint_ticket("request", **args)
+    assert unavailable.value.code == "mint_unsupported"
+    monkeypatch.setattr(fake, "MintCall", lambda **kwargs: SimpleNamespace(**kwargs), raising=False)
+
+    def refuse(*args):
+        raise fake.KernelError.InvalidInput("gate.permission_denied", "refused")
+
+    monkeypatch.setattr(mesh.kernel, "mint_ticket_for_request", refuse, raising=False)
+    with pytest.raises(node_mesh.NodeMeshError) as denied:
+        await mesh.mint_ticket("request", **args)
+    assert denied.value.code == "gate.permission_denied"
+    await mesh.stop()
 
 
 async def test_start_configured_is_off_without_the_profile_or_binding(tmp_path, monkeypatch):

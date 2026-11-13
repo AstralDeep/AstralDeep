@@ -425,6 +425,21 @@ class NodeMesh:
     async def verify_ticket(self, ticket_json: str, action_json: str, effect_kind: str) -> Any:
         return await self._request_call(self.kernel.verify_ticket, ticket_json, action_json, effect_kind)
 
+    async def mint_ticket(
+        self, request_id: str, *, call_id: str, tool: str, arguments_json: str,
+        tool_def: str, effect_kind: str, labels: tuple, untrusted_arguments: bool,
+    ) -> Any:
+        mint = getattr(self.kernel, "mint_ticket_for_request", None)
+        if mint is None:
+            raise MeshUnavailable("mint_unsupported")
+        call = self._binding.MintCall(
+            call_id=call_id, tool=tool, arguments_json=arguments_json,
+            tool_def_hash=tool_def, effect_kind=effect_kind,
+            labels=self._peer_labels(labels), influence=[],
+            untrusted_arguments=untrusted_arguments, consent_json=None,
+        )
+        return await self._request_call(mint, request_id, call)
+
     async def record_turn(
         self,
         chat_id: str,

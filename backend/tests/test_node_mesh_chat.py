@@ -511,6 +511,134 @@ async def test_a_tool_call_is_verified_run_through_the_nodes_gates_and_recorded(
     await bridge.stop()
 
 
+async def test_a_node_run_turn_mints_its_tool_and_records_the_real_receipt(tmp_path, monkeypatch):
+    import httpx
+
+    minted = []
+    sent = []
+
+    async def mint(request_id, **call):
+        minted.append((request_id, call))
+        action = json.loads(call_for(arguments={"q": "weather"}, device="dev-node", turn=request_id).action_json)
+        return SimpleNamespace(ticket_json='{"signed":true}', action_json=canonical(action), receipt_event="receipt-1")
+
+    def deliver(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"output": "sunny", "error": False})
+
+    executor = vessel_executor.VesselExecutor(
+        vessel_executor.ExecutorSettings("http://executor:8800", "catalog", agent_tokens={"agent-1": "agent"}),
+        httpx.AsyncClient(transport=httpx.MockTransport(deliver)),
+    )
+
+    async def runner(owner, local, prompt):
+        response = await executor.invoke("agent-1", "lookup", {"q": "weather"}, owner=owner)
+        nmc.observe_step(owner, local, {"name": "agent-1__lookup", "args": '{"q":"weather"}', "status": "completed", "result": response.result})
+        nmc.observe_message(owner, local, "assistant", "It is sunny.")
+
+    mesh, kernel, history, bridge = await build(tmp_path, runner, calls=FakeCalls(scope="tools:write"))
+    monkeypatch.setattr(mesh, "mint_ticket", mint, raising=False)
+    kernel.add_chat("c", [])
+    kernel.add_request("r1", "c")
+    await serve(bridge, kernel, "r1")
+    assert len(sent) == 1 and sent[0]["ticket_json"] == '{"signed":true}'
+    request_id, call = minted[0]
+    assert request_id == "r1" and call["tool"] == "lookup" and call["tool_def"] == DEFINITION
+    assert call["effect_kind"] == "outside_effect" and call["arguments_json"] == '{"q":"weather"}'
+    step = only_turn(kernel)[1].steps[0]
+    assert step.receipt == "receipt-1" and step.tool_def == DEFINITION and step.call_id == call["call_id"]
+    assert step.tool == "lookup" and step.content == "sunny"
+    assert vessel_executor.current_ticket() is None
+    await bridge.stop()
+    await executor.close()
+
+
+async def test_a_node_mint_refusal_prevents_the_executor_request(tmp_path, monkeypatch):
+    import httpx
+
+    sent = []
+    responses = []
+
+    async def mint(*args, **kwargs):
+        raise node_mesh.NodeMeshError("consent.required")
+
+    def deliver(request):
+        sent.append(request)
+        return httpx.Response(200, json={"output": "must not run"})
+
+    executor = vessel_executor.VesselExecutor(
+        vessel_executor.ExecutorSettings("http://executor:8800", "catalog", agent_tokens={"agent-1": "agent"}),
+        httpx.AsyncClient(transport=httpx.MockTransport(deliver)),
+    )
+
+    async def runner(owner, local, prompt):
+        responses.append(await executor.invoke("agent-1", "lookup", {}, owner=owner))
+        nmc.observe_message(owner, local, "assistant", "Consent is required.")
+
+    mesh, kernel, history, bridge = await build(tmp_path, runner, calls=FakeCalls())
+    monkeypatch.setattr(mesh, "mint_ticket", mint, raising=False)
+    kernel.add_chat("c", [])
+    kernel.add_request("r1", "c")
+    await serve(bridge, kernel, "r1")
+    assert responses and responses[0].error["code"] == "consent.required" and not sent
+    assert kernel.request("r1").state == fake.RequestState.ANSWERED
+    await bridge.stop()
+    await executor.close()
+
+
+@pytest.mark.parametrize("case,code", [("owner", "node.owner_mismatch"), ("tool", "request.call_mismatch"), ("limit", "mint.limit")])
+async def test_node_mint_context_refuses_a_foreign_owner_tool_or_excess_call(tmp_path, monkeypatch, case, code):
+    import httpx
+
+    results = []
+    issued = []
+    calls = FakeCalls()
+    if case == "tool":
+        calls.resolved = calls_module.ResolvedTool("different", "lookup", "tools:read", DEFINITION)
+    monkeypatch.setattr(nmc, "MAX_STEPS", 1)
+
+    async def mint(request, **kwargs):
+        issued.append(kwargs)
+        ticket = call_for(arguments={}, device="dev-node", turn=request)
+        return SimpleNamespace(ticket_json=ticket.ticket_json, action_json=ticket.action_json, receipt_event=None)
+
+    executor = vessel_executor.VesselExecutor(
+        vessel_executor.ExecutorSettings("http://executor:8800", "catalog", agent_tokens={"agent-1": "agent"}),
+        httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"output": "done"}))),
+    )
+
+    async def runner(owner, local, prompt):
+        if case == "limit":
+            assert (await executor.invoke("agent-1", "lookup", {}, owner=owner)).result == "done"
+        results.append(await executor.invoke("agent-1", "lookup", {}, owner="other" if case == "owner" else owner))
+        nmc.observe_message(owner, local, "assistant", "Refused.")
+
+    mesh, kernel, history, bridge = await build(tmp_path, runner, calls=calls)
+    monkeypatch.setattr(mesh, "mint_ticket", mint)
+    kernel.add_chat("c", [])
+    kernel.add_request("r1", "c")
+    await serve(bridge, kernel, "r1")
+    assert results and results[0].error["code"] == code
+    assert len(issued) == (1 if case == "limit" else 0)
+    await bridge.stop()
+    await executor.close()
+
+
+async def test_unrelated_tool_steps_never_inherit_a_minted_calls_receipt(tmp_path, monkeypatch):
+    mesh, kernel, history, bridge = await build(tmp_path, answering())
+    session = nmc._Session(OWNER, "local")
+    session.minted.append({
+        "call_id": "call", "tool": "lookup", "qualified": "agent-1__lookup", "arguments_json": '{"q":"x"}',
+        "tool_def": DEFINITION, "receipt": "receipt-1", "labels": ("private", "untrusted"),
+    })
+    bridge._sessions["local"] = session
+    for name, arguments in [("other", '{"q":"x"}'), ("lookup", '{"q":"y"}'), ("lookup", '{"q":"x"}'), ("lookup", '{"q":"x"}')]:
+        bridge._handle_step(OWNER, "local", {"name": name, "args": arguments, "status": "completed", "result": "done"})
+    recorded = nmc._step_records(session.steps, ("private", "tool_trusted"))
+    assert [s.receipt for s in recorded] == [None, None, "receipt-1", None]
+    await bridge.stop()
+
+
 async def test_a_write_tool_is_verified_as_an_outside_effect(tmp_path):
     calls = FakeCalls(scope="tools:write")
     mesh, kernel, history, bridge = await build(tmp_path, calls=calls)

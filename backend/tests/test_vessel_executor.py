@@ -158,6 +158,44 @@ async def test_a_call_without_a_ticket_is_refused_and_never_sent():
     assert code_of(response) == "executor.ticket_required" and not recorder.requests
 
 
+async def test_a_node_turn_mints_its_exact_call_before_sending_it():
+    recorder = Recorder()
+    issued = []
+
+    async def issue(agent, tool, arguments, owner):
+        issued.append((agent, tool, arguments, owner))
+        return ticket_for(arguments)
+
+    with ve.minting(issue):
+        response = await executor_with(recorder).invoke(AGENT, "lookup", {"q": "x"}, owner=OWNER)
+    assert response.result == "done"
+    assert issued == [(AGENT, "lookup", {"q": "x"}, OWNER)]
+    assert json.loads(recorder.requests[0].content)["ticket_json"] == '{"ticket":1}'
+    assert ve.current_ticket() is None
+
+
+async def test_a_carried_peer_ticket_is_never_minted_again():
+    async def issue(*args):
+        raise AssertionError("a peer call already carries its ticket")
+
+    with ve.minting(issue):
+        response = await invoke(executor_with(Recorder()), ticket_for())
+    assert response.result == "done"
+
+
+async def test_mint_refusal_is_reported_without_sending_the_call_or_leaking_context():
+    recorder = Recorder()
+
+    async def issue(*args):
+        raise ve.TicketRefused("consent.required")
+
+    executor = executor_with(recorder)
+    with ve.minting(issue):
+        response = await executor.invoke(AGENT, "lookup", {}, owner=OWNER)
+    assert code_of(response) == "consent.required" and not recorder.requests
+    assert code_of(await executor.invoke(AGENT, "lookup", {}, owner=OWNER)) == "executor.ticket_required"
+
+
 @pytest.mark.parametrize(
     "overrides",
     [

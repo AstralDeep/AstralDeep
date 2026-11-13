@@ -87,6 +87,12 @@ def assert_production_posture() -> None:
         institution_profile.enforce()
     mock_on = os.getenv("USE_MOCK_AUTH", "").strip().lower() in ("1", "true", "yes")
     if is_dev_mode():
+        if node_identity.is_personal():
+            try:
+                node_identity.load_node_identity()
+            except node_identity.NodeIdentityError as exc:
+                logger.error("Personal node signing key is unusable: %s", exc)
+                raise SystemExit(78) from exc
         warn_on_typesafe_environment()
         return
     problems = []

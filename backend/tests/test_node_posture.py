@@ -94,8 +94,30 @@ def test_personal_node_needs_an_accepted_issuer_and_a_well_formed_owner(producti
     assert_production_posture()
 
 
-def test_development_posture_does_not_touch_the_node_directory(production, monkeypatch):
+def test_development_personal_node_creates_the_key_before_dispatch(production, monkeypatch):
     monkeypatch.setenv(ni.PROFILE_ENV, "personal")
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    assert_production_posture()
+    assert stat.S_IMODE((production / ni.KEY_FILE).stat().st_mode) == 0o600
+    ni.reset_cache()
+    identity = ni.load_node_identity(create=False)
+    assert identity.node_id
+
+
+def test_development_personal_node_refuses_an_existing_unusable_key(production, monkeypatch):
+    monkeypatch.setenv(ni.PROFILE_ENV, "personal")
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    production.mkdir()
+    key = production / ni.KEY_FILE
+    key.write_text("corrupt")
+    key.chmod(0o600)
+    with pytest.raises(SystemExit) as stopped:
+        assert_production_posture()
+    assert stopped.value.code == 78 and key.read_text() == "corrupt"
+
+
+def test_development_shared_posture_does_not_create_a_node_key(production, monkeypatch):
+    monkeypatch.delenv(ni.PROFILE_ENV, raising=False)
     monkeypatch.setenv("ASTRAL_ENV", "development")
     assert_production_posture()
     assert not production.exists()

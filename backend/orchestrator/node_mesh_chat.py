@@ -179,6 +179,8 @@ class _Session:
     user_text: Optional[str] = None
     request: Optional[Any] = None
     steps: List[Dict[str, Any]] = field(default_factory=list)
+    minted: List[Dict[str, Any]] = field(default_factory=list)
+    floor: Labels = BASE_LABELS
     answer: Optional[str] = None
     done: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -309,6 +311,20 @@ class MeshChatBridge:
         session = self._sessions.get(chat_id)
         if session is None or len(session.steps) >= MAX_STEPS:
             return
+        arguments = _arguments(step.get("args"))
+        for minted in session.minted:
+            if minted.get("recorded") or step.get("name") not in {minted["tool"], minted["qualified"]}:
+                continue
+            if arguments != minted["arguments_json"]:
+                continue
+            minted["recorded"] = True
+            failed = bool(step.get("error")) or step.get("status") != "completed"
+            step = {
+                **minted, "status": "error" if failed else "ok",
+                "content": _clip(step.get("error") if failed else step.get("result") or "", MAX_STEP_TEXT),
+                "code": "node.tool_failed" if failed else None,
+            }
+            break
         session.steps.append(step)
 
     async def _finish(self, session: _Session) -> None:
@@ -506,7 +522,8 @@ class MeshChatBridge:
         if request.call is not None:
             steps, text = await self._run_call(request, admitted, local), ""
         else:
-            steps, text = await self._run_turn(request, local)
+            steps, text = await self._run_turn(request, local, admitted.floor)
+            admitted.floor = join_labels(admitted.floor, *(step.get("labels", admitted.floor) for step in steps))
         try:
             await self._record(
                 request.chat_id,
@@ -545,11 +562,40 @@ class MeshChatBridge:
             }
         ]
 
-    async def _run_turn(self, request: Any, local: str) -> Tuple[List[Dict[str, Any]], str]:
-        session = _Session(self._owner, local, mesh_chat=request.chat_id, user_text=request.text, request=request)
+    async def _run_turn(self, request: Any, local: str, floor: Labels) -> Tuple[List[Dict[str, Any]], str]:
+        session = _Session(self._owner, local, mesh_chat=request.chat_id, user_text=request.text, request=request, floor=floor)
         self._sessions[local] = session
+
+        async def issue(agent: str, tool: str, arguments: Dict[str, Any], owner: Optional[str]) -> vessel_executor.CallTicket:
+            if owner != session.owner_id or self._owner != owner or self._calls is None:
+                raise vessel_executor.TicketRefused("node.owner_mismatch")
+            if len(session.minted) >= MAX_STEPS:
+                raise vessel_executor.TicketRefused("mint.limit")
+            try:
+                resolved = await self._calls.resolve(owner, f"{agent}__{tool}")
+                if (resolved.agent_id, resolved.tool) != (agent, tool):
+                    raise vessel_executor.TicketRefused("request.call_mismatch")
+                if session.minted or session.steps:
+                    session.floor = join_labels(session.floor, ("private", "untrusted"))
+                arguments_json = _arguments(arguments)
+                call_id = f"node-call-{len(session.minted) + 1}"
+                minted = await self._mesh.mint_ticket(
+                    request.id, call_id=call_id, tool=tool, arguments_json=arguments_json,
+                    tool_def=resolved.definition, effect_kind=resolved.effect_kind,
+                    labels=session.floor, untrusted_arguments=session.floor[1] == "untrusted",
+                )
+            except (CallRefused, NodeMeshError) as exc:
+                raise vessel_executor.TicketRefused(exc.code) from exc
+            session.minted.append({
+                "call_id": call_id, "tool": tool, "qualified": f"{agent}__{tool}",
+                "arguments_json": arguments_json, "tool_def": resolved.definition,
+                "receipt": minted.receipt_event, "labels": join_labels(session.floor, ("private", "untrusted")),
+            })
+            return vessel_executor.CallTicket(minted.ticket_json, minted.action_json, arguments_json)
+
         try:
-            await asyncio.wait_for(self._runner(self._owner, local, request.text), self._turn_seconds)
+            with vessel_executor.minting(issue):
+                await asyncio.wait_for(self._runner(self._owner, local, request.text), self._turn_seconds)
             try:
                 await asyncio.wait_for(session.done.wait(), ANSWER_GRACE_SECONDS)
             except asyncio.TimeoutError:
@@ -633,7 +679,8 @@ def _step_records(steps: List[Any], floor: Labels) -> List[StepRecord]:
                 StepRecord(
                     call_id=step["call_id"], tool=step["tool"], arguments_json=step["arguments_json"],
                     tool_def=step["tool_def"], status="ok" if step["status"] == "ok" else "error",
-                    content=step["content"], labels=floor, code=step["code"],
+                    content=step["content"], labels=step.get("labels", floor), code=step["code"],
+                    receipt=step.get("receipt"), reasons=tuple(step.get("reasons", ())),
                 )
             )
             continue
