@@ -7528,7 +7528,7 @@ class Orchestrator:
                     or frame.get("session_id") is not None or supplied_connection is None):
                 return None
             try:
-                from astralprojection.work_continuity import validate_continuity_payload
+                from rote.work_continuity import validate_continuity_payload
 
                 validate_continuity_payload(payload)
             except (ImportError, ValueError):

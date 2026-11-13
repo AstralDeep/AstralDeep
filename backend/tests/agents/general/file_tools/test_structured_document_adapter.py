@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -102,14 +105,15 @@ def test_read_bounded_rejects_symlink_and_oversized_output(tmp_path):
 def test_scratch_root_mode_and_privilege_drop(monkeypatch):
     calls = []
     monkeypatch.setattr(adapter.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(adapter.os, "chown", lambda *args: None)
     monkeypatch.setattr(adapter.os, "setgroups", calls.append)
     monkeypatch.setattr(adapter.os, "setgid", calls.append)
     monkeypatch.setattr(adapter.os, "setuid", calls.append)
     adapter._drop_privileges()
     assert calls == [[], adapter._NON_ROOT_GID, adapter._NON_ROOT_UID]
     with adapter._scratch(b"worker", b"profile") as (runtime, work):
-        assert runtime.stat().st_mode & 0o777 == 0o555
-        assert work.stat().st_mode & 0o777 == 0o777
+        assert runtime.stat().st_mode & 0o777 == 0o510
+        assert work.stat().st_mode & 0o777 == 0o700
 
 
 def test_preexec_builds_resource_and_privilege_callbacks(monkeypatch):
@@ -259,3 +263,48 @@ def test_parse_fails_closed_at_concurrency_limit(monkeypatch):
 def test_parse_rejects_invalid_max_chars_before_spawn():
     result = parse_structured_document(b"%PDF-1.4", "pdf", None, "not-a-number")
     assert result["error"]["code"] == "invalid_max_chars"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux worker custody")
+def test_scratch_worker_reads_private_assets_after_privilege_drop():
+    expected_uid = adapter._NON_ROOT_UID if os.geteuid() == 0 else os.geteuid()
+    with adapter._scratch(b"worker", b"profile") as (runtime, work):
+        for name in ("worker.py", "profile.json"):
+            asset = runtime / name
+            assert asset.stat().st_uid == expected_uid
+            assert asset.stat().st_mode & 0o777 == 0o400
+        assert work.stat().st_uid == expected_uid
+        assert work.stat().st_mode & 0o777 == 0o700
+        expected_runtime_mode = 0o510 if os.geteuid() == 0 else 0o500
+        assert runtime.stat().st_mode & 0o777 == expected_runtime_mode
+        assert runtime.parent.stat().st_mode & 0o777 == (
+            0o710 if os.geteuid() == 0 else 0o700
+        )
+        result = subprocess.run(
+            [sys.executable, "-I", "-c",
+             "import os,pathlib,sys; "
+             "assert os.geteuid() == int(sys.argv[1]); "
+             "assert pathlib.Path(sys.argv[2]).read_bytes() == b'worker'; "
+             "assert pathlib.Path(sys.argv[3]).read_bytes() == b'profile'; "
+             "pathlib.Path('result').write_text('ok')",
+             str(expected_uid), str(runtime / "worker.py"), str(runtime / "profile.json")],
+            cwd=work, preexec_fn=adapter._drop_privileges, capture_output=True,
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        assert (work / "result").read_text() == "ok"
+
+
+def test_scratch_custody_failure_removes_private_assets(monkeypatch, tmp_path):
+    root = tmp_path / "scratch"
+    root.mkdir()
+    monkeypatch.setattr(adapter.tempfile, "mkdtemp", lambda **_kwargs: str(root))
+    monkeypatch.setattr(adapter.os, "geteuid", lambda: 0)
+
+    def deny_custody(*_args):
+        raise PermissionError("custody refused")
+
+    monkeypatch.setattr(adapter.os, "chown", deny_custody)
+    with pytest.raises(PermissionError, match="custody refused"):
+        with adapter._scratch(b"worker", b"profile"):
+            pytest.fail("custody failure must prevent worker launch")
+    assert not root.exists()

@@ -128,7 +128,12 @@ def test_a_malformed_key_stops_the_process_with_exit_78(env, monkeypatch, key):
     assert info.value.code == 78
 
 
-@pytest.mark.parametrize("content", ["not json", "[]", json.dumps(statement(subject="astral-node:someone-else")), json.dumps(statement(OTHER, subject="x"))])
+@pytest.mark.parametrize(
+    "content",
+    ["not json", "[]", json.dumps(statement(subject="astral-node:someone-else")),
+     json.dumps(statement(OTHER, subject="x"))],
+    ids=["invalid-json", "non-object", "wrong-subject", "wrong-signing-key"],
+)
 def test_a_bad_approval_file_stops_the_process_with_exit_78(env, monkeypatch, content):
     path = env / "approval.json"
     path.write_text(content)

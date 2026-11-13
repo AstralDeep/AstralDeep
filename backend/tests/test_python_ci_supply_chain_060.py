@@ -276,6 +276,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "initialize_backend_web_services.py",
         "install_doctor.py",
         "install_local_components.py",
+        "install_kernel_binding.py",
         "macos_release_notes.py",
         "merge_backend_web_coverage.py",
         "next_macos_release.py",
