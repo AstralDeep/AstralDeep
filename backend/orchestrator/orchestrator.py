@@ -19536,6 +19536,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if stream_params is None:
             stream_params = dict(args)
 
+        from orchestrator import node_mesh_admission
+
+        refusal = await node_mesh_admission.check(self, websocket, user_id, chat_id, agent_id, tool_name, args)
+        if refusal is not None:
+            return GateRefusal(response=refusal)
+
         agent_flags = self.security_flags.get(agent_id, {}) if agent_id else {}
         if agent_id and tool_name in agent_flags and agent_flags[tool_name].get("blocked"):
             reason = agent_flags[tool_name].get("reason", "Security threat detected")
@@ -21450,6 +21456,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 self, websocket, user_id, conversation_id, agent_id, tool_name, args, start=True)
             if refusal is not None:
                 return refusal
+            async def current_invoke():
+                from orchestrator import node_mesh_admission
+
+                refusal = await node_mesh_admission.check(
+                    self, websocket, user_id, conversation_id, agent_id, tool_name, args, physical=True)
+                return refusal if refusal is not None else await invoke(capabilities)
+
             stop = getattr(self, "emergency_stop", None)
             try:
                 if stop is not None and user_id and user_id != "legacy":
@@ -21457,11 +21470,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                     try:
                         async with stop.effect(user_id):
-                            result = await invoke(capabilities)
+                            result = await current_invoke()
                     except EmergencyStopRefused as exc:
                         result = MCPResponse(error={"message": exc.code, "retryable": False})
                 else:
-                    result = await invoke(capabilities)
+                    result = await current_invoke()
             except (Exception, asyncio.CancelledError):
                 outcome_call = approval.call if action.needs_review else project_read
                 if outcome_call is not None:

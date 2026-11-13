@@ -193,6 +193,7 @@ class _Admitted:
     authority: Optional[Any] = None
     arguments: Optional[Dict[str, Any]] = None
     action: Optional[Dict[str, Any]] = None
+    owner: Optional[str] = None
 
 
 class MeshChatBridge:
@@ -479,6 +480,7 @@ class MeshChatBridge:
             raise Refusal("node.phi_not_approved")
 
     async def _admit_call(self, request: Any, admitted: _Admitted) -> None:
+        owner = self._owner
         call = request.call
         if self._calls is None:
             raise Refusal("node.calls_unavailable")
@@ -494,7 +496,7 @@ class MeshChatBridge:
         if action.get("device") != request.from_device:
             raise Refusal("ticket.device_mismatch")
         try:
-            resolved = await self._calls.resolve(self._owner, call.tool)
+            resolved = await self._calls.resolve(owner, call.tool)
         except CallRefused as exc:
             raise Refusal(exc.code) from None
         if action.get("tool_def") != resolved.definition:
@@ -512,10 +514,10 @@ class MeshChatBridge:
         admitted.floor = join_labels(admitted.floor, labels_of(verified.labels))
         await self._check_floor(admitted.floor, request)
         try:
-            admitted.authority = await self._calls.authorize(self._owner, resolved)
+            admitted.authority = await self._calls.authorize(owner, resolved)
         except CallRefused as exc:
             raise Refusal(exc.code) from None
-        admitted.resolved, admitted.arguments, admitted.action = resolved, arguments, action
+        admitted.resolved, admitted.arguments, admitted.action, admitted.owner = resolved, arguments, action, owner
 
     async def _execute(self, request: Any, admitted: _Admitted) -> None:
         local = await self._local_chat(admitted.view)
@@ -539,17 +541,22 @@ class MeshChatBridge:
 
     async def _run_call(self, request: Any, admitted: _Admitted, local: str) -> List[Any]:
         call = request.call
-        outcome = await asyncio.wait_for(
-            self._calls.run(
-                self._owner,
-                local,
-                admitted.resolved,
-                admitted.authority,
-                admitted.arguments,
-                vessel_executor.CallTicket(call.ticket_json, call.action_json, call.arguments_json),
-            ),
-            self._turn_seconds,
-        )
+        from orchestrator import node_mesh_admission
+
+        owner = admitted.owner
+        if not owner or self._owner != owner:
+            raise Refusal("node.owner_mismatch")
+        ticket = vessel_executor.CallTicket(call.ticket_json, call.action_json, call.arguments_json)
+        with node_mesh_admission.binding(
+            self._mesh, lambda: self._owner, owner, local, admitted.resolved, ticket,
+        ):
+            outcome = await asyncio.wait_for(
+                self._calls.run(
+                    owner, local, admitted.resolved, admitted.authority,
+                    admitted.arguments, ticket,
+                ),
+                self._turn_seconds,
+            )
         return [
             {
                 "call_id": call.call_id,

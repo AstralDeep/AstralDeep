@@ -169,6 +169,7 @@ class OrchestratorCalls:
 
         task = BackgroundTask(task_id=f"mesh-call-{int(time.time() * 1000)}", chat_id=local_chat, user_id=owner_id)
         vws = VirtualWebSocket(task)
+        vws._node_mesh_peer_call = True
         self._orch._bind_machine_turn(vws, authority)
         try:
             with vessel_executor.carrying(ticket):
