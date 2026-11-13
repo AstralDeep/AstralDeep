@@ -90,7 +90,7 @@ def install(directory: Path, key: str, bin_dir: Path, manifest: Optional[Dict[st
     manifest = manifest or load_manifest()
     paths = verify(directory, key, manifest)
     subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--no-cache-dir", "--no-deps", "--no-index", str(paths["wheel"])],
+        [sys.executable, "-m", "pip", "install", "--no-cache-dir", "--no-deps", "--no-index", "--force-reinstall", str(paths["wheel"])],
         check=True,
     )
     bin_dir.mkdir(parents=True, exist_ok=True)

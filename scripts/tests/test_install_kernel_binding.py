@@ -84,7 +84,7 @@ def test_install_runs_pip_copies_the_mailbox_and_imports(staged, tmp_path, monke
     monkeypatch.setattr(ikb.subprocess, "run", lambda command, check: calls.append(command))
     bin_dir = tmp_path / "bin"
     ikb.install(artifacts, "linux-aarch64", bin_dir, manifest)
-    assert "--no-index" in calls[0] and calls[0][-1] == str(artifacts / "k.whl")
+    assert "--no-index" in calls[0] and "--force-reinstall" in calls[0] and calls[0][-1] == str(artifacts / "k.whl")
     assert calls[1][-1] == "import astral_kernel"
     target = bin_dir / "astral-mailbox"
     assert target.read_bytes() == b"mailbox" and target.stat().st_mode & 0o777 == 0o755
