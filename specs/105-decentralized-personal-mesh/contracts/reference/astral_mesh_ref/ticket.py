@@ -215,6 +215,7 @@ def parse_blocks(token: bytes) -> dict[str, Any]:
         or any(not crypto.is_id(s) for s in sources)
     ):
         raise MeshError("ticket.label_missing", "label values")
+    _expires(biscuit)
     return {
         "device": _one(authority, "device")[0],
         "feed": _one(authority, "feed")[0],
@@ -381,16 +382,12 @@ def verify_ticket(
 _EXPIRY = re.compile(r"\$t < (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ);")
 
 
-def expiry(token: bytes) -> int:
-    """The latest instant at which the ticket is still valid: the earliest expiry check of the device and turn blocks."""
-    biscuit = _unverified(token)
-    if biscuit.block_count() < 4:
-        raise MeshError("ticket.wrong_block_shape", "blocks")
+def _expires(biscuit: UnverifiedBiscuit) -> int:
     found = []
     for i in (0, 1):
         match = _EXPIRY.search(biscuit.block_source(i))
         if not match:
-            continue
+            raise MeshError("ticket.wrong_block_shape", "an expiry check is required")
         found.append(
             int(
                 dt.datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%SZ")
@@ -398,7 +395,15 @@ def expiry(token: bytes) -> int:
                 .timestamp()
             )
         )
-    return min(found) if found else 2**63 - 1
+    return min(found)
+
+
+def expiry(token: bytes) -> int:
+    """The earliest expiry check of the device and turn blocks, each of which must carry one."""
+    biscuit = _unverified(token)
+    if biscuit.block_count() < 4:
+        raise MeshError("ticket.wrong_block_shape", "blocks")
+    return _expires(biscuit)
 
 
 def grant_name(tool: str, tool_def: str) -> str:

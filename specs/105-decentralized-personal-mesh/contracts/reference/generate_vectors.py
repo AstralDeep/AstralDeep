@@ -3219,11 +3219,14 @@ def build_ticket(repin: bool = False) -> Suite:
 
         return tok(label, make)
 
+    expiry_check = f"check if time($t), $t < {ticket.rfc3339(now_s + 1800)};"
     head = (
         f'mesh("{mesh}"); device("{ALICE.id}"); feed("{ALICE.feed}"); actor("device:{ALICE.id}"); stop_counter(0); '
-        f"check if mesh_ctx($m), mesh($m); check if stop_current($n), stop_counter($c), $n <= $c;"
+        f"check if mesh_ctx($m), mesh($m); check if stop_current($n), stop_counter($c), $n <= $c; {expiry_check}"
     )
-    turn_block = f'actor("turn:{turn}"); turn("{turn}"); check if tool($t), {{"mail.send"}}.contains($t);'
+    turn_block = f'actor("turn:{turn}"); turn("{turn}"); check if tool($t), {{"mail.send"}}.contains($t); {expiry_check}'
+    head_no_expiry = head.replace(expiry_check, "")
+    turn_no_expiry = turn_block.replace(expiry_check, "")
     agent_block = 'actor("agent:agent.mail"); check if agent($a), $a == "agent.mail";'
     call_block = (
         f'actor("call:{digest}"); label("integrity", "owner"); label("confidentiality", "private"); '
@@ -3235,7 +3238,20 @@ def build_ticket(repin: bool = False) -> Suite:
     plain_digest = ticket.action_digest(plain_action)
     plain_call = call_block.replace(digest, plain_digest)
     plain_receipt = {**receipt, "evidence_digest": plain_digest}
-    ok_custom = custom("hand-built-valid", [head, turn_block, agent_block, plain_call])
+    ok_custom = custom(
+        "hand-built-valid-with-expiry", [head, turn_block, agent_block, plain_call]
+    )
+    no_expiry_token = custom(
+        "hand-built-valid", [head_no_expiry, turn_no_expiry, agent_block, plain_call]
+    )
+    turn_only_expiry = custom(
+        "hand-built-without-device-expiry",
+        [head_no_expiry, turn_block, agent_block, plain_call],
+    )
+    device_only_expiry = custom(
+        "hand-built-without-turn-expiry",
+        [head, turn_no_expiry, agent_block, plain_call],
+    )
     owner = {
         **claims,
         "action": plain_digest,
@@ -3250,6 +3266,26 @@ def build_ticket(repin: bool = False) -> Suite:
         ),
         expect=owner,
     )
+    for name, token in (
+        ("hand-built-token-without-any-expiry-check-is-refused", no_expiry_token),
+        ("hand-built-token-without-a-device-expiry-is-refused", turn_only_expiry),
+        ("hand-built-token-without-a-turn-expiry-is-refused", device_only_expiry),
+    ):
+        s.add(
+            name,
+            "ticket_verify",
+            base(
+                action=plain_action,
+                ticket=with_ticket(capability=token, receipt=plain_receipt),
+            ),
+            error="ticket.wrong_block_shape",
+        )
+        s.add(
+            name.replace("-is-refused", "-has-no-expiry"),
+            "ticket_expiry",
+            {"capability": token},
+            error="ticket.wrong_block_shape",
+        )
     s.add(
         "block-with-a-rule-refused",
         "ticket_verify",
