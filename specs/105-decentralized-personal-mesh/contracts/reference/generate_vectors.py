@@ -29,6 +29,7 @@ from astral_mesh_ref import (
     runs as runs_ref,
     sync,
     ticket,
+    tools as tools_ref,
     transfer as transfer_ref,
 )
 from astral_mesh_ref.cj import b64url_decode, b64url_encode, canonical
@@ -40,6 +41,7 @@ learning_ref.register(runner.op)
 credential_ref.register(runner.op)
 transfer_ref.register(runner.op)
 requests_ref.register(runner.op)
+tools_ref.register(runner.op)
 
 HERE = Path(__file__).resolve().parent
 VECTORS = HERE.parent / "vectors"
@@ -9277,6 +9279,141 @@ def build_requests() -> Suite:
     return s
 
 
+def build_tools() -> Suite:
+    s = Suite("tools", "contracts/tools.md")
+    feeds = {ALICE.feed: ALICE.id, BOB.feed: BOB.id}
+
+    def tool(name: str = "lights_on", **over: Any) -> dict[str, Any]:
+        fields: dict[str, Any] = {
+            "annotations": {"readOnlyHint": False},
+            "description": "turns the lights on",
+            "effect": "outside_effect",
+            "input_schema": {
+                "properties": {"room": {"type": "string"}, "level": {"minimum": {"$num": "0.5"}}},
+                "type": "object",
+            },
+            "name": name,
+        }
+        fields.update(over)
+        if "hash" not in fields:
+            fields["hash"] = tools_ref.definition_hash(
+                fields["name"],
+                fields["description"],
+                fields["input_schema"],
+                fields["annotations"],
+            )
+        return fields
+
+    def check(name: str, body: Any, error: str | None = None, **ok: Any) -> None:
+        s.add(name, "tools_check", {"body": body}, error=error, expect=ok or None)
+
+    good = tool()
+    s.add(
+        "hash-of-a-definition",
+        "tools_hash",
+        {
+            "annotations": good["annotations"],
+            "description": good["description"],
+            "input_schema": good["input_schema"],
+            "name": good["name"],
+        },
+        expect={"hash": good["hash"]},
+    )
+    check("one-tool", {"tools": [good]}, count=1, names=["lights_on"])
+    check("an-empty-catalog-is-valid", {"tools": []}, count=0, names=[])
+    check(
+        "two-tools",
+        {"tools": [good, tool("lights_off")]},
+        count=2,
+        names=["lights_off", "lights_on"],
+    )
+    check("extra-field", {"tools": [], "x": 1}, error="tools.malformed")
+    check("not-an-object", [], error="tools.malformed")
+    check("tool-extra-field", {"tools": [{**good, "x": 1}]}, error="tools.malformed")
+    check("tool-missing-field", {"tools": [{k: v for k, v in good.items() if k != "effect"}]}, error="tools.malformed")
+    check("duplicate-name", {"tools": [good, good]}, error="tools.malformed")
+    check("bad-name", {"tools": [tool("1bad")]}, error="tools.malformed")
+    check("name-too-long", {"tools": [tool("a" * 65)]}, error="tools.malformed")
+    check("bad-effect", {"tools": [tool(effect="delete_everything")]}, error="tools.malformed")
+    check("description-too-long", {"tools": [tool(description="x" * 4097)]}, error="tools.malformed")
+    check("schema-not-an-object", {"tools": [tool(input_schema=[])]}, error="tools.malformed")
+    check("float-in-schema", {"tools": [tool(input_schema={"minimum": 0.5}, hash=good["hash"])]}, error="tools.malformed")
+    check("too-many-tools", {"tools": [tool(f"t{i}") for i in range(65)]}, error="tools.malformed")
+    check(
+        "hash-does-not-match",
+        {"tools": [{**good, "description": "turns the lights off"}]},
+        error="tools.hash_mismatch",
+    )
+    check("hash-of-another-tool", {"tools": [{**good, "hash": tool("other")["hash"]}]}, error="tools.hash_mismatch")
+
+    def event(name: str, dev: Any, tick: int, body: Any, seq: int) -> dict[str, Any]:
+        return {
+            "after": [],
+            "body": body,
+            "clock": hlc(sc.BASE_MS + tick * 1000),
+            "feed": dev.feed,
+            "id": _eid("tools", name),
+            "seq": seq,
+            "type": "tools.catalog",
+        }
+
+    def fold_case(name: str, events: list[Any], expect: Any, devices: Any = None) -> None:
+        s.add(
+            name,
+            "tools_fold",
+            {"devices": devices if devices is not None else feeds, "events": copy.deepcopy(events)},
+            expect=expect,
+        )
+
+    a1 = event("a1", ALICE, 1, {"tools": [good]}, 1)
+    a2 = event("a2", ALICE, 2, {"tools": [good, tool("lights_off")]}, 2)
+    b1 = event("b1", BOB, 1, {"tools": [tool("scan")]}, 1)
+    fold_case("no-catalogs", [], {"catalogs": [], "ignored": []})
+    fold_case(
+        "one-catalog",
+        [a1],
+        {"catalogs": [{"device": ALICE.id, "event": a1["id"], "tools": [good]}], "ignored": []},
+    )
+    fold_case(
+        "the-latest-catalog-of-a-device-wins",
+        [a2, a1],
+        {
+            "catalogs": [{"device": ALICE.id, "event": a2["id"], "tools": a2["body"]["tools"]}],
+            "ignored": [a1["id"]],
+        },
+    )
+    expected = sorted(
+        [
+            {"device": ALICE.id, "event": a1["id"], "tools": [good]},
+            {"device": BOB.id, "event": b1["id"], "tools": b1["body"]["tools"]},
+        ],
+        key=lambda c: c["device"],
+    )
+    fold_case("each-member-has-its-own-catalog", [b1, a1], {"catalogs": expected, "ignored": []})
+    fold_case(
+        "a-removed-member-is-ignored",
+        [a1, b1],
+        {"catalogs": [{"device": ALICE.id, "event": a1["id"], "tools": [good]}], "ignored": [b1["id"]]},
+        devices={ALICE.feed: ALICE.id},
+    )
+    bad = event("a3", ALICE, 3, {"tools": [{**good, "hash": tool("other")["hash"]}]}, 3)
+    fold_case(
+        "an-invalid-later-catalog-leaves-the-earlier-one",
+        [a1, bad],
+        {"catalogs": [{"device": ALICE.id, "event": a1["id"], "tools": [good]}], "ignored": [bad["id"]]},
+    )
+    changed = tool(description="turns the lights on, slowly")
+    a4 = event("a4", ALICE, 4, {"tools": [changed]}, 4)
+    folded = tools_ref.fold([a1, a4], feeds.get)
+    assert folded["catalogs"][0]["tools"][0]["hash"] != good["hash"]
+    fold_case(
+        "a-changed-definition-has-a-new-hash",
+        [a1, a4],
+        {"catalogs": [{"device": ALICE.id, "event": a4["id"], "tools": [changed]}], "ignored": [a1["id"]]},
+    )
+    return s
+
+
 def suites(repin: bool) -> list[Suite]:
     return [
         build_canonical(),
@@ -9299,6 +9436,7 @@ def suites(repin: bool) -> list[Suite]:
         build_credential(),
         build_transfer(),
         build_requests(),
+        build_tools(),
     ]
 
 

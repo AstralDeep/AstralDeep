@@ -95,6 +95,11 @@
       "sha256": "fb9452055e84ec643a9cce410ab3a4adafee5c9832ad77f1d60620eddb99a4b1",
       "spec": "contracts/ticket.md"
     },
+    "tools.json": {
+      "cases": 25,
+      "sha256": "276e06ad49bb95ee18bddee37daec0a93d892030be75ffd583a4d39cf940bed2",
+      "spec": "contracts/tools.md"
+    },
     "transfer.json": {
       "cases": 8,
       "sha256": "f9e241cbbc7d204fb8b80b4572d060d94a7c6b7ecea8314823ffce450540874e",

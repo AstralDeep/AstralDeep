@@ -18,7 +18,9 @@ The formats are the ones fixed in [../tasks.md](../tasks.md). Where a format nee
 | [surface.md](surface.md) | `astral.surface/v1` | Surface documents, patches, action events and capabilities, value bindings | `surface.json` | `surface.py` |
 | [runs.md](runs.md) | `astral.runs/v1` | Run ids, lease, goal and schedule bodies, the lease fold (one executor, handoff, takeover with the owner's presence consent, contested runs), the state fold, run start checks, schedule arithmetic, the pre-check, the judge's fixed answer | `runs.json` | `runs.py` |
 | [requests.md](requests.md) | `astral.requests/v1` | Requests addressed to one member, the tool call and ticket a request carries, claim, refusal and cancel, and the fold that gives each request one state | `requests.json` | `requests.py` |
-| [learning.md](learning.md) | `astral.learning/v1` | Candidates and the content hash, evidence labels, proposal, gate, replay, adoption and reversal bodies, the static gate, the replay digest, the trial, the ledger fold that re-checks every adoption and recomputes owner review from the proposal itself | `learning.json` | `learning.py` |
+| [tools.md](tools.md) | `astral.tools/v1` | The `tools.catalog` event with the tools a member serves, the definition hash, the fold that picks each current member's catalog, and how a changed definition is a new tool | `tools.json` | `tools.py` |
+| [learning.md](learning.md) | `astral.learning/v1` | Candidates and the content hash, evidence labels, proposal, gate, replay, adoption and reversal bodies, the static gate, the replay digest, the trial, the ledger fold that re-checks every adoption and recomputes owner review from the proposal itself | `tools.json` | `tools_check` (`body`) gives `count` and `names`. `tools_hash` (`name`, `description`, `input_schema`, `annotations`) gives `hash`. `tools_fold` (`events`, `devices`: feed to device for current members) gives `catalogs` and `ignored` | none |
+| `learning.json` | `learning.py` |
 
 A change to a format raises its version. A document, its vectors and its reference module change together.
 

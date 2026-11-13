@@ -52,6 +52,7 @@ EVENT_TYPES = {
     "settings.set": "memory",
     "key.content": "key",
     "key.credential": "key",
+    "tools.catalog": "tools",
 }
 HEADER_FIELDS = {
     "v",
@@ -164,6 +165,8 @@ def check_header_shape(header: Any) -> None:
         raise MeshError("event.malformed", "scope")
     if EVENT_TYPES[header["type"]] in ("chat", "request") and scope == "mesh":
         raise MeshError("event.malformed", "chat events need a chat scope")
+    if EVENT_TYPES[header["type"]] == "tools" and scope != "mesh":
+        raise MeshError("event.malformed", "tool catalogs have the mesh scope")
     labels = header["labels"]
     if (
         not isinstance(labels, dict)
