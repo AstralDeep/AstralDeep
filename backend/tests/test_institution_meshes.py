@@ -1,4 +1,4 @@
-"""Covers orchestrator/institution_meshes.py: every owner gets a separate kernel data directory, keys and mesh, the same owner reuses its peer, a restart restores the owners already served, and invalid, duplicate-subject and over-capacity owners are refused."""
+"""Covers orchestrator/institution_meshes.py: every owner gets a separate kernel data directory, keys and mesh, the same owner reuses its peer, a restart restores the owners already served, and invalid and over-capacity owners are refused."""
 
 from __future__ import annotations
 
@@ -45,14 +45,14 @@ async def test_the_same_owner_reuses_its_peer(tmp_path):
     await registry.stop()
 
 
-async def test_the_same_subject_from_another_issuer_is_a_different_owner_but_is_refused_for_orchestrator_safety(tmp_path):
+async def test_the_same_subject_from_another_issuer_is_a_separate_owner_with_its_own_peer(tmp_path):
     registry = meshes(tmp_path)
-    await registry.for_owner(Owner.verified(ISS, "alice"))
+    first = await registry.for_owner(Owner.verified(ISS, "alice"))
     other = Owner.verified("https://idp.example/realms/b", "alice")
-    assert other.partition != Owner.verified(ISS, "alice").partition and other.slot != Owner.verified(ISS, "alice").slot
-    with pytest.raises(NodeMeshError) as info:
-        await registry.for_owner(other)
-    assert info.value.code == "owner_subject_conflict"
+    second = await registry.for_owner(other)
+    assert first is not second and len(fake.Kernel.instances) == 2
+    assert registry.owner_dir(other) != registry.owner_dir(Owner.verified(ISS, "alice"))
+    assert len({owner.partition for owner in registry.owners}) == 2
     await registry.stop()
 
 

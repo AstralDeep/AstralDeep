@@ -352,7 +352,7 @@ async def test_each_institution_owner_gets_a_trigger_that_wakes_for_that_owner_o
     fake.Kernel.instances[1].peers = [peer(PHONE, connected=False, pending_out=1)]
     fake.Kernel.instances[1].notify()
     await settle(lambda: targets.asked)
-    assert targets.asked == [("bob", PHONE)]
+    assert targets.asked == [(ni.canonical_owner_id("https://idp.example/realms/a", "bob"), PHONE)]
     await runtime.stop()
     nmc.install(None)
 

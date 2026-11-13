@@ -84,7 +84,7 @@ class InstitutionRuntime:
             kwargs["phi_active"] = self._phi_active
         bridge = MeshChatBridge(
             mesh,
-            owner_id=owner.subject,
+            owner_id=owner.partition,
             history=self._history,
             runner=self._runner,
             calls=self._calls,
@@ -94,9 +94,9 @@ class InstitutionRuntime:
             **kwargs,
         )
         await bridge.start()
-        self.bridges.add(owner.subject, bridge)
+        self.bridges.add(owner.partition, bridge)
         if self._wake is not None:
-            self._wake.attach(mesh, lambda: owner.subject)
+            self._wake.attach(mesh, lambda: owner.partition)
 
     async def stop(self) -> None:
         if self._wake is not None:

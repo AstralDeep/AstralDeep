@@ -94,11 +94,7 @@ An institution node partitions owners by issuer and subject. Each owner has thei
 
 After a move, an owner who signs in through the new realm is a different owner. The node creates a new peer for them and they pair it into their mesh like any other device.
 
-If the new realm keeps the old subject, the node refuses the new owner with `owner_subject_conflict` while the old owner's peer is still served. Stop serving the old owner first:
-
-1. Stop the node.
-2. Remove the old owner's directory under `owners/` in the node data directory.
-3. Start the node and ask the owner to pair again.
+If the new realm keeps the old subject, nothing collides. The node keys the orchestrator's history, bridge and wake targets by the canonical owner id, which includes the issuer, so the same subject under the new issuer is a separate owner with its own peer.
 
 The node does not carry web chat history between the two owners. The mesh log is unaffected because it belongs to the mesh.
 

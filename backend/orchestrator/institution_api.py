@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 
 from orchestrator import institution_runtime, mesh_api, node_mesh
 from orchestrator.institution_meshes import Owner
-from shared import institution_profile, node_identity
+from shared import institution_profile, node_identity, token_verify
 
 institution_router = APIRouter(tags=["Institution"])
 
@@ -63,7 +63,9 @@ async def create_pairing(
         raise HTTPException(403, "institution_owner_required")
     claims = actor.get("claims") or {}
     try:
-        owner = Owner.verified(claims.get("iss"), claims.get("sub"))
+        owner = Owner.verified(claims.get("iss"), claims.get(token_verify.IDP_SUBJECT_CLAIM))
+        if owner.partition != claims.get("sub"):
+            raise node_mesh.NodeMeshError("owner_invalid", 400)
     except node_mesh.NodeMeshError as exc:
         raise HTTPException(exc.status, exc.code) from exc
     runtime = institution_runtime.current()

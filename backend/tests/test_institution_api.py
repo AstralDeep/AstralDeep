@@ -14,15 +14,19 @@ from orchestrator import institution_runtime, mesh_api, node_api, node_mesh, nod
 from orchestrator.institution_meshes import Owner
 from shared import institution_profile as ip
 from shared import node_identity as ni
+from shared.token_verify import with_owner_identity
 from tests import fake_astral_kernel as fake
 from tests.test_node_mesh_chat import History, answering, no_issuers, settle
 
 KEY = ec.derive_private_key(0x1D2C3B4A5968778695A4B3C2D1E0F00F, ec.SECP256R1())
 ISS = "https://idp.example/realms/a"
+OWNER_A = ni.canonical_owner_id(ISS, "alice")
+OWNER_B = ni.canonical_owner_id(ISS, "bob")
 
 
 def owner_actor(subject="alice", issuer=ISS):
-    return {"kind": "owner", "id": subject, "member": None, "claims": {"sub": subject, "iss": issuer}}
+    claims = with_owner_identity({"sub": subject, "iss": issuer}, issuer)
+    return {"kind": "owner", "id": claims["sub"], "member": None, "claims": claims}
 
 
 @pytest.fixture
@@ -179,7 +183,13 @@ async def test_a_delegated_member_cannot_open_an_owners_pairing(env):
     assert response.status_code == 403 and response.json()["detail"] == "institution_owner_required"
 
 
-@pytest.mark.parametrize("claims", [{"sub": "alice"}, {"iss": ISS}, {"sub": " alice", "iss": ISS}])
+@pytest.mark.parametrize("claims", [
+        {"sub": "alice"},
+        {"iss": ISS},
+        {"sub": " alice", "iss": ISS},
+        {"sub": "alice", "iss": ISS},
+        {"sub": "oidc.0.alice", "iss": ISS, "astral_idp_sub": "alice"},
+    ])
 async def test_a_token_without_an_issuer_and_subject_is_refused(env, claims):
     env.actor["claims"] = claims
     institution_runtime.set_current(runtime_for(env))
@@ -194,14 +204,20 @@ async def test_pairing_without_a_running_institution_runtime_is_unavailable(env)
     assert response.status_code == 503
 
 
-async def test_an_owner_subject_seen_under_another_issuer_gets_a_conflict(env):
+async def test_the_same_subject_under_a_new_issuer_is_a_separate_owner_keyed_by_its_canonical_id(env):
     runtime = runtime_for(env)
     institution_runtime.set_current(runtime)
+    other = "https://idp.example/realms/b"
     async with client(env) as http:
-        await http.post("/api/institution/pairing", json={})
-        env.actor.update(owner_actor("alice", "https://idp.example/realms/b"))
-        response = await http.post("/api/institution/pairing", json={})
-    assert response.status_code == 409 and response.json()["detail"] == "owner_subject_conflict"
+        first = await http.post("/api/institution/pairing", json={})
+        env.actor.update(owner_actor("alice", other))
+        second = await http.post("/api/institution/pairing", json={})
+    assert first.status_code == 200 and second.status_code == 200
+    assert first.json()["owner_hash"] != second.json()["owner_hash"]
+    keys = {ni.canonical_owner_id(ISS, "alice"), ni.canonical_owner_id(other, "alice")}
+    assert {owner.partition for owner in runtime.meshes.owners} == keys
+    assert all(runtime.bridges.get(key) is not None for key in keys)
+    assert runtime.bridges.get("alice") is None
     await runtime.stop()
 
 
@@ -217,15 +233,16 @@ async def test_the_runtime_bridge_enforces_the_policy_and_keeps_owners_apart(env
     kernel_a.unattested.add("dev-phone")
     kernel_a.add_request("r1", "c")
     kernel_b.add_request("r2", "c")
-    assert runtime.bridges.get("alice") is not runtime.bridges.get("bob")
-    await runtime.bridges.get("alice").scan()
-    await runtime.bridges.get("bob").scan()
+    assert runtime.bridges.get(OWNER_A) is not runtime.bridges.get(OWNER_B)
+    assert (runtime.bridges.get(OWNER_A)._owner, runtime.bridges.get(OWNER_B)._owner) == (OWNER_A, OWNER_B)
+    await runtime.bridges.get(OWNER_A).scan()
+    await runtime.bridges.get(OWNER_B).scan()
     await settle(lambda: kernel_a.refused and kernel_b.request("r2").state == fake.RequestState.ANSWERED)
     assert kernel_a.refused == [("r1", "institution.attestation_stale")]
     assert kernel_b.request("r2").state == fake.RequestState.ANSWERED and kernel_b.refused == []
     assert first is not second
     await runtime.stop()
-    assert runtime.bridges.get("alice") is None and not kernel_a.network and not kernel_b.network
+    assert runtime.bridges.get(OWNER_A) is None and not kernel_a.network and not kernel_b.network
 
 
 async def test_a_peer_without_request_support_is_not_served(env, monkeypatch):

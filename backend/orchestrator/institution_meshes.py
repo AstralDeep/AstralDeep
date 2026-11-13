@@ -136,8 +136,6 @@ class InstitutionMeshes:
                 return mesh
             if len(self._meshes) >= self._max_owners:
                 raise NodeMeshError("institution_capacity", 429)
-            if any(other.subject == owner.subject for other in self._owners.values()):
-                raise NodeMeshError("owner_subject_conflict", 409)
             directory = self.owner_dir(owner)
             self._record_owner(directory, owner)
             kwargs: Dict[str, Any] = {"data_dir": directory, "settings": self._settings}
