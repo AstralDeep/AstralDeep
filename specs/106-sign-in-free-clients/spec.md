@@ -1,8 +1,8 @@
 # Spec 106: Astral without a sign-in or Docker
 
 **Date:** 2026-11-13. **Status:** design only, not implemented (O7). It starts after spec 105 merges.
-Nothing here is built, tested or deployed. The owner answered twelve open questions on 2026-11-13
-(O8 to O19). **Companions:** [plan.md](plan.md) (phases and exit criteria),
+Nothing here is built, tested or deployed. The owner answered this spec's open questions on 2026-11-13
+(O8 to O22) and deferred one until phase 0 reports. **Companions:** [plan.md](plan.md) (phases and exit criteria),
 [tasks.md](tasks.md), [research.md](research.md) (evidence, with file and source references). **Builds on:**
 [spec 105](../105-decentralized-personal-mesh/spec.md) and its
 [contracts](../105-decentralized-personal-mesh/contracts/README.md).
@@ -21,7 +21,7 @@ anything a user installs.
   repository that owns them. Every reference into spec 105 was checked against its files.
 - A sentence marked **proposed** describes this design. Nothing proposed exists.
 - O is the owner's decision. C is this design's call, with the alternative that lost. The owner has
-  reviewed the calls that O8 to O19 name and no others.
+  reviewed the calls that O8 to O22 name and no others.
 
 | Word | Meaning |
 |---|---|
@@ -79,7 +79,9 @@ same mesh then asks for its own sign-in.
 - An identity service, account system, password store or verified real names.
 - An OAuth authorization server run by Astral, or a multi-user profile with built-in IAM (O4).
 - Syncing tokens between devices (O5).
-- Android and Windows. They are paused until their kernel port (O9).
+- Android and Windows. They are paused until their kernel port (O9). After phase 7 their apps open
+  to a plain "not available yet" screen (O22).
+- A watch with mesh keys of its own. The watch works through its iPhone (O21).
 - `contribute` sharing and the institution deployment recipe. Each is a later spec (O10, O15).
 - MCP enterprise-managed authorization, client credentials and DPoP (section 7.4).
 - Removing Docker from development, CI or institution deployments.
@@ -121,8 +123,11 @@ same mesh then asks for its own sign-in.
 | O17 | An operator of a shared blind service may require a silent platform check. It is off by default. |
 | O18 | LLM Factory authenticates with an API key, so it is a `model` connection with a pasted key. |
 | O19 | The rule changes in section 13 are approved. `AGENTS.md` is edited when implementation starts. |
+| O20 | A pasted key is sealed to every device in the mesh by default. The owner may narrow the list when entering it. |
+| O21 | The watch works through its paired iPhone. It holds no mesh keys and is not on the roster. |
+| O22 | Once their sign-in code is deleted, the paused Android and Windows apps open to a plain "not available yet" screen. |
 
-O8 to O19 are the owner's answers to this spec's first round of questions, given the same day.
+O8 to O22 are the owner's answers to this spec's questions, given the same day.
 
 O1 answers 105 question 3, "a mesh with no identity provider at all", with "in". It also ends a
 contradiction in 105. Section 15 item 1 says a new device "can join unattested with reduced rights"
@@ -148,7 +153,7 @@ line 156). Both go.
 | C12 | The device that executes the call must hold its own credential. If it does not, the effect fails closed and a sign-in prompt is routed to that device. A phone calls remote HTTP servers itself with its own token. | One device holds the token and proxies. It breaks when that device sleeps and it moves a token between devices. |
 | C13 | First connect is an owner approval signed by the presence key. The owner sees the server address, the issuer host that will ask for sign-in, scopes, tools and labels. A model may propose a connection. Only the owner adds one. | Let a model add a server after an approval in chat. The prompt would come from model output, which 105 forbids. |
 | C14 | Discovery and metadata fetches go through the approved egress path (`backend/shared/external_http.py` on a node, the kernel's equivalent on a device). HTTPS only. Private addresses only when the owner adds a local server on purpose. | Each adapter fetches directly. Every adapter would need its own SSRF guard. |
-| C15 | A token obtained by a sign-in stays on its device and never syncs (O5). A pasted API key or model key may sync as a 105 `key.credential` item, sealed to devices of the owner (O11). | One rule for every secret, per device. The first draft said so and the owner chose to sync pasted keys. |
+| C15 | A token obtained by a sign-in stays on its device and never syncs (O5). A pasted API key or model key syncs as a 105 `key.credential` item, sealed to every device of the owner by default, and the owner may narrow the list at entry (O11, O20). | One rule for every secret, per device. The first draft said so and the owner chose to sync pasted keys. |
 | C16 | A Client ID Metadata Document and the app-link association files are static HTTPS files on `astraldeep.github.io` (O16). They join the list of things that stay centralized. | Dynamic client registration only. The MCP revision deprecates it. |
 | C17 | The kernel sets the PHI label on the device from two sources: the connection's flow class (the owner marks a connection as a PHI source and a server hint may only tighten) and the on-device detector (the rules of `backend/personalization/phi_gate.py` as the floor, an on-device model where hardware allows). Uncertain means PHI. No large model on a node is required. | PHI checks that need a large model on a node (105 section 16.2). A phone with no node would have no check. |
 | C18 | Where PHI may go is an owner decision, signed with the presence key into mesh policy as a "PHI destination" entry. The owner's own devices and on-device models qualify by default. Every model endpoint and outside service is off until the owner approves it by name, with a plain warning. The institution signing key from 105 `roster.md` line 162 is removed. | Keep institution-signed approvals. 105 never named an institution that would sign. |
@@ -257,6 +262,11 @@ node's MCP endpoint. The owner mints a narrow ticket for that caller on a device
 key (O13). The ticket names the tools it covers, expires and can be revoked. Phase 1 settles its
 format.
 
+**The watch.** **Today** the watch signs in by itself through a Keycloak device grant
+(`backend/orchestrator/device_login.py`). **Proposed:** the watch is a companion of its paired
+iPhone (O21). It holds no mesh keys, is not on the roster, and shows and speaks what the phone
+sends it. It works only while the phone is reachable.
+
 Phase 7 deletes the Keycloak modules: `web_auth.py`, `device_login.py`, `offline_grant.py`,
 `native_session_custody.py`, `delegation.py` and its RFC 8693 exchange, and the Keycloak parts of
 `auth.py`, `mesh_admission.py` and `token_verify.py` (all in `backend/orchestrator/` or
@@ -333,8 +343,9 @@ credential was refused, expired with no refresh, or the server wants more scope.
 state and the time, never a token, so another device can show "signed in on Mac". Removing a device
 does not cancel its tokens, and the owner revokes them at the service, as 105 section 7.5 says.
 
-A pasted API key or model key is different (O11, C15). It may sync as a 105 `key.credential` item,
-sealed to devices of the owner, and each of those devices then shows `signed in`. LLM Factory uses
+A pasted API key or model key is different (O11, C15). It syncs as a 105 `key.credential` item,
+sealed to every device in the mesh by default. The owner may narrow the list when entering the key
+(O20). Each device it is sealed to then shows `signed in`. LLM Factory uses
 an API key (O18), so the default model endpoint works this way. A token obtained by a sign-in never
 becomes a credential item.
 
@@ -759,13 +770,13 @@ spec 105 merges.
 | Phase | Work | Exit criteria |
 |---|---|---|
 | 0. Spikes | Seatbelt `enforce` runs a bundled Python tool whose only route is a loopback proxy. Test the Virtualization.framework fallback, set the minimum Landlock version, read MXC. Build the Python bundle, measure it, sign and notarize it in the Mac app, test whether the App Sandboxed build can host it. Run the MCP adapter against a fixture OAuth server and test the HTTPS callback on macOS and iOS. Check the A2A reader against a card with each scheme. Publish the metadata document and app-link files on `astraldeep.github.io` (O16) | A written result for each item with the call it supports or reverses. The Seatbelt spike refuses a write outside the workspace and any connection except to the proxy. The HTTPS callback returns to the app on a real Mac and iPhone *(live)* |
-| 1. Identity cut | Roster contract, vectors and reference code at the new version. Kernel local mesh creation, with the nonce, `complete_mesh_creation(id_token)` and `reattest` dropped. In Deep, Plane and Vessel the owner id is the mesh id and a node authenticates by device key and ticket. The seeded test mesh. The owner-minted ticket for callers that are not mesh devices (O13). The `AGENTS.md` wording in section 13 (O19) | A Mac and an iPhone each create a mesh and pair with the network blocked *(live)*. A request with only a bearer JWT is refused. A production boot with a placeholder secret exits 78 and `ASTRAL_ENV` unset means production. No test uses mock auth. A script holding an owner-minted ticket calls a named tool and is refused for any other |
+| 1. Identity cut | Roster contract, vectors and reference code at the new version. Kernel local mesh creation, with the nonce, `complete_mesh_creation(id_token)` and `reattest` dropped. In Deep, Plane and Vessel the owner id is the mesh id and a node authenticates by device key and ticket. The seeded test mesh. The owner-minted ticket for callers that are not mesh devices (O13). The `AGENTS.md` wording in section 13 (O19). The watch as a companion of its iPhone (O21) | A Mac and an iPhone each create a mesh and pair with the network blocked *(live)*. A request with only a bearer JWT is refused. A production boot with a placeholder secret exits 78 and `ASTRAL_ENV` unset means production. No test uses mock auth. A script holding an owner-minted ticket calls a named tool and is refused for any other. The watch holds no credential and reaches nothing except through its iPhone |
 | 2. Connections with MCP over HTTP | The connection event family, its contract and the per-device state events. The keystore layer on Apple platforms and for headless Linux. Adapter 1 on the kernel and the node, on the stateless revision. First-connect card, sign-in, step-up, refresh, failure states. Fixture OAuth and MCP servers | Against the fixture: discovery, required `S256`, `resource`, the `iss` check, step-up, refresh, a refused refresh, the dynamic registration fallback and a refused token passthrough all pass. A changed tool definition is refused until approved again. No token appears in an event, a log line or a model context. The section 7.8 example works end to end against a fixture server: add on the Mac, sign in on the iPhone, let a token expire, sign in again *(live)* |
 | 3. A2A, stdio, key connections | The A2A adapter with schemes, extended card, signed card with pinned signer, unsigned card pinned by hash and origin, and `AUTH_REQUIRED`. The stdio client on the existing macOS Seatbelt path, never on iOS. Key connections for HTTP APIs and models in native secure fields, synced as sealed credential items | A fixture A2A agent signs a device in for each supported scheme. A stdio server runs under enforce mode and reaches no network except through the proxy. A pasted key opens only on the owner's devices it was sealed to and never appears in the clear in an event. A changed unsigned card is refused until approved again |
 | 4. Docker-free node, after Plane on SQLite is enabled in Deep | The bundle, supervision, the executor interface, the macOS and Linux backends, the egress proxy, `astralvessel up`, `check` and `down` without `docker compose`, the conformance suite, the no-Docker CI job, the C32 removals | `astralvessel up` runs on a Mac and a Linux host with no Docker on the path *(live)*. Every backend passes the conformance suite. The no-Docker CI job finishes inside 30 minutes. Untrusted code is refused where no enforcing backend exists |
 | 5. PHI on the device | The detector rules ported with shared vectors, the on-device model where hardware allows, the PHI destination entry, the warning card, the flow input, the PHI group following the owner's devices | The same vectors pass in Python and in the kernel. A failed or missing detector labels content PHI. PHI to a model endpoint is refused until the owner approves it by name. An iPhone with no node labels and gates its own content *(live)* |
 | 6. Sharing | Contacts, the comparison code, `view` grants, revocation with key rotation, the second sync session kind | Two meshes exchange a `view` grant and the contact reads the item live *(live)*. A contact's new device receives the item and a removed one does not. After revocation the contact cannot read new events. A PHI item is refused for a contact that is not a PHI destination. A contact's event is labeled untrusted |
-| 7. Keycloak removal | Delete the modules in 6.4 and the Keycloak parts of the clients | A search for Keycloak in non-test product code finds nothing. Every earlier exit criterion still passes |
+| 7. Keycloak removal | Delete the modules in 6.4 and the Keycloak parts of the clients. Android and Windows open to a "not available yet" screen (O22) | A search for Keycloak in non-test product code finds nothing. Every earlier exit criterion still passes |
 
 ---
 
@@ -785,7 +796,8 @@ spec 105 merges.
 | The phone cannot run stdio servers | iOS has no subprocesses | The phone uses remote HTTP and routes code to a Mac or node |
 | An unsigned A2A card proves nothing about its author | A2A makes signing optional and the owner allowed unsigned cards (O12) | Pinned by hash and HTTPS origin, shown as unsigned, and any change needs approval again |
 | A synced pasted key sits on several devices | The owner allowed pasted keys to sync (O11) | Sealed per device as a 105 credential item. After removing a device the owner rotates the key at the service |
-| Android and Windows cannot reach a node until ported | No Keycloak path and no kernel yet (O9) | Accepted by the owner. The 105 port order stands |
+| Android and Windows cannot reach a node until ported | No Keycloak path and no kernel yet (O9) | Accepted by the owner. The 105 port order stands. The apps say so plainly (O22) |
+| The watch works only while its iPhone is reachable | It holds no mesh keys (O21) | Accepted by the owner. A watch with its own keys is a later decision |
 | The website domain is part of the app's OAuth client identity | Servers know the app by the URL of its metadata document (O16) | Moving the domain means every device signs in again |
 | Redirect hijack on a shared machine | A metadata document cannot stop another local program using the port | The first-connect card shows the redirect host |
 | Removing a device does not cancel its tokens | They sit in that device's keystore | The owner revokes at the service (105 section 7.5) |
@@ -794,15 +806,11 @@ spec 105 merges.
 
 ## 16. Questions for the owner
 
-The owner answered twelve questions on 2026-11-13. They are O8 to O19 in section 4.1. Three remain.
+The owner answered fifteen questions on 2026-11-13. They are O8 to O22 in section 4.1. One remains,
+and the owner deferred it until phase 0 reports.
 
 1. **The Mac sandbox default.** Which backend is the Mac default if Apple removes `sandbox-exec`
-   (C29)? Phase 0 tests the Virtualization.framework fallback and brings a recommendation.
-2. **Where a pasted key goes by default.** Every device in the mesh, or only the devices picked when
-   the key is entered (O11)?
-3. **The watch, and the paused clients.** The watch signs in today through a Keycloak device grant
-   (`backend/orchestrator/device_login.py`), and this spec never says what it does after the cut.
-   Does it pair as a device of the mesh, or work only through its iPhone? And what should the paused
-   Android and Windows apps show once their sign-in code is deleted in phase 7 (O9)?
+   (C29)? Phase 0 builds and measures the Virtualization.framework fallback and brings a
+   recommendation with numbers. Nothing depends on the answer before phase 4.
 
 Every C call that no O row names is still this design's own and unreviewed.

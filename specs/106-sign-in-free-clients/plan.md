@@ -14,15 +14,14 @@ planned and nothing is built.
 1. **Spec 105 is merged.** Every phase starts after it. This plan edits 105's contracts.
 2. **Plane on SQLite is enabled in Deep.** Phase 4 needs it. **Today** Deep still calls
    `create_postgres_runtime` and expects PostgreSQL's registry (research C86 to C88, C199).
-3. **Three questions only the owner can answer** (spec section 16).
+3. **One question only the owner can answer** (spec section 16). The owner deferred it until phase 0
+   reports.
 
 | Question | Who answers | Needed by |
 |---|---|---|
 | 1. Mac sandbox default if Apple removes `sandbox-exec` (C29) | The owner, once phase 0 brings a recommendation | End of phase 0, since phase 4 builds the Mac backend |
-| 2. Where a pasted key goes by default, every device or only those picked at entry (O11) | The owner | Before phase 3, which builds key connections |
-| 3. What the watch does after the cut, and what the paused Android and Windows clients show | The owner | Before phase 7, which deletes their sign-in code |
 
-The spec gives no deadline for any of them. The "needed by" column is this plan's proposal.
+The "needed by" column is this plan's proposal.
 
 ## Order
 
@@ -107,7 +106,8 @@ the `issuers` field of genesis, the `attestation` field of add, and the state fi
 4. Deep: the ticket verifier is the only door. A bearer JWT is refused and mock auth leaves the tree.
    An owner-minted ticket serves callers that are not mesh devices.
 5. Vessel: pairing stops sending an owner token (`astralvessel/node.py`) and the issuer prompt and
-   `KEYCLOAK_*` exports go. Projection: create a mesh and pair a device with no sign-in.
+   `KEYCLOAK_*` exports go. Projection: create a mesh and pair a device with no sign-in. The watch becomes a companion
+   of its iPhone and holds no mesh keys (O21).
 6. Edit `AGENTS.md` with the section 13 wording (O19).
 
 **Tests.** Golden path with the network blocked. Edge cases: two meshes on one machine, recovery-key
@@ -121,6 +121,7 @@ tool A used on tool B. Failures: a placeholder secret in production, a seeded te
 - A production boot with a placeholder secret exits 78 and `ASTRAL_ENV` unset means production.
 - No test uses mock auth.
 - A script holding an owner-minted ticket calls a named tool and is refused for any other.
+- The watch holds no credential and reaches nothing except through its iPhone.
 
 **Live.** Create and pair on a real Mac and iPhone with the network off.
 **Open items.** The ticket's fields and lifetime are for this phase to settle (6.4). The spec does not
@@ -171,7 +172,7 @@ and a table brings the `SCHEMA_REVISION` rule.
 ## Phase 3: A2A, stdio and key connections
 
 **Goal.** The other connection kinds work, each with the auth its server declares.
-**Depends on.** Phase 2 and the answer to question 2. **Repositories.** AstralKernel, AstralDeep,
+**Depends on.** Phase 2. **Repositories.** AstralKernel, AstralDeep,
 AstralProjection.
 **Contracts.** The connection contract revised for `a2a`, `mcp-stdio`, `http-api` and `model` and the
 card pin. `keys.md` revised so `key.credential` carries pasted keys only (C15).
@@ -183,7 +184,8 @@ card pin. `keys.md` revised so `key.credential` carries pasted keys only (C15).
    and `TASK_STATE_AUTH_REQUIRED` as a sign-in prompt.
 3. The stdio client. **Today** none exists (research B87). It runs on the existing macOS Seatbelt path in
    enforce mode, takes credentials from the keystore by environment and never runs on iOS.
-4. Key connections in native secure fields, synced as sealed credential items. LLM Factory is a `model`
+4. Key connections in native secure fields, synced as sealed credential items to every device by
+   default, with the list narrowable at entry (O20). LLM Factory is a `model`
    connection with a pasted key (O18).
 
 **Tests.** Golden path per scheme. Edge cases: an extended card, several requirements. Denials: a
@@ -325,11 +327,9 @@ waits for the rest so the final rerun covers every exit criterion.
 - Every earlier exit criterion still passes.
 
 **Live.** A fresh install on a Mac and an iPhone creates a mesh and connects the fixture server.
-**Open item.** **Today** the watch signs in through `backend/orchestrator/device_login.py`, a
-Keycloak device grant. The spec does not say what the watch does after the cut, and O9 pauses Android
-and Windows without saying what their apps show. Spec question 3 asks the owner (TO.5). Until the
-owner answers, this phase deletes the Keycloak code on every client and leaves those three with a
-plain "not available yet" screen.
+**Decided.** The watch has been a companion of its iPhone since phase 1 (O21), so
+`backend/orchestrator/device_login.py` goes with the rest. Android and Windows lose their sign-in
+code and open to a plain "not available yet" screen (O22).
 
 ## Cross-repository landing order
 
@@ -377,6 +377,8 @@ uses it.
 ## What this plan does not cover
 
 - **Android and Windows.** Paused until their kernel port (O9). No pairing-and-signing library is built.
+  After phase 7 their apps show "not available yet" (O22).
+- **A watch with its own mesh keys.** The watch works through its iPhone (O21).
 - **`contribute` sharing.** A later spec (O10). Phase 6 builds `view` only.
 - **The institution deployment recipe.** A later spec (O15). This plan ends with the Keycloak removal
   and the owner's UK example runs against a fixture server (C33).

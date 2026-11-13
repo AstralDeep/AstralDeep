@@ -19,10 +19,8 @@ is AstralProjection, `Kernel` is AstralKernel, `Site` is `astraldeep.github.io`.
 | ID | Task | Needed by |
 |---|---|---|
 | TO.1 | Answer question 1, the Mac sandbox default if `sandbox-exec` goes, after phase 0 brings evidence | End of phase 0 |
-| TO.2 | Answer question 2, where a pasted key goes by default | Before phase 3 |
 | TO.3 | Review the C calls that no O row names (the spec says they are unreviewed) | Before phase 1 |
 | TO.4 | Approve publishing the metadata document and app-link files on `astraldeep.github.io` | T0.13, T2.15 |
-| TO.5 | Answer question 3, what the watch does after the cut and what the paused Android and Windows apps show | Before phase 7 |
 | TO.6 | Complete every live sign-in and key entry, and every Touch ID prompt, during verification | Each *(live)* task |
 | TO.7 | Approve the PHI accuracy measure proposed in T5.3 | Phase 5 |
 
@@ -66,6 +64,7 @@ is AstralProjection, `Kernel` is AstralKernel, `Site` is `astraldeep.github.io`.
 | T1.16 | Projection | Create a mesh and pair a device with no sign-in on macOS and iOS | `apple-clients/AstralApp/AstralApp/Mesh/` | Both platforms create and pair with the network blocked *(live)* |
 | T1.17 | Deep | Edit `AGENTS.md` with the spec section 13 wording | `AGENTS.md` | Diff matches the section 13 rows. Owner reviews |
 | T1.18 | Deep | Gate-level checks for phase 1 through the real dispatch path | `backend/tests/`, files decided in this task | Denial tests pass. Changed Python lines at 90% coverage or more |
+| T1.19 | Projection | The watch becomes a companion of its iPhone (O21). Remove its device-grant sign-in and relay through the phone | The watch target under `apple-clients/`, files decided in this task | The watch holds no credential and reaches nothing except through its iPhone |
 
 ## Phase 2: connections with MCP over HTTP
 
@@ -103,7 +102,7 @@ is AstralProjection, `Kernel` is AstralKernel, `Site` is `astraldeep.github.io`.
 | T3.6 | Kernel | `TASK_STATE_AUTH_REQUIRED` becomes a device sign-in prompt | Same crate | The transition asks for credentials and authorizes nothing |
 | T3.7 | Deep | Stdio client on the node. Credentials by environment from the keystore. Never on iOS | New module, decided in this task. **Today** none exists | A fixture stdio server runs and gets only the credential it needs |
 | T3.8 | Projection | Run stdio servers under Seatbelt `enforce` | `apple-clients/AstralCore/.../Computer/` | The server reaches no network except through the proxy |
-| T3.9 | Projection | Native secure fields for API keys and model keys, synced as sealed items | `apple-clients/AstralApp/AstralApp/Mesh/` | A key opens only on devices it was sealed to. Never clear in an event |
+| T3.9 | Projection | Native secure fields for API keys and model keys, sealed to every device by default with the list narrowable at entry (O20) | `apple-clients/AstralApp/AstralApp/Mesh/` | A key opens only on devices it was sealed to. Never clear in an event |
 | T3.10 | Deep | LLM Factory as a `model` connection with a pasted key | `backend/llm_config/` | Default model call works from a pasted key in a fixture |
 | T3.11 | Deep | Fixture A2A agents in CI | `backend/tests/` | Each scheme runs with no live network |
 | T3.12 | Projection | Stdio on the Mac and a pasted key on the iPhone, shown on devices | Verification report | Recorded *(live)* |
@@ -169,4 +168,5 @@ is AstralProjection, `Kernel` is AstralKernel, `Site` is `astraldeep.github.io`.
 | T7.3 | Projection | Delete Apple client sign-in screens and Keycloak settings | `apple-clients/AstralCore/.../Configuration.swift`, `Auth/` | `swift test` and unsigned `xcodebuild` pass |
 | T7.4 | Vessel, Kernel | Remove remaining Keycloak mentions and `KEYCLOAK_*` names | `astralvessel/`, kernel docs and README | Search finds nothing |
 | T7.5 | Deep | CI check that searches non-test product code for Keycloak | `.github/workflows/` and `scripts/`, decided in this task | Check finds nothing and fails when one is added |
-| T7.6 | Deep | Rerun every earlier exit criterion on macOS and iOS | Verification report | All pass. Live ones shown again *(live)* |
+| T7.6 | Projection | Delete the Android and Windows sign-in code. Both apps open to a plain "not available yet" screen (O22) | `android-client/`, `windows-client/` | Both apps build and show the screen. Their Keycloak code is gone |
+| T7.7 | Deep | Rerun every earlier exit criterion on macOS and iOS | Verification report | All pass. Live ones shown again *(live)* |
