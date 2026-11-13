@@ -34,7 +34,7 @@ BYO_LEGACY_RUNTIME_DISPOSITIONS = MappingProxyType(
 )
 BYO_RUNTIME_LOCK_ARTIFACT = "components/AstralProjection/windows-client/requirements-release.lock.txt"
 BYO_RUNTIME_LOCK_SHA256 = (
-    "cd04dd23361ee769f57ea1d046b0b5e10aa50bb41ebe65c4683d7518c9e9a079"
+    "bcbc222b7f306f501c80bde5f6347a1b37efadcb4c911cfac32637b47b435c0d"
 )
 
 BYO_BUNDLE_FILENAMES = GENERATED_AGENT_BUNDLE_CONTRACT.file_names

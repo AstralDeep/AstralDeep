@@ -54,6 +54,13 @@ def locked_packages(path: Path) -> dict[str, str]:
     except OSError as exc:
         raise CandidateManifestError("release lock is unreadable") from exc
     for line in lines:
+        local = re.fullmatch(r"# local-presentation: (astralprims|astral-rote)==([0-9]+(?:\.[0-9]+){1,3})", line)
+        if local is not None:
+            name, version = local.groups()
+            if name in packages:
+                raise CandidateManifestError(f"release lock repeats package {name}")
+            packages[name] = version
+            continue
         if '; sys_platform == "darwin"' in line:
             # Lets a macOS host dry-resolve this Windows-only lock
             continue

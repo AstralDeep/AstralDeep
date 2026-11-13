@@ -429,11 +429,15 @@ def test_windows_candidate_build_never_installs_the_test_lock() -> None:
     )
     for job_name in ("windows-packaged-smoke", "windows-source-suite", "windows-producer"):
         job = _workflow_job(readiness, job_name)
-        runtime = job.index(
-            "python -m pip install --require-hashes -r "
-            "components/AstralProjection/windows-client/requirements-release.lock.txt"
-        )
+        runtime = job.index("uses: ./components/AstralProjection/.github/actions/presentation")
+        assert "projection-root: components/AstralProjection" in job
         assert runtime < job.index(LOCK_INSTALL) < job.index("python -m pytest")
+
+    assert workflow.count("uses: ./components/AstralProjection/.github/actions/presentation") == 2
+    for environment in ("a", "b"):
+        assert f"python: components/AstralProjection/windows-client/.venv-release-{environment}/Scripts/python.exe" in workflow
+        assert f"output: build/presentation-{environment}" in workflow
+    assert "ASTRAL_PRESENTATION_OUTPUT: build/presentation-a" in workflow
 
 
 @bridge_parked
@@ -489,14 +493,9 @@ def test_ci_only_python_manifest_cannot_enter_projection_product_artifacts() -> 
 
 def test_windows_release_installs_only_hash_locked_build_and_signing_deps() -> None:
     workflow = WINDOWS_RELEASE_BRIDGE.read_text(encoding="utf-8")
-    installs = [
-        line.strip() for line in workflow.splitlines() if "pip install" in line
-    ]
-    assert installs, "the release workflow must install its build/signing deps"
-    for line in installs:
-        assert "--require-hashes" in line, f"unhashed pip install: {line}"
-        assert (
-            "components/AstralProjection/windows-client/requirements-release.lock.txt" in line
-        ), f"install is not from the release lock: {line}"
+    assert "uses: ./components/AstralProjection/.github/actions/presentation" in workflow
+    assert "projection-root: components/AstralProjection" in workflow
+    assert "external-lock: windows-client/requirements-release.lock.txt" in workflow
+    assert "pip install" not in workflow
     assert "pip install --upgrade" not in workflow
     assert "sigstore>=" not in workflow

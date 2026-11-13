@@ -131,6 +131,8 @@ Client gates:
 
 When driving a running iOS Simulator app, prefer available simulator MCP tools, inspect screenshots or accessibility trees, and use semantic labels for interaction. Keep `xcodebuild` for builds/tests; drive the macOS app directly because it is not a simulator. Apple sign-in uses real PKCE and must be completed by the user, without a development-token bypass.
 
+When replacing an Apple localtest app that holds existing mesh keys, retain its bundle identifier and stable developer signing identity, use Xcode-generated entitlements, and take a stopped data backup first. Use Projection's localtest build script and verify the installed app's actual path and signature. Ad-hoc re-signing or post-build rebranding can invalidate Keychain access across rebuilds; the user must handle any password or presence prompt themselves.
+
 Tests are necessary, not sufficient. Exercise changed UI behavior against the live backend on every affected client/form factor. Verify authorization and security changes through the real dispatch path, including denial/failure cases. If an unrelated baseline failure exists, demonstrate and document the baseline rather than hiding it or weakening a gate.
 
 Release-evidence collection, normalization, and parsing normally run locally before push and
