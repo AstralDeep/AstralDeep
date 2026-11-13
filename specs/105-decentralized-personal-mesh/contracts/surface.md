@@ -24,11 +24,11 @@ A component id matches `^[a-z][a-z0-9_.-]{0,63}$`. A **component** is an object 
 | `type` | A name in the vocabulary |
 | `props` | An object of JSON values with no floats |
 | `children` | Array of component ids |
-| `prov` | `model`, `tool` or `host` |
+| `prov` | `model`, `tool`, `agent` or `host` |
 
 The tree rules: every child exists, every component has at most one parent, the root has none, no cycles, depth at most 32, and every component is reachable from the root. Otherwise `surface.malformed`.
 
-The model supplies the document. The kernel sets `prov` to say who produced each node: a model, a tool result or the host. A document that a model produced and that claims `host` is refused with `surface.false_provenance`. The host is the only producer of consent prompts, so the vocabulary offered to the model has no consent component. A type outside the vocabulary raises `surface.unknown_type`.
+The model supplies the document. The kernel sets `prov` to say who produced each node: a model, a tool result, an outside agent or the host. A document that a model produced and that claims `host` is refused with `surface.false_provenance`, and so is a `prov` outside the four values. The host is the only producer of consent prompts, so the vocabulary offered to the model has no consent component. A type outside the vocabulary raises `surface.unknown_type`.
 
 ## 2. Properties
 
@@ -53,7 +53,7 @@ A surface cannot grant itself more than the turn that created it had. The valida
 
 ## 4. Patches
 
-`ui.surface_put` has body `{"document": <document>, "turn": <id>}`. `turn` is the id of the `chat.turn_start` event of the turn that made the surface. The fold ignores it and section 6 uses it. `ui.patch` has body `{"surface": <id>, "ops": [...]}`. An op is one of:
+`ui.surface_put` has body `{"document": <document>, "turn": <id>}` and, for a surface imported from A2UI, a third field `source` (section 8). `turn` is the id of the `chat.turn_start` event of the turn that made the surface, or null for a surface imported outside a turn. The fold ignores it and section 6 uses it. `ui.patch` has body `{"surface": <id>, "ops": [...]}`. An op is one of:
 
 | Op | Fields | Effect |
 |---|---|---|
@@ -100,6 +100,36 @@ The turn rules of section 3 are taken from the executing device: `tools` is what
 
 The event named must be a `chat.tool_result` that the peer holds (`surface.bind_unknown_event`, `surface.bind_not_tool_result`). The path is a JSON pointer into the event's body, with `~1` for a slash and `~0` for a tilde. The empty path is the whole body. A path that does not resolve raises `surface.bind_path`. The value must be a string, boolean, integer or null (`surface.bind_not_scalar`). Numbers are shown exactly as returned.
 
-## 8. Errors
+## 8. A2UI interchange
+
+A2UI 1.0 is the interchange format for surfaces that come from outside the mesh or go to an outside renderer. The kernel translates in both directions. The frozen schemas it checks against are the ones Primitives pins (`agent_to_renderer.json`, `common_types.json`, the basic catalog and the Astral catalog).
+
+**Import.** The input is a list of A2UI messages, or one message, from a tool result or from another agent. It is untrusted. The steps run in this order and the first failure refuses the whole document.
+
+1. The size is at most 262144 bytes and the list has at most 64 messages (`a2ui.too_large`, `a2ui.too_many_messages`). The text must be JSON and a message or a list of messages (`a2ui.malformed`).
+2. The first message is `createSurface` (`a2ui.no_create`). Its `catalogId` is the Astral catalog `urn:astralprims:a2ui:catalog:1` or the basic catalog `https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json` (`a2ui.unknown_catalog`).
+3. Every message validates against the frozen protocol schema and that catalog (`a2ui.schema`). A component outside the catalog fails here.
+4. The messages are applied in order and the tree is built from component `root`. A cycle, a tree deeper than 16, more than 500 components or an id that is not defined is `a2ui.invalid`.
+5. Components map to primitives. A catalog component with no primitive, a component with invalid properties, a dynamic value that cannot be resolved, a template child and a local function action are replaced by muted text or dropped, and each adds a notice. Properties named `url`, `src`, `css`, `class`, `capability`, `provenance`, `attributes`, `id` and `type` are dropped.
+6. A `button` or an `input` becomes muted text with its label (`a2ui.control_dropped`). No control from outside can name a capability, so no document ever causes a tool call.
+7. Text that holds a link (by the link check of the generation profile) is replaced by a fixed sentence (`a2ui.link_removed`).
+8. The tree goes through the same generation rules as a model's surface: the strict profile, handles that must name a public https link or a small image of this chat, and bindings that must resolve to a successful tool result of this chat. A failure is `a2ui.refused` and names the first problems. The turn has no tools, so no capability can exist.
+9. Every component gets `prov` `tool` when the document came from a tool result and `agent` when it came from another agent. The document is checked as a whole (section 1).
+
+The kernel writes a `ui.surface_put` with integrity `untrusted`, the confidentiality of the chat (at least `private`) and a body with a third field.
+
+| Field | Rule |
+|---|---|
+| `source` | An object with `origin` (`tool` or `agent`), `name` (the tool or agent, 1 to 128 characters without control characters), `format` (`a2ui/1.0`), `catalog` (the catalog id) and `surface` (the A2UI surface id) |
+
+Notices are not errors. Each has a code and a detail. The codes are `a2ui.component_unsupported`, `a2ui.component_invalid`, `a2ui.property_dropped`, `a2ui.value_dropped`, `a2ui.template_dropped`, `a2ui.action_dropped`, `a2ui.binding_flattened`, `a2ui.control_dropped` and `a2ui.link_removed`. At most 100 are kept.
+
+**Export.** A surface document that validates (section 1) becomes A2UI messages for the Astral catalog or the basic catalog. A `createSurface` and an `updateComponents` message carry the tree. Capabilities are never exported. A control names only its capability handle, which means nothing to an outside renderer, and tools, arguments and uses stay on the device. A node with `prov` `agent` is exported as external. The A2UI surface id is `s_` followed by 32 hex digits of the surface id, and a caller may pass its own that matches `^[A-Za-z_][A-Za-z0-9_]*$` (`a2ui.bad_surface_id`).
+
+The reference module has no A2UI translator. The translation is pinned by the Primitives package and its conformance fixtures, and the kernel's tests run both. The `prov` value `agent` is in the vectors (`surface_validate`).
+
+## 9. Errors
 
 `surface.malformed`, `surface.unknown_type`, `surface.false_provenance`, `surface.raw_url`, `surface.incomplete`, `surface.unknown_capability`, `surface.capability_exceeds_turn`, `surface.patch_invalid`, `surface.unknown_component`, `surface.action_args`, `surface.capability_exhausted`, `surface.bind_unknown_event`, `surface.bind_not_tool_result`, `surface.bind_path`, `surface.bind_not_scalar`, `surface.unknown_surface`, `surface.no_origin_turn`.
+
+The codes of section 8 are `a2ui.malformed`, `a2ui.too_large`, `a2ui.too_many_messages`, `a2ui.no_create`, `a2ui.unknown_catalog`, `a2ui.schema`, `a2ui.invalid`, `a2ui.refused` and `a2ui.bad_surface_id`. A kernel produces them and the reference does not.

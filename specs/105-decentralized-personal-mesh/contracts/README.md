@@ -15,7 +15,7 @@ The formats are the ones fixed in [../tasks.md](../tasks.md). Where a format nee
 | [policy.md](policy.md) | `astral.policy/v1` | Budget policy, consent for widening, narrowing-only merge, input to LETS | `policy.json`, `transfer.json` | `policy.py`, `consent.py`, `transfer.py` |
 | [ticket.md](ticket.md) | `astral.ticket/v1` | Biscuit capability chain, action digest, consent, receipt binding, labels as facts | `ticket.json` | `ticket.py`, `consent.py` |
 | [labels.md](labels.md) | `astral.labels/v1` | Integrity and confidentiality axes, inheritance, quarantined readers, flow rules, gate order | `labels.json` | `labels.py` |
-| [surface.md](surface.md) | `astral.surface/v1` | Surface documents, patches, action events and capabilities, value bindings | `surface.json` | `surface.py` |
+| [surface.md](surface.md) | `astral.surface/v1` | Surface documents, patches, action events and capabilities, value bindings, A2UI import and export | `surface.json` | `surface.py` |
 | [runs.md](runs.md) | `astral.runs/v1` | Run ids, lease, goal and schedule bodies, the lease fold (one executor, handoff, takeover with the owner's presence consent, contested runs), the state fold, run start checks, schedule arithmetic, the pre-check, the judge's fixed answer | `runs.json` | `runs.py` |
 | [requests.md](requests.md) | `astral.requests/v1` | Requests addressed to one member, the tool call and ticket a request carries, claim, refusal and cancel, and the fold that gives each request one state | `requests.json` | `requests.py` |
 | [tools.md](tools.md) | `astral.tools/v1` | The `tools.catalog` event with the tools a member serves, the definition hash, the fold that picks each current member's catalog, and how a changed definition is a new tool | `tools.json` | `tools.py` |

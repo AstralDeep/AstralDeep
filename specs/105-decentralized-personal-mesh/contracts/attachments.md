@@ -85,7 +85,7 @@ Chunks are never part of the eager set of a sync session. Eager sync (`sync.md` 
 4. It checks every received chunk before it keeps it (section 6) and drops a chunk that fails.
 5. When every chunk is held, it opens them in order and checks the whole (section 6).
 
-A chunk that arrives for a hash the device did not ask for, or that no attachment event of this device names, is refused with `attachment.chunk_unreferenced`. A device keeps asking for what is still missing at its next session with another peer. A fetch that no peer can satisfy ends with `attachment.chunks_unavailable` and names how many chunks are still missing. It is never reported as done.
+A chunk that arrives for a hash no attachment event of this device names is dropped like any body nobody asked for. A device keeps asking for what is still missing at its next session with another peer. A fetch that no peer can satisfy ends with `attachment.chunks_unavailable` and names how many chunks are still missing. It is never reported as done.
 
 A device holds at most one chunk and the assembled content in memory while it opens an attachment. The content is at most 16777216 bytes.
 
@@ -118,9 +118,9 @@ A receiver that holds no key yet checks steps 1 to 3 and keeps the chunk. After 
 
 ## 9. Errors
 
-`attachment.malformed`, `attachment.bad_name`, `attachment.mime_not_allowed`, `attachment.empty`, `attachment.too_large`, `attachment.chunk_count`, `attachment.label`, `attachment.too_many`, `attachment.chunk_missing`, `attachment.chunk_hash`, `attachment.chunk_size`, `attachment.chunk_decrypt`, `attachment.content_mismatch`, `attachment.chunk_unreferenced`, `attachment.unavailable`, `attachment.chunks_unavailable`.
+`attachment.malformed`, `attachment.bad_name`, `attachment.mime_not_allowed`, `attachment.empty`, `attachment.too_large`, `attachment.chunk_count`, `attachment.label`, `attachment.too_many`, `attachment.chunk_missing`, `attachment.chunk_hash`, `attachment.chunk_size`, `attachment.chunk_decrypt`, `attachment.content_mismatch`, `attachment.unavailable`, `attachment.chunks_unavailable`.
 
-The reference implements the body checks, sealing, chunk and whole-content verification, and the rule for which peers receive a chunk. The last three codes are decisions the kernel makes from its store and its peers. They are not computed in the reference.
+The reference implements the body checks, sealing, chunk and whole-content verification, and the rule for which peers receive a chunk. The last two codes are decisions the kernel makes from its store and its peers. They are not computed in the reference.
 
 ## 10. Operations in the vectors
 

@@ -4102,6 +4102,25 @@ def build_surface() -> Suite:
         ),
     )
     val(
+        "agent-provenance-allowed",
+        surface_doc(
+            components={
+                **doc["components"],
+                "title": comp("title", "text", {"text": "x"}, prov="agent"),
+            }
+        ),
+    )
+    val(
+        "unknown-provenance-refused",
+        surface_doc(
+            components={
+                **doc["components"],
+                "title": comp("title", "text", {"text": "x"}, prov="robot"),
+            }
+        ),
+        "surface.false_provenance",
+    )
+    val(
         "action-names-an-unknown-capability",
         mutated(
             ["components", "add", "props"],

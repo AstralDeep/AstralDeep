@@ -11,7 +11,7 @@ from typing import Any
 from .errors import MeshError
 
 ID = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
-PROVENANCE = ("model", "tool", "host")
+PROVENANCE = ("model", "tool", "host", "agent")
 MAX_NODES = 512
 MAX_DEPTH = 32
 URL_PROPS = ("href", "src")
