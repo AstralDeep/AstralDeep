@@ -3,7 +3,7 @@
   "source": {
     "repository": "https://github.com/AstralDeep/AstralKernel.git",
     "branch": "k/integration",
-    "commit": "d02e4ea15098016855dc99a579590a21c6e65b12"
+    "commit": "c015c8adfaa4360847f3f6e54106814ba2726d9a"
   },
   "python": {
     "distribution": "astral-kernel",
@@ -14,7 +14,7 @@
     "linux-aarch64": {
       "wheel": {
         "file": "astral_kernel-0.1.0-py3-none-manylinux_2_36_aarch64.whl",
-        "sha256": "3c42f450b0e155dbca5c554494c3524034241a55c51b0446d25dbd790d390ef1"
+        "sha256": "63bad8940b268ce4c805e4fd3b831bb89c18700e49c1d654eabde6d89fe77b4f"
       },
       "mailbox": {
         "file": "astral-mailbox-linux-aarch64",

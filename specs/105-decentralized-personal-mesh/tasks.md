@@ -1,6 +1,6 @@
 # Tasks for spec 105
 
-**Date:** 2026-11-13. **Status:** resumed by the owner after the third stop; implementation and qualification remain in progress. No final runtime SHA has been selected and no complete final same-SHA gate set exists. Current work uses Deep `feat/105-integration`, Kernel `k/integration`, Projection `feat/105-mesh-final` and Vessel `feat/105-vessel-final`. The third-stop anchors and subsequent evidence are in [local-integration-handoff.md](local-integration-handoff.md). Prior product branches were pushed except the Kernel; new resume commits are local. No default-branch merge, deployment or release is claimed. Read [spec.md](spec.md) and [plan.md](plan.md) for intent.
+**Date:** 2026-11-13. **Status:** resumed by the owner after the third stop; implementation and qualification remain in progress. The final candidate SHA is recorded outside the candidate tree at clean freeze; no complete final same-SHA gate set exists yet. Current work uses Deep `feat/105-integration`, Kernel `k/integration`, Projection `feat/105-mesh-final` and Vessel `feat/105-vessel-final`. The third-stop anchors and subsequent evidence are in [local-integration-handoff.md](local-integration-handoff.md). Prior product branches were pushed except the Kernel; new resume commits are local. No default-branch merge, deployment or release is claimed. Read [spec.md](spec.md) and [plan.md](plan.md) for intent.
 
 ## Current qualification queue
 
@@ -11,10 +11,11 @@ This is a local checkpoint, not a completion checklist for an already qualified 
 - [x] Repair stream-test completion synchronization and the reviewed local-wheel voice guards without production-code changes or weaker gates; retain red/green proof and the original failing full attempts.
 - [x] Retain Projection `8abce633` Python/NodePack changed-line result 616/628 (98.09%) and 230 focused passes/five skips/one active Apple-provenance deselection. The deselected guard still requires final qualification.
 - [x] Verify all 13 actual installed model files (1,419,703,438 bytes) at immutable revision `65619d48c5e4bc1552db24e07bc4a2ff2aa3cf49`; retain offline-package/parity and optimized network-denied diagnostic results separately from live voice.
-- [ ] Finish standalone remote MCP through Kernel/FFI/native UI, with durable registry, sealed credentials, bounded SSRF controls, revision-bound authority and denial tests; qualify and adopt exact source/artifact pins together.
-- [ ] Regenerate bindings and test the optimized Mac app and connected iPhone 13 Pro: bounded final ASR completion, speech buffering/Stop Voice, the A15 text fallback, real offline voice and interruption measurements. Corrected provisioning does not establish installation or device qualification; MCP bindings currently block installation. Hardware work is requested and active, with no owner deferral.
+- [x] Qualify standalone MCP Kernel/FFI at c015c8a: 1,182 workspace tests and strict Clippy; sealed registry, bounded egress, endpoint/revision/hash-bound approval/turn/reopen/action/retry authority and denials. All tools are outside effects despite read-only hints. Native manager source is implemented; final exact-artifact native gates and actual iPhone internet/no-peer turn remain required.
+- [ ] Regenerate bindings and test the optimized Mac app and connected iPhone 13 Pro: bounded final ASR completion, speech buffering/Stop Voice, the A15 text fallback, real offline voice and interruption measurements. Corrected provisioning does not establish installation or device qualification; Projection 730d82e source-side voice checks executed 115 tests with one optional skip and zero failures; final rebuilt installation and real owner input remain unqualified. Hardware work is requested and active, with no owner deferral.
 - [ ] Finish normal owner-authorized mesh push registration/access custody, then demonstrate physical background APNs wake and sync. Warm-handler `7339507` has 96 focused iOS passes; actual registration/delivery remains unqualified.
-- [ ] Exercise one stored native surface and an imported A2UI surface on both clients; finish native node catalog/provider custody and regenerate the pack after final MCP adoption.
+- [x] Exercise the same actual stored imported A2UI event on Mac and iPhone simulator: Projection 2916899, Mac 39 unit + one UI and iPhone five unit + one UI pass; accessible Untrusted label, link removed, outside control inert. Final combined native gates/owner-device sync remain separate.
+- [ ] Finish native node catalog/provider custody and regenerate the pack after final MCP/Deep adoption; keep post-freeze NodePack metadata separate to avoid a reciprocal gitlink cycle.
 - [ ] Add the bounded composed-host conformance consumers for existing shared vectors (3.11); no production changes were made by the read-only gap assessment.
 - [ ] Freeze one clean final Deep SHA after all code/pins/docs are integrated. Run `tests_2`, `tests_1`, `modules` and `persistent_agents` with the corresponding rebuilt image and correct nonroot scratch posture. Revisit the unexplained full-group work-runtime model-call-count failure; focused passes do not explain it.
 - [ ] Merge only passing same-SHA coverage; run strict 90% changed-line gates against both the resume base `ced61ce087ca8b1a1d1e4339e521ef2c8f59718a` and full-feature base `a3eb724aa15fcdcb2c590b859c5f5104c41a4daa`, with backend/tooling/voice-worker reports and no changed-code exclusions.
@@ -57,12 +58,12 @@ Resolve active lane checkouts with `git worktree list`; the primary checkout can
 | Repository | Integration lane / source | Adoption state |
 |---|---|---|
 | AstralDeep | `feat/105-integration`, named `final` worktree; inspected checkpoint `13b96dbb` | Final integration and same-SHA qualification pending. |
-| AstralKernel | `k/integration`; adopted source `components/AstralKernel` at `d02e4ea` | Notes test `e2db832b` is local; final MCP successor/artifacts pending. No Kernel push. |
-| AstralProjection | `feat/105-mesh-final`; qualified checkpoint `8abce633` | Deep checkpoint still pins `components/AstralProjection` at `5abd809`; later Apple/MCP revision must be qualified before adoption. |
+| AstralKernel | `k/integration`; adopted source `components/AstralKernel` at `c015c8a` | Notes provenance and MCP authority tests included; exact replacement artifact qualification is separate. No Kernel push. |
+| AstralProjection | `feat/105-mesh-final`; adopted checkpoint `228a58fb` | Contains 730d82e voice/MCP/surface source and NodePack Kernel pin; final combined native/physical gates remain pending. |
 | AstralPlane | `components/AstralPlane`, `f8f2a637` | SQLite/PostgreSQL component adopted. |
 | AstralPrimitives | `components/AstralPrimitives`, `f4314c8` (0.13.0) | Adopted local wheel; separate release train. |
 | LETS | `components/LETS`, `13213061` (1.1.2) | Adopted node component; Windows' reviewed client closure is separate. |
-| AstralVessel | `feat/105-vessel-final`, `76bb18a8` checkpoint | Final distribution qualification remains separate. |
+| AstralVessel | `feat/105-vessel-final`, `76bb18a8` checkpoint | Exact c015c8a wheel/source adopted; final distribution qualification and candidate evidence remain separate. |
 
 Rust: put `/opt/homebrew/opt/rustup/bin` first on `PATH`. Homebrew's own `rustc` has no iOS
 standard library.

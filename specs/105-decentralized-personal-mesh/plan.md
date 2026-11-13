@@ -1,6 +1,6 @@
 # Plan for spec 105
 
-**Updated:** 2026-11-13. **Status:** implementation and qualification resumed; final MCP/native bindings, physical-device checks and a complete same-SHA gate set remain pending. See [qualification.md](qualification.md) for criterion-level evidence and [local-integration-handoff.md](local-integration-handoff.md) for current source/pin inventory, commands and retained reports. This is a program plan: phases,
+**Updated:** 2026-11-13. **Status:** implementation and qualification resumed; final artifact adoption/native gates, physical-device checks and a complete same-SHA gate set remain pending. See [qualification.md](qualification.md) for criterion-level evidence and [local-integration-handoff.md](local-integration-handoff.md) for current source/pin inventory, commands and retained reports. This is a program plan: phases,
 the work in each repository, and how to tell a phase is finished. A task-level plan for each phase is
 written when that phase is approved, not before.
 
@@ -8,13 +8,13 @@ Read [spec.md](spec.md) first. Section numbers below refer to it.
 
 ## Current qualification checkpoint
 
-Local evidence currently supports 43 automated criteria, eight partial criteria, six live-only criteria and the owner's section 17 approval. This does not complete a phase: final exact-source CI and the required live demonstrations remain outstanding. The production compaction-note test at Kernel test-only `e2db832b` closes 3.9 for persisted Untrusted notes across log reopen, without claiming an unspecified general memory system.
+Local evidence currently supports 45 automated criteria, six partial criteria, six live-only criteria and the owner's section 17 approval. This does not complete a phase: final exact-source CI and the required live demonstrations remain outstanding. The production compaction-note test at Kernel `c015c8a` (including test-only `e2db832b`) closes 3.9 for persisted Untrusted notes across log reopen, without claiming an unspecified general memory system.
 
 The actual `13b96dbb`/`d02e4ea` Mac pack has packaging, Swift installation and owner-authorized bundled-tool proof. Native catalog/provider custody and pack regeneration at the final MCP pin remain separate checks. Projection's `8abce633` Python/NodePack changed-line coverage is 616/628 (98.09%); the repaired full attempts are recorded as attempts plus focused retests, not silently promoted to final full passes.
 
-Standalone MCP registry/credentials/SSRF/revision binding and native FFI are being completed before pin adoption. Shared 18-argument/seven-repeat loop fixtures and 25 pure gate vectors already exist; 3.11 still requires the same state cases through both composed hosts. Release voice diagnostics with real verified weights are promising, but the actual optimized app and connected iPhone still need microphone/speaker, fallback, offline and push qualification. Physical-device work is active and is not deferred by owner instruction.
+Kernel `c015c8a` qualifies standalone MCP sealed registry/credentials, bounded egress and exact endpoint/revision/hash authority through FFI, turn/reopen/action/retry paths. Every remote tool remains an outside effect even with a malicious read-only hint; denied consent dispatches nothing. Projection `730d82e` includes native management, voice repairs and the `2916899` shared imported-surface proof (Mac 39+1; iPhone simulator 5+1). Its voice source-side suite executed 115 tests with one optional skip and zero failures; final artifacts, combined native gates and real owner voice remain separate. Shared 18-argument/seven-repeat loop fixtures and 25 pure gate vectors already exist; 3.11 still requires the same state cases through both composed hosts. Release voice diagnostics with real verified weights are promising, but the actual optimized app and connected iPhone still need microphone/speaker, fallback, offline and push qualification. Physical-device work is active and is not deferred by owner instruction.
 
-Freeze the final source/artifact combination after these changes, run all four backend groups against that one clean SHA, and apply both 90% changed-line coverage bases. Keep kernel publication and new external product mutations outside this local work's authorization.
+Freeze the final source/artifact combination, record its exact SHA and report digests outside the candidate tree, then run all four backend groups against that one clean SHA, and apply both 90% changed-line coverage bases. Do not amend the frozen candidate merely to copy its own SHA or post-freeze report into these documents; an external candidate-bound evidence inventory prevents a documentation/commit loop. Keep kernel publication and new external product mutations outside this local work's authorization.
 
 ## Order
 
