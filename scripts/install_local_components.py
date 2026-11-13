@@ -544,6 +544,23 @@ def load_contract(
     return contract
 
 
+
+def select_components(
+    contract: LocalContract, names: Sequence[str], *, require_sources: bool = False
+) -> LocalContract:
+    available = {component.key for component in contract.components}
+    if not names or len(names) != len(set(names)) or set(names) - available:
+        raise ComponentInstallError("component selection must be nonempty, unique, and declared")
+    selected = LocalContract(
+        contract.repository_root,
+        contract.manifest_path,
+        tuple(component for component in contract.components if component.key in names),
+    )
+    if require_sources:
+        _validate_component_sources(selected)
+    return selected
+
+
 def _iter_build_files(component: ComponentSpec, repository_root: Path) -> Iterable[Path]:
     source_root = component.source_root(repository_root).resolve(strict=True)
     seen: set[str] = set()
@@ -1066,6 +1083,8 @@ def _parser() -> argparse.ArgumentParser:
 
     sync = subparsers.add_parser("sync", help="build, install, and verify components")
     sync.add_argument("--root", type=Path, default=Path.cwd())
+    for command in (validate, build, install, verify, sync):
+        command.add_argument("--components", nargs="+", help="select declared components in canonical order")
     return parser
 
 
@@ -1080,9 +1099,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         contract = load_contract(
             arguments.root,
-            require_sources=require_sources,
+            require_sources=require_sources and arguments.components is None,
             require_gitlinks=require_gitlinks,
         )
+        if arguments.components is not None:
+            contract = select_components(contract, arguments.components, require_sources=require_sources)
         if arguments.command == "validate":
             qualifier = "declarations" if arguments.declarations_only else "initialized sources"
             print(

@@ -637,3 +637,27 @@ def test_main_routes_commands_and_reports_typed_errors(
     )
     assert installer.main(["validate", "--root", str(tmp_path)]) == 2
     assert "typed failure" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("names", [[], ["missing"], ["demo", "demo"]])
+def test_component_selection_rejects_invalid_names(tmp_path, names):
+    contract = _contract(tmp_path)
+    with pytest.raises(installer.ComponentInstallError, match="selection"):
+        installer.select_components(contract, names)
+
+
+def test_component_selection_keeps_canonical_order_and_default_contract(tmp_path):
+    contract = _contract(tmp_path)
+    selected = installer.select_components(contract, [component.key for component in reversed(contract.components)])
+    assert selected.components == contract.components
+    assert selected.manifest_path == contract.manifest_path
+    assert installer._parser().parse_args(["validate"]).components is None
+
+
+def test_component_selection_validates_only_selected_sources(tmp_path, monkeypatch):
+    contract = _contract(tmp_path)
+    observed = []
+    monkeypatch.setattr(installer, "_validate_component_sources", observed.append)
+    selected = installer.select_components(contract, [contract.components[0].key], require_sources=True)
+    assert observed == [selected]
+    assert len(contract.components) > len(selected.components)
