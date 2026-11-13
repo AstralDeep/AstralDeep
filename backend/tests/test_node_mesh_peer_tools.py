@@ -121,6 +121,26 @@ def peer_spec(host, *, description=None):
     return build
 
 
+def published_spec(host, calls):
+    def build(node_device):
+        return [
+            ak.PeerToolSpec(
+                device=node_device,
+                tool=ak.LocalToolSpec(
+                    name=tool["name"],
+                    description=tool["description"],
+                    input_schema_json=json.dumps(tool["input_schema"], sort_keys=True),
+                    annotations_json=json.dumps(tool["annotations"], sort_keys=True),
+                    effect=getattr(ak.LocalToolEffect, tool["effect"].upper()),
+                    confidentiality=ak.LocalToolConfidentiality.PRIVATE,
+                ),
+            )
+            for tool in calls.published_tools(OWNER)
+        ]
+
+    return build
+
+
 def provide_model(laptop, port):
     laptop.set_model_provider(
         ak.ModelProviderConfig(
@@ -133,7 +153,7 @@ def provide_model(laptop, port):
 async def test_a_second_runtimes_turn_calls_the_nodes_tool_through_the_nodes_own_gates(node_host, model_server, tmp_path, monkeypatch):
     host = node_host
     calls = OrchestratorCalls(host.orch)
-    async with paired(tmp_path, monkeypatch, calls=calls, peer_tools=peer_spec(host), history=host.orch.history) as (
+    async with paired(tmp_path, monkeypatch, calls=calls, peer_tools=published_spec(host, calls), history=host.orch.history) as (
         node, laptop, node_device, bridge,
     ):
         provide_model(laptop, model_server)

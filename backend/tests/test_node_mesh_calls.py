@@ -182,6 +182,97 @@ async def test_a_resolved_tool_carries_the_hash_of_the_nodes_own_definition(monk
     assert (await calls.resolve(OWNER, "bare")).definition == nmcalls.definition_hash("bare", "", {}, {})
 
 
-def test_the_runner_lists_the_vessel_tools_to_publish(monkeypatch):
+async def test_the_runner_publishes_only_owner_visible_bundled_and_vessel_tools(monkeypatch):
+    first_party = skill(
+        "roll_dice",
+        description="Roll dice",
+        input_schema={"type": "object", "properties": {"n": {"type": "integer"}}},
+        metadata={"annotations": {"readOnlyHint": True, "ignored": "value"}},
+    )
+    external = skill("external_tool", description="External")
+    orch = Orch()
+    orch.local_agents = {"dice-roller-1": object()}
+    orch.tool_permissions.get_tool_scope = lambda agent, tool: "tools:read"
+    pairs_by_owner = {
+        OWNER: [("dice-roller-1", first_party), ("remote-agent", external)],
+        "other-owner": [],
+    }
+    monkeypatch.setattr(
+        tool_visibility, "eligible_tool_pairs", lambda _orch, owner: pairs_by_owner[owner]
+    )
     monkeypatch.setattr(nmcalls.vessel_executor, "published_tools", lambda orch: [{"name": "lookup"}])
-    assert nmcalls.OrchestratorCalls(object()).published_tools() == [{"name": "lookup"}]
+    calls = nmcalls.OrchestratorCalls(orch)
+
+    published = calls.published_tools(OWNER)
+
+    assert [tool["name"] for tool in published] == ["lookup", "roll_dice"]
+    dice = published[1]
+    assert dice["annotations"] == {"readOnlyHint": True}
+    assert dice["effect"] == "outward_read"
+    assert (await calls.resolve(OWNER, "roll_dice")).definition == nmcalls.definition_hash(
+        dice["name"], dice["description"], dice["input_schema"], dice["annotations"]
+    )
+    assert calls.published_tools("other-owner") == [{"name": "lookup"}]
+
+
+async def test_the_runner_omits_ambiguous_published_names(monkeypatch):
+    left = skill("lookup", description="left")
+    right = skill("lookup", description="right")
+    orch = Orch()
+    orch.local_agents = {"dice-roller-1": object(), "general-1": object()}
+    orch.tool_permissions.get_tool_scope = lambda agent, tool: "tools:read"
+    monkeypatch.setattr(
+        tool_visibility,
+        "eligible_tool_pairs",
+        lambda _orch, owner: [("dice-roller-1", left), ("general-1", right)],
+    )
+    monkeypatch.setattr(nmcalls.vessel_executor, "published_tools", lambda _orch: [])
+    calls = nmcalls.OrchestratorCalls(orch)
+
+    assert calls.published_tools(OWNER) == []
+    with pytest.raises(nmcalls.CallRefused, match="node.tool_ambiguous"):
+        await calls.resolve(OWNER, "lookup")
+
+
+async def test_a_real_orchestrator_publishes_its_owner_visible_bundled_dice_tool(
+    orchestrator_factory, monkeypatch, tmp_path,
+):
+    import asyncio
+
+    from agents.dice_roller.dice_roller_agent import DiceRollerAgent
+    from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
+    from shared.feature_flags import flags
+    from shared.protocol import RegisterAgent
+
+    key = "node-catalog-test-key"
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    monkeypatch.setenv("ASTRAL_NODE_PROFILE", "personal")
+    monkeypatch.setenv("ASTRAL_NODE_DATA_DIR", str(tmp_path / "node-data"))
+    monkeypatch.setenv("ASTRAL_NODE_OWNER", "oidc.0123456789abcdef.owner")
+    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://auth.example.test/realms/astral")
+    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-desktop")
+    monkeypatch.setenv("AUDIT_HMAC_SECRET", "node-catalog-test-audit")
+    monkeypatch.setenv("AGENT_KEY_PATH", str(tmp_path / "agent.pem"))
+    monkeypatch.setenv("AGENT_API_KEY", key)
+    monkeypatch.setenv("DELEGATION_REQUIRED", "false")
+    monkeypatch.setitem(flags._flags, "inprocess_agents", True)
+    monkeypatch.setitem(flags._flags, "user_skills", False)
+    monkeypatch.delenv("DEFAULT_AGENT_OWNER", raising=False)
+    orch = await asyncio.to_thread(orchestrator_factory)
+    agent = DiceRollerAgent(port=0)
+    await orch.register_agent(None, RegisterAgent(agent_card=agent.card, api_key=key))
+    orch.local_agents[agent.agent_id] = agent
+    orch.tool_permissions.set_agent_scopes(OWNER, agent.agent_id, {"tools:read": True})
+    orch.tool_permissions.set_agent_scopes("oidc.abc.other", agent.agent_id, {"tools:read": False})
+
+    calls = nmcalls.OrchestratorCalls(orch)
+    published = calls.published_tools(OWNER)
+
+    assert agent.agent_id in FIRST_PARTY_PUBLIC_AGENT_IDS
+    assert [tool["name"] for tool in published] == ["roll_dice"]
+    resolved = await calls.resolve(OWNER, "roll_dice")
+    tool = published[0]
+    assert resolved.definition == nmcalls.definition_hash(
+        tool["name"], tool["description"], tool["input_schema"], tool["annotations"]
+    )
+    assert calls.published_tools("oidc.abc.other") == []

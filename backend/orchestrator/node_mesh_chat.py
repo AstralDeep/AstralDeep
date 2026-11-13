@@ -394,7 +394,7 @@ class MeshChatBridge:
 
     async def _publish_catalog(self) -> None:
         listing = getattr(self._calls, "published_tools", None)
-        tools = listing() if listing is not None else []
+        tools = listing(self._owner) if listing is not None else []
         if not tools:
             return
         digest = hashlib.sha256(json.dumps(tools, sort_keys=True).encode()).hexdigest()

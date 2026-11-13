@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import time
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -99,8 +100,37 @@ class OrchestratorCalls:
     def __init__(self, orch: Any):
         self._orch = orch
 
-    def published_tools(self) -> List[Dict[str, Any]]:
-        return vessel_executor.published_tools(self._orch)
+    def published_tools(self, owner_id: str) -> List[Dict[str, Any]]:
+        tools = list(vessel_executor.published_tools(self._orch))
+        local_agents = getattr(self._orch, "local_agents", {})
+        if type(owner_id) is str and owner_id and isinstance(local_agents, dict):
+            from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
+            from orchestrator.tool_visibility import eligible_tool_pairs
+
+            first_party = frozenset(FIRST_PARTY_PUBLIC_AGENT_IDS)
+            for agent_id, skill in eligible_tool_pairs(self._orch, owner_id):
+                if agent_id not in first_party or agent_id not in local_agents:
+                    continue
+                name = str(getattr(skill, "id", "") or "")
+                if not name:
+                    continue
+                description = str(getattr(skill, "description", "") or "")
+                schema = getattr(skill, "input_schema", None)
+                schema = schema if isinstance(schema, dict) else {}
+                metadata = getattr(skill, "metadata", None)
+                metadata = metadata if isinstance(metadata, dict) else {}
+                annotations = sanitize_annotations(metadata.get("annotations"))
+                scope = self._orch.tool_permissions.get_tool_scope(agent_id, name)
+                tools.append({
+                    "name": name,
+                    "description": description,
+                    "input_schema": schema,
+                    "annotations": annotations,
+                    "effect": "outward_read" if scope in READ_SCOPES else "outside_effect",
+                })
+        counts = Counter(tool.get("name") for tool in tools)
+        ambiguous = {name for name, count in counts.items() if count > 1}
+        return [tool for tool in tools if tool.get("name") not in ambiguous]
 
     async def resolve(self, owner_id: str, tool: str) -> ResolvedTool:
         from orchestrator.tool_visibility import eligible_tool_pairs

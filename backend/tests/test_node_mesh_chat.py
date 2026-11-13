@@ -969,8 +969,10 @@ class CatalogCalls(FakeCalls):
     def __init__(self, tools):
         super().__init__()
         self.tools = tools
+        self.owners = []
 
-    def published_tools(self):
+    def published_tools(self, owner_id):
+        self.owners.append(owner_id)
         return self.tools
 
 
@@ -979,6 +981,7 @@ async def test_the_vessel_tools_are_published_with_their_agent_annotation_once(t
     await bridge.scan()
     await bridge.scan()
     assert len(kernel.catalogs) == 1
+    assert bridge._calls.owners == [OWNER, OWNER]
     spec = kernel.catalogs[0][0]
     assert (spec.name, json.loads(spec.annotations_json), spec.effect.name, spec.confidentiality.name) == (
         "lookup", {"agent": "guide"}, "OUTWARD_READ", "PRIVATE")
