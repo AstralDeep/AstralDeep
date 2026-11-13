@@ -565,8 +565,9 @@ class MeshChatBridge:
     async def _run_turn(self, request: Any, local: str, floor: Labels) -> Tuple[List[Dict[str, Any]], str]:
         session = _Session(self._owner, local, mesh_chat=request.chat_id, user_text=request.text, request=request, floor=floor)
         self._sessions[local] = session
+        mint_lock = asyncio.Lock()
 
-        async def issue(agent: str, tool: str, arguments: Dict[str, Any], owner: Optional[str]) -> vessel_executor.CallTicket:
+        async def mint(agent: str, tool: str, arguments: Dict[str, Any], owner: Optional[str]) -> vessel_executor.CallTicket:
             if owner != session.owner_id or self._owner != owner or self._calls is None:
                 raise vessel_executor.TicketRefused("node.owner_mismatch")
             if len(session.minted) >= MAX_STEPS:
@@ -592,6 +593,10 @@ class MeshChatBridge:
                 "receipt": minted.receipt_event, "labels": join_labels(session.floor, ("private", "untrusted")),
             })
             return vessel_executor.CallTicket(minted.ticket_json, minted.action_json, arguments_json)
+
+        async def issue(agent: str, tool: str, arguments: Dict[str, Any], owner: Optional[str]) -> vessel_executor.CallTicket:
+            async with mint_lock:
+                return await mint(agent, tool, arguments, owner)
 
         try:
             with vessel_executor.minting(issue):

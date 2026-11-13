@@ -545,6 +545,36 @@ def build_event() -> Suite:
         {"kind": "answer", "text": "Here is what you heard."},
         sc.BASE_MS + 6000,
     )
+    imported = seal(
+        "a2ui-import-source-result-metadata",
+        6,
+        spoken["event_id"],
+        [],
+        chat_id,
+        "ui.surface_put",
+        {"confidentiality": "private", "integrity": "untrusted"},
+        ck,
+        content,
+        {"document": {}, "turn": None, "source": {
+            "origin": "tool", "name": "lab-results", "format": "a2ui/1.0",
+            "catalog": "urn:astralprims:a2ui:catalog:1", "surface": "results",
+            "result": msg["event_id"],
+        }},
+        sc.BASE_MS + 7000,
+    )
+    seal(
+        "assistant-notice-metadata-roundtrip",
+        7,
+        imported["event_id"],
+        [],
+        chat_id,
+        "chat.assistant_message",
+        {"confidentiality": "private", "integrity": "untrusted"},
+        ck,
+        content,
+        {"turn": msg["event_id"], "text": "A2UI result remains available.", "notice": True},
+        sc.BASE_MS + 8000,
+    )
     keysets = {
         "content_keys": {
             ck: content.hex(),

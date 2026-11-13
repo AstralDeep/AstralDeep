@@ -639,6 +639,44 @@ async def test_unrelated_tool_steps_never_inherit_a_minted_calls_receipt(tmp_pat
     await bridge.stop()
 
 
+async def test_parallel_node_calls_get_distinct_ids_and_keep_their_exact_receipts(tmp_path, monkeypatch):
+    import httpx
+
+    issued = []
+    responses = []
+
+    async def mint(request, **call):
+        await asyncio.sleep(0)
+        issued.append(call)
+        arguments = json.loads(call["arguments_json"])
+        ticket = call_for(arguments=arguments, device="dev-node", turn=request)
+        return SimpleNamespace(ticket_json=ticket.ticket_json, action_json=ticket.action_json, receipt_event=f"receipt-{arguments['q']}")
+
+    executor = vessel_executor.VesselExecutor(
+        vessel_executor.ExecutorSettings("http://executor:8800", "catalog", agent_tokens={"agent-1": "agent"}),
+        httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"output": "done"}))),
+    )
+
+    async def runner(owner, local, prompt):
+        responses.extend(await asyncio.gather(*(executor.invoke("agent-1", "lookup", {"q": n}, owner=owner) for n in [1, 2])))
+        for n in [2, 1]:
+            nmc.observe_step(owner, local, {"name": "agent-1__lookup", "args": canonical({"q": n}), "status": "completed", "result": "done"})
+        nmc.observe_message(owner, local, "assistant", "Both done.")
+
+    mesh, kernel, history, bridge = await build(tmp_path, runner, calls=FakeCalls())
+    monkeypatch.setattr(mesh, "mint_ticket", mint)
+    kernel.add_chat("c", [])
+    kernel.add_request("r1", "c")
+    await serve(bridge, kernel, "r1")
+    assert len({call["call_id"] for call in issued}) == 2
+    assert all(response.result == "done" for response in responses)
+    steps = only_turn(kernel)[1].steps
+    assert [step.receipt for step in steps] == ["receipt-2", "receipt-1"]
+    assert len({step.call_id for step in steps}) == 2
+    await bridge.stop()
+    await executor.close()
+
+
 async def test_a_write_tool_is_verified_as_an_outside_effect(tmp_path):
     calls = FakeCalls(scope="tools:write")
     mesh, kernel, history, bridge = await build(tmp_path, calls=calls)

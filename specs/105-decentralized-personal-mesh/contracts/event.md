@@ -150,7 +150,7 @@ The family decides the merge rule. The body of every type is a canonical JSON ob
 |---|---|---|---|
 | `chat.create` | chat | `new` | none. `title` is customary |
 | `chat.user_message` | chat | chat id | `base` (turn id or null: the latest turn the writer knew). Optional `attachments`: at most 8 attachment event ids (`attachments.md`) |
-| `chat.assistant_message` | chat | chat id | none |
+| `chat.assistant_message` | chat | chat id | none. Engine notices may carry `notice: true` with `turn` and `text`; a notice is displayed but is not a final answer when replaying a turn (`surface.md`, section 8) |
 | `chat.model_request`, `chat.model_response` | chat | chat id | none |
 | `chat.tool_proposed`, `chat.tool_authorized` | chat | chat id | none |
 | `chat.tool_result` | chat | chat id | the whole body is addressable by surface bindings |

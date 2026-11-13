@@ -120,9 +120,11 @@ The kernel writes a `ui.surface_put` with integrity `untrusted`, the confidentia
 
 | Field | Rule |
 |---|---|
-| `source` | An object with `origin` (`tool` or `agent`), `name` (the tool or agent, 1 to 128 characters without control characters, else `a2ui.bad_source`), `format` (`a2ui/1.0`), `catalog` (the catalog id) and `surface` (the A2UI surface id) |
+| `source` | An object with `origin` (`tool` or `agent`), `name` (the tool or agent, 1 to 128 characters without control characters, else `a2ui.bad_source`), `format` (`a2ui/1.0`), `catalog` (the catalog id) and `surface` (the A2UI surface id). Automatic tool-result imports also carry `result`, the id of the successful `chat.tool_result` event of this chat; manual imports may omit it |
 
 Notices are not errors. Each has a code and a detail. The codes are `a2ui.component_unsupported`, `a2ui.component_invalid`, `a2ui.property_dropped`, `a2ui.value_dropped`, `a2ui.template_dropped`, `a2ui.action_dropped`, `a2ui.binding_flattened`, `a2ui.control_dropped` and `a2ui.link_removed`. At most 100 are kept.
+
+**Automatic tool results and recovery.** A successful local tool result whose JSON explicitly begins with an A2UI `createSurface` message is imported through these same rules. `source.name` remains the tool's real name and `source.result` binds the original result event. The originating device writes at most one imported surface for that result, including after a crash or reopen; other peers receive that surface through sync rather than importing it again. A malformed or refused document leaves the completed tool result unchanged and adds a bounded, untrusted assistant notice with the chat's confidentiality floor. Its body is `{turn, text, notice: true}`; `notice` is boolean when present and a notice never counts as the final assistant answer during turn replay. Dropped-control or link notices use the same recovery rule.
 
 **Export.** A surface document that validates (section 1) becomes A2UI messages for the Astral catalog or the basic catalog. A `createSurface` and an `updateComponents` message carry the tree. Capabilities are never exported. A control names only its capability handle, which means nothing to an outside renderer, and tools, arguments and uses stay on the device. A node with `prov` `agent` is exported as external. The A2UI surface id is `s_` followed by 32 hex digits of the surface id, and a caller may pass its own that matches `^[A-Za-z_][A-Za-z0-9_]*$` (`a2ui.bad_surface_id`).
 
