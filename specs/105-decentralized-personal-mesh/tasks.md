@@ -14,6 +14,7 @@ fixes the choices every lane shares, so lanes can work in parallel.
 | 1. Kernel in Rust (C2) | Yes. rustup is installed through Homebrew with the Apple targets. |
 | 7. Interim relay | The transport's public relays may be used. |
 | Live tests | The owner signs in to Keycloak when asked. Live chat turns use the model endpoint and key already in AstralDeep's `.env`, loaded by a local script. The key is never typed into a form, printed, or committed. |
+| UX (2026-11-12) | After live testing the owner judged the mesh UI poor in look and behavior and asked for a full fix at the end: a HIG-grade pass over every mesh screen on the Mac and iPhone. |
 | Kernel repository (2026-11-12) | The owner asked for the kernel repository to be created: `github.com/AstralDeep/AstralKernel`, public like the other components. It was created empty. Nothing is pushed to it yet. |
 | A2UI (2026-11-12) | Use the latest stable protocol. The owner supplied the [A2UI 1.0 announcement](https://developers.googleblog.com/a2ui-10-build-delightful-fast-reliable-agentic-experiences/). Python and Rust adapters are being qualified against the stable 1.0 schemas at upstream `a2ui-project/a2ui@8bf644a37d680a227296b8c0849a7f4b328b8b73`, rather than relying on the earlier release-candidate check. |
 
