@@ -14,7 +14,9 @@ from astral_mesh_ref import requests
 VECTORS = Path(__file__).resolve().parents[2] / "vectors"
 CASES = [
     c
-    for c in json.loads((VECTORS / "requests.json").read_text(encoding="utf-8"))["cases"]
+    for c in json.loads((VECTORS / "requests.json").read_text(encoding="utf-8"))[
+        "cases"
+    ]
     if c["kind"] == "request_fold"
 ]
 STATES = {"pending", "claimed", "answered", "refused", "cancelled"}

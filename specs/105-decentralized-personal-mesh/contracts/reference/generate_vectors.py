@@ -8533,7 +8533,6 @@ def build_requests() -> Suite:
     s = Suite("requests", "contracts/requests.md")
     people = (ALICE, BOB, CAROL, MALLORY)
     feeds = {d.feed: d.id for d in people}
-    chat = _eid("requests", "chat")
     args = {"path": "notes/today.md"}
     args_text = canonical(args).decode()
     action = {
@@ -8601,7 +8600,12 @@ def build_requests() -> Suite:
         {k: v for k, v in send().items() if k != "call"},
         "request.malformed",
     )
-    check("a-target-that-is-not-a-device-id-is-refused", "request.send", send(to="bob"), "request.malformed")
+    check(
+        "a-target-that-is-not-a-device-id-is-refused",
+        "request.send",
+        send(to="bob"),
+        "request.malformed",
+    )
     check("empty-text-is-refused", "request.send", send(text=""), "request.malformed")
     check(
         "text-over-the-limit-is-refused",
@@ -8654,7 +8658,9 @@ def build_requests() -> Suite:
     check(
         "an-action-with-a-missing-field-is-refused",
         "request.send",
-        send(call={**call, "action": {k: v for k, v in action.items() if k != "agent"}}),
+        send(
+            call={**call, "action": {k: v for k, v in action.items() if k != "agent"}}
+        ),
         "request.malformed",
     )
     check(
@@ -8679,8 +8685,18 @@ def build_requests() -> Suite:
         code="gate.permission_denied",
         request=rid,
     )
-    check("a-claim-with-an-extra-field-is-refused", "request.claim", {"request": rid, "note": "x"}, "request.malformed")
-    check("a-claim-naming-no-event-is-refused", "request.claim", {"request": "r1"}, "request.malformed")
+    check(
+        "a-claim-with-an-extra-field-is-refused",
+        "request.claim",
+        {"request": rid, "note": "x"},
+        "request.malformed",
+    )
+    check(
+        "a-claim-naming-no-event-is-refused",
+        "request.claim",
+        {"request": "r1"},
+        "request.malformed",
+    )
     check(
         "a-refusal-without-a-dotted-code-is-refused",
         "request.refuse",
@@ -8693,7 +8709,12 @@ def build_requests() -> Suite:
         {"code": "Gate.Denied", "request": rid},
         "request.malformed",
     )
-    check("an-unknown-type-is-refused", "request.answer", {"request": rid}, "event.unknown_type")
+    check(
+        "an-unknown-type-is-refused",
+        "request.answer",
+        {"request": rid},
+        "event.unknown_type",
+    )
 
     class Log:
         def __init__(self, tag: str) -> None:
@@ -8725,19 +8746,40 @@ def build_requests() -> Suite:
             )
             return eid
 
-        def ask(self, dev: TestDevice = ALICE, to: TestDevice = BOB, name: str = "ask", **fields: Any) -> str:
+        def ask(
+            self,
+            dev: TestDevice = ALICE,
+            to: TestDevice = BOB,
+            name: str = "ask",
+            **fields: Any,
+        ) -> str:
             return self.add(name, dev, "request.send", send(to=to.id, **fields))
 
-        def claim(self, dev: TestDevice, request: str, name: str = "claim", **kw: Any) -> str:
+        def claim(
+            self, dev: TestDevice, request: str, name: str = "claim", **kw: Any
+        ) -> str:
             return self.add(name, dev, "request.claim", {"request": request}, **kw)
 
-        def refuse(self, dev: TestDevice, request: str, code: str = "gate.denied", name: str = "refuse", **kw: Any) -> str:
-            return self.add(name, dev, "request.refuse", {"code": code, "request": request}, **kw)
+        def refuse(
+            self,
+            dev: TestDevice,
+            request: str,
+            code: str = "gate.denied",
+            name: str = "refuse",
+            **kw: Any,
+        ) -> str:
+            return self.add(
+                name, dev, "request.refuse", {"code": code, "request": request}, **kw
+            )
 
-        def cancel(self, dev: TestDevice, request: str, name: str = "cancel", **kw: Any) -> str:
+        def cancel(
+            self, dev: TestDevice, request: str, name: str = "cancel", **kw: Any
+        ) -> str:
             return self.add(name, dev, "request.cancel", {"request": request}, **kw)
 
-        def answer(self, dev: TestDevice, request: str, name: str = "answer", **kw: Any) -> str:
+        def answer(
+            self, dev: TestDevice, request: str, name: str = "answer", **kw: Any
+        ) -> str:
             return self.add(
                 name,
                 dev,

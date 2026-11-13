@@ -76,10 +76,9 @@ def _check_call(call: Any) -> None:
         ticket.action_digest(call["action"])
     except (MeshError, KeyError, TypeError) as exc:
         raise _malformed("action") from exc
-    if (
-        call["action"]["tool"] != tool
-        or call["action"]["args_digest"] != crypto.sha256_id(raw)
-    ):
+    if call["action"]["tool"] != tool or call["action"][
+        "args_digest"
+    ] != crypto.sha256_id(raw):
         raise MeshError("request.call_mismatch", tool)
 
 
@@ -116,7 +115,11 @@ def check_body(kind: str, body: Any) -> dict[str, Any]:
     if kind == REFUSE:
         request = _check_ref(body, {"code", "request"})
         code = body["code"]
-        if not isinstance(code, str) or len(code) > MAX_CODE or not CODE.fullmatch(code):
+        if (
+            not isinstance(code, str)
+            or len(code) > MAX_CODE
+            or not CODE.fullmatch(code)
+        ):
             raise _malformed("code")
         return {"code": code, "request": request}
     raise MeshError("event.unknown_type", kind)
@@ -158,7 +161,11 @@ def fold(
         if request is None or author is None:
             ignored.add(e["id"])
             continue
-        owner = request["body"]["to"] if e["type"] != CANCEL else device_of_feed(request["feed"])
+        owner = (
+            request["body"]["to"]
+            if e["type"] != CANCEL
+            else device_of_feed(request["feed"])
+        )
         if author != owner:
             ignored.add(e["id"])
             continue
