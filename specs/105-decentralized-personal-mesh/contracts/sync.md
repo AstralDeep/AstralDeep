@@ -59,7 +59,7 @@ Nothing from a rejected envelope enters any fold.
 
 ## 5. Bodies by hash
 
-A ciphertext object, which is an event body or an attachment chunk, is requested by the hash of its bytes. A sender decides per object, from the event's labels:
+A ciphertext object, which is an event body or an attachment chunk, is requested by the hash of its bytes. The label of a chunk is the label of the attachment event that names it (`attachments.md` section 4), and a session never asks for chunks eagerly (`attachments.md` section 5). A sender decides per object, from the event's labels:
 
 | Confidentiality of the event | The peer is in the PHI group | The peer is not |
 |---|---|---|

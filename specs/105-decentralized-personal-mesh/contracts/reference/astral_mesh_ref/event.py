@@ -27,6 +27,7 @@ EVENT_TYPES = {
     "chat.turn_end": "chat",
     "chat.turn_outcome_unknown": "chat",
     "chat.spoken": "chat",
+    "chat.attachment": "chat",
     "request.send": "request",
     "request.claim": "request",
     "request.refuse": "request",

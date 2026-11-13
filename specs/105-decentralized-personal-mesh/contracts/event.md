@@ -149,13 +149,14 @@ The family decides the merge rule. The body of every type is a canonical JSON ob
 | Type | Family | Scope | Body fields the folds read |
 |---|---|---|---|
 | `chat.create` | chat | `new` | none. `title` is customary |
-| `chat.user_message` | chat | chat id | `base` (turn id or null: the latest turn the writer knew) |
+| `chat.user_message` | chat | chat id | `base` (turn id or null: the latest turn the writer knew). Optional `attachments`: at most 8 attachment event ids (`attachments.md`) |
 | `chat.assistant_message` | chat | chat id | none |
 | `chat.model_request`, `chat.model_response` | chat | chat id | none |
 | `chat.tool_proposed`, `chat.tool_authorized` | chat | chat id | none |
 | `chat.tool_result` | chat | chat id | the whole body is addressable by surface bindings |
 | `chat.turn_start` | chat | chat id | `continues` (turn id or null), `message` (user message id or null). Optional `request`: the request this turn answers (`requests.md`) |
 | `chat.turn_end`, `chat.turn_outcome_unknown` | chat | chat id | none |
+| `chat.attachment` | chat | chat id | none. The body names the file and the hashes of its sealed chunks (`attachments.md`) |
 | `chat.spoken` | chat | chat id | none. `kind` is `answer` or `acknowledgement`, `text` is the assistant text a device actually played aloud, and `turn` is optional |
 | `request.send`, `request.claim`, `request.refuse`, `request.cancel` | request | chat id | see `requests.md`. The request fold reads `to`, `request`, `code`. `chat.turn_start` may also carry `request` |
 | `ui.surface_put` | ui | chat id | `document`, `turn` (see `surface.md`) |

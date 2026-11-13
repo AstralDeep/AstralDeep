@@ -1,5 +1,10 @@
 {
   "files": {
+    "attachments.json": {
+      "cases": 75,
+      "sha256": "f4ee4a5e0a91a77227dfcd1728c8677ad4e627e7fccf1606205dab2d8b46d81e",
+      "spec": "contracts/attachments.md"
+    },
     "attestation.json": {
       "cases": 32,
       "sha256": "6264949e45ed2a9fc4b324fb60f3a0a4a635ce84284a044e08077c8ca3fea231",
