@@ -31,6 +31,7 @@ DATA_DIR_ENV = "ASTRAL_NODE_DATA_DIR"
 OWNER_ENV = "ASTRAL_NODE_OWNER"
 ISSUERS_ENV = "ASTRAL_ACCEPTED_ISSUERS"
 PERSONAL = "personal"
+INSTITUTION = "institution"
 
 KEY_FILE = "node-ed25519.pem"
 OWNER_FILE = "owner"
@@ -61,6 +62,10 @@ class OwnerMismatch(NodeIdentityError):
 
 def is_personal() -> bool:
     return os.getenv(PROFILE_ENV, "").strip().lower() == PERSONAL
+
+
+def is_institution() -> bool:
+    return os.getenv(PROFILE_ENV, "").strip().lower() == INSTITUTION
 
 
 def data_dir() -> Path:

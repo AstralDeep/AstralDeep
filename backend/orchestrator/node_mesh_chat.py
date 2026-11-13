@@ -39,6 +39,7 @@ OFF_VALUES = {"0", "false", "no", "off"}
 Labels = Tuple[str, str]
 TurnRunner = Callable[[str, str, str], Awaitable[None]]
 PhiCheck = Callable[[str], bool]
+Admission = Callable[[Any, Labels], Awaitable[None]]
 
 
 class Refusal(Exception):
@@ -202,6 +203,7 @@ class MeshChatBridge:
         calls: Optional[Any] = None,
         policy: Optional[NodePolicy] = None,
         phi_active: Optional[PhiCheck] = None,
+        admission: Optional[Admission] = None,
         poll_seconds: float = POLL_SECONDS,
         turn_seconds: float = TURN_SECONDS,
     ):
@@ -213,6 +215,7 @@ class MeshChatBridge:
         self._state = ChatState(state_path)
         self._policy = policy or NodePolicy.from_env()
         self._phi_active = phi_active or _protection_enabled
+        self._admission = admission
         self._poll_seconds = poll_seconds
         self._turn_seconds = turn_seconds
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -426,13 +429,15 @@ class MeshChatBridge:
         floor = join_labels(BASE_LABELS, labels_of(request.labels), _chat_floor(view))
         if await asyncio.to_thread(self._phi_active, self._owner):
             floor = join_labels(floor, ("phi", "owner"))
-        await self._check_floor(floor)
+        await self._check_floor(floor, request)
         admitted = _Admitted(floor, view)
         if request.call is not None:
             await self._admit_call(request, admitted)
         return admitted
 
-    async def _check_floor(self, floor: Labels) -> None:
+    async def _check_floor(self, floor: Labels, request: Any) -> None:
+        if self._admission is not None:
+            await self._admission(request, floor)
         if floor[0] == "secret":
             raise Refusal("node.secret_label")
         if floor[0] == "phi" and not await self._mesh.phi_member():
@@ -470,7 +475,7 @@ class MeshChatBridge:
         ):
             raise Refusal("ticket.unauthorized")
         admitted.floor = join_labels(admitted.floor, labels_of(verified.labels))
-        await self._check_floor(admitted.floor)
+        await self._check_floor(admitted.floor, request)
         try:
             admitted.authority = await self._calls.authorize(self._owner, resolved)
         except CallRefused as exc:
@@ -639,15 +644,40 @@ def _protection_enabled(owner_id: str) -> bool:
     return bool(protection_enabled(owner_id))
 
 
-_bridge: Optional[MeshChatBridge] = None
+class BridgeSet:
+    def __init__(self) -> None:
+        self._bridges: Dict[str, MeshChatBridge] = {}
+
+    def add(self, owner_id: str, bridge: MeshChatBridge) -> None:
+        self._bridges[owner_id] = bridge
+
+    def get(self, owner_id: str) -> Optional[MeshChatBridge]:
+        return self._bridges.get(owner_id)
+
+    def observe_message(self, owner_id: str, chat_id: str, role: str, content: Any) -> None:
+        bridge = self._bridges.get(owner_id)
+        if bridge is not None:
+            bridge.observe_message(owner_id, chat_id, role, content)
+
+    def observe_step(self, owner_id: str, chat_id: str, step: Dict[str, Any]) -> None:
+        bridge = self._bridges.get(owner_id)
+        if bridge is not None:
+            bridge.observe_step(owner_id, chat_id, step)
+
+    async def stop(self) -> None:
+        bridges, self._bridges = list(self._bridges.values()), {}
+        await asyncio.gather(*(bridge.stop() for bridge in bridges), return_exceptions=True)
+
+
+_bridge: Optional[Any] = None
 _bridge_lock = threading.Lock()
 
 
-def active() -> Optional[MeshChatBridge]:
+def active() -> Optional[Any]:
     return _bridge
 
 
-def install(bridge: Optional[MeshChatBridge]) -> None:
+def install(bridge: Optional[Any]) -> None:
     global _bridge
     with _bridge_lock:
         _bridge = bridge
@@ -692,6 +722,11 @@ async def start_for(orch: Any) -> None:
     from orchestrator import node_mesh
     from shared import node_identity
 
+    if node_identity.is_institution():
+        from orchestrator import institution_runtime
+
+        await institution_runtime.start_for(orch)
+        return
     mesh = await node_mesh.start_configured()
     if mesh is None or not mesh.requests_supported:
         return
@@ -710,10 +745,15 @@ async def start_for(orch: Any) -> None:
 async def stop_all() -> None:
     from orchestrator import node_mesh
 
+    from orchestrator import institution_runtime
+
     bridge = _bridge
     install(None)
     try:
         if bridge is not None:
             await bridge.stop()
     finally:
-        await node_mesh.shutdown()
+        try:
+            await institution_runtime.shutdown()
+        finally:
+            await node_mesh.shutdown()

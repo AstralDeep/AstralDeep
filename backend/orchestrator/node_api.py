@@ -15,7 +15,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
-from orchestrator import mesh_api
+from orchestrator import institution_api, mesh_api
 from orchestrator import mesh_enrollment as me
 from orchestrator import node_mesh
 from shared import node_identity
@@ -63,12 +63,23 @@ def _require_personal() -> node_identity.NodeIdentity:
         raise HTTPException(503, "node_key_unavailable") from exc
 
 
+def _require_node() -> node_identity.NodeIdentity:
+    if not (node_identity.is_personal() or node_identity.is_institution()):
+        raise HTTPException(404, "node_profile_inactive")
+    try:
+        return node_identity.load_node_identity()
+    except node_identity.NodeIdentityError as exc:
+        raise HTTPException(503, "node_key_unavailable") from exc
+
+
 def _b64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode()
 
 
 def descriptor() -> dict[str, Any]:
-    identity = _require_personal()
+    identity = _require_node()
+    if node_identity.is_institution():
+        return institution_api.descriptor(identity, DESCRIPTOR_FORMAT, NODE_VERSION, CAPABILITIES)
     owner = node_identity.bound_owner()
     return {
         "format": DESCRIPTOR_FORMAT,
@@ -106,8 +117,8 @@ async def mesh_descriptor_fields(document: dict[str, Any]) -> dict[str, Any]:
     return document
 
 
-async def _mesh_pairing() -> dict[str, Any] | None:
-    mesh = node_mesh.current()
+async def _mesh_pairing(mesh: node_mesh.NodeMesh | None = None) -> dict[str, Any] | None:
+    mesh = mesh or node_mesh.current()
     if mesh is None or not mesh.started:
         return None
     status = await mesh.status()
@@ -193,7 +204,7 @@ async def get_descriptor(response: Response):
 @node_router.get("/.well-known/astral-node/jwks.json", include_in_schema=False)
 async def get_node_jwks(response: Response):
     response.headers["Cache-Control"] = "public, max-age=300"
-    return _require_personal().jwks()
+    return _require_node().jwks()
 
 
 @node_router.post("/api/node/pairing")
@@ -279,3 +290,6 @@ async def resolve_pairing(request: Request, body: dict[str, Any], response: Resp
     if offer is None:
         raise HTTPException(404, "pairing_code_unknown")
     return {"pairing": {"document": offer["document"], "qr": qr_payload(offer["document"])}}
+
+
+node_router.include_router(institution_api.institution_router)

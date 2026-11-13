@@ -237,6 +237,9 @@ class Kernel:
         self.record_error: Optional[str] = None
         self.floor = ("PUBLIC", "OWNER")
         self.phi_member = False
+        self.phone_phi = True
+        self.unattested: set = set()
+        self.peers: List[Any] = []
         self.sent: List[tuple] = []
         self.created: List[tuple] = []
         self.address_error: Optional[Exception] = None
@@ -317,9 +320,13 @@ class Kernel:
 
     def roster(self):
         return SimpleNamespace(
-            members=[SimpleNamespace(device_id=self.device_id, is_local=True, phi=self.phi_member),
-                     SimpleNamespace(device_id="dev-phone", is_local=False, phi=True)]
+            members=[SimpleNamespace(device_id=self.device_id, is_local=True, phi=self.phi_member, unattested=False),
+                     SimpleNamespace(device_id="dev-phone", is_local=False, phi=self.phone_phi,
+                                     unattested="dev-phone" in self.unattested)]
         )
+
+    async def sync_state(self):
+        return list(self.peers)
 
     def add_request(self, request_id, chat_id, text="do the thing", *, to=None, author="dev-phone", state="PENDING",
                     continues=None, call=None, labels=None):

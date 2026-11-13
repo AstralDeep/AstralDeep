@@ -29,6 +29,7 @@ RESTART_FIRST_SECONDS = 1.0
 RESTART_MAX_SECONDS = 60.0
 STABLE_SECONDS = 30.0
 MAX_MESHES = 1
+MESHES_ENV = "ASTRAL_NODE_MAILBOX_MAX_MESHES"
 
 
 class MailboxError(Exception):
@@ -44,6 +45,7 @@ class MailboxSettings:
     relay: Sequence[str] = ("default",)
     max_age_days: Optional[int] = None
     max_mib: Optional[int] = None
+    max_meshes: int = MAX_MESHES
 
     @classmethod
     def from_env(cls, env: Dict[str, str], *, loopback: bool = False) -> "MailboxSettings":
@@ -59,13 +61,14 @@ class MailboxSettings:
             relay=("none",) if loopback else ("default",),
             max_age_days=number(RETENTION_ENV),
             max_mib=number(SIZE_ENV),
+            max_meshes=number(MESHES_ENV) or MAX_MESHES,
         )
 
     def resolve_binary(self) -> Optional[str]:
         return shutil.which(self.binary or DEFAULT_BINARY)
 
     def arguments(self, data_dir: Path) -> List[str]:
-        args = ["serve", "--data-dir", str(data_dir), "--max-meshes", str(MAX_MESHES)]
+        args = ["serve", "--data-dir", str(data_dir), "--max-meshes", str(self.max_meshes)]
         for relay in self.relay:
             if relay != "default":
                 args += ["--relay", relay]

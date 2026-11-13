@@ -163,6 +163,13 @@ def _relay(binding: Any, relay: Sequence[str]) -> Any:
 
 
 @dataclass(frozen=True)
+class PeerStanding:
+    device_id: str
+    phi: bool
+    needs_attestation: bool
+
+
+@dataclass(frozen=True)
 class StepRecord:
     call_id: str
     tool: str
@@ -205,7 +212,9 @@ class NodeMesh:
         binding: Any = None,
         issuers: Optional[IssuerLoader] = None,
         mailbox: Optional[MailboxProcess] = None,
+        mailbox_address: Optional[str] = None,
     ):
+        self._mailbox_address = mailbox_address
         self._data_dir = Path(data_dir)
         self._settings = settings or MeshSettings()
         self._binding = binding if binding is not None else load_binding()
@@ -269,7 +278,7 @@ class NodeMesh:
                     internet_lookup=self._settings.internet_lookup,
                     loopback_only=self._settings.loopback_only,
                     sync_interval_ms=self._settings.sync_interval_ms,
-                    mailbox=self._mailbox.snapshot()["address"] if self._mailbox is not None else None,
+                    mailbox=self._mailbox.snapshot()["address"] if self._mailbox is not None else self._mailbox_address,
                 ),
             )
             (self._data_dir / KERNEL_DIR).mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -389,6 +398,16 @@ class NodeMesh:
     async def phi_member(self) -> bool:
         roster = await asyncio.to_thread(self.kernel.roster)
         return any(device.is_local and device.phi for device in roster.members)
+
+    async def peer_standing(self, device_id: str) -> Optional[PeerStanding]:
+        roster = await asyncio.to_thread(self.kernel.roster)
+        for device in roster.members:
+            if device.device_id == device_id:
+                return PeerStanding(device_id, bool(device.phi), bool(getattr(device, "unattested", False)))
+        return None
+
+    async def sync_peers(self) -> List[Any]:
+        return list(await self.kernel.sync_state())
 
     async def pending_requests(self) -> List[Any]:
         return await asyncio.to_thread(self.kernel.pending_requests_for_me)

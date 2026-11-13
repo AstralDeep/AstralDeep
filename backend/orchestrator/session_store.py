@@ -79,6 +79,12 @@ _DEV_PLACEHOLDER_SECRETS = (
 
 
 def assert_production_posture() -> None:
+    from shared import node_identity
+
+    if node_identity.is_institution():
+        from shared import institution_profile
+
+        institution_profile.enforce()
     mock_on = os.getenv("USE_MOCK_AUTH", "").strip().lower() in ("1", "true", "yes")
     if is_dev_mode():
         warn_on_typesafe_environment()
@@ -120,8 +126,6 @@ def assert_production_posture() -> None:
             "AUDIT_HMAC_SECRET is unset or still the shipped dev placeholder — "
             "the audit hash chain would be forgeable. Set a high-entropy value."
         )
-    from shared import node_identity
-
     personal = node_identity.is_personal()
     if not mock_on:
         required = [
