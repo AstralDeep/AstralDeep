@@ -46,7 +46,7 @@ The result is `{"catalogs": [...], "ignored": [...]}`. Each catalog is `{device,
 
 A kernel offers the tools of the other members' catalogs to its model. It never offers a tool from its own catalog, since it already has those tools.
 
-A tool is identified by its device, its name and its hash. A tool whose definition changed has a new hash, so it is a new tool. The kernel exposes it under the name `<name>__<first 8 hex digits of the hash>`, and a grant names that string. A grant for the old definition therefore does not cover the new one, and the owner must grant it again.
+A tool is identified by its device, its name and its hash. A tool whose definition changed has a new hash, so it is a new tool. The model sees the plain name. The grant for it names `<name>@<first 8 hex digits of the hash>`, so a grant for the old definition does not cover the new one and the owner must grant it again.
 
 Every call to a peer tool still needs a consented grant, passes the gates of `labels.md` and carries a ticket (`requests.md`). The member that serves the tool derives the effect kind itself and runs its own gates. The `effect` in a catalog only guides the caller's own gates.
 
