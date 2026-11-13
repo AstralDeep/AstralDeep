@@ -488,6 +488,49 @@
       "expect": {
         "ok": {
           "grants": {},
+          "refusals": {
+            "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038": "grant.consent_missing"
+          },
+          "rules": {},
+          "waiting_for_consent": [
+            "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038"
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "agent": "agent.mail",
+              "scope": "mesh",
+              "tool": "mail.send",
+              "widening": false
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038",
+            "seq": 1,
+            "type": "auth.grant"
+          }
+        ],
+        "presence_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+        }
+      },
+      "kind": "fold_authority",
+      "name": "a-grant-without-consent-is-ignored"
+    },
+    {
+      "expect": {
+        "ok": {
+          "grants": {
+            "agent.mail/mail.send/mesh": "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038"
+          },
+          "refusals": {},
           "rules": {},
           "waiting_for_consent": []
         }
@@ -510,6 +553,92 @@
             "id": "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038",
             "seq": 1,
             "type": "auth.grant"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1050,
+                  "n": 0
+                },
+                "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                "digest": "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038",
+                "kind": "grant",
+                "sig": "4Av8TmDkinkLaI3syOIc0QQDscPYWKuPVRp_1Ydo-HUTEddKWNCCz_8aIQQDXF0TgvU9ovn3fTxxtW0y8FuTfA",
+                "v": 1
+              },
+              "grant": "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038"
+            },
+            "clock": {
+              "ms": 1050,
+              "n": 0
+            },
+            "feed": "ccc",
+            "id": "sha256:5ffb08209c66199045c64bacbefba43afa830d884d20fb7fffd8fc2acb8227fe",
+            "seq": 1,
+            "type": "auth.consent"
+          }
+        ],
+        "presence_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+        }
+      },
+      "kind": "fold_authority",
+      "name": "a-consented-grant-takes-effect"
+    },
+    {
+      "expect": {
+        "ok": {
+          "grants": {},
+          "refusals": {},
+          "rules": {},
+          "waiting_for_consent": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "agent": "agent.mail",
+              "scope": "mesh",
+              "tool": "mail.send",
+              "widening": false
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038",
+            "seq": 1,
+            "type": "auth.grant"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1050,
+                  "n": 0
+                },
+                "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                "digest": "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038",
+                "kind": "grant",
+                "sig": "4Av8TmDkinkLaI3syOIc0QQDscPYWKuPVRp_1Ydo-HUTEddKWNCCz_8aIQQDXF0TgvU9ovn3fTxxtW0y8FuTfA",
+                "v": 1
+              },
+              "grant": "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038"
+            },
+            "clock": {
+              "ms": 1050,
+              "n": 0
+            },
+            "feed": "ccc",
+            "id": "sha256:5ffb08209c66199045c64bacbefba43afa830d884d20fb7fffd8fc2acb8227fe",
+            "seq": 1,
+            "type": "auth.consent"
           },
           {
             "after": [],
@@ -539,6 +668,7 @@
       "expect": {
         "ok": {
           "grants": {},
+          "refusals": {},
           "rules": {},
           "waiting_for_consent": []
         }
@@ -561,6 +691,31 @@
             "id": "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038",
             "seq": 1,
             "type": "auth.grant"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1050,
+                  "n": 0
+                },
+                "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                "digest": "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038",
+                "kind": "grant",
+                "sig": "4Av8TmDkinkLaI3syOIc0QQDscPYWKuPVRp_1Ydo-HUTEddKWNCCz_8aIQQDXF0TgvU9ovn3fTxxtW0y8FuTfA",
+                "v": 1
+              },
+              "grant": "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038"
+            },
+            "clock": {
+              "ms": 1050,
+              "n": 0
+            },
+            "feed": "ccc",
+            "id": "sha256:5ffb08209c66199045c64bacbefba43afa830d884d20fb7fffd8fc2acb8227fe",
+            "seq": 1,
+            "type": "auth.consent"
           },
           {
             "after": [
@@ -586,7 +741,7 @@
         }
       },
       "kind": "fold_authority",
-      "name": "revoke-after-the-grant-removes-it"
+      "name": "revoke-without-consent-is-applied"
     },
     {
       "expect": {
@@ -594,6 +749,7 @@
           "grants": {
             "agent.mail/mail.send/mesh": "sha256:4d2f4b668cfc48e6059d36e91326bf87de39ba819f35450477bc1ce614a63bbd"
           },
+          "refusals": {},
           "rules": {},
           "waiting_for_consent": []
         }
@@ -616,6 +772,31 @@
             "id": "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038",
             "seq": 1,
             "type": "auth.grant"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1050,
+                  "n": 0
+                },
+                "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                "digest": "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038",
+                "kind": "grant",
+                "sig": "4Av8TmDkinkLaI3syOIc0QQDscPYWKuPVRp_1Ydo-HUTEddKWNCCz_8aIQQDXF0TgvU9ovn3fTxxtW0y8FuTfA",
+                "v": 1
+              },
+              "grant": "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038"
+            },
+            "clock": {
+              "ms": 1050,
+              "n": 0
+            },
+            "feed": "ccc",
+            "id": "sha256:5ffb08209c66199045c64bacbefba43afa830d884d20fb7fffd8fc2acb8227fe",
+            "seq": 1,
+            "type": "auth.consent"
           },
           {
             "after": [],
@@ -651,6 +832,31 @@
             "id": "sha256:4d2f4b668cfc48e6059d36e91326bf87de39ba819f35450477bc1ce614a63bbd",
             "seq": 2,
             "type": "auth.grant"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 2050,
+                  "n": 0
+                },
+                "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                "digest": "sha256:4d2f4b668cfc48e6059d36e91326bf87de39ba819f35450477bc1ce614a63bbd",
+                "kind": "grant",
+                "sig": "MDkPn5k6Ko4MT0jwMOaxWQ1LRq-YEdayqFQY4bDBriE24T5410eXL_Ft38pdNtTGRbNKUXhS-YRxHPOvwtglAA",
+                "v": 1
+              },
+              "grant": "sha256:4d2f4b668cfc48e6059d36e91326bf87de39ba819f35450477bc1ce614a63bbd"
+            },
+            "clock": {
+              "ms": 2050,
+              "n": 0
+            },
+            "feed": "ddd",
+            "id": "sha256:7a1803c3906e662a3f43abb4b6d50456020dd89295b9098eaa56a7c41c275f1a",
+            "seq": 1,
+            "type": "auth.consent"
           }
         ],
         "presence_keys": {
@@ -666,6 +872,7 @@
           "grants": {
             "agent.mail/mail.send/mesh": "sha256:3921871aa0881e3e94830142ac90994452f670fe337eb50303ea9cc6d0f3ae37"
           },
+          "refusals": {},
           "rules": {},
           "waiting_for_consent": []
         }
@@ -704,6 +911,31 @@
             "id": "sha256:3921871aa0881e3e94830142ac90994452f670fe337eb50303ea9cc6d0f3ae37",
             "seq": 2,
             "type": "auth.grant"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 2050,
+                  "n": 0
+                },
+                "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                "digest": "sha256:3921871aa0881e3e94830142ac90994452f670fe337eb50303ea9cc6d0f3ae37",
+                "kind": "grant",
+                "sig": "i8O28-R3SMZuPYxdQsRTO7eLDxe1FD2093ZfpyVrKZlcs4XhrJYLls-u9ewP4Mw1JPHUkSZv79dBXK9-iynM-w",
+                "v": 1
+              },
+              "grant": "sha256:3921871aa0881e3e94830142ac90994452f670fe337eb50303ea9cc6d0f3ae37"
+            },
+            "clock": {
+              "ms": 2050,
+              "n": 0
+            },
+            "feed": "ddd",
+            "id": "sha256:edc4a612621e203bab2284413de7ca672ae6784ad3275c4c3bd77f58f2ec7825",
+            "seq": 1,
+            "type": "auth.consent"
           }
         ],
         "presence_keys": {
@@ -717,6 +949,9 @@
       "expect": {
         "ok": {
           "grants": {},
+          "refusals": {
+            "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf": "grant.consent_missing"
+          },
           "rules": {},
           "waiting_for_consent": [
             "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf"
@@ -748,7 +983,7 @@
         }
       },
       "kind": "fold_authority",
-      "name": "widening-grant-waits-for-consent"
+      "name": "a-grant-marked-widening-without-consent-is-ignored"
     },
     {
       "expect": {
@@ -756,6 +991,7 @@
           "grants": {
             "agent.mail/mail.send/mesh": "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf"
           },
+          "refusals": {},
           "rules": {},
           "waiting_for_consent": []
         }
@@ -799,9 +1035,9 @@
               "ms": 1500,
               "n": 0
             },
-            "feed": "aaa",
-            "id": "sha256:d0f631ca1ddba8db3bcfcb9e057cdc98d0379f1bee00e75a545147a27dadd982",
-            "seq": 2,
+            "feed": "ccc",
+            "id": "sha256:12e54ff4e270ba8e2b3ffce74b90c38e84e37af437b705167a30b9230ce77918",
+            "seq": 1,
             "type": "auth.consent"
           }
         ],
@@ -810,12 +1046,15 @@
         }
       },
       "kind": "fold_authority",
-      "name": "widening-grant-with-consent-takes-effect"
+      "name": "a-grant-marked-widening-with-consent-takes-effect"
     },
     {
       "expect": {
         "ok": {
           "grants": {},
+          "refusals": {
+            "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf": "grant.consent_bad_signature"
+          },
           "rules": {},
           "waiting_for_consent": [
             "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf"
@@ -861,9 +1100,9 @@
               "ms": 1500,
               "n": 0
             },
-            "feed": "aaa",
-            "id": "sha256:9c0abe51c6e6655d81de2d044d4fb194931f058c0426c67c7285d8f5657ed64a",
-            "seq": 2,
+            "feed": "ccc",
+            "id": "sha256:12e54ff4e270ba8e2b3ffce74b90c38e84e37af437b705167a30b9230ce77918",
+            "seq": 1,
             "type": "auth.consent"
           }
         ],
@@ -878,6 +1117,9 @@
       "expect": {
         "ok": {
           "grants": {},
+          "refusals": {
+            "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf": "grant.consent_wrong_action"
+          },
           "rules": {},
           "waiting_for_consent": [
             "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf"
@@ -923,9 +1165,9 @@
               "ms": 1500,
               "n": 0
             },
-            "feed": "aaa",
-            "id": "sha256:7c1c97df17c066924822b0af09a65251554962c61e23329aed04cd19020dc3b8",
-            "seq": 2,
+            "feed": "ccc",
+            "id": "sha256:12e54ff4e270ba8e2b3ffce74b90c38e84e37af437b705167a30b9230ce77918",
+            "seq": 1,
             "type": "auth.consent"
           }
         ],
@@ -940,6 +1182,156 @@
       "expect": {
         "ok": {
           "grants": {},
+          "refusals": {
+            "sha256:2352da7280f1decc3acf1ba84eb945c9fc2b7b541094e1d0992dbffd1b6664cc": "grant.consent_missing",
+            "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038": "grant.consent_wrong_action"
+          },
+          "rules": {},
+          "waiting_for_consent": [
+            "sha256:2352da7280f1decc3acf1ba84eb945c9fc2b7b541094e1d0992dbffd1b6664cc",
+            "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038"
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "agent": "agent.mail",
+              "scope": "mesh",
+              "tool": "mail.send",
+              "widening": false
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038",
+            "seq": 1,
+            "type": "auth.grant"
+          },
+          {
+            "after": [],
+            "body": {
+              "agent": "agent.mail",
+              "scope": "mesh",
+              "tool": "files.delete",
+              "widening": false
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "bbb",
+            "id": "sha256:2352da7280f1decc3acf1ba84eb945c9fc2b7b541094e1d0992dbffd1b6664cc",
+            "seq": 1,
+            "type": "auth.grant"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1500,
+                  "n": 0
+                },
+                "device": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+                "digest": "sha256:2352da7280f1decc3acf1ba84eb945c9fc2b7b541094e1d0992dbffd1b6664cc",
+                "kind": "grant",
+                "sig": "yZDn0nXdSf1LjZelGxng5VZwSzQf0FobZTBEvMfmsS9JkoFVmoMad-kRhL1Ja7cu2eQsjk0WA6CjTPRbKG58nw",
+                "v": 1
+              },
+              "grant": "sha256:711430f6164e93803d93428bc1fab80f41e213bb197689307de8606d437c3038"
+            },
+            "clock": {
+              "ms": 1500,
+              "n": 0
+            },
+            "feed": "ccc",
+            "id": "sha256:5ffb08209c66199045c64bacbefba43afa830d884d20fb7fffd8fc2acb8227fe",
+            "seq": 1,
+            "type": "auth.consent"
+          }
+        ],
+        "presence_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+        }
+      },
+      "kind": "fold_authority",
+      "name": "consent-for-a-grant-of-a-different-tool-does-not-count"
+    },
+    {
+      "expect": {
+        "ok": {
+          "grants": {},
+          "refusals": {
+            "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf": "grant.consent_unknown_device"
+          },
+          "rules": {},
+          "waiting_for_consent": [
+            "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf"
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "agent": "agent.mail",
+              "scope": "mesh",
+              "tool": "mail.send",
+              "widening": true
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "aaa",
+            "id": "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf",
+            "seq": 1,
+            "type": "auth.grant"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1500,
+                  "n": 0
+                },
+                "device": "sha256:3ba02485c17db8a76e77c37e05a812778ffc7b5a8b03cb19866728bfb08c9bed",
+                "digest": "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf",
+                "kind": "grant",
+                "sig": "_OUctNMAi2mMjb3Z20lt1NTxsgGvWVgs3W_8FQocW2MTlh89GkFvJSDdufw6hI3tVLqiT9V-eAd9t97cS_uq5w",
+                "v": 1
+              },
+              "grant": "sha256:60c5590f72eef292f9545afc28bf63ca91d2016a0a288f90f9a32f89d3fffcaf"
+            },
+            "clock": {
+              "ms": 1500,
+              "n": 0
+            },
+            "feed": "ccc",
+            "id": "sha256:e67be79550661604d9b9c646911c80d74f6c691613224c207fa7088c20698acd",
+            "seq": 1,
+            "type": "auth.consent"
+          }
+        ],
+        "presence_keys": {
+          "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY"
+        }
+      },
+      "kind": "fold_authority",
+      "name": "consent-by-a-device-off-the-roster-does-not-count"
+    },
+    {
+      "expect": {
+        "ok": {
+          "grants": {},
+          "refusals": {},
           "rules": {
             "mail.send": "deny"
           },

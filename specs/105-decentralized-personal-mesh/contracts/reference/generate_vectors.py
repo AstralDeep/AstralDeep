@@ -4769,117 +4769,141 @@ def build_fold() -> Suite:
             after,
         )
 
+    def consent_for(
+        grant_event: dict[str, Any],
+        feed: str,
+        ms: int,
+        digest: str | None = None,
+        scalar: int | None = None,
+    ) -> dict[str, Any]:
+        target = grant_event["id"]
+        return ev(
+            "c-" + target[-8:] + feed,
+            feed,
+            1,
+            ms,
+            "auth.consent",
+            {
+                "consent": consent.build(
+                    "grant",
+                    digest or target,
+                    ALICE.id,
+                    scalar or ALICE.presence_scalar,
+                    hlc(ms),
+                ),
+                "grant": target,
+            },
+        )
+
+    def authority_case(
+        name: str,
+        events: list[dict[str, Any]],
+        grants: dict[str, str],
+        waiting: list[str] | None = None,
+        refusals: dict[str, str] | None = None,
+    ) -> None:
+        s.add(
+            name,
+            "fold_authority",
+            {"events": events, "presence_keys": keys_},
+            expect={
+                "grants": grants,
+                "refusals": refusals or {},
+                "rules": {},
+                "waiting_for_consent": waiting or [],
+            },
+        )
+
+    key = "agent.mail/mail.send/mesh"
     g1, r1 = grant("g1", "aaa", 1, 1000), revoke("r1", "bbb", 1, 1100)
-    out = s.add(
-        "revoke-beats-a-concurrent-grant",
-        "fold_authority",
-        {"events": [g1, r1], "presence_keys": keys_},
-        expect={"grants": {}, "rules": {}, "waiting_for_consent": []},
+    c1 = consent_for(g1, "ccc", 1050)
+    authority_case(
+        "a-grant-without-consent-is-ignored",
+        [g1],
+        {},
+        [eid("g1")],
+        {eid("g1"): "grant.consent_missing"},
     )
-    out = s.add(
-        "revoke-after-the-grant-removes-it",
-        "fold_authority",
-        {
-            "events": [g1, revoke("r2", "bbb", 1, 1100, [eid("g1")])],
-            "presence_keys": keys_,
-        },
-        expect={"grants": {}, "rules": {}, "waiting_for_consent": []},
+    authority_case("a-consented-grant-takes-effect", [g1, c1], {key: eid("g1")})
+    authority_case("revoke-beats-a-concurrent-grant", [g1, c1, r1], {})
+    authority_case(
+        "revoke-without-consent-is-applied",
+        [g1, c1, revoke("r2", "bbb", 1, 1100, [eid("g1")])],
+        {},
     )
     g2 = grant("g2", "aaa", 2, 2000, [eid("r1")])
-    s.add(
+    authority_case(
         "grant-after-the-revoke-takes-effect",
-        "fold_authority",
-        {"events": [g1, r1, g2], "presence_keys": keys_},
-        expect={
-            "grants": {"agent.mail/mail.send/mesh": eid("g2")},
-            "rules": {},
-            "waiting_for_consent": [],
-        },
+        [g1, c1, r1, g2, consent_for(g2, "ddd", 2050)],
+        {key: eid("g2")},
     )
-    s.add(
+    g3 = grant("g3", "aaa", 2, 2000)
+    authority_case(
         "grant-that-follows-a-revoke-in-its-own-feed",
-        "fold_authority",
-        {
-            "events": [revoke("r3", "aaa", 1, 1000), grant("g3", "aaa", 2, 2000)],
-            "presence_keys": keys_,
-        },
-        expect={
-            "grants": {"agent.mail/mail.send/mesh": eid("g3")},
-            "rules": {},
-            "waiting_for_consent": [],
-        },
+        [revoke("r3", "aaa", 1, 1000), g3, consent_for(g3, "ddd", 2050)],
+        {key: eid("g3")},
     )
     wide = grant("w1", "aaa", 1, 1000, widening=True)
-    s.add(
-        "widening-grant-waits-for-consent",
-        "fold_authority",
-        {"events": [wide], "presence_keys": keys_},
-        expect={"grants": {}, "rules": {}, "waiting_for_consent": [eid("w1")]},
+    authority_case(
+        "a-grant-marked-widening-without-consent-is-ignored",
+        [wide],
+        {},
+        [eid("w1")],
+        {eid("w1"): "grant.consent_missing"},
     )
-    cons = ev(
-        "c1",
-        "aaa",
-        2,
-        1500,
-        "auth.consent",
-        {
-            "consent": consent.build(
-                "grant", eid("w1"), ALICE.id, ALICE.presence_scalar, hlc(1500)
-            ),
-            "grant": eid("w1"),
-        },
+    authority_case(
+        "a-grant-marked-widening-with-consent-takes-effect",
+        [wide, consent_for(wide, "ccc", 1500)],
+        {key: eid("w1")},
     )
-    s.add(
-        "widening-grant-with-consent-takes-effect",
-        "fold_authority",
-        {"events": [wide, cons], "presence_keys": keys_},
-        expect={
-            "grants": {"agent.mail/mail.send/mesh": eid("w1")},
-            "rules": {},
-            "waiting_for_consent": [],
-        },
-    )
-    forged = ev(
-        "c2",
-        "aaa",
-        2,
-        1500,
-        "auth.consent",
-        {
-            "consent": consent.build(
-                "grant", eid("w1"), ALICE.id, ALICE.identity_scalar, hlc(1500)
-            ),
-            "grant": eid("w1"),
-        },
-    )
-    s.add(
+    authority_case(
         "consent-signed-with-the-wrong-key-does-not-count",
-        "fold_authority",
-        {"events": [wide, forged], "presence_keys": keys_},
-        expect={"grants": {}, "rules": {}, "waiting_for_consent": [eid("w1")]},
+        [wide, consent_for(wide, "ccc", 1500, scalar=ALICE.identity_scalar)],
+        {},
+        [eid("w1")],
+        {eid("w1"): "grant.consent_bad_signature"},
     )
-    wrong = ev(
-        "c3",
-        "aaa",
-        2,
+    authority_case(
+        "consent-for-another-grant-does-not-count",
+        [wide, consent_for(wide, "ccc", 1500, digest=crypto.sha256_id(b"other"))],
+        {},
+        [eid("w1")],
+        {eid("w1"): "grant.consent_wrong_action"},
+    )
+    other_tool = grant("o1", "bbb", 1, 1000, tool="files.delete")
+    authority_case(
+        "consent-for-a-grant-of-a-different-tool-does-not-count",
+        [
+            g1,
+            other_tool,
+            consent_for(g1, "ccc", 1500, digest=eid("o1")),
+        ],
+        {},
+        sorted([eid("g1"), eid("o1")]),
+        {
+            eid("g1"): "grant.consent_wrong_action",
+            eid("o1"): "grant.consent_missing",
+        },
+    )
+    unknown = ev(
+        "cu",
+        "ccc",
+        1,
         1500,
         "auth.consent",
         {
             "consent": consent.build(
-                "grant",
-                crypto.sha256_id(b"other"),
-                ALICE.id,
-                ALICE.presence_scalar,
-                hlc(1500),
+                "grant", eid("w1"), MALLORY.id, MALLORY.presence_scalar, hlc(1500)
             ),
             "grant": eid("w1"),
         },
     )
-    s.add(
-        "consent-for-another-grant-does-not-count",
-        "fold_authority",
-        {"events": [wide, wrong], "presence_keys": keys_},
-        expect={"grants": {}, "rules": {}, "waiting_for_consent": [eid("w1")]},
+    authority_case(
+        "consent-by-a-device-off-the-roster-does-not-count",
+        [wide, unknown],
+        {},
+        [eid("w1")],
+        {eid("w1"): "grant.consent_unknown_device"},
     )
     n1 = ev(
         "n1", "aaa", 3, 3000, "auth.narrow", {"key": "mail.send", "rule": "consent"}
@@ -4892,6 +4916,7 @@ def build_fold() -> Suite:
         {"events": [n1, n2, n3], "presence_keys": keys_},
         expect={
             "grants": {},
+            "refusals": {},
             "rules": {"mail.send": "deny"},
             "waiting_for_consent": [],
         },

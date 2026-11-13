@@ -161,7 +161,7 @@ The family decides the merge rule. The body of every type is a canonical JSON ob
 | `ui.surface_put` | ui | chat id | `document` (see `surface.md`) |
 | `ui.patch` | ui | chat id | `surface`, `ops` |
 | `ui.action` | ui | chat id | `surface`, `component`, `capability`, `args` |
-| `auth.grant` | authority | `mesh` or chat id | `agent`, `tool`, `scope`, `widening` |
+| `auth.grant` | authority | `mesh` or chat id | `agent`, `tool`, `scope`. Needs a consent (section 10.3). `widening` is accepted and ignored |
 | `auth.revoke` | authority | `mesh` or chat id | `agent`, `tool`, `scope` |
 | `auth.narrow` | authority | `mesh` or chat id | `key`, `rule` |
 | `auth.policy` | authority | `mesh` | `policy`, `consent` (see `policy.md`) |
@@ -196,7 +196,7 @@ A `chat.user_message` that no turn names in its `message` field is queued. It is
 ### 10.3 Authority
 
 - A grant is keyed by `(agent, tool, scope)`. A grant is in effect only if every revoke with the same key is an ancestor of the grant. A revoke that is concurrent with the grant, or later, wins. A grant written after the revoke is a new grant and stands.
-- A grant whose `widening` is true is in effect only if some `auth.consent` event names it in `grant` and carries a valid consent signature (`consent.kind` is `grant`, `digest` is the grant's event id, signed by the presence key of a roster member). Until then it is listed as waiting for consent.
+- **Every grant needs consent.** A grant is in effect only if some `auth.consent` event names it in `grant` and carries a valid consent signature (`consent.kind` is `grant`, `digest` is the grant's event id, signed by the presence key of a roster member). The grant's event id covers its agent, tool and scope, so the signature covers exactly what the owner was shown. The host draws the prompt from the grant's tool and scope. A grant without a valid consent is ignored and listed in `waiting_for_consent`, and `refusals` maps its id to a dotted code: `grant.consent_missing` when no consent names it, otherwise `grant.consent_` plus the reason the earliest consent failed (`malformed`, `wrong_action`, `unknown_device`, `bad_signature`). The `widening` field of a grant body is no longer read, so a writer that skips the prompt cannot widen anything. A revoke is narrowing and needs no consent.
 - `auth.narrow` events give a rule per key from `allow`, `consent`, `deny`. The strictest rule across all narrow events applies. Narrowing needs no consent and applies the moment a peer sees it. Any other rule value raises `fold.bad_rule`.
 - The budget policy is merged by `policy.md`.
 

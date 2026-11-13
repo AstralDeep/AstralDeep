@@ -88,16 +88,17 @@ def authority(
 ) -> dict[str, Any]:
     anc = ancestors(events)
     consented: set[str] = set()
-    for event in events:
-        if event["type"] == "auth.consent":
-            target = event["body"]["grant"]
-            try:
-                consent_mod.verify(
-                    event["body"]["consent"], "grant", target, presence_keys
-                )
-            except MeshError:
-                continue
-            consented.add(target)
+    failures: dict[str, str] = {}
+    for event in sorted(
+        (e for e in events if e["type"] == "auth.consent"), key=order_key
+    ):
+        target = event["body"]["grant"]
+        try:
+            consent_mod.verify(event["body"]["consent"], "grant", target, presence_keys)
+        except MeshError as error:
+            failures.setdefault(target, error.code.removeprefix("consent."))
+            continue
+        consented.add(target)
 
     def key_of(e: dict[str, Any]) -> tuple[str, str, str]:
         return (e["body"]["agent"], e["body"]["tool"], e["body"]["scope"])
@@ -108,11 +109,17 @@ def authority(
             revokes.setdefault(key_of(event), []).append(event["id"])
     grants: dict[str, str] = {}
     waiting: list[str] = []
+    refusals: dict[str, str] = {}
     for event in sorted(
         (e for e in events if e["type"] == "auth.grant"), key=order_key
     ):
-        if event["body"]["widening"] and event["id"] not in consented:
+        if event["id"] not in consented:
             waiting.append(event["id"])
+            refusals[event["id"]] = (
+                "grant.consent_" + failures[event["id"]]
+                if event["id"] in failures
+                else "grant.consent_missing"
+            )
             continue
         if all(r in anc[event["id"]] for r in revokes.get(key_of(event), [])):
             grants["/".join(key_of(event))] = event["id"]
@@ -129,6 +136,7 @@ def authority(
                 rules[key] = rule
     return {
         "grants": dict(sorted(grants.items())),
+        "refusals": dict(sorted(refusals.items())),
         "rules": dict(sorted(rules.items())),
         "waiting_for_consent": sorted(waiting),
     }

@@ -31,8 +31,8 @@
       "spec": "contracts/event.md#feeds-and-chains"
     },
     "fold.json": {
-      "cases": 22,
-      "sha256": "20be9a77033448a202deb0860e63e236073aa036bffb57d05355e63d41b9b1ac",
+      "cases": 26,
+      "sha256": "723e0f07a2a579fbd166bf4412229ffc9d8806dcda14b791deed4016efb2b0d2",
       "spec": "contracts/event.md#merge-rules"
     },
     "keys.json": {
