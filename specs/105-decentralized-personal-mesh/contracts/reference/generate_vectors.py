@@ -25,6 +25,7 @@ from astral_mesh_ref import (
     policy,
     roster,
     runner,
+    requests as requests_ref,
     runs as runs_ref,
     sync,
     ticket,
@@ -38,6 +39,7 @@ runs_ref.register(runner.op)
 learning_ref.register(runner.op)
 credential_ref.register(runner.op)
 transfer_ref.register(runner.op)
+requests_ref.register(runner.op)
 
 HERE = Path(__file__).resolve().parent
 VECTORS = HERE.parent / "vectors"
@@ -8050,6 +8052,25 @@ def build_credential() -> Suite:
             "wrap_public_hex": device.wrap_public.hex(),
         }
 
+    def seal_audience(
+        n: str, v: dict[str, Any], who: list[TestDevice], audience: str
+    ) -> dict[str, Any]:
+        return s.add(
+            "seal-"
+            + n.replace(".", "-")
+            + "-to-"
+            + ("nobody" if not who else "-".join(d.name for d in who))
+            + "-audience-"
+            + audience,
+            "credential_seal",
+            {
+                "audience": audience,
+                "name": n,
+                "recipients": [recipient(d) for d in who],
+                "value": v,
+            },
+        )["body"]
+
     def seal(n: str, v: dict[str, Any], who: list[TestDevice]) -> dict[str, Any]:
         return s.add(
             "seal-" + n.replace(".", "-") + "-to-" + "-".join(d.name for d in who),
@@ -8309,6 +8330,138 @@ def build_credential() -> Suite:
         },
         expect={"hidden": [], "values": {name: value}},
     )
+    everyone = seal_audience(name, value, [ALICE, BOB], "all")
+    listed = seal_audience(name, value, [ALICE, BOB], "list")
+    s.add(
+        "an-all-audience-item-passes-the-check",
+        "credential_check",
+        {"body": everyone, "labels": labels_secret, "type": "key.credential"},
+        expect={"name": name},
+    )
+    s.add(
+        "a-list-audience-item-passes-the-check",
+        "credential_check",
+        {"body": listed, "labels": labels_secret, "type": "key.credential"},
+        expect={"name": name},
+    )
+    s.add(
+        "an-unknown-audience-is-refused",
+        "credential_check",
+        {
+            "body": {**everyone, "audience": "some"},
+            "labels": labels_secret,
+            "type": "key.credential",
+        },
+        error="credential.malformed",
+    )
+    s.add(
+        "a-non-text-audience-is-refused",
+        "credential_check",
+        {
+            "body": {**everyone, "audience": ["all"]},
+            "labels": labels_secret,
+            "type": "key.credential",
+        },
+        error="credential.malformed",
+    )
+    s.add(
+        "an-audience-does-not-change-what-a-recipient-opens",
+        "credential_open",
+        {
+            "body": everyone,
+            "device": BOB.id,
+            "wrap_private_hex": BOB.wrap_private.hex(),
+        },
+        expect={"value": value},
+    )
+
+    def reseal(
+        case: str,
+        events: list[dict[str, Any]],
+        members: list[str],
+        who: TestDevice,
+        names: list[str],
+    ) -> None:
+        s.add(
+            case,
+            "credential_reseal",
+            {
+                "device": who.id,
+                "events": events,
+                "members": members,
+                "wrap_private_hex": who.wrap_private.hex(),
+            },
+            expect={"names": names},
+        )
+
+    members = [ALICE.id, BOB.id, CAROL.id]
+    full = seal_audience(name, value, [ALICE, BOB, CAROL], "all")
+    reseal(
+        "reseal-an-all-item-that-misses-a-new-device",
+        [item(ALICE.feed, 5000, everyone)],
+        members,
+        ALICE,
+        [name],
+    )
+    reseal(
+        "reseal-is-skipped-when-the-new-device-already-has-a-box",
+        [item(ALICE.feed, 5000, full)],
+        members,
+        ALICE,
+        [],
+    )
+    reseal(
+        "reseal-is-skipped-for-an-explicit-list",
+        [item(ALICE.feed, 5000, listed)],
+        members,
+        ALICE,
+        [],
+    )
+    reseal(
+        "reseal-is-skipped-for-an-item-without-an-audience",
+        [item(ALICE.feed, 5000, both)],
+        members,
+        ALICE,
+        [],
+    )
+    reseal(
+        "reseal-is-skipped-by-a-device-that-cannot-open-the-item",
+        [item(ALICE.feed, 5000, seal_audience(name, value, [ALICE], "all"))],
+        members,
+        BOB,
+        [],
+    )
+    reseal(
+        "reseal-is-skipped-for-a-removed-credential",
+        [item(ALICE.feed, 5000, seal_audience(name, {}, [], "all"))],
+        members,
+        ALICE,
+        [],
+    )
+    reseal(
+        "reseal-looks-only-at-the-winning-item",
+        [
+            item(ALICE.feed, 5000, everyone),
+            item(BOB.feed, 6000, full),
+        ],
+        members,
+        ALICE,
+        [],
+    )
+    reseal(
+        "reseal-names-each-credential-once",
+        [
+            item(ALICE.feed, 5000, everyone),
+            item(
+                ALICE.feed,
+                5100,
+                seal_audience("model.provider.local", value, [ALICE, BOB], "all"),
+            ),
+        ],
+        members,
+        ALICE,
+        [name, "model.provider.local"],
+    )
     return s
 
 
@@ -8376,6 +8529,454 @@ def build_transfer() -> Suite:
     return s
 
 
+def build_requests() -> Suite:
+    s = Suite("requests", "contracts/requests.md")
+    people = (ALICE, BOB, CAROL, MALLORY)
+    feeds = {d.feed: d.id for d in people}
+    chat = _eid("requests", "chat")
+    args = {"path": "notes/today.md"}
+    args_text = canonical(args).decode()
+    action = {
+        "agent": "kernel",
+        "args_digest": crypto.sha256_id(canonical(args)),
+        "device": ALICE.id,
+        "influence": [],
+        "mesh": _eid("requests", "mesh"),
+        "tool": "files.read",
+        "tool_def": _eid("requests", "tool-def"),
+        "turn": _eid("requests", "turn"),
+        "v": 1,
+    }
+    call = {
+        "action": action,
+        "arguments": args_text,
+        "call_id": "call_0001",
+        "ticket": {
+            "capability": "Zm9v",
+            "consent": None,
+            "receipt": None,
+            "v": 1,
+        },
+        "tool": "files.read",
+    }
+
+    def send(**fields: Any) -> dict[str, Any]:
+        body = {"call": None, "continues": None, "text": "read my notes", "to": BOB.id}
+        body.update(fields)
+        return body
+
+    def check(name: str, kind: str, body: Any, error: str | None = None, **ok: Any):
+        s.add(
+            name,
+            "request_check",
+            {"body": body, "type": kind},
+            error=error,
+            expect=None if error else ok,
+        )
+
+    check("a-plain-request-is-accepted", "request.send", send(), call=False, to=BOB.id)
+    check(
+        "a-request-continuing-a-turn-is-accepted",
+        "request.send",
+        send(continues=_eid("requests", "turn")),
+        call=False,
+        to=BOB.id,
+    )
+    check(
+        "a-request-carrying-a-tool-call-and-ticket-is-accepted",
+        "request.send",
+        send(call=call),
+        call=True,
+        to=BOB.id,
+    )
+    check(
+        "an-extra-field-is-refused",
+        "request.send",
+        {**send(), "extra": 1},
+        "request.malformed",
+    )
+    check(
+        "a-missing-call-field-is-refused",
+        "request.send",
+        {k: v for k, v in send().items() if k != "call"},
+        "request.malformed",
+    )
+    check("a-target-that-is-not-a-device-id-is-refused", "request.send", send(to="bob"), "request.malformed")
+    check("empty-text-is-refused", "request.send", send(text=""), "request.malformed")
+    check(
+        "text-over-the-limit-is-refused",
+        "request.send",
+        send(text="x" * 65537),
+        "request.malformed",
+    )
+    check(
+        "a-continues-that-is-not-an-id-is-refused",
+        "request.send",
+        send(continues="turn-1"),
+        "request.malformed",
+    )
+    check(
+        "a-call-with-an-unknown-field-is-refused",
+        "request.send",
+        send(call={**call, "extra": True}),
+        "request.malformed",
+    )
+    check(
+        "a-call-id-with-a-space-is-refused",
+        "request.send",
+        send(call={**call, "call_id": "call 1"}),
+        "request.malformed",
+    )
+    check(
+        "arguments-that-are-not-canonical-are-refused",
+        "request.send",
+        send(call={**call, "arguments": '{ "path": "notes/today.md" }'}),
+        "request.malformed",
+    )
+    check(
+        "arguments-that-are-not-an-object-are-refused",
+        "request.send",
+        send(call={**call, "arguments": "[1]"}),
+        "request.malformed",
+    )
+    check(
+        "a-ticket-with-the-wrong-version-is-refused",
+        "request.send",
+        send(call={**call, "ticket": {**call["ticket"], "v": 2}}),
+        "request.malformed",
+    )
+    check(
+        "a-ticket-with-an-extra-field-is-refused",
+        "request.send",
+        send(call={**call, "ticket": {**call["ticket"], "extra": 1}}),
+        "request.malformed",
+    )
+    check(
+        "an-action-with-a-missing-field-is-refused",
+        "request.send",
+        send(call={**call, "action": {k: v for k, v in action.items() if k != "agent"}}),
+        "request.malformed",
+    )
+    check(
+        "a-tool-that-differs-from-the-action-is-refused",
+        "request.send",
+        send(call={**call, "tool": "files.write"}),
+        "request.call_mismatch",
+    )
+    check(
+        "arguments-that-differ-from-the-action-digest-are-refused",
+        "request.send",
+        send(call={**call, "arguments": canonical({"path": "other"}).decode()}),
+        "request.call_mismatch",
+    )
+    rid = _eid("requests", "target-request")
+    check("a-claim-is-accepted", "request.claim", {"request": rid}, request=rid)
+    check("a-cancel-is-accepted", "request.cancel", {"request": rid}, request=rid)
+    check(
+        "a-refusal-is-accepted",
+        "request.refuse",
+        {"code": "gate.permission_denied", "request": rid},
+        code="gate.permission_denied",
+        request=rid,
+    )
+    check("a-claim-with-an-extra-field-is-refused", "request.claim", {"request": rid, "note": "x"}, "request.malformed")
+    check("a-claim-naming-no-event-is-refused", "request.claim", {"request": "r1"}, "request.malformed")
+    check(
+        "a-refusal-without-a-dotted-code-is-refused",
+        "request.refuse",
+        {"code": "denied", "request": rid},
+        "request.malformed",
+    )
+    check(
+        "a-refusal-with-an-upper-case-code-is-refused",
+        "request.refuse",
+        {"code": "Gate.Denied", "request": rid},
+        "request.malformed",
+    )
+    check("an-unknown-type-is-refused", "request.answer", {"request": rid}, "event.unknown_type")
+
+    class Log:
+        def __init__(self, tag: str) -> None:
+            self.tag, self.n, self.seq = tag, 0, {}
+            self.events: list[dict[str, Any]] = []
+
+        def add(
+            self,
+            name: str,
+            dev: TestDevice,
+            kind: str,
+            body: Any,
+            after: list[str] | None = None,
+            tick: int | None = None,
+        ) -> str:
+            self.n += 1
+            self.seq[dev.name] = self.seq.get(dev.name, 0) + 1
+            eid = _eid("requests", self.tag, name)
+            self.events.append(
+                {
+                    "after": sorted(after or []),
+                    "body": body,
+                    "clock": hlc(sc.BASE_MS + (tick or self.n) * 1000),
+                    "feed": dev.feed,
+                    "id": eid,
+                    "seq": self.seq[dev.name],
+                    "type": kind,
+                }
+            )
+            return eid
+
+        def ask(self, dev: TestDevice = ALICE, to: TestDevice = BOB, name: str = "ask", **fields: Any) -> str:
+            return self.add(name, dev, "request.send", send(to=to.id, **fields))
+
+        def claim(self, dev: TestDevice, request: str, name: str = "claim", **kw: Any) -> str:
+            return self.add(name, dev, "request.claim", {"request": request}, **kw)
+
+        def refuse(self, dev: TestDevice, request: str, code: str = "gate.denied", name: str = "refuse", **kw: Any) -> str:
+            return self.add(name, dev, "request.refuse", {"code": code, "request": request}, **kw)
+
+        def cancel(self, dev: TestDevice, request: str, name: str = "cancel", **kw: Any) -> str:
+            return self.add(name, dev, "request.cancel", {"request": request}, **kw)
+
+        def answer(self, dev: TestDevice, request: str, name: str = "answer", **kw: Any) -> str:
+            return self.add(
+                name,
+                dev,
+                "chat.turn_start",
+                {"continues": None, "message": None, "request": request},
+                **kw,
+            )
+
+    def fold_case(name: str, log: Log, expect: Any = None, devices: Any = None) -> Any:
+        return s.add(
+            name,
+            "request_fold",
+            {
+                "devices": devices if devices is not None else feeds,
+                "events": copy.deepcopy(log.events),
+            },
+            expect=expect,
+        )
+
+    def view(rid: str, **fields: Any) -> dict[str, Any]:
+        base = {
+            "author": ALICE.id,
+            "claim": None,
+            "code": None,
+            "id": rid,
+            "state": "pending",
+            "to": BOB.id,
+            "turn": None,
+        }
+        base.update(fields)
+        return base
+
+    log = Log("pending")
+    r = log.ask()
+    fold_case("a-new-request-is-pending", log, {"ignored": [], "requests": [view(r)]})
+
+    log = Log("claimed")
+    r = log.ask()
+    c = log.claim(BOB, r)
+    fold_case(
+        "the-target-claims-it",
+        log,
+        {"ignored": [], "requests": [view(r, claim=c, state="claimed")]},
+    )
+
+    log = Log("answered")
+    r = log.ask()
+    c = log.claim(BOB, r)
+    t = log.answer(BOB, r)
+    fold_case(
+        "a-turn-the-target-records-answers-it",
+        log,
+        {"ignored": [], "requests": [view(r, claim=c, state="answered", turn=t)]},
+    )
+
+    log = Log("refused")
+    r = log.ask()
+    f = log.refuse(BOB, r, "gate.permission_denied")
+    fold_case(
+        "the-target-refuses-it-with-a-reason",
+        log,
+        {
+            "ignored": [],
+            "requests": [view(r, code="gate.permission_denied", state="refused")],
+        },
+    )
+
+    log = Log("refused-after-claim")
+    r = log.ask()
+    c = log.claim(BOB, r)
+    log.refuse(BOB, r, "ticket.stopped")
+    fold_case(
+        "a-refusal-after-a-claim-ends-it",
+        log,
+        {
+            "ignored": [],
+            "requests": [view(r, claim=c, code="ticket.stopped", state="refused")],
+        },
+    )
+
+    log = Log("cancelled")
+    r = log.ask()
+    log.cancel(ALICE, r)
+    fold_case(
+        "the-requester-cancels-it",
+        log,
+        {"ignored": [], "requests": [view(r, state="cancelled")]},
+    )
+
+    log = Log("cancel-concurrent")
+    r = log.ask()
+    x = log.cancel(ALICE, r, tick=10)
+    c = log.claim(BOB, r, tick=11)
+    fold_case(
+        "a-claim-concurrent-with-a-cancel-stands",
+        log,
+        {"ignored": [], "requests": [view(r, claim=c, state="claimed")]},
+    )
+
+    log = Log("cancel-seen")
+    r = log.ask()
+    x = log.cancel(ALICE, r)
+    c = log.claim(BOB, r, after=[x])
+    fold_case(
+        "a-claim-written-after-seeing-the-cancel-is-void",
+        log,
+        {"ignored": [c], "requests": [view(r, state="cancelled")]},
+    )
+
+    log = Log("late-cancel")
+    r = log.ask()
+    c = log.claim(BOB, r)
+    log.cancel(ALICE, r, after=[c])
+    fold_case(
+        "a-cancel-after-a-claim-changes-nothing",
+        log,
+        {"ignored": [], "requests": [view(r, claim=c, state="claimed")]},
+    )
+
+    log = Log("answer-wins")
+    r = log.ask()
+    c = log.claim(BOB, r)
+    t = log.answer(BOB, r)
+    log.refuse(BOB, r, "gate.denied")
+    fold_case(
+        "an-answering-turn-outranks-a-later-refusal",
+        log,
+        {"ignored": [], "requests": [view(r, claim=c, state="answered", turn=t)]},
+    )
+
+    log = Log("two-claims")
+    r = log.ask()
+    c1 = log.claim(BOB, r, name="first")
+    log.claim(BOB, r, name="second")
+    fold_case(
+        "the-earliest-of-two-claims-is-the-claim",
+        log,
+        {"ignored": [], "requests": [view(r, claim=c1, state="claimed")]},
+    )
+
+    log = Log("other-claim")
+    r = log.ask()
+    c = log.claim(CAROL, r)
+    fold_case(
+        "a-claim-by-another-member-is-ignored",
+        log,
+        {"ignored": [c], "requests": [view(r)]},
+    )
+
+    log = Log("other-refuse")
+    r = log.ask()
+    f = log.refuse(CAROL, r)
+    fold_case(
+        "a-refusal-by-another-member-is-ignored",
+        log,
+        {"ignored": [f], "requests": [view(r)]},
+    )
+
+    log = Log("other-cancel")
+    r = log.ask()
+    x = log.cancel(BOB, r)
+    fold_case(
+        "a-cancel-by-the-target-is-ignored",
+        log,
+        {"ignored": [x], "requests": [view(r)]},
+    )
+
+    log = Log("other-cancel-third")
+    r = log.ask()
+    x = log.cancel(CAROL, r)
+    fold_case(
+        "a-cancel-by-a-third-member-is-ignored",
+        log,
+        {"ignored": [x], "requests": [view(r)]},
+    )
+
+    log = Log("answer-other")
+    r = log.ask()
+    c = log.claim(BOB, r)
+    log.answer(CAROL, r)
+    fold_case(
+        "a-turn-recorded-by-another-member-does-not-answer",
+        log,
+        {"ignored": [], "requests": [view(r, claim=c, state="claimed")]},
+    )
+
+    log = Log("answer-unclaimed")
+    r = log.ask()
+    log.answer(BOB, r)
+    fold_case(
+        "a-turn-without-a-claim-does-not-answer",
+        log,
+        {"ignored": [], "requests": [view(r)]},
+    )
+
+    log = Log("unknown-target")
+    ghost = _eid("requests", "unknown", "request")
+    c = log.claim(BOB, ghost)
+    fold_case(
+        "a-claim-naming-an-unknown-request-is-ignored",
+        log,
+        {"ignored": [c], "requests": []},
+    )
+
+    log = Log("malformed")
+    bad = log.add("bad", ALICE, "request.send", {"text": "hi"})
+    fold_case(
+        "a-malformed-request-is-ignored",
+        log,
+        {"ignored": [bad], "requests": []},
+    )
+
+    log = Log("stranger")
+    bad = log.ask(dev=MALLORY)
+    fold_case(
+        "a-request-from-a-feed-no-member-owns-is-ignored",
+        log,
+        {"ignored": [bad], "requests": []},
+        devices={d.feed: d.id for d in (ALICE, BOB, CAROL)},
+    )
+
+    log = Log("many")
+    r1 = log.ask(name="first")
+    r2 = log.ask(dev=CAROL, to=ALICE, name="second")
+    c2 = log.claim(ALICE, r2)
+    fold_case(
+        "requests-are-independent-and-listed-in-order",
+        log,
+        {
+            "ignored": [],
+            "requests": [
+                view(r1),
+                view(r2, author=CAROL.id, claim=c2, state="claimed", to=ALICE.id),
+            ],
+        },
+    )
+    return s
+
+
 def suites(repin: bool) -> list[Suite]:
     return [
         build_canonical(),
@@ -8397,6 +8998,7 @@ def suites(repin: bool) -> list[Suite]:
         build_learning(),
         build_credential(),
         build_transfer(),
+        build_requests(),
     ]
 
 

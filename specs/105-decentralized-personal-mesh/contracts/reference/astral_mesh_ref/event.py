@@ -27,6 +27,10 @@ EVENT_TYPES = {
     "chat.turn_end": "chat",
     "chat.turn_outcome_unknown": "chat",
     "chat.spoken": "chat",
+    "request.send": "request",
+    "request.claim": "request",
+    "request.refuse": "request",
+    "request.cancel": "request",
     "ui.surface_put": "ui",
     "ui.patch": "ui",
     "ui.action": "ui",
@@ -158,7 +162,7 @@ def check_header_shape(header: Any) -> None:
             raise MeshError("event.malformed", "chat.create scope must be new")
     elif scope != "mesh" and not (crypto.is_id(scope)):
         raise MeshError("event.malformed", "scope")
-    if EVENT_TYPES[header["type"]] == "chat" and scope == "mesh":
+    if EVENT_TYPES[header["type"]] in ("chat", "request") and scope == "mesh":
         raise MeshError("event.malformed", "chat events need a chat scope")
     labels = header["labels"]
     if (

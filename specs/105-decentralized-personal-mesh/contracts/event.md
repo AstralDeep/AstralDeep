@@ -95,7 +95,7 @@ Any other field makes the header malformed. The event id is the hash of the cano
 |---|---|
 | Wrong fields, version, types, `prev`/`seq` pairing, unsorted `after`, bad scope, bad labels, bad key reference, bad body hash | `event.malformed` |
 | `type` not in section 9 | `event.unknown_type` |
-| `chat.create` with a scope other than `new`, or a chat type with scope `mesh` | `event.malformed` |
+| `chat.create` with a scope other than `new`, or a chat or request type with scope `mesh` | `event.malformed` |
 | Signature does not verify under `astral.event/v1` with the feed key | `event.bad_signature` |
 | Clock too far ahead | `event.future_clock` |
 
@@ -154,9 +154,10 @@ The family decides the merge rule. The body of every type is a canonical JSON ob
 | `chat.model_request`, `chat.model_response` | chat | chat id | none |
 | `chat.tool_proposed`, `chat.tool_authorized` | chat | chat id | none |
 | `chat.tool_result` | chat | chat id | the whole body is addressable by surface bindings |
-| `chat.turn_start` | chat | chat id | `continues` (turn id or null), `message` (user message id or null) |
+| `chat.turn_start` | chat | chat id | `continues` (turn id or null), `message` (user message id or null). Optional `request`: the request this turn answers (`requests.md`) |
 | `chat.turn_end`, `chat.turn_outcome_unknown` | chat | chat id | none |
 | `chat.spoken` | chat | chat id | none. `kind` is `answer` or `acknowledgement`, `text` is the assistant text a device actually played aloud, and `turn` is optional |
+| `request.send`, `request.claim`, `request.refuse`, `request.cancel` | request | chat id | see `requests.md`. The request fold reads `to`, `request`, `code`. `chat.turn_start` may also carry `request` |
 | `ui.surface_put` | ui | chat id | `document` (see `surface.md`) |
 | `ui.patch` | ui | chat id | `surface`, `ops` |
 | `ui.action` | ui | chat id | `surface`, `component`, `capability`, `args` |
@@ -172,7 +173,7 @@ The family decides the merge rule. The body of every type is a canonical JSON ob
 | `mem.remember`, `settings.set` | memory | `mesh` | `key`, `value` |
 | `mem.supersede` | memory | `mesh` | `key`, `value`, `supersedes` |
 | `key.content` | key | `mesh` | `id`, `key`, `scope` (see `keys.md`) |
-| `key.credential` | key | `mesh` | `name`, `boxes` (see `keys.md` section 4.1). The label is always secret |
+| `key.credential` | key | `mesh` | `name`, `boxes`, optional `audience` (see `keys.md` section 4.1). The label is always secret |
 
 A `chat.spoken` event records what the person heard in voice mode. It is visible to the owner like an assistant message and carries labels from the chat it was spoken in. A reader that builds model context for a later turn uses the spoken text of a turn in place of that turn's final model text, because the person heard only the spoken text. The complete model output stays in its `chat.model_response` events for audit and is never rewritten.
 

@@ -17,6 +17,7 @@ NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}")
 MAX_VALUE_BYTES = 65536
 MAX_BOXES = 64
 BODY_FIELDS = {"boxes", "name"}
+AUDIENCES = ("all", "list")
 BOX_FIELDS = {"epk", "nonce", "ct"}
 
 
@@ -33,8 +34,12 @@ def check_body(body: Any) -> None:
         raise MeshError("credential.malformed", "body is not an object")
     if "boxes" not in body:
         raise MeshError("credential.not_sealed", "no per-recipient boxes")
-    if set(body) != BODY_FIELDS or not _valid_name(body["name"]):
-        raise MeshError("credential.malformed", "fields or name")
+    if not (set(body) == BODY_FIELDS or set(body) == BODY_FIELDS | {"audience"}):
+        raise MeshError("credential.malformed", "fields")
+    if not _valid_name(body["name"]):
+        raise MeshError("credential.malformed", "name")
+    if "audience" in body and body["audience"] not in AUDIENCES:
+        raise MeshError("credential.malformed", "audience")
     boxes = body["boxes"]
     if not isinstance(boxes, dict) or len(boxes) > MAX_BOXES:
         raise MeshError("credential.malformed", "boxes")
@@ -67,8 +72,13 @@ def choose_recipients(members: list[str], requested: list[str] | None) -> list[s
 
 
 def seal_body(
-    name: str, value: dict[str, Any], recipients: list[dict[str, Any]]
+    name: str,
+    value: dict[str, Any],
+    recipients: list[dict[str, Any]],
+    audience: str | None = None,
 ) -> dict[str, Any]:
+    if audience is not None and audience not in AUDIENCES:
+        raise MeshError("credential.malformed", "audience")
     if not _valid_name(name):
         raise MeshError("credential.malformed", "name")
     plaintext = canonical(value)
@@ -84,7 +94,10 @@ def seal_body(
         )
         for r in recipients
     }
-    return {"boxes": boxes, "name": name}
+    body = {"boxes": boxes, "name": name}
+    if audience is not None:
+        body["audience"] = audience
+    return body
 
 
 def open_body(body: Any, device: str, wrap_private: bytes) -> dict[str, Any]:
@@ -125,6 +138,38 @@ def fold(
     return {"hidden": hidden, "values": values}
 
 
+def reseal_names(
+    events: list[dict[str, Any]],
+    members: list[str],
+    device: str,
+    wrap_private: bytes,
+) -> list[str]:
+    winners: dict[str, dict[str, Any]] = {}
+    for item in events:
+        try:
+            check_body(item["body"])
+        except MeshError:
+            continue
+        name = item["body"]["name"]
+        if name not in winners or _order(item) > _order(winners[name]):
+            winners[name] = item
+    names = []
+    for name in sorted(winners):
+        body = winners[name]["body"]
+        if (
+            body.get("audience") != "all"
+            or not body["boxes"]
+            or set(members) <= set(body["boxes"])
+        ):
+            continue
+        try:
+            open_body(body, device, wrap_private)
+        except MeshError:
+            continue
+        names.append(name)
+    return names
+
+
 def register(op: Callable[[str], Callable[[Any], Any]]) -> None:
     @op("credential_check")
     def _check(i: dict[str, Any]) -> Any:
@@ -145,7 +190,7 @@ def register(op: Callable[[str], Callable[[Any], Any]]) -> None:
             }
             for r in i["recipients"]
         ]
-        return {"body": seal_body(i["name"], i["value"], recipients)}
+        return {"body": seal_body(i["name"], i["value"], recipients, i.get("audience"))}
 
     @op("credential_open")
     def _open(i: dict[str, Any]) -> Any:
@@ -158,3 +203,14 @@ def register(op: Callable[[str], Callable[[Any], Any]]) -> None:
     @op("credential_fold")
     def _fold(i: dict[str, Any]) -> Any:
         return fold(i["events"], i["device"], bytes.fromhex(i["wrap_private_hex"]))
+
+    @op("credential_reseal")
+    def _reseal(i: dict[str, Any]) -> Any:
+        return {
+            "names": reseal_names(
+                i["events"],
+                i["members"],
+                i["device"],
+                bytes.fromhex(i["wrap_private_hex"]),
+            )
+        }

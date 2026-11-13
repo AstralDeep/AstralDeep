@@ -17,6 +17,7 @@ The formats are the ones fixed in [../tasks.md](../tasks.md). Where a format nee
 | [labels.md](labels.md) | `astral.labels/v1` | Integrity and confidentiality axes, inheritance, quarantined readers, flow rules, gate order | `labels.json` | `labels.py` |
 | [surface.md](surface.md) | `astral.surface/v1` | Surface documents, patches, action events and capabilities, value bindings | `surface.json` | `surface.py` |
 | [runs.md](runs.md) | `astral.runs/v1` | Run ids, lease, goal and schedule bodies, the lease fold (one executor, handoff, takeover with the owner's presence consent, contested runs), the state fold, run start checks, schedule arithmetic, the pre-check, the judge's fixed answer | `runs.json` | `runs.py` |
+| [requests.md](requests.md) | `astral.requests/v1` | Requests addressed to one member, the tool call and ticket a request carries, claim, refusal and cancel, and the fold that gives each request one state | `requests.json` | `requests.py` |
 | [learning.md](learning.md) | `astral.learning/v1` | Candidates and the content hash, evidence labels, proposal, gate, replay, adoption and reversal bodies, the static gate, the replay digest, the trial, the ledger fold that re-checks every adoption and recomputes owner review from the proposal itself | `learning.json` | `learning.py` |
 
 A change to a format raises its version. A document, its vectors and its reference module change together.
@@ -83,7 +84,8 @@ A harness runs each case by `kind` with `input` and compares the result with `ex
 | `ticket.json` | `action_digest`. `ticket_verify` (`ticket`, `action`, `effect_kind`, `mesh`, `roster_feeds`, `presence_keys`, `stop`, `now_s`, `consent_required`, `receipt_valid`) gives the claims. `consent_verify` | `devices`, `tokens`, `tokens_note` |
 | `labels.json` | `labels_join`, `labels_quarantine`, `labels_flow`, `labels_gate` | none |
 | `surface.json` | `surface_validate`, `surface_fold`, `surface_action`, `surface_bind` | `vocabulary`, `actionable` |
-| `credential.json` | `credential_check`, `credential_recipients`, `credential_seal`, `credential_open`, `credential_fold` | `devices` |
+| `credential.json` | `credential_check`, `credential_recipients`, `credential_seal`, `credential_open`, `credential_fold`, `credential_reseal` | `devices` |
+| `requests.json` | `request_check` (`type`, `body`) gives the summary of the body. `request_fold` (`events`, `devices`: feed to device) gives `requests` and `ignored` | none |
 | `transfer.json` | `transfer_check` | none |
 | `sync.json` | `sync_plan`, `sync_bodies`, `sync_message`, `sync_frame`, `checkpoint_verify`, `shortened` | `devices` |
 | `fold.json` | `fold_branches`, `fold_authority`, `fold_settings` | none |
