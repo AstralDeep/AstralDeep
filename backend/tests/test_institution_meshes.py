@@ -163,3 +163,13 @@ async def test_a_mailbox_that_cannot_start_leaves_the_owners_without_one(tmp_pat
     await registry.for_owner(Owner.verified(ISS, "alice"))
     assert fake.Kernel.instances[0].config.network.mailbox is None
     await registry.stop()
+
+
+def test_the_owner_capacity_comes_from_the_environment_and_ignores_nonsense(monkeypatch):
+    from orchestrator import institution_meshes as module
+
+    monkeypatch.setenv(module.MAX_OWNERS_ENV, "7")
+    assert module._configured_capacity() == 7
+    for value in ("", "0", "many", "-2"):
+        monkeypatch.setenv(module.MAX_OWNERS_ENV, value)
+        assert module._configured_capacity() == module.DEFAULT_MAX_OWNERS

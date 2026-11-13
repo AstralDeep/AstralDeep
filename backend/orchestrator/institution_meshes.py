@@ -24,6 +24,11 @@ MAX_OWNERS_ENV = "ASTRAL_INSTITUTION_MAX_OWNERS"
 DEFAULT_MAX_OWNERS = 1000
 
 
+def _configured_capacity() -> int:
+    raw = os.environ.get(MAX_OWNERS_ENV, "").strip()
+    return int(raw) if raw.isdigit() and int(raw) > 0 else DEFAULT_MAX_OWNERS
+
+
 @dataclass(frozen=True)
 class Owner:
     issuer: str
@@ -76,7 +81,7 @@ class InstitutionMeshes:
         self._binding = binding
         self._mailbox_settings = mailbox_settings
         self._mailbox: Optional[MailboxProcess] = None
-        self._max_owners = max_owners or DEFAULT_MAX_OWNERS
+        self._max_owners = max_owners or _configured_capacity()
         self._on_started = on_started
         self._meshes: Dict[str, NodeMesh] = {}
         self._owners: Dict[str, Owner] = {}

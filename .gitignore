@@ -26,6 +26,7 @@ docs/*
 !docs/keycloak*.md
 !docs/production-deployment.md
 !docs/personal-node.md
+!docs/institution-node.md
 !docs/byo-client-agents.md
 !docs/remote-compute-agents.md
 !docs/mcp-server-endpoint.md
