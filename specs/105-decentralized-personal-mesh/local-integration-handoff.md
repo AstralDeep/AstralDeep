@@ -136,3 +136,52 @@ first stop's state above still holds except where this section says otherwise.
 Task containers stopped without removal: `ad105-codex-pg`, `adwt-pg-phase-r`, `adwt-pg-rote`,
 `plane-pls-pg`, `plane-sqlite-contract-pg`, `sqlite-node-issuer`. The shared `astraldeep` stack was not
 touched.
+
+## Third stop, 2026-11-13
+
+The owner asked for a stopping point and approved pushing every spec 105 branch except
+AstralKernel. All agents are stopped. Nothing is merged to a default branch, released or deployed.
+
+### Where everything is
+
+| Repository | Branch and head | State |
+|---|---|---|
+| Deep | `feat/105-integration` (this handoff) | Every Deep lane merged: SQLite node, node peer with requests and tickets, institution profile and push wake, Vessel executor adapter (per-agent tokens, no owner or workspace in the action), and all contracts through attachments, node minting and ticket expiry. Contracts: 23 vector files match, 1,274 reference tests pass. Kernel wheel pin is still 12e7cdc. |
+| Deep | `feat/105-personal-mesh` de9f5f8c | Spec and contracts up to invitations. Behind `feat/105-integration`. Not moved because the main checkout holds unrelated owner changes. |
+| Kernel (local only) | `k/integration` 34ef4a5 | Merges `k/node-mint` and `k/attach` with a schema 2 to 3 log upgrade test. The full test run, flake loops and artifact rebuild after the merge did NOT finish. Last verified artifacts are 22513f9 (1,054 tests) and the two lanes alone (1,084 and 1,111 tests). |
+| Projection | `feat/105-mesh-final` 503988a | Full UX pass on Mac and iOS, invitation pairing, rename, Markdown, metric cards, settings rows, node pack merged. macOS 202 tests, iOS 900 (1 skip), MeshModeUITests 17, all passing. Kernel artifacts 22513f9. |
+| Vessel | `feat/105-vessel-final` 3c50ea8 | Executor with the pinned kernel wheel, per-agent tokens, persisted replay memory, real ticket end to end, node env wiring. 147 passed, 1 skipped. |
+| Plane | `feat/105-plane-sqlite` f8f2a63 | SQLite backend with the write-lock fix. |
+| LETS, Primitives | `feat/105-personal-mesh` 1321306, f4314c8 | Unchanged since the second stop. |
+
+### Live state on the owner's Mac
+
+- The redesigned localtest apps (503988a, kernel 22513f9) are staged. The iPhone simulator
+  33EFFC80 opens the existing mesh with its chats and three devices.
+- The Mac app waits on a Keychain prompt for `com.personalailabs.astraldeep.localtest.mesh-device`
+  caused by the new ad-hoc signature. The owner answers it, then checks chats, devices and provider.
+- Backup of both apps' data before staging:
+  `AstralProjection-wt/localtest-backup-20261113/` (no Keychain items). Restoring
+  `mac/ApplicationSupport` is safe if the Mac fails after the prompt.
+
+### Resume order
+
+1. Kernel `k/integration` 34ef4a5: run `cargo test --workspace --locked --no-fail-fast` with
+   vectors from this branch, loop the known flaky tests 20 times, then rebuild the Apple
+   xcframework, the Linux wheel (smoke), the Linux mailbox and the macOS CLI with SHA256SUMS.
+2. Deep: pin the new wheel and mailbox, let the node call `mint_ticket_for_request` for executor
+   tools, and trace why a Vessel node listed no tools ("node signing key is missing").
+3. App: bind attachments and the merged artifacts, run the AstralCore package tests, re-stage with
+   a fresh backup.
+4. Write the missing automated tests listed in [qualification.md](qualification.md), smallest first.
+5. Measure the live valid-surface rate with the provider credentials from `.env` through a script.
+6. Owner: the UX review in the staged apps, invitation pairing, and the voice test on the Mac.
+
+### Open gaps
+
+- No mesh event tells an owner device that a node needs consent, so node tools that need it fail
+  closed with `consent.required`.
+- The model does not see attachments, and nothing imports A2UI from tool results automatically.
+- There is no owner-initiated allowance transfer and no way to create a PHI chat in the app.
+- No Android or Windows kernel build. Vessel CI needs an arm runner and the wheel artifact.
+- The website downloads change stays unpushed until the new client is ready to deploy.
