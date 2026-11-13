@@ -180,3 +180,8 @@ async def test_a_resolved_tool_carries_the_hash_of_the_nodes_own_definition(monk
         "lookup", "Find a thing", {"type": "object", "properties": {"q": {"type": "string"}}}, {"readOnlyHint": True}
     )
     assert (await calls.resolve(OWNER, "bare")).definition == nmcalls.definition_hash("bare", "", {}, {})
+
+
+def test_the_runner_lists_the_vessel_tools_to_publish(monkeypatch):
+    monkeypatch.setattr(nmcalls.vessel_executor, "published_tools", lambda orch: [{"name": "lookup"}])
+    assert nmcalls.OrchestratorCalls(object()).published_tools() == [{"name": "lookup"}]

@@ -33,6 +33,7 @@ DEFAULT_SYNC_MS = 5000
 MIN_SYNC_MS = 200
 MAX_SYNC_MS = 600_000
 REQUEST_EXPORT = "record_peer_turn"
+PUBLISH_EXPORT = "publish_tool_catalog"
 ENROLLED_STATES = frozenset({"ENROLLED", "RESTORED"})
 
 
@@ -475,6 +476,24 @@ class NodeMesh:
             confidentiality=getattr(self._binding.PeerConfidentiality, confidentiality.upper()),
             integrity=getattr(self._binding.PeerIntegrity, integrity.upper()),
         )
+
+    async def publish_tool_catalog(self, tools: Sequence[Dict[str, Any]]) -> str:
+        publish = getattr(self._kernel, PUBLISH_EXPORT, None)
+        if publish is None:
+            raise MeshUnavailable("catalog_unsupported")
+        binding = self._binding
+        specs = [
+            binding.LocalToolSpec(
+                name=tool["name"],
+                description=tool["description"],
+                input_schema_json=json.dumps(tool["input_schema"], sort_keys=True),
+                annotations_json=json.dumps(tool["annotations"], sort_keys=True),
+                effect=getattr(binding.LocalToolEffect, tool["effect"].upper()),
+                confidentiality=binding.LocalToolConfidentiality.PRIVATE,
+            )
+            for tool in tools
+        ]
+        return await self._request_call(publish, specs)
 
     async def _request_call(self, function: Callable[..., Any], *arguments: Any) -> Any:
         try:

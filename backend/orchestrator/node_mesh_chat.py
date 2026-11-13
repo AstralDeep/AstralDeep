@@ -229,6 +229,7 @@ class MeshChatBridge:
         self._turn_slots = asyncio.Semaphore(MAX_CONCURRENT_TURNS)
         self._running: set = set()
         self._recovered = False
+        self._published: Optional[str] = None
 
     @property
     def _owner(self) -> Optional[str]:
@@ -361,6 +362,7 @@ class MeshChatBridge:
         own = (await self._mesh.status()).get("member_id")
         if own is None or self._owner is None:
             return 0
+        await self._publish_catalog()
         if not self._recovered:
             await self._recover(own)
             self._recovered = True
@@ -373,6 +375,21 @@ class MeshChatBridge:
             started += 1
         self._tasks = [task for task in self._tasks if not task.done()]
         return started
+
+    async def _publish_catalog(self) -> None:
+        listing = getattr(self._calls, "published_tools", None)
+        tools = listing() if listing is not None else []
+        if not tools:
+            return
+        digest = hashlib.sha256(json.dumps(tools, sort_keys=True).encode()).hexdigest()
+        if digest == self._published:
+            return
+        try:
+            await self._mesh.publish_tool_catalog(tools)
+        except (NodeMeshError, MeshUnavailable) as exc:
+            logger.warning("node_mesh_catalog_unpublished: %s", exc.code)
+            return
+        self._published = digest
 
     async def _recover(self, own: str) -> None:
         for summary in await self._mesh.list_chats():

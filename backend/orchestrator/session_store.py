@@ -143,6 +143,9 @@ def assert_production_posture() -> None:
         node_identity.bind_host()
     except node_identity.NodeIdentityError as exc:
         problems.append(str(exc))
+    from orchestrator import vessel_executor
+
+    problems.extend(vessel_executor.configuration_problems())
     agent_key = os.getenv("AGENT_API_KEY", "").strip()
     if agent_key and (agent_key in _DEV_PLACEHOLDER_SECRETS or len(agent_key) < 16):
         problems.append(

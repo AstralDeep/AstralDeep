@@ -99,6 +99,9 @@ class OrchestratorCalls:
     def __init__(self, orch: Any):
         self._orch = orch
 
+    def published_tools(self) -> List[Dict[str, Any]]:
+        return vessel_executor.published_tools(self._orch)
+
     async def resolve(self, owner_id: str, tool: str) -> ResolvedTool:
         from orchestrator.tool_visibility import eligible_tool_pairs
 

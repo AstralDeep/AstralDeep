@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from orchestrator.orchestrator import Orchestrator
 from shared.protocol import AgentCard, AgentSkill
 
 TOKEN = "executor-secret"
+AGENT_TOKEN = "agent-secret"
 URL = "http://executor:8800"
 OWNER = "oidc.abc.owner"
 AGENT = "guide"
@@ -30,7 +32,6 @@ def ticket_for(arguments=None, **overrides):
     action = {
         "v": 1, "mesh": "mesh-1", "device": "device-1", "turn": "turn-1", "agent": "kernel", "tool": "lookup",
         "tool_def": DEFINITION, "args_digest": "sha256:" + hashlib.sha256(text.encode()).hexdigest(),
-        "owner": OWNER, "workspace": "ws-1",
     }
     action.update(overrides)
     return ve.CallTicket('{"ticket":1}', json.dumps(action), text)
@@ -38,6 +39,7 @@ def ticket_for(arguments=None, **overrides):
 
 def executor_with(handler, **settings):
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    settings.setdefault("agent_tokens", {AGENT: AGENT_TOKEN})
     return ve.VesselExecutor(ve.ExecutorSettings(URL, TOKEN, **settings), client)
 
 
@@ -62,31 +64,72 @@ def code_of(response):
     return response.error["code"]
 
 
-def test_the_executor_needs_both_a_url_and_a_token():
+@pytest.fixture
+def tokens_file(tmp_path):
+    path = tmp_path / "executor-agents.json"
+    path.write_text(json.dumps({AGENT: AGENT_TOKEN, "other": "other-secret"}))
+    return path
+
+
+def env_with(path, **extra):
+    return {ve.URL_ENV: URL, ve.TOKEN_ENV: TOKEN, ve.AGENT_TOKENS_ENV: str(path), **extra}
+
+
+def test_nothing_configured_is_not_a_problem():
     assert ve.ExecutorSettings.from_env({}) is None
-    settings = ve.ExecutorSettings.from_env({ve.URL_ENV: URL + "/", ve.TOKEN_ENV: TOKEN})
+    assert ve.configuration_problems({}) == []
+    assert ve.configuration_problems({ve.TIMEOUT_ENV: "5"}) == []
+
+
+def test_the_settings_hold_the_operator_token_and_each_agents_token(tokens_file):
+    settings = ve.ExecutorSettings.from_env(env_with(tokens_file, **{ve.URL_ENV: URL + "/"}))
     assert (settings.url, settings.token, settings.timeout) == (URL, TOKEN, ve.DEFAULT_TIMEOUT)
+    assert dict(settings.agent_tokens) == {AGENT: AGENT_TOKEN, "other": "other-secret"}
+    assert ve.configuration_problems(env_with(tokens_file)) == []
+
+
+def test_the_timeout_is_read_from_the_environment(tokens_file):
+    assert ve.ExecutorSettings.from_env(env_with(tokens_file, **{ve.TIMEOUT_ENV: "15.5"})).timeout == 15.5
 
 
 @pytest.mark.parametrize(
-    "env",
+    "mutate",
     [
-        {ve.URL_ENV: URL},
-        {ve.TOKEN_ENV: TOKEN},
-        {ve.URL_ENV: "ftp://executor", ve.TOKEN_ENV: TOKEN},
-        {ve.URL_ENV: "http://user:pw@executor", ve.TOKEN_ENV: TOKEN},
-        {ve.URL_ENV: "http://", ve.TOKEN_ENV: TOKEN},
-        {ve.URL_ENV: URL, ve.TOKEN_ENV: TOKEN, ve.TIMEOUT_ENV: "soon"},
-        {ve.URL_ENV: URL, ve.TOKEN_ENV: TOKEN, ve.TIMEOUT_ENV: "0"},
+        lambda e, f: e.pop(ve.URL_ENV),
+        lambda e, f: e.pop(ve.TOKEN_ENV),
+        lambda e, f: e.pop(ve.AGENT_TOKENS_ENV),
+        lambda e, f: e.update({ve.URL_ENV: "ftp://executor"}),
+        lambda e, f: e.update({ve.URL_ENV: "http://user:pw@executor"}),
+        lambda e, f: e.update({ve.URL_ENV: "http://"}),
+        lambda e, f: e.update({ve.TIMEOUT_ENV: "soon"}),
+        lambda e, f: e.update({ve.TIMEOUT_ENV: "0"}),
+        lambda e, f: e.update({ve.AGENT_TOKENS_ENV: str(f) + ".missing"}),
+        lambda e, f: f.write_text("not json"),
+        lambda e, f: f.write_text("[]"),
+        lambda e, f: f.write_text("{}"),
+        lambda e, f: f.write_text('{"guide": ""}'),
+        lambda e, f: f.write_text('{"guide": 7}'),
+        lambda e, f: f.write_text("x" * (ve.MAX_TOKENS_FILE_BYTES + 1)),
     ],
 )
-def test_a_partial_or_unusable_configuration_leaves_the_executor_unconfigured(env):
-    assert ve.ExecutorSettings.from_env(env) is None
+def test_a_partial_or_unusable_configuration_is_a_problem_and_leaves_the_executor_off(tokens_file, mutate):
+    env = env_with(tokens_file)
+    mutate(env, tokens_file)
+    problems = ve.configuration_problems(env)
+    assert problems and ve.ExecutorSettings.from_env(env) is None
+    assert not any(TOKEN in p or AGENT_TOKEN in p for p in problems)
 
 
-def test_the_timeout_is_read_from_the_environment():
-    settings = ve.ExecutorSettings.from_env({ve.URL_ENV: URL, ve.TOKEN_ENV: TOKEN, ve.TIMEOUT_ENV: "15.5"})
-    assert settings.timeout == 15.5
+def test_a_production_node_refuses_to_start_on_a_broken_executor_setting(monkeypatch, tmp_path):
+    from orchestrator import session_store
+
+    monkeypatch.setenv(ve.URL_ENV, URL)
+    monkeypatch.setenv(ve.TOKEN_ENV, TOKEN)
+    monkeypatch.setenv(ve.AGENT_TOKENS_ENV, str(tmp_path / "missing.json"))
+    monkeypatch.delenv("ASTRAL_ENV", raising=False)
+    with pytest.raises(SystemExit) as stopped:
+        session_store.assert_production_posture()
+    assert stopped.value.code == 78
 
 
 async def test_a_call_forwards_the_tool_arguments_action_and_ticket_with_the_bearer_token():
@@ -95,11 +138,12 @@ async def test_a_call_forwards_the_tool_arguments_action_and_ticket_with_the_bea
     response = await invoke(executor_with(recorder), ticket)
     assert (response.result, response.error) == ("done", None)
     request = recorder.requests[0]
-    assert (request.method, str(request.url), request.headers["authorization"]) == ("POST", URL + "/run", f"Bearer {TOKEN}")
+    assert (request.method, str(request.url), request.headers["authorization"]) == ("POST", URL + "/run", f"Bearer {AGENT_TOKEN}")
     assert json.loads(request.content) == {
         "agent": AGENT, "tool": "lookup", "arguments_json": ticket.arguments_json, "action_json": ticket.action_json,
-        "ticket_json": ticket.ticket_json, "workspace": "ws-1", "owner": OWNER,
+        "ticket_json": ticket.ticket_json, "owner": OWNER,
     }
+    assert TOKEN not in request.headers["authorization"]
 
 
 async def test_files_from_the_sandbox_come_back_with_the_output():
@@ -117,11 +161,10 @@ async def test_a_call_without_a_ticket_is_refused_and_never_sent():
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"owner": "someone-else"},
         {"tool": "other"},
         {"mesh": ""},
         {"agent": ""},
-        {"workspace": 7},
+        {"mesh": 7},
     ],
 )
 async def test_an_action_for_a_different_call_is_refused_before_it_is_sent(overrides):
@@ -130,7 +173,7 @@ async def test_an_action_for_a_different_call_is_refused_before_it_is_sent(overr
     assert code_of(response) == "request.call_mismatch" and not recorder.requests
 
 
-@pytest.mark.parametrize("missing", ["agent", "mesh", "owner", "workspace"])
+@pytest.mark.parametrize("missing", ["agent", "mesh"])
 async def test_an_action_missing_a_pinned_field_is_refused_before_it_is_sent(missing):
     recorder = Recorder()
     ticket = ticket_for()
@@ -140,10 +183,19 @@ async def test_an_action_missing_a_pinned_field_is_refused_before_it_is_sent(mis
     assert code_of(response) == "request.call_mismatch" and not recorder.requests
 
 
-async def test_a_workspace_may_be_null_when_the_action_says_so():
+async def test_an_action_without_an_owner_or_workspace_is_the_real_kernel_shape_and_is_sent_without_a_workspace():
     recorder = Recorder()
-    await invoke(executor_with(recorder), ticket_for(workspace=None))
-    assert json.loads(recorder.requests[0].content)["workspace"] is None
+    ticket = ticket_for()
+    action = json.loads(ticket.action_json)
+    assert "owner" not in action and "workspace" not in action
+    await invoke(executor_with(recorder), ticket)
+    assert "workspace" not in json.loads(recorder.requests[0].content)
+
+
+async def test_an_agent_without_a_token_is_refused_before_it_is_sent():
+    recorder = Recorder()
+    response = await invoke(executor_with(recorder, agent_tokens={"other": "x"}), ticket_for())
+    assert code_of(response) == "executor.unauthorized" and not recorder.requests
 
 
 async def test_an_unreadable_action_is_refused():
@@ -259,7 +311,7 @@ CATALOG = {
 }
 
 
-async def test_the_catalog_is_read_with_the_token():
+async def test_the_catalog_is_read_with_the_operator_token_only():
     recorder = Recorder(body={"agents": CATALOG})
     assert await executor_with(recorder).catalog() == CATALOG
     assert (recorder.requests[0].method, str(recorder.requests[0].url), recorder.requests[0].headers["authorization"]) == (
@@ -312,14 +364,16 @@ def test_an_agent_id_already_taken_is_not_replaced():
 async def test_start_does_nothing_without_configuration(monkeypatch):
     monkeypatch.delenv(ve.URL_ENV, raising=False)
     monkeypatch.delenv(ve.TOKEN_ENV, raising=False)
+    monkeypatch.delenv(ve.AGENT_TOKENS_ENV, raising=False)
     orch, _ = fake_orch()
     assert await ve.start_for(orch) is None and orch.vessel_executor is None
     await ve.stop_for(orch)
 
 
-async def test_start_registers_the_catalog_and_stop_releases_the_client(monkeypatch):
+async def test_start_registers_the_catalog_and_stop_releases_the_client(monkeypatch, tokens_file):
     monkeypatch.setenv(ve.URL_ENV, URL)
     monkeypatch.setenv(ve.TOKEN_ENV, TOKEN)
+    monkeypatch.setenv(ve.AGENT_TOKENS_ENV, str(tokens_file))
     real = httpx.AsyncClient
     monkeypatch.setattr(ve.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(Recorder(body={"agents": CATALOG})), **kw))
     orch, _ = fake_orch()
@@ -329,9 +383,10 @@ async def test_start_registers_the_catalog_and_stop_releases_the_client(monkeypa
     assert orch.vessel_executor is None and executor._client.is_closed
 
 
-async def test_an_unreachable_executor_at_start_registers_nothing(monkeypatch):
+async def test_an_unreachable_executor_at_start_registers_nothing(monkeypatch, tokens_file):
     monkeypatch.setenv(ve.URL_ENV, URL)
     monkeypatch.setenv(ve.TOKEN_ENV, TOKEN)
+    monkeypatch.setenv(ve.AGENT_TOKENS_ENV, str(tokens_file))
     real = httpx.AsyncClient
     monkeypatch.setattr(ve.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(Recorder(raises=httpx.ConnectError("no"))), **kw))
     orch, _ = fake_orch()
@@ -509,3 +564,113 @@ async def test_a_connecting_agent_cannot_take_a_sandboxed_agent_id(monkeypatch):
     card = AgentCard(name="x", description="", agent_id=AGENT, skills=[AgentSkill(name="t", id="t", description="", input_schema={"type": "object", "properties": {}})])
     await orch.register_agent(Socket(), SimpleNamespace(agent_card=card, api_key="k"))
     assert closed == [(1008, "agent id reserved")] and AGENT not in orch.agent_cards and AGENT not in orch.agents
+
+
+def run_response(workspace="ws-abc"):
+    return {"output": "done", "error": False, "workspace": workspace}
+
+
+async def test_the_workspace_a_run_returns_is_ended_with_the_agents_own_token():
+    recorder = Recorder(body=run_response())
+    executor = executor_with(recorder)
+    await invoke(executor, ticket_for())
+    recorder.body = {"ok": True}
+    await executor.end_all()
+    request = recorder.requests[-1]
+    assert (str(request.url), request.headers["authorization"]) == (URL + "/end", f"Bearer {AGENT_TOKEN}")
+    assert json.loads(request.content) == {"agent": AGENT, "workspace": "ws-abc"}
+    await executor.end_all()
+    assert len(recorder.requests) == 2
+
+
+async def test_a_run_that_returns_no_workspace_or_failed_opens_none():
+    for status, body in ((200, {"output": "x", "error": False}), (403, {"error": True, "code": "ticket.replayed", "workspace": "w"})):
+        recorder = Recorder(status=status, body=body)
+        executor = executor_with(recorder)
+        await invoke(executor, ticket_for())
+        await executor.end_all()
+        assert len(recorder.requests) == 1
+    unreadable = executor_with(lambda request: httpx.Response(200, content=b"<html>"))
+    await invoke(unreadable, ticket_for())
+    assert not unreadable._open
+
+
+async def test_a_workspace_that_could_not_be_ended_stays_open_for_the_next_try():
+    recorder = Recorder(body=run_response())
+    executor = executor_with(recorder)
+    await invoke(executor, ticket_for())
+    recorder.status, recorder.body = 403, {"error": True, "code": "executor.token_agent_mismatch"}
+    assert await executor.end(AGENT, "ws-abc") is False and executor._open
+    recorder.raises = httpx.ReadTimeout("slow")
+    assert await executor.end(AGENT, "ws-abc") is False and executor._open
+    assert await executor_with(recorder, agent_tokens={}).end(AGENT, "ws-abc") is False
+    recorder.raises, recorder.status, recorder.body = None, 200, {"ok": True}
+    assert await executor.end(AGENT, "ws-abc") is True and not executor._open
+
+
+async def test_only_idle_workspaces_are_swept():
+    now = [0.0]
+    recorder = Recorder(body=run_response("old"))
+    client = httpx.AsyncClient(transport=httpx.MockTransport(recorder))
+    executor = ve.VesselExecutor(ve.ExecutorSettings(URL, TOKEN, agent_tokens={AGENT: AGENT_TOKEN}), client, clock=lambda: now[0])
+    await invoke(executor, ticket_for())
+    now[0] = ve.WORKSPACE_IDLE_SECONDS / 2
+    recorder.body = run_response("new")
+    await invoke(executor, ticket_for())
+    now[0] = ve.WORKSPACE_IDLE_SECONDS + 1
+    recorder.body = {"ok": True}
+    assert await executor.sweep() == 1
+    assert list(executor._open) == [(AGENT, "new")]
+
+
+async def test_close_ends_what_is_open_and_stops_the_sweeper(monkeypatch):
+    recorder = Recorder(body=run_response())
+    real = httpx.AsyncClient
+    monkeypatch.setattr(ve.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(recorder), **kw))
+    executor = ve.VesselExecutor(ve.ExecutorSettings(URL, TOKEN, agent_tokens={AGENT: AGENT_TOKEN}))
+    executor.start_sweeping()
+    executor.start_sweeping()
+    await invoke(executor, ticket_for())
+    recorder.body = {"ok": True}
+    await executor.close()
+    assert str(recorder.requests[-1].url) == URL + "/end" and executor._sweeper is None and executor._client.is_closed
+
+
+async def test_the_sweeper_survives_a_failing_sweep(monkeypatch):
+    executor = executor_with(Recorder())
+    calls = []
+
+    async def failing():
+        calls.append(1)
+        raise RuntimeError("boom")
+
+    async def instant(_seconds):
+        if len(calls) >= 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(executor, "sweep", failing)
+    monkeypatch.setattr(ve.asyncio, "sleep", instant)
+    with pytest.raises(asyncio.CancelledError):
+        await executor._sweep_forever()
+    assert len(calls) == 2
+
+
+def test_published_tools_carry_the_agent_annotation_and_the_hash_the_executor_pins():
+    from orchestrator.node_mesh_calls import definition_hash
+
+    cards, pins = ve.build_cards({"guide": {"tools": [
+        {"name": "lookup", "description": "Looks up", "input_schema": {"type": "object"}, "scope": "tools:read",
+         "definition": definition_hash("lookup", "Looks up", {"type": "object"}, {"agent": "guide"})},
+        {"name": "save", "description": "Saves", "input_schema": {}, "scope": "tools:write",
+         "definition": definition_hash("save", "Saves", {}, {"agent": "guide"})},
+        {"name": "drift", "description": "Drifts", "input_schema": {}, "scope": "tools:read", "definition": DEFINITION},
+    ]}})
+    orch, _ = fake_orch()
+    ve.register(orch, cards, pins)
+    tools = ve.published_tools(orch)
+    assert [(t["name"], t["effect"], t["annotations"]) for t in tools] == [
+        ("lookup", "outward_read", {"agent": "guide"}), ("save", "outside_effect", {"agent": "guide"}),
+    ]
+    orch.vessel_definitions[("ghost", "x")] = DEFINITION
+    assert len(ve.published_tools(orch)) == 2
+    assert ve.published_tools(SimpleNamespace()) == []

@@ -785,3 +785,67 @@ async def test_start_for_without_the_export_keeps_the_mesh_but_no_bridge(tmp_pat
     monkeypatch.delenv(ni.PROFILE_ENV)
     await nmc.start_for(SimpleNamespace(history=History()))
     assert node_mesh.current() is None
+
+
+TOOLS = [{"name": "lookup", "description": "Looks up", "input_schema": {"type": "object"}, "annotations": {"agent": "guide"}, "effect": "outward_read"}]
+
+
+class CatalogCalls(FakeCalls):
+    def __init__(self, tools):
+        super().__init__()
+        self.tools = tools
+
+    def published_tools(self):
+        return self.tools
+
+
+async def test_the_vessel_tools_are_published_with_their_agent_annotation_once(tmp_path):
+    mesh, kernel, _, bridge = await build(tmp_path, calls=CatalogCalls(TOOLS), start=False)
+    await bridge.scan()
+    await bridge.scan()
+    assert len(kernel.catalogs) == 1
+    spec = kernel.catalogs[0][0]
+    assert (spec.name, json.loads(spec.annotations_json), spec.effect.name, spec.confidentiality.name) == (
+        "lookup", {"agent": "guide"}, "OUTWARD_READ", "PRIVATE")
+    assert json.loads(spec.input_schema_json) == {"type": "object"}
+
+
+async def test_a_changed_tool_list_is_published_again(tmp_path):
+    calls = CatalogCalls(TOOLS)
+    mesh, kernel, _, bridge = await build(tmp_path, calls=calls, start=False)
+    await bridge.scan()
+    calls.tools = [{**TOOLS[0], "effect": "outside_effect"}]
+    await bridge.scan()
+    assert len(kernel.catalogs) == 2
+
+
+async def test_nothing_is_published_without_vessel_tools_or_a_mesh(tmp_path):
+    mesh, kernel, _, bridge = await build(tmp_path, calls=CatalogCalls([]), start=False)
+    await bridge.scan()
+    assert kernel.catalogs == []
+    mesh, kernel, _, bridge = await build(tmp_path / "b", calls=CatalogCalls(TOOLS), joined=False, start=False)
+    await bridge.scan()
+    assert kernel.catalogs == []
+    mesh, kernel, _, bridge = await build(tmp_path / "c", calls=FakeCalls(), start=False)
+    await bridge.scan()
+    assert kernel.catalogs == []
+
+
+async def test_a_refused_publish_is_retried_on_the_next_scan(tmp_path):
+    mesh, kernel, _, bridge = await build(tmp_path, calls=CatalogCalls(TOOLS), start=False)
+    kernel.catalog_error = "tools.malformed"
+    await bridge.scan()
+    assert kernel.catalogs == []
+    kernel.catalog_error = None
+    await bridge.scan()
+    assert len(kernel.catalogs) == 1
+
+
+async def test_a_kernel_without_catalog_publishing_is_reported_not_faked(tmp_path, monkeypatch):
+    mesh, kernel, _, bridge = await build(tmp_path, calls=CatalogCalls(TOOLS), start=False)
+    monkeypatch.delattr(fake.Kernel, "publish_tool_catalog")
+    await bridge.scan()
+    assert bridge._published is None
+    with pytest.raises(node_mesh.MeshUnavailable) as caught:
+        await mesh.publish_tool_catalog(TOOLS)
+    assert caught.value.code == "catalog_unsupported"

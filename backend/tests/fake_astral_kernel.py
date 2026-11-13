@@ -213,6 +213,30 @@ def operations_public_key(secret: bytes) -> str:
     return "pk-" + secret[:4].hex()
 
 
+class LocalToolEffect(enum.Enum):
+    MESH_READ = 0
+    MESH_WRITE = 1
+    OUTWARD_READ = 2
+    OUTSIDE_EFFECT = 3
+
+
+class LocalToolConfidentiality(enum.Enum):
+    PUBLIC = 0
+    PRIVATE = 1
+    PHI = 2
+    SECRET = 3
+
+
+class LocalToolSpec:
+    def __init__(self, *, name, description, input_schema_json, annotations_json, effect, confidentiality):
+        self.name = name
+        self.description = description
+        self.input_schema_json = input_schema_json
+        self.annotations_json = annotations_json
+        self.effect = effect
+        self.confidentiality = confidentiality
+
+
 class Kernel:
     instances: List["Kernel"] = []
 
@@ -242,6 +266,8 @@ class Kernel:
         self.peers: List[Any] = []
         self.sent: List[tuple] = []
         self.created: List[tuple] = []
+        self.catalogs: List[List[Any]] = []
+        self.catalog_error: Optional[str] = None
         self.address_error: Optional[Exception] = None
         self._ids = itertools.count(1)
         Kernel.instances.append(self)
@@ -381,6 +407,12 @@ class Kernel:
             turn=action.get("turn", "turn-x"), agents=["kernel"], action_digest="sha256:" + "0" * 64,
             labels=self.ticket_labels, sources=[], consented=False,
         )
+
+    def publish_tool_catalog(self, tools):
+        if self.catalog_error is not None:
+            raise KernelError.InvalidInput(self.catalog_error, "refused")
+        self.catalogs.append(list(tools))
+        return f"event-{len(self.catalogs)}"
 
     def record_peer_turn(self, chat_id, turn):
         if self.record_error is not None:

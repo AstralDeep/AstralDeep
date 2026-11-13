@@ -93,16 +93,19 @@ The node labels what it records. The labels are at least the join of the request
 
 ## Sandboxed tools
 
-Tools that live in an AstralVessel sandbox run only through the Vessel executor. The node never runs them itself. Set both of these on the node:
+Tools that live in an AstralVessel sandbox run only through the Vessel executor. The node never runs them itself. Set these on the node:
 
 | Variable | Meaning |
 |---|---|
 | `ASTRAL_VESSEL_EXECUTOR_URL` | The executor's address on the internal network, for example `http://executor:8800` |
-| `ASTRAL_VESSEL_EXECUTOR_TOKEN` | The bearer token the executor was started with |
+| `ASTRAL_VESSEL_EXECUTOR_TOKEN` | The executor's operator token. The node uses it only to list `/tools` |
+| `ASTRAL_VESSEL_EXECUTOR_AGENT_TOKENS_FILE` | Path to the JSON file of agent ids and their tokens (`.generated/executor-agents.json` in a Vessel deployment). The node uses an agent's own token for `/run` and `/end` |
 | `ASTRAL_VESSEL_EXECUTOR_TIMEOUT_SECONDS` | Optional. Longest wait for one call. Default 120 |
 
-At start the node reads `GET /tools` and lists each sandboxed agent with the executor's own definition hash for every tool. With no executor configured, or when it cannot be reached at start, no sandboxed tool is listed. A sandboxed agent whose executor is gone refuses the call with `executor.unavailable`.
+A production node refuses to start (exit 78) when any of the first three is set and the set is incomplete, the address is not http or https, or the token file is missing or not a JSON object of non-empty strings. Tokens are never logged.
 
-A call goes to `POST /run` with the tool, the exact arguments the action covers, the signed action, the ticket, the workspace and the owner. The action must carry `agent`, `mesh`, `owner` and `workspace`, and `owner` must be the owner the node is serving. The node refuses a call without a ticket with `executor.ticket_required`, so a turn the node starts itself cannot reach a sandbox until the kernel can mint a ticket for it.
+At start the node reads `GET /tools` and lists each sandboxed agent with the executor's own definition hash for every tool. Once the node has joined the owner's mesh it publishes those tools to the mesh catalog with the annotation `{"agent": "<id>"}`, so the hash in a device's ticket is the hash the executor holds. With no executor configured, or when it cannot be reached at start, no sandboxed tool is listed. A sandboxed agent whose executor is gone refuses the call with `executor.unavailable`.
+
+A call goes to `POST /run` with the tool, the exact arguments the action covers, the signed action, the ticket and the owner the node is serving. The action must name the tool, `agent` and `mesh`. It carries no owner or workspace: the executor takes the owner from its deployment and derives the workspace from the ticket, and returns that workspace from `/run`. The node ends it with `POST /end` using the agent's token when the node stops or the workspace has been idle for 15 minutes. The node refuses a call without a ticket with `executor.ticket_required`, so a turn the node starts itself cannot reach a sandbox until the kernel can mint a ticket for it.
 
 Executor refusals keep their dotted codes, such as `ticket.replayed` or `gate.tool_def_changed`. A tool error in the sandbox is `executor.tool_error`. If the node cannot connect, nothing ran and the code is `executor.unavailable`. If the connection fails or times out after the call was sent, the code is `executor.outcome_unknown` and the call is not retried.
