@@ -42,6 +42,7 @@ Start the orchestrator with that env file. For the container image use `--env-fi
 | `KEYCLOAK_AUTHORITY` | The first accepted issuer |
 | `ASTRAL_ACCEPTED_ISSUERS` | More accepted issuers, comma separated |
 | `KEYCLOAK_CLIENT_ID` and `KEYCLOAK_ALLOWED_AZP` | The client ids whose tokens are accepted. A token with no `azp` is refused |
+| `ORCHESTRATOR_HOST` | The address the server binds. A personal node defaults to `127.0.0.1`. Every other profile defaults to `0.0.0.0`. Use an IP address or `localhost` |
 | `ASTRAL_NODE_OWNER` | Optional. The owner id to bind at install time |
 | `JWKS_STALE_GRACE_SECONDS` | How long the last good issuer keys serve when the issuer is unreachable. Default 86400 |
 

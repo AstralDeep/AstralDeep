@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -28,6 +29,9 @@ logger = logging.getLogger("shared.node_identity")
 
 PROFILE_ENV = "ASTRAL_NODE_PROFILE"
 DATA_DIR_ENV = "ASTRAL_NODE_DATA_DIR"
+HOST_ENV = "ORCHESTRATOR_HOST"
+SERVER_HOST = "0.0.0.0"
+PERSONAL_HOST = "127.0.0.1"
 OWNER_ENV = "ASTRAL_NODE_OWNER"
 ISSUERS_ENV = "ASTRAL_ACCEPTED_ISSUERS"
 PERSONAL = "personal"
@@ -66,6 +70,18 @@ def is_personal() -> bool:
 
 def is_institution() -> bool:
     return os.getenv(PROFILE_ENV, "").strip().lower() == INSTITUTION
+
+
+def bind_host() -> str:
+    configured = os.getenv(HOST_ENV, "").strip()
+    if not configured:
+        return PERSONAL_HOST if is_personal() else SERVER_HOST
+    if configured != "localhost":
+        try:
+            ipaddress.ip_address(configured)
+        except ValueError:
+            raise NodeIdentityError(f"{HOST_ENV} must be an IP address or localhost") from None
+    return configured
 
 
 def data_dir() -> Path:

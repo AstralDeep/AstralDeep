@@ -26717,7 +26717,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 self._external_agent_discovery_task = asyncio.create_task(
                     _discover_external())
 
-        bind_host = "0.0.0.0"
+        from shared import node_identity
+
+        bind_host = node_identity.bind_host()
         config = uvicorn.Config(
             app, host=bind_host, port=PORT,
             log_level=os.getenv("LOG_LEVEL", "info").lower(),

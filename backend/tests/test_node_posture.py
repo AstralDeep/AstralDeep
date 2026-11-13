@@ -99,3 +99,27 @@ def test_development_posture_does_not_touch_the_node_directory(production, monke
     monkeypatch.setenv("ASTRAL_ENV", "development")
     assert_production_posture()
     assert not production.exists()
+
+
+def test_a_bind_host_that_is_not_an_address_refuses_to_start(production, monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_HOST", "not a host")
+    with pytest.raises(SystemExit) as stopped:
+        assert_production_posture()
+    assert stopped.value.code == 78
+
+
+def test_the_bind_host_defaults_by_profile_and_can_be_set(monkeypatch):
+    monkeypatch.delenv(ni.HOST_ENV, raising=False)
+    monkeypatch.delenv(ni.PROFILE_ENV, raising=False)
+    assert ni.bind_host() == "0.0.0.0"
+    monkeypatch.setenv(ni.PROFILE_ENV, "institution")
+    assert ni.bind_host() == "0.0.0.0"
+    monkeypatch.setenv(ni.PROFILE_ENV, "personal")
+    assert ni.bind_host() == "127.0.0.1"
+    monkeypatch.setenv(ni.HOST_ENV, " localhost ")
+    assert ni.bind_host() == "localhost"
+    monkeypatch.setenv(ni.HOST_ENV, "10.0.0.7")
+    assert ni.bind_host() == "10.0.0.7"
+    monkeypatch.setenv(ni.HOST_ENV, "example.com")
+    with pytest.raises(ni.NodeIdentityError):
+        ni.bind_host()

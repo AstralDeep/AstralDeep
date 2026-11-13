@@ -139,6 +139,10 @@ def assert_production_posture() -> None:
                 problems.append(f"{var} is unset — the OIDC flow cannot operate.")
     if personal:
         problems.extend(_personal_node_problems(node_identity))
+    try:
+        node_identity.bind_host()
+    except node_identity.NodeIdentityError as exc:
+        problems.append(str(exc))
     agent_key = os.getenv("AGENT_API_KEY", "").strip()
     if agent_key and (agent_key in _DEV_PLACEHOLDER_SECRETS or len(agent_key) < 16):
         problems.append(
