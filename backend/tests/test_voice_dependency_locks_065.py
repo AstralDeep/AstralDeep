@@ -72,7 +72,7 @@ CURRENT_DEPENDENCY_AUTHORITIES = {
     "backend/requirements.txt": "54ca1ab0277575f4c833a5437fb4e3f9defb49c9382be6b6a6828608ddc3671c",
     "backend/requirements-gaiakeep.txt": "87ea5ed066e8aa376f355df70a4efac295d331c7c77601d277a05c8acb37feea",
     "backend/tests/fixtures/runtime_reliability_060/runtime-lock-contract.json": (
-        "ff84f895f5b8253dff59c9581cc033452ad576a09e40d00da31b5ba7b0f4875e"
+        "57f37fee4a7481dd8412ac4fb6a74dbc2edd84fa85625153e21b72b8eba71e9e"
     ),
     "pyproject.toml": "c3b2cf99a06d653be76035e63de05bcadb7a2ed2616bb51e0ec0e96c3afbc495",
     "scripts/openai_agents_example/requirements.in": (
@@ -184,6 +184,12 @@ def _pin(requirement: str) -> tuple[str, str]:
     match = re.match(r"^([A-Za-z0-9_.-]+)==([^ ;\\]+)", requirement)
     if match:
         return _normalized(match.group(1)), match.group(2)
+    for name, variable, version in (
+        ("astralprims", "ASTRAL_PRIMITIVES_WHEEL_URI", "0.13.0"),
+        ("astral-rote", "ASTRAL_ROTE_WHEEL_URI", "0.1.0"),
+    ):
+        if re.match(rf"^{name} @ \${{{variable}}}(?:\s|$)", requirement):
+            return name, version
     direct = re.match(
         r"^lets-agent @ https://github\.com/AstralDeep/LETS/releases/download/"
         r"v([0-9]+\.[0-9]+\.[0-9]+)/lets_agent-"
@@ -272,16 +278,30 @@ def test_windows_livekit_direct_pin_and_win_amd64_wheel_are_exact() -> None:
     assert _pins(WINDOWS_INPUT)["livekit"] == "1.1.14"
     locked = _pins(WINDOWS_LOCK)
     hashes = _hashes(WINDOWS_LOCK)
-    assert len(locked) == 69
-    assert len(set(locked) - {"macholib"}) == 68
+    assert len(locked) == 72
+    assert len(set(locked) - {"macholib"}) == 71
     assert locked["livekit"] == "1.1.14"
     assert {
         name: (locked[name], hashes[name])
-        for name in ("aiofiles", "livekit", "numpy", "protobuf", "types-protobuf")
+        for name in ("aiofiles", "astralprims", "astral-rote", "linkify-it-py", "livekit",
+                     "numpy", "protobuf", "types-protobuf", "uc-micro-py")
     } == {
         "aiofiles": (
             "25.1.0",
             {"abe311e527c862958650f9438e859c1fa7568a141b22abcd015e120e86a85695"},
+        ),
+        "astralprims": (
+            "0.13.0",
+            {"08674e5aa5605db3c96db381bc71b6c0d60c7fbbc07f1b1d73c3700f9e4cfa3e"},
+        ),
+        "astral-rote": (
+            "0.1.0",
+            {"35695af9906434fe3c70d30b263e839fa5e454f1c58cbd0ddc0f8888432d00ab"},
+        ),
+        "linkify-it-py": (
+            "2.0.3",
+            {"68cda27e162e9215c17d786649d1da0021a451bdc436ef9e0fa0ba5234b9b048",
+             "6bcbc417b0ac14323382aef5c5192c0075bf8a9d6b41820a2b66371eac6b6d79"},
         ),
         "livekit": (
             "1.1.14",
@@ -299,8 +319,25 @@ def test_windows_livekit_direct_pin_and_win_amd64_wheel_are_exact() -> None:
             "7.34.1.20260518",
             {"a0a5337413347166439c0e07cbc26c6164d091401c6f01b1dfd8cdb966c4dd8f"},
         ),
+        "uc-micro-py": (
+            "1.0.3",
+            {"d321b92cff673ec58027c04015fcaa8bb1e005478643ff4a500882eaab88c48a",
+             "db1dffff340817673d7b466ec86114a9dc0e9d4d9b5ba229d9d60e5c12600cd5"},
+        ),
     }
     assert all(locked.get(name) == version for name, version in _pins(WINDOWS_INPUT).items())
+
+
+@pytest.mark.parametrize("requirement", [
+    "astralprims @ ${ASTRAL_ROTE_WHEEL_URI}",
+    "astral-rote @ ${ASTRAL_PRIMITIVES_WHEEL_URI}",
+    "astralprims @ ${UNREVIEWED_WHEEL_URI}",
+    "unreviewed @ ${ASTRAL_PRIMITIVES_WHEEL_URI}",
+    "astralprims @ https://example.invalid/astralprims-0.13.0-py3-none-any.whl",
+])
+def test_unreviewed_local_presentation_references_are_refused(requirement: str) -> None:
+    with pytest.raises(AssertionError, match="not an exact approved pin"):
+        _pin(requirement)
 
 
 def test_contract_validator_lock_is_exact_complete_and_hash_locked() -> None:
