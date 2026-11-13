@@ -120,7 +120,7 @@ The kernel writes a `ui.surface_put` with integrity `untrusted`, the confidentia
 
 | Field | Rule |
 |---|---|
-| `source` | An object with `origin` (`tool` or `agent`), `name` (the tool or agent, 1 to 128 characters without control characters), `format` (`a2ui/1.0`), `catalog` (the catalog id) and `surface` (the A2UI surface id) |
+| `source` | An object with `origin` (`tool` or `agent`), `name` (the tool or agent, 1 to 128 characters without control characters, else `a2ui.bad_source`), `format` (`a2ui/1.0`), `catalog` (the catalog id) and `surface` (the A2UI surface id) |
 
 Notices are not errors. Each has a code and a detail. The codes are `a2ui.component_unsupported`, `a2ui.component_invalid`, `a2ui.property_dropped`, `a2ui.value_dropped`, `a2ui.template_dropped`, `a2ui.action_dropped`, `a2ui.binding_flattened`, `a2ui.control_dropped` and `a2ui.link_removed`. At most 100 are kept.
 
@@ -132,4 +132,4 @@ The reference module has no A2UI translator. The translation is pinned by the Pr
 
 `surface.malformed`, `surface.unknown_type`, `surface.false_provenance`, `surface.raw_url`, `surface.incomplete`, `surface.unknown_capability`, `surface.capability_exceeds_turn`, `surface.patch_invalid`, `surface.unknown_component`, `surface.action_args`, `surface.capability_exhausted`, `surface.bind_unknown_event`, `surface.bind_not_tool_result`, `surface.bind_path`, `surface.bind_not_scalar`, `surface.unknown_surface`, `surface.no_origin_turn`.
 
-The codes of section 8 are `a2ui.malformed`, `a2ui.too_large`, `a2ui.too_many_messages`, `a2ui.no_create`, `a2ui.unknown_catalog`, `a2ui.schema`, `a2ui.invalid`, `a2ui.refused` and `a2ui.bad_surface_id`. A kernel produces them and the reference does not.
+The codes of section 8 are `a2ui.malformed`, `a2ui.too_large`, `a2ui.too_many_messages`, `a2ui.no_create`, `a2ui.unknown_catalog`, `a2ui.schema`, `a2ui.invalid`, `a2ui.refused`, `a2ui.bad_surface_id` and `a2ui.bad_source`. A kernel produces them and the reference does not.
