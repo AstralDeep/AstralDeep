@@ -34,6 +34,11 @@ the turn status. The file's `baseline`, `operations`, `timing`, `consent` and `e
 define each term. Cases also carry the gate `state` the setup produces when the deciding
 evaluation runs, and the pure gate must return the expectation over that state.
 
+For normalized refusal comparison, adapters map only `allowance.share_spent` and
+`allowance.solo_cap_reached` to the pure gate code `allowance.exhausted`. The
+`journal_code` expectation retains the actual holder refusal. This preserves the detailed
+allowance reasons permitted by `requests.md` without changing gate precedence or dispatch.
+
 A host adapter may seed state through the host's own grant, policy, roster, tool, allowance and
 consent paths. It must not replace a gate. A case that a host cannot reach through those paths
 names the host and the reason under `skip`.

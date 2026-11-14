@@ -44,11 +44,11 @@
   },
   "expect": {
     "dispatched": "calls of the named tool that reached its runner",
-    "outcome": "allow when it ran; consent with code consent.required and the prompt's reasons when a prompt was not validly approved; otherwise refuse with the journaled code",
+    "outcome": "allow when it ran; consent with code consent.required and the prompt reasons when a prompt was not validly approved; otherwise refuse with the normalized code",
     "gate": "the gate number of the pure decision over state; hosts that do not journal it check it only through state",
     "prompt": "the consent prompt for the call and its ordered reasons, or null when none may appear",
     "journal_status": "status of the call's journaled result, or null when the call was never proposed",
-    "journal_code": "code of the call's journaled result",
+    "journal_code": "raw code of the call journaled result, before normalized outcome comparison",
     "turn_status": "status of the turn"
   },
   "cases": [
@@ -1226,7 +1226,7 @@
         "gate": 7,
         "prompt": null,
         "journal_status": "refused",
-        "journal_code": "allowance.exhausted",
+        "journal_code": "allowance.share_spent",
         "turn_status": "completed"
       }
     },
@@ -1294,7 +1294,7 @@
           ]
         },
         "journal_status": "refused",
-        "journal_code": "allowance.exhausted",
+        "journal_code": "allowance.share_spent",
         "turn_status": "completed"
       }
     },
@@ -2092,7 +2092,7 @@
           ]
         },
         "journal_status": "refused",
-        "journal_code": "allowance.exhausted",
+        "journal_code": "allowance.share_spent",
         "turn_status": "completed"
       }
     }
