@@ -121,5 +121,17 @@
     "installed_phone": "Nativefb5de54/Kernel a499; last observed waiting for approval",
     "consent_cause": "Actual Add Device modal hides root consent sheet; no-modal synthetic control passed and modal failed with SwiftUI single-sheet warning"
   },
-  "preservation": "Private data, keys, invitations, backups, binaries and raw diagnostic artifacts remain outside Git. No Kernel push. Other repositories are saved on topic branches only."
+  "preservation": "Private data, keys, invitations, backups, binaries and raw diagnostic artifacts remain outside Git. No Kernel push. Other repositories are saved on topic branches only.",
+  "cleanup_2026_11_14": {
+    "docker_containers_removed": 24,
+    "docker_images_removed": 58,
+    "docker_managed_volumes_removed": 46,
+    "remaining_containers": 0,
+    "remaining_images": 0,
+    "remaining_volumes": 0,
+    "remaining_build_cache_bytes": 0,
+    "docker_desktop": "stopped",
+    "consequence": "All recorded local runtime/test image IDs are historical; rebuild Docker services and images before resuming. Managed-volume data was intentionally deleted at owner request.",
+    "preserved": "Git sources, native app data, model weights, backups, private diagnostic evidence, Kernel Git bundle and host-native qualified artifacts remain outside Docker."
+  }
 }

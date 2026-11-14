@@ -307,3 +307,7 @@ Source qualification before this documentation commit was Deep `6d5307b1`; Kerne
 4. Diagnose the remaining work-runtime full-run failure without weakening authority or timing gates. Run all four backend groups at one new clean source/image, then both strict coverage bases. Complete remaining live/security/mesh-push criteria before any readiness claim.
 
 All post-resume work remains stopped until a new owner instruction. The website downloads branch is saved for handoff; its changes are not deployed.
+
+### Cleanup completed — 2026-11-14
+
+At the owner's explicit request, all local Docker containers, images, managed volumes and build caches were deleted, including the data in those volumes. Final Docker inventory was zero containers, zero images, zero volumes and zero build-cache bytes; Docker Desktop was then stopped. Recorded image IDs above are historical evidence, not available local runtimes: rebuild services/images before resuming. Host Git sources, native app data, model weights, backups, private diagnostics, the local Kernel bundle and qualified host artifacts were preserved. No implementation or testing resumed during handoff/cleanup.
