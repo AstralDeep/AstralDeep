@@ -11,6 +11,7 @@ import os
 import tempfile
 import threading
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -196,6 +197,9 @@ class _Admitted:
     owner: Optional[str] = None
 
 
+_request_session: ContextVar[Optional[_Session]] = ContextVar("node_mesh_request_session", default=None)
+
+
 class MeshChatBridge:
     def __init__(
         self,
@@ -266,10 +270,10 @@ class MeshChatBridge:
             loop.call_soon_threadsafe(self._wake.set)
 
     def observe_message(self, owner_id: str, chat_id: str, role: str, content: Any) -> None:
-        self._enqueue(("message", owner_id, chat_id, role, content))
+        self._enqueue(("message", owner_id, chat_id, role, content, _request_session.get()))
 
     def observe_step(self, owner_id: str, chat_id: str, step: Dict[str, Any]) -> None:
-        self._enqueue(("step", owner_id, chat_id, step))
+        self._enqueue(("step", owner_id, chat_id, step, _request_session.get()))
 
     def _enqueue(self, item: tuple) -> None:
         loop = self._loop
@@ -287,8 +291,16 @@ class MeshChatBridge:
             except Exception:
                 logger.exception("node_mesh_chat_observe_failed")
 
-    async def _handle_message(self, owner_id: str, chat_id: str, role: str, content: Any) -> None:
-        if chat_id in self._suppressed:
+    def _current_observation(self, chat_id: str, source: Optional[_Session]) -> bool:
+        current = self._sessions.get(chat_id)
+        if source is not None:
+            return current is source
+        return current is None or current.request is None
+
+    async def _handle_message(
+        self, owner_id: str, chat_id: str, role: str, content: Any, source: Optional[_Session] = None,
+    ) -> None:
+        if chat_id in self._suppressed or not self._current_observation(chat_id, source):
             return
         text = message_text(content)
         if role == "user":
@@ -308,7 +320,11 @@ class MeshChatBridge:
             session.answer = text
             await self._finish(session)
 
-    def _handle_step(self, owner_id: str, chat_id: str, step: Dict[str, Any]) -> None:
+    def _handle_step(
+        self, owner_id: str, chat_id: str, step: Dict[str, Any], source: Optional[_Session] = None,
+    ) -> None:
+        if not self._current_observation(chat_id, source):
+            return
         session = self._sessions.get(chat_id)
         if session is None or len(session.steps) >= MAX_STEPS:
             return
@@ -605,6 +621,7 @@ class MeshChatBridge:
             async with mint_lock:
                 return await mint(agent, tool, arguments, owner)
 
+        observation = _request_session.set(session)
         try:
             with vessel_executor.minting(issue):
                 await asyncio.wait_for(self._runner(self._owner, local, request.text), self._turn_seconds)
@@ -613,7 +630,9 @@ class MeshChatBridge:
             except asyncio.TimeoutError:
                 pass
         finally:
-            self._sessions.pop(local, None)
+            _request_session.reset(observation)
+            if self._sessions.get(local) is session:
+                self._sessions.pop(local, None)
         if not (session.answer or "").strip():
             raise Refusal("node.no_answer")
         return session.steps, session.answer

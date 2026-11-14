@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -474,6 +475,70 @@ async def test_a_pending_request_is_started_once_while_it_runs(tmp_path):
     release.set()
     await settle(lambda: kernel.recorded)
     await bridge.stop()
+
+
+async def test_a_cancelled_requests_late_worker_cannot_answer_its_replacement(tmp_path, monkeypatch):
+    loop = asyncio.get_running_loop()
+    worker_started = asyncio.Event()
+    release_worker = threading.Event()
+    worker_finished = asyncio.Event()
+    replacement_started = asyncio.Event()
+    release_replacement = asyncio.Event()
+    late_observed = asyncio.Event()
+
+    def publish_late(owner, local_chat):
+        loop.call_soon_threadsafe(worker_started.set)
+        release_worker.wait()
+        nmc.observe_step(owner, local_chat, {
+            "name": "cancelled-tool", "args": {}, "status": "completed", "result": "cancelled result",
+        })
+        nmc.observe_message(owner, local_chat, "assistant", "cancelled answer")
+        loop.call_soon_threadsafe(worker_finished.set)
+
+    async def runner(owner, local_chat, prompt):
+        if prompt == "first":
+            await asyncio.to_thread(publish_late, owner, local_chat)
+        else:
+            replacement_started.set()
+            await release_replacement.wait()
+            nmc.observe_message(owner, local_chat, "assistant", "replacement answer")
+
+    mesh, kernel, history, bridge = await build(tmp_path, runner)
+    nmc.install(bridge)
+    original = bridge._handle_message
+
+    async def handle(*args):
+        await original(*args)
+        if args[3] == "cancelled answer":
+            late_observed.set()
+
+    monkeypatch.setattr(bridge, "_handle_message", handle)
+    kernel.add_chat("c", [])
+    first_request = kernel.add_request("first", "c", "first")
+    second_request = kernel.add_request("second", "c", "second")
+    first = asyncio.create_task(bridge._run_turn(first_request, "local", nmc.BASE_LABELS))
+    second = None
+    try:
+        await asyncio.wait_for(worker_started.wait(), 30)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        second = asyncio.create_task(bridge._run_turn(second_request, "local", nmc.BASE_LABELS))
+        await asyncio.wait_for(replacement_started.wait(), 30)
+        release_worker.set()
+        await asyncio.wait_for(late_observed.wait(), 30)
+        assert not bridge._sessions["local"].done.is_set()
+        release_replacement.set()
+        assert await second == ([], "replacement answer")
+    finally:
+        first.cancel()
+        release_worker.set()
+        release_replacement.set()
+        await asyncio.wait_for(worker_finished.wait(), 30)
+        if second is not None:
+            await asyncio.gather(second, return_exceptions=True)
+        await asyncio.gather(first, return_exceptions=True)
+        await bridge.stop()
 
 
 async def test_a_failure_before_any_write_leaves_the_request_pending_for_a_retry(tmp_path):
