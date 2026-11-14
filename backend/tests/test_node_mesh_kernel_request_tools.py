@@ -11,7 +11,7 @@ import pytest
 
 from orchestrator.node_mesh_calls import OrchestratorCalls, skill_definition
 from tests.test_node_mesh_kernel_integration import OWNER, ak, paired, until  # noqa: F401
-from tests.test_node_mesh_peer_tools import API_KEY, FakeModel, REPLY, TOOL, model_server  # noqa: F401
+from tests.test_node_mesh_peer_tools import API_KEY, FakeModel, REPLY, TOOL, model_server, node_host  # noqa: F401
 from tests.test_node_mesh_personal_authority_integration import forbid_iam, verify_actual_principal
 from tests.test_node_mesh_turn_tools import AGENT, SANDBOXED_TOOL, dice_grant, grant, sandboxed_grant, turn_host  # noqa: F401
 
