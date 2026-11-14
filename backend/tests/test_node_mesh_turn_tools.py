@@ -17,7 +17,7 @@ from orchestrator import node_mesh_admission, node_mesh_chat, vessel_executor as
 from orchestrator.node_mesh_calls import OrchestratorCalls, definition_hash, grant_name, skill_definition
 from shared.feature_flags import flags
 from shared.protocol import AgentSkill, RegisterAgent
-from tests.test_node_mesh_kernel_integration import ak, paired, pytestmark, until  # noqa: F401
+from tests.test_node_mesh_kernel_integration import ak, paired, until  # noqa: F401
 from tests.test_node_mesh_peer_tools import AGENT, OWNER, TOOL, node_host  # noqa: F401
 
 SIBLING = "general-1"

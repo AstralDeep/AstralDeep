@@ -11,10 +11,10 @@ import shutil
 import socket
 import time
 
+import astral_kernel as ak
 import pytest
 
-ak = pytest.importorskip("astral_kernel")
-pytestmark = pytest.mark.skipif(shutil.which("astral-mailbox") is None, reason="mailbox binary not installed")
+assert shutil.which("astral-mailbox") is not None, "the pinned Kernel mailbox is required for real-binding tests"
 
 from contextlib import asynccontextmanager  # noqa: E402
 

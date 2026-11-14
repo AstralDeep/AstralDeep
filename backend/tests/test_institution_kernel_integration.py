@@ -3,13 +3,6 @@ It runs only where the pinned kernel wheel and the mailbox binary are installed,
 
 from __future__ import annotations
 
-import shutil
-
-import pytest
-
-pytest.importorskip("astral_kernel")
-pytestmark = pytest.mark.skipif(shutil.which("astral-mailbox") is None, reason="mailbox binary not installed")
-
 from types import SimpleNamespace  # noqa: E402
 
 from orchestrator import institution_runtime, node_mesh, node_mesh_chat  # noqa: E402

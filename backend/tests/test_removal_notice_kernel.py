@@ -4,12 +4,8 @@ It runs only where the pinned kernel wheel and the mailbox binary are installed,
 from __future__ import annotations
 
 import asyncio
-import shutil
 
 import pytest
-
-pytest.importorskip("astral_kernel")
-pytestmark = pytest.mark.skipif(shutil.which("astral-mailbox") is None, reason="mailbox binary not installed")
 
 from orchestrator import node_mesh  # noqa: E402
 from orchestrator.node_mailbox import MailboxSettings  # noqa: E402

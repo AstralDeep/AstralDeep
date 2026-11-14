@@ -4,13 +4,9 @@ It runs only where the pinned kernel wheel and the mailbox binary are installed,
 from __future__ import annotations
 
 import json
-import shutil
 import time
 
 import pytest
-
-pytest.importorskip("astral_kernel")
-pytestmark = pytest.mark.skipif(shutil.which("astral-mailbox") is None, reason="mailbox binary not installed")
 
 from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
 

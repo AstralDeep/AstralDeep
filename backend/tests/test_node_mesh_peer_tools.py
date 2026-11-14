@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 
-from tests.test_node_mesh_kernel_integration import OWNER, ak, paired, pytestmark, until  # noqa: F401
+from tests.test_node_mesh_kernel_integration import OWNER, ak, paired, until  # noqa: F401
 
 from orchestrator.node_mesh_calls import OrchestratorCalls, definition_hash, skill_definition
 from shared.feature_flags import flags

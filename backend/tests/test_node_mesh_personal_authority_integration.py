@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 from orchestrator.node_mesh_calls import OrchestratorCalls
 from shared import node_identity
-from tests.test_node_mesh_kernel_integration import ISS, OWNER, ak, paired, pytestmark, until  # noqa: F401
+from tests.test_node_mesh_kernel_integration import ISS, OWNER, ak, paired, until  # noqa: F401
 from tests.test_node_mesh_peer_tools import (  # noqa: F401
     TOOL, model_server, node_host, provide_model, published_spec,
 )

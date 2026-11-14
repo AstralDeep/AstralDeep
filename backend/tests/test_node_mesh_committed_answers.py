@@ -16,7 +16,7 @@ from orchestrator import node_mesh_chat
 from orchestrator.history import ConversationNotFound
 from orchestrator.node_mesh_calls import OrchestratorCalls
 from shared.feature_flags import flags
-from tests.test_node_mesh_kernel_integration import ak, paired, pytestmark, until  # noqa: F401
+from tests.test_node_mesh_kernel_integration import ak, paired, until  # noqa: F401
 from tests import test_node_mesh_peer_tools as peer_tools
 
 OWNER = peer_tools.OWNER

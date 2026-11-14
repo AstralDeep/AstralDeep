@@ -9,7 +9,7 @@ import asyncio
 import pytest
 
 from orchestrator.node_mesh_calls import OrchestratorCalls
-from tests.test_node_mesh_kernel_integration import ak, paired, pytestmark, until  # noqa: F401
+from tests.test_node_mesh_kernel_integration import ak, paired, until  # noqa: F401
 from tests.test_node_mesh_peer_tools import (  # noqa: F401
     AGENT, OWNER, TOOL, model_server, node_host, provide_model, published_spec,
 )
