@@ -48,9 +48,13 @@ class History:
 DEFINITION = "sha256:" + "d" * 64
 
 
+GRANT = SimpleNamespace(agent="kernel", tool="lookup@" + "d" * 8, scope="*", consented=True)
+
+
 class FakeCalls:
     def __init__(self, *, scope="tools:read", outcome=None, resolve_error=None, authorize_error=None):
         self.resolved = calls_module.ResolvedTool("agent-1", "lookup", scope, DEFINITION)
+        self.listed = self.resolved
         self.outcome = outcome or calls_module.CallOutcome("ok", "sunny")
         self.resolve_error = resolve_error
         self.authorize_error = authorize_error
@@ -67,6 +71,16 @@ class FakeCalls:
         if self.authorize_error:
             raise calls_module.CallRefused(self.authorize_error)
         return "authority"
+
+    def catalog(self, owner_id):
+        tool = self.listed
+        return {(tool.agent_id, tool.tool): calls_module.CatalogTool(tool.definition, tool.effect_kind)}
+
+    def turn_tools(self, owner_id, grants):
+        tool = self.listed
+        if not calls_module.grant_covers(grants, tool.tool, tool.definition, tool.effect_kind):
+            return []
+        return [calls_module.TurnTool(tool.agent_id, tool.tool, tool.definition, tool.scope)]
 
     async def run(self, owner_id, local_chat, resolved, authority, arguments, ticket=None):
         if self.delay:
@@ -129,6 +143,27 @@ def answering(text="the answer", steps=()):
 
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def turn_orch(scope="tools:read"):
+    from unittest.mock import AsyncMock
+
+    return SimpleNamespace(
+        security_flags={},
+        agent_cards={"agent-1": SimpleNamespace(skills=[SimpleNamespace(id="lookup")])},
+        vessel_definitions={("agent-1", "lookup"): DEFINITION},
+        tool_permissions=SimpleNamespace(get_tool_scope=lambda agent, tool: scope, is_tool_allowed=lambda owner, agent, tool: True),
+        _audit_gate_denial=AsyncMock(),
+    )
+
+
+async def node_call(orch, owner, local, arguments, invoke, *, agent="agent-1", tool="lookup"):
+    from orchestrator import node_mesh_admission
+
+    refusal = await node_mesh_admission.check(orch, None, owner, local, agent, tool, arguments)
+    if refusal is not None:
+        return refusal
+    return await node_mesh_admission.dispatch(orch, None, owner, local, agent, tool, arguments, invoke)
 
 
 def test_recorded_arguments_keep_non_ascii_paths_in_canonical_utf8():
@@ -600,12 +635,15 @@ async def test_a_node_run_turn_mints_its_tool_and_records_the_real_receipt(tmp_p
         httpx.AsyncClient(transport=httpx.MockTransport(deliver)),
     )
 
+    orch = turn_orch("tools:write")
+
     async def runner(owner, local, prompt):
-        response = await executor.invoke("agent-1", "lookup", {"q": "weather"}, owner=owner)
+        response = await node_call(orch, owner, local, {"q": "weather"}, lambda: executor.invoke("agent-1", "lookup", {"q": "weather"}, owner=owner))
         nmc.observe_step(owner, local, {"name": "agent-1__lookup", "args": '{"q":"weather"}', "status": "completed", "result": response.result})
         nmc.observe_message(owner, local, "assistant", "It is sunny.")
 
     mesh, kernel, history, bridge = await build(tmp_path, runner, calls=FakeCalls(scope="tools:write"))
+    kernel.mesh_grants = [GRANT]
     monkeypatch.setattr(mesh, "mint_ticket", mint, raising=False)
     kernel.add_chat("c", [])
     kernel.add_request("r1", "c")
@@ -640,16 +678,20 @@ async def test_a_node_mint_refusal_prevents_the_executor_request(tmp_path, monke
         httpx.AsyncClient(transport=httpx.MockTransport(deliver)),
     )
 
+    orch = turn_orch()
+
     async def runner(owner, local, prompt):
-        responses.append(await executor.invoke("agent-1", "lookup", {}, owner=owner))
+        responses.append(await node_call(orch, owner, local, {}, lambda: executor.invoke("agent-1", "lookup", {}, owner=owner)))
         nmc.observe_message(owner, local, "assistant", "Consent is required.")
 
     mesh, kernel, history, bridge = await build(tmp_path, runner, calls=FakeCalls())
+    kernel.mesh_grants = [GRANT]
     monkeypatch.setattr(mesh, "mint_ticket", mint, raising=False)
     kernel.add_chat("c", [])
     kernel.add_request("r1", "c")
     await serve(bridge, kernel, "r1")
     assert responses and responses[0].error["code"] == "consent.required" and not sent
+    assert orch._audit_gate_denial.await_args.kwargs == {"gate": "node_mesh", "detail": "consent.required"}
     assert kernel.request("r1").state == fake.RequestState.ANSWERED
     await bridge.stop()
     await executor.close()
@@ -676,13 +718,19 @@ async def test_node_mint_context_refuses_a_foreign_owner_tool_or_excess_call(tmp
         httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"output": "done"}))),
     )
 
+    orch = turn_orch()
+
     async def runner(owner, local, prompt):
+        def invoke():
+            return executor.invoke("agent-1", "lookup", {}, owner=owner)
+
         if case == "limit":
-            assert (await executor.invoke("agent-1", "lookup", {}, owner=owner)).result == "done"
-        results.append(await executor.invoke("agent-1", "lookup", {}, owner="other" if case == "owner" else owner))
+            assert (await node_call(orch, owner, local, {}, invoke)).result == "done"
+        results.append(await node_call(orch, "other" if case == "owner" else owner, local, {}, invoke))
         nmc.observe_message(owner, local, "assistant", "Refused.")
 
     mesh, kernel, history, bridge = await build(tmp_path, runner, calls=calls)
+    kernel.mesh_grants = [GRANT]
     monkeypatch.setattr(mesh, "mint_ticket", mint)
     kernel.add_chat("c", [])
     kernel.add_request("r1", "c")
@@ -728,8 +776,13 @@ async def test_parallel_node_calls_get_distinct_ids_and_keep_their_exact_receipt
         httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"output": "done"}))),
     )
 
+    orch = turn_orch()
+
     async def runner(owner, local, prompt):
-        responses.extend(await asyncio.gather(*(executor.invoke("agent-1", "lookup", {"q": n}, owner=owner) for n in [1, 2])))
+        def invoke(n):
+            return lambda: executor.invoke("agent-1", "lookup", {"q": n}, owner=owner)
+
+        responses.extend(await asyncio.gather(*(node_call(orch, owner, local, {"q": n}, invoke(n)) for n in [1, 2])))
         for n, response in reversed(list(zip([1, 2], responses))):
             if response.error is not None:
                 continue
@@ -737,6 +790,7 @@ async def test_parallel_node_calls_get_distinct_ids_and_keep_their_exact_receipt
         nmc.observe_message(owner, local, "assistant", "Both done.")
 
     mesh, kernel, history, bridge = await build(tmp_path, runner, calls=FakeCalls())
+    kernel.mesh_grants = [GRANT]
     monkeypatch.setattr(mesh, "mint_ticket", mint)
     kernel.add_chat("c", [])
     kernel.add_request("r1", "c")
@@ -964,36 +1018,104 @@ async def test_protection_check_uses_the_phi_policy(monkeypatch):
     assert nmc._protection_enabled("other") is False
 
 
-async def test_runner_uses_machine_authority_without_tool_scopes():
+def machine_authority(scopes):
+    from orchestrator.chain_authority import MachineAuthority
+
+    return MachineAuthority(
+        access_token="consent-token", allowed_scopes=list(scopes), principal="machine:mesh_request",
+        user_id=OWNER, consent_ref="grant-1", turn_class="mesh_request",
+    )
+
+
+class RunnerOrch:
+    def __init__(self, result=None):
+        self.calls = {}
+        self.result = result
+
+    async def derive_machine_authority(self, **kwargs):
+        self.calls["derive"] = kwargs
+        return self.result if self.result is not None else machine_authority(kwargs["consented_scopes"])
+
+    def _bind_machine_turn(self, vws, authority):
+        from orchestrator import node_mesh_admission
+
+        self.calls["bound"] = authority
+        self.calls["marked"] = getattr(vws, node_mesh_admission.TURN_MARK, False)
+
+    def _unbind_machine_turn(self, vws):
+        self.calls["unbound"] = True
+
+    async def handle_chat_message(self, vws, text, chat_id, user_id=None):
+        self.calls["handled"] = (text, chat_id, user_id)
+
+
+async def test_a_runner_outside_a_node_turn_gets_no_scopes_and_no_tools():
     from orchestrator.chain_authority import AuthoritySkip
 
-    calls = {}
-
-    class Orch:
-        async def derive_machine_authority(self, **kwargs):
-            calls["derive"] = kwargs
-            return "authority"
-
-        def _bind_machine_turn(self, vws, authority):
-            calls["bound"] = authority
-
-        def _unbind_machine_turn(self, vws):
-            calls["unbound"] = True
-
-        async def handle_chat_message(self, vws, text, chat_id, user_id=None):
-            calls["handled"] = (text, chat_id, user_id)
-
-    await nmc.orchestrator_runner(Orch())(OWNER, "local-1", "hello")
-    assert calls["derive"] == {"user_id": OWNER, "agent_id": None, "turn_class": "mesh_request", "consented_scopes": []}
-    assert calls["handled"] == ("hello", "local-1", OWNER) and calls["unbound"] and calls["bound"] == "authority"
-
-    class Denied(Orch):
-        async def derive_machine_authority(self, **kwargs):
-            return AuthoritySkip("missing_consent", "no grant")
+    orch = RunnerOrch()
+    await nmc.orchestrator_runner(orch)(OWNER, "local-1", "hello")
+    assert orch.calls["derive"] == {"user_id": OWNER, "agent_id": None, "turn_class": "mesh_request", "consented_scopes": []}
+    assert orch.calls["bound"].allowed_tools == () and orch.calls["marked"] is True
+    assert orch.calls["handled"] == ("hello", "local-1", OWNER) and orch.calls["unbound"]
 
     with pytest.raises(node_mesh.NodeMeshError) as refused:
-        await nmc.orchestrator_runner(Denied())(OWNER, "local-1", "hello")
+        await nmc.orchestrator_runner(RunnerOrch(AuthoritySkip("missing_consent", "no grant")))(OWNER, "local-1", "hello")
     assert refused.value.code == "authority_missing_consent"
+
+
+async def test_a_runner_inside_a_node_turn_binds_exactly_the_granted_tools_and_their_scopes(tmp_path):
+    from orchestrator import node_mesh_admission
+
+    mesh, kernel, history, bridge = await build(tmp_path, start=False)
+    tools = {("b", "two", DEFINITION): "tools:write", ("a", "one", DEFINITION): "tools:read", ("c", "three", DEFINITION): "tools:read"}
+
+    async def no_catalog():
+        return {}
+
+    async def no_mint(*args):
+        raise AssertionError("not minted")
+
+    orch = RunnerOrch()
+    with node_mesh_admission.turn(mesh, lambda: OWNER, OWNER, "local-1", tools, no_catalog, no_mint):
+        await nmc.orchestrator_runner(orch)(OWNER, "local-1", "hello")
+    assert orch.calls["derive"]["consented_scopes"] == ["tools:read", "tools:write"]
+    assert orch.calls["bound"].allowed_tools == (("a", "one", DEFINITION), ("b", "two", DEFINITION), ("c", "three", DEFINITION))
+    assert node_mesh_admission.current_turn() is None
+
+
+async def test_a_turn_offers_only_catalog_tools_a_consented_grant_for_the_current_hash_covers(tmp_path):
+    seen = []
+
+    async def runner(owner, local, prompt):
+        from orchestrator import node_mesh_admission
+
+        seen.append(dict(node_mesh_admission.current_turn().tools))
+        nmc.observe_message(owner, local, "assistant", "done")
+
+    mesh, kernel, history, bridge = await build(tmp_path, runner, calls=FakeCalls())
+    grants = [
+        [GRANT],
+        [],
+        [SimpleNamespace(agent="kernel", tool="lookup", scope="*", consented=True)],
+        [SimpleNamespace(agent="kernel", tool="lookup@" + "e" * 8, scope="*", consented=True)],
+        [SimpleNamespace(agent="kernel", tool="lookup@" + "d" * 8, scope="outside_effect", consented=True)],
+        [SimpleNamespace(agent="kernel", tool="lookup@" + "d" * 8, scope="outward_read", consented=False)],
+        [SimpleNamespace(agent="other", tool="lookup@" + "d" * 8, scope="outward_read", consented=True)],
+        [SimpleNamespace(agent="*", tool="lookup@" + "d" * 8, scope="outward_read", consented=True)],
+    ]
+    for index, current in enumerate(grants):
+        kernel.mesh_grants = current
+        kernel.add_chat(f"c{index}", [])
+        kernel.add_request(f"r{index}", f"c{index}")
+        await serve(bridge, kernel, f"r{index}")
+    covered = {("agent-1", "lookup", DEFINITION): "tools:read"}
+    assert seen == [covered, {}, {}, {}, {}, {}, {}, covered]
+    kernel.grants_error = "grant.unavailable"
+    kernel.add_chat("cx", [])
+    kernel.add_request("rx", "cx")
+    await serve(bridge, kernel, "rx")
+    assert seen[-1] == {} and kernel.request("rx").state == fake.RequestState.ANSWERED
+    await bridge.stop()
 
 
 async def test_start_for_wires_the_bridge_and_stop_all_tears_it_down(tmp_path, monkeypatch):

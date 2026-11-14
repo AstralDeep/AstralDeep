@@ -19605,7 +19605,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 return GateRefusal(response=MCPResponse(error={
                     "code": mesh_admission.MeshAdmissionError.code,
                     "message": "Current member authority is unavailable", "retryable": False}))
-        from orchestrator.chain_authority import machine_scope_ceiling
+        from orchestrator.chain_authority import machine_scope_ceiling, machine_tool_admitted
 
         machine_scopes = machine_scope_ceiling(_session_claims)
         if machine_scopes is not None and agent_id:
@@ -19619,6 +19619,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 _session_claims.get("sub") != user_id
                 or _session_claims.get("_machine_authority_agent") not in (None, agent_id)
                 or required_scope not in machine_scopes
+                or not machine_tool_admitted(self, _session_claims, agent_id, tool_name)
             ):
                 err_msg = (
                     f"Tool '{tool_name}' is outside this unattended task's approved "
@@ -20184,7 +20185,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     ) -> Optional[MCPResponse]:
         if not isinstance(agent_id, str) or not agent_id.startswith("__"):
             return None
-        from orchestrator.chain_authority import machine_scope_ceiling
+        from orchestrator.chain_authority import machine_meta_refused, machine_scope_ceiling
 
         session = self.ui_sessions.get(websocket, {})
         scopes = machine_scope_ceiling(session)
@@ -20196,7 +20197,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             ("__skill_guidance__", "read_user_skill"),
         }
         decomposition = (agent_id, tool_name) == ("__subtasks__", "delegate_subtasks")
-        if session.get("sub") == user_id and scopes and (
+        if session.get("sub") == user_id and scopes and not machine_meta_refused(session) and (
             decomposition or (
                 read_only and "tools:read" in scopes
                 and session.get("_machine_authority_agent") is None
@@ -21459,9 +21460,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             async def current_invoke():
                 from orchestrator import node_mesh_admission
 
-                refusal = await node_mesh_admission.check(
-                    self, websocket, user_id, conversation_id, agent_id, tool_name, args, physical=True)
-                return refusal if refusal is not None else await invoke(capabilities)
+                return await node_mesh_admission.dispatch(
+                    self, websocket, user_id, conversation_id, agent_id, tool_name, args,
+                    lambda: invoke(capabilities))
 
             stop = getattr(self, "emergency_stop", None)
             try:

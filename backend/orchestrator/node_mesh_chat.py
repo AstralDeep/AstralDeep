@@ -1,9 +1,11 @@
 """Moves chat activity between the node's own Python turn loop and the owner's mesh log: a request addressed to the node is claimed, run through the node's own gates and answered with a recorded turn, and a turn the node runs for a thin client is recorded into the owner's chat.
-The node computes the labels of what it records, refuses PHI work unless the roster lists it as a PHI member, and trusts nothing a requesting device's gates decided."""
+The node computes the labels of what it records, refuses PHI work unless the roster lists it as a PHI member, and trusts nothing a requesting device's gates decided.
+A turn it runs offers only catalog tools that consented mesh grants and the owner's enablement cover, and node_mesh_admission.py mints a kernel ticket for each call before dispatch."""
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import logging
@@ -585,12 +587,31 @@ class MeshChatBridge:
             }
         ]
 
+    async def _turn_tools(self, owner: str) -> Dict[Tuple[str, str, str], str]:
+        listing = getattr(self._calls, "turn_tools", None)
+        if listing is None:
+            return {}
+        try:
+            grants = await self._mesh.grants()
+        except (NodeMeshError, MeshUnavailable) as exc:
+            logger.warning("node_mesh_grants_unavailable: %s", exc.code)
+            return {}
+        tools = await asyncio.to_thread(listing, owner, grants)
+        return {(tool.agent_id, tool.tool, tool.definition): tool.scope for tool in tools}
+
+    async def _catalog(self, owner: str) -> Dict[Tuple[str, str], Any]:
+        listing = getattr(self._calls, "catalog", None)
+        return {} if listing is None else await asyncio.to_thread(listing, owner)
+
     async def _run_turn(self, request: Any, local: str, floor: Labels) -> Tuple[List[Dict[str, Any]], str]:
-        session = _Session(self._owner, local, mesh_chat=request.chat_id, user_text=request.text, request=request, floor=floor)
+        from orchestrator import node_mesh_admission
+
+        owner_id = self._owner
+        session = _Session(owner_id, local, mesh_chat=request.chat_id, user_text=request.text, request=request, floor=floor)
         self._sessions[local] = session
         mint_lock = asyncio.Lock()
 
-        async def mint(agent: str, tool: str, arguments: Dict[str, Any], owner: Optional[str]) -> vessel_executor.CallTicket:
+        async def mint(agent: str, tool: str, arguments: Dict[str, Any], owner: Optional[str]) -> Tuple[vessel_executor.CallTicket, Any]:
             if owner != session.owner_id or self._owner != owner or self._calls is None:
                 raise vessel_executor.TicketRefused("node.owner_mismatch")
             if len(session.minted) >= MAX_STEPS:
@@ -615,16 +636,19 @@ class MeshChatBridge:
                 "arguments_json": arguments_json, "tool_def": resolved.definition,
                 "receipt": minted.receipt_event, "labels": join_labels(session.floor, ("private", "untrusted")),
             })
-            return vessel_executor.CallTicket(minted.ticket_json, minted.action_json, arguments_json)
+            return vessel_executor.CallTicket(minted.ticket_json, minted.action_json, arguments_json), resolved
 
-        async def issue(agent: str, tool: str, arguments: Dict[str, Any], owner: Optional[str]) -> vessel_executor.CallTicket:
+        async def issue(agent: str, tool: str, arguments: Dict[str, Any], owner: Optional[str]) -> Tuple[vessel_executor.CallTicket, Any]:
             async with mint_lock:
                 return await mint(agent, tool, arguments, owner)
 
         observation = _request_session.set(session)
         try:
-            with vessel_executor.minting(issue):
-                await asyncio.wait_for(self._runner(self._owner, local, request.text), self._turn_seconds)
+            tools = await self._turn_tools(owner_id)
+            with node_mesh_admission.turn(
+                self._mesh, lambda: self._owner, owner_id, local, tools, lambda: self._catalog(owner_id), issue,
+            ):
+                await asyncio.wait_for(self._runner(owner_id, local, request.text), self._turn_seconds)
             try:
                 await asyncio.wait_for(session.done.wait(), ANSWER_GRACE_SECONDS)
             except asyncio.TimeoutError:
@@ -802,17 +826,22 @@ def observe_step(owner_id: str, chat_id: str, step: Dict[str, Any]) -> None:
 
 def orchestrator_runner(orch: Any) -> TurnRunner:
     async def run(owner_id: str, local_chat: str, text: str) -> None:
+        from orchestrator import node_mesh_admission
         from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
         from orchestrator.chain_authority import AuthoritySkip
 
+        bound = node_mesh_admission.current_turn()
         authority = await orch.derive_machine_authority(
-            user_id=owner_id, agent_id=None, turn_class="mesh_request", consented_scopes=[]
+            user_id=owner_id, agent_id=None, turn_class="mesh_request",
+            consented_scopes=bound.scopes if bound is not None else [],
         )
         if isinstance(authority, AuthoritySkip):
             session_reason = getattr(authority, "reason", "authority_unavailable")
             raise NodeMeshError(f"authority_{session_reason}")
+        authority = dataclasses.replace(authority, allowed_tools=bound.allowed if bound is not None else ())
         task = BackgroundTask(task_id=f"mesh-{int(time.time() * 1000)}", chat_id=local_chat, user_id=owner_id)
         vws = VirtualWebSocket(task)
+        setattr(vws, node_mesh_admission.TURN_MARK, True)
         orch._bind_machine_turn(vws, authority)
         try:
             await orch.handle_chat_message(vws, text, local_chat, user_id=owner_id)

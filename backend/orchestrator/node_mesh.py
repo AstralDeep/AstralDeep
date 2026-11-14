@@ -422,6 +422,9 @@ class NodeMesh:
     async def refuse_request(self, request_id: str, code: str) -> str:
         return await self._request_call(self.kernel.refuse_request, request_id, code)
 
+    async def grants(self) -> List[Any]:
+        return list(await self._request_call(self.kernel.grants))
+
     async def verify_ticket(self, ticket_json: str, action_json: str, effect_kind: str) -> Any:
         return await self._request_call(self.kernel.verify_ticket, ticket_json, action_json, effect_kind)
 

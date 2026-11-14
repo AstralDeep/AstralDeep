@@ -1,5 +1,6 @@
 """Resolves a tool a mesh member asked the node to run and runs it through the orchestrator's protected dispatch under machine authority, so every permission, PHI, confirmation and audit gate applies as for any other turn.
-node_mesh_chat.py calls it after the kernel has verified the request's ticket, and it never trusts the requesting device's own gates."""
+node_mesh_chat.py calls it after the kernel has verified the request's ticket, and it never trusts the requesting device's own gates.
+It also lists the node's published catalog and the catalog tools that consented mesh grants and the owner's own enablement both cover, for the node's own turns."""
 
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ logger = logging.getLogger("Orchestrator.NodeMeshCalls")
 READ_SCOPES = frozenset({"tools:read", "tools:search"})
 MAX_CONTENT = 65536
 QUALIFIER = "__"
+GRANT_AGENTS = frozenset({"kernel", "*"})
 
 
 class CallRefused(Exception):
@@ -38,6 +40,20 @@ class ResolvedTool:
     @property
     def effect_kind(self) -> str:
         return "outward_read" if self.scope in READ_SCOPES else "outside_effect"
+
+
+@dataclass(frozen=True)
+class CatalogTool:
+    definition: str
+    effect: str
+
+
+@dataclass(frozen=True)
+class TurnTool:
+    agent_id: str
+    tool: str
+    definition: str
+    scope: str
 
 
 @dataclass(frozen=True)
@@ -91,6 +107,30 @@ def skill_definition(skill: Any) -> str:
     )
 
 
+def current_definition(orch: Any, agent_id: str, tool: str) -> Optional[str]:
+    pinned = vessel_executor.pinned_definition(orch, agent_id, tool)
+    if pinned is not None:
+        return pinned
+    card = getattr(orch, "agent_cards", {}).get(agent_id)
+    skills = [skill for skill in getattr(card, "skills", None) or () if skill.id == tool]
+    return skill_definition(skills[0]) if len(skills) == 1 else None
+
+
+def grant_name(name: str, definition: str) -> str:
+    return f"{name}@{definition.removeprefix('sha256:')[:8]}"
+
+
+def grant_covers(grants: Any, name: str, definition: str, effect: str) -> bool:
+    wanted = grant_name(name, definition)
+    return any(
+        getattr(grant, "consented", False) is True
+        and getattr(grant, "agent", None) in GRANT_AGENTS
+        and getattr(grant, "tool", None) == wanted
+        and getattr(grant, "scope", None) in (effect, "*")
+        for grant in grants
+    )
+
+
 def _text(value: Any) -> str:
     text = value if isinstance(value, str) else json.dumps(value, sort_keys=True, default=str)
     return text[:MAX_CONTENT]
@@ -101,7 +141,35 @@ class OrchestratorCalls:
         self._orch = orch
 
     def published_tools(self, owner_id: str) -> List[Dict[str, Any]]:
-        tools = list(vessel_executor.published_tools(self._orch))
+        return [tool for _, tool in self._entries(owner_id)]
+
+    def catalog(self, owner_id: str) -> Dict[Tuple[str, str], CatalogTool]:
+        return {
+            (agent_id, tool["name"]): CatalogTool(
+                definition_hash(tool["name"], tool["description"], tool["input_schema"], tool["annotations"]),
+                tool["effect"],
+            )
+            for agent_id, tool in self._entries(owner_id)
+        }
+
+    def turn_tools(self, owner_id: str, grants: Any) -> List[TurnTool]:
+        permissions = self._orch.tool_permissions
+        found: List[TurnTool] = []
+        for (agent_id, name), entry in sorted(self.catalog(owner_id).items()):
+            if current_definition(self._orch, agent_id, name) != entry.definition:
+                continue
+            if not grant_covers(grants, name, entry.definition, entry.effect):
+                continue
+            if not permissions.is_tool_allowed(owner_id, agent_id, name):
+                continue
+            found.append(TurnTool(agent_id, name, entry.definition, permissions.get_tool_scope(agent_id, name)))
+        return found
+
+    def _entries(self, owner_id: str) -> List[Tuple[str, Dict[str, Any]]]:
+        tools = [
+            (tool["annotations"][vessel_executor.AGENT_ANNOTATION], tool)
+            for tool in vessel_executor.published_tools(self._orch)
+        ]
         local_agents = getattr(self._orch, "local_agents", {})
         if type(owner_id) is str and owner_id and isinstance(local_agents, dict):
             from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
@@ -121,16 +189,16 @@ class OrchestratorCalls:
                 metadata = metadata if isinstance(metadata, dict) else {}
                 annotations = sanitize_annotations(metadata.get("annotations"))
                 scope = self._orch.tool_permissions.get_tool_scope(agent_id, name)
-                tools.append({
+                tools.append((agent_id, {
                     "name": name,
                     "description": description,
                     "input_schema": schema,
                     "annotations": annotations,
                     "effect": "outward_read" if scope in READ_SCOPES else "outside_effect",
-                })
-        counts = Counter(tool.get("name") for tool in tools)
+                }))
+        counts = Counter(tool.get("name") for _, tool in tools)
         ambiguous = {name for name, count in counts.items() if count > 1}
-        return [tool for tool in tools if tool.get("name") not in ambiguous]
+        return [(agent_id, tool) for agent_id, tool in tools if tool.get("name") not in ambiguous]
 
     async def resolve(self, owner_id: str, tool: str) -> ResolvedTool:
         from orchestrator.tool_visibility import eligible_tool_pairs

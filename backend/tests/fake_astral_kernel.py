@@ -269,6 +269,8 @@ class Kernel:
         self.catalogs: List[List[Any]] = []
         self.catalog_error: Optional[str] = None
         self.address_error: Optional[Exception] = None
+        self.mesh_grants: List[Any] = []
+        self.grants_error: Optional[str] = None
         self._ids = itertools.count(1)
         Kernel.instances.append(self)
 
@@ -407,6 +409,11 @@ class Kernel:
             turn=action.get("turn", "turn-x"), agents=["kernel"], action_digest="sha256:" + "0" * 64,
             labels=self.ticket_labels, sources=[], consented=False,
         )
+
+    def grants(self):
+        if self.grants_error is not None:
+            raise KernelError.InvalidInput(self.grants_error, "refused")
+        return list(self.mesh_grants)
 
     def publish_tool_catalog(self, tools):
         if self.catalog_error is not None:

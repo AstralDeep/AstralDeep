@@ -200,7 +200,8 @@ async def test_the_runner_publishes_only_owner_visible_bundled_and_vessel_tools(
     monkeypatch.setattr(
         tool_visibility, "eligible_tool_pairs", lambda _orch, owner: pairs_by_owner[owner]
     )
-    monkeypatch.setattr(nmcalls.vessel_executor, "published_tools", lambda orch: [{"name": "lookup"}])
+    vessel = {"name": "lookup", "annotations": {"agent": "guide"}}
+    monkeypatch.setattr(nmcalls.vessel_executor, "published_tools", lambda orch: [vessel])
     calls = nmcalls.OrchestratorCalls(orch)
 
     published = calls.published_tools(OWNER)
@@ -212,7 +213,7 @@ async def test_the_runner_publishes_only_owner_visible_bundled_and_vessel_tools(
     assert (await calls.resolve(OWNER, "roll_dice")).definition == nmcalls.definition_hash(
         dice["name"], dice["description"], dice["input_schema"], dice["annotations"]
     )
-    assert calls.published_tools("other-owner") == [{"name": "lookup"}]
+    assert calls.published_tools("other-owner") == [vessel]
 
 
 async def test_the_runner_omits_ambiguous_published_names(monkeypatch):
@@ -276,3 +277,65 @@ async def test_a_real_orchestrator_publishes_its_owner_visible_bundled_dice_tool
         tool["name"], tool["description"], tool["input_schema"], tool["annotations"]
     )
     assert calls.published_tools("oidc.abc.other") == []
+
+
+def grant(tool, scope="*", *, agent="kernel", consented=True):
+    return SimpleNamespace(agent=agent, tool=tool, scope=scope, consented=consented)
+
+
+def test_a_grant_covers_only_the_exact_name_and_definition_with_the_effect_or_any_scope():
+    name = "roll_dice@" + "d" * 8
+    assert nmcalls.grant_name("roll_dice", DEFINITION) == name
+    assert nmcalls.grant_covers([grant(name)], "roll_dice", DEFINITION, "outward_read")
+    assert nmcalls.grant_covers([grant(name, "outward_read", agent="*")], "roll_dice", DEFINITION, "outward_read")
+    for refused in [
+        grant("roll_dice"), grant("*"), grant("roll_dice@" + "e" * 8), grant(name, "outside_effect"),
+        grant(name, consented=False), grant(name, agent="assistant"), SimpleNamespace(),
+    ]:
+        assert not nmcalls.grant_covers([refused], "roll_dice", DEFINITION, "outward_read")
+
+
+def turn_orchestrator(monkeypatch, *, allowed=lambda owner, agent, tool: True):
+    dice = skill("roll_dice", description="Roll dice", input_schema={"type": "object"}, metadata={})
+    coin = skill("flip_coin", description="Flip", input_schema={}, metadata={})
+    orch = Orch()
+    orch.local_agents = {"dice-roller-1": object(), "general-1": object()}
+    orch.agent_cards = {"dice-roller-1": SimpleNamespace(skills=[dice]), "general-1": SimpleNamespace(skills=[coin])}
+    orch.tool_permissions.get_tool_scope = lambda agent, tool: "tools:read"
+    orch.tool_permissions.is_tool_allowed = allowed
+    monkeypatch.setattr(
+        tool_visibility, "eligible_tool_pairs", lambda _orch, owner: [("dice-roller-1", dice), ("general-1", coin)]
+    )
+    monkeypatch.setattr(nmcalls.vessel_executor, "published_tools", lambda _orch: [])
+    return orch, dice, coin
+
+
+def test_the_catalog_keys_each_published_tool_by_agent_and_name_with_its_definition(monkeypatch):
+    orch, dice, coin = turn_orchestrator(monkeypatch)
+    catalog = nmcalls.OrchestratorCalls(orch).catalog(OWNER)
+    assert catalog == {
+        ("dice-roller-1", "roll_dice"): nmcalls.CatalogTool(nmcalls.skill_definition(dice), "outward_read"),
+        ("general-1", "flip_coin"): nmcalls.CatalogTool(nmcalls.skill_definition(coin), "outward_read"),
+    }
+    assert nmcalls.current_definition(orch, "dice-roller-1", "roll_dice") == nmcalls.skill_definition(dice)
+    assert nmcalls.current_definition(orch, "dice-roller-1", "absent") is None
+    assert nmcalls.current_definition(orch, "absent", "roll_dice") is None
+
+
+def test_turn_tools_need_a_grant_for_the_current_hash_and_the_owners_enablement(monkeypatch):
+    disabled = {"flip_coin"}
+    orch, dice, coin = turn_orchestrator(monkeypatch, allowed=lambda owner, agent, tool: tool not in disabled)
+    calls = nmcalls.OrchestratorCalls(orch)
+    dice_grant = grant(nmcalls.grant_name("roll_dice", nmcalls.skill_definition(dice)), "outward_read")
+    coin_grant = grant(nmcalls.grant_name("flip_coin", nmcalls.skill_definition(coin)))
+    assert calls.turn_tools(OWNER, []) == []
+    assert calls.turn_tools(OWNER, [dice_grant, coin_grant]) == [
+        nmcalls.TurnTool("dice-roller-1", "roll_dice", nmcalls.skill_definition(dice), "tools:read"),
+    ]
+    disabled.clear()
+    assert [tool.tool for tool in calls.turn_tools(OWNER, [dice_grant, coin_grant])] == ["roll_dice", "flip_coin"]
+    stale = calls.catalog
+    monkeypatch.setattr(calls, "catalog", lambda owner: {
+        key: nmcalls.CatalogTool("sha256:" + "0" * 64, entry.effect) for key, entry in stale(owner).items()
+    })
+    assert calls.turn_tools(OWNER, [dice_grant, coin_grant]) == []
