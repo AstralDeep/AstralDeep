@@ -265,12 +265,12 @@ class OrchestratorCalls:
                 )
         except Exception as exc:
             logger.warning("node_mesh_call_failed: %s", type(exc).__name__)
-            return CallOutcome("error", "The node could not run the tool.", "node.tool_failed")
+            return CallOutcome("error", "The node could not confirm the tool outcome.", "node.outcome_unknown")
         finally:
             self._orch._unbind_machine_turn(vws)
             await vws.close()
         if response is None:
-            return CallOutcome("error", "The tool returned nothing.", "node.tool_failed")
+            return CallOutcome("error", "The tool returned no confirmed outcome.", "node.outcome_unknown")
         if response.error is not None:
             error = response.error
             return CallOutcome("error", _text(error.get("message") or "The tool refused the call."), dotted(error.get("code") or "tool_failed"))

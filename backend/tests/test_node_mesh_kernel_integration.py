@@ -256,7 +256,7 @@ def canonical(value) -> str:
 
 
 @asynccontextmanager
-async def paired(tmp_path, monkeypatch, *, phi_protected=False, calls=None, peer_tools=None, history=None, runner=None):
+async def paired(tmp_path, monkeypatch, *, phi_protected=False, calls=None, peer_tools=None, history=None, runner=None, kernel_answers=False):
     monkeypatch.setenv("ASTRAL_NODE_PROFILE", "personal")
     monkeypatch.setenv("ASTRAL_NODE_DATA_DIR", str(tmp_path / "node"))
     monkeypatch.setenv("ASTRAL_NODE_OWNER", OWNER)
@@ -281,7 +281,7 @@ async def paired(tmp_path, monkeypatch, *, phi_protected=False, calls=None, peer
         await laptop.approve_pairing(offer["payload"], ak.HistoryGrant.ALL)
         await until(lambda: enrolled(node), "the node to join")
         bridge = node_mesh_chat.MeshChatBridge(
-            node, owner_id=OWNER, history=history or History(), runner=runner or model_turn, calls=calls,
+            node, owner_id=OWNER, history=history or History(), runner=None if kernel_answers else runner or model_turn, calls=calls,
             state_path=tmp_path / "chats.json",
             phi_active=lambda owner: phi_protected, poll_seconds=0.2,
         )

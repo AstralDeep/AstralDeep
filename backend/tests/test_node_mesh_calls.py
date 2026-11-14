@@ -121,12 +121,12 @@ async def test_a_gate_refusal_becomes_an_error_outcome_with_a_dotted_code():
     assert bare.code == "node.tool_failed" and bare.content
 
 
-async def test_a_missing_response_or_a_dispatch_failure_is_an_error_outcome_and_unbinds():
+async def test_a_missing_response_or_dispatch_exception_is_unknown_and_unbinds():
     orch = Orch(response=None)
-    assert (await run(orch)).code == "node.tool_failed"
+    assert (await run(orch)).code == "node.outcome_unknown"
     broken = Orch(error=RuntimeError("down"))
     outcome = await run(broken)
-    assert outcome.status == "error" and outcome.code == "node.tool_failed" and "down" not in outcome.content
+    assert outcome.status == "error" and outcome.code == "node.outcome_unknown" and "down" not in outcome.content
     assert broken.events[-1] == ("unbind",)
 
 

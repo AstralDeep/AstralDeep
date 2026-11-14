@@ -928,14 +928,14 @@ async def test_phi_labels_on_a_ticket_need_an_approved_node(tmp_path):
     await bridge.stop()
 
 
-async def test_a_tool_call_that_overruns_is_refused_as_a_timeout(tmp_path):
+async def test_a_tool_call_that_overruns_preserves_the_claimed_unknown_outcome(tmp_path):
     calls = FakeCalls()
     calls.delay = 30
     mesh, kernel, history, bridge = await build(tmp_path, calls=calls, turn_seconds=0.1)
     kernel.add_chat("c", [])
     kernel.add_request("r1", "c", call=call_for())
     await serve(bridge, kernel, "r1")
-    assert kernel.refused == [("r1", "node.turn_timeout")]
+    assert kernel.refused == [] and kernel.request("r1").state == fake.RequestState.CLAIMED
     await bridge.stop()
 
 
@@ -1214,3 +1214,42 @@ async def test_a_kernel_without_catalog_publishing_is_reported_not_faked(tmp_pat
     with pytest.raises(node_mesh.MeshUnavailable) as caught:
         await mesh.publish_tool_catalog(TOOLS)
     assert caught.value.code == "catalog_unsupported"
+
+
+@pytest.mark.parametrize("source", [PHONE, "dev-node"])
+async def test_recovery_preserves_claimed_peer_effects_without_synthetic_refusal(tmp_path, source):
+    mesh, kernel, history, bridge = await build(tmp_path, calls=FakeCalls())
+    kernel.add_chat("c", [])
+    request = kernel.add_request("r1", "c", state="CLAIMED", call=call_for())
+    request.from_device = source
+    await bridge.scan()
+    assert request.state == fake.RequestState.CLAIMED and not kernel.refused and not kernel.recorded
+    assert not bridge._running
+    await bridge.stop()
+
+
+async def test_a_peer_effect_without_a_committed_reply_stays_claimed_and_is_not_retried(tmp_path):
+    calls = FakeCalls()
+    mesh, kernel, history, bridge = await build(tmp_path, calls=calls)
+    kernel.add_chat("c", [])
+    request = kernel.add_request("r1", "c", call=call_for())
+    kernel.record_error = "store.reply_unwritten"
+    await serve(bridge, kernel, "r1")
+    assert len(calls.ran) == 1 and request.state == fake.RequestState.CLAIMED
+    assert not kernel.refused and not kernel.recorded
+    await bridge.scan()
+    assert len(calls.ran) == 1 and request.state == fake.RequestState.CLAIMED
+    assert not kernel.refused
+    await bridge.stop()
+
+
+async def test_an_unknown_dispatch_result_does_not_close_or_replay_the_claimed_call(tmp_path):
+    calls = FakeCalls(outcome=calls_module.CallOutcome("error", "No committed reply", "node.outcome_unknown"))
+    mesh, kernel, history, bridge = await build(tmp_path, calls=calls)
+    kernel.add_chat("c", [])
+    request = kernel.add_request("r1", "c", call=call_for())
+    await serve(bridge, kernel, "r1")
+    await bridge.scan()
+    assert len(calls.ran) == 1 and request.state == fake.RequestState.CLAIMED
+    assert not kernel.refused and not kernel.recorded
+    await bridge.stop()

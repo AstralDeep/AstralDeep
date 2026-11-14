@@ -445,11 +445,44 @@ class NodeMesh:
     async def chat_requests(self, chat_id: str) -> List[Any]:
         return await asyncio.to_thread(self.kernel.chat_requests, chat_id)
 
+    async def request(self, request_id: str) -> Any:
+        return await self._request_call(self.kernel.request, request_id)
+
+    def require_request_runtime(self, kernel: Any) -> None:
+        if self.kernel is not kernel:
+            raise NodeMeshError("node.mesh_admission_unavailable")
+        capability = getattr(kernel, "supports_node_request_tools", None)
+        if not callable(capability) or capability() is not True:
+            raise MeshUnavailable("node.request_runtime_unsupported")
+
+    async def answer_request(self, request_id: str, kernel: Any) -> Any:
+        self.require_request_runtime(kernel)
+        try:
+            return await kernel.answer_request(request_id)
+        except self._binding.KernelError as exc:
+            raise NodeMeshError(_code_of(exc)) from exc
+
+    async def interrupt_request(self, chat_id: str, kernel: Any) -> None:
+        if self.kernel is not kernel:
+            raise NodeMeshError("node.mesh_admission_unavailable")
+        await self._request_call(kernel.interrupt, chat_id)
+
     async def claim_request(self, request_id: str) -> str:
         return await self._request_call(self.kernel.claim_request, request_id)
 
     async def personal_authority_context(
         self, request: RequestReference, owner: str, kernel: Any,
+    ) -> PersonalAuthorityContext:
+        return await self._personal_context(request, owner, kernel, claimed=True)
+
+    async def personal_request_context(
+        self, request: RequestReference, owner: str, kernel: Any,
+    ) -> PersonalAuthorityContext:
+        self.require_request_runtime(kernel)
+        return await self._personal_context(request, owner, kernel, claimed=False)
+
+    async def _personal_context(
+        self, request: RequestReference, owner: str, kernel: Any, *, claimed: bool,
     ) -> PersonalAuthorityContext:
         if self.kernel is not kernel:
             raise NodeMeshError("node.mesh_admission_unavailable")
@@ -482,8 +515,20 @@ class NodeMesh:
                 raise NodeMeshError("ticket.device_removed")
             if request.to_device != status.device_id or RequestReference.capture(current) != request:
                 raise NodeMeshError("request.call_mismatch")
-            if getattr(current.state, "name", None) != "CLAIMED":
-                raise NodeMeshError("request.not_claimed")
+            state = getattr(current.state, "name", None)
+            if claimed:
+                if state != "CLAIMED":
+                    raise NodeMeshError("request.not_claimed")
+            else:
+                if request.call is not None:
+                    raise NodeMeshError("request.call_mismatch")
+                if state == "ANSWERED":
+                    view = kernel.chat(request.chat_id).view
+                    if not getattr(current, "claim", None) or not any(turn.id == current.turn and turn.author == current.to_device
+                               and getattr(turn.status, "name", None) == "RUNNING" for turn in view.turns):
+                        raise NodeMeshError("request.closed")
+                elif state != "PENDING":
+                    raise NodeMeshError("request.closed")
             try:
                 owners = {node_identity.canonical_owner_id(identity.issuer, identity.subject) for identity in proof.identities}
             except (AttributeError, TypeError, node_identity.NodeIdentityError):

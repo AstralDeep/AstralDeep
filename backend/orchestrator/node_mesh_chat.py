@@ -1,6 +1,6 @@
-"""Moves chat activity between the node's own Python turn loop and the owner's mesh log: a request addressed to the node is claimed, run through the node's own gates and answered with a recorded turn, and a turn the node runs for a thin client is recorded into the owner's chat.
-The node computes the labels of what it records, refuses PHI work unless the roster lists it as a PHI member, and trusts nothing a requesting device's gates decided.
-A turn it runs offers only catalog tools that consented mesh grants and the owner's enablement cover, and node_mesh_admission.py mints a kernel ticket for each call before dispatch."""
+"""Routes personal node text requests through the Kernel's sealed provider book and serves ticketed peer calls through the orchestrator's normal gates.
+Explicit Python runners remain available for legacy hosts and conformance; node_mesh_admission.py bounds their exact tools and credentials.
+The bridge also mirrors committed thin-client turns, computes label floors and recovers requested turns without replaying unknown effects."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from orchestrator import push_wake
-from orchestrator.node_mesh import MeshUnavailable, NodeMesh, NodeMeshError, StepRecord
+from orchestrator.node_mesh import MeshUnavailable, NodeMesh, NodeMeshError, RequestReference, StepRecord
 from orchestrator import vessel_executor
 from orchestrator.node_mesh_calls import CallRefused, OrchestratorCalls, dotted
 
@@ -34,6 +34,7 @@ MAX_STEP_TEXT = 16384
 MAX_STEPS = 64
 STATE_FILE = "mesh-chats.json"
 MAX_CONCURRENT_TURNS = 2
+MAX_CONCURRENT_CALLS = 2
 PROVIDER = "node"
 MODEL = "node-turn-loop"
 CONFIDENTIALITY = ("public", "private", "phi", "secret")
@@ -209,7 +210,7 @@ class MeshChatBridge:
         *,
         owner_id: Any,
         history: Any,
-        runner: TurnRunner,
+        runner: Optional[TurnRunner] = None,
         state_path: Path,
         calls: Optional[Any] = None,
         policy: Optional[NodePolicy] = None,
@@ -236,6 +237,7 @@ class MeshChatBridge:
         self._suppressed: set = set()
         self._tasks: List[asyncio.Task] = []
         self._turn_slots = asyncio.Semaphore(MAX_CONCURRENT_TURNS)
+        self._call_slots = asyncio.Semaphore(MAX_CONCURRENT_CALLS)
         self._running: set = set()
         self._recovered = False
         self._published: Optional[str] = None
@@ -429,12 +431,24 @@ class MeshChatBridge:
     async def _recover(self, own: str) -> None:
         for summary in await self._mesh.list_chats():
             for request in await self._mesh.chat_requests(summary.chat_id):
-                if request.state.name == "CLAIMED" and request.to_device == own and request.id not in self._running:
-                    await self._refuse(request, "node.interrupted")
+                if request.to_device != own or request.id in self._running:
+                    continue
+                if request.state.name == "CLAIMED":
+                    if request.call is None:
+                        await self._refuse(request, "node.interrupted")
+                    else:
+                        logger.warning("node_mesh_call_needs_owner: %s", request.id)
+                elif self._runner is None and request.call is None and request.state.name == "ANSWERED":
+                    view = (await self._mesh.chat(request.chat_id)).view
+                    if any(turn.id == request.turn and turn.author == own and _name(turn.status) == "running"
+                           for turn in view.turns):
+                        self._running.add(request.id)
+                        self._tasks.append(asyncio.create_task(self._serve(request), name="node-mesh-request-recovery"))
 
     async def _serve(self, request: Any) -> None:
         try:
-            async with self._turn_slots:
+            slots = self._call_slots if request.call is not None else self._turn_slots
+            async with slots:
                 await self._answer(request)
         except asyncio.CancelledError:
             raise
@@ -451,6 +465,9 @@ class MeshChatBridge:
         except Refusal as denial:
             await self._refuse(request, denial.code)
             return
+        if request.call is None and self._runner is None:
+            await self._answer_kernel(request)
+            return
         try:
             await self._mesh.claim_request(request.id)
         except NodeMeshError as exc:
@@ -463,12 +480,57 @@ class MeshChatBridge:
         except Refusal as denial:
             await self._refuse(request, denial.code)
         except asyncio.TimeoutError:
-            await self._refuse(request, "node.turn_timeout")
+            await self._execution_failed(request, "node.turn_timeout")
         except NodeMeshError as exc:
-            await self._refuse(request, exc.code)
+            await self._execution_failed(request, exc.code)
         except Exception as exc:
             logger.warning("node_mesh_request_failed: %s", type(exc).__name__)
-            await self._refuse(request, "node.turn_failed")
+            await self._execution_failed(request, "node.turn_failed")
+
+    async def _execution_failed(self, request: Any, code: str) -> None:
+        if request.call is not None:
+            logger.warning("node_mesh_call_outcome_unknown: %s", code)
+        else:
+            await self._refuse(request, code)
+
+    async def _answer_kernel(self, request: Any) -> None:
+        kernel, owner = self._mesh.kernel, self._owner
+        try:
+            await self._mesh.personal_request_context(RequestReference.capture(request), owner, kernel)
+            if self._owner != owner:
+                raise NodeMeshError("node.owner_mismatch")
+        except NodeMeshError as exc:
+            await self._refuse(request, exc.code)
+            return
+        task = asyncio.create_task(self._mesh.answer_request(request.id, kernel))
+        try:
+            await asyncio.wait_for(asyncio.shield(task), self._turn_seconds)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            await self._interrupt_native(task, request.chat_id, kernel)
+            try:
+                await asyncio.shield(task)
+            except Exception:
+                logger.exception("node_mesh_request_interrupted_outcome_unknown")
+            if asyncio.current_task().cancelling():
+                raise
+        except Exception as exc:
+            current = await self._mesh.request(request.id)
+            if current.state.name == "PENDING":
+                await self._refuse(request, exc.code if isinstance(exc, NodeMeshError) else "node.turn_failed")
+            elif current.state.name == "CLAIMED":
+                await self._refuse(request, "node.outcome_unknown")
+            else:
+                logger.warning("node_mesh_request_outcome_unknown: %s", type(exc).__name__)
+
+    async def _interrupt_native(self, task: asyncio.Task, chat: str, kernel: Any) -> None:
+        delay = 0.001
+        while not task.done():
+            try:
+                await self._mesh.interrupt_request(chat, kernel)
+                return
+            except NodeMeshError:
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 0.05)
 
     async def _refuse(self, request: Any, code: str) -> None:
         try:
@@ -558,6 +620,8 @@ class MeshChatBridge:
                 text=text,
             )
         except NodeMeshError as exc:
+            if request.call is not None:
+                raise
             raise Refusal(exc.code) from None
 
     async def _run_call(self, request: Any, admitted: _Admitted, local: str) -> List[Any]:
@@ -584,6 +648,8 @@ class MeshChatBridge:
                 ),
                 self._turn_seconds,
             )
+        if outcome.code == "node.outcome_unknown":
+            raise NodeMeshError(outcome.code)
         return [
             {
                 "call_id": call.call_id,
@@ -884,7 +950,6 @@ async def start_for(orch: Any) -> None:
         mesh,
         owner_id=node_identity.bound_owner,
         history=orch.history,
-        runner=orchestrator_runner(orch),
         calls=OrchestratorCalls(orch),
         state_path=node_identity.data_dir() / STATE_FILE,
     )

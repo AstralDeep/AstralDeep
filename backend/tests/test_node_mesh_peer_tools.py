@@ -26,6 +26,7 @@ API_KEY = "sk-peer-tool-secret-4412"
 class FakeModel(BaseHTTPRequestHandler):
     seen: list = []
     arguments = {"n": 2}
+    tool = TOOL
 
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers.get("content-length", "0"))))
@@ -34,7 +35,7 @@ class FakeModel(BaseHTTPRequestHandler):
         if any(m.get("role") == "tool" for m in request.get("messages", [])):
             deltas = [{"content": REPLY}], "stop"
         else:
-            call = {"index": 0, "id": "call-dice-1", "type": "function", "function": {"name": TOOL, "arguments": json.dumps(FakeModel.arguments)}}
+            call = {"index": 0, "id": "call-dice-1", "type": "function", "function": {"name": FakeModel.tool, "arguments": json.dumps(FakeModel.arguments)}}
             deltas = [{"tool_calls": [call]}], "tool_calls"
         body = (
             "".join("data: " + json.dumps({"choices": [{"delta": d}]}) + "\n\n" for d in deltas[0])
@@ -68,6 +69,7 @@ class Grants:
 def model_server():
     FakeModel.seen = []
     FakeModel.arguments = {"n": 2}
+    FakeModel.tool = TOOL
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeModel)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield server.server_address[1]
