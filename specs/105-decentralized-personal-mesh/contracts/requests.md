@@ -15,7 +15,7 @@ All four types have the family `request` and the scope of a chat. A request type
 | `request.refuse` | `request`, `code` | The target |
 | `request.cancel` | `request` | The requester |
 
-- `to` is the device id of the member that should run the request. It is a member of the roster when written. A request to the writer itself is refused by the kernel and ignored by no rule here.
+- `to` is the device id of the member that should run the request. It is a member of the roster when written. Public request APIs refuse a request to its writer. The narrow internal node-tool route below can write such a call; the fold has no self-address exclusion.
 - `text` is 1 to 65536 bytes of UTF-8. It is what the target shows or feeds to its own model.
 - `continues` is a turn id of this chat or null. It is the turn the answer continues.
 - `call` is null or a tool call (section 2).
@@ -66,9 +66,19 @@ The output is `{"requests": [...], "ignored": [...]}`. Each request is `{id, aut
 
 The target verifies the ticket of a call (`ticket.md` section 4) with its own roster, its own stop counter and the effect kind it derives itself. It runs its own gate stack. It records the turn it ran as ordinary chat events under its own feed with the labels it computed, which may not be lower than the inputs it could see. The turn start carries `request`. The requester reads the result from the `chat.tool_result` event of the turn whose `call` is the request's `call_id`.
 
+### 4.1 Node-requested turns and credential custody
+
+The production personal node asks its Kernel to answer a text request. The Kernel claims it, reads the sealed provider configuration itself, and owns its user-message and turn events. Python never receives the provider key and must neither preclaim nor record a second answer. An explicit Python runner remains available for legacy hosts and conformance under section 5; it is not the personal node's provider-custody path.
+
+For a tool hosted by that same node, the Kernel may use the signed peer-call route internally. This exception requires a verified local Node member on its current active feed in an unstopped mesh, a text request addressed to it with a real claim, and that request's exact still-open answering turn. Because the fold changes the request to `answered` at `chat.turn_start`, this proof uses `answered` plus the matching open turn; `answered` alone is never authority. The tool must be in the node's current granted catalog with the exact definition hash. The engine runs its gates and mints the exact action ticket before sending the internal call. Public self-request APIs remain refused.
+
+The Python tool host verifies the canonical action, arguments, ticket, current owner, live membership and stop state through its normal dispatch path. It runs the receiver gates without minting a replacement ticket or charging an allowance twice. Internal tool-call capacity is bounded separately from whole requested-turn capacity, so a node waiting for its own tools cannot exhaust the slots needed to execute them. A compiled capability flag is an interface check, not authorization or readiness.
+
+On restart, an `answered` text request may resume only its exact own still-open answering turn under a per-chat admission claim, with the same verified request and current authority. It must not create another claim, user message or turn start. A completed answer is terminal. A previously claimed tool call or unknown dispatched effect is never replayed; it needs an owner decision. Cancellation requests an actual Kernel interruption and awaits the real result rather than treating host task cancellation as proof that native work stopped.
+
 ## 5. A member that runs a request outside the engine
 
-The always-on node runs the turn of a request in its own loop and records the turn afterwards with the ordinary events. Its tools run in a sandboxed executor that refuses a call without a ticket. A device mints its tickets in its turn engine, so the node needs one place that applies the same gates and mints for it. That place is the **mint**.
+An explicit host runner can run the turn of a request in its own loop and record the turn afterwards with the ordinary events. Its tools run in a sandboxed executor that refuses a call without a ticket. A device mints its tickets in its turn engine, so the host runner needs one place that applies the same gates and mints for it. That place is the **mint**. The production personal node uses section 4.1 instead.
 
 The mint takes the id of a request and one call with these fields.
 

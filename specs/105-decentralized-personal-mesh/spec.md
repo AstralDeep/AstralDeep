@@ -89,6 +89,7 @@ mesh that runs the heavy agents, and the form an institution deploys.
 | O4 | Clean break from existing sandbox accounts and history. |
 | O5 | Documents live under AstralDeep `specs/`, on a local branch. GitHub is list-only. |
 | O6 | Something must sync data across devices. Its shape was left to this design. Each client must tolerate being cut off, and LETS should supply that logic. |
+| O7 (2026-11-14) | Node-requested turns run in the Kernel, which keeps custody of the saved model credential. Python continues hosting agents behind the normal dispatch gates. Do not export or lease the provider key to Python. |
 
 ### 3.2 Calls made in this design, for the owner to check
 
@@ -617,9 +618,10 @@ follow.
   forking and reverting are requests to the engine. Any number of windows, on any peer, can watch one
   turn.
 
-The Python orchestrator keeps its own loop on nodes until the kernel engine reaches parity, then adopts
-it ([plan.md](plan.md), phase 5). Both must pass one set of conformance vectors from the day the kernel
-engine exists.
+Node-requested turns use the kernel engine, keeping model credentials inside the kernel (owner decision,
+2026-11-14). Python continues hosting the agents and applies the normal dispatch gates to their tool
+calls. The Python orchestrator retains its loop for other node-hosted work until parity, then adopts the
+kernel ([plan.md](plan.md), phase 5). Both loops must pass the shared conformance vectors.
 
 ### 10.2 Model calls
 
