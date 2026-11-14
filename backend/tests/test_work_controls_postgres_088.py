@@ -1,9 +1,10 @@
 """Tests that orchestrator/work_controls.py's owner controls use real Plane CAS and
 receipts: replay/stale/terminal-delete contracts, linearized concurrent pause/cancel,
-and atomic decide/approve without dispatch.
+exact retries refused by a bounded lock wait, and atomic decide/approve without dispatch.
 """
 
 import asyncio
+import threading
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -125,9 +126,54 @@ async def test_concurrent_exact_retry_changes_control_only_once(records):
     _, reads, ids, _ = records
     service = WorkControlService(reads.assignments)
     request = command(1)
-    results = await asyncio.gather(*(service.control(OWNER_ID, reads.control_caller.context.claims, ids[0], "pause", request, caller=reads.control_caller) for _ in range(2)))
-    assert sorted(value["applied"] for value in results) == [False, True]
+    results = await asyncio.gather(*(service.control(OWNER_ID, reads.control_caller.context.claims, ids[0], "pause", request, caller=reads.control_caller) for _ in range(2)), return_exceptions=True)
+    assert sum(isinstance(value, dict) and value["applied"] is True for value in results) == 1
+    for value in results:
+        if not isinstance(value, dict):
+            assert isinstance(value, AssignmentError), value
+            assert (value.code, value.status_code) == ("assignment_transaction_unavailable", 503)
+        else:
+            assert value["operation"]["revision"] == 2
+    retry = await service.control(OWNER_ID, reads.control_caller.context.claims, ids[0], "pause", request, caller=reads.control_caller)
+    assert retry["applied"] is False and retry["operation"]["revision"] == 2
     assert (await reads.get(OWNER_ID, OWNER, ids[0]))["revision"] == 2
+    assert len(await asyncio.to_thread(pause_audits, reads)) == 1
+
+
+def pause_audits(reads):
+    rows, _ = reads.assignments.orch.audit_repo.list_for_user(OWNER_ID)
+    return [row for row in rows if row.action_type == "assignment_pause"]
+
+
+@pytest.mark.asyncio
+async def test_exact_retry_refused_by_a_held_lock_applies_once_after_release(records):
+    runtime, reads, ids, _ = records
+    service = WorkControlService(reads.assignments)
+    request = command(1)
+    entered, release = threading.Event(), threading.Event()
+
+    def hold():
+        with runtime.transaction() as tx:
+            tx.fetch_one("SELECT id FROM persistent_assignment WHERE id=%s FOR UPDATE", (ids[0],))
+            entered.set()
+            release.wait()
+
+    holder = asyncio.create_task(asyncio.to_thread(hold))
+    try:
+        await asyncio.to_thread(entered.wait)
+        with pytest.raises(AssignmentError) as refused:
+            await service.control(OWNER_ID, reads.control_caller.context.claims, ids[0], "pause", request, caller=reads.control_caller)
+        assert (refused.value.code, refused.value.status_code) == ("assignment_transaction_unavailable", 503)
+        assert (await reads.get(OWNER_ID, OWNER, ids[0]))["revision"] == 1
+        assert await asyncio.to_thread(pause_audits, reads) == []
+    finally:
+        release.set()
+        await holder
+    applied = await service.control(OWNER_ID, reads.control_caller.context.claims, ids[0], "pause", request, caller=reads.control_caller)
+    assert applied["applied"] is True and applied["operation"]["revision"] == 2
+    retry = await service.control(OWNER_ID, reads.control_caller.context.claims, ids[0], "pause", request, caller=reads.control_caller)
+    assert retry == {**applied, "applied": False}
+    assert len(await asyncio.to_thread(pause_audits, reads)) == 1
 
 
 @pytest.mark.asyncio
