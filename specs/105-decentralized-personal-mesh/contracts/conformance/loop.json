@@ -640,5 +640,6 @@
       ]
     }
   ],
-  "gate_vectors": "../vectors/labels.json#labels_gate"
+  "gate_vectors": "../vectors/labels.json#labels_gate",
+  "composed_gate": "composed_gate.json"
 }

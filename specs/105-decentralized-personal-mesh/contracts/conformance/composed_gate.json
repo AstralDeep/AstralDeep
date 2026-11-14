@@ -1,0 +1,2100 @@
+{
+  "format": "astral.composed-gate-conformance/v1",
+  "gate_vectors": "../vectors/labels.json#labels_gate",
+  "baseline": {
+    "roster": "the proposing device and one peer are members and the mesh is not halted",
+    "grants": [
+      {
+        "tool": "*",
+        "scope": "*",
+        "consent": "grant"
+      }
+    ],
+    "allowance": "fresh: a peer was in contact inside the freshness window and the default budget policy applies",
+    "context": "one private owner message",
+    "tools": {
+      "mesh_read": "lookup",
+      "mesh_write": "note_write",
+      "outward_read": "fetch_url",
+      "outside_effect": "send_message"
+    },
+    "model": "one provider that is not PHI-approved, scripted to propose the call once and then reply"
+  },
+  "operations": {
+    "raise_stop": "an owner stop with the given counter",
+    "resume": "an owner resume naming the given counter",
+    "remove_device": "the proposing device leaves the roster",
+    "hard_flag": "the host flags the tool as a hard security risk",
+    "change_tool_def": "the definition the tool serves changes",
+    "revoke": "the owner revokes the grant",
+    "narrow_policy": "an owner narrowing rule for the key agent/tool/scope",
+    "solo_allowance": "no peer contact inside the freshness window",
+    "spend_allowance": "the dimension is spent through the device's own allowance holder",
+    "label_context": "owner_message relabels the owner message; outward_read runs the named outward-read tool first so its untrusted result is in context"
+  },
+  "timing": {
+    "before_turn": "the default: applied before the turn starts",
+    "model_call": "applied while the model request that proposes the call is in flight",
+    "awaiting_consent": "applied after the consent prompt appears and before the owner answers"
+  },
+  "consent": {
+    "none": "if a prompt appears, the owner declines it",
+    "valid": "the owner approves and the presence key signs this action",
+    "wrong_action": "the owner approves and the presence key signs a consent for a different action digest"
+  },
+  "expect": {
+    "dispatched": "calls of the named tool that reached its runner",
+    "outcome": "allow when it ran; consent with code consent.required and the prompt's reasons when a prompt was not validly approved; otherwise refuse with the journaled code",
+    "gate": "the gate number of the pure decision over state; hosts that do not journal it check it only through state",
+    "prompt": "the consent prompt for the call and its ordered reasons, or null when none may appear",
+    "journal_status": "status of the call's journaled result, or null when the call was never proposed",
+    "journal_code": "code of the call's journaled result",
+    "turn_status": "status of the turn"
+  },
+  "cases": [
+    {
+      "name": "all-clear-dispatches",
+      "source": "gate-all-clear-dispatches",
+      "setup": [],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "allow",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 1,
+        "outcome": "allow",
+        "code": null,
+        "reasons": [],
+        "gate": 8,
+        "prompt": null,
+        "journal_status": "ok",
+        "journal_code": null,
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "stopped-mesh-refuses-an-outside-effect",
+      "source": "gate-1-mesh-stopped",
+      "setup": [
+        {
+          "op": "raise_stop",
+          "counter": 1
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "allow",
+        "stopped": true,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "gate.mesh_stopped",
+        "reasons": [],
+        "gate": 1,
+        "prompt": null,
+        "journal_status": "refused",
+        "journal_code": "gate.mesh_stopped",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "stopped-mesh-refuses-a-read",
+      "source": "gate-1-halted-mesh-refuses-a-read-effect",
+      "setup": [
+        {
+          "op": "raise_stop",
+          "counter": 1
+        }
+      ],
+      "call": {
+        "tool": "lookup",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "mesh_read",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "mesh_read",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "allow",
+        "stopped": true,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "gate.mesh_stopped",
+        "reasons": [],
+        "gate": 1,
+        "prompt": null,
+        "journal_status": "refused",
+        "journal_code": "gate.mesh_stopped",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "stopped-mesh-refuses-a-write",
+      "source": "gate-1-halted-mesh-refuses-a-write-effect",
+      "setup": [
+        {
+          "op": "raise_stop",
+          "counter": 1
+        }
+      ],
+      "call": {
+        "tool": "note_write",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "mesh_write",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "mesh_write",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "allow",
+        "stopped": true,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "gate.mesh_stopped",
+        "reasons": [],
+        "gate": 1,
+        "prompt": null,
+        "journal_status": "refused",
+        "journal_code": "gate.mesh_stopped",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "resumed-mesh-dispatches-a-write",
+      "source": "gate-1-resumed-mesh-dispatches",
+      "setup": [
+        {
+          "op": "raise_stop",
+          "counter": 1
+        },
+        {
+          "op": "resume",
+          "counter": 1
+        }
+      ],
+      "call": {
+        "tool": "note_write",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "mesh_write",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "mesh_write",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "allow",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 1,
+        "outcome": "allow",
+        "code": null,
+        "reasons": [],
+        "gate": 8,
+        "prompt": null,
+        "journal_status": "ok",
+        "journal_code": null,
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "removed-device-cannot-dispatch",
+      "source": "gate-1-device-not-on-roster",
+      "setup": [
+        {
+          "op": "remove_device",
+          "at": "model_call"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": false,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "allow",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "gate.device_not_on_roster",
+        "reasons": [],
+        "gate": 1,
+        "prompt": null,
+        "journal_status": "refused",
+        "journal_code": "gate.device_not_on_roster",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "hard-flagged-tool-is-refused",
+      "source": "gate-2-hard-flag",
+      "setup": [
+        {
+          "op": "hard_flag",
+          "tool": "send_message"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": true,
+        "permission": true,
+        "policy": "allow",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "gate.hard_flag",
+        "reasons": [],
+        "gate": 2,
+        "prompt": null,
+        "journal_status": "refused",
+        "journal_code": "gate.hard_flag",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "changed-tool-definition-is-refused",
+      "source": "gate-2-tool-definition-changed",
+      "setup": [
+        {
+          "op": "change_tool_def",
+          "tool": "send_message",
+          "at": "model_call"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "allow",
+        "stopped": false,
+        "tool_def_matches": false,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "gate.tool_def_changed",
+        "reasons": [],
+        "gate": 2,
+        "prompt": null,
+        "journal_status": "refused",
+        "journal_code": "gate.tool_def_changed",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "revoked-permission-is-refused",
+      "source": "gate-3-permission-denied",
+      "setup": [
+        {
+          "op": "revoke",
+          "tool": "*",
+          "scope": "*"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": false,
+        "policy": "allow",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "gate.permission_denied",
+        "reasons": [],
+        "gate": 3,
+        "prompt": null,
+        "journal_status": "refused",
+        "journal_code": "gate.permission_denied",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "deny-rule-is-refused",
+      "source": "gate-4-policy-denied",
+      "setup": [
+        {
+          "op": "narrow_policy",
+          "key": "*/send_message/outside_effect",
+          "rule": "deny"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "deny",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "gate.policy_denied",
+        "reasons": [],
+        "gate": 4,
+        "prompt": null,
+        "journal_status": "refused",
+        "journal_code": "gate.policy_denied",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "phi-context-is-not-sent-to-an-unapproved-model",
+      "source": "gate-5-phi-to-model",
+      "setup": [
+        {
+          "op": "label_context",
+          "source": "owner_message",
+          "confidentiality": "phi"
+        }
+      ],
+      "call": {
+        "tool": "lookup",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "mesh_read",
+          "target": "model"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "mesh_read",
+          "target": "model"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "allow",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "phi",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "flow.phi_to_model",
+        "reasons": [],
+        "gate": 5,
+        "prompt": null,
+        "journal_status": null,
+        "journal_code": null,
+        "turn_status": "failed"
+      }
+    },
+    {
+      "name": "consent-rule-asks",
+      "source": "gate-6-policy-asks-for-consent",
+      "setup": [
+        {
+          "op": "narrow_policy",
+          "key": "*/send_message/outside_effect",
+          "rule": "consent"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "consent",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "consent",
+        "code": "consent.required",
+        "reasons": [
+          "policy"
+        ],
+        "gate": 6,
+        "prompt": {
+          "reasons": [
+            "policy"
+          ]
+        },
+        "journal_status": "refused",
+        "journal_code": "consent.denied",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "untrusted-influence-without-private-access-asks",
+      "source": "gate-6-flow-rule-asks-for-consent",
+      "setup": [
+        {
+          "op": "label_context",
+          "source": "outward_read",
+          "tool": "fetch_url"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "allow",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            {
+              "confidentiality": "public",
+              "integrity": "untrusted"
+            }
+          ],
+          "private_access": false,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "consent",
+        "code": "consent.required",
+        "reasons": [
+          "untrusted_influence"
+        ],
+        "gate": 6,
+        "prompt": {
+          "reasons": [
+            "untrusted_influence"
+          ]
+        },
+        "journal_status": "refused",
+        "journal_code": "consent.denied",
+        "turn_status": "completed"
+      },
+      "skip": {
+        "kernel": "The engine derives private access from a private running label or any listed local tool, so a private context that is also untrusted always has private access and adds rule_of_two. untrusted-influence-with-private-access-asks covers the reachable state."
+      }
+    },
+    {
+      "name": "untrusted-influence-with-private-access-asks",
+      "source": "gate-6-flow-rule-asks-for-consent",
+      "setup": [
+        {
+          "op": "label_context",
+          "source": "outward_read",
+          "tool": "fetch_url"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "allow",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            {
+              "confidentiality": "public",
+              "integrity": "untrusted"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "consent",
+        "code": "consent.required",
+        "reasons": [
+          "untrusted_influence",
+          "rule_of_two"
+        ],
+        "gate": 6,
+        "prompt": {
+          "reasons": [
+            "untrusted_influence",
+            "rule_of_two"
+          ]
+        },
+        "journal_status": "refused",
+        "journal_code": "consent.denied",
+        "turn_status": "completed"
+      },
+      "note": "The source state with private access set, which is how a private chat with local tools reaches it."
+    },
+    {
+      "name": "policy-and-flow-reasons-keep-their-order",
+      "source": "gate-6-policy-and-flow-reasons-in-order",
+      "setup": [
+        {
+          "op": "narrow_policy",
+          "key": "*/send_message/outside_effect",
+          "rule": "consent"
+        },
+        {
+          "op": "label_context",
+          "source": "outward_read",
+          "tool": "fetch_url"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "consent",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            {
+              "confidentiality": "public",
+              "integrity": "untrusted"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "consent",
+        "code": "consent.required",
+        "reasons": [
+          "policy",
+          "untrusted_influence",
+          "rule_of_two"
+        ],
+        "gate": 6,
+        "prompt": {
+          "reasons": [
+            "policy",
+            "untrusted_influence",
+            "rule_of_two"
+          ]
+        },
+        "journal_status": "refused",
+        "journal_code": "consent.denied",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "valid-consent-dispatches",
+      "source": "gate-6-consent-given-proceeds",
+      "setup": [
+        {
+          "op": "narrow_policy",
+          "key": "*/send_message/outside_effect",
+          "rule": "consent"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "valid",
+      "state": {
+        "allowance": "ok",
+        "consent": true,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "consent",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 1,
+        "outcome": "allow",
+        "code": null,
+        "reasons": [
+          "policy"
+        ],
+        "gate": 8,
+        "prompt": {
+          "reasons": [
+            "policy"
+          ]
+        },
+        "journal_status": "ok",
+        "journal_code": null,
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "solo-allowance-asks",
+      "source": "gate-6-solo-allowance-needs-consent",
+      "setup": [
+        {
+          "op": "solo_allowance"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "solo",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "allow",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "consent",
+        "code": "consent.required",
+        "reasons": [
+          "solo_allowance"
+        ],
+        "gate": 6,
+        "prompt": {
+          "reasons": [
+            "solo_allowance"
+          ]
+        },
+        "journal_status": "refused",
+        "journal_code": "consent.denied",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "solo-allowance-with-consent-dispatches",
+      "source": "gate-6-solo-allowance-with-consent",
+      "setup": [
+        {
+          "op": "solo_allowance"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "valid",
+      "state": {
+        "allowance": "solo",
+        "consent": true,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "allow",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 1,
+        "outcome": "allow",
+        "code": null,
+        "reasons": [
+          "solo_allowance"
+        ],
+        "gate": 8,
+        "prompt": {
+          "reasons": [
+            "solo_allowance"
+          ]
+        },
+        "journal_status": "ok",
+        "journal_code": null,
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "exhausted-allowance-is-refused",
+      "source": "gate-7-allowance-exhausted",
+      "setup": [
+        {
+          "op": "spend_allowance",
+          "dimension": "outside_effect",
+          "units": "all"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "exhausted",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "allow",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "allowance.exhausted",
+        "reasons": [],
+        "gate": 7,
+        "prompt": null,
+        "journal_status": "refused",
+        "journal_code": "allowance.exhausted",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "exhausted-allowance-is-refused-after-consent",
+      "source": "gate-7-exhausted-even-with-consent",
+      "setup": [
+        {
+          "op": "spend_allowance",
+          "dimension": "outside_effect",
+          "units": "all"
+        },
+        {
+          "op": "narrow_policy",
+          "key": "*/send_message/outside_effect",
+          "rule": "consent"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "valid",
+      "state": {
+        "allowance": "exhausted",
+        "consent": true,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "consent",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "allowance.exhausted",
+        "reasons": [],
+        "gate": 7,
+        "prompt": {
+          "reasons": [
+            "policy"
+          ]
+        },
+        "journal_status": "refused",
+        "journal_code": "allowance.exhausted",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "stop-outranks-hard-flag",
+      "source": "order-stop-before-hard-flag",
+      "setup": [
+        {
+          "op": "raise_stop",
+          "counter": 1
+        },
+        {
+          "op": "hard_flag",
+          "tool": "send_message"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": true,
+        "permission": true,
+        "policy": "allow",
+        "stopped": true,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "gate.mesh_stopped",
+        "reasons": [],
+        "gate": 1,
+        "prompt": null,
+        "journal_status": "refused",
+        "journal_code": "gate.mesh_stopped",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "hard-flag-outranks-permission",
+      "source": "order-hard-flag-before-permission",
+      "setup": [
+        {
+          "op": "hard_flag",
+          "tool": "send_message"
+        },
+        {
+          "op": "revoke",
+          "tool": "*",
+          "scope": "*"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": true,
+        "permission": false,
+        "policy": "allow",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "gate.hard_flag",
+        "reasons": [],
+        "gate": 2,
+        "prompt": null,
+        "journal_status": "refused",
+        "journal_code": "gate.hard_flag",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "permission-outranks-policy",
+      "source": "order-permission-before-policy",
+      "setup": [
+        {
+          "op": "revoke",
+          "tool": "*",
+          "scope": "*"
+        },
+        {
+          "op": "narrow_policy",
+          "key": "*/send_message/outside_effect",
+          "rule": "deny"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": false,
+        "policy": "deny",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "gate.permission_denied",
+        "reasons": [],
+        "gate": 3,
+        "prompt": null,
+        "journal_status": "refused",
+        "journal_code": "gate.permission_denied",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "policy-outranks-flow",
+      "source": "order-policy-before-flow",
+      "setup": [
+        {
+          "op": "narrow_policy",
+          "key": "*/lookup/mesh_read",
+          "rule": "deny"
+        },
+        {
+          "op": "label_context",
+          "source": "owner_message",
+          "confidentiality": "phi"
+        }
+      ],
+      "call": {
+        "tool": "lookup",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "mesh_read",
+          "target": "model"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "mesh_read",
+          "target": "model"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "deny",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "phi",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "gate.policy_denied",
+        "reasons": [],
+        "gate": 4,
+        "prompt": null,
+        "journal_status": "refused",
+        "journal_code": "gate.policy_denied",
+        "turn_status": "completed"
+      },
+      "skip": {
+        "kernel": "A model request is not a tool call: policy rules name an agent, tool and scope, and the model flow check runs before any tool is proposed, so no policy rule can apply to a model-target effect."
+      }
+    },
+    {
+      "name": "flow-refusal-outranks-consent",
+      "source": "order-flow-refusal-before-consent",
+      "setup": [
+        {
+          "op": "narrow_policy",
+          "key": "*/lookup/mesh_read",
+          "rule": "consent"
+        },
+        {
+          "op": "label_context",
+          "source": "owner_message",
+          "confidentiality": "phi"
+        }
+      ],
+      "call": {
+        "tool": "lookup",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "mesh_read",
+          "target": "model"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "mesh_read",
+          "target": "model"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "consent",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "phi",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "flow.phi_to_model",
+        "reasons": [],
+        "gate": 5,
+        "prompt": null,
+        "journal_status": null,
+        "journal_code": null,
+        "turn_status": "failed"
+      },
+      "note": "The consent rule names the tool the model would propose. A host refuses the model request before that tool is evaluated, so this checks the outcome, not the order of a policy step."
+    },
+    {
+      "name": "consent-outranks-allowance",
+      "source": "order-consent-before-allowance",
+      "setup": [
+        {
+          "op": "spend_allowance",
+          "dimension": "outside_effect",
+          "units": "all"
+        },
+        {
+          "op": "narrow_policy",
+          "key": "*/send_message/outside_effect",
+          "rule": "consent"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "none",
+      "state": {
+        "allowance": "exhausted",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "consent",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "consent",
+        "code": "consent.required",
+        "reasons": [
+          "policy"
+        ],
+        "gate": 6,
+        "prompt": {
+          "reasons": [
+            "policy"
+          ]
+        },
+        "journal_status": "refused",
+        "journal_code": "consent.denied",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "consent-for-another-action-does-not-dispatch",
+      "source": "gate-6-policy-asks-for-consent",
+      "setup": [
+        {
+          "op": "narrow_policy",
+          "key": "*/send_message/outside_effect",
+          "rule": "consent"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "wrong_action",
+      "state": {
+        "allowance": "ok",
+        "consent": false,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "consent",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "consent",
+        "code": "consent.required",
+        "reasons": [
+          "policy"
+        ],
+        "gate": 6,
+        "prompt": {
+          "reasons": [
+            "policy"
+          ]
+        },
+        "journal_status": "refused",
+        "journal_code": "consent.denied",
+        "turn_status": "completed"
+      },
+      "note": "The presence signature is valid but covers a different action digest, so the call keeps its consent outcome."
+    },
+    {
+      "name": "stop-raised-after-consent-does-not-dispatch",
+      "source": "gate-6-consent-given-proceeds",
+      "setup": [
+        {
+          "op": "narrow_policy",
+          "key": "*/send_message/outside_effect",
+          "rule": "consent"
+        },
+        {
+          "op": "raise_stop",
+          "counter": 1,
+          "at": "awaiting_consent"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "valid",
+      "state": {
+        "allowance": "ok",
+        "consent": true,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "consent",
+        "stopped": true,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "gate.mesh_stopped",
+        "reasons": [],
+        "gate": 1,
+        "prompt": {
+          "reasons": [
+            "policy"
+          ]
+        },
+        "journal_status": "refused",
+        "journal_code": "gate.mesh_stopped",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "device-removed-after-consent-does-not-dispatch",
+      "source": "gate-6-consent-given-proceeds",
+      "setup": [
+        {
+          "op": "narrow_policy",
+          "key": "*/send_message/outside_effect",
+          "rule": "consent"
+        },
+        {
+          "op": "remove_device",
+          "at": "awaiting_consent"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "valid",
+      "state": {
+        "allowance": "ok",
+        "consent": true,
+        "device_on_roster": false,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "consent",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "gate.device_not_on_roster",
+        "reasons": [],
+        "gate": 1,
+        "prompt": {
+          "reasons": [
+            "policy"
+          ]
+        },
+        "journal_status": "refused",
+        "journal_code": "gate.device_not_on_roster",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "permission-revoked-after-consent-does-not-dispatch",
+      "source": "gate-6-consent-given-proceeds",
+      "setup": [
+        {
+          "op": "narrow_policy",
+          "key": "*/send_message/outside_effect",
+          "rule": "consent"
+        },
+        {
+          "op": "revoke",
+          "tool": "*",
+          "scope": "*",
+          "at": "awaiting_consent"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "valid",
+      "state": {
+        "allowance": "ok",
+        "consent": true,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": false,
+        "policy": "consent",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "gate.permission_denied",
+        "reasons": [],
+        "gate": 3,
+        "prompt": {
+          "reasons": [
+            "policy"
+          ]
+        },
+        "journal_status": "refused",
+        "journal_code": "gate.permission_denied",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "tool-definition-changed-after-consent-does-not-dispatch",
+      "source": "gate-6-consent-given-proceeds",
+      "setup": [
+        {
+          "op": "narrow_policy",
+          "key": "*/send_message/outside_effect",
+          "rule": "consent"
+        },
+        {
+          "op": "change_tool_def",
+          "tool": "send_message",
+          "at": "awaiting_consent"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "valid",
+      "state": {
+        "allowance": "ok",
+        "consent": true,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "consent",
+        "stopped": false,
+        "tool_def_matches": false,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "gate.tool_def_changed",
+        "reasons": [],
+        "gate": 2,
+        "prompt": {
+          "reasons": [
+            "policy"
+          ]
+        },
+        "journal_status": "refused",
+        "journal_code": "gate.tool_def_changed",
+        "turn_status": "completed"
+      }
+    },
+    {
+      "name": "allowance-exhausted-after-consent-does-not-dispatch",
+      "source": "gate-6-consent-given-proceeds",
+      "setup": [
+        {
+          "op": "narrow_policy",
+          "key": "*/send_message/outside_effect",
+          "rule": "consent"
+        },
+        {
+          "op": "spend_allowance",
+          "dimension": "outside_effect",
+          "units": "all",
+          "at": "awaiting_consent"
+        }
+      ],
+      "call": {
+        "tool": "send_message",
+        "arguments": {
+          "text": "hello"
+        },
+        "effect": {
+          "kind": "outside_effect",
+          "target": "local_tool"
+        }
+      },
+      "consent": "valid",
+      "state": {
+        "allowance": "exhausted",
+        "consent": true,
+        "device_on_roster": true,
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": false,
+          "kind": "outside_effect",
+          "target": "local_tool"
+        },
+        "hard_flag": false,
+        "permission": true,
+        "policy": "consent",
+        "stopped": false,
+        "tool_def_matches": true,
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": true,
+          "secret_in_context": false
+        }
+      },
+      "expect": {
+        "dispatched": 0,
+        "outcome": "refuse",
+        "code": "allowance.exhausted",
+        "reasons": [],
+        "gate": 7,
+        "prompt": {
+          "reasons": [
+            "policy"
+          ]
+        },
+        "journal_status": "refused",
+        "journal_code": "allowance.exhausted",
+        "turn_status": "completed"
+      }
+    }
+  ]
+}
