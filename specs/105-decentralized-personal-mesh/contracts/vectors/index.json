@@ -56,8 +56,8 @@
       "spec": "contracts/learning.md"
     },
     "mailbox.json": {
-      "cases": 72,
-      "sha256": "333b89a224a2f08bc87152a1abca611033f4a5bb6a4d713dde67e4ab2f88f5a7",
+      "cases": 76,
+      "sha256": "588a0770067de5f1c1b63d91e71810468be234148866446c8e154c75fcd73f3d",
       "spec": "contracts/mailbox.md"
     },
     "pairing.json": {

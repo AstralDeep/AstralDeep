@@ -283,9 +283,9 @@ class Mailbox:
         mesh = self.meshes.get(mesh_id)
         if mesh is None:
             raise MeshError("mailbox.unknown_mesh", mesh_id)
-        if device in mesh.removed:
+        if device in mesh.removed and op != "notice_get":
             raise MeshError("mailbox.removed", device)
-        if device not in mesh.members:
+        if device not in mesh.members and device not in mesh.removed:
             raise MeshError("mailbox.not_a_member", device)
         self._collect(mesh, now_s)
         if op == "deposit":
@@ -377,7 +377,7 @@ class Mailbox:
         mesh.notices = [
             notice
             for notice in mesh.notices
-            if not everyone <= notice["seen"]
+            if not (everyone | (_removal_targets(notice["notice"]) & mesh.removed)) <= notice["seen"]
             and notice["at_s"] + self.limits["notice_max_age_s"] > now_s
         ]
 
@@ -457,8 +457,11 @@ class Mailbox:
         return {"id": identifier, "new": True}
 
     def _notice_get(self, mesh: _Mesh, device: str) -> dict[str, Any]:
-        out = [{"id": n["id"], "notice": n["notice"]} for n in mesh.notices]
-        for notice in mesh.notices:
+        chosen = [n for n in mesh.notices if device not in mesh.removed or device in _removal_targets(n["notice"])]
+        if device in mesh.removed and not chosen:
+            raise MeshError("mailbox.removed", device)
+        out = [{"id": n["id"], "notice": n["notice"]} for n in chosen]
+        for notice in chosen:
             notice["seen"].add(device)
         return {"notices": out}
 
@@ -472,6 +475,14 @@ class Mailbox:
             "notices": len(mesh.notices),
             "seq": mesh.seq,
         }
+
+
+def _removal_targets(notice: dict[str, Any]) -> set[str]:
+    if notice.get("type") != "remove":
+        return set()
+    body = notice.get("body")
+    cutoff = body.get("cutoff") if isinstance(body, dict) else None
+    return set(cutoff) if isinstance(cutoff, dict) else set()
 
 
 def register(op: Callable[[str], Callable[[Any], Any]]) -> None:

@@ -6284,6 +6284,74 @@ def build_mailbox() -> Suite:
     assert out[2]["error"] == "mailbox.cursor_ahead"
 
     n_remove, n_stop = mb_notice(a, tag="r"), mb_notice(a, "stop", tag="s")
+    own_remove = mb_notice(a, tag="targeted-b")
+    own_remove["body"] = {"device": b.id, "cutoff": {b.feed: 0}}
+    other_remove = mb_notice(a, tag="targeted-c")
+    other_remove["body"] = {"device": c.id, "cutoff": {c.feed: 0}}
+    without_b = mb_statement(a, mb_members(a, c), 2)
+    out = run(
+        "replay/a-removed-key-fetches-only-its-own-removal-notice",
+        [
+            register(a, b, c),
+            step(mb_request(a, "notice_put", {"notice": own_remove})),
+            step(mb_request(a, "notice_put", {"notice": other_remove})),
+            step(mb_request(a, "notice_put", {"notice": n_stop})),
+            step(mb_request(a, "notice_put", {"notice": mb_notice(a, "epoch", tag="epoch")})),
+            step(mb_request(a, "members", {"statement": without_b})),
+            step(mb_request(b, "notice_get", {})),
+            fet(b, 0),
+            dep(b, e1),
+            stat(b),
+            step(mb_request(b, "notice_put", {"notice": own_remove})),
+            step(mb_request(b, "notice_get", {"target": c.feed})),
+            step(mb_request(b, "notice_get", {}, signer=mal)),
+            step(mb_request(mal, "notice_get", {})),
+        ],
+    )
+    assert [entry["notice"] for entry in out[6]["ok"]["notices"]] == [own_remove]
+    assert [entry.get("error") for entry in out[7:]] == [
+        "mailbox.removed", "mailbox.removed", "mailbox.removed", "mailbox.removed",
+        "mailbox.malformed", "mailbox.bad_signature", "mailbox.not_a_member",
+    ]
+    out = run(
+        "replay/remaining-members-cannot-collect-an-offline-targets-removal-notice",
+        [
+            register(a, b, c),
+            step(mb_request(a, "notice_put", {"notice": own_remove})),
+            step(mb_request(a, "members", {"statement": without_b})),
+            step(mb_request(c, "notice_get", {})),
+            stat(a),
+            step(mb_request(b, "notice_get", {})),
+            stat(a),
+            step(mb_request(b, "notice_get", {})),
+        ],
+    )
+    assert out[4]["ok"]["notices"] == 1 and out[6]["ok"]["notices"] == 0
+    assert [entry["notice"] for entry in out[5]["ok"]["notices"]] == [own_remove]
+    assert out[7]["error"] == "mailbox.removed"
+    out = run(
+        "replay/own-removal-notices-expire-without-extending-their-age",
+        [
+            register(a, b, c),
+            step(mb_request(a, "notice_put", {"notice": own_remove})),
+            step(mb_request(a, "members", {"statement": without_b})),
+            step(mb_request(b, "notice_get", {}, ts=MBOX_T + 1), MBOX_T + 1),
+            step(mb_request(b, "notice_get", {}, ts=MBOX_T + 5), MBOX_T + 5),
+        ],
+        limits={"notice_max_age_s": 5},
+    )
+    assert len(out[3]["ok"]["notices"]) == 1 and out[4]["error"] == "mailbox.removed"
+    out = run(
+        "replay/a-removed-key-without-an-own-notice-remains-refused",
+        [
+            register(a, b, c),
+            step(mb_request(a, "notice_put", {"notice": other_remove})),
+            step(mb_request(a, "notice_put", {"notice": n_stop})),
+            step(mb_request(a, "members", {"statement": without_b})),
+            step(mb_request(b, "notice_get", {})),
+        ],
+    )
+    assert out[4]["error"] == "mailbox.removed"
     out = run(
         "replay/a-removal-notice-waits-for-a-device-that-comes-online-later",
         [

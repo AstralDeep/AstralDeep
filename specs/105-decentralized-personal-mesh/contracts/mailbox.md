@@ -38,7 +38,7 @@ The mailbox checks a request in this order and stops at the first failure.
 3. `ts` is within 300 seconds of the mailbox's clock (`mailbox.stale`).
 4. `device` is the key the transport authenticated (`mailbox.wrong_peer`).
 5. The signature (`mailbox.bad_signature`).
-6. For every op but `members`: the mesh is known (`mailbox.unknown_mesh`). A device that was removed gets `mailbox.removed`. Any other device that is not listed gets `mailbox.not_a_member`.
+6. For every op but `members`: the mesh is known (`mailbox.unknown_mesh`). A device that was removed gets `mailbox.removed`, except for the restricted own-removal `notice_get` below. Any other device that is not listed gets `mailbox.not_a_member`.
 7. The rules of the op.
 
 A response is an object `{"v": 1, "ok": true, "result": {...}}` or `{"v": 1, "ok": false, "code": "<dotted code>"}`. Responses are not signed. The client reached the mailbox by its key, so the transport authenticates the answer.
@@ -98,6 +98,8 @@ Asking with `after` also records what the requester holds. A client collects unt
 
 **`notice_get`.** Body `{}`. Result `{"notices": [{"id": hash, "notice": {...}}]}` in the order first deposited. The requester is then counted as having seen each one.
 
+An authenticated operations key remembered as removed may perform only this op. Its result contains only `remove` notices whose `body.cutoff` object contains that exact operations key. It receives no `stop`, `epoch`, other-target removal, envelope, status or membership data. If no unexpired notice matches, the request still fails with `mailbox.removed`. The body stays empty; a requester cannot choose another target. All request shape, audience, clock, transport-key and signature checks still run first. The mailbox only filters the public target; it does not authenticate a notice's roster authority.
+
 **`status`.** Body `{}`. Result `{"bytes", "expired_through", "head", "items", "members", "notices", "seq"}`, all integers. `seq` is the membership statement's.
 
 ## 6. What the mailbox keeps and for how long
@@ -121,7 +123,9 @@ When the owner removes a lost device, the other devices may all be off. The remo
 
 A notice is a roster entry (`roster.md`) of type `remove`, `stop` or `epoch`. Those are the entries `roster.md` allows a mailbox to hold in the clear. Any other type is `mailbox.notice_type`. The mailbox checks only that the object has string fields `author`, `mesh`, `sig` and `type`, that `mesh` matches the request (`mailbox.wrong_mesh`), and that its canonical form is at most 16384 bytes (`mailbox.too_large`). It cannot check the entry against the roster and does not try. Receiving devices do, and drop an entry that fails.
 
-The notice id is the hash of its canonical JSON. A notice is deleted when every current member has deposited or collected it, or when it is older than `notice_max_age_s`. The removal also arrives by the statement of section 4, so the removed device loses access at once and learns it was removed from `mailbox.removed`.
+The notice id is the hash of its canonical JSON. A notice is deleted when every current member has deposited or collected it, or when it is older than `notice_max_age_s`. A `remove` notice additionally waits for every remembered removed operations key named in its `body.cutoff` to collect it; current-member collection alone cannot delete that notice. Expiry still applies, reads never extend it, and retained notices still count against the ordinary quota. The membership statement of section 4 immediately blocks a removed key from every operation except its restricted own-removal retrieval.
+
+`mailbox.removed` alone is an unsigned availability result, not authority to change a client's roster or principal. A client receiving it tries the restricted `notice_get`. It accepts a removal only through normal roster shape, mesh, target, signature, presence or recovery, and ancestor checks. If an exact own-device removal has valid authority signatures from a key already trusted locally but lacks ancestors, the client persists it as pending and suspends local model, tool, mint, executor, principal, recovery and provider-write authority until it can resolve that proof. It does not invent a removed roster member or admit unrelated entries. A malformed, forged, wrong-mesh, wrong-target or untrusted-signer object cannot create that suspension. A missing or expired notice remains an unavailable verification path. The client retries publication races with bounded backoff and continues ordinary peer discovery; it never admits new epoch keys or event envelopes through this exception.
 
 ## 8. Honest state
 
