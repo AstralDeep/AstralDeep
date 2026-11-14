@@ -375,8 +375,13 @@ def _covers(arguments_json: str, arguments: Dict[str, Any], action: Dict[str, An
         sent = json.loads(arguments_json)
     except ValueError:
         return False
+    from orchestrator.hitl_confirmation import _SERVER_ARGUMENTS
+
+    if not isinstance(sent, dict):
+        return False
+    compared = {key: value for key, value in arguments.items() if key in sent or key not in _SERVER_ARGUMENTS}
     digest = "sha256:" + hashlib.sha256(arguments_json.encode("utf-8")).hexdigest()
-    return sent == arguments and action.get("args_digest") == digest
+    return sent == compared and action.get("args_digest") == digest
 
 
 def build_cards(catalog: Dict[str, Any]) -> Tuple[List[AgentCard], Dict[Tuple[str, str], str]]:

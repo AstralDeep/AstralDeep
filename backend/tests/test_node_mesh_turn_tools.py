@@ -1,6 +1,6 @@
 """Runs whole turns the node answers for another member with the real kernel wheel on both sides and a real orchestrator, protected dispatch and audit behind the node, checking that each tool call needs a consented mesh grant for its current definition, the owner's enablement and a kernel ticket minted for exactly that call.
 Stubbed: the model and its client lookup, chat titling, as in test_node_mesh_peer_tools.py; the personal mesh derives its authority from the real enrolled kernel.
-The dispatching runner drives node admission and physical dispatch directly, because the orchestrator's gate stack refuses sandboxed agents before admission."""
+The direct runner isolates final dispatch seams, while the normal runner covers the full tool preparation stack."""
 
 from __future__ import annotations
 
@@ -241,14 +241,22 @@ async def test_a_granted_in_process_tool_dispatches_exactly_once_with_its_own_ti
 
 async def test_a_granted_sandboxed_tool_reaches_the_executor_once_with_the_ticket_the_kernel_minted(turn_host, tmp_path, monkeypatch):
     host = turn_host
-    outcomes = []
-    runner = dispatching_runner(host, [(SANDBOXED, SANDBOXED_TOOL, {"q": "weather"})], outcomes)
-    async with bridge_for(host, tmp_path, monkeypatch, runner) as (node, laptop, node_device, bridge):
+    responses = []
+    dispatch = host.orch._dispatch_tool_call
+
+    async def watched(*args, **kwargs):
+        result = await dispatch(*args, **kwargs)
+        responses.append(result)
+        return result
+
+    monkeypatch.setattr(host.orch, "_dispatch_tool_call", watched)
+    async with bridge_for(host, tmp_path, monkeypatch) as (node, laptop, node_device, bridge):
         await grant(node, laptop, sandboxed_grant(host))
-        outcome = await run_turn(host, node, laptop, node_device, bridge, [])
+        outcome = await run_turn(host, node, laptop, node_device, bridge, [(SANDBOXED_TOOL, {"q": "weather"})])
     assert outcome.request.state == ak.RequestState.ANSWERED, diag(outcome, host)
-    assert len(host.sent) == 1 and [tool for tool, _ in outcomes] == [SANDBOXED_TOOL]
-    assert outcomes[0][1].error is None and outcomes[0][1].result == "found it"
+    assert len(host.sent) == 1, (diag(outcome, host), [response.error for response in responses])
+    assert len(responses) == 1 and responses[0].error is None and responses[0].result == "found it"
+    assert any("found it" in result for result in outcome.model.results)
     assert [m.call["tool"] for m in outcome.minted] == [SANDBOXED_TOOL]
     sent = host.sent[0]
     assert (sent["agent"], sent["tool"], json.loads(sent["arguments_json"])) == (SANDBOXED, SANDBOXED_TOOL, {"q": "weather"})

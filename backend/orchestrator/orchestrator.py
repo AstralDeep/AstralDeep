@@ -19932,7 +19932,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             if pending.error else None,
                             render_target="chat" if pending.error else None)
 
-        if chat_id:
+        if chat_id and not _vessel_executor.is_sandboxed(self, agent_id):
             if agent_id != "terminal-shell-1" and (agent_id, tool_name) != ("fhir-1", "extract_note_fields"):
                 args = await asyncio.to_thread(
                     self._map_file_paths, chat_id, args, user_id=user_id)
@@ -19985,6 +19985,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             agent_id not in self.agents
             and agent_id not in self.a2a_clients
             and agent_id not in self.local_agents
+            and not _vessel_executor.is_sandboxed(self, agent_id)
         ):
             err_msg = f"No agent available for tool '{tool_name}'"
             return GateRefusal(

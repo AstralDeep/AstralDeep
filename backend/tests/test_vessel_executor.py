@@ -712,3 +712,47 @@ def test_published_tools_carry_the_agent_annotation_and_the_hash_the_executor_pi
     orch.vessel_definitions[("ghost", "x")] = DEFINITION
     assert len(ve.published_tools(orch)) == 2
     assert ve.published_tools(SimpleNamespace()) == []
+
+
+@pytest.mark.parametrize("reserved", ["_delegation_token", "_credentials", "_credentials_encrypted", "_session_llm_credentials"])
+async def test_server_dispatch_metadata_does_not_change_the_exact_ticket_payload(reserved):
+    recorder = Recorder()
+    executor = executor_with(recorder)
+    try:
+        response = await invoke(executor, ticket_for(), {"q": "x", reserved: "server-only"})
+        assert response.error is None and len(recorder.requests) == 1
+        sent = json.loads(recorder.requests[0].content)
+        assert json.loads(sent["arguments_json"]) == {"q": "x"} and "server-only" not in recorder.requests[0].content.decode()
+    finally:
+        await executor.close()
+
+
+async def test_ticketed_reserved_arguments_and_changed_user_arguments_remain_exact():
+    recorder = Recorder()
+    executor = executor_with(recorder)
+    try:
+        for original, changed in [
+            ({"q": "x", "_credentials": "ticketed"}, {"q": "x", "_credentials": "changed"}),
+            ({"q": "x"}, {"q": "changed", "_delegation_token": "server-only"}),
+            ({"q": "x"}, {"q": "x", "unexpected": "changed"}),
+        ]:
+            response = await invoke(executor, ticket_for(original), changed)
+            assert code_of(response) == "request.call_mismatch"
+        assert not recorder.requests
+    finally:
+        await executor.close()
+
+
+@pytest.mark.parametrize("value", [[], None, "not an object", 7])
+async def test_a_ticket_with_non_object_arguments_is_refused_without_sending(value):
+    recorder = Recorder()
+    executor = executor_with(recorder)
+    payload = json.dumps(value)
+    ticket = ticket_for()
+    action = json.loads(ticket.action_json)
+    action["args_digest"] = "sha256:" + hashlib.sha256(payload.encode()).hexdigest()
+    try:
+        response = await invoke(executor, ve.CallTicket(ticket.ticket_json, json.dumps(action), payload))
+        assert code_of(response) == "request.call_mismatch" and not recorder.requests
+    finally:
+        await executor.close()
