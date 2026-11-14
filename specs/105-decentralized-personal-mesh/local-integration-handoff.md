@@ -1,6 +1,6 @@
 # Spec 105 integration and qualification handoff
 
-Updated 2026-11-13. Work resumed after the historical stops below. Local implementation and qualification remain in progress. The final candidate is identified by an external exact-SHA evidence inventory after the clean source freeze; no complete final same-SHA gate set exists yet, and the feature is not production-ready. The owner approved spec section 17. Physical iPhone checks are requested and active; the earlier hardware-deferral wording is revoked. No new product push, Kernel publication, merge, deployment or release is authorized by this handoff.
+Updated 2026-11-14. The current state is the "Fifth checkpoint" section at the end of this file, which supersedes the text between here and there. Work resumed after the historical stops below. Local implementation and qualification remain in progress. The final candidate is identified by an external exact-SHA evidence inventory after the clean source freeze; no complete final same-SHA gate set exists yet, and the feature is not production-ready. The owner approved spec section 17. Physical iPhone checks are requested and active; the earlier hardware-deferral wording is revoked. No new product push, Kernel publication, merge, deployment or release is authorized by this handoff.
 
 ## Current source and pending adoption
 
@@ -311,3 +311,127 @@ All post-resume work remains stopped until a new owner instruction. The website 
 ### Cleanup completed — 2026-11-14
 
 At the owner's explicit request, all local Docker containers, images, managed volumes and build caches were deleted, including the data in those volumes. Final Docker inventory was zero containers, zero images, zero volumes and zero build-cache bytes; Docker Desktop was then stopped. Recorded image IDs above are historical evidence, not available local runtimes: rebuild services/images before resuming. Host Git sources, native app data, model weights, backups, private diagnostics, the local Kernel bundle and qualified host artifacts were preserved. No implementation or testing resumed during handoff/cleanup.
+
+## Fifth checkpoint, 2026-11-14
+
+This section supersedes the running state above. The owner resumed the work, was away for most of it, and allowed pushing AstralKernel once ready. Nothing is merged to a default branch, deployed, released or submitted.
+
+Every path under `/tmp` named earlier in this file is gone. Evidence for this checkpoint lives outside Git at `/Users/sam/Desktop/Work/AstralDeep-wt/evidence-105/`. A structured copy of the numbers is in [evidence/resume-2026-11-14/summary.json](evidence/resume-2026-11-14/summary.json).
+
+### Saved branches
+
+| Repository | Branch and head | State |
+|---|---|---|
+| Deep | `feat/105-integration`, frozen backend candidate `bd197b828cd5d9bda4e613eaee6c34e39a75e8d7` | Pushed. Later commits on the branch are documentation only. |
+| Deep | `feat/105-node-turn-scopes` at `4de30d69` | Pushed. A proposal, not integrated. Needs owner sign-off. |
+| Projection | `feat/105-mesh-final` at `377ee45d1f7a64071762bfdbd9a7ba28a57daf2e` | Pushed. Consent repair, accessibility work, hosted voice guard, node pack driver and pin. |
+| Kernel | `k/integration` at `a49905544244c79dd0f5b847ac4c1618e4a055e5` | Pushed to origin for the first time. Artifacts are not published. |
+| Kernel | `k/composed-gate` at `97aba18` | Local only. Deliberately red. See 3.11 below. |
+| Vessel, Plane, LETS, Primitives | Unchanged from the fourth stop | No new work. |
+
+### Backend qualification, complete on one source
+
+Deep `bd197b82` differs from the last tested source `6d5307b1` by three test fixes and one contract fixture. No product code changed.
+
+One test image, `sha256:aa6fa0b4f5a2f35d0260b381021f27458f15bd5be14efd45c1e63c114d39060c`, ran all four groups. The tree was clean and at the frozen SHA before and after.
+
+| Group | Collected | Skipped | Failures | Errors |
+|---|---|---|---|---|
+| `tests_2` | 11,708 | 13 | 0 | 0 |
+| `tests_1` | 12,025 | 3 | 0 | 0 |
+| `modules` | 9,072 | 17 | 0 | 0 |
+| `persistent_agents` | 1,008 | 0 | 0 | 0 |
+
+Voice worker on images built from the same SHA: 382 passed, two isolation skips, 4,219 of 4,669 lines (90.36%).
+
+Strict changed-line coverage with a 90% floor, merged from exactly those four groups plus the voice worker:
+
+- Resume delta against `ced61ce0`: 339 of 347 lines, 97.69%, pass.
+- Full feature against `a3eb724a`: 4,583 of 4,685 lines, 97.82%, pass.
+
+The comparison added `--empty-diff not-applicable`, as CI does. Both diffs had measurable lines, so the flag had no effect.
+
+This is local qualification. It is not protected CI.
+
+### The three intermittent failures were test defects
+
+Each was reproduced by an injected stall or hold before any fix. None is a product or security defect.
+
+1. `test_work_runtime_postgres_088.py`, zero model calls. The fixture set a 5 second claim lease, below the production floor. A worker stall let the lease lapse, the runner failed the operation before any model call, and the wait accepted a completed lifecycle without checking disposition. The fixture now keeps the production lease and the test asserts the disposition.
+2. `test_evidence_surface.py`, a denial that did not raise. Helpers bounded each request by 5 seconds of wall clock. After a stall the test released its late child while the request was still running. The privacy proof itself closes in a `finally` and refuses afterwards. The bounds are replaced by explicit waits.
+3. `test_work_controls_postgres_088.py`, a 503 for a concurrent exact retry. Bounded transactions cap each lock wait at 100 ms by design (feature 088 verification record). The test now accepts that documented refusal for the loser, still requires exactly one applied control, and checks a single audit row. A new event-driven test covers the held-lock case.
+
+The natural cause of the stalls was not proven. CPU load inside the container did not reproduce them. Starvation of the whole Docker VM while the Mac ran several builds is the leading guess.
+
+One product observation from item 1. Lease renewal starts only after authority refresh, admit and bind. A stall of about 20 seconds in that window would fail a real operation the same way. That is fail-closed. Whether it is acceptable is an owner decision.
+
+### Harness
+
+The gate runner was rebuilt from the Codex session logs and lives at `evidence-105/backend/harness/`. Three things differ from the old one.
+
+- The old runner's guards never fired. macOS `/bin/bash` 3.2 ignores a failing bare `[[ ]]` under `set -e`. Earlier runs therefore never enforced their SHA and clean-tree checks. Every guard now exits explicitly.
+- The source is baked into the test image as a full clone owned by the test user, with canonical remotes. Each run ends with a `git status` check on that tree.
+- The PostgreSQL fixture is created and destroyed per run from CI's pinned image.
+
+### Apple client
+
+Pairing consent repair, three commits on Projection (`71b7d18`, `e66aad6`, `0787ade`):
+
+- The consent sheet never appeared even with no other sheet open. An idle host did not observe the incoming request. This was the main defect.
+- Closing a parent sheet on macOS left a hidden request alive until the 120 second timeout.
+- A retired request could leave the system authentication prompt on screen.
+- Four more sheets could hide consent. Each now hosts it.
+
+The exact prompt bytes, digest binding and signature binding are unchanged. The only approve call in the product is the Approve button.
+
+Native gates on Projection `8931bd8`, with no retries. The two later commits change only `pins.json` and the provenance ledger.
+
+| Gate | Passed | Failed | Skipped |
+|---|---|---|---|
+| macOS AstralAppTests, two consecutive full runs | 1,618 each | 0 | 2 |
+| iOS simulator, iPhone 17 Pro, iOS 27.0 and 26.5 | 989 each | 0 | 2 |
+| AstralCore package | 621 | 0 | 1 |
+| Kernel Swift wrapper | 10 | 0 | 0 |
+| Windows client Python | 2,567 | 0 | 20 |
+| Projection Python at `377ee45` | 4,528 | 0 | 8 |
+
+The accessibility proposal is integrated together with two fixes it exposed. The workbench Stop button turned accent purple in a focused window and is now error red. The surface text reader was reading a transparent bitmap and now composites onto an opaque background. The 21 earlier accessibility failures were environmental. They passed on a second run of the same source and their trigger was not found.
+
+A signed Release Mac candidate is staged and not installed:
+`AstralProjection-wt/localtest-stage-20261114T2008Z-final/AstralDeep-localtest.app`. Its designated requirement, team, bundle identifier and entitlements are identical to the installed app. It was built from `8931bd8`, which has the same Swift sources as `377ee45`.
+
+No physical iPhone build exists. The repository has no script for one.
+
+Keep Xcode derived data and the source path out of `~/Desktop` for unsigned test runs. A privacy prompt for the Desktop folder otherwise freezes the test host.
+
+### Node pack
+
+Pack `3.11.18-bd197b82-a499055` is assembled at `~/Library/Caches/AstralNodePack/pack-bd197b82`. Archive 146,303,689 bytes, SHA-256 `155fe50401a9bd1c8ebd632f2c40a14423b81e283a30a7b63192673c2b431400`.
+
+- Swift host tests: 48 executed, 0 failures.
+- Real download, install, start, health and stop: passed.
+- Committed driver `apple-clients/NodePack/qualify/tool_turn.py`: 14 of 14 checks. Missing and forged credentials get 401, the owner gets 200, 100 tools are offered, `generate_dynamic_chart` runs and persists.
+
+Limits. The driver uses a fake model and a loopback issuer in development posture. The pack's macOS Kernel wheel and mailbox come from the `kernel-final-a499055` cache, which is not part of the 14-artifact qualified manifest.
+
+### Findings that need the owner
+
+1. **Node-run turns cannot use tools, and the obvious fix is unsafe.** Deriving the scope ceiling from mesh grants would let in-process tools dispatch with no Kernel ticket, and would open every enabled tool that shares a scope. The proposal branch instead mints a ticket for every call, carries an exact per-tool allowlist and refuses meta tools. 1,917 tests pass with it and changed lines are fully covered. It touches the central dispatch path, so it waits for sign-off.
+2. **Node whole turns do not answer at all on the current source.** A probe with a text-only model ended in `node.no_answer`. The cause was not traced. The existing criterion 1.1 test uses a stub runner, so it does not show this.
+3. **Sandboxed agents are refused by the normal gate stack** during a real model turn, and a node removed mid-turn keeps minting for itself.
+4. **Node turns need a Keycloak offline grant and a live token exchange on every request.** That conflicts with criterion 1.2 for node-run turns.
+5. **Provider key custody.** The Kernel can seal a key to a node. Nothing on the node can open it for the Python loop, and the app seals to every device without telling the owner.
+6. **Mesh push cannot work as built.** The app enrolls a different device id than the gateway looks up, mesh mode skips registration, and the sender would need the publisher's APNs key on every personal node.
+7. **Composed-gate conformance found two disagreements** between the contract and the Kernel host. Both fail closed. The host reports `allowance.share_spent` or `allowance.solo_cap_reached` where the contract says `allowance.exhausted`. A device removed while consent is pending is reported as a consent denial where the fixture expects `gate.device_not_on_roster`. The choice is between amending the contract and changing the Kernel. A Kernel product change means rebuilding and re-adopting all artifacts.
+8. **Hosted pipelines never exercise the Kernel.** Deep's image build allows missing Kernel artifacts and the real-Kernel tests skip without the wheel. Projection CI cannot build the app from a clean checkout. The Kernel has no CI.
+9. **Hosted voice remnants.** The app still advertises `voiceTransport = "livekit"`, the LiveKit package is still linked, and the Watch target posts to `api/voice` by design.
+
+The full read-only audit is at `evidence-105/audit/exit-criteria-audit.md`.
+
+### Still required before any readiness claim
+
+- A fresh pairing attempt with the owner on the staged Mac build. Take a stopped data backup first. Do not reuse the expired transaction or reset keys.
+- Physical checks: iPhone voice and offline operation, interruption timing, push delivery, hand-off between devices.
+- Mac voice recheck for the duplicate acknowledgement fix, and the idle CPU check on the canonical Mac.
+- The owner decisions listed above.
+- Protected CI on the pushed branches.

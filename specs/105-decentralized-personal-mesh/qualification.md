@@ -1,6 +1,21 @@
 # Spec 105 qualification map
 
-Updated: 2026-11-13. Qualification remains in progress. This maps every exit criterion in plan.md to inspected source, executed local tests and recorded live checks. Exact suite revisions, commands, evidence paths and pending pin updates are in [local-integration-handoff.md](local-integration-handoff.md). The current evidence spans several revisions; it is not one passing final candidate. Physical iPhone checks are requested and active. Final artifact adoption and combined native gates remain separate from source-side checks. No protected CI, merge, deployment, release or production-readiness claim is made.
+Updated: 2026-11-14. Qualification remains in progress. This maps every exit criterion in plan.md to inspected source, executed local tests and recorded live checks. Exact suite revisions, commands, evidence paths and pending pin updates are in [local-integration-handoff.md](local-integration-handoff.md). The current evidence spans several revisions; it is not one passing final candidate. Physical iPhone checks are requested and active. Final artifact adoption and combined native gates remain separate from source-side checks. No protected CI, merge, deployment, release or production-readiness claim is made.
+
+## Checkpoint 2026-11-14
+
+This checkpoint is newer than the text below it. Details, numbers and evidence paths are in the "Fifth checkpoint" section of [local-integration-handoff.md](local-integration-handoff.md). Every `/tmp` path cited in this file is gone.
+
+- **Backend gates.** Deep `bd197b82` passed all four canonical groups on one image, the voice worker suite, and both strict 90% changed-line comparisons (97.69% resume delta, 97.82% full feature). Local run, not protected CI.
+- **Native gates.** Projection `8931bd8` passed the full macOS gate twice in a row (1,618 passed), the iOS simulator gate (989 passed), the AstralCore package and the Windows client suite. The earlier 18 accessibility failures were environmental.
+- **Pairing consent.** The defect is repaired and covered by tests. Live pairing still waits for the owner.
+- **3.11 stays Partly covered.** A shared fixture `contracts/conformance/composed_gate.json` now holds 32 composed cases. The pure gate agrees with all of them in Python and Rust. The Kernel composed host matches 26 of 30 runnable cases and disagrees on four: three allowance refusal codes and one device removed while consent is pending. All four dispatch nothing. The Python composed-host runner is not written, because node-run turns cannot use tools yet.
+- **4.6 stays Partly covered.** A source guard and eight runtime tests now cover every voice entry point in the main app and found no path to the hosted voice server. The Watch target still posts to it by design, and the live check with the network blocked is not done.
+- **5.6 stays Partly covered.** Pack `3.11.18-bd197b82-a499055` passed the host tests, the real install run and a committed owner-authenticated tool-turn driver. Provider custody and the Mac app driving the pack remain open.
+- **1.1 is weaker than the table says.** Its automated test uses a stub runner. A probe of a real node-run turn on the current source ended in `node.no_answer`, and such turns cannot dispatch tools. See the owner findings in the handoff.
+- **7.2 cannot pass as built.** Mesh push registration uses the wrong device id and needs a sender that is not the personal node.
+
+Counts are unchanged: 45 proven by automated test, six partly covered, six live only, one owner approved.
 
 Revisions read:
 
