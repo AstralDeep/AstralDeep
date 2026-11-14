@@ -435,3 +435,21 @@ The full read-only audit is at `evidence-105/audit/exit-criteria-audit.md`.
 - Mac voice recheck for the duplicate acknowledgement fix, and the idle CPU check on the canonical Mac.
 - The owner decisions listed above.
 - Protected CI on the pushed branches.
+
+### Live pairing, 2026-11-14
+
+The owner paired the physical iPhone 13 Pro to the canonical Mac mesh. This is the first live-verified pairing for spec 105.
+
+- **Mac.** Stopped data backup at `AstralProjection-wt/localtest-backup-20261114T204037Z-pre-final-pairing`, verified file by file. Then the staged build from Projection `8931bd8` was installed at `/Users/sam/Applications/AstralDeep Localtest.app`. Its designated requirement matched, and the existing mesh opened with all chats and devices and no Keychain prompt.
+- **iPhone.** The app's data container was copied to `AstralProjection-wt/physical-backup-20261114T204416Z-pre-final-pairing` (20 MB). The app was removed from the phone at that moment, so the staged device build from Projection `b206e44` was installed fresh. The phone therefore joined as a new device with none of its earlier chats.
+- **Flow.** The Mac showed a fresh invitation. The owner scanned it with the phone, matched comparison codes, approved on the Mac and completed the system authentication.
+- **Commit, read-only from the Mac store.** The roster grew from 10,082 to 11,846 bytes and gained the peer `3lcED1m3…`. A sync session with that peer ran at 20:45:52 UTC. The phone's own `auth.transfer` event was accepted into the Mac log.
+
+Roster membership requires a presence signature, and the product's only approve path is the consent sheet's Approve button. So the consent repair is live-verified on the Mac for the device-add path.
+
+Two observations.
+
+- The Mac wrote a `key.credential` event when the phone joined. Provider credentials were resealed to the new device with no prompt, which matches owner finding 5.
+- The phone shows as "Needs sign-in to verify" on the Mac until it attests through Keycloak, as expected.
+
+Still unverified: chat sync between the two devices, and every other physical check listed above.
