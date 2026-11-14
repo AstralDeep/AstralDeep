@@ -171,6 +171,35 @@ class PeerStanding:
 
 
 @dataclass(frozen=True)
+class RequestReference:
+    id: str
+    chat_id: str
+    from_device: str
+    to_device: str
+    text: str
+    call: Optional[tuple]
+
+    @classmethod
+    def capture(cls, request: Any) -> "RequestReference":
+        values = tuple(getattr(request, name, None) for name in ("id", "chat_id", "from_device", "to_device", "text"))
+        if any(type(value) is not str or not value for value in values):
+            raise NodeMeshError("request.malformed")
+        call = getattr(request, "call", None)
+        if call is not None:
+            call = tuple(getattr(call, name, None) for name in ("tool", "arguments_json", "action_json", "ticket_json"))
+            if any(type(value) is not str or not value for value in call):
+                raise NodeMeshError("request.malformed")
+        return cls(*values, call)
+
+
+@dataclass(frozen=True)
+class PersonalAuthorityContext:
+    mesh_id: str
+    member_id: str
+    request: RequestReference
+
+
+@dataclass(frozen=True)
 class StepRecord:
     call_id: str
     tool: str
@@ -418,6 +447,46 @@ class NodeMesh:
 
     async def claim_request(self, request_id: str) -> str:
         return await self._request_call(self.kernel.claim_request, request_id)
+
+    async def personal_authority_context(
+        self, request: RequestReference, owner: str, kernel: Any,
+    ) -> PersonalAuthorityContext:
+        def inspect():
+            if self.kernel is not kernel:
+                raise NodeMeshError("node.mesh_admission_unavailable")
+            principal = getattr(kernel, "mesh_principal", None)
+            if not callable(principal):
+                raise MeshUnavailable("principal_unsupported")
+            principal()
+            status = kernel.mesh_status()
+            roster = kernel.roster()
+            current = kernel.request(request.id)
+            proof = principal()
+            if self.kernel is not kernel:
+                raise NodeMeshError("node.mesh_admission_unavailable")
+            if self._enrollment(status) not in ENROLLED_STATES or not proof.mesh_id:
+                raise NodeMeshError("mesh.not_enrolled")
+            if proof.mesh_id != status.mesh_id or proof.mesh_id != roster.mesh_id:
+                raise NodeMeshError("node.mesh_mismatch")
+            if roster.stopped:
+                raise NodeMeshError("gate.mesh_stopped")
+            if not any(member.is_local and member.device_id == status.device_id for member in roster.members):
+                raise NodeMeshError("gate.device_not_on_roster")
+            if not any(member.device_id == request.from_device for member in roster.members):
+                raise NodeMeshError("ticket.device_removed")
+            if request.to_device != status.device_id or RequestReference.capture(current) != request:
+                raise NodeMeshError("request.call_mismatch")
+            if getattr(current.state, "name", None) != "CLAIMED":
+                raise NodeMeshError("request.not_claimed")
+            try:
+                owners = {node_identity.canonical_owner_id(identity.issuer, identity.subject) for identity in proof.identities}
+            except (AttributeError, TypeError, node_identity.NodeIdentityError):
+                raise NodeMeshError("node.owner_unproven") from None
+            if owner not in owners:
+                raise NodeMeshError("node.owner_mismatch")
+            return PersonalAuthorityContext(proof.mesh_id, status.device_id, request)
+
+        return await self._request_call(inspect)
 
     async def refuse_request(self, request_id: str, code: str) -> str:
         return await self._request_call(self.kernel.refuse_request, request_id, code)

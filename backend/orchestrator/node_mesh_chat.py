@@ -531,10 +531,13 @@ class MeshChatBridge:
             raise Refusal("ticket.unauthorized")
         admitted.floor = join_labels(admitted.floor, labels_of(verified.labels))
         await self._check_floor(admitted.floor, request)
-        try:
-            admitted.authority = await self._calls.authorize(owner, resolved)
-        except CallRefused as exc:
-            raise Refusal(exc.code) from None
+        from shared import node_identity
+
+        if not node_identity.is_personal():
+            try:
+                admitted.authority = await self._calls.authorize(owner, resolved)
+            except CallRefused as exc:
+                raise Refusal(exc.code) from None
         admitted.resolved, admitted.arguments, admitted.action, admitted.owner = resolved, arguments, action, owner
 
     async def _execute(self, request: Any, admitted: _Admitted) -> None:
@@ -560,14 +563,20 @@ class MeshChatBridge:
     async def _run_call(self, request: Any, admitted: _Admitted, local: str) -> List[Any]:
         call = request.call
         from orchestrator import node_mesh_admission
+        from shared import node_identity
 
         owner = admitted.owner
         if not owner or self._owner != owner:
             raise Refusal("node.owner_mismatch")
         ticket = vessel_executor.CallTicket(call.ticket_json, call.action_json, call.arguments_json)
         with node_mesh_admission.binding(
-            self._mesh, lambda: self._owner, owner, local, admitted.resolved, ticket,
-        ):
+            self._mesh, lambda: self._owner, owner, local, admitted.resolved, ticket, request=request,
+        ), vessel_executor.carrying(ticket):
+            if node_identity.is_personal():
+                try:
+                    admitted.authority = await self._calls.authorize(owner, admitted.resolved)
+                except CallRefused as exc:
+                    raise Refusal(exc.code) from None
             outcome = await asyncio.wait_for(
                 self._calls.run(
                     owner, local, admitted.resolved, admitted.authority,
@@ -647,6 +656,7 @@ class MeshChatBridge:
             tools = await self._turn_tools(owner_id)
             with node_mesh_admission.turn(
                 self._mesh, lambda: self._owner, owner_id, local, tools, lambda: self._catalog(owner_id), issue,
+                request=request,
             ):
                 await asyncio.wait_for(self._runner(owner_id, local, request.text), self._turn_seconds)
             try:
@@ -829,12 +839,18 @@ def orchestrator_runner(orch: Any) -> TurnRunner:
         from orchestrator import node_mesh_admission
         from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
         from orchestrator.chain_authority import AuthoritySkip
+        from shared import node_identity
 
         bound = node_mesh_admission.current_turn()
-        authority = await orch.derive_machine_authority(
-            user_id=owner_id, agent_id=None, turn_class="mesh_request",
-            consented_scopes=bound.scopes if bound is not None else [],
-        )
+        if node_identity.is_personal():
+            if bound is None or bound.chat != local_chat:
+                raise NodeMeshError("request.call_mismatch")
+            authority = await node_mesh_admission.personal_authority(orch, owner_id)
+        else:
+            authority = await orch.derive_machine_authority(
+                user_id=owner_id, agent_id=None, turn_class="mesh_request",
+                consented_scopes=bound.scopes if bound is not None else [],
+            )
         if isinstance(authority, AuthoritySkip):
             session_reason = getattr(authority, "reason", "authority_unavailable")
             raise NodeMeshError(f"authority_{session_reason}")

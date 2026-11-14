@@ -12,12 +12,11 @@ from uuid import uuid4
 
 import pytest
 
-from tests.test_node_mesh_kernel_integration import ak, paired, pytestmark, until  # noqa: F401
+from tests.test_node_mesh_kernel_integration import OWNER, ak, paired, pytestmark, until  # noqa: F401
 
 from orchestrator.node_mesh_calls import OrchestratorCalls, definition_hash, skill_definition
 from shared.feature_flags import flags
 
-OWNER = "oidc.abc.owner"
 AGENT = "dice-roller-1"
 TOOL = "roll_dice"
 REPLY = "the node rolled the dice"

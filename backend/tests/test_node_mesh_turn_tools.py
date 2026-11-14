@@ -1,5 +1,5 @@
 """Runs whole turns the node answers for another member with the real kernel wheel on both sides and a real orchestrator, protected dispatch and audit behind the node, checking that each tool call needs a consented mesh grant for its current definition, the owner's enablement and a kernel ticket minted for exactly that call.
-Stubbed: the model and its client lookup, chat titling, and the offline-grant store that would exchange a Keycloak refresh token, as in test_node_mesh_peer_tools.py.
+Stubbed: the model and its client lookup, chat titling, as in test_node_mesh_peer_tools.py; the personal mesh derives its authority from the real enrolled kernel.
 The dispatching runner drives node admission and physical dispatch directly, because the orchestrator's gate stack refuses sandboxed agents before admission."""
 
 from __future__ import annotations
@@ -197,9 +197,7 @@ def dispatching_runner(host, calls, outcomes):
         from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
 
         bound = node_mesh_admission.current_turn()
-        authority = await host.orch.derive_machine_authority(
-            user_id=owner, agent_id=None, turn_class="mesh_request", consented_scopes=bound.scopes,
-        )
+        authority = await node_mesh_admission.personal_authority(host.orch, owner)
         authority = dataclasses.replace(authority, allowed_tools=bound.allowed)
         vws = VirtualWebSocket(BackgroundTask(task_id="mesh-direct", chat_id=local, user_id=owner))
         setattr(vws, node_mesh_admission.TURN_MARK, True)

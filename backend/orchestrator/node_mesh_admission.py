@@ -13,7 +13,7 @@ from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Tup
 
 from orchestrator import vessel_executor
 from orchestrator.hitl_confirmation import _arguments, _SERVER_ARGUMENTS
-from orchestrator.node_mesh import NodeMeshError
+from orchestrator.node_mesh import NodeMeshError, RequestReference
 from shared.protocol import MCPResponse
 
 
@@ -27,6 +27,7 @@ class Admission:
     resolved: Any
     ticket: vessel_executor.CallTicket
     lease: object
+    request: Optional[RequestReference] = None
 
 
 TurnMint = Callable[[str, str, Dict[str, Any], Optional[str]], Awaitable[Tuple[vessel_executor.CallTicket, Any]]]
@@ -53,6 +54,7 @@ class Turn:
     catalog: TurnCatalog
     mint: TurnMint
     lease: object
+    request: Optional[RequestReference] = None
     held: List[_Held] = field(default_factory=list)
 
     @property
@@ -70,9 +72,10 @@ _ACTIVE: set[object] = set()
 
 
 @contextlib.contextmanager
-def binding(mesh, owner_of, owner, chat, resolved, ticket) -> Iterator[None]:
+def binding(mesh, owner_of, owner, chat, resolved, ticket, *, request=None) -> Iterator[None]:
     lease = object()
-    admission = Admission(mesh, mesh.kernel, owner_of, owner, chat, resolved, ticket, lease)
+    reference = None if request is None else RequestReference.capture(request)
+    admission = Admission(mesh, mesh.kernel, owner_of, owner, chat, resolved, ticket, lease, reference)
     _ACTIVE.add(lease)
     token = _CURRENT.set(admission)
     try:
@@ -83,9 +86,10 @@ def binding(mesh, owner_of, owner, chat, resolved, ticket) -> Iterator[None]:
 
 
 @contextlib.contextmanager
-def turn(mesh, owner_of, owner, chat, tools, catalog, mint) -> Iterator[Turn]:
+def turn(mesh, owner_of, owner, chat, tools, catalog, mint, *, request=None) -> Iterator[Turn]:
     lease = object()
-    bound = Turn(mesh, mesh.kernel, owner_of, owner, chat, dict(tools), catalog, mint, lease)
+    reference = None if request is None else RequestReference.capture(request)
+    bound = Turn(mesh, mesh.kernel, owner_of, owner, chat, dict(tools), catalog, mint, lease, reference)
     _ACTIVE.add(lease)
     token = _TURN.set(bound)
     try:
@@ -97,6 +101,68 @@ def turn(mesh, owner_of, owner, chat, tools, catalog, mint) -> Iterator[Turn]:
 
 def current_turn() -> Optional[Turn]:
     return _TURN.get()
+
+
+def current_admission() -> Optional[Admission]:
+    return _CURRENT.get()
+
+
+async def personal_authority(orch, owner: str, *, agent_id: Optional[str] = None):
+    from orchestrator.chain_authority import MachineAuthority
+    from shared import node_identity
+
+    if not node_identity.is_personal():
+        raise NodeMeshError("node.personal_mesh_required")
+    bound = _CURRENT.get() if agent_id is not None else _TURN.get()
+
+    def current():
+        if node_identity.bound_owner() != owner:
+            return "node.owner_mismatch"
+        if agent_id is None:
+            return _turn_binding_code(bound, owner, bound.chat if bound is not None else None)
+        code = _binding_code(bound, vessel_executor.current_ticket(), owner)
+        if code is None and bound.resolved.agent_id != agent_id:
+            code = "request.call_mismatch"
+        return code
+
+    code = current()
+    if code is not None:
+        raise NodeMeshError(code)
+    if bound.request is None or (bound.request.call is None) != (agent_id is None):
+        raise NodeMeshError("request.call_mismatch")
+    context = await bound.mesh.personal_authority_context(bound.request, owner, bound.kernel)
+    code = current()
+    if agent_id is None:
+        tools, scopes = bound.allowed, bound.scopes
+    else:
+        ticket = bound.ticket
+        if bound.request.call[1:] != (ticket.arguments_json, ticket.action_json, ticket.ticket_json):
+            raise NodeMeshError("request.call_mismatch")
+        await bound.mesh.verify_ticket(ticket.ticket_json, ticket.action_json, bound.resolved.effect_kind)
+        code = current() or _current_resolved(orch, owner, bound.resolved)
+        tools = ((agent_id, bound.resolved.tool, bound.resolved.definition),)
+        scopes = [bound.resolved.scope]
+    if code is not None:
+        raise NodeMeshError(code)
+    consent = f"mesh:{context.mesh_id}/request:{bound.request.id}"
+    try:
+        identity = node_identity.load_node_identity(create=False)
+        credential = identity.mint_token({
+            "sub": owner, "act": {"sub": "machine:mesh_request"}, "scope": " ".join(scopes),
+            "consent_ref": consent,
+            "mesh_authority": {
+                "mesh": context.mesh_id, "member": context.member_id, "request": bound.request.id,
+                "chat": bound.request.chat_id, "local_chat": bound.chat, "source": bound.request.from_device,
+                "tools": [list(tool) for tool in tools],
+            },
+        }, lifetime=node_identity.MAX_TOKEN_SECONDS)
+    except node_identity.NodeIdentityError:
+        raise NodeMeshError("node.signing_key_unavailable") from None
+    return MachineAuthority(
+        access_token=credential, allowed_scopes=scopes, principal="machine:mesh_request", user_id=owner,
+        consent_ref=consent, turn_class="mesh_request", agent_id=agent_id,
+        allowed_tools=tools if agent_id is None else None,
+    )
 
 
 def _matches(admission, owner, chat, agent, tool, args):

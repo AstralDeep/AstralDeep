@@ -216,6 +216,18 @@ class OrchestratorCalls:
 
     async def authorize(self, owner_id: str, resolved: ResolvedTool) -> Any:
         from orchestrator.chain_authority import AuthoritySkip
+        from orchestrator import node_mesh_admission
+        from orchestrator.node_mesh import NodeMeshError
+        from shared import node_identity
+
+        if node_identity.is_personal():
+            bound = node_mesh_admission.current_admission()
+            if bound is None or bound.resolved != resolved:
+                raise CallRefused("request.call_mismatch")
+            try:
+                return await node_mesh_admission.personal_authority(self._orch, owner_id, agent_id=resolved.agent_id)
+            except NodeMeshError as exc:
+                raise CallRefused(exc.code) from exc
 
         authority = await self._orch.derive_machine_authority(
             user_id=owner_id, agent_id=resolved.agent_id, turn_class="mesh_request", consented_scopes=[resolved.scope]

@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat 
 
 from orchestrator import node_api, node_mesh, node_mesh_chat, node_mesh_keys  # noqa: E402
 from orchestrator.node_mailbox import MailboxSettings  # noqa: E402
+from shared import node_identity  # noqa: E402
 
 ISS = "https://auth.example.test/realms/astral"
 CLIENT = "astral-desktop"
@@ -227,7 +228,7 @@ async def test_the_node_joins_a_mesh_syncs_chats_and_relays_through_its_mailbox(
         await node.stop()
 
 
-OWNER = "oidc.abc.owner"
+OWNER = node_identity.canonical_owner_id(ISS, "user-1")
 NODE_TEXT = "node says: "
 
 
@@ -258,6 +259,8 @@ def canonical(value) -> str:
 async def paired(tmp_path, monkeypatch, *, phi_protected=False, calls=None, peer_tools=None, history=None, runner=None):
     monkeypatch.setenv("ASTRAL_NODE_PROFILE", "personal")
     monkeypatch.setenv("ASTRAL_NODE_DATA_DIR", str(tmp_path / "node"))
+    monkeypatch.setenv("ASTRAL_NODE_OWNER", OWNER)
+    node_identity.load_node_identity()
     settings = node_mesh.MeshSettings(
         label="node", relay=("none",), loopback_only=True, local_discovery=False, internet_lookup=False, sync_interval_ms=500,
         mailbox=MailboxSettings(loopback=True, relay=("none",), bind=(f"127.0.0.1:{free_port()}",)),
