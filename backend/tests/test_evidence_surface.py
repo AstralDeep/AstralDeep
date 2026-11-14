@@ -35,7 +35,7 @@ from tests.test_human_request_authority_088 import (
     bound as bound, fixture as fixture, human as human, runtime as runtime,
     service as service, signing_key as signing_key,
 )
-from tests.test_work_surface_ingress_088 import ingress as ingress, registered
+from tests.test_work_surface_ingress_088 import ingress as ingress
 from tests.test_work_surface_postgres_088 import surface as surface, command as command, context as context
 
 pytestmark = pytest.mark.asyncio
@@ -112,6 +112,13 @@ async def inspection(ingress, fixture, runtime, service, tmp_path, monkeypatch):
         audience_id=f"user:{state.owner}", dependencies=(state.evidence._dependency(observation),))
     state.calls, state.notices, state.last_response = [], [], None
 
+    async def arrived(predicate):
+        while not predicate(value := await state.arrivals.get()):
+            pass
+        return value
+
+    monkeypatch.setattr(state, "arrived", arrived)
+
     async def prepare(ws, agent, tool, arguments, chat, owner, **kwargs):
         assert ws is state.socket and chat == state.chat and owner == state.owner
         if not orch.tool_permissions.is_tool_allowed(owner, agent, tool):
@@ -162,6 +169,12 @@ async def inspection(ingress, fixture, runtime, service, tmp_path, monkeypatch):
         assert not getattr(orch, "_evidence_navigation", {})
 
 
+async def registered(state):
+    state.register()
+    await state.registrations.get()
+    await state.barrier()
+
+
 def request(state, params=None, *, action="chrome_open", **updates):
     generation = str(uuid4())
     value = {"type": "ui_event", "action": action, "submission_id": str(uuid4()),
@@ -173,15 +186,14 @@ def request(state, params=None, *, action="chrome_open", **updates):
 
 
 async def terminal(state, generation):
-    async with asyncio.timeout(5):
-        value = await state.arrived(lambda value: value.get("type") == "operation_status"
-            and value.get("request_generation") == generation and value.get("terminal") is True)
-        context = state.orch._connection_contexts.get(id(state.socket))
-        work = next((item for item in context.operations.values()
-            if str(item.frame.request_generation) == generation), None) if context is not None else None
-        if work is not None and work.lane_complete is not None:
-            await asyncio.shield(work.lane_complete)
-        return value
+    value = await state.arrived(lambda value: value.get("type") == "operation_status"
+        and value.get("request_generation") == generation and value.get("terminal") is True)
+    context = state.orch._connection_contexts.get(id(state.socket))
+    work = next((item for item in context.operations.values()
+        if str(item.frame.request_generation) == generation), None) if context is not None else None
+    if work is not None and work.lane_complete is not None:
+        await asyncio.shield(work.lane_complete)
+    return value
 
 
 def surfaces(state):
@@ -344,9 +356,13 @@ async def test_privacy_proof_closes_for_an_inherited_late_child(inspection, monk
     generation = request(state, {"kind": "source", "reference": state.reference})
     try:
         assert (await terminal(state, generation))["state"] == "completed"
-    finally:
+        assert len(children) == 1
         release.set()
         await asyncio.gather(*children)
+    finally:
+        for child in children:
+            child.cancel()
+        await asyncio.gather(*children, return_exceptions=True)
 
 
 async def test_privacy_policy_change_during_the_full_scan_cannot_create_a_proof(inspection, monkeypatch):
@@ -500,7 +516,7 @@ async def test_watch_handoff_retains_final_cancellation_and_human_authority(insp
         else {"kind": kind, "reference": state.reference, "offset": 0})
     generation = request(state, params)
     try:
-        await asyncio.wait_for(entered.wait(), 5)
+        await entered.wait()
         if loss == "operation":
             record = state.calls[0][3].operation_records[0]
             await asyncio.to_thread(state.orch.work_admission.cancel,
@@ -583,7 +599,7 @@ async def test_navigation_invalidates_an_awaiting_read_on_web_and_native(inspect
     monkeypatch.setattr(state.evidence, "verify_delivery", held)
     generation = request(state, {"kind": "source", "reference": state.reference})
     try:
-        await asyncio.wait_for(entered.wait(), 5)
+        await entered.wait()
         actual = state.orch.handle_ui_message
 
         async def skip_navigation(ws, raw):
@@ -594,7 +610,7 @@ async def test_navigation_invalidates_an_awaiting_read_on_web_and_native(inspect
 
         if action == "register_ui":
             state.register()
-            await asyncio.wait_for(state.registrations.get(), 5)
+            await state.registrations.get()
         else:
             monkeypatch.setattr(state.orch, "handle_ui_message", skip_navigation)
             params = {"surface": "llm", "params": {}} if action == "chrome_open" else {"surface": "evidence", "params": {}}
@@ -641,30 +657,29 @@ async def test_terminal_waits_for_admitted_read_cleanup(inspection, fixture, mon
     finished = None
     work = None
     try:
-        async with asyncio.timeout(5):
-            await admitted.wait()
-            await asyncio.to_thread(fixture[0].delete, fixture[2])
-            admission_release.set()
-            finished = asyncio.create_task(terminal(state, generation))
-            await cleanup_entered.wait()
-            await terminal_read.wait()
-            context = state.orch._connection_contexts[id(state.socket)]
-            work = next(item for item in context.operations.values()
-                if str(item.frame.request_generation) == generation)
-            assert not work.lane_complete.done()
-            assert state.orch._evidence_navigation
-            assert not finished.done()
-            cleanup_release.set()
-            assert (await finished)["state"] == "failed"
-            assert work.lane_complete.done()
-            assert not state.orch._evidence_navigation
+        await admitted.wait()
+        await asyncio.to_thread(fixture[0].delete, fixture[2])
+        admission_release.set()
+        finished = asyncio.create_task(terminal(state, generation))
+        await cleanup_entered.wait()
+        await terminal_read.wait()
+        context = state.orch._connection_contexts[id(state.socket)]
+        work = next(item for item in context.operations.values()
+            if str(item.frame.request_generation) == generation)
+        assert not work.lane_complete.done()
+        assert state.orch._evidence_navigation
+        assert not finished.done()
+        cleanup_release.set()
+        assert (await finished)["state"] == "failed"
+        assert work.lane_complete.done()
+        assert not state.orch._evidence_navigation
     finally:
         admission_release.set()
         cleanup_release.set()
         if finished is not None:
-            await asyncio.wait_for(finished, 5)
+            await finished
         if work is not None:
-            await asyncio.wait_for(work.task, 5)
+            await asyncio.wait({work.task})
 
 
 @pytest.mark.parametrize("loss", ["active_chat", "registration", "token", "issuance", "consent", "operation", "provider_flags"])
@@ -683,7 +698,7 @@ async def test_fresh_metadata_scope_refuses_lifetime_changes_after_admission(ins
     monkeypatch.setattr(state.orch, "_call_work_admission", held)
     generation = request(state, {"kind": "source", "reference": state.reference})
     try:
-        await asyncio.wait_for(entered.wait(), 5)
+        await entered.wait()
         if loss == "active_chat":
             state.orch._ws_active_chat[id(state.socket)] = str(uuid4())
         elif loss == "registration":
@@ -726,7 +741,7 @@ async def test_changes_after_latest_delivery_check_cannot_publish_source(inspect
     monkeypatch.setattr(state.evidence, "verify_delivery", held)
     generation = request(state, {"kind": "source", "reference": state.reference})
     try:
-        await asyncio.wait_for(entered.wait(), 5)
+        await entered.wait()
         if loss == "permission":
             await asyncio.to_thread(state.orch.tool_permissions.set_tool_overrides,
                 state.owner, "web-research-1", {"fetch_page": False})
@@ -850,15 +865,17 @@ async def test_connection_close_scrubs_pending_navigation_without_source_deliver
         return checked
 
     monkeypatch.setattr(state.evidence, "verify_delivery", held)
-    request(state, {"kind": "source", "reference": state.reference})
+    generation = request(state, {"kind": "source", "reference": state.reference})
     try:
-        await asyncio.wait_for(entered.wait(), 5)
+        await entered.wait()
+        context = state.orch._connection_contexts[id(state.socket)]
+        work = next(item for item in context.operations.values()
+            if str(item.frame.request_generation) == generation)
         state.socket.closed = True
         state.socket.disconnect()
         release.set()
-        async with asyncio.timeout(5):
-            while state.orch._evidence_navigation:
-                await asyncio.sleep(0)
+        await asyncio.wait({work.task})
+        assert not state.orch._evidence_navigation
     finally:
         release.set()
     assert not surfaces(state)
