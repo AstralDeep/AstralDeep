@@ -194,7 +194,7 @@ async def test_an_effect_before_reply_commit_failure_remains_unknown_without_rep
         inner = [item for item in node.kernel.chat_requests(chat) if item.call is not None]
         assert len(inner) == 1 and inner[0].state == ak.RequestState.CLAIMED
         assert counter.read_text() == "1"
-        node.kernel.interrupt(chat)
+        node.kernel.interrupt_request(request)
         await until(lambda: bool(completed), "the native unknown-effect outcome")
         assert completed[0][1].status == "needs_owner"
         resumed = await node.kernel.answer_request(request)

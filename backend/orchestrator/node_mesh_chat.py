@@ -506,7 +506,7 @@ class MeshChatBridge:
         try:
             await asyncio.wait_for(asyncio.shield(task), self._turn_seconds)
         except (asyncio.CancelledError, asyncio.TimeoutError):
-            await self._interrupt_native(task, request.chat_id, kernel)
+            await self._interrupt_native(task, request.id, kernel)
             try:
                 await asyncio.shield(task)
             except Exception:
@@ -522,11 +522,11 @@ class MeshChatBridge:
             else:
                 logger.warning("node_mesh_request_outcome_unknown: %s", type(exc).__name__)
 
-    async def _interrupt_native(self, task: asyncio.Task, chat: str, kernel: Any) -> None:
+    async def _interrupt_native(self, task: asyncio.Task, request_id: str, kernel: Any) -> None:
         delay = 0.001
         while not task.done():
             try:
-                await self._mesh.interrupt_request(chat, kernel)
+                await self._mesh.interrupt_request(request_id, kernel)
                 return
             except NodeMeshError:
                 await asyncio.sleep(delay)

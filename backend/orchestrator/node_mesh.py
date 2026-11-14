@@ -452,7 +452,9 @@ class NodeMesh:
         if self.kernel is not kernel:
             raise NodeMeshError("node.mesh_admission_unavailable")
         capability = getattr(kernel, "supports_node_request_tools", None)
-        if not callable(capability) or capability() is not True:
+        if (not callable(capability) or capability() is not True
+                or not callable(getattr(kernel, "answer_request", None))
+                or not callable(getattr(kernel, "interrupt_request", None))):
             raise MeshUnavailable("node.request_runtime_unsupported")
 
     async def answer_request(self, request_id: str, kernel: Any) -> Any:
@@ -462,10 +464,10 @@ class NodeMesh:
         except self._binding.KernelError as exc:
             raise NodeMeshError(_code_of(exc)) from exc
 
-    async def interrupt_request(self, chat_id: str, kernel: Any) -> None:
+    async def interrupt_request(self, request_id: str, kernel: Any) -> None:
         if self.kernel is not kernel:
             raise NodeMeshError("node.mesh_admission_unavailable")
-        await self._request_call(kernel.interrupt, chat_id)
+        await self._request_call(kernel.interrupt_request, request_id)
 
     async def claim_request(self, request_id: str) -> str:
         return await self._request_call(self.kernel.claim_request, request_id)

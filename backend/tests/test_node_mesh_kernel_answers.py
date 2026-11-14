@@ -24,6 +24,7 @@ def kernel_host(personal, tmp_path):  # noqa: F811
     host.mesh.claim_request = AsyncMock(side_effect=AssertionError("Python must not claim Kernel-owned turns"))
     host.mesh.record_turn = AsyncMock(side_effect=AssertionError("Python must not record Kernel-owned turns"))
     host.mesh._kernel.supports_node_request_tools = lambda: True
+    host.mesh._kernel.interrupt_request = MagicMock()
     refusals = []
 
     async def refuse(request_id, code):
@@ -182,7 +183,7 @@ async def test_timeout_and_shutdown_explicitly_interrupt_and_wait_for_native_out
 
     state.native.side_effect = running
     loop = asyncio.get_running_loop()
-    state.host.mesh._kernel.interrupt = MagicMock(side_effect=lambda chat: loop.call_soon_threadsafe(interrupted.set))
+    state.host.mesh._kernel.interrupt_request = MagicMock(side_effect=lambda request: loop.call_soon_threadsafe(interrupted.set))
     state.bridge._turn_seconds = 5 if cancel else 0.01
     task = asyncio.create_task(state.bridge._answer(state.host.request))
     await entered.wait()
@@ -193,7 +194,7 @@ async def test_timeout_and_shutdown_explicitly_interrupt_and_wait_for_native_out
     else:
         await task
     assert finished.is_set() and state.refusals == []
-    state.host.mesh._kernel.interrupt.assert_called_once_with("mesh-chat")
+    state.host.mesh._kernel.interrupt_request.assert_called_once_with("request-1")
 
 
 async def test_pending_native_failure_refuses_but_never_uses_python_runner(kernel_host):
@@ -232,8 +233,17 @@ async def test_timeout_retries_interrupt_until_native_registration_without_resta
         loop.call_soon_threadsafe(interrupted.set)
 
     state.native.side_effect = delayed_registration
-    state.host.mesh._kernel.interrupt = interrupt
+    state.host.mesh._kernel.interrupt_request = interrupt
+    state.host.mesh._kernel.interrupt = MagicMock(side_effect=AssertionError("Another turn uses this chat"))
     state.bridge._turn_seconds = 0.01
     await asyncio.wait_for(state.bridge._answer(state.host.request), 5)
     assert len(attempts) == 2 and interrupted.is_set() and state.refusals == []
     state.native.assert_awaited_once()
+
+
+async def test_missing_request_bound_interrupt_refuses_before_any_native_work(kernel_host):
+    state = kernel_host
+    state.host.mesh._kernel.interrupt_request = None
+    await state.bridge._answer(state.host.request)
+    assert state.refusals == [("request-1", "node.request_runtime_unsupported")]
+    state.native.assert_not_awaited()
