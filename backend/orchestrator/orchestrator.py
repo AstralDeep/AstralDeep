@@ -22740,7 +22740,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     )
                 return None
 
-            from orchestrator.chain_authority import machine_scope_ceiling
+            from orchestrator.chain_authority import machine_scope_ceiling, machine_tool_admitted, machine_tool_listed
 
             machine_scopes = machine_scope_ceiling(session)
             if machine_scopes is not None and (
@@ -22758,6 +22758,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         continue
                     if not self.tool_permissions.is_tool_allowed(user_id, agent_id, skill.id):
                         continue
+                    if not machine_tool_admitted(self, session, agent_id, skill.id):
+                        continue
                     if machine_scopes is not None and (
                         self.tool_permissions.get_tool_scope(agent_id, skill.id)
                         not in machine_scopes
@@ -22771,7 +22773,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
             allowed_tools, enabled_scopes = await asyncio.to_thread(_scope_reads)
 
-            if machine_scopes is not None and not enabled_scopes:
+            if machine_scopes is not None and (
+                not enabled_scopes or (machine_tool_listed(session) and not allowed_tools)
+            ):
                 return None
 
             if resolver is not None:
@@ -22872,6 +22876,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         node_session: bool = False,
     ) -> Optional[str]:
         from orchestrator import delegation as _dg
+        from orchestrator.chain_authority import machine_tool_admitted
 
         card = self.agent_cards.get(agent_id)
         if not card:
@@ -22900,6 +22905,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     agent_id,
                     skill.id,
                 )
+                and machine_tool_admitted(self, claims, agent_id, skill.id)
                 and (
                     machine_scopes is None
                     or self.tool_permissions.get_tool_scope(agent_id, skill.id)

@@ -277,6 +277,74 @@ def test_the_tool_list_admits_exact_tools_at_their_current_definition():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("personal", [False, True])
+@pytest.mark.parametrize("tools", ["granted", "empty", "missing", "changed"])
+async def test_delegated_mesh_tools_never_exceed_the_exact_root_tools(monkeypatch, personal, tools):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from orchestrator import delegation
+    from shared import node_identity
+
+    identity = node_identity.NodeIdentity.from_private(Ed25519PrivateKey.generate())
+    monkeypatch.setattr(node_identity, "is_personal", lambda: personal)
+    monkeypatch.setattr(delegation, "_node_identity_or_config_error", lambda: identity)
+    orch = _mesh_orchestrator()
+    orch.delegation.agent_service_client_id = "test-agent-service"
+    allowed = None if tools == "missing" else () if tools == "empty" else (("agent", "read", _definition("read")),)
+    claims = machine_session_binding(_mesh_turn(allowed, scopes=("tools:read",)))
+    if tools == "changed":
+        orch.agent_cards["agent"].skills[0].description = "changed since approval"
+    socket = object()
+    orch.ui_sessions[socket] = claims
+    token = await orch._get_delegation_token(socket, "agent", "owner")
+    if tools != "granted":
+        unexpected_credential = token is not None
+        assert unexpected_credential is False
+        orch.delegation.exchange_token_for_agent.assert_not_awaited()
+    elif personal:
+        payload = identity.verify_token(token, audience="test-agent-service")
+        assert set(payload["scope"].split()) == {"tools:read", "tool:read"}
+        orch.delegation.exchange_token_for_agent.assert_not_awaited()
+    else:
+        assert token == "delegated"
+        orch.delegation.exchange_token_for_agent.assert_awaited_once_with(
+            "consent-token", "agent", ["read"], "owner", ["tools:read"],
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("personal", [False, True])
+@pytest.mark.parametrize("authority", ["interactive", "scheduled", "peer_call"])
+async def test_other_authorities_keep_enabled_siblings_when_delegating(monkeypatch, personal, authority):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from orchestrator import delegation
+    from shared import node_identity
+
+    identity = node_identity.NodeIdentity.from_private(Ed25519PrivateKey.generate())
+    monkeypatch.setattr(node_identity, "is_personal", lambda: personal)
+    monkeypatch.setattr(delegation, "_node_identity_or_config_error", lambda: identity)
+    orch = _mesh_orchestrator()
+    orch.delegation.agent_service_client_id = "test-agent-service"
+    claims = {"sub": "owner", "_raw_token": "interactive"}
+    if authority == "scheduled":
+        claims = machine_session_binding(_authority())
+    elif authority == "peer_call":
+        claims = machine_session_binding(_mesh_turn(None, scopes=("tools:read",), agent_id="agent"))
+    socket = object()
+    orch.ui_sessions[socket] = claims
+    token = await orch._get_delegation_token(socket, "agent", "owner")
+    expected = ["read", "write", "peek"] if authority == "interactive" else ["read", "peek"]
+    if personal:
+        payload = identity.verify_token(token, audience="test-agent-service")
+        assert {scope for scope in payload["scope"].split() if scope.startswith("tool:")} == {
+            "tool:" + tool for tool in expected
+        }
+        orch.delegation.exchange_token_for_agent.assert_not_awaited()
+    else:
+        assert token == "delegated"
+        assert orch.delegation.exchange_token_for_agent.await_args.args[2] == expected
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("tool", ["peek", "write"])
 async def test_a_sibling_tool_sharing_a_granted_scope_is_refused_at_the_shared_gate(tool):
     from orchestrator.orchestrator import GateRefusal

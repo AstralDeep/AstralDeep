@@ -246,6 +246,27 @@ async def test_authority_lost_between_gate_entry_and_the_effect_refuses_the_effe
     assert host.events[-1] == ("agent", expected)
 
 
+@pytest.mark.parametrize("reason", ["gate.mesh_stopped", "ticket.device_removed"])
+async def test_revocation_during_the_last_catalog_read_refuses_the_effect(host, reason):
+    with host.bound() as bound:
+        assert await admission.check(host.orch, None, OWNER, CHAT, "agent", "lookup", {"q": "x"}) is None
+        reads = 0
+
+        async def catalog():
+            nonlocal reads
+            reads += 1
+            if reads == 2:
+                host.state.verify_error = NodeMeshError(reason)
+            return dict(host.state.catalog)
+
+        bound.catalog = catalog
+        response = await admission.dispatch(host.orch, None, OWNER, CHAT, "agent", "lookup", {"q": "x"}, host.invoke)
+    assert reads == 2
+    assert host.ran == []
+    assert code(response) == reason
+    assert host.events[-1] == ("agent", reason)
+
+
 async def test_a_marked_turn_socket_without_a_bound_turn_is_refused():
     socket = SimpleNamespace(**{admission.TURN_MARK: True})
     audited = []

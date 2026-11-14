@@ -214,10 +214,12 @@ async def _turn_physical(orch, bound, owner, chat, agent, tool, args):
         return "node.ticket_required", None
     bound.held.remove(held)
     for _ in range(2):
+        code = await _turn_tool_code(orch, bound, agent, tool)
+        if code is not None:
+            return code, None
         await bound.mesh.verify_ticket(held.ticket.ticket_json, held.ticket.action_json, held.resolved.effect_kind)
         code = (
             _turn_binding_code(bound, owner, chat)
-            or await _turn_tool_code(orch, bound, agent, tool)
             or _current_resolved(orch, owner, held.resolved)
         )
         if code is not None:

@@ -52,7 +52,7 @@ def machine_scope_ceiling(session: Dict[str, Any]) -> Optional[frozenset[str]]:
     return frozenset(scopes)
 
 
-def _tool_listed(session: Dict[str, Any]) -> bool:
+def machine_tool_listed(session: Dict[str, Any]) -> bool:
     return session.get("machine_class") in _TOOL_LISTED_CLASSES and session.get("_machine_authority_agent") is None
 
 
@@ -65,7 +65,7 @@ def _valid_tools(tools: Any) -> bool:
 
 
 def machine_tool_admitted(orch: Any, session: Dict[str, Any], agent_id: str, tool: str) -> bool:
-    if not _tool_listed(session):
+    if not machine_tool_listed(session):
         return True
     tools = session.get(_MACHINE_TOOLS_KEY)
     if not _valid_tools(tools):
