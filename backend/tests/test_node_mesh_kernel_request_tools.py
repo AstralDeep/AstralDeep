@@ -137,6 +137,15 @@ async def test_revocation_after_native_mint_blocks_the_actual_agent_effect(turn_
                       kernel_answers=True) as (node, laptop, device, bridge):
         await setup_native(host, node, laptop, device, bridge, model_server, monkeypatch)
         await grant(node, laptop, dice_grant(host))
+        recorded = []
+        record_turn = node.record_turn
+
+        async def observed_record(*args, **kwargs):
+            result = await record_turn(*args, **kwargs)
+            recorded.append((result, kwargs["steps"]))
+            return result
+
+        monkeypatch.setattr(node, "record_turn", observed_record)
         record = host.orch.audit_recorder.record
 
         async def mutate(event):
@@ -159,8 +168,24 @@ async def test_revocation_after_native_mint_blocks_the_actual_agent_effect(turn_
         await asyncio.wait_for(changed.wait(), 30)
         await until(lambda: request not in bridge._running, "the refused native request to settle")
         inner = [item for item in node.kernel.chat_requests(chat) if item.call is not None]
-        assert len(inner) == 1 and inner[0].state == ak.RequestState.REFUSED
         assert not any(host.dispatched.values()) and not host.sent
+        assert len(inner) == 1
+        if change == "remove":
+            assert inner[0].state == ak.RequestState.REFUSED
+        else:
+            assert inner[0].state == ak.RequestState.ANSWERED
+            assert len(recorded) == 1
+            turn, steps = recorded[0]
+            assert inner[0].turn == turn and len(steps) == 1
+            step = steps[0]
+            assert step.status == "error"
+            assert step.code == {"stop": "gate.mesh_stopped", "permission": "gate.permission_denied"}[change]
+            assert step.call_id == inner[0].call.call_id and step.tool == TOOL
+            view = node.kernel.chat(chat).view
+            results = [message for message in view.messages if message.turn == turn and message.role == ak.Role.TOOL]
+            assert len(results) == 1 and results[0].kind == "chat.tool_result"
+            assert results[0].status == ak.MessageStatus.COMPLETE
+            assert next(item for item in view.turns if item.id == turn).status == ak.TurnStatus.ENDED
 
 
 async def test_an_effect_before_reply_commit_failure_remains_unknown_without_replay(turn_host, model_server, tmp_path, monkeypatch):  # noqa: F811
