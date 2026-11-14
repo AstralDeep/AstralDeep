@@ -453,3 +453,12 @@ Two observations.
 - The phone shows as "Needs sign-in to verify" on the Mac until it attests through Keycloak, as expected.
 
 Still unverified: chat sync between the two devices, and every other physical check listed above.
+
+Chat sync was then checked both ways with the owner. Read-only from the Mac store:
+
+- **Mac to iPhone.** A new Mac chat (created 20:47:25 UTC) and its model turn were followed by a sync session with the phone at 20:47:29. The owner confirmed the chat on the phone.
+- **iPhone to Mac.** The phone's chat create, user message and complete model turn (phone feed, sequence 2 to 21, 20:48:31 to 20:48:57) are in the Mac log.
+- **Speed.** The owner saw the reply arrive slowly on the Mac. The phone's own model call took 10.3 seconds to its first response, against 0.7 seconds for the same kind of turn on the Mac. The last recorded session followed about 55 seconds after the turn ended. The store keeps only the latest session per peer, so the exact delivery time is not known.
+- **Credentials.** The phone also wrote a `key.credential` event, so it is using the provider credential that was sealed to it on joining.
+
+This live-verifies chat sync between paired physical devices on the same network with internet available. It does not verify sync with the internet off (2.1) or airplane-mode queueing (2.2).
