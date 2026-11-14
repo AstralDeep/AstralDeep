@@ -59,7 +59,7 @@ def personal(monkeypatch):
                 raise fake.KernelError.State("gate.device_not_on_roster", "removed")
             return state.principal
 
-        def mesh_status(self):
+        async def mesh_status(self):
             return SimpleNamespace(state=SimpleNamespace(name="ENROLLED" if state.enrolled else "NOT_ENROLLED"),
                                    mesh_id="mesh-1", device_id="node")
 

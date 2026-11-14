@@ -451,6 +451,13 @@ class NodeMesh:
     async def personal_authority_context(
         self, request: RequestReference, owner: str, kernel: Any,
     ) -> PersonalAuthorityContext:
+        if self.kernel is not kernel:
+            raise NodeMeshError("node.mesh_admission_unavailable")
+        try:
+            status = await kernel.mesh_status()
+        except self._binding.KernelError as exc:
+            raise NodeMeshError(_code_of(exc)) from exc
+
         def inspect():
             if self.kernel is not kernel:
                 raise NodeMeshError("node.mesh_admission_unavailable")
@@ -458,7 +465,6 @@ class NodeMesh:
             if not callable(principal):
                 raise MeshUnavailable("principal_unsupported")
             principal()
-            status = kernel.mesh_status()
             roster = kernel.roster()
             current = kernel.request(request.id)
             proof = principal()
