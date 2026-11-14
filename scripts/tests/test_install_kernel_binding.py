@@ -1,4 +1,4 @@
-"""Tests for scripts/install_kernel_binding.py: manifest checks, platform selection, digest verification, optional absence and the install steps with pip stubbed out."""
+"""Tests pinned Kernel artifact checks and fail-closed installation, with pip isolated from the test process."""
 
 from __future__ import annotations
 
@@ -90,7 +90,7 @@ def test_install_runs_pip_copies_the_mailbox_and_imports(staged, tmp_path, monke
     assert target.read_bytes() == b"mailbox" and target.stat().st_mode & 0o777 == 0o755
 
 
-def test_main_verify_install_and_optional_absence(staged, tmp_path, monkeypatch, capsys):
+def test_main_verify_install_and_missing_artifacts(staged, tmp_path, monkeypatch, capsys):
     artifacts, manifest, path = staged
     monkeypatch.setattr(ikb, "MANIFEST", path)
     monkeypatch.setattr(ikb, "load_manifest", lambda: manifest)
@@ -100,13 +100,19 @@ def test_main_verify_install_and_optional_absence(staged, tmp_path, monkeypatch,
     assert ikb.main(["install", "--artifacts", str(artifacts), "--bin-dir", str(tmp_path / "b")]) == 0
     empty = tmp_path / "empty"
     empty.mkdir()
-    assert ikb.main(["install", "--artifacts", str(empty), "--allow-missing"]) == 0
-    assert "without the mesh peer" in capsys.readouterr().out
-    assert ikb.main(["install", "--artifacts", str(tmp_path / "absent"), "--allow-missing"]) == 0
+    assert ikb.main(["install", "--artifacts", str(empty)]) == 1
+    assert "missing artifact" in capsys.readouterr().err
+    assert ikb.main(["install", "--artifacts", str(tmp_path / "absent")]) == 1
     assert ikb.main(["verify", "--artifacts", str(empty)]) == 1
     (artifacts / "k.whl").write_bytes(b"other")
     assert ikb.main(["verify", "--artifacts", str(artifacts)]) == 1
     assert "digest mismatch" in capsys.readouterr().err
+
+
+def test_optional_absence_cannot_be_enabled_from_the_command_line(tmp_path):
+    with pytest.raises(SystemExit) as error:
+        ikb.main(["install", "--artifacts", str(tmp_path), "--allow-missing"])
+    assert error.value.code == 2
 
 
 def test_main_reports_a_failed_pip_install(staged, monkeypatch, capsys):

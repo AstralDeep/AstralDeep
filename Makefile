@@ -18,7 +18,7 @@ export MSYS_NO_PATHCONV := 1
 export MSYS2_ARG_CONV_EXCL := *
 
 .PHONY: help up down restart apply-config build ps logs logs-db shell psql \
-        bootstrap composition-preflight doctor sync sync-backend sync-components \
+        bootstrap composition-preflight kernel-artifacts doctor sync sync-backend sync-components \
         test test-backend test-web test-projection check-060-selection test-060 \
         lint lint-backend lint-web secret-scan \
         prepare-release-evidence
@@ -59,14 +59,17 @@ bootstrap: ## Initialize exact submodules and install their locked wheels into t
 	$(PYTHON) -m pip install --disable-pip-version-check --no-cache-dir -r backend/requirements.txt
 	$(COMPONENT_INSTALLER) sync --root .
 
-composition-preflight: ## Fail closed unless all four initialized component pins/contracts are exact and clean
+composition-preflight: ## Fail closed unless all five initialized component pins/contracts are exact and clean
 	$(COMPOSITION_VERIFIER) --root .
 	$(COMPONENT_INSTALLER) validate --root . --require-gitlinks
 
 doctor: ## Diagnose prerequisites, composition, configuration and services without changes
 	$(PYTHON) scripts/install_doctor.py --root .
 
-up: composition-preflight ## Build images and start all containers in the background
+kernel-artifacts: composition-preflight ## Build or verify the pinned Kernel wheel and mailbox for Docker
+	$(PYTHON) scripts/build_kernel_binding.py --root . --output build/kernel-binding
+
+up: composition-preflight kernel-artifacts ## Build images and start all containers in the background
 	docker compose up -d --build
 
 down: ## Stop containers (volumes preserved)
@@ -79,7 +82,7 @@ apply-config: ## Recreate the app with boot-time config and report the safe BYO 
 	docker compose up -d --force-recreate astraldeep
 	docker compose exec -T astraldeep python -c 'import os; value = os.getenv("FF_BYO_AGENTS", "false").strip().lower(); print("Effective FF_BYO_AGENTS=" + ("true" if value in {"1", "true", "yes"} else "false"))'
 
-build: composition-preflight ## Build images without starting containers
+build: composition-preflight kernel-artifacts ## Build images without starting containers
 	docker compose build
 
 ps: ## Show container status
@@ -104,7 +107,7 @@ sync-backend: ## Tar backend source via an alpine container, copy into astraldee
 	  | docker cp - astraldeep:/app/backend/
 	docker compose restart astraldeep
 
-sync-components: composition-preflight ## Rebuild/recreate the app so exact local component wheels stay in sync
+sync-components: composition-preflight kernel-artifacts ## Rebuild/recreate the app so exact local component wheels stay in sync
 	docker compose build astraldeep
 	docker compose up -d --no-deps --force-recreate astraldeep
 

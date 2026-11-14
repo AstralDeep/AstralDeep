@@ -73,7 +73,7 @@ RUN python scripts/install_local_components.py install \
 COPY config/astral-kernel-binding.json ./config/astral-kernel-binding.json
 COPY scripts/install_kernel_binding.py ./scripts/install_kernel_binding.py
 RUN --mount=type=bind,from=kernel-artifacts,target=/kernel-artifacts \
-    python scripts/install_kernel_binding.py install --artifacts /kernel-artifacts --allow-missing
+    python scripts/install_kernel_binding.py install --artifacts /kernel-artifacts
 ENV PATH="/opt/astral-kernel/bin:${PATH}"
 
 RUN python -m spacy download en_core_web_lg

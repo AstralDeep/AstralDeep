@@ -106,15 +106,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("command", choices=["verify", "install", "pin"])
     parser.add_argument("--artifacts", type=Path, required=True)
     parser.add_argument("--bin-dir", type=Path, default=DEFAULT_BIN_DIR)
-    parser.add_argument("--allow-missing", action="store_true")
     parser.add_argument("--platform")
     parser.add_argument("--wheel")
     parser.add_argument("--mailbox")
     parser.add_argument("--commit")
     args = parser.parse_args(argv)
-    if args.allow_missing and not (args.artifacts.is_dir() and any(args.artifacts.iterdir())):
-        print("kernel binding artifacts not provided, the node runs without the mesh peer")
-        return 0
     try:
         key = args.platform or platform_key()
         if args.command == "pin":

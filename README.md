@@ -137,9 +137,15 @@ cd AstralDeep && cp .env.example .env
 make up
 ```
 
-`make up` verifies that every component submodule matches its pin, builds the images, and starts
+`make up` verifies that every component submodule matches its pin, prepares the pinned Kernel
+wheel and mailbox in `build/kernel-binding`, builds the images, and starts
 PostgreSQL, LiveKit, and the application. The Makefile invokes `python`. If your host only
 provides `python3`, run `make up PYTHON=python3`.
+
+`make kernel-artifacts` prepares or verifies that artifact directory independently. A direct
+Docker build must supply it with `--build-context kernel-artifacts=build/kernel-binding`.
+Missing bindings or a digest mismatch fail the build; the real-Kernel tests require both the
+native binding and mailbox.
 
 When the container reports healthy, open <http://localhost:8001>. Useful endpoints:
 

@@ -46,6 +46,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      additional_contexts:
+        kernel-artifacts: ./build/kernel-binding
     image: astraldeep:latest
     container_name: astraldeep
     ports:

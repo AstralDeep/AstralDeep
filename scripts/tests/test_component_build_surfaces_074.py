@@ -90,7 +90,7 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
         )
     )
     assert job_ids == {
-        "backend-image", "backend-boot", "backend-web", "backend-changed-coverage",
+        "kernel-binding", "backend-image", "backend-boot", "backend-web", "backend-changed-coverage",
         "projection-backend-web", "plane-postgres",
         "lint",
         "ui-v2-contracts",
@@ -120,7 +120,7 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
 
     composition = _workflow_job(workflow, "composition-declarations")
     assert "submodules: false" in composition
-    assert 'test "${#COMPONENT_STATUS[@]}" -eq 4' in composition
+    assert 'test "${#COMPONENT_STATUS[@]}" -eq 5' in composition
     assert "--declarations-only --require-gitlinks" in composition
     ui_contracts = _workflow_job(workflow, "ui-v2-contracts")
     assert "submodules: recursive" in ui_contracts
@@ -155,6 +155,14 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
     assert "secrets." not in workflow
     assert "actions/download-artifact" in _workflow_job(workflow, "backend-boot")
     assert "docker save" in _workflow_job(workflow, "backend-image")
+    kernel = _workflow_job(workflow, "kernel-binding")
+    assert "submodules: recursive" in kernel
+    assert "scripts/build_kernel_binding.py" in kernel
+    assert "name: kernel-binding" in kernel and "if-no-files-found: error" in kernel
+    image = _workflow_job(workflow, "backend-image")
+    assert "needs: [kernel-binding]" in image
+    assert "--build-context kernel-artifacts=build/kernel-binding" in image
+    assert "scripts/install_kernel_binding.py verify" in image
     assert "org.opencontainers.image.revision" in _workflow_job(workflow, "backend-web")
     assert "docker push" not in workflow
     assert "docker/login-action" not in workflow
@@ -323,6 +331,11 @@ def test_publish_image_workflow_publishes_only_after_green_main_ci() -> None:
     assert "secrets.GITHUB_TOKEN" in publish
     assert "secrets." not in publish.replace("secrets.GITHUB_TOKEN", "")
     assert "app-token" not in workflow
+    assert "actions: read" in publish
+    assert "run-id: ${{ github.event.workflow_run.id }}" in publish
+    assert "name: backend-image" in publish
+    assert "docker load" in publish and re.search(r"\bdocker build\s", publish) is None
+    assert "timeout-minutes: 30" in publish
 
     external_actions = {
         value
@@ -332,6 +345,7 @@ def test_publish_image_workflow_publishes_only_after_green_main_ci() -> None:
     assert external_actions == {
         "actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd",
         "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+        "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
     }
 
 

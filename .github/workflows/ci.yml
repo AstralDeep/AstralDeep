@@ -23,8 +23,30 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  kernel-binding:
+    name: Exact Kernel Python binding and mailbox
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - name: Build and verify pinned source and artifact digests
+        run: python scripts/build_kernel_binding.py --root . --output build/kernel-binding
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: kernel-binding
+          path: build/kernel-binding/
+          if-no-files-found: error
+          retention-days: 1
+
   backend-image:
     name: Clean backend production image build
+    needs: [kernel-binding]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -44,11 +66,18 @@ jobs:
           set -euo pipefail
           python scripts/verify_composition.py --root .
           python scripts/install_local_components.py validate --root . --require-gitlinks
-      - name: Build a clean production image containing the pinned browser client
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: kernel-binding
+          path: build/kernel-binding
+      - name: Verify the current-run Kernel binding
+        run: python scripts/install_kernel_binding.py verify --artifacts build/kernel-binding
+      - name: Build a clean production image containing the pinned browser client and Kernel
         run: |
           set -euo pipefail
           mkdir -p build/backend-web
           docker build --pull --no-cache --file Dockerfile \
+            --build-context kernel-artifacts=build/kernel-binding \
             --iidfile build/backend-web/image-id.txt \
             --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" \
             --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" .
@@ -874,6 +903,8 @@ jobs:
             scripts/tests/test_backend_web_state.py
             scripts/tests/test_merge_backend_web_coverage.py
             scripts/tests/test_install_local_components.py
+            scripts/tests/test_build_kernel_binding.py
+            scripts/tests/test_install_kernel_binding.py
             scripts/tests/test_install_doctor.py
             backend/tests/test_install_doctor.py
             scripts/tests/test_retire_restored_sessions.py
@@ -972,24 +1003,25 @@ jobs:
           cache-dependency-path: tooling/python-ci/requirements.lock.txt
       - name: Install hash-locked CI-only Python tooling
         run: python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
-      - name: Prove exactly four uninitialized component gitlinks
+      - name: Prove exactly five uninitialized component gitlinks
         shell: bash
         run: |
           set -euo pipefail
           mapfile -t COMPONENT_GITLINKS < <(
             git ls-files --stage -- \
+              components/AstralKernel \
               components/AstralPlane \
               components/AstralPrimitives \
               components/AstralProjection \
               components/LETS
           )
-          test "${#COMPONENT_GITLINKS[@]}" -eq 4
+          test "${#COMPONENT_GITLINKS[@]}" -eq 5
           printf '%s\n' "${COMPONENT_GITLINKS[@]}" \
-            | awk '$1 != "160000" { exit 1 } END { if (NR != 4) exit 1 }'
+            | awk '$1 != "160000" { exit 1 } END { if (NR != 5) exit 1 }'
           mapfile -t COMPONENT_STATUS < <(git submodule status --recursive)
-          test "${#COMPONENT_STATUS[@]}" -eq 4
+          test "${#COMPONENT_STATUS[@]}" -eq 5
           if printf '%s\n' "${COMPONENT_STATUS[@]}" \
-            | grep -Ev '^-([0-9a-f]{40}) components/(AstralPlane|AstralPrimitives|AstralProjection|LETS)( |$)'; then
+            | grep -Ev '^-([0-9a-f]{40}) components/(AstralKernel|AstralPlane|AstralPrimitives|AstralProjection|LETS)( |$)'; then
             exit 1
           fi
       - name: Validate exact public composition declarations
@@ -1091,6 +1123,7 @@ jobs:
     name: Deep owner CI aggregate
     if: always()
     needs:
+      - kernel-binding
       - backend-image
       - backend-boot
       - backend-web
@@ -1110,6 +1143,7 @@ jobs:
     steps:
       - name: Enforce every hosted owner gate
         run: |
+          [[ '${{ needs.kernel-binding.result }}' == 'success' ]]
           [[ '${{ needs.backend-image.result }}' == 'success' ]]
           [[ '${{ needs.backend-boot.result }}' == 'success' ]]
           [[ '${{ needs.backend-web.result }}' == 'success' ]]
