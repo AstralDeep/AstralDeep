@@ -193,6 +193,7 @@ class _Session:
 class _Admitted:
     floor: Labels
     view: Any
+    reference: RequestReference
     resolved: Optional[Any] = None
     authority: Optional[Any] = None
     arguments: Optional[Dict[str, Any]] = None
@@ -446,6 +447,7 @@ class MeshChatBridge:
                         self._tasks.append(asyncio.create_task(self._serve(request), name="node-mesh-request-recovery"))
 
     async def _serve(self, request: Any) -> None:
+        request_id = request.id
         try:
             slots = self._call_slots if request.call is not None else self._turn_slots
             async with slots:
@@ -457,7 +459,7 @@ class MeshChatBridge:
         except Exception:
             logger.exception("node_mesh_request_failed")
         finally:
-            self._running.discard(request.id)
+            self._running.discard(request_id)
 
     async def _answer(self, request: Any) -> None:
         try:
@@ -465,6 +467,7 @@ class MeshChatBridge:
         except Refusal as denial:
             await self._refuse(request, denial.code)
             return
+        request = admitted.reference
         if request.call is None and self._runner is None:
             await self._answer_kernel(request)
             return
@@ -526,11 +529,13 @@ class MeshChatBridge:
         delay = 0.001
         while not task.done():
             try:
-                await self._mesh.interrupt_request(request_id, kernel)
-                return
+                acknowledged = await self._mesh.interrupt_request(request_id, kernel)
             except NodeMeshError:
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, 0.05)
+                acknowledged = False
+            if acknowledged is True:
+                return
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 0.05)
 
     async def _refuse(self, request: Any, code: str) -> None:
         try:
@@ -541,12 +546,16 @@ class MeshChatBridge:
     async def _admit(self, request: Any) -> _Admitted:
         if not request.from_device:
             raise Refusal("request.malformed")
-        view = (await self._mesh.chat(request.chat_id)).view
+        try:
+            reference = RequestReference.capture(request)
+        except NodeMeshError as exc:
+            raise Refusal(exc.code) from exc
+        view = (await self._mesh.chat(reference.chat_id)).view
         floor = join_labels(BASE_LABELS, labels_of(request.labels), _chat_floor(view))
         if await asyncio.to_thread(self._phi_active, self._owner):
             floor = join_labels(floor, ("phi", "owner"))
         await self._check_floor(floor, request)
-        admitted = _Admitted(floor, view)
+        admitted = _Admitted(floor, view, reference)
         if request.call is not None:
             await self._admit_call(request, admitted)
         return admitted
@@ -561,32 +570,33 @@ class MeshChatBridge:
 
     async def _admit_call(self, request: Any, admitted: _Admitted) -> None:
         owner = self._owner
-        call = request.call
+        reference = admitted.reference
+        _call_id, tool, arguments_json, action_json, ticket_json = reference.call
         if self._calls is None:
             raise Refusal("node.calls_unavailable")
         try:
-            action = json.loads(call.action_json)
-            arguments = json.loads(call.arguments_json)
+            action = json.loads(action_json)
+            arguments = json.loads(arguments_json)
         except ValueError:
             raise Refusal("request.malformed") from None
         if not isinstance(action, dict) or not isinstance(arguments, dict):
             raise Refusal("request.malformed")
-        if action.get("tool") != call.tool or action.get("args_digest") != args_digest(call.arguments_json):
+        if action.get("tool") != tool or action.get("args_digest") != args_digest(arguments_json):
             raise Refusal("request.call_mismatch")
-        if action.get("device") != request.from_device:
+        if action.get("device") != reference.from_device:
             raise Refusal("ticket.device_mismatch")
         try:
-            resolved = await self._calls.resolve(owner, call.tool)
+            resolved = await self._calls.resolve(owner, tool)
         except CallRefused as exc:
             raise Refusal(exc.code) from None
         if action.get("tool_def") != resolved.definition:
             raise Refusal("gate.tool_def_changed")
         try:
-            verified = await self._mesh.verify_ticket(call.ticket_json, call.action_json, resolved.effect_kind)
+            verified = await self._mesh.verify_ticket(ticket_json, action_json, resolved.effect_kind)
         except NodeMeshError as exc:
             raise Refusal(exc.code) from None
         if (
-            verified.device != request.from_device
+            verified.device != reference.from_device
             or verified.turn != action.get("turn")
             or verified.mesh != action.get("mesh")
         ):
@@ -625,14 +635,14 @@ class MeshChatBridge:
             raise Refusal(exc.code) from None
 
     async def _run_call(self, request: Any, admitted: _Admitted, local: str) -> List[Any]:
-        call = request.call
+        call_id, tool, arguments_json, action_json, ticket_json = admitted.reference.call
         from orchestrator import node_mesh_admission
         from shared import node_identity
 
         owner = admitted.owner
         if not owner or self._owner != owner:
             raise Refusal("node.owner_mismatch")
-        ticket = vessel_executor.CallTicket(call.ticket_json, call.action_json, call.arguments_json)
+        ticket = vessel_executor.CallTicket(ticket_json, action_json, arguments_json)
         with node_mesh_admission.binding(
             self._mesh, lambda: self._owner, owner, local, admitted.resolved, ticket, request=request,
         ), vessel_executor.carrying(ticket):
@@ -652,9 +662,9 @@ class MeshChatBridge:
             raise NodeMeshError(outcome.code)
         return [
             {
-                "call_id": call.call_id,
-                "tool": call.tool,
-                "arguments_json": call.arguments_json,
+                "call_id": call_id,
+                "tool": tool,
+                "arguments_json": arguments_json,
                 "tool_def": admitted.action["tool_def"],
                 "status": outcome.status,
                 "content": outcome.content,

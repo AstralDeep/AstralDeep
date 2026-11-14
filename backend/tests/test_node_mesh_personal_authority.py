@@ -88,7 +88,7 @@ def personal(monkeypatch):
                                 {("agent", "read", definition): "tools:read"}, catalog, mint, request=request) as context:
                 yield context
         else:
-            request.call = SimpleNamespace(tool="read", arguments_json=arguments, action_json=action, ticket_json="{}")
+            request.call = SimpleNamespace(call_id="call-1", tool="read", arguments_json=arguments, action_json=action, ticket_json="{}")
             with admission.binding(mesh, lambda: state.owner, OWNER, "local-chat", resolved, ticket, request=request):
                 with vessel_executor.carrying(ticket):
                     yield admission.current_admission()
@@ -293,7 +293,7 @@ async def test_peer_authority_requires_its_exact_agent_and_carried_ticket(person
                 await admission.personal_authority(personal.orch, OWNER, agent_id="agent")
 
 
-@pytest.mark.parametrize("field,value", [("id", ""), ("text", None), ("from_device", 1)])
+@pytest.mark.parametrize("field,value", [("id", ""), ("text", None), ("from_device", 1), ("continues", ""), ("continues", 7)])
 async def test_malformed_request_references_cannot_open_an_authority_lease(personal, field, value):
     setattr(personal.request, field, value)
     with pytest.raises(NodeMeshError, match="malformed"):

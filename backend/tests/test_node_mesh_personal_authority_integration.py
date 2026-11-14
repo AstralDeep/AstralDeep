@@ -6,6 +6,8 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock
 
+import pytest
+
 
 from orchestrator.node_mesh_calls import OrchestratorCalls
 from shared import node_identity
@@ -92,3 +94,53 @@ async def test_binding_without_the_principal_accessor_refuses_instead_of_using_i
     assert result.request.state == ak.RequestState.REFUSED and result.request.code == "node.principal_unsupported"
     assert not any(host.dispatched.values()) and not result.minted
     host.orch.derive_machine_authority.assert_not_awaited()
+
+
+@pytest.mark.parametrize("field", ["call_id", "continues"])
+async def test_mutated_pending_request_identity_is_refused_before_real_dispatch(node_host, model_server, tmp_path, monkeypatch, field):  # noqa: F811
+    host = node_host
+    forbid_iam(host, monkeypatch)
+    dispatched = []
+    invoke = host.agent.handle_mcp_request
+
+    async def observed(*args, **kwargs):
+        dispatched.append(True)
+        return await invoke(*args, **kwargs)
+
+    monkeypatch.setattr(host.agent, "handle_mcp_request", observed)
+    calls = OrchestratorCalls(host.orch)
+    async with paired(tmp_path, monkeypatch, calls=calls, peer_tools=published_spec(host, calls), history=host.orch.history) as (
+        node, laptop, device, bridge,
+    ):
+        verify_actual_principal(node)
+        pending = node.pending_requests
+
+        async def mutated():
+            requests = await pending()
+            for request in requests:
+                if request.call is not None:
+                    if field == "call_id":
+                        request.call.call_id = "mutated-call"
+                    else:
+                        request.continues = "sha256:" + "0" * 64
+            return requests
+
+        monkeypatch.setattr(node, "pending_requests", mutated)
+        provide_model(laptop, model_server)
+        chat = laptop.create_chat("request identity")
+        laptop.send_message(chat, "roll two dice on the node", None)
+        await until(lambda: any(item.chat_id == chat for item in node.kernel.list_chats()), "the chat to sync")
+        laptop.grant_tool(TOOL, "*")
+        running = asyncio.create_task(laptop.run_turn(chat))
+
+        def settled():
+            return dispatched or any(request.state == ak.RequestState.REFUSED for request in node.kernel.chat_requests(chat))
+
+        await until(settled, "the raw identity check")
+        if dispatched:
+            laptop.interrupt(chat)
+        await asyncio.wait_for(running, 60)
+        assert not dispatched
+        requests = [request for request in node.kernel.chat_requests(chat) if request.call is not None]
+        assert len(requests) == 1 and requests[0].state == ak.RequestState.REFUSED
+        assert requests[0].code == "request.call_mismatch"

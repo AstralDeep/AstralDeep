@@ -136,7 +136,7 @@ async def personal_authority(orch, owner: str, *, agent_id: Optional[str] = None
         tools, scopes = bound.allowed, bound.scopes
     else:
         ticket = bound.ticket
-        if bound.request.call[1:] != (ticket.arguments_json, ticket.action_json, ticket.ticket_json):
+        if bound.request.call[2:] != (ticket.arguments_json, ticket.action_json, ticket.ticket_json):
             raise NodeMeshError("request.call_mismatch")
         await bound.mesh.verify_ticket(ticket.ticket_json, ticket.action_json, bound.resolved.effect_kind)
         code = current() or _current_resolved(orch, owner, bound.resolved)

@@ -177,19 +177,25 @@ class RequestReference:
     from_device: str
     to_device: str
     text: str
+    continues: Optional[str]
     call: Optional[tuple]
 
     @classmethod
     def capture(cls, request: Any) -> "RequestReference":
+        if isinstance(request, cls):
+            return request
         values = tuple(getattr(request, name, None) for name in ("id", "chat_id", "from_device", "to_device", "text"))
         if any(type(value) is not str or not value for value in values):
             raise NodeMeshError("request.malformed")
+        continues = getattr(request, "continues", None)
+        if continues is not None and (type(continues) is not str or not continues):
+            raise NodeMeshError("request.malformed")
         call = getattr(request, "call", None)
         if call is not None:
-            call = tuple(getattr(call, name, None) for name in ("tool", "arguments_json", "action_json", "ticket_json"))
+            call = tuple(getattr(call, name, None) for name in ("call_id", "tool", "arguments_json", "action_json", "ticket_json"))
             if any(type(value) is not str or not value for value in call):
                 raise NodeMeshError("request.malformed")
-        return cls(*values, call)
+        return cls(*values, continues, call)
 
 
 @dataclass(frozen=True)
@@ -464,10 +470,10 @@ class NodeMesh:
         except self._binding.KernelError as exc:
             raise NodeMeshError(_code_of(exc)) from exc
 
-    async def interrupt_request(self, request_id: str, kernel: Any) -> None:
+    async def interrupt_request(self, request_id: str, kernel: Any) -> bool:
         if self.kernel is not kernel:
             raise NodeMeshError("node.mesh_admission_unavailable")
-        await self._request_call(kernel.interrupt_request, request_id)
+        return await self._request_call(kernel.interrupt_request, request_id)
 
     async def claim_request(self, request_id: str) -> str:
         return await self._request_call(self.kernel.claim_request, request_id)

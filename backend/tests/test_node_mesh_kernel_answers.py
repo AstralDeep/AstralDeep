@@ -24,7 +24,7 @@ def kernel_host(personal, tmp_path):  # noqa: F811
     host.mesh.claim_request = AsyncMock(side_effect=AssertionError("Python must not claim Kernel-owned turns"))
     host.mesh.record_turn = AsyncMock(side_effect=AssertionError("Python must not record Kernel-owned turns"))
     host.mesh._kernel.supports_node_request_tools = lambda: True
-    host.mesh._kernel.interrupt_request = MagicMock()
+    host.mesh._kernel.interrupt_request = MagicMock(return_value=True)
     refusals = []
 
     async def refuse(request_id, code):
@@ -183,7 +183,11 @@ async def test_timeout_and_shutdown_explicitly_interrupt_and_wait_for_native_out
 
     state.native.side_effect = running
     loop = asyncio.get_running_loop()
-    state.host.mesh._kernel.interrupt_request = MagicMock(side_effect=lambda request: loop.call_soon_threadsafe(interrupted.set))
+    def interrupt(_request):
+        loop.call_soon_threadsafe(interrupted.set)
+        return True
+
+    state.host.mesh._kernel.interrupt_request = MagicMock(side_effect=interrupt)
     state.bridge._turn_seconds = 5 if cancel else 0.01
     task = asyncio.create_task(state.bridge._answer(state.host.request))
     await entered.wait()
@@ -231,6 +235,7 @@ async def test_timeout_retries_interrupt_until_native_registration_without_resta
             loop.call_soon_threadsafe(registered.set)
             raise fake.KernelError.State("engine.no_open_turn", "not registered yet")
         loop.call_soon_threadsafe(interrupted.set)
+        return True
 
     state.native.side_effect = delayed_registration
     state.host.mesh._kernel.interrupt_request = interrupt
@@ -247,3 +252,30 @@ async def test_missing_request_bound_interrupt_refuses_before_any_native_work(ke
     await state.bridge._answer(state.host.request)
     assert state.refusals == [("request-1", "node.request_runtime_unsupported")]
     state.native.assert_not_awaited()
+
+
+async def test_false_request_interrupt_acknowledgement_retries_without_restarting(kernel_host):
+    state = kernel_host
+    registered, interrupted = asyncio.Event(), asyncio.Event()
+    attempts = []
+    loop = asyncio.get_running_loop()
+
+    async def delayed(_request):
+        await registered.wait()
+        state.host.request.state = SimpleNamespace(name="ANSWERED")
+        await interrupted.wait()
+
+    def interrupt(_request):
+        attempts.append(True)
+        if len(attempts) == 1:
+            loop.call_soon_threadsafe(registered.set)
+            return False
+        loop.call_soon_threadsafe(interrupted.set)
+        return True
+
+    state.native.side_effect = delayed
+    state.host.mesh._kernel.interrupt_request = interrupt
+    state.bridge._turn_seconds = 0.01
+    await asyncio.wait_for(state.bridge._answer(state.host.request), 5)
+    assert len(attempts) == 2 and state.refusals == []
+    state.native.assert_awaited_once()
