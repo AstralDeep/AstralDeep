@@ -8,46 +8,60 @@ This guide builds a personal AstralDeep node, installs the AstralVessel command,
 - A supported sandbox host: Linux x86_64 or arm64 with kernel 6.12 or newer and Landlock ABI 6; or an Apple silicon Mac with Docker Desktop whose Linux VM provides Landlock ABI 6. Docker Desktop 29.5 with a kernel 6.12 VM was checked; older versions may ship an older kernel. Windows with Docker Desktop is unverified. See [platform support](../security/platforms.md).
 - An AstralDeep Keycloak issuer and client ID. Use the values configured for the AstralDeep app you use. See [realm setup](https://github.com/AstralDeep/AstralDeep/blob/main/docs/keycloak-realm-settings.md) and the relevant [Android and iOS client](https://github.com/AstralDeep/AstralDeep/blob/main/docs/keycloak-android-client-setup.md) or [Windows client](https://github.com/AstralDeep/AstralDeep/blob/main/docs/keycloak-windows-client-setup.md) guide.
 
-## 1. Build the node image
+## 1. Prepare the node build inputs
 
-The node image is built from the AstralDeep source and its pinned submodules. These commands use the [source commit qualified for this guide](https://github.com/AstralDeep/AstralDeep/commit/528467d1bd602ab3219a426ac9c82eda3b5bc4d5):
+The AstralVessel 0.7.0 executor image contains the exact, verified Kernel artifacts used to build the matching Deep node image. Use it only to copy those files; it is not the node image and must not be passed to `astralvessel up --image`.
+
+```bash
+mkdir astral-install && cd astral-install
+docker pull ghcr.io/astraldeep/astralvessel:0.7.0
+artifact_container="$(docker create ghcr.io/astraldeep/astralvessel:0.7.0)"
+mkdir kernel-artifacts
+docker cp "${artifact_container}:/opt/vessel-build/kernel-artifacts/." ./kernel-artifacts/
+docker rm "$artifact_container"
+```
+
+`docker create` does not start the executor. The release image is public; this step needs no registry login.
+
+## 2. Build the node image
+
+Clone the qualified AstralDeep source and initialize its pinned submodules:
 
 ```bash
 git clone https://github.com/AstralDeep/AstralDeep.git astraldeep
 cd astraldeep
-git checkout 528467d1bd602ab3219a426ac9c82eda3b5bc4d5
+git checkout 67519cba8964cb77335642bd7fdb5871f996547a
 git submodule update --init --recursive
 ```
 
-Build the pinned Kernel wheel and mailbox for the machine that will run Docker, then pass that directory as the named build context:
+Build for the machine that will run Docker. The named build context points to the artifacts copied in the previous step:
 
 === "Linux x86_64"
 
     ```bash
-    python3 scripts/build_kernel_binding.py --root . --output ../kernel-artifacts --platform linux-x86_64
     docker build --platform linux/amd64 --build-context kernel-artifacts=../kernel-artifacts -t astralvessel-node:local .
     ```
 
 === "Linux arm64 or Apple silicon"
 
     ```bash
-    python3 scripts/build_kernel_binding.py --root . --output ../kernel-artifacts --platform linux-aarch64
     docker build --platform linux/arm64 --build-context kernel-artifacts=../kernel-artifacts -t astralvessel-node:local .
     ```
 
-The helper reads `config/astral-kernel-binding.json`, builds from its exact Kernel submodule commit, and checks the wheel and mailbox digests before the image build can use them. `astralvessel-node:local` is the default node image name.
+Deep's image build checks the wheel and mailbox against its pinned manifest and fails if either is missing or differs. `astralvessel-node:local` is the default node image name.
 
-## 2. Install AstralVessel
+## 3. Install AstralVessel
 
 ```bash
-python3 -m pip install astralvessel
+python3 -m pip install astralvessel==0.7.0
 ```
 
-## 3. Start and check the node
+## 4. Start and check the node
 
-Use your Keycloak realm URL as the issuer and the client ID configured for your AstralDeep app:
+Use your Keycloak realm URL as the issuer and the client ID configured for your AstralDeep app. The example uses `astral-mobile`:
 
 ```bash
+cd ..
 mkdir mynode && cd mynode
 astralvessel up --issuer https://keycloak.example/realms/astral --client-id astral-mobile --example
 ```

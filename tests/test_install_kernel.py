@@ -126,3 +126,12 @@ def test_cli_accepts_explicit_binding_and_bin_directory(monkeypatch):
 def test_cli_rejects_missing_artifact_argument():
     result = subprocess.run([installer.sys.executable, str(SCRIPT)], capture_output=True, text=True)
     assert result.returncode == 2 and "usage:" in result.stderr
+
+
+def test_docker_image_retains_payloads_only_after_digest_verification():
+    dockerfile = SCRIPT.parents[1] / "Dockerfile"
+    source = dockerfile.read_text()
+    verify = source.index("python /opt/vessel-build/install_kernel.py /kernel-artifacts")
+    retain = source.index("COPY --from=kernel-artifacts / /opt/vessel-build/kernel-artifacts/")
+    user = source.index("USER vessel")
+    assert source.index("FROM scratch AS kernel-artifacts") < verify < retain < user

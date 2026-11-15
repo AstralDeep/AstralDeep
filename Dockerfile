@@ -1,7 +1,6 @@
 # One image for the executor and the sandbox: the same code, run as `astralvessel executor` or `astralvessel sandbox`.
-# Agent packages are mounted at runtime; compose applies the sandbox hardening. Build with
-# --build-context kernel-artifacts=<folder holding the pinned kernel wheel and mailbox>: the build fails without it, because the
-# executor cannot check a ticket without the kernel.
+# Compose applies sandbox hardening and mounts agent packages at runtime. Build with
+# --build-context kernel-artifacts=<folder holding the pinned kernel wheel and mailbox>; the payloads are verified, installed, and retained for matching Deep node builds.
 FROM scratch AS kernel-artifacts
 
 FROM python:3.11-slim
@@ -21,6 +20,7 @@ RUN pip install --no-cache-dir .
 COPY config/kernel-binding.json scripts/install_kernel.py /opt/vessel-build/
 RUN --mount=type=bind,from=kernel-artifacts,target=/kernel-artifacts \
     python /opt/vessel-build/install_kernel.py /kernel-artifacts
+COPY --from=kernel-artifacts / /opt/vessel-build/kernel-artifacts/
 
 RUN useradd --create-home --uid 1001 --shell /usr/sbin/nologin vessel \
     && mkdir -p /data /executor && chown vessel:vessel /data /executor
