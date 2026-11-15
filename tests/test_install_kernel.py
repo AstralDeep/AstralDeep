@@ -47,7 +47,7 @@ def test_platform_key_fails_closed_outside_linux_artifact_architectures():
 
 def test_binding_pins_final_kernel_and_both_linux_architectures():
     manifest = json.loads((SCRIPT.parents[1] / "config" / "kernel-binding.json").read_text())
-    assert manifest["source"]["commit"] == "8ab7f91e66c27e47db4e6cce7061e78142bc0ba9"
+    assert manifest["source"]["commit"] == "ed5ad2231f445497082750103326242b24fcbcb0"
     assert set(manifest["artifacts"]) == {"linux-aarch64", "linux-x86_64"}
     for entries in manifest["artifacts"].values():
         assert set(entries) == {"wheel", "mailbox"}
