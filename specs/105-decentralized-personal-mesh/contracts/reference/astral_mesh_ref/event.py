@@ -54,6 +54,7 @@ EVENT_TYPES = {
     "key.content": "key",
     "key.credential": "key",
     "tools.catalog": "tools",
+    "device.wake_route": "device",
 }
 HEADER_FIELDS = {
     "v",
@@ -166,8 +167,8 @@ def check_header_shape(header: Any) -> None:
         raise MeshError("event.malformed", "scope")
     if EVENT_TYPES[header["type"]] in ("chat", "request") and scope == "mesh":
         raise MeshError("event.malformed", "chat events need a chat scope")
-    if EVENT_TYPES[header["type"]] == "tools" and scope != "mesh":
-        raise MeshError("event.malformed", "tool catalogs have the mesh scope")
+    if EVENT_TYPES[header["type"]] in ("tools", "device") and scope != "mesh":
+        raise MeshError("event.malformed", "event requires mesh scope")
     labels = header["labels"]
     if (
         not isinstance(labels, dict)
@@ -176,6 +177,8 @@ def check_header_shape(header: Any) -> None:
         or labels["confidentiality"] not in CONFIDENTIALITY
     ):
         raise MeshError("event.malformed", "labels")
+    if header["type"] == "device.wake_route" and labels != {"confidentiality": "private", "integrity": "owner"}:
+        raise MeshError("event.malformed", "wake route labels")
     key = header["key"]
     if not isinstance(key, str) or not (_CK.match(key) or _EK.match(key)):
         raise MeshError("event.malformed", "key")

@@ -1,0 +1,2129 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "ok": {
+          "route": null
+        }
+      },
+      "input": {
+        "body": {
+          "route": null
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "valid/tombstone"
+    },
+    {
+      "expect": {
+        "ok": {
+          "route": {
+            "capability": "opaque_token",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        }
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "opaque_token",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "valid/padding-0"
+    },
+    {
+      "expect": {
+        "ok": {
+          "route": {
+            "capability": "opaque_token=",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        }
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "opaque_token=",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "valid/padding-1"
+    },
+    {
+      "expect": {
+        "ok": {
+          "route": {
+            "capability": "opaque_token==",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        }
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "opaque_token==",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "valid/padding-2"
+    },
+    {
+      "expect": {
+        "ok": {
+          "route": {
+            "capability": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        }
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "valid/maximum-capability"
+    },
+    {
+      "expect": {
+        "ok": {
+          "route": {
+            "capability": "opaque_capability",
+            "expires_at_ms": 86401000,
+            "publisher": "astral"
+          }
+        }
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "opaque_capability",
+            "expires_at_ms": 86401000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "valid/maximum-ttl"
+    },
+    {
+      "expect": {
+        "ok": {
+          "route": {
+            "capability": "opaque_capability",
+            "expires_at_ms": 9007199254740991,
+            "publisher": "astral"
+          }
+        }
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "opaque_capability",
+            "expires_at_ms": 9007199254740991,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 9007199254740990
+      },
+      "kind": "wake_route_validate",
+      "name": "valid/maximum-safe-expiry"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": [],
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/body-not-object"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {},
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/body-missing-route"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "device": "other",
+          "route": null
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/body-extra-field"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": "value"
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/route-not-object"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "x",
+            "expires_at_ms": 2000
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/missing-publisher"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "opaque_capability",
+            "device": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/extra-target"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "opaque_capability",
+            "expires_at_ms": 2000,
+            "publisher": "other"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/unknown-publisher"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": null,
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/capability-0"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": true,
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/capability-1"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/capability-2"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "a.b",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/capability-3"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "https://example.test",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/capability-4"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "a b",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/capability-5"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "a\nb",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/capability-6"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "a+b",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/capability-7"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "a/b",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/capability-8"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "é",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/capability-9"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "=abc",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/capability-10"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "a=b",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/capability-11"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "abc===",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/capability-12"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expires_at_ms": 2000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/capability-13"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "opaque_capability",
+            "expires_at_ms": null,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/expiry-0"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "opaque_capability",
+            "expires_at_ms": true,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/expiry-1"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "opaque_capability",
+            "expires_at_ms": "2000",
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/expiry-2"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "opaque_capability",
+            "expires_at_ms": -1,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/expiry-3"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "opaque_capability",
+            "expires_at_ms": 0,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/expiry-4"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "opaque_capability",
+            "expires_at_ms": 1000,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/expiry-5"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "opaque_capability",
+            "expires_at_ms": 999,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/expiry-6"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "opaque_capability",
+            "expires_at_ms": 86401001,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/expiry-7"
+    },
+    {
+      "expect": {
+        "error": "wake.malformed"
+      },
+      "input": {
+        "body": {
+          "route": {
+            "capability": "opaque_capability",
+            "expires_at_ms": 9007199254740992,
+            "publisher": "astral"
+          }
+        },
+        "signed_ms": 1000
+      },
+      "kind": "wake_route_validate",
+      "name": "invalid/expiry-8"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": [
+            {
+              "device_id": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+              "route": {
+                "capability": "latest",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            {
+              "device_id": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f",
+              "route": {
+                "capability": "peer",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "latest",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:5e1e2bcac305958b27077ca136f35f0abae7cf38c9af678f7d220ed0cb51d4f8",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 2000,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "peer",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1500,
+              "n": 0
+            },
+            "feed": "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU",
+            "id": "sha256:2ffc1d06387ef8bb7a34312b6c6c3f691550684508c3ce7ee3889375a18d6fa0",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1500,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/latest-per-current-device-forward"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": [
+            {
+              "device_id": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+              "route": {
+                "capability": "latest",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            {
+              "device_id": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f",
+              "route": {
+                "capability": "peer",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "peer",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1500,
+              "n": 0
+            },
+            "feed": "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU",
+            "id": "sha256:2ffc1d06387ef8bb7a34312b6c6c3f691550684508c3ce7ee3889375a18d6fa0",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1500,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "latest",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:5e1e2bcac305958b27077ca136f35f0abae7cf38c9af678f7d220ed0cb51d4f8",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 2000,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/latest-per-current-device-reverse"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": [
+            {
+              "device_id": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "retired",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 9000,
+              "n": 0
+            },
+            "feed": "aIjuah9bqWFSdrltpyX7IxrryQwf0-mtBd9wQLDpK8E",
+            "id": "sha256:5b720147b6918dfc19baa0d7767cab75b76e17998837d04af43f2f3463c5350f",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 9000,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/retired-and-foreign-feeds-ignored-forward"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": [
+            {
+              "device_id": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "retired",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 9000,
+              "n": 0
+            },
+            "feed": "aIjuah9bqWFSdrltpyX7IxrryQwf0-mtBd9wQLDpK8E",
+            "id": "sha256:5b720147b6918dfc19baa0d7767cab75b76e17998837d04af43f2f3463c5350f",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 9000,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/retired-and-foreign-feeds-ignored-reverse"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": [
+            {
+              "device_id": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "peer",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1500,
+              "n": 0
+            },
+            "feed": "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU",
+            "id": "sha256:2ffc1d06387ef8bb7a34312b6c6c3f691550684508c3ce7ee3889375a18d6fa0",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1500,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/removed-device-ignored-forward"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": [
+            {
+              "device_id": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "peer",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1500,
+              "n": 0
+            },
+            "feed": "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU",
+            "id": "sha256:2ffc1d06387ef8bb7a34312b6c6c3f691550684508c3ce7ee3889375a18d6fa0",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1500,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/removed-device-ignored-reverse"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": []
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": null
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:913a4cb91be20332f3559f8070255d7ac3e6228bb423f4441551d3f783e7d4f4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 2000,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/tombstone-does-not-revive-older-forward"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": []
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": null
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:913a4cb91be20332f3559f8070255d7ac3e6228bb423f4441551d3f783e7d4f4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 2000,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/tombstone-does-not-revive-older-reverse"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": []
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "expired",
+                "expires_at_ms": 2500,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:fa64ea1e82e1206f828ab2a02917c7e92accb98e3b95881a1b4ad52b914b66e3",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 2000,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/expired-newest-does-not-revive-older-forward"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": []
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "expired",
+                "expires_at_ms": 2500,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:fa64ea1e82e1206f828ab2a02917c7e92accb98e3b95881a1b4ad52b914b66e3",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 2000,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/expired-newest-does-not-revive-older-reverse"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": []
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "latest",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:5e1e2bcac305958b27077ca136f35f0abae7cf38c9af678f7d220ed0cb51d4f8",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 2000,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 10000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/exact-expiry-is-unavailable-forward"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": []
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "latest",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:5e1e2bcac305958b27077ca136f35f0abae7cf38c9af678f7d220ed0cb51d4f8",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 2000,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 10000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/exact-expiry-is-unavailable-reverse"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": []
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "unreadable",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:da3c01050b1f352b33853bf17e408ba64e0b14423d4f7137a20906ed2e58e679",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 2000,
+            "state": "unavailable",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/unreadable-newest-does-not-revive-older-forward"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": []
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "unreadable",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:da3c01050b1f352b33853bf17e408ba64e0b14423d4f7137a20906ed2e58e679",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 2000,
+            "state": "unavailable",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/unreadable-newest-does-not-revive-older-reverse"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": []
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "a.b",
+                "expires_at_ms": 2000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:2f05d4b689d270cafb02285f35f44866f7dc8a2d368a3f9d1124373eeab31fb1",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 2000,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/malformed-newest-does-not-revive-older-forward"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": []
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "a.b",
+                "expires_at_ms": 2000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:2f05d4b689d270cafb02285f35f44866f7dc8a2d368a3f9d1124373eeab31fb1",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 2000,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/malformed-newest-does-not-revive-older-reverse"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": [
+            {
+              "device_id": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "memory",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:c064fbca9d9de8dd9bb0624984403b28d0da807a69365d4f7fb09123ecb0c405",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 2000,
+            "state": "present",
+            "type": "settings.set"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/unrelated-kind-ignored-forward"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": [
+            {
+              "device_id": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "memory",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:c064fbca9d9de8dd9bb0624984403b28d0da807a69365d4f7fb09123ecb0c405",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 2000,
+            "state": "present",
+            "type": "settings.set"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/unrelated-kind-ignored-reverse"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": [
+            {
+              "device_id": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "untrusted",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:6353de988bb15f611bd2eb9ca3a62eb2aeda604e2fdd570802f5c15404c073e3",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "untrusted"
+            },
+            "seq": 2000,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/untrusted-header-ignored-forward"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": [
+            {
+              "device_id": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "untrusted",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:6353de988bb15f611bd2eb9ca3a62eb2aeda604e2fdd570802f5c15404c073e3",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "untrusted"
+            },
+            "seq": 2000,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/untrusted-header-ignored-reverse"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": [
+            {
+              "device_id": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "public",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:efa1f375d76194fa51a3556a97e641e61685f914d446979da50a551a4333ffd7",
+            "labels": {
+              "confidentiality": "public",
+              "integrity": "owner"
+            },
+            "seq": 2000,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/public-header-ignored-forward"
+    },
+    {
+      "expect": {
+        "ok": {
+          "routes": [
+            {
+              "device_id": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "current_device_of_feed": {
+          "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8": "sha256:561f41780366aeabaa281574ce625ec07c9b61634de5aafef4b81f2de6a1589b",
+          "zWpVHzzFEw2ds7_nj2s71QPHllQbe21cyOerinamspU": "sha256:8328095e611c1676812fac70a0e40991e7370e1d631853780b5fd98378cdd63f"
+        },
+        "events": [
+          {
+            "body": {
+              "route": {
+                "capability": "public",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 2000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:efa1f375d76194fa51a3556a97e641e61685f914d446979da50a551a4333ffd7",
+            "labels": {
+              "confidentiality": "public",
+              "integrity": "owner"
+            },
+            "seq": 2000,
+            "state": "present",
+            "type": "device.wake_route"
+          },
+          {
+            "body": {
+              "route": {
+                "capability": "old",
+                "expires_at_ms": 10000,
+                "publisher": "astral"
+              }
+            },
+            "clock": {
+              "ms": 1000,
+              "n": 0
+            },
+            "feed": "7ntqbwALfhYHiNmU-NIUOQAX-VEw3-M-6xkL3wDBnt8",
+            "id": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "seq": 1000,
+            "state": "present",
+            "type": "device.wake_route"
+          }
+        ],
+        "now_ms": 3000
+      },
+      "kind": "wake_route_fold",
+      "name": "fold/public-header-ignored-reverse"
+    }
+  ],
+  "format": "astral.vectors/v1",
+  "name": "wake",
+  "spec": "contracts/wake.md"
+}

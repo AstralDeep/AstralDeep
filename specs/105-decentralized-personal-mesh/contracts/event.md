@@ -175,6 +175,7 @@ The family decides the merge rule. The body of every type is a canonical JSON ob
 | `mem.supersede` | memory | `mesh` | `key`, `value`, `supersedes` |
 | `key.content` | key | `mesh` | `id`, `key`, `scope` (see `keys.md`) |
 | `tools.catalog` | tools | `mesh` | `tools` (see `tools.md`). A chat scope is `event.malformed` |
+| `device.wake_route` | device | `mesh` | `route`, an attenuated empty-wake delegation or null withdrawal (`wake.md`). Exactly Private/Owner labels; other scope or labels are `event.malformed` |
 | `key.credential` | key | `mesh` | `name`, `boxes`, optional `audience` (see `keys.md` section 4.1). The label is always secret |
 
 A `chat.spoken` event records what the person heard in voice mode. It is visible to the owner like an assistant message and carries labels from the chat it was spoken in. A reader that builds model context for a later turn uses the spoken text of a turn in place of that turn's final model text, because the person heard only the spoken text. The complete model output stays in its `chat.model_response` events for audit and is never rewritten.

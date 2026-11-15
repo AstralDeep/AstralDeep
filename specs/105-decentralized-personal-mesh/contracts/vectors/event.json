@@ -1318,6 +1318,142 @@
       },
       "kind": "open_event",
       "name": "envelope-feed-differs"
+    },
+    {
+      "expect": {
+        "ok": {
+          "envelope": {
+            "body_ct": "fLbbLMiAX_FJhgGbIX862Uu84Ne1kGc5fKAYatbVUYWWUgGDocZH9AteMaEEsMoOdoTWhoduiv3NcNCsx1QQrg8QdMZb4yjNtFm2YiBH8KqV2q1hY6WBIhQXu_cYXiWZjJKpJayIa4PUe_kl7UY1hFj4X8aC7acXVVOL4J5rdNNui-Qj",
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "header_ct": "v5poeCQdWgkUq07N-m_UdfirOaOSOpCUrjg2mbEGcLiEW8z2XGyJpvDNwTI2MSnbc8jdgk8tPagHquKyWKcUAoSjzmOt6Xg6CTXJ9hRWqy7aHTMD811oy8sp9mPWufTETEEA05Q4cPE-QKy2uNgZtWSzj8qWXIxDxmGX2jsWoknwtqXfrxlDuULWysZBIgiS9F8B5sjuwCSE_VkRdLRGmSeITg2j4sKFVcDJ8pOfGKOaIH8uIOptlCjP3AOqZl0Aik0rfF5XQIenf27j_U4W5I7sJvITZBBDIBSxh5ArUfPkkRaaSyU5O4ph6bBDT7NklHLuPxUgJ6bykliYLDCcKJCFEWNC-fUV6HmzA-Ovqsotz8ZOHM2X9V2C1my-g8NEjeBSnJD_zueYJDGzDdu267uqCxLfwgTLRLwjE_XjGkUMr6cP1WGBTu87lItQs05lWK4R-xVkRpiIBc2N3zFptrh_1gvgbWiY0OyBi6c7vxc1ybaxSNK-Yvll09E5l3Cs8Qskdl7-KJvS9WTDqCUy2uJUqplvT-pQutMfBS5iOS_FVU4IdMr0WKI_oJ_Ohb3I77_6ryrtwtypnY1m8sYipVjuXrAEfr3ayryiFUEixjm6cEcjnHlBWDxnVQmhKXnjGyHPOusGg02WfR0lzDlSyTBgPR4OokpaRf5C5xA",
+            "seq": 1
+          },
+          "event_id": "sha256:bb8f91a0e6746b220670eb77ee8f36ea0ed6b3d664a50879f1a342c69710a5ee",
+          "header": {
+            "after": [],
+            "body": "sha256:1ceccebaee8bd0ef5ab5deb803ebe738a11defc0d19904fca49f0ec304107779",
+            "clock": {
+              "ms": 1794441601000,
+              "n": 0
+            },
+            "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+            "key": "ck:8Udf6HMCBFY6jhlKq7BfbQ",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "prev": null,
+            "scope": "mesh",
+            "seq": 1,
+            "sig": "nowzPSdTVXh6OkdGoQ5jYzYhu0GDxH54o9gBZN9t8ZlgpzYSviUHnuCbw4FZfZrhR3H8XnhkrU1hLtk2TzHfAQ",
+            "type": "device.wake_route",
+            "v": 1
+          }
+        }
+      },
+      "input": {
+        "after": [],
+        "body": {
+          "route": {
+            "capability": "opaque_fixture",
+            "expires_at_ms": 1794441602000,
+            "publisher": "astral"
+          }
+        },
+        "body_nonce_hex": "7cb6db2cc8805ff14986019b217f3ad94bbce0d7b5906739",
+        "clock": {
+          "ms": 1794441601000,
+          "n": 0
+        },
+        "content_key_hex": "b7ce4b4985d5cefb777a9644c2f0a1fcc53caf8cadf2dfe2f45157dd702a6784",
+        "epoch_id": "sha256:bf9a6878241d5a0914ab4ecdfa6fd475f8ab39a3923a9094ae383699b10670b8",
+        "epoch_key_hex": "cc5245d68265dc769a0a3e01822ec73c56c3f53b57c14e3ee851238af44f474c",
+        "header_nonce_hex": "845bccf65c6c89a6f0cdc132363129db73c8dd824f2d3da8",
+        "key": "ck:8Udf6HMCBFY6jhlKq7BfbQ",
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        },
+        "ops_seed_hex": "37a6db180b13765d86ecf35cb5ed52d2a4aa7fb3ece91194f61e7f645e82c3c6",
+        "prev": null,
+        "scope": "mesh",
+        "seq": 1,
+        "type": "device.wake_route"
+      },
+      "kind": "seal_event",
+      "name": "device-wake-route-is-private-mesh-data"
+    },
+    {
+      "expect": {
+        "error": "event.malformed"
+      },
+      "input": {
+        "content_keys": {
+          "ck:8Udf6HMCBFY6jhlKq7BfbQ": "b7ce4b4985d5cefb777a9644c2f0a1fcc53caf8cadf2dfe2f45157dd702a6784",
+          "ek:personal:sha256:bf9a6878241d5a0914ab4ecdfa6fd475f8ab39a3923a9094ae383699b10670b8": "cc5245d68265dc769a0a3e01822ec73c56c3f53b57c14e3ee851238af44f474c",
+          "ek:phi:sha256:863884724bbe1c22ac43be8eac40a6199fad9abc022b0df63601b5006a43804e": "d72c618b1dc66a8f78d6199fc41b463d0ea12258e23b6deeaebb3cc6bfa5ce3e"
+        },
+        "envelope": {
+          "body_ct": null,
+          "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+          "header_ct": "v5poeCQdWgkUq07N-m_UdfirOaOSOpCUrjg2mbEGcLhy_0jQbeiQHm-qLrZwvkLuB76XmBOiXlSTHtre8_sAfBS0MZosU504BVWm79NKEnYCNJBfqtU1S_2Odn_6IfSuyWe1SykVXYkZs9G0jAwmdOJQEreuWDTo_rzsQ5eOqpiasiK-rHm3H8_yF2BgsA_aWOvRaNFDsZZjon5NvWNWnjxic0mHm4WNxF6hPZwxMI45455ckBxuioO-HXh9UtyabSedrSQ4Il9M1C7lIDR5hJbVx8xC2GLDgYru-fBBhi0OU-s0aqiMTTfmodUY3lSvA1JpE2FyNKMQps2Y0Ig0JpxaiDBNic11X9IBp-72-1Hi5GTk4ZtGj71SULLdZ2eBtz-aGTmFe2r0A8nJw8fyZIau0ocXChVU3AW1PQ9GkTNPF14HUdCd-twqm8JC4S87swo4bxQwKe4QXgOS4uTpV6z1psNj3Ya4ix6QUJ-VLtzMoSANCG0I1eQnNG3A2-Gzsw9W4h2srow49V0WxQXei2V_5bwq4avmgN83GmdWMEo7Fiy5h1BtOvbeIjG4jpgZPH2eTzUGHk4pgflsHZDJUcCC6DgkyeM1p0rheNTL-7eHhNTdtWkxdh9fuHfiw5S2IWaejAjhMWrDC-fqWcIDpYL7sjg2JD8KG7BIGw",
+          "seq": 1
+        },
+        "epoch_keys": {
+          "sha256:bf9a6878241d5a0914ab4ecdfa6fd475f8ab39a3923a9094ae383699b10670b8": "cc5245d68265dc769a0a3e01822ec73c56c3f53b57c14e3ee851238af44f474c"
+        },
+        "now_ms": null
+      },
+      "kind": "open_event",
+      "name": "device-wake-route-rejects-public"
+    },
+    {
+      "expect": {
+        "error": "event.malformed"
+      },
+      "input": {
+        "content_keys": {
+          "ck:8Udf6HMCBFY6jhlKq7BfbQ": "b7ce4b4985d5cefb777a9644c2f0a1fcc53caf8cadf2dfe2f45157dd702a6784",
+          "ek:personal:sha256:bf9a6878241d5a0914ab4ecdfa6fd475f8ab39a3923a9094ae383699b10670b8": "cc5245d68265dc769a0a3e01822ec73c56c3f53b57c14e3ee851238af44f474c",
+          "ek:phi:sha256:863884724bbe1c22ac43be8eac40a6199fad9abc022b0df63601b5006a43804e": "d72c618b1dc66a8f78d6199fc41b463d0ea12258e23b6deeaebb3cc6bfa5ce3e"
+        },
+        "envelope": {
+          "body_ct": null,
+          "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+          "header_ct": "v5poeCQdWgkUq07N-m_UdfirOaOSOpCUrjg2mbEGcLjuS9o4ETuyopQrLXBcjH0ulrY-MB5BJohhB5pM-TvxzJHN0xxb5W3C9l2Ek8uf31lwHmSorc_mp4AC-djne2-uPHYfJLZsNhLYGrOKmfEZfxF756qDz8zhJZ2Y9odYJaBzWx7JG9w1vPOCPMBv5KrfROcwuxaBQt8klIXJYqgKMtMRzcm7U9SKwv9yhjsC1Atawdvl79kIQqbrYLpyIuLHlgnHOYb6DKVlhvVrmXzCiHsyd8Rkq8V6Gq5_x0huaKoIbsBjtZRtson52pmP3Qo1h38FQmdDZpMrGJaPb_QmVs6Tz6-07QjwaMMMfrYTMSFksBfh0ucQqAVYRUwULLOLS4HSpYDk6hQgRnfQ5zj35z4T3qwiQcDO1aMzA0IzZwcPQk3EMUjigegbVS_q_ffhd-OqB6iGXzxNwJc-EqQBRjrXvJCTH8yQRHag8igsgn_2msY7mxuTo2IF4jRIEfcS3hQBBn4RK9cehE6g5CITh7JONuoJU0IounBepPvI1nCAP9lAWlOen-uHNsSXbjGPm2Em5EqqaGI0XBWT6c_2bnhW9Gf-pTnh_bSYi7P15BGNx_cOnX9CC7dKN060EThLN7ecPU4TLEjzt6iBDCSWrxoOiaLM6FtEIR7zYpm91ttx",
+          "seq": 1
+        },
+        "epoch_keys": {
+          "sha256:bf9a6878241d5a0914ab4ecdfa6fd475f8ab39a3923a9094ae383699b10670b8": "cc5245d68265dc769a0a3e01822ec73c56c3f53b57c14e3ee851238af44f474c"
+        },
+        "now_ms": null
+      },
+      "kind": "open_event",
+      "name": "device-wake-route-rejects-untrusted"
+    },
+    {
+      "expect": {
+        "error": "event.malformed"
+      },
+      "input": {
+        "content_keys": {
+          "ck:8Udf6HMCBFY6jhlKq7BfbQ": "b7ce4b4985d5cefb777a9644c2f0a1fcc53caf8cadf2dfe2f45157dd702a6784",
+          "ek:personal:sha256:bf9a6878241d5a0914ab4ecdfa6fd475f8ab39a3923a9094ae383699b10670b8": "cc5245d68265dc769a0a3e01822ec73c56c3f53b57c14e3ee851238af44f474c",
+          "ek:phi:sha256:863884724bbe1c22ac43be8eac40a6199fad9abc022b0df63601b5006a43804e": "d72c618b1dc66a8f78d6199fc41b463d0ea12258e23b6deeaebb3cc6bfa5ce3e"
+        },
+        "envelope": {
+          "body_ct": null,
+          "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+          "header_ct": "v5poeCQdWgkUq07N-m_UdfirOaOSOpCUrjg2mbEGcLgjgI1xLfwqy6KzwBW78xsTkVu9N-R8GuWBCdzQM8glzXNblKeqDs5sNSz25yOqnAMJiOx9xlO9MB6q0IEDLEvYntRe7LXUPn-gT2KyVkhR_FedbKQCyDJWTNCRf2NkNSn5wN_ToqxGL_eMD98PjMh6bUAnXpyEKPiepk11luwoJZ-hvUBsrAWN2YnEGusFjCPEtOwoiK2mgUxBl_lryQzGYLZn0yfT1HnhCUd12jRf5Qrmqa-vODWtDPVqEyerGp58hfaxeAg9DRz_9KwG-aooniLQ2d1cHLNFTr_hFjPoAEEorNk1YkKmxfWb0hqGcNSyXtYibm9XiDv2QQtKMU5C03fjIkWfyJObugM5E5CDhwVv4UBDNoRiQYIZ-Q4IHASpXSYsEplqB0t-0NcEUbEuS5ajOLhRQ_F6MecXQjVsZIsoCRqf9SYVvwe5FTUIHyL39wu0Yms_LO6VmJ5MRrtLCKUYEDl6-ZX5SqsngB05w3egsN9VpJpz2xdgt2RwVO6Y6Gl8ML3UNkt17y_6xSHT4hwZnKhxG-69Vs-EGL3tHP3TBlJzGmCvX-e7w90t-TZiWuWW25GYmOEP75ab2WtT_7z0S9AQvI5VUALmMxYR3lKj7mDIL4Wx2KI1zvMBERNqISLe7lkG8WCI_Az64zp13NWW6pBfQE9uIVMEyE9n4qhwTj_20BAa22A2nghGdsC0XaPBdEg076RPg-MhPrP5",
+          "seq": 1
+        },
+        "epoch_keys": {
+          "sha256:bf9a6878241d5a0914ab4ecdfa6fd475f8ab39a3923a9094ae383699b10670b8": "cc5245d68265dc769a0a3e01822ec73c56c3f53b57c14e3ee851238af44f474c"
+        },
+        "now_ms": null
+      },
+      "kind": "open_event",
+      "name": "device-wake-route-rejects-chat-scope"
     }
   ],
   "devices": {

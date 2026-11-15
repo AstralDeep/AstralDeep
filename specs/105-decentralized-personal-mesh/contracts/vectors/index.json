@@ -26,8 +26,8 @@
       "spec": "contracts/event.md#signatures-and-ids"
     },
     "event.json": {
-      "cases": 35,
-      "sha256": "ed6f35b53e9cf01df8057668a20f61502a0b6967a8409f42d5c3cbed76ab92d3",
+      "cases": 39,
+      "sha256": "a4a027c35b2a8e4d77d888c7c578893303390af822f0ed3d4e2c1c7cec400508",
       "spec": "contracts/event.md"
     },
     "feed.json": {
@@ -109,6 +109,11 @@
       "cases": 8,
       "sha256": "f9e241cbbc7d204fb8b80b4572d060d94a7c6b7ecea8314823ffce450540874e",
       "spec": "contracts/policy.md#carrying-a-transfer"
+    },
+    "wake.json": {
+      "cases": 59,
+      "sha256": "1af89362410a04abbd3ddaaaec781e4496ec040ad69267723c4d107bf84b0eb2",
+      "spec": "contracts/wake.md"
     }
   },
   "format": "astral.vectors/v1"

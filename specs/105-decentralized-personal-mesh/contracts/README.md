@@ -93,10 +93,13 @@ A harness runs each case by `kind` with `input` and compares the result with `ex
 | `fold.json` | `fold_branches`, `fold_authority`, `fold_settings` | none |
 | `runs.json` | `run_lease_fold` (`events`, `devices`: feed id to device id, `presence_keys`: device id to presence key of the current roster) gives `runs`. `run_takeover_digest` (`run`, `supersedes`, `executor`) gives `digest`. `run_state_fold` (`run`, `chat`, `events`) gives `state`. `run_start` (`spec`, `device`, `now_ms`) gives `run` and `events`. `run_schedule_plan` (`schedule`, `now_ms`, `last_slot`). `run_precheck` (`probe`, `last_fingerprint`). `run_judge_answer` (`goal`, `round`, `round_output`, `raw`) gives `verdict`, `progress`, `content` | none |
 | `tools.json` | `tools_check` (`body`) gives `count` and `names`. `tools_hash` (`name`, `description`, `input_schema`, `annotations`) gives `hash`. `tools_fold` (`events`, `devices`: feed to device for current members) gives `catalogs` and `ignored` | none |
+| `wake.json` | `wake_route_validate` (`body`, `signed_ms`) gives `route` or null. `wake_route_fold` (`events`, `current_device_of_feed`, `now_ms`) gives current `routes`; see `wake.md` for the verified projection shape | none |
 | `attachments.json` | `attachment_check` (`body`, `labels`) gives `chunks`, `mime`, `size`. `attachment_message_check` (`body`) gives `attachments`. `attachment_seal` (`content`, `key_hex`, `key`, `chat`, `nonces`, optional `name`, `mime`, `labels`) gives `body` and `lengths`. `attachment_receive` and `attachment_open` take the inputs of `attachment_seal` plus `tamper` steps and give the checked chunk or the opened content. `attachment_serve` (`attachments`, `requested`, `peer_in_phi_group`) gives `send` and `withheld` | none |
 | `learning.json` | `learn_gate` (`candidate`, `grants`) gives the finding codes, hygiene, owner reasons and labels. `learn_stage`, `learn_gate_record`, `learn_replay_record`, `learn_decline`, `learn_adoption`, `learn_reversal` give the `event` to write. `learn_trial` (`baseline`, `policy`, `samples`). `learn_ledger_fold` (`events`, in any order) gives `proposals`, `active`, `invalid` | none |
 
 In `ticket_verify`, `receipt_valid` stands for the answer of the LETS receipt check. A harness passes it to the verifier's receipt callback.
+
+Wake capabilities are opaque padded-or-unpadded URL-safe strings under their own bounded grammar. They are intentionally shared delegations for empty wake hints, never model/provider credentials. They do not alter Secret credential sealing or model-context rules.
 
 `feed_replay` uses plain, decrypted headers so a harness can test the chain rules without any encryption. `open_event` covers sealing.
 

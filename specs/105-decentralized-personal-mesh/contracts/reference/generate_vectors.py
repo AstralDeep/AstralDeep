@@ -32,6 +32,7 @@ from astral_mesh_ref import (
     ticket,
     tools as tools_ref,
     transfer as transfer_ref,
+    wake as wake_ref,
 )
 from astral_mesh_ref.cj import b64url_decode, b64url_encode, canonical
 from astral_mesh_ref.testkit import DetRng, TestDevice, hlc, seed
@@ -45,6 +46,7 @@ requests_ref.register(runner.op)
 ticket.register(runner.op)
 tools_ref.register(runner.op)
 attachments_ref.register(runner.op)
+wake_ref.register(runner.op)
 
 HERE = Path(__file__).resolve().parent
 VECTORS = HERE.parent / "vectors"
@@ -771,6 +773,22 @@ def build_event() -> Suite:
         {"envelope": other_feed, "now_ms": None, **keysets},
         error="event.decrypt_failed",
     )
+    wake_event = seal(
+        "device-wake-route-is-private-mesh-data", 1, None, [], "mesh", "device.wake_route", own,
+        ck, content, {"route": {"publisher": "astral", "capability": "opaque_fixture", "expires_at_ms": sc.BASE_MS + 2000}},
+        sc.BASE_MS + 1000,
+    )
+    for name, changed in [
+        ("public", {"labels": {"confidentiality": "public", "integrity": "owner"}}),
+        ("untrusted", {"labels": {"confidentiality": "private", "integrity": "untrusted"}}),
+        ("chat-scope", {"scope": chat_id}),
+    ]:
+        changed_header = {**{key: value for key, value in wake_event["header"].items() if key != "sig"}, **changed}
+        changed_header["sig"] = crypto.sign_object("ed25519", ALICE.ops_seed, "astral.event/v1", changed_header)
+        s.add("device-wake-route-rejects-" + name, "open_event", {
+            "envelope": sc.sealed_craft(changed_header, epoch_id, epoch_key, nonce_tag="wake-" + name),
+            "now_ms": None, **keysets,
+        }, error="event.malformed")
     return s
 
 
@@ -10048,6 +10066,8 @@ def build_attachments() -> Suite:
 
 
 def suites(repin: bool) -> list[Suite]:
+    from generate_wake_vectors import build_wake
+
     return [
         build_canonical(),
         build_crypto(),
@@ -10071,6 +10091,7 @@ def suites(repin: bool) -> list[Suite]:
         build_requests(),
         build_tools(),
         build_attachments(),
+        build_wake(Suite),
     ]
 
 
