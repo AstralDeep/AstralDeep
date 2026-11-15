@@ -176,6 +176,53 @@ def test_qualified_thin_macho_and_native_lane_metadata(lane):
     domain.test_identity(*_metadata(lane), lane)
 
 
+def _ios_skip(summary, tests, identifier, reason):
+    suite = tests["testNodes"][0]["children"][0]["children"][0]
+    suite["children"].append(
+        {
+            "nodeType": "Test Case",
+            "nodeIdentifier": identifier,
+            "result": "Skipped",
+            "children": [{"nodeType": "Failure Message", "name": "Test skipped - " + reason}],
+        }
+    )
+    summary["totalTestCount"] += 1
+    summary["skippedTests"] += 1
+
+
+def test_ios_unit_accepts_only_exact_declared_host_checks():
+    checks = {
+        "MeshDeviceKeysTests/testKeychainStoreRoundTrip()": "Keychain needs a signed host; unsigned simulator test builds have none",
+        "OnDeviceFallbackModelTests/testRealVerifiedTextFallbackWhenExplicitlyRequested()": "Set ASTRAL_VERIFIED_MODEL_TEST_ROOT to a verified installed model root for this local hardware check.",
+    }
+    assert domain.IOS_SKIP_DISPOSITIONS["unit"] == checks
+    summary, tests = _metadata("unit")
+    for identifier, reason in checks.items():
+        _ios_skip(summary, tests, identifier, reason)
+    domain.test_identity(summary, tests, "unit")
+
+    for mutation in ("unknown", "reason", "lane", "status"):
+        summary, tests = _metadata("unit")
+        identifier, reason = next(iter(checks.items()))
+        if mutation == "unknown":
+            identifier = "UnknownTests/testUnlistedSkip()"
+        elif mutation == "reason":
+            reason = "not the approved local hardware condition"
+        _ios_skip(summary, tests, identifier, reason)
+        if mutation == "lane":
+            with pytest.raises(domain.DomainError):
+                domain.test_identity(summary, tests, "ui")
+        elif mutation == "status":
+            tests["testNodes"][0]["children"][0]["children"][0]["children"][-1][
+                "result"
+            ] = "Failed"
+            with pytest.raises(domain.DomainError):
+                domain.test_identity(summary, tests, "unit")
+        else:
+            with pytest.raises(domain.DomainError):
+                domain.test_identity(summary, tests, "unit")
+
+
 @pytest.mark.parametrize(
     "raw",
     [

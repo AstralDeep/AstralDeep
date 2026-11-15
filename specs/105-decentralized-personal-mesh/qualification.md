@@ -34,6 +34,12 @@ The hosted7b23 Apple run executes all1,736 Mac unit cases with two declared skip
 
 Projection069bb579 corrects only evidence collection: exact platform/lane/test/reason dispositions admit the owner-waived installed-model and unsigned-iOS-Keychain diagnostics; all unknown skips, failed/expected-failure cases, count mismatches and invalid source/region mappings still fail. Repeated LLVM filename indexes now retain their index/provenance/region checks. Root independently passes all199 focused tests; changed helper coverage is99%. Actual iOS summary/identity documents and a real LLVM export mapping164 maintained Swift files pass replay. No Swift/product assertions are weakened. Final hosted collection is still required.
 
+## Strict collector coverage and provenance follow-up
+
+Deep c0b02449 passes all four backend groups and 17 CI jobs, then its changed-line gate correctly fails at 15/19 helper lines (78.95%). The 99% whole-file result did not cover the new iOS skip-acceptance branch. Explicit golden identities/reasons plus unknown-identity, wrong-reason, wrong-lane and failed-result denials now exercise those lines. Root passes all 513 adjacent checks and verifies 19/19 changed executable lines. The publisher remains disabled; its automatic failure event is skipped, and no release is claimed.
+
+Projection's package-cache workflow change also requires refreshing its extraction ledger's result-path digest. Only that existing destination digest is updated; immutable input provenance and the gate remain intact. The complete normal Python suite passes in a clean CI-shaped environment: 4,597 passed, eight declared skips and 33 passing subtests. The focused provenance test passes and all four regression-effectiveness mutations are killed. These results precede the new exact-source CI and publication.
+
 ## Native evidence follow-up
 
 The c18141a5 native run finishes with 17 passing jobs. Mac executes all 1,736 unit cases with two approved skips and zero failures, then rejects a known QoS diagnostic emitted from `RealMeshKernelTests.swift`; the job reaches its unchanged 18-minute limit during failure reporting. The collector now admits only that exact test source and warning text, retains unknown-source/warning/skip refusals, and passes 467 adjacent tests at 100% collector coverage. Root replays the actual Mac identity (1,734 passed, two skipped, zero failed); the actual binary mapping validates 216 maintained Swift files. Full local collection remains refused by the deliberate Xcode version pin; CI uses the required 26.6 toolchain.
