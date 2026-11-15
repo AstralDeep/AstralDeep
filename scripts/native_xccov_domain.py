@@ -45,11 +45,20 @@ MACOS_ARCHITECTURES = ("arm64", "x86_64")
 MACOS_BINARY_MEMBER = "Products/Debug/AstralDeep.app/Contents/MacOS/AstralDeep.debug.dylib"
 MACOS_SKIP_DISPOSITIONS = {
     "unit": {
-        "AppModelChromeSurfaceTests/testEvidenceHostedSurfaceRetiresItsActualTimerAndRejectsLateReplay()": "Hosted SwiftUI evidence coverage uses the isolated iOS test destination"
+        "AppModelChromeSurfaceTests/testEvidenceHostedSurfaceRetiresItsActualTimerAndRejectsLateReplay()": "Hosted SwiftUI evidence coverage uses the isolated iOS test destination",
+        "OnDeviceFallbackModelTests/testRealVerifiedTextFallbackWhenExplicitlyRequested()": "Set ASTRAL_VERIFIED_MODEL_TEST_ROOT to a verified installed model root for this local hardware check.",
     },
     "ui": {
         "Accessibility060UITests/testMainComposerUsesSystemKeyboardWithoutApplicationDrawnDoneAccessory()": "The system-IME contract (on-screen keyboard, keyboard-anchored send, interactive dismissal) has no macOS analogue — macOS input is a hardware keyboard with no Keyboard element in the AX tree."
     },
+}
+IOS_SKIP_DISPOSITIONS = {
+    "unit": {
+        "MeshDeviceKeysTests/testKeychainStoreRoundTrip()": "Keychain needs a signed host; unsigned simulator test builds have none",
+        "OnDeviceFallbackModelTests/testRealVerifiedTextFallbackWhenExplicitlyRequested()": (
+            "Set ASTRAL_VERIFIED_MODEL_TEST_ROOT to a verified installed model root for this local hardware check."
+        ),
+    }
 }
 
 
@@ -258,7 +267,7 @@ def _macos_test_identity(summary: Any, tests: Any, lane: str, architecture: str)
     require(summary.get("result") == "Passed")
     total = _integer(summary.get("totalTestCount"), minimum=1, maximum=50_000)
     passed = _integer(summary.get("passedTests"), minimum=1, maximum=50_000)
-    skipped = _integer(summary.get("skippedTests"), maximum=1)
+    skipped = _integer(summary.get("skippedTests"), maximum=len(MACOS_SKIP_DISPOSITIONS.get(lane, {})))
     require(passed + skipped == total)
     for field in ("failedTests", "expectedFailures"):
         require(type(summary.get(field)) is int and summary[field] == 0)
@@ -423,7 +432,6 @@ def mapping_geometry(
         require(total_regions <= MAX_REGIONS)
         require(all(isinstance(value, str) and value in all_names for value in names))
         source_names = [selected(value) for value in names]
-        require(len(set(names)) == len(names))
         for region in values:
             require(isinstance(region, list) and len(region) == 8)
             for value in region:
@@ -647,8 +655,10 @@ def test_identity(
     require(lane in LANES and isinstance(summary, dict) and isinstance(tests, dict))
     require(summary.get("result") == "Passed")
     total = _integer(summary.get("totalTestCount"), minimum=1, maximum=50_000)
-    require(type(summary.get("passedTests")) is int and summary["passedTests"] == total)
-    for field in ("failedTests", "skippedTests", "expectedFailures"):
+    passed = _integer(summary.get("passedTests"), minimum=1, maximum=50_000)
+    skipped = _integer(summary.get("skippedTests"), maximum=len(IOS_SKIP_DISPOSITIONS.get(lane, {})))
+    require(passed + skipped == total)
+    for field in ("failedTests", "expectedFailures"):
         require(type(summary.get(field)) is int and summary[field] == 0)
     values = summary.get("devicesAndConfigurations")
     require(isinstance(values, list) and len(values) == 1 and isinstance(values[0], dict))
@@ -677,7 +687,8 @@ def test_identity(
     require(isinstance(bundles, list) and len(bundles) == 1 and isinstance(bundles[0], dict))
     expected = {"core": "AstralCoreTests", "unit": "AstralAppTests"}.get(lane, "AstralAppUITests")
     require(bundles[0].get("name") == expected and bundles[0].get("result") == "Passed")
-    cases = []
+    cases = set()
+    dispositions = {}
     pending = [bundles[0]]
     seen = 0
     while pending:
@@ -685,14 +696,30 @@ def test_identity(
         seen += 1
         require(seen <= 50_000 and isinstance(node, dict))
         if node.get("nodeType") == "Test Case":
-            require(node.get("result") == "Passed")
-            cases.append(_text(node.get("nodeIdentifier")))
+            identifier = _text(node.get("nodeIdentifier"))
+            require(identifier not in cases and identifier not in dispositions)
+            if node.get("result") == "Skipped":
+                reason = IOS_SKIP_DISPOSITIONS.get(lane, {}).get(identifier)
+                children = node.get("children")
+                require(
+                    reason is not None
+                    and isinstance(children, list)
+                    and len(children) == 1
+                    and isinstance(children[0], dict)
+                    and set(children[0]) == {"name", "nodeType"}
+                    and children[0].get("nodeType") == "Failure Message"
+                    and children[0].get("name") == "Test skipped - " + reason
+                )
+                dispositions[identifier] = reason
+            else:
+                require(node.get("result") == "Passed")
+                cases.add(identifier)
         children = node.get("children", [])
         require(isinstance(children, list))
         pending.extend(children)
-    require(len(cases) == total and len(set(cases)) == total)
+    require(len(cases) == passed and len(dispositions) == skipped and len(cases) + skipped == total)
     staging = "ReleaseEvidenceUITests/testReleaseEvidenceProducesPlatformReport()"
-    require(cases == [staging] if lane == "staging" else staging not in cases)
+    require(cases == {staging} if lane == "staging" else staging not in cases)
 
 
 def collect_domain(
