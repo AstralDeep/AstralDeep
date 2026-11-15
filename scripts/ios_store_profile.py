@@ -32,6 +32,64 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise ProvisioningError("Apple provisioning API redirects are refused")
 
 
+def request_class(url, method):
+    parts = urllib.parse.urlsplit(url).path.removeprefix("/v1/").split("/")
+    resources = {"profiles", "bundleIds", "certificates", "bundleIdCapabilities"}
+    resource = parts[0] if parts[0] in resources else "[redacted]"
+    if len(parts) > 1:
+        resource += "/{id}"
+    if len(parts) > 2:
+        resource += "/" + (parts[2] if parts[2] in resources else "[redacted]")
+    return {"method": method, "resource": resource}
+
+
+def safe_apple_error(error):
+    safe = {"status": error.code, "code": "[redacted]", "title": "[redacted]", "detail": "[redacted]"}
+    try:
+        raw = error.read(64 * 1024 + 1)
+        require(len(raw) <= 64 * 1024, "Apple error response exceeds bounds")
+        errors = json.loads(raw).get("errors", [])
+        first = errors[0] if errors else {}
+        public_parameters = ("filter[identifier]", "filter[certificateType]", "filter[profileType]",
+                             "filter[profileState]", "filter[name]", "limit", "include", "sort")
+        parameter = first.get("source", {}).get("parameter")
+        if parameter is not None:
+            safe["source"] = {"parameter": parameter if parameter in public_parameters else "[redacted]"}
+        prefixes = {"FORBIDDEN", "FORBIDDEN_ERROR", "UNAUTHORIZED", "UNAUTHORIZED_ERROR", "PARAMETER_ERROR",
+                    "ENTITY_ERROR", "STATE_ERROR", "NOT_FOUND", "NOT_FOUND_ERROR", "RATE_LIMIT_EXCEEDED", "INTERNAL_ERROR"}
+        suffixes = {"INVALID", "MISSING", "UNKNOWN", "NOT_ALLOWED", "INVALID_FILTER", "INVALID_FILTER_NAME",
+                    "INVALID_FILTER_VALUE", "INVALID_PARAMETER", "INVALID_PARAMETER_VALUE", "UNKNOWN_PARAMETER",
+                    "UNSUPPORTED_PARAMETER", "INVALID_QUERY_PARAMETER", "REQUIRED_AGREEMENTS_MISSING"}
+        code = first.get("code", "")
+        components = code.split(".") if isinstance(code, str) else []
+        if components and components[0] in prefixes and all(item in suffixes for item in components[1:]):
+            safe["code"] = code
+        public_messages = {"Access Forbidden", "Forbidden", "This request is forbidden for security reasons.",
+                           "A required agreement is missing or has expired.", "The API key in use does not allow this request.",
+                           "A parameter has an invalid value", "A parameter is not supported", "A required parameter is missing",
+                           "An unexpected query parameter was provided", "The request is invalid"}
+        for field in ("title", "detail"):
+            if first.get(field) in public_messages:
+                safe[field] = first[field]
+        detail = first.get("detail", "")
+        if (safe["detail"] == "[redacted]" and isinstance(detail, str)
+                and (str(safe["code"]).startswith("PARAMETER_ERROR")
+                     or (error.code == 400 and any(word in detail.lower() for word in ("parameter", "filter", "query"))))):
+            lowered = detail.lower()
+            reason = next((label for phrases, label in (
+                (("not supported", "unsupported", "unexpected query parameter", "unknown query parameter", "not allowed"),
+                 "Unsupported parameter"),
+                (("invalid", "not valid"), "Invalid parameter value"),
+                (("missing", "required parameter"), "Missing required parameter"),
+            ) if any(phrase in lowered for phrase in phrases)), None)
+            if reason:
+                names = [name for name in public_parameters if name in detail]
+                safe["detail"] = reason + (": " + ", ".join(names) if names else "") + "; values redacted"
+    except (ValueError, TypeError, AttributeError, IndexError):
+        pass
+    return safe
+
+
 class AppleAPI:
     def __init__(self, key_path):
         from jose import jwt
@@ -64,36 +122,23 @@ class AppleAPI:
         request = urllib.request.Request(url, data=body, headers={
             "Authorization": f"Bearer {self.token}", "Content-Type": "application/json",
         })
+        operation = request_class(url, request.get_method())
+        print(json.dumps({"apple_provisioning_request": operation}), flush=True)
         try:
             with self.opener.open(request, timeout=30) as response:
                 raw = response.read(8 * 1024**2 + 1)
         except urllib.error.HTTPError as error:
+            safe = safe_apple_error(error)
+            print(json.dumps({"apple_provisioning_error": safe, **operation}), flush=True)
             if error.code == 403:
-                code = "UNSPECIFIED"
-                safe = {"status": 403, "code": code, "title": "[redacted]", "detail": "[redacted]"}
-                try:
-                    errors = json.loads(error.read(64 * 1024)).get("errors", [])
-                    first = errors[0] if errors else {}
-                    candidate = first.get("code", "")
-                    if re.fullmatch(r"FORBIDDEN(?:_ERROR)?(?:\.[A-Z_]+)*", candidate):
-                        code = candidate
-                    safe["code"] = code
-                    public_messages = {"Access Forbidden", "Forbidden", "This request is forbidden for security reasons.",
-                                       "A required agreement is missing or has expired.",
-                                       "The API key in use does not allow this request."}
-                    for field in ("title", "detail"):
-                        if first.get(field) in public_messages:
-                            safe[field] = first[field]
-                except (ValueError, TypeError, AttributeError):
-                    pass
-                print(json.dumps({"apple_provisioning_error": safe, "method": request.get_method(),
-                                  "resource": url.removeprefix(API).split("/")[0].split("?")[0]}), flush=True)
                 raise ProvisioningError(
-                    f"Apple API HTTP 403 ({code}): provisioning access denied; "
+                    f"Apple API HTTP 403 ({safe['code']}): provisioning access denied; "
                     "check API key role, Certificates/Identifiers/Profiles access, and required developer agreements. "
                     "An authorized Account Holder or Admin must resolve access or supply the matching production-push profile",
                 ) from None
-            raise ProvisioningError(f"Apple provisioning API HTTP {error.code}; no automatic retry") from None
+            raise ProvisioningError(
+                f"Apple provisioning API {operation['method']} {operation['resource']} HTTP {error.code}; no automatic retry",
+            ) from None
         require(len(raw) <= 8 * 1024**2, "Apple provisioning API response exceeds its size limit")
         result = json.loads(raw)
         require(isinstance(result, dict) and "data" in result, "invalid Apple provisioning API response")

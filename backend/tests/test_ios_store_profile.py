@@ -335,7 +335,7 @@ def test_api_retains_only_public_error_fields(api, capsys):
     api.opener = SimpleNamespace(open=denied)
     with pytest.raises(signing.ProvisioningError):
         api.pages('profiles')
-    report = json.loads(capsys.readouterr().out)['apple_provisioning_error']
+    report = json.loads(capsys.readouterr().out.splitlines()[-1])['apple_provisioning_error']
     assert report == {'status':403,'code':'FORBIDDEN.REQUIRED_AGREEMENTS_MISSING',
                       'title':'Access Forbidden','detail':'A required agreement is missing or has expired.'}
 
@@ -350,3 +350,43 @@ def test_workflow_uses_verified_profile_name_for_archive_and_export():
     assert "APPLE_PROFILE_IOS: ${{ env.IOS_RELEASE_PROFILE_NAME }}" in workflow[archive_step:]
     assert "APPLE_PROFILE_WATCH: ${{ secrets.APPLE_PROFILE_WATCH }}" in workflow[archive_step:]
     assert '"$RUNNER_TEMP/ios-profile-name.txt"' in workflow[workflow.index("- name: Remove signing material"):]
+
+
+@pytest.mark.parametrize('payload,expected', [
+    ({'code':'PARAMETER_ERROR.INVALID', 'title':'A parameter has an invalid value',
+      'detail':"The value 'PRIVATE-VALUE' for 'filter[certificateType]' is not valid.",
+      'source':{'parameter':'filter[certificateType]'}},
+     {'status':400,'code':'PARAMETER_ERROR.INVALID','title':'A parameter has an invalid value',
+      'detail':'Invalid parameter value: filter[certificateType]; values redacted','source':{'parameter':'filter[certificateType]'}}),
+    ({'code':'PARAMETER_ERROR.UNSUPPORTED_PARAMETER','title':'An unexpected query parameter was provided',
+      'detail':"The query parameter 'filter[profileState]' is not supported; PRIVATE-VALUE",
+      'source':{'parameter':'filter[profileState]'}},
+     {'status':400,'code':'PARAMETER_ERROR.UNSUPPORTED_PARAMETER','title':'An unexpected query parameter was provided',
+      'detail':'Unsupported parameter: filter[profileState]; values redacted','source':{'parameter':'filter[profileState]'}}),
+    ({'code':'PRIVATE-VALUE','title':'PRIVATE-VALUE','detail':'PRIVATE-VALUE', 'source':{'parameter':'PRIVATE-VALUE'}},
+     {'status':400,'code':'[redacted]','title':'[redacted]','detail':'[redacted]','source':{'parameter':'[redacted]'}}),
+])
+def test_all_http_errors_report_safe_endpoint_and_parameter_context(api, capsys, payload, expected):
+    url = signing.API+'bundleIds/PRIVATE-RESOURCE-ID/profiles?filter[name]=PRIVATE-QUERY-VALUE'
+    def bad_query(*args, **kwargs):
+        raise urllib.error.HTTPError(url,400,'PRIVATE-VALUE',{},io.BytesIO(json.dumps({'errors':[payload]}).encode()))
+    api.opener = SimpleNamespace(open=bad_query)
+    with pytest.raises(signing.ProvisioningError, match=r'GET bundleIds/\{id\}/profiles HTTP 400'):
+        api.request(url)
+    output = capsys.readouterr().out
+    records = [json.loads(line) for line in output.splitlines()]
+    assert records[0] == {'apple_provisioning_request':{'method':'GET','resource':'bundleIds/{id}/profiles'}}
+    assert records[1]['apple_provisioning_error'] == expected
+    assert records[1]['method'] == 'GET' and records[1]['resource'] == 'bundleIds/{id}/profiles'
+    for private in ('PRIVATE', 'private-token', 'private-key'):
+        assert private not in output
+
+
+def test_http_error_body_and_resource_classes_stay_bounded(api, capsys):
+    assert signing.request_class(signing.API+'PRIVATE/PRIVATE-ID/PRIVATE?PRIVATE=PRIVATE','GET') == {
+        'method':'GET','resource':'[redacted]/{id}/[redacted]'}
+    error = urllib.error.HTTPError(signing.API+'profiles',400,'private',{},io.BytesIO(b'x'*(64*1024+1)))
+    assert signing.safe_apple_error(error) == {'status':400,'code':'[redacted]','title':'[redacted]','detail':'[redacted]'}
+    error = urllib.error.HTTPError(signing.API+'profiles',400,'private',{},io.BytesIO(json.dumps({'errors':[
+        {'code':'PARAMETER_ERROR.MISSING','detail':"A required parameter 'limit' is missing."}]}).encode()))
+    assert signing.safe_apple_error(error)['detail'] == 'Missing required parameter: limit; values redacted'
