@@ -16,7 +16,7 @@ from shared.protocol import AgentSkill
 from tests.test_node_mesh_kernel_integration import ak, paired, until  # noqa: F401
 from tests.test_node_mesh_kernel_request_tools import ask, setup_native
 from tests.test_node_mesh_peer_tools import FakeModel, model_server, node_host  # noqa: F401
-from tests.test_node_mesh_turn_tools import OWNER, SANDBOXED, grant, turn_host  # noqa: F401
+from tests.test_node_mesh_turn_tools import SANDBOXED, grant, turn_host  # noqa: F401
 
 FIXTURE = Path(__file__).resolve().parents[2] / "specs/105-decentralized-personal-mesh/contracts/conformance/composed_gate.json"
 CASES = {case["name"]: case for case in json.loads(FIXTURE.read_text())["cases"]}
@@ -28,7 +28,7 @@ async def test_receiver_capability_and_effect_audit_fail_closed_without_native_b
     from shared import node_identity
 
     monkeypatch.setattr(node_identity, "is_personal", lambda: True)
-    assert await node_mesh_admission.source_bound_capability(None, OWNER, "chat", "agent", "tool", {}) is None
+    assert await node_mesh_admission.source_bound_capability(None, "owner", "chat", "agent", "tool", {}) is None
     assert await node_mesh_admission.source_bound_capability(None, "", "chat", "agent", "tool", {}) is None
     with pytest.raises(NodeMeshError, match="request.malformed"):
         RequestReference.capture(SimpleNamespace(
@@ -56,7 +56,7 @@ def install_effect(host, case):
     card.skills.append(AgentSkill(name=name, id=name, description=description, input_schema=schema, scope="tools:write"))
     host.orch.vessel_definitions[(SANDBOXED, name)] = definition
     host.orch.tool_permissions.register_tool_scopes(SANDBOXED, {name: "tools:write"})
-    host.orch.tool_permissions.set_agent_scopes(OWNER, SANDBOXED, {"tools:read": True, "tools:write": True})
+    host.orch.tool_permissions.set_agent_scopes(host.owner, SANDBOXED, {"tools:read": True, "tools:write": True})
     return grant_name(name, definition)
 
 
@@ -69,7 +69,7 @@ async def test_native_host_dispatches_clear_kernel_allowed_shared_outside_effect
     grant_tool = install_effect(host, case)
     FakeModel.tool = case["call"]["tool"]
     FakeModel.arguments = case["call"]["arguments"]
-    async with paired(tmp_path, monkeypatch, calls=OrchestratorCalls(host.orch), history=host.orch.history,
+    async with paired(tmp_path, monkeypatch, creator=host.mesh_creator, calls=OrchestratorCalls(host.orch), history=host.orch.history,
                       kernel_answers=True) as (node, laptop, device, bridge):
         completed = await setup_native(host, node, laptop, device, bridge, model_server, monkeypatch)
         recorded = []
@@ -205,7 +205,7 @@ async def test_native_host_dispatches_clear_kernel_allowed_shared_outside_effect
                 result.error["code"] == "node.ticket_in_use" for result in concurrent_results)
             assert concurrent_invocations == []
         local_chat = bridge.state.local_for(chat)
-        events = host.orch.audit_repo.list_for_user(OWNER, limit=100, conversation_id=local_chat)[0]
+        events = host.orch.audit_repo.list_for_user(host.owner, limit=100, conversation_id=local_chat)[0]
         kernel_events = [event for event in events if event.action_type.startswith("mesh.kernel_effect_")]
         expected_audits = (
             {"mesh.kernel_effect_started", "mesh.kernel_effect_response_success"}
@@ -241,7 +241,7 @@ async def test_receiver_refuses_reissued_action_in_new_request_context(
     grant_tool = install_effect(host, case)
     FakeModel.tool = case["call"]["tool"]
     FakeModel.arguments = case["call"]["arguments"]
-    async with paired(tmp_path, monkeypatch, calls=OrchestratorCalls(host.orch), history=host.orch.history,
+    async with paired(tmp_path, monkeypatch, creator=host.mesh_creator, calls=OrchestratorCalls(host.orch), history=host.orch.history,
                       kernel_answers=True) as (node, laptop, device, bridge):
         completed = await setup_native(host, node, laptop, device, bridge, model_server, monkeypatch)
         await grant(node, laptop, grant_tool, case["call"]["effect"]["kind"])

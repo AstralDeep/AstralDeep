@@ -217,6 +217,7 @@ class MeshChatBridge:
         policy: Optional[NodePolicy] = None,
         phi_active: Optional[PhiCheck] = None,
         admission: Optional[Admission] = None,
+        owner_setup: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
         poll_seconds: float = POLL_SECONDS,
         turn_seconds: float = TURN_SECONDS,
     ):
@@ -229,6 +230,7 @@ class MeshChatBridge:
         self._policy = policy or NodePolicy.from_env()
         self._phi_active = phi_active or _protection_enabled
         self._admission = admission
+        self._owner_setup = owner_setup
         self._poll_seconds = poll_seconds
         self._turn_seconds = turn_seconds
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -271,7 +273,7 @@ class MeshChatBridge:
 
     def _on_change(self, change: Any) -> None:
         loop = self._loop
-        if loop is not None and type(change).__name__ in {"CHAT_CHANGED", "ChatChanged"}:
+        if loop is not None and type(change).__name__ in {"CHAT_CHANGED", "ChatChanged", "ROSTER_CHANGED", "RosterChanged"}:
             loop.call_soon_threadsafe(self._wake.set)
 
     def observe_message(self, owner_id: str, chat_id: str, role: str, content: Any) -> None:
@@ -389,12 +391,15 @@ class MeshChatBridge:
             except Exception:
                 logger.exception("node_mesh_chat_scan_failed")
             try:
-                await asyncio.wait_for(self._wake.wait(), self._poll_seconds)
+                async with asyncio.timeout(self._poll_seconds):
+                    await self._wake.wait()
             except asyncio.TimeoutError:
                 pass
             self._wake.clear()
 
     async def scan(self) -> int:
+        if self._owner_setup is not None and await self._owner_setup() is None:
+            return 0
         if not self._policy.serve_requests:
             return 0
         own = (await self._mesh.status()).get("member_id")
@@ -958,7 +963,8 @@ async def start_for(orch: Any) -> None:
         return
     bridge = MeshChatBridge(
         mesh,
-        owner_id=node_identity.bound_owner,
+        owner_id=mesh.personal_owner_id,
+        owner_setup=mesh.refresh_personal_owner,
         history=orch.history,
         calls=OrchestratorCalls(orch),
         state_path=node_identity.data_dir() / STATE_FILE,
@@ -969,7 +975,7 @@ async def start_for(orch: Any) -> None:
     if gateway is not None:
         global _wake
         _wake = push_wake.WakeTriggers(gateway)
-        _wake.attach(mesh, node_identity.bound_owner)
+        _wake.attach(mesh, mesh.personal_owner_id)
 
 
 async def stop_all() -> None:

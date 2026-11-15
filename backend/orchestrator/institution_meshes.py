@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from orchestrator.node_mailbox import MailboxError, MailboxProcess, MailboxSettings
-from orchestrator.node_mesh import IssuerLoader, MeshSettings, NodeMesh, NodeMeshError, default_issuers
+from orchestrator.node_mesh import MeshSettings, NodeMesh, NodeMeshError
 from shared import node_identity
 
 logger = logging.getLogger("Orchestrator.InstitutionMeshes")
@@ -49,6 +49,26 @@ class Owner:
     @property
     def slot(self) -> str:
         return node_identity.owner_principal_hash(self.partition)[len("sha256:"):][:32]
+
+
+IssuerLoader = Callable[[], Awaitable[List[Dict[str, str]]]]
+
+
+async def default_issuers() -> List[Dict[str, str]]:
+    from shared import jwks_cache, token_verify
+
+    client_id = os.getenv("KEYCLOAK_CLIENT_ID", "").strip()
+    found: List[Dict[str, str]] = []
+    if not client_id:
+        return found
+    for issuer in node_identity.accepted_issuers():
+        try:
+            jwks = await jwks_cache.get_jwks(token_verify.jwks_url_for(issuer))
+        except Exception:
+            logger.warning("node_mesh_issuer_keys_unavailable")
+            continue
+        found.append({"issuer": issuer, "client_id": client_id, "jwks_json": json.dumps(jwks)})
+    return found
 
 
 OwnerHook = Callable[[Owner, NodeMesh], Awaitable[None]]
@@ -139,26 +159,20 @@ class InstitutionMeshes:
             issuer_loader = self._issuers or default_issuers
             configured_issuers = await issuer_loader()
             owner_issuers = []
-            other_issuers = []
             for issuer in configured_issuers:
                 try:
                     matches_owner = node_identity.normalize_issuer(issuer.get("issuer")) == owner.issuer
                 except (AttributeError, node_identity.NodeIdentityError):
                     matches_owner = False
-                (owner_issuers if matches_owner else other_issuers).append(issuer)
+                if matches_owner:
+                    owner_issuers.append(issuer)
             if not owner_issuers:
                 raise NodeMeshError("institution_owner_issuer_unaccepted", 403)
             directory = self.owner_dir(owner)
             self._record_owner(directory, owner)
-            ordered_issuers = [*owner_issuers, *other_issuers]
-
-            async def load_owner_issuers() -> List[Dict[str, str]]:
-                return list(ordered_issuers)
-
             kwargs: Dict[str, Any] = {
                 "data_dir": directory,
                 "settings": self._settings,
-                "issuers": load_owner_issuers,
             }
             if self._binding is not None:
                 kwargs["binding"] = self._binding

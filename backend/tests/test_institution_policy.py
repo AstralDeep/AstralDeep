@@ -1,8 +1,10 @@
-"""Covers orchestrator/institution_policy.py through the request bridge: a stale or missing attestation is refused before anything runs, PHI work from a peer outside the PHI group is refused, a served ticket still passes the kernel check and the node's own tool gates, and one owner's bridge never sees another's requests."""
+"""Covers orchestrator/institution_policy.py through the request bridge: an unavailable external identity is refused before anything runs, PHI work from a peer outside the PHI group is refused, a served ticket still passes the kernel check and the node's own tool gates, and one owner's bridge never sees another's requests."""
 
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -15,7 +17,6 @@ from tests.test_node_mesh_chat import (
     StubMailbox,
     answering,
     call_for,
-    no_issuers,
     serve,
     settle,
 )
@@ -31,12 +32,21 @@ def clean():
     node_mesh.install(None)
 
 
-async def build(tmp_path, *, owner=OWNER, runner=None, calls=None, phi_member=True):
-    mesh = node_mesh.NodeMesh(data_dir=tmp_path, binding=fake, issuers=no_issuers, mailbox=StubMailbox())
+async def build(tmp_path, *, owner=OWNER, runner=None, calls=None, phi_member=True, external_identity=True):
+    mesh = node_mesh.NodeMesh(data_dir=tmp_path, binding=fake, mailbox=StubMailbox())
     await mesh.start()
     kernel = fake.Kernel.instances[-1]
     kernel.join()
     kernel.phi_member = phi_member
+    if external_identity:
+        async def external_standing(device_id):
+            roster = kernel.roster()
+            member = next((member for member in roster.members if member.device_id == device_id), None)
+            if member is not None:
+                return SimpleNamespace(device_id=device_id, phi=member.phi, external_identity_available=True)
+            return None
+
+        mesh.peer_standing = external_standing
     history = History()
     bridge = nmc.MeshChatBridge(
         mesh,
@@ -55,7 +65,7 @@ async def build(tmp_path, *, owner=OWNER, runner=None, calls=None, phi_member=Tr
     return mesh, kernel, history, bridge
 
 
-async def test_a_member_with_a_current_attestation_is_served(tmp_path):
+async def test_a_member_with_separately_verified_external_identity_is_served(tmp_path):
     mesh, kernel, history, bridge = await build(tmp_path)
     nmc.install(bridge)
     kernel.add_chat("c", [])
@@ -65,33 +75,32 @@ async def test_a_member_with_a_current_attestation_is_served(tmp_path):
     await bridge.stop()
 
 
-async def test_a_stale_attestation_is_refused_with_a_dotted_code_and_nothing_runs(tmp_path):
+async def test_mesh_membership_alone_cannot_supply_external_institution_identity(tmp_path):
     ran = []
 
     async def runner(*args):
         ran.append(args)
 
-    mesh, kernel, history, bridge = await build(tmp_path, runner=runner)
-    kernel.unattested.add("dev-phone")
+    mesh, kernel, history, bridge = await build(tmp_path, runner=runner, external_identity=False)
     kernel.add_chat("c", [])
     kernel.add_request("r1", "c")
     await serve(bridge, kernel, "r1")
-    assert kernel.refused == [("r1", "institution.attestation_stale")]
+    assert kernel.refused == [("r1", "institution.external_identity_unavailable")]
     assert not ran and not kernel.claimed and not kernel.recorded and not history.created
     await bridge.stop()
 
 
-async def test_the_next_request_is_served_once_the_device_has_attested_again(tmp_path):
+async def test_separately_verified_external_identity_is_required_on_every_request(tmp_path):
     mesh, kernel, history, bridge = await build(tmp_path)
     nmc.install(bridge)
-    kernel.unattested.add("dev-phone")
+    mesh.peer_standing = AsyncMock(return_value=SimpleNamespace(phi=True, external_identity_available=False))
     kernel.add_chat("c", [])
     kernel.add_request("r1", "c")
     await serve(bridge, kernel, "r1")
-    kernel.unattested.clear()
+    mesh.peer_standing.return_value.external_identity_available = True
     kernel.add_request("r2", "c")
     await serve(bridge, kernel, "r2")
-    assert kernel.refused == [("r1", "institution.attestation_stale")]
+    assert kernel.refused == [("r1", "institution.external_identity_unavailable")]
     assert kernel.request("r2").state == fake.RequestState.ANSWERED
     await bridge.stop()
 

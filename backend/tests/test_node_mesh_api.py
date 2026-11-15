@@ -7,13 +7,13 @@ import pytest
 from orchestrator import node_mesh
 from tests import fake_astral_kernel as fake
 from tests.test_node_api import JSON, OFFER, client, env  # noqa: F401
-from tests.test_node_mesh import StubMailbox, no_issuers
+from tests.test_node_mesh import StubMailbox
 
 
 @pytest.fixture
 async def mesh(tmp_path):
     fake.Kernel.instances.clear()
-    instance = node_mesh.NodeMesh(data_dir=tmp_path / "mesh-home", binding=fake, issuers=no_issuers, mailbox=StubMailbox())
+    instance = node_mesh.NodeMesh(data_dir=tmp_path / "mesh-home", binding=fake, mailbox=StubMailbox())
     await instance.start()
     node_mesh.install(instance)
     yield instance
@@ -31,7 +31,7 @@ async def test_descriptor_reports_the_endpoint_before_joining_but_not_the_mailbo
     async with client(env) as http:
         body = (await http.get("/api/node/descriptor")).json()
     assert body["transport_addresses"] == [{"kind": "iroh", "address": '{"id":"endpoint-1","addrs":["127.0.0.1:1"]}'}]
-    assert body["mesh"] == {"state": "not_enrolled", "mesh_id": None, "member_id": None, "hardware_backed": False, "requests": True}
+    assert body["mesh"] == {"state": "not_enrolled", "mesh_id": None, "member_id": None, "hardware_backed": False, "requests": True, "owner_binding": {"state": "setup_required", "code": "mesh.not_enrolled"}}
     assert "mailbox" not in body and "mesh-peer" in body["capabilities"] and "mesh-mailbox" not in body["capabilities"]
 
 

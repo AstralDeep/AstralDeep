@@ -28,9 +28,6 @@ class StubMailbox:
         return {"running": True, "address": None}
 
 
-async def no_issuers():
-    return []
-
 
 class History:
     def __init__(self):
@@ -99,7 +96,7 @@ def clean():
 
 
 async def build(tmp_path, runner=None, *, policy=None, phi=False, start=True, turn_seconds=5.0, owner=OWNER, joined=True, calls=None, phi_member=False):
-    mesh = node_mesh.NodeMesh(data_dir=tmp_path, binding=fake, issuers=no_issuers, mailbox=StubMailbox())
+    mesh = node_mesh.NodeMesh(data_dir=tmp_path, binding=fake, mailbox=StubMailbox())
     await mesh.start()
     kernel = fake.Kernel.instances[-1]
     kernel.phi_member = phi_member
@@ -1157,7 +1154,6 @@ async def test_start_for_wires_the_bridge_and_stop_all_tears_it_down(tmp_path, m
     monkeypatch.setenv(ni.DATA_DIR_ENV, str(tmp_path))
     monkeypatch.setenv("ASTRAL_NODE_MAILBOX", "0")
     monkeypatch.setattr(node_mesh, "load_binding", lambda: fake)
-    monkeypatch.setattr(node_mesh, "default_issuers", no_issuers)
     await nmc.start_for(SimpleNamespace(history=History()))
     assert nmc.active() is not None and node_mesh.current() is not None and nmc.active()._calls is not None
     await nmc.stop_all()
@@ -1171,7 +1167,6 @@ async def test_start_for_without_the_export_keeps_the_mesh_but_no_bridge(tmp_pat
     monkeypatch.setenv(ni.DATA_DIR_ENV, str(tmp_path))
     monkeypatch.setenv("ASTRAL_NODE_MAILBOX", "0")
     monkeypatch.setattr(node_mesh, "load_binding", lambda: fake)
-    monkeypatch.setattr(node_mesh, "default_issuers", no_issuers)
     monkeypatch.delattr(fake.Kernel, "record_peer_turn")
     await nmc.start_for(SimpleNamespace(history=History()))
     assert nmc.active() is None and node_mesh.current() is not None

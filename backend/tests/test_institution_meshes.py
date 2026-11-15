@@ -64,14 +64,13 @@ async def test_the_same_subject_from_another_issuer_is_a_separate_owner_with_its
     await registry.stop()
 
 
-async def test_each_owner_issuer_is_first_while_other_accepted_issuers_remain_trusted(tmp_path):
+async def test_external_issuer_admission_is_isolated_from_kernel_configuration(tmp_path):
     registry = meshes(tmp_path)
     first = await registry.for_owner(Owner.verified(ISS, "alice"))
     second = await registry.for_owner(Owner.verified(OTHER_ISS, "bob"))
-    first_issuers = first.kernel.config.issuers
-    second_issuers = second.kernel.config.issuers
-    assert [issuer.issuer for issuer in first_issuers] == [ISS, OTHER_ISS]
-    assert [issuer.issuer for issuer in second_issuers] == [OTHER_ISS, ISS]
+    assert not hasattr(first.kernel.config, "issuers")
+    assert not hasattr(second.kernel.config, "issuers")
+    assert registry.owner_dir(Owner.verified(ISS, "alice")) != registry.owner_dir(Owner.verified(OTHER_ISS, "bob"))
     await registry.stop()
 
 

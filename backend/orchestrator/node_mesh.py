@@ -10,10 +10,11 @@ import importlib
 import json
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from orchestrator import node_mesh_keys
 from orchestrator.node_mailbox import MailboxError, MailboxProcess, MailboxSettings
@@ -168,7 +169,7 @@ def _relay(binding: Any, relay: Sequence[str]) -> Any:
 class PeerStanding:
     device_id: str
     phi: bool
-    needs_attestation: bool
+    external_identity_available: bool = False
 
 
 @dataclass(frozen=True)
@@ -224,26 +225,6 @@ class StepRecord:
     receipt: Optional[str] = None
 
 
-IssuerLoader = Callable[[], Awaitable[List[Dict[str, str]]]]
-
-
-async def default_issuers() -> List[Dict[str, str]]:
-    from shared import jwks_cache, token_verify
-
-    client_id = os.getenv("KEYCLOAK_CLIENT_ID", "").strip()
-    found: List[Dict[str, str]] = []
-    if not client_id:
-        return found
-    for issuer in node_identity.accepted_issuers():
-        try:
-            jwks = await jwks_cache.get_jwks(token_verify.jwks_url_for(issuer))
-        except Exception:
-            logger.warning("node_mesh_issuer_keys_unavailable")
-            continue
-        found.append({"issuer": issuer, "client_id": client_id, "jwks_json": json.dumps(jwks)})
-    return found
-
-
 class NodeMesh:
     def __init__(
         self,
@@ -251,7 +232,6 @@ class NodeMesh:
         data_dir: Path,
         settings: Optional[MeshSettings] = None,
         binding: Any = None,
-        issuers: Optional[IssuerLoader] = None,
         mailbox: Optional[MailboxProcess] = None,
         mailbox_address: Optional[str] = None,
     ):
@@ -259,14 +239,16 @@ class NodeMesh:
         self._data_dir = Path(data_dir)
         self._settings = settings or MeshSettings()
         self._binding = binding if binding is not None else load_binding()
-        self._issuers = issuers or default_issuers
         self._mailbox = mailbox
         self._kernel: Any = None
         self._keys: Optional[node_mesh_keys.NodeMeshKeys] = None
         self._listener: Optional[_Listener] = None
         self._started = False
         self._mailbox_error: Optional[str] = None
+        self._personal_owner: Optional[str] = None
+        self._owner_binding = {"state": "setup_required", "code": "mesh.not_enrolled"}
         self._lock = asyncio.Lock()
+        self._owner_lock = asyncio.Lock()
 
     @property
     def kernel(self) -> Any:
@@ -295,13 +277,14 @@ class NodeMesh:
         async with self._lock:
             if self._started:
                 return
+            self._personal_owner = None
+            self._owner_binding = {"state": "setup_required", "code": "mesh.not_enrolled"}
             binding = self._binding
             keys = await asyncio.to_thread(
                 node_mesh_keys.NodeMeshKeys.load_or_create,
                 self._data_dir,
                 new_secret=lambda: bytes(binding.new_operations_secret()),
             )
-            issuers = await self._issuers()
             self._keys = keys
             self._listener = _Listener(binding)
             await self._start_mailbox()
@@ -312,7 +295,6 @@ class NodeMesh:
                 restore_marker=keys.restore_marker,
                 device_label=self._settings.label,
                 device_kind=binding.DeviceKind.NODE,
-                issuers=[binding.IssuerConfig(**item) for item in issuers],
                 network=binding.NetworkConfig(
                     relay=_relay(binding, self._settings.relay),
                     local_discovery=self._settings.local_discovery,
@@ -359,6 +341,7 @@ class NodeMesh:
             if not self._started:
                 return
             self._started = False
+            self._personal_owner = None
             try:
                 await self._kernel.stop_network()
             finally:
@@ -370,6 +353,59 @@ class NodeMesh:
     @staticmethod
     def _enrollment(status: Any) -> str:
         return getattr(status.state, "name", str(status.state))
+
+    def personal_owner_id(self) -> Optional[str]:
+        return self._personal_owner if self._started else None
+
+    async def refresh_personal_owner(self) -> Optional[str]:
+        async with self._owner_lock:
+            return await self._refresh_personal_owner()
+
+    async def _refresh_personal_owner(self) -> Optional[str]:
+        try:
+            if not node_identity.is_personal() or self._data_dir.resolve() != node_identity.data_dir().resolve():
+                raise NodeMeshError("node.personal_mesh_required")
+            kernel = self.kernel
+            status = await self._request_call(kernel.mesh_status)
+            if self._enrollment(status) not in ENROLLED_STATES:
+                self._personal_owner = None
+                self._owner_binding = {"state": "setup_required", "code": "mesh.not_enrolled"}
+                return None
+
+            def bind():
+                principal = getattr(kernel, "mesh_principal", None)
+                if not callable(principal):
+                    raise MeshUnavailable("principal_unsupported")
+                proof = principal()
+                mesh_id = getattr(proof, "mesh_id", None)
+                if type(mesh_id) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", mesh_id) is None:
+                    raise NodeMeshError("node.owner_unproven")
+                roster = kernel.roster()
+                if mesh_id != status.mesh_id or mesh_id != roster.mesh_id:
+                    raise NodeMeshError("node.mesh_mismatch")
+                if roster.stopped:
+                    raise NodeMeshError("gate.mesh_stopped")
+                if not any(member.is_local and member.device_id == status.device_id for member in roster.members):
+                    raise NodeMeshError("gate.device_not_on_roster")
+                if getattr(principal(), "mesh_id", None) != mesh_id or self.kernel is not kernel or not self._started:
+                    raise NodeMeshError("node.mesh_admission_unavailable")
+                try:
+                    return node_identity.bind_mesh_owner(mesh_id)
+                except node_identity.OwnerMismatch:
+                    raise NodeMeshError("node.owner_mismatch") from None
+                except node_identity.NodeIdentityError:
+                    raise NodeMeshError("node.owner_binding_unavailable") from None
+
+            owner = await self._request_call(bind)
+            if self.kernel is not kernel or not self._started:
+                raise NodeMeshError("node.mesh_admission_unavailable")
+            self._personal_owner = owner
+            self._owner_binding = {"state": "ready", "code": None}
+            return owner
+        except NodeMeshError as exc:
+            self._personal_owner = None
+            self._owner_binding = {"state": "refused", "code": exc.code}
+            return None
 
     async def status(self) -> Dict[str, Any]:
         if not self._started:
@@ -395,6 +431,7 @@ class NodeMesh:
             "endpoint_address": address,
             "mailbox": mailbox,
             "requests": self.requests_supported,
+            "owner_binding": dict(self._owner_binding),
         }
 
     async def pairing_offer(self) -> Dict[str, Any]:
@@ -444,7 +481,7 @@ class NodeMesh:
         roster = await asyncio.to_thread(self.kernel.roster)
         for device in roster.members:
             if device.device_id == device_id:
-                return PeerStanding(device_id, bool(device.phi), bool(getattr(device, "unattested", False)))
+                return PeerStanding(device_id, bool(device.phi))
         return None
 
     async def sync_peers(self) -> List[Any]:
@@ -516,7 +553,10 @@ class NodeMesh:
             proof = principal()
             if self.kernel is not kernel:
                 raise NodeMeshError("node.mesh_admission_unavailable")
-            if self._enrollment(status) not in ENROLLED_STATES or not proof.mesh_id:
+            mesh_id = getattr(proof, "mesh_id", None)
+            if type(mesh_id) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", mesh_id) is None:
+                raise NodeMeshError("node.owner_unproven")
+            if self._enrollment(status) not in ENROLLED_STATES:
                 raise NodeMeshError("mesh.not_enrolled")
             if proof.mesh_id != status.mesh_id or proof.mesh_id != roster.mesh_id:
                 raise NodeMeshError("node.mesh_mismatch")
@@ -542,11 +582,7 @@ class NodeMesh:
                         raise NodeMeshError("request.closed")
                 elif state != "PENDING":
                     raise NodeMeshError("request.closed")
-            try:
-                owners = {node_identity.canonical_owner_id(identity.issuer, identity.subject) for identity in proof.identities}
-            except (AttributeError, TypeError, node_identity.NodeIdentityError):
-                raise NodeMeshError("node.owner_unproven") from None
-            if owner not in owners:
+            if owner != mesh_id:
                 raise NodeMeshError("node.owner_mismatch")
             return PersonalAuthorityContext(proof.mesh_id, status.device_id, request)
 

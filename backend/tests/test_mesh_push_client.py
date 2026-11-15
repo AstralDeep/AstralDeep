@@ -213,3 +213,10 @@ async def test_unstarted_context_missing_route_and_local_limiter_send_nothing():
     assert (await gateway.wake(OWNER, DEVICE)).status == pw.SENT
     assert (await gateway.wake(OWNER, DEVICE)).status == pw.RATE_LIMITED
     assert len(http.calls) == 1
+
+
+async def test_accountless_principal_without_a_publisher_binding_has_no_destination():
+    _, native, http, gateway = setup()
+    native.mesh_principal = lambda: NS(mesh_id=MESH)
+    assert await gateway.wake(MESH, DEVICE) == pw.WakeOutcome(pw.NO_DESTINATION)
+    assert http.calls == []

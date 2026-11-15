@@ -250,3 +250,81 @@ def test_unwritable_owner_binding_is_reported(tmp_path, monkeypatch):
 def test_principal_hash_is_stable():
     assert ni.owner_principal_hash("o") == ni.owner_principal_hash("o")
     assert ni.owner_principal_hash("o").startswith("sha256:")
+
+
+def test_mesh_owner_binding_cannot_hide_an_existing_file_behind_environment(node, monkeypatch):
+    ni.bind_owner("oidc.old.owner")
+    mesh = "sha256:" + "a" * 64
+    monkeypatch.setenv(ni.OWNER_ENV, mesh)
+    with pytest.raises(ni.OwnerMismatch):
+        ni.bind_mesh_owner(mesh)
+    assert (node / ni.OWNER_FILE).read_text() == "oidc.old.owner"
+
+
+def test_concurrent_owner_binding_publishes_one_complete_owner_and_preserves_the_winner(node, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+
+    ready = threading.Barrier(12)
+    publishing = threading.Barrier(12)
+    link = os.link
+
+    def publish(*args):
+        publishing.wait()
+        return link(*args)
+
+    monkeypatch.setattr(os, "link", publish)
+
+    def bind(index):
+        ready.wait()
+        return ni.bind_owner("sha256:" + f"{index:064x}")
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        owners = list(pool.map(bind, range(12)))
+    assert len(set(owners)) == 1
+    assert ni.bound_owner() == owners[0]
+    assert len(owners[0]) == 71
+    assert stat.S_IMODE((node / ni.OWNER_FILE).stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("mesh", [None, "", "mesh-1", "sha256:" + "A" * 64])
+def test_mesh_owner_binding_rejects_unusable_principal(node, mesh):
+    with pytest.raises(ni.NodeIdentityError):
+        ni.bind_mesh_owner(mesh)
+    assert not (node / ni.OWNER_FILE).exists()
+
+
+@pytest.mark.parametrize("operation", ["bind_owner", "bind_mesh_owner"])
+def test_empty_existing_owner_file_is_a_refusal_not_permission_to_rebind(node, operation):
+    node.mkdir(parents=True)
+    (node / ni.OWNER_FILE).write_text("")
+    with pytest.raises(ni.NodeIdentityError):
+        getattr(ni, operation)("sha256:" + "a" * 64)
+    assert (node / ni.OWNER_FILE).read_text() == ""
+
+
+@pytest.mark.parametrize("failure", ["read", "link", "empty_race"])
+def test_owner_file_failure_never_returns_success_or_leaves_temporary_keys(node, monkeypatch, failure):
+    from pathlib import Path
+
+    mesh = "sha256:" + "a" * 64
+    if failure == "read":
+        read = Path.read_text
+
+        def denied(path, *args, **kwargs):
+            if path == node / ni.OWNER_FILE:
+                raise PermissionError("denied")
+            return read(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", denied)
+    else:
+        def denied(*_args):
+            if failure == "empty_race":
+                (node / ni.OWNER_FILE).write_text("")
+                raise FileExistsError()
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(os, "link", denied)
+    with pytest.raises(ni.NodeIdentityError):
+        ni.bind_mesh_owner(mesh)
+    assert not list(node.glob(".owner-*"))

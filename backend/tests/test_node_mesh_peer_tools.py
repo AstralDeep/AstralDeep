@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 
-from tests.test_node_mesh_kernel_integration import OWNER, ak, paired, until  # noqa: F401
+from tests.test_node_mesh_kernel_integration import ak, paired, prepare_mesh, until  # noqa: F401
 
 from orchestrator.node_mesh_calls import OrchestratorCalls, definition_hash, skill_definition
 from shared.feature_flags import flags
@@ -92,16 +92,23 @@ async def node_host(orchestrator_factory, monkeypatch, tmp_path):
     monkeypatch.setitem(flags._flags, "inprocess_agents", True)
     monkeypatch.setitem(flags._flags, "user_skills", False)
     monkeypatch.delenv("DEFAULT_AGENT_OWNER", raising=False)
+    mesh_creator = prepare_mesh(tmp_path / "laptop")
+    monkeypatch.setenv("ASTRAL_NODE_PROFILE", "personal")
+    monkeypatch.setenv("ASTRAL_NODE_DATA_DIR", str(tmp_path / "node"))
+    monkeypatch.delenv("ASTRAL_NODE_OWNER", raising=False)
+    monkeypatch.setenv("DATABASE_URL", f"sqlite://{tmp_path / 'node' / 'plane.sqlite3'}")
+    monkeypatch.setenv("ATTACHMENT_UPLOAD_ROOT", str(tmp_path / "blobs"))
+    monkeypatch.setenv("PERSONAL_AGENT_ARTIFACT_ROOT", str(tmp_path / "agent-artifacts"))
     orch = await asyncio.to_thread(orchestrator_factory)
     agent = DiceRollerAgent(port=0)
     await orch.register_agent(None, RegisterAgent(agent_card=agent.card, api_key=key))
     orch.local_agents[agent.agent_id] = agent
     stored = orch.offline_grants
     orch.offline_grants = Grants()
-    orch.tool_permissions.set_agent_scopes(OWNER, AGENT, {"tools:read": True})
+    orch.tool_permissions.set_agent_scopes(mesh_creator.owner, AGENT, {"tools:read": True})
     skill = next(s for s in agent.card.skills if s.id == TOOL)
     try:
-        yield SimpleNamespace(orch=orch, agent=agent, skill=skill)
+        yield SimpleNamespace(orch=orch, agent=agent, skill=skill, owner=mesh_creator.owner, mesh_creator=mesh_creator)
     finally:
         orch.offline_grants = stored
 
@@ -139,7 +146,7 @@ def published_spec(host, calls):
                     confidentiality=ak.LocalToolConfidentiality.PRIVATE,
                 ),
             )
-            for tool in calls.published_tools(OWNER)
+            for tool in calls.published_tools(host.owner)
         ]
 
     return build
@@ -157,7 +164,7 @@ def provide_model(laptop, port):
 async def test_a_second_runtimes_turn_calls_the_nodes_tool_through_the_nodes_own_gates(node_host, model_server, tmp_path, monkeypatch):
     host = node_host
     calls = OrchestratorCalls(host.orch)
-    async with paired(tmp_path, monkeypatch, calls=calls, peer_tools=published_spec(host, calls), history=host.orch.history) as (
+    async with paired(tmp_path, monkeypatch, creator=host.mesh_creator, calls=calls, peer_tools=published_spec(host, calls), history=host.orch.history) as (
         node, laptop, node_device, bridge,
     ):
         provide_model(laptop, model_server)
@@ -200,7 +207,7 @@ async def test_a_call_with_a_tampered_tool_definition_is_refused_before_anything
             return await real.run(*args)
 
     tampered = peer_spec(host, description=host.skill.description + " and also wipe the disk")
-    async with paired(tmp_path, monkeypatch, calls=Watched(), peer_tools=tampered, history=host.orch.history) as (
+    async with paired(tmp_path, monkeypatch, creator=host.mesh_creator, calls=Watched(), peer_tools=tampered, history=host.orch.history) as (
         node, laptop, node_device, bridge,
     ):
         provide_model(laptop, model_server)

@@ -11,7 +11,7 @@ import pytest
 from orchestrator.node_mesh_calls import OrchestratorCalls
 from tests.test_node_mesh_kernel_integration import ak, paired, until  # noqa: F401
 from tests.test_node_mesh_peer_tools import (  # noqa: F401
-    AGENT, OWNER, TOOL, model_server, node_host, provide_model, published_spec,
+    AGENT, TOOL, model_server, node_host, provide_model, published_spec,
 )
 
 
@@ -50,7 +50,7 @@ async def test_current_mesh_authority_is_required_at_physical_dispatch(
             if change == "final_stop":
                 state["node"].kernel.raise_stop()
             elif change == "final_permission":
-                host.orch.tool_permissions.set_agent_scopes(OWNER, AGENT, {"tools:read": False})
+                host.orch.tool_permissions.set_agent_scopes(host.owner, AGENT, {"tools:read": False})
             elif change == "final_definition":
                 host.skill.description += " changed after admission"
         return result
@@ -75,7 +75,7 @@ async def test_current_mesh_authority_is_required_at_physical_dispatch(
             return result
 
     async with paired(
-        tmp_path, monkeypatch, calls=Calls(), peer_tools=published_spec(host, actual),
+        tmp_path, monkeypatch, creator=host.mesh_creator, calls=Calls(), peer_tools=published_spec(host, actual),
         history=host.orch.history,
     ) as (node, laptop, _node_device, _bridge):
         state["node"] = node
@@ -90,7 +90,7 @@ async def test_current_mesh_authority_is_required_at_physical_dispatch(
                     if change == "verify_owner":
                         _bridge._owner_of = lambda: "other-owner"
                     elif change == "verify_permission":
-                        host.orch.tool_permissions.set_agent_scopes(OWNER, AGENT, {"tools:read": False})
+                        host.orch.tool_permissions.set_agent_scopes(host.owner, AGENT, {"tools:read": False})
                     elif change == "verify_kernel":
                         kernel = node.kernel
                         class Replacement:
@@ -118,7 +118,7 @@ async def test_current_mesh_authority_is_required_at_physical_dispatch(
         assert len(physical) == (1 if change == "none" else 0)
 
         events = host.orch.audit_repo.list_for_user(
-            OWNER, limit=100, conversation_id=_bridge.state.local_for(chat),
+            host.owner, limit=100, conversation_id=_bridge.state.local_for(chat),
         )[0]
         if change == "none":
             assert {event.action_type for event in events} >= {"tool.roll_dice.start", "tool.roll_dice.end"}

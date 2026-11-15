@@ -18,7 +18,7 @@ from orchestrator.node_mesh_calls import OrchestratorCalls, definition_hash, gra
 from shared.feature_flags import flags
 from shared.protocol import AgentSkill, RegisterAgent
 from tests.test_node_mesh_kernel_integration import ak, paired, until  # noqa: F401
-from tests.test_node_mesh_peer_tools import AGENT, OWNER, TOOL, node_host  # noqa: F401
+from tests.test_node_mesh_peer_tools import AGENT, TOOL, node_host  # noqa: F401
 
 SIBLING = "general-1"
 SIBLING_TOOL = "flip_coin"
@@ -88,7 +88,7 @@ async def turn_host(node_host, monkeypatch):  # noqa: F811
             raise AssertionError(f"{_agent} must not run")
 
         monkeypatch.setattr(agent, "handle_mcp_request", refuse)
-        orch.tool_permissions.set_agent_scopes(OWNER, agent_id, {"tools:read": True})
+        orch.tool_permissions.set_agent_scopes(host.owner, agent_id, {"tools:read": True})
 
     sent = []
 
@@ -106,8 +106,8 @@ async def turn_host(node_host, monkeypatch):  # noqa: F811
         ve.ExecutorSettings("http://executor.test:8800", "operator", agent_tokens={SANDBOXED: "agent-token"}),
         httpx.AsyncClient(transport=httpx.MockTransport(executor)),
     )
-    orch.tool_permissions.set_agent_scopes(OWNER, SANDBOXED, {"tools:read": True})
-    orch._llm_store.set_sync(OWNER, provider="custom", base_url="http://test.invalid/v1", model="test-model", api_key="test-key")
+    orch.tool_permissions.set_agent_scopes(host.owner, SANDBOXED, {"tools:read": True})
+    orch._llm_store.set_sync(host.owner, provider="custom", base_url="http://test.invalid/v1", model="test-model", api_key="test-key")
     orch._resolve_llm_client_for = AsyncMock(return_value=(object(), None, SimpleNamespace(model="test-model", base_url=None)))
     orch.summarize_chat_title = AsyncMock()
     try:
@@ -159,7 +159,7 @@ async def run_turn(host, node, laptop, node_device, bridge, calls, *, before=Non
     )
     node.mint_ticket = minted.original
     local = bridge.state.local_for(chat)
-    events = host.orch.audit_repo.list_for_user(OWNER, limit=200, conversation_id=local)[0] if local else []
+    events = host.orch.audit_repo.list_for_user(host.owner, limit=200, conversation_id=local)[0] if local else []
     return SimpleNamespace(
         model=model, chat=chat, request=laptop.request(request), local=local, events=events,
         minted=minted.calls, request_id=request,
@@ -187,7 +187,7 @@ def denials(outcome, tool):
 def bridge_for(host, tmp_path, monkeypatch, runner=None):
     calls = OrchestratorCalls(host.orch)
     return paired(
-        tmp_path, monkeypatch, calls=calls, history=host.orch.history,
+        tmp_path, monkeypatch, creator=host.mesh_creator, calls=calls, history=host.orch.history,
         runner=runner or node_mesh_chat.orchestrator_runner(host.orch),
     )
 
@@ -330,7 +330,7 @@ async def test_a_tool_the_owner_has_not_enabled_never_dispatches_even_with_a_mes
         await grant(node, laptop, dice_grant(host))
 
         async def disable():
-            host.orch.tool_permissions.set_agent_scopes(OWNER, AGENT, {"tools:read": False})
+            host.orch.tool_permissions.set_agent_scopes(host.owner, AGENT, {"tools:read": False})
 
         outcome = await run_turn(host, node, laptop, node_device, bridge, [(TOOL, {"n": 2})], before=disable)
     assert host.dispatched[AGENT] == [] and outcome.minted == [], diag(outcome, host)
@@ -409,7 +409,7 @@ async def test_authority_lost_after_gate_entry_refuses_the_effect(turn_host, tmp
             elif change == "definition":
                 host.skill.description += " changed mid-turn"
             elif change == "permission":
-                host.orch.tool_permissions.set_agent_scopes(OWNER, AGENT, {"tools:read": False})
+                host.orch.tool_permissions.set_agent_scopes(host.owner, AGENT, {"tools:read": False})
             elif change == "unticketed":
                 bound.held.clear()
             elif change == "other_arguments":
@@ -439,14 +439,14 @@ async def test_an_unticketed_dispatch_in_a_node_turn_is_refused_although_the_cei
         tools = {(AGENT, TOOL, skill_definition(host.skill)): "tools:read"}
 
         async def catalog():
-            return OrchestratorCalls(host.orch).catalog(OWNER)
+            return OrchestratorCalls(host.orch).catalog(host.owner)
 
         async def never(*args):
             raise AssertionError("no mint without gate entry")
 
-        with node_mesh_admission.turn(node, lambda: OWNER, OWNER, "local-x", tools, catalog, never):
+        with node_mesh_admission.turn(node, lambda: host.owner, host.owner, "local-x", tools, catalog, never):
             response = await host.orch._dispatch_tool_call(
-                AGENT, TOOL, {"n": 1}, 30.0, socket, protected_owner_id=OWNER,
+                AGENT, TOOL, {"n": 1}, 30.0, socket, protected_owner_id=host.owner,
                 protected_channel="background", protected_conversation_id="local-x",
             )
     assert response.error is not None and host.dispatched[AGENT] == []

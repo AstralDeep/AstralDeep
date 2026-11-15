@@ -1,5 +1,5 @@
 """Pairs the node into a mesh created by a second runtime through the real kernel binding, syncs a chat both ways, delivers events between devices that are never online together through the node's own supervised mailbox, and answers or refuses requests the second runtime sends to the node.
-It runs only where the pinned kernel wheel and the mailbox binary are installed, which is the node image, using software keys, a test token issuer and loopback networking."""
+It runs only where the pinned kernel wheel and the mailbox binary are installed, which is the node image, using software keys and loopback networking."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ import pytest
 assert shutil.which("astral-mailbox") is not None, "the pinned Kernel mailbox is required for real-binding tests"
 
 from contextlib import asynccontextmanager  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
 
 from cryptography.hazmat.primitives import hashes  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
@@ -93,7 +94,7 @@ class Listener(ak.KernelListener):
         pass
 
 
-def open_device(directory, label: str, marker: int, mailbox: str, peer_tools=None):
+def device_config(directory, label: str, marker: int, mailbox: str | None):
     config = ak.KernelConfig(
         data_dir=str(directory),
         operations_secret=ak.new_operations_secret(),
@@ -101,7 +102,6 @@ def open_device(directory, label: str, marker: int, mailbox: str, peer_tools=Non
         restore_marker=bytes([marker]) * 32,
         device_label=label,
         device_kind=ak.DeviceKind.DESKTOP,
-        issuers=[ak.IssuerConfig(**issuer_json())],
         network=ak.NetworkConfig(
             relay=ak.RelayChoice.DISABLED(),
             local_discovery=False,
@@ -111,7 +111,21 @@ def open_device(directory, label: str, marker: int, mailbox: str, peer_tools=Non
             mailbox=mailbox,
         ),
     )
-    return ak.Kernel.open(config, Signer(), None, None, Listener(), peer_tools=peer_tools)
+    return config
+
+
+def open_device(directory, label: str, marker: int, mailbox: str | None, peer_tools=None):
+    return ak.Kernel.open(device_config(directory, label, marker, mailbox), Signer(), None, None, Listener(), peer_tools=peer_tools)
+
+
+def prepare_mesh(directory):
+    config = device_config(directory, "laptop", 1, None)
+    signer = Signer()
+    kernel = ak.Kernel.open(config, signer, None, None, Listener())
+    created = kernel.create_mesh()
+    kernel.confirm_mesh_recovery()
+    assert kernel.mesh_principal().mesh_id == created.mesh_id
+    return SimpleNamespace(config=config, signer=signer, owner=created.mesh_id)
 
 
 async def until(condition, what, seconds=40):
@@ -155,7 +169,7 @@ async def test_the_node_joins_a_mesh_syncs_chats_and_relays_through_its_mailbox(
         sync_interval_ms=500,
         mailbox=MailboxSettings(loopback=True, relay=("none",), bind=(f"127.0.0.1:{free_port()}",)),
     )
-    node = node_mesh.NodeMesh(data_dir=tmp_path / "node", settings=settings, issuers=test_issuers)
+    node = node_mesh.NodeMesh(data_dir=tmp_path / "node", settings=settings)
     await node.start()
     node_mesh.install(node)
     running = []
@@ -168,8 +182,8 @@ async def test_the_node_joins_a_mesh_syncs_chats_and_relays_through_its_mailbox(
         assert before["mesh"]["member_id"] is None and "mailbox" not in before
 
         laptop = open_device(tmp_path / "laptop", "laptop", 1, mailbox_address)
-        request = laptop.begin_mesh_creation()
-        created = laptop.complete_mesh_creation(token(request.nonce))
+        created = laptop.create_mesh()
+        laptop.confirm_mesh_recovery()
         await laptop.start_network()
         running.append(laptop)
 
@@ -228,7 +242,6 @@ async def test_the_node_joins_a_mesh_syncs_chats_and_relays_through_its_mailbox(
         await node.stop()
 
 
-OWNER = node_identity.canonical_owner_id(ISS, "user-1")
 NODE_TEXT = "node says: "
 
 
@@ -256,16 +269,16 @@ def canonical(value) -> str:
 
 
 @asynccontextmanager
-async def paired(tmp_path, monkeypatch, *, phi_protected=False, calls=None, peer_tools=None, history=None, runner=None, kernel_answers=False):
+async def paired(tmp_path, monkeypatch, *, phi_protected=False, calls=None, peer_tools=None, history=None, runner=None, kernel_answers=False, creator=None):
     monkeypatch.setenv("ASTRAL_NODE_PROFILE", "personal")
     monkeypatch.setenv("ASTRAL_NODE_DATA_DIR", str(tmp_path / "node"))
-    monkeypatch.setenv("ASTRAL_NODE_OWNER", OWNER)
+    monkeypatch.delenv("ASTRAL_NODE_OWNER", raising=False)
     node_identity.load_node_identity()
     settings = node_mesh.MeshSettings(
         label="node", relay=("none",), loopback_only=True, local_discovery=False, internet_lookup=False, sync_interval_ms=500,
         mailbox=MailboxSettings(loopback=True, relay=("none",), bind=(f"127.0.0.1:{free_port()}",)),
     )
-    node = node_mesh.NodeMesh(data_dir=tmp_path / "node", settings=settings, issuers=test_issuers)
+    node = node_mesh.NodeMesh(data_dir=tmp_path / "node", settings=settings)
     await node.start()
     bridge = None
     laptop = None
@@ -273,20 +286,29 @@ async def paired(tmp_path, monkeypatch, *, phi_protected=False, calls=None, peer
         status = await node.status()
         node_device = (await node.kernel.mesh_status()).device_id
         tools = peer_tools(node_device) if peer_tools else None
-        laptop = open_device(tmp_path / "laptop", "laptop", 1, status["mailbox"]["address"], tools)
-        request = laptop.begin_mesh_creation()
-        laptop.complete_mesh_creation(token(request.nonce))
+        if creator is None:
+            laptop = open_device(tmp_path / "laptop", "laptop", 1, status["mailbox"]["address"], tools)
+            laptop.create_mesh()
+            laptop.confirm_mesh_recovery()
+            owner = laptop.mesh_principal().mesh_id
+        else:
+            creator.config.network.mailbox = status["mailbox"]["address"]
+            laptop = ak.Kernel.open(creator.config, creator.signer, None, None, Listener(), peer_tools=tools)
+            owner = creator.owner
+            assert laptop.mesh_principal().mesh_id == owner
         await laptop.start_network()
         offer = await node.pairing_offer()
         await laptop.approve_pairing(offer["payload"], ak.HistoryGrant.ALL)
         await until(lambda: enrolled(node), "the node to join")
         bridge = node_mesh_chat.MeshChatBridge(
-            node, owner_id=OWNER, history=history or History(), runner=None if kernel_answers else runner or model_turn, calls=calls,
+            node, owner_id=node.personal_owner_id, owner_setup=node.refresh_personal_owner, history=history or History(), runner=None if kernel_answers else runner or model_turn, calls=calls,
             state_path=tmp_path / "chats.json",
             phi_active=lambda owner: phi_protected, poll_seconds=0.2,
         )
         node_mesh_chat.install(bridge)
         await bridge.start()
+        await bridge.scan()
+        assert node_identity.bound_owner() == owner == node.personal_owner_id()
         yield node, laptop, (await node.status())["member_id"], bridge
     finally:
         node_mesh_chat.install(None)

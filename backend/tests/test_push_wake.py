@@ -17,7 +17,7 @@ from orchestrator.push_providers import ApnsPushAdapter, PushProviderError
 from shared import institution_profile as ip
 from shared import node_identity as ni
 from tests import fake_astral_kernel as fake
-from tests.test_node_mesh_chat import History, StubMailbox, answering, no_issuers, settle
+from tests.test_node_mesh_chat import History, StubMailbox, answering, settle
 
 PHONE = "sha256:" + "ab" * 32
 HEX = "ab" * 32
@@ -344,7 +344,7 @@ async def test_a_running_trigger_wakes_on_a_kernel_change_and_survives_a_failing
 
 async def test_the_whole_path_from_a_kernel_change_to_a_content_free_apns_request(tmp_path):
     fake.Kernel.instances.clear()
-    mesh = node_mesh.NodeMesh(data_dir=tmp_path, binding=fake, issuers=no_issuers, mailbox=StubMailbox())
+    mesh = node_mesh.NodeMesh(data_dir=tmp_path, binding=fake, mailbox=StubMailbox())
     await mesh.start()
     kernel = fake.Kernel.instances[-1]
     kernel.join()
@@ -397,7 +397,7 @@ async def test_each_institution_owner_gets_a_trigger_that_wakes_for_that_owner_o
     nmc.install(None)
 
 
-async def test_the_personal_node_attaches_a_trigger_and_stops_it_with_the_bridge(tmp_path, monkeypatch):
+async def test_a_legacy_personal_owner_never_wakes_from_an_unavailable_mesh_binding(tmp_path, monkeypatch):
     fake.Kernel.instances.clear()
     monkeypatch.setenv(ni.PROFILE_ENV, "personal")
     monkeypatch.setenv(ni.DATA_DIR_ENV, str(tmp_path))
@@ -411,11 +411,30 @@ async def test_the_personal_node_attaches_a_trigger_and_stops_it_with_the_bridge
     monkeypatch.setattr(pw, "gateway_for", lambda orch: wake)
     await nmc.start_for(SimpleNamespace(history=History()))
     kernel = fake.Kernel.instances[-1]
-    kernel.join()
-    await asyncio.sleep(0.05)
+    mesh_id = "sha256:" + "e" * 64
+    kernel.join(mesh_id)
+    kernel.mesh_principal = lambda: SimpleNamespace(mesh_id=mesh_id)
+    kernel.roster = lambda: SimpleNamespace(mesh_id=mesh_id, stopped=False, members=[
+        SimpleNamespace(device_id=kernel.device_id, is_local=True)])
+    await nmc.active().scan()
     kernel.peers = [peer(PHONE, connected=False, pending_out=1)]
     kernel.notify()
-    await settle(lambda: transport.calls)
-    await nmc.stop_all()
+    assert ni.bound_owner() == "oidc.abc.owner"
+    assert (await node_mesh.current().status())["owner_binding"] == {"state": "refused", "code": "node.owner_mismatch"}
+    assert not transport.calls
+    async with asyncio.timeout(5):
+        await nmc.stop_all()
     assert nmc._wake is None
     ni.reset_cache()
+
+
+async def test_unbound_wake_trigger_can_stop_immediately_after_a_ready_notification():
+    mesh, recorder = Mesh([]), Recorder()
+    trigger = pw.WakeTrigger(mesh, recorder, lambda: None)
+    trigger.start()
+    await asyncio.sleep(0)
+    mesh.callbacks[0](object())
+    async with asyncio.timeout(5):
+        await trigger.stop()
+    assert trigger._task is None and trigger._loop is None
+    assert recorder.calls == []

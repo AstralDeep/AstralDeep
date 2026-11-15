@@ -1,4 +1,4 @@
-"""Personal-node identity: the profile switch, the node's Ed25519 signing key, owner-id derivation from verified issuer claims, and the single-owner binding.
+"""Personal-node identity: the profile switch, node signing key, and single-owner custody for verified mesh principals or separately authenticated external identities.
 shared/token_verify.py, orchestrator/delegation.py, mesh_admission.py and node_api.py build on it; it never imports orchestrator code.
 """
 
@@ -10,6 +10,8 @@ import ipaddress
 import json
 import logging
 import os
+import re
+import tempfile
 import stat
 import threading
 import time
@@ -331,25 +333,68 @@ def bound_owner() -> Optional[str]:
         return None
     except OSError as exc:
         raise NodeIdentityError("owner binding is unreadable") from exc
-    return value or None
+    if not value:
+        raise NodeIdentityError("owner binding is empty")
+    return value
 
 
 def bind_owner(owner_id: str) -> str:
     current = bound_owner()
     if current is not None:
         return current
+    return _bind_owner_file(owner_id)
+
+
+def _bind_owner_file(owner_id: str) -> str:
     directory = data_dir()
     try:
+        current = (directory / OWNER_FILE).read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        current = None
+    except OSError as exc:
+        raise NodeIdentityError("owner binding is unreadable") from exc
+    if current is not None:
+        if not current:
+            raise NodeIdentityError("owner binding is empty")
+        return current
+    temporary = None
+    try:
         _ensure_private_dir(directory)
-        descriptor = os.open(directory / OWNER_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        return bound_owner() or owner_id
+        descriptor, temporary = tempfile.mkstemp(prefix=".owner-", dir=directory)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(owner_id)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, directory / OWNER_FILE)
+            directory_descriptor = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        except FileExistsError:
+            current = (directory / OWNER_FILE).read_text(encoding="utf-8").strip()
+            if not current:
+                raise NodeIdentityError("owner binding is empty")
+            return current
     except OSError as exc:
         raise NodeIdentityError("owner binding cannot be stored") from exc
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write(owner_id)
+    finally:
+        if temporary is not None:
+            Path(temporary).unlink(missing_ok=True)
     logger.info("bound this node to its owner")
     return owner_id
+
+
+def bind_mesh_owner(mesh_id: str) -> str:
+    if not is_personal() or type(mesh_id) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", mesh_id) is None:
+        raise NodeIdentityError("verified personal mesh principal required")
+    configured = os.getenv(OWNER_ENV, "").strip()
+    if configured and configured != mesh_id:
+        raise OwnerMismatch("configured owner belongs to another principal")
+    if _bind_owner_file(mesh_id) != mesh_id:
+        raise OwnerMismatch("existing owner binding belongs to another principal")
+    return mesh_id
 
 
 def enforce_owner(owner_id: str) -> None:

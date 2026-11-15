@@ -168,7 +168,8 @@ class WakeTrigger:
     async def _run(self) -> None:
         while True:
             try:
-                await asyncio.wait_for(self._dirty.wait(), timeout=self._retry_seconds)
+                async with asyncio.timeout(self._retry_seconds):
+                    await self._dirty.wait()
             except asyncio.TimeoutError:
                 pass
             self._dirty.clear()

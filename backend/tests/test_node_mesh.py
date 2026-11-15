@@ -22,9 +22,6 @@ def reset_fake():
     node_mesh.install(None)
 
 
-async def no_issuers():
-    return [{"issuer": "https://idp.example/realms/a", "client_id": "c", "jwks_json": "{}"}]
-
 
 class StubMailbox:
     def __init__(self, fail=False):
@@ -45,7 +42,7 @@ class StubMailbox:
 
 def make(tmp_path, **kwargs):
     kwargs.setdefault("mailbox", StubMailbox())
-    return node_mesh.NodeMesh(data_dir=tmp_path, binding=fake, issuers=no_issuers, **kwargs)
+    return node_mesh.NodeMesh(data_dir=tmp_path, binding=fake, **kwargs)
 
 
 def test_keys_are_generated_once_at_mode_0600(tmp_path):
@@ -129,7 +126,7 @@ async def test_start_opens_the_kernel_as_a_node_with_software_custody(tmp_path):
     kernel = fake.Kernel.instances[0]
     assert kernel.config.device_kind == fake.DeviceKind.NODE
     assert kernel.config.network.mailbox == '{"id":"mb"}'
-    assert kernel.config.issuers[0].client_id == "c"
+    assert not hasattr(kernel.config, "issuers")
     assert kernel.network and mesh.started
     signer = kernel.signer
     assert signer.hardware_backed() is False
@@ -219,7 +216,7 @@ async def test_a_mailbox_is_created_from_settings_when_enabled(tmp_path, monkeyp
             created["dir"] = data_dir
 
     monkeypatch.setattr(node_mesh, "MailboxProcess", Recording)
-    mesh = node_mesh.NodeMesh(data_dir=tmp_path, binding=fake, issuers=no_issuers)
+    mesh = node_mesh.NodeMesh(data_dir=tmp_path, binding=fake)
     await mesh.start()
     assert created["dir"] == tmp_path / "mailbox" and mesh.mailbox.started
 
@@ -423,7 +420,6 @@ async def test_start_configured_installs_and_shutdown_clears(tmp_path, monkeypat
     monkeypatch.setenv(ni.PROFILE_ENV, "personal")
     monkeypatch.setenv("ASTRAL_NODE_MAILBOX", "0")
     monkeypatch.setattr(node_mesh, "load_binding", lambda: fake)
-    monkeypatch.setattr(node_mesh, "default_issuers", no_issuers)
     mesh = await node_mesh.start_configured(tmp_path)
     assert mesh is not None and node_mesh.current() is mesh
     await node_mesh.shutdown()
@@ -488,6 +484,7 @@ async def test_start_configured_is_off_without_the_profile_or_binding(tmp_path, 
 
 async def test_default_issuers_fetch_keys_and_skip_failures(monkeypatch):
     from shared import jwks_cache
+    from orchestrator import institution_meshes
 
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/a")
     monkeypatch.delenv(ni.ISSUERS_ENV, raising=False)
@@ -497,13 +494,28 @@ async def test_default_issuers_fetch_keys_and_skip_failures(monkeypatch):
         return {"keys": [{"kid": "k"}]}
 
     monkeypatch.setattr(jwks_cache, "get_jwks", get)
-    found = await node_mesh.default_issuers()
+    found = await institution_meshes.default_issuers()
     assert found == [{"issuer": "https://idp.example/realms/a", "client_id": "client", "jwks_json": '{"keys": [{"kid": "k"}]}'}]
 
     async def fail(url, token=None):
         raise RuntimeError("down")
 
     monkeypatch.setattr(jwks_cache, "get_jwks", fail)
-    assert await node_mesh.default_issuers() == []
+    assert await institution_meshes.default_issuers() == []
     monkeypatch.delenv("KEYCLOAK_CLIENT_ID")
-    assert await node_mesh.default_issuers() == []
+    assert await institution_meshes.default_issuers() == []
+
+
+async def test_personal_kernel_startup_does_not_consult_external_identity_provider(tmp_path, monkeypatch):
+    from shared import jwks_cache
+
+    async def forbidden(*_args, **_kwargs):
+        pytest.fail("personal Kernel startup must not request issuer keys")
+
+    monkeypatch.setattr(jwks_cache, "get_jwks", forbidden)
+    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example.test")
+    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "existing-institution-client")
+    mesh = make(tmp_path)
+    await mesh.start()
+    assert mesh.started
+    await mesh.stop()

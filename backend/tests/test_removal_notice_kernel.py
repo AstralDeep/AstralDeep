@@ -1,5 +1,5 @@
 """Removes a lost device while every other device is off and shows the removal reaches a device that comes online afterwards through the node's own mailbox: the notice is deposited, the node and the removing device go offline, and the late device learns of the removal from the mailbox alone. With the mailbox stopped it does not learn, which shows the notice path is the mailbox.
-It runs only where the pinned kernel wheel and the mailbox binary are installed, using a test token issuer, software keys and loopback networking."""
+It runs only where the pinned kernel wheel and the mailbox binary are installed, using software keys and loopback networking."""
 
 from __future__ import annotations
 
@@ -14,8 +14,6 @@ from tests.test_node_mesh_kernel_integration import (  # noqa: E402
     enrolled,
     free_port,
     open_device,
-    test_issuers as issuers_for_tests,
-    token,
     until,
 )
 
@@ -32,14 +30,14 @@ async def test_a_removal_notice_reaches_a_device_that_comes_online_after_every_o
         label="node", relay=("none",), loopback_only=True, local_discovery=False, internet_lookup=False, sync_interval_ms=500,
         mailbox=MailboxSettings(loopback=True, relay=("none",), bind=(f"127.0.0.1:{free_port()}",)),
     )
-    node = node_mesh.NodeMesh(data_dir=tmp_path / "node", settings=settings, issuers=issuers_for_tests)
+    node = node_mesh.NodeMesh(data_dir=tmp_path / "node", settings=settings)
     await node.start()
     running = []
     try:
         mailbox = (await node.status())["mailbox"]["address"]
         laptop = open_device(tmp_path / "laptop", "laptop", 1, mailbox)
-        request = laptop.begin_mesh_creation()
-        laptop.complete_mesh_creation(token(request.nonce))
+        laptop.create_mesh()
+        laptop.confirm_mesh_recovery()
         await laptop.start_network()
         running.append(laptop)
         offer = await node.pairing_offer()

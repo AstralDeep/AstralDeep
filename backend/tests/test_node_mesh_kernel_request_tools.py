@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from orchestrator.node_mesh_calls import OrchestratorCalls, skill_definition
-from tests.test_node_mesh_kernel_integration import OWNER, ak, paired, until  # noqa: F401
+from tests.test_node_mesh_kernel_integration import ak, paired, until  # noqa: F401
 from tests.test_node_mesh_peer_tools import API_KEY, FakeModel, REPLY, TOOL, model_server, node_host  # noqa: F401
 from tests.test_node_mesh_personal_authority_integration import forbid_iam, verify_actual_principal
 from tests.test_node_mesh_turn_tools import AGENT, SANDBOXED_TOOL, dice_grant, grant, sandboxed_grant, turn_host  # noqa: F401
@@ -54,7 +54,7 @@ async def ask(node, laptop, device, text="roll two dice on the node"):
 async def test_sealed_node_provider_answers_once_through_real_peer_dispatch(turn_host, model_server, tmp_path, monkeypatch, kind):  # noqa: F811
     host = turn_host
     calls = OrchestratorCalls(host.orch)
-    async with paired(tmp_path, monkeypatch, calls=calls, history=host.orch.history, kernel_answers=True) as (
+    async with paired(tmp_path, monkeypatch, creator=host.mesh_creator, calls=calls, history=host.orch.history, kernel_answers=True) as (
         node, laptop, device, bridge,
     ):
         completed = await setup_native(host, node, laptop, device, bridge, model_server, monkeypatch)
@@ -92,7 +92,7 @@ async def test_sealed_node_provider_answers_once_through_real_peer_dispatch(turn
 
 async def test_two_native_outer_requests_both_complete_their_inner_calls(turn_host, model_server, tmp_path, monkeypatch):  # noqa: F811
     host = turn_host
-    async with paired(tmp_path, monkeypatch, calls=OrchestratorCalls(host.orch), history=host.orch.history,
+    async with paired(tmp_path, monkeypatch, creator=host.mesh_creator, calls=OrchestratorCalls(host.orch), history=host.orch.history,
                       kernel_answers=True) as (node, laptop, device, bridge):
         completed = await setup_native(host, node, laptop, device, bridge, model_server, monkeypatch)
         await grant(node, laptop, dice_grant(host))
@@ -106,7 +106,7 @@ async def test_two_native_outer_requests_both_complete_their_inner_calls(turn_ho
 @pytest.mark.parametrize("grant_kind", ["none", "bare_name", "wrong_hash"])
 async def test_native_route_never_dispatches_without_exact_granted_hash(turn_host, model_server, tmp_path, monkeypatch, grant_kind):  # noqa: F811
     host = turn_host
-    async with paired(tmp_path, monkeypatch, calls=OrchestratorCalls(host.orch), history=host.orch.history,
+    async with paired(tmp_path, monkeypatch, creator=host.mesh_creator, calls=OrchestratorCalls(host.orch), history=host.orch.history,
                       kernel_answers=True) as (node, laptop, device, bridge):
         completed = await setup_native(host, node, laptop, device, bridge, model_server, monkeypatch)
         if grant_kind != "none":
@@ -119,7 +119,7 @@ async def test_native_route_never_dispatches_without_exact_granted_hash(turn_hos
 
 async def test_native_route_refuses_an_unproven_owner_before_model_or_tool_use(turn_host, model_server, tmp_path, monkeypatch):  # noqa: F811
     host = turn_host
-    async with paired(tmp_path, monkeypatch, calls=OrchestratorCalls(host.orch), history=host.orch.history,
+    async with paired(tmp_path, monkeypatch, creator=host.mesh_creator, calls=OrchestratorCalls(host.orch), history=host.orch.history,
                       kernel_answers=True) as (node, laptop, device, bridge):
         completed = await setup_native(host, node, laptop, device, bridge, model_server, monkeypatch)
         bridge._owner_of = lambda: "oidc.abc.owner"
@@ -133,7 +133,7 @@ async def test_native_route_refuses_an_unproven_owner_before_model_or_tool_use(t
 async def test_revocation_after_native_mint_blocks_the_actual_agent_effect(turn_host, model_server, tmp_path, monkeypatch, change):  # noqa: F811
     host = turn_host
     changed = asyncio.Event()
-    async with paired(tmp_path, monkeypatch, calls=OrchestratorCalls(host.orch), history=host.orch.history,
+    async with paired(tmp_path, monkeypatch, creator=host.mesh_creator, calls=OrchestratorCalls(host.orch), history=host.orch.history,
                       kernel_answers=True) as (node, laptop, device, bridge):
         await setup_native(host, node, laptop, device, bridge, model_server, monkeypatch)
         await grant(node, laptop, dice_grant(host))
@@ -166,7 +166,7 @@ async def test_revocation_after_native_mint_blocks_the_actual_agent_effect(turn_
                 await until(lambda: not any(member.is_local for member in node.kernel.roster().members),
                             "the local verifier to observe its removal")
             else:
-                host.orch.tool_permissions.set_agent_scopes(OWNER, AGENT, {"tools:read": False})
+                host.orch.tool_permissions.set_agent_scopes(host.owner, AGENT, {"tools:read": False})
             changed.set()
             return result
 
@@ -220,7 +220,7 @@ async def test_an_effect_before_reply_commit_failure_remains_unknown_without_rep
         return result
 
     monkeypatch.setattr(host.agent, "handle_mcp_request", persisted_effect)
-    async with paired(tmp_path, monkeypatch, calls=OrchestratorCalls(host.orch), history=host.orch.history,
+    async with paired(tmp_path, monkeypatch, creator=host.mesh_creator, calls=OrchestratorCalls(host.orch), history=host.orch.history,
                       kernel_answers=True) as (node, laptop, device, bridge):
         completed = await setup_native(host, node, laptop, device, bridge, model_server, monkeypatch)
         await grant(node, laptop, dice_grant(host))
@@ -249,7 +249,7 @@ async def test_an_effect_before_reply_commit_failure_remains_unknown_without_rep
 
 async def test_a_real_binding_without_native_tool_capability_refuses_without_python_fallback(turn_host, tmp_path, monkeypatch):  # noqa: F811
     host = turn_host
-    async with paired(tmp_path, monkeypatch, calls=OrchestratorCalls(host.orch), history=host.orch.history,
+    async with paired(tmp_path, monkeypatch, creator=host.mesh_creator, calls=OrchestratorCalls(host.orch), history=host.orch.history,
                       kernel_answers=True) as (node, laptop, device, bridge):
         verify_actual_principal(node)
         forbid_iam(host, monkeypatch)

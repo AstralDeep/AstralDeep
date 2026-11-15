@@ -58,6 +58,8 @@ class MeshWakeSender:
             return None
         proof = principal()
         mesh_id = proof.mesh_id
+        if not hasattr(proof, "identities"):
+            return None
         if not _ID.fullmatch(mesh_id):
             return None
         if owner not in {node_identity.canonical_owner_id(identity.issuer, identity.subject) for identity in proof.identities}:

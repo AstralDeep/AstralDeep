@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from orchestrator import node_mesh
-from orchestrator.institution_meshes import InstitutionMeshes, Owner
+from orchestrator.institution_meshes import InstitutionMeshes, IssuerLoader, Owner
 from orchestrator.institution_policy import InstitutionPolicy
 from orchestrator.push_wake import WakeTriggers, gateway_for
 from orchestrator.node_mesh_chat import (
@@ -36,7 +36,7 @@ class InstitutionRuntime:
         calls: Any,
         meshes: Optional[InstitutionMeshes] = None,
         settings: Optional[node_mesh.MeshSettings] = None,
-        issuers: Optional[node_mesh.IssuerLoader] = None,
+        issuers: Optional[IssuerLoader] = None,
         binding: Any = None,
         wake: Optional[WakeTriggers] = None,
         policy: Optional[NodePolicy] = None,

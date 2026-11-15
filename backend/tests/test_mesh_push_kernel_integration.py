@@ -13,18 +13,18 @@ from audit.repository import AuditRepository
 from orchestrator.mesh_push_client import RemoteWakeGateway
 from orchestrator.mesh_push_gateway import MeshPushPublisher
 from orchestrator.mesh_push_registry import MeshPushRegistry
-from orchestrator.push_wake import SENT, WakeLimiter
+from orchestrator.push_wake import NO_DESTINATION, SENT, WakeLimiter
 from shared.node_identity import canonical_owner_id
 from tests.test_mesh_push_api import Apns
 from tests.test_mesh_push_registry import KEY, plane  # noqa: F401
-from tests.test_node_mesh_kernel_integration import ISS, OWNER, paired, until
+from tests.test_node_mesh_kernel_integration import ISS, paired, until
 
 
 async def route_for(node, laptop, runtime):
     status = await laptop.mesh_status()
     registry = MeshPushRegistry(plane_runtime=runtime, audit_repository=AuditRepository(plane_runtime=runtime),
                                 encryption_key=lambda: KEY)
-    registered = registry.register(OWNER, mesh_id=status.mesh_id, device_id=status.device_id,
+    registered = registry.register(status.mesh_id, mesh_id=status.mesh_id, device_id=status.device_id,
                                    token="private-physical-phone-token", expected_revision=0)
     laptop.set_wake_route(status.mesh_id, status.device_id, ak.WakeRoute(
         publisher="astral", capability=registered.capability, expires_at_ms=registered.expires_at_ms))
@@ -44,7 +44,7 @@ async def route_for(node, laptop, runtime):
     return sender, status, adapter, calls
 
 
-async def test_actual_enrollment_signed_route_and_gateway_send_only_one_empty_wake(tmp_path, monkeypatch, plane):  # noqa: F811
+async def test_accountless_signed_route_cannot_supply_missing_publisher_owner_binding(tmp_path, monkeypatch, plane):  # noqa: F811
     async with paired(tmp_path, monkeypatch) as (node, laptop, _, _bridge):
         sender, target, adapter, calls = await route_for(node, laptop, plane)
 
@@ -52,17 +52,14 @@ async def test_actual_enrollment_signed_route_and_gateway_send_only_one_empty_wa
             pytest.fail("mesh wake requested per-call IAM")
 
         monkeypatch.setattr("shared.jwks_cache.get_jwks", no_iam)
-        assert (await sender.wake(OWNER, target.device_id)).status == SENT
-        assert adapter.tokens == ["private-physical-phone-token"]
-        assert calls[0][0:2] == ("POST", "https://publisher.example/api/push/mesh/wake")
-        assert calls[0][2]["json_body"] == {"mesh_id": target.mesh_id, "device_id": target.device_id}
-        assert (await sender.wake(canonical_owner_id(ISS, "different-owner"), target.device_id)).status != SENT
-        assert len(calls) == 1
+        assert (await sender.wake(target.mesh_id, target.device_id)).status == NO_DESTINATION
+        assert (await sender.wake(canonical_owner_id(ISS, "different-owner"), target.device_id)).status == NO_DESTINATION
+        assert calls == [] and adapter.tokens == []
         laptop.set_wake_route(target.mesh_id, target.device_id, None)
         await until(lambda: not any(item.device_id == target.device_id for item in node.kernel.wake_routes()),
                     "the phone wake withdrawal to reach the node")
-        assert (await sender.wake(OWNER, target.device_id)).status != SENT
-        assert len(calls) == 1 and adapter.tokens == ["private-physical-phone-token"]
+        assert (await sender.wake(target.mesh_id, target.device_id)).status == NO_DESTINATION
+        assert calls == [] and adapter.tokens == []
 
 
 @pytest.mark.parametrize("change", ["stop", "remove"])
@@ -79,5 +76,5 @@ async def test_actual_native_stop_or_signed_own_removal_blocks_wake_before_netwo
                         "the node to verify its signed own removal")
         with pytest.raises(ak.KernelError):
             node.kernel.mesh_principal()
-        assert (await sender.wake(OWNER, target.device_id)).status != SENT
+        assert (await sender.wake(target.mesh_id, target.device_id)).status != SENT
         assert adapter.tokens == [] and calls == []

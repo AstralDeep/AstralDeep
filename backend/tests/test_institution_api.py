@@ -1,4 +1,4 @@
-"""Covers orchestrator/institution_api.py and orchestrator/institution_runtime.py: the descriptor declares the node's PHI approval and fresh-attestation rule, an owner opens a pairing offer in that owner's own mesh only, other callers and profiles are refused, and the runtime gives each owner a bridge that enforces the institution policy."""
+"""Covers orchestrator/institution_api.py and orchestrator/institution_runtime.py: the descriptor declares the node's PHI approval and separate external-identity boundary, an owner opens a pairing offer in that owner's own mesh only, other callers and profiles are refused, and the runtime gives each owner a bridge that enforces the institution policy."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from jose import jwt as jose_jwt
 
 from orchestrator import institution_runtime, mesh_api, node_api, node_mesh, node_mesh_chat as nmc
 from orchestrator.institution_meshes import Owner
@@ -87,7 +86,7 @@ async def test_the_descriptor_declares_the_institution_key_and_rules_without_an_
     assert response.status_code == 200 and body["profile"] == "institution"
     assert body["institution_key"] == ip.key_text(KEY) and body["phi_approval"] is None
     assert body["owner_hash"] is None and body["accepted_issuers"] == [ISS]
-    assert {"institution", "multi-owner", "fresh-attestation", "peer-phi-group", "chat"} <= set(body["capabilities"])
+    assert {"institution", "multi-owner", "peer-phi-group", "chat"} <= set(body["capabilities"])
     assert "d" not in body["node_key"]
 
 
@@ -160,190 +159,29 @@ async def test_an_owner_opens_a_pairing_offer_in_their_own_mesh(env):
     await runtime.stop()
 
 
-async def test_an_owner_can_request_a_fresh_kernel_attestation_challenge(env, monkeypatch):
+@pytest.mark.parametrize("endpoint", ["/api/institution/attestation/challenge", "/api/institution/attestation"])
+@pytest.mark.parametrize("kind", ["owner", "member", "anonymous"])
+async def test_mesh_identity_attestation_routes_are_absent(env, endpoint, kind):
+    env.actor["kind"] = kind
+    async with client(env) as http:
+        response = await http.post(endpoint, json={"id_token": "unused"})
+    assert response.status_code == 404
+    assert not fake.Kernel.instances
+
+
+async def test_pairing_reports_the_owner_peer_failure_without_opening_an_offer(env, monkeypatch):
     runtime = runtime_for(env)
     institution_runtime.set_current(runtime)
+
+    async def refused(_owner):
+        raise node_mesh.NodeMeshError("mesh.pairing_refused", 409)
+
+    monkeypatch.setattr(runtime, "serve_owner", refused)
     async with client(env) as http:
-        await http.post("/api/institution/pairing", json={})
-        kernel = fake.Kernel.instances[0]
-        monkeypatch.setattr(
-            kernel,
-            "begin_attestation",
-            lambda: SimpleNamespace(nonce="kernel-nonce", issuer=ISS, client_id="astral", mesh_id="mesh-1"),
-            raising=False,
-        )
-        response = await http.post("/api/institution/attestation/challenge", json={})
-    assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
-    assert response.json() == {
-        "nonce": "kernel-nonce", "issuer": ISS, "client_id": "astral", "mesh_id": "mesh-1"
-    }
+        response = await http.post("/api/institution/pairing", json={})
+    assert response.status_code == 409 and response.json()["detail"] == "mesh.pairing_refused"
+    assert not fake.Kernel.instances
     await runtime.stop()
-
-
-async def test_attestation_completion_passes_the_owner_bound_token_to_kernel(env, monkeypatch):
-    runtime = runtime_for(env)
-    institution_runtime.set_current(runtime)
-    observed = []
-    token = jose_jwt.encode({"iss": ISS, "sub": "alice", "nonce": "kernel-nonce"}, KEY, algorithm="ES256")
-    async with client(env) as http:
-        await http.post("/api/institution/pairing", json={})
-        monkeypatch.setattr(fake.Kernel.instances[0], "reattest", observed.append, raising=False)
-        response = await http.post("/api/institution/attestation", json={"id_token": token})
-    assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
-    assert response.json() == {"attested": True} and observed == [token]
-    await runtime.stop()
-
-
-async def test_attestation_token_for_another_owner_is_refused_before_kernel(env, monkeypatch):
-    runtime = runtime_for(env)
-    institution_runtime.set_current(runtime)
-    observed = []
-    token = jose_jwt.encode({"iss": ISS, "sub": "bob", "nonce": "kernel-nonce"}, KEY, algorithm="ES256")
-    async with client(env) as http:
-        await http.post("/api/institution/pairing", json={})
-        monkeypatch.setattr(fake.Kernel.instances[0], "reattest", observed.append, raising=False)
-        response = await http.post("/api/institution/attestation", json={"id_token": token})
-    assert response.status_code == 403 and response.json()["detail"] == "institution_owner_mismatch"
-    assert observed == []
-    await runtime.stop()
-
-
-async def test_malformed_attestation_token_is_refused(env):
-    runtime = runtime_for(env)
-    institution_runtime.set_current(runtime)
-    async with client(env) as http:
-        response = await http.post("/api/institution/attestation", json={"id_token": "not-a-jwt"})
-    assert response.status_code == 400 and response.json()["detail"] == "institution_id_token_invalid"
-    await runtime.stop()
-
-
-async def test_non_ascii_attestation_token_is_refused_without_a_server_error(env):
-    runtime = runtime_for(env)
-    institution_runtime.set_current(runtime)
-    async with client(env) as http:
-        response = await http.post(
-            "/api/institution/attestation", content=json.dumps({"id_token": "\ud800"}),
-            headers={"content-type": "application/json"},
-        )
-    assert response.status_code == 400 and response.json()["detail"] == "institution_id_token_invalid"
-    await runtime.stop()
-
-
-async def test_oversized_attestation_token_is_refused(env):
-    async with client(env) as http:
-        response = await http.post("/api/institution/attestation", json={"id_token": "a" * 65537})
-    assert response.status_code == 413 and response.json()["detail"] == "institution_id_token_too_large"
-
-
-async def test_token_without_owner_identity_is_refused(env, monkeypatch):
-    runtime = runtime_for(env)
-    institution_runtime.set_current(runtime)
-    mesh = SimpleNamespace(kernel=object(), _binding=fake)
-
-    async def serve_owner(_owner):
-        return mesh
-
-    monkeypatch.setattr(runtime, "serve_owner", serve_owner)
-    token = jose_jwt.encode({"iss": ISS}, KEY, algorithm="ES256")
-    async with client(env) as http:
-        response = await http.post("/api/institution/attestation", json={"id_token": token})
-    assert response.status_code == 403 and response.json()["detail"] == "institution_owner_mismatch"
-
-
-async def test_attestation_routes_are_inactive_on_other_node_profiles(env):
-    env.monkeypatch.delenv(ni.PROFILE_ENV)
-    async with client(env) as http:
-        challenge = await http.post("/api/institution/attestation/challenge", json={})
-        completion = await http.post("/api/institution/attestation", json={"id_token": "x.y.z"})
-    assert challenge.status_code == completion.status_code == 404
-
-
-async def test_attestation_requires_authenticated_owner(env):
-    from fastapi import HTTPException
-
-    env.app.dependency_overrides[mesh_api._read_actor] = lambda: (_ for _ in ()).throw(HTTPException(401, "Not authenticated"))
-    async with client(env) as http:
-        response = await http.post("/api/institution/attestation/challenge", json={})
-    assert response.status_code == 401
-
-
-@pytest.mark.parametrize(("endpoint", "kernel_method", "status"), [
-    ("/api/institution/attestation/challenge", "begin_attestation", 409),
-    ("/api/institution/attestation", "reattest", 403),
-    ("/api/institution/attestation/challenge", "unavailable", 503),
-    ("/api/institution/attestation", "unavailable", 503),
-])
-async def test_native_kernel_attestation_errors_are_returned_as_denials(env, monkeypatch, endpoint, kernel_method, status):
-    runtime = runtime_for(env)
-    institution_runtime.set_current(runtime)
-    token = jose_jwt.encode({"iss": ISS, "sub": "alice"}, KEY, algorithm="ES256")
-
-    def refused(*_args):
-        raise fake.KernelError.Verification("attestation.refused")
-
-    if kernel_method == "unavailable":
-        def unavailable(*_args):
-            raise node_mesh.MeshUnavailable("mesh_not_started")
-
-        method = "begin_attestation" if endpoint.endswith("challenge") else "reattest"
-        kernel = SimpleNamespace(**{method: unavailable})
-        expected = "mesh_not_started"
-    else:
-        kernel = SimpleNamespace(**{kernel_method: refused})
-        expected = "attestation.refused"
-    mesh = SimpleNamespace(kernel=kernel, _binding=fake)
-
-    async def serve_owner(_owner):
-        return mesh
-
-    monkeypatch.setattr(runtime, "serve_owner", serve_owner)
-    async with client(env) as http:
-        body = {"id_token": token} if endpoint.endswith("attestation") else {}
-        response = await http.post(endpoint, json=body)
-    assert response.status_code == status and response.json()["detail"] == expected
-
-
-async def test_an_accepted_owner_mesh_failure_is_reported(env, monkeypatch):
-    runtime = runtime_for(env)
-    institution_runtime.set_current(runtime)
-
-    async def refuse_owner(_owner):
-        raise node_mesh.NodeMeshError("mesh_owner_refused", 409)
-
-    monkeypatch.setattr(runtime, "serve_owner", refuse_owner)
-    async with client(env) as http:
-        response = await http.post("/api/institution/attestation/challenge", json={})
-    assert response.status_code == 409 and response.json()["detail"] == "mesh_owner_refused"
-
-
-async def test_owner_claims_must_match_their_canonical_partition(env):
-    env.actor["claims"]["sub"] = "another-owner"
-    async with client(env) as http:
-        response = await http.post("/api/institution/attestation/challenge", json={})
-    assert response.status_code == 400 and response.json()["detail"] == "owner_invalid"
-
-
-async def test_attestation_completion_rejects_extra_nonce_fields(env):
-    runtime = runtime_for(env)
-    institution_runtime.set_current(runtime)
-    async with client(env) as http:
-        response = await http.post("/api/institution/attestation", json={"id_token": "x.y.z", "nonce": "caller"})
-    assert response.status_code == 400 and response.json()["detail"] == "institution_id_token_required"
-    await runtime.stop()
-
-
-async def test_attestation_challenge_requires_a_running_runtime(env):
-    async with client(env) as http:
-        response = await http.post("/api/institution/attestation/challenge", json={})
-    assert response.status_code == 503 and response.json()["detail"] == "institution_mesh_unavailable"
-
-
-async def test_a_delegated_member_cannot_attest_an_institution_node(env):
-    env.actor.update({"kind": "member", "id": "m1", "member": {"owner_id": "alice", "scopes": ["mesh:confirm"]}, "claims": {}})
-    institution_runtime.set_current(runtime_for(env))
-    async with client(env) as http:
-        response = await http.post("/api/institution/attestation/challenge", json={})
-    assert response.status_code == 403 and response.json()["detail"] == "institution_owner_required"
 
 
 async def test_two_owners_get_two_offers_from_two_separate_peers(env):
@@ -424,16 +262,15 @@ async def test_the_runtime_bridge_enforces_the_policy_and_keeps_owners_apart(env
     for kernel in (kernel_a, kernel_b):
         kernel.join()
         kernel.add_chat("c", [])
-    kernel_a.unattested.add("dev-phone")
     kernel_a.add_request("r1", "c")
     kernel_b.add_request("r2", "c")
     assert runtime.bridges.get(OWNER_A) is not runtime.bridges.get(OWNER_B)
     assert (runtime.bridges.get(OWNER_A)._owner, runtime.bridges.get(OWNER_B)._owner) == (OWNER_A, OWNER_B)
     await runtime.bridges.get(OWNER_A).scan()
     await runtime.bridges.get(OWNER_B).scan()
-    await settle(lambda: kernel_a.refused and kernel_b.request("r2").state == fake.RequestState.ANSWERED)
-    assert kernel_a.refused == [("r1", "institution.attestation_stale")]
-    assert kernel_b.request("r2").state == fake.RequestState.ANSWERED and kernel_b.refused == []
+    await settle(lambda: kernel_a.refused and kernel_b.refused)
+    assert kernel_a.refused == [("r1", "institution.external_identity_unavailable")]
+    assert kernel_b.refused == [("r2", "institution.external_identity_unavailable")]
     assert first is not second
     await runtime.stop()
     assert runtime.bridges.get(OWNER_A) is None and not kernel_a.network and not kernel_b.network

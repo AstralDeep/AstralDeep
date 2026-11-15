@@ -197,7 +197,6 @@ class KernelConfig:
     restore_marker: Optional[bytes]
     device_label: str
     device_kind: Any
-    issuers: List[Any]
     network: Any
 
 

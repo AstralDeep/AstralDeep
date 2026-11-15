@@ -11,7 +11,7 @@ import pytest
 
 from orchestrator.node_mesh_calls import OrchestratorCalls
 from shared import node_identity
-from tests.test_node_mesh_kernel_integration import ISS, OWNER, ak, paired, until  # noqa: F401
+from tests.test_node_mesh_kernel_integration import ak, paired, until  # noqa: F401
 from tests.test_node_mesh_peer_tools import (  # noqa: F401
     TOOL, model_server, node_host, provide_model, published_spec,
 )
@@ -33,8 +33,8 @@ def forbid_iam(host, monkeypatch):
 def verify_actual_principal(node):
     proof = node.kernel.mesh_principal()
     assert proof.mesh_id == node.kernel.roster().mesh_id
-    assert {(identity.issuer, identity.subject) for identity in proof.identities} == {(ISS, "user-1")}
-    assert OWNER == node_identity.canonical_owner_id(ISS, "user-1")
+    assert proof.mesh_id == node_identity.bound_owner()
+    assert not hasattr(proof, "identities")
 
 
 async def test_a_real_enrolled_node_answers_a_tool_turn_without_any_iam_call(turn_host, tmp_path, monkeypatch):  # noqa: F811
@@ -54,7 +54,7 @@ async def test_a_real_ticketed_peer_call_runs_without_an_offline_grant(node_host
     host = node_host
     forbid_iam(host, monkeypatch)
     calls = OrchestratorCalls(host.orch)
-    async with paired(tmp_path, monkeypatch, calls=calls, peer_tools=published_spec(host, calls), history=host.orch.history) as (
+    async with paired(tmp_path, monkeypatch, creator=host.mesh_creator, calls=calls, peer_tools=published_spec(host, calls), history=host.orch.history) as (
         node, laptop, device, bridge,
     ):
         verify_actual_principal(node)
@@ -109,7 +109,7 @@ async def test_mutated_pending_request_identity_is_refused_before_real_dispatch(
 
     monkeypatch.setattr(host.agent, "handle_mcp_request", observed)
     calls = OrchestratorCalls(host.orch)
-    async with paired(tmp_path, monkeypatch, calls=calls, peer_tools=published_spec(host, calls), history=host.orch.history) as (
+    async with paired(tmp_path, monkeypatch, creator=host.mesh_creator, calls=calls, peer_tools=published_spec(host, calls), history=host.orch.history) as (
         node, laptop, device, bridge,
     ):
         verify_actual_principal(node)

@@ -105,6 +105,7 @@ async def mesh_descriptor_fields(document: dict[str, Any]) -> dict[str, Any]:
         "member_id": status.get("member_id"),
         "hardware_backed": status["hardware_backed"],
         "requests": status["requests"],
+        "owner_binding": status["owner_binding"],
     }
     capabilities = list(document["capabilities"]) + ["mesh-peer"]
     if status.get("endpoint_address"):

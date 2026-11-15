@@ -1,4 +1,4 @@
-"""What an institution node demands of the device behind a mesh request before its own gates run: the device must be a member whose identity attestation is current, and PHI-labeled work is accepted only from a member of that mesh's PHI group.
+"""What an institution node demands of the device behind a mesh request before its own gates run: the device must have separately verified external identity, and PHI-labeled work is accepted only from a member of that mesh's PHI group.
 node_mesh_chat.py calls it for every request it serves and again once a ticket's labels are known, and it reads standing from the kernel's roster through node_mesh.py.
 """
 
@@ -10,7 +10,7 @@ from orchestrator.node_mesh import NodeMesh
 from orchestrator.node_mesh_chat import Labels, Refusal
 
 NOT_A_MEMBER = "institution.not_a_member"
-ATTESTATION_STALE = "institution.attestation_stale"
+EXTERNAL_IDENTITY_UNAVAILABLE = "institution.external_identity_unavailable"
 PEER_NOT_PHI = "institution.peer_not_phi"
 
 
@@ -22,7 +22,7 @@ class InstitutionPolicy:
         standing = await self._mesh.peer_standing(request.from_device)
         if standing is None:
             raise Refusal(NOT_A_MEMBER)
-        if standing.needs_attestation:
-            raise Refusal(ATTESTATION_STALE)
+        if not standing.external_identity_available:
+            raise Refusal(EXTERNAL_IDENTITY_UNAVAILABLE)
         if floor[0] == "phi" and not standing.phi:
             raise Refusal(PEER_NOT_PHI)
