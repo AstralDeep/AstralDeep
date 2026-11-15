@@ -1,11 +1,10 @@
 # Spec 105: Astral without a central server
 
-**Date:** 2026-11-11. **Status:** implementation and qualification resumed. The four feature PRs merged
-on 2026-11-14 under the owner's instruction to repair default-branch CI afterward. Individual
-implementation and verification results are tracked in [tasks.md](tasks.md); the phase exit criteria
-are not yet met. No deployment or release is claimed. **Companions:** [plan.md](plan.md) (phases and exit criteria), [research.md](research.md)
-(evidence, with file and source references), [issue-triage.md](issue-triage.md) (open issues and pull
-requests this would close).
+**Date:** 2026-11-15. **Status:** exact-source code/native qualification, protected Mac release and website verification are complete. The 58-criterion map has 55 automated criteria and three owner-approved criteria (0.4, 3.10, 6.2); this documentation closure adds no further acceptance changes. Earlier failures remain in dated records.
+
+**Current checkpoint — 2026-11-15.** Deep D11 and Projection P18 pass exact-source hosted CI; the Kernel and Vessel pins are qualified. The protected publisher issued `macos-v2.0.23-96`, and the public downloads page is verified. Full source identities, coverage, native counts/retries, artifact digests and deployment evidence are in [qualification.md](qualification.md) and [local-integration-handoff.md](local-integration-handoff.md).
+
+**Companions:** [plan.md](plan.md) records phases; [tasks.md](tasks.md) records completion; [qualification.md](qualification.md) and [local-integration-handoff.md](local-integration-handoff.md) record evidence and historical checkpoints. No App Store submission, production APNs registration/delivery, physical owner-device run or live provider sign-in is claimed; live demonstrations remain optional under [the acceptance clarification](clarification-code-qualification.md), while deterministic gates remain required.
 
 **Scope:** the five core repositories (AstralDeep, AstralProjection, AstralPlane, AstralPrimitives,
 LETS) and one proposed new component. The two Desktop documents on decentralization and stack

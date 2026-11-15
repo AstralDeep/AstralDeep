@@ -1,23 +1,21 @@
 # Tasks for spec 105
 
-**Date:** 2026-11-15. **Status:** feature PRs are merged; earlier defaults pass CI and the exact final candidate is still being checked. The owner authorized push, merge, release and the website update, and made live device/environment demonstrations optional. Deterministic code and security qualification remain required under [the acceptance clarification](clarification-code-qualification.md). Release publication is being prepared; it has not happened yet. Read [spec.md](spec.md), [plan.md](plan.md) and the current [qualification map](qualification.md) for intent and evidence.
+**Date:** 2026-11-15. **Status:** D11/P18 exact-source code/native gates, the protected Mac release, and the website deployment are verified. Live device/environment demonstrations remain optional; deterministic code and security qualification remain required under [the acceptance clarification](clarification-code-qualification.md). Read [spec.md](spec.md), [plan.md](plan.md) and the [qualification map](qualification.md) for evidence and limits.
 
 ## Current completion queue
 
-- [x] Merge the four feature PRs, delete their merged local/remote head branches and preserve unrelated working trees.
-- [x] Qualify Kernel ed5 with 1,310 Rust tests, strict Clippy, all 17 source-bound payloads and hosted CI; adopt it in Deep, Projection and Vessel.
-- [x] Pass all 18 hosted Deep CI jobs at e541580d, including four backend groups, actual Kernel bindings, changed-line coverage and the production image. Kernel, Projection a8b and Vessel default CI also pass.
-- [x] Record code-only acceptance, native results and their diagnostic failures honestly. iOS passes 1,158 tests and AstralCore 636; Mac's 23 environment-dependent failures remain failures, with five reproduced on the earlier source. No permissions or assertions were changed.
-- [x] Qualify the source-bound Mac NodePack's real install/start/health/stop and 14 bundled-tool checks at Deep 2ab8027b/Kernel ed5 through recipe Projection 6dbe0a71. Runtime changes require a new pack before release.
-- [x] Complete the institution node's Kernel-owned production route, normal owner-bound attestation API, second-issuer handling and actual two-owner allowed/denied/replay/uncertain executor tests for 3.11. Final combined gates remain in the next item.
-- [x] Integrate release tooling and shared-runtime qualification: Root's 217 combined tests/96.55% changed coverage, 30 wake tests, 513 collector consumers with 19/19 changed helper lines covered, and the exact final recipe's full Python suite (4,597 passed, eight declared skips, 33 passing subtests). The regenerated 2ab8027b pack passes all 14 tool checks and real Swift install/run; recipe tests pass 77 with one declared missing-dependency skip.
-- [x] Repair native capture sequencing with current-epoch readiness and paired Swift/JavaScript completion (14 focused Mac checks, two independent state checks, local changed Swift 95.81%); preserve all snapshot assertions and the five-second limit. Optimize the first-login UI fixture (four cases pass) and require exact pinned Apple CI before signing.
-- [x] Keep complete native test suites within their existing budgets by reusing source-bound compiled Products; local full suite 4,603 passes, changed helper coverage 16/16, and real Mac product transport format/round-trip passes.
-- [x] Pin both Mac test consumers and the producer to the actual arm64 binary architecture; preserve strict native identity and pass all 4,603 local tests.
-- [ ] Pass the final default-branch code checks and publish the exact authorized candidate.
-- [x] Synchronize Deep's protected Apple collector copy after the exact-byte CI regression; preserve the assertion, pass 512 adjacent tests at 99% collector coverage, and repin the pack without widening release source allowances. Final pack/CI qualification remains in the preceding item.
-- [ ] Publish the signed/notarized Mac release and its immutable NodePack through the normal release workflow, then update and verify the public website.
-- [ ] Record final source and asset identities, residual limits and publication results in the spec and curated vault.
+- [x] Integrate the four feature PRs and delete their merged branches while preserving unrelated working trees.
+- [x] Qualify Kernel `ed5ad2231f445497082750103326242b24fcbcb0` with 1,310 workspace tests, strict all-feature Clippy and all 17 source-bound payloads; adopt the qualified source in Deep, Projection and Vessel.
+- [x] Pass Deep D11 `528467d1bd602ab3219a426ac9c82eda3b5bc4d5` hosted CI 19/19 and both strict changed-line bases: resume 1767/1833=96.40%, full-feature 5960/6118=97.42%; exact report hashes are recorded in the spec and handoff.
+- [x] Pass Projection P18 `6dbe0a717efc0b49d89beaecf44988f657c599d2` primary, Android and Apple hosted runs; Apple completed 21/21 provider jobs. Preserve its native totals, six declared skips and one Watch per-test retry in [qualification.md](qualification.md).
+- [x] Close institution-node Kernel-owned dispatch, owner-bound attestation, issuer ordering, policy/PHI/consent/replay/audit paths and actual-binding tests for 3.11 without changing the shared criterion.
+- [x] Complete same-run iOS/macOS Products reuse with explicit macOS arm64 destination while preserving full selectors, strict architecture checks and existing 18/20-minute caps; no suite sharding.
+- [x] Qualify local source and composition checks: full Python 4,603 passed, 8 skipped, 33 subtests; helper coverage 16/16; 303 composition/release checks; NodePack recipe 77 passed, one existing skip; 159 workflow-contract tests passed, 4 skipped.
+- [x] Qualify the local diagnostic NodePack (14/14 tool checks and Swift real install/run 1/1), and separately build/publish the immutable D11 NodePack in the protected release.
+- [x] Publish and verify tag `macos-v2.0.23-96` through protected workflow run `43718280618`; all 11 assets, read-only app/DMG signature and stapler checks, Ed25519 policy/DMG signatures and source graph verification passed. Public DMG SHA-256 `50c89a80eb75c7b58bc9b3bfcd47593282978f546b79825520272ed662373bcc`; public NodePack `37157527cab5d625fc3aa8c4b550b1c505ffa010fcfc58e02711e0590cbc6bb4`; descriptor `7c6f67ae96278525a8f413883007b6fff7850b79c74c4d257ee368a979d9c901`; manifest `a3d1932364828c36d54fda87d0160f980a250dd1e9e38393c709ebff0f119bff`.
+- [x] Record 29 independently verified merged local/remote branch-pair deletions in the external cleanup evidence; do not remove retained source/evidence worktrees or outputs.
+- [x] Deploy and verify the authorized website update: release-sync run `43723268187` passed sync/build/deploy at site SHA `efd9097c98ba85267eb0c29f01226eb6709947c0`; `https://astraldeep.github.io/downloads.html` returned 200 with release JSON 2.0.23 (96), matching DMG/NodePack links and iPhone preparation label. Desktop 1200px and mobile 390px layouts fit their viewports and show both download controls.
+- [x] Update the curated vault/index/log under its own instructions for the verified release and website checkpoint; vault commit `1e3836d` is pushed. Root will record the final Spec 105 documentation commit identity separately.
 
 ## Historical qualification queue, 2026-11-14
 

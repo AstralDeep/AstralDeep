@@ -1,6 +1,6 @@
 # Plan for spec 105
 
-**Updated:** 2026-11-15. **Status:** final code qualification and release preparation. The owner made live demonstrations optional and authorized release; exact code-check and publication states are tracked separately. See [qualification.md](qualification.md) for criterion-level evidence and [local-integration-handoff.md](local-integration-handoff.md) for current source/pin inventory, commands and retained reports. This is a program plan: phases,
+**Updated:** 2026-11-15. **Status:** D11/P18 code and native qualification passed; the protected Mac release and website deployment are verified. The owner made live demonstrations optional and authorized release; remaining operational limits are stated explicitly below. See [qualification.md](qualification.md) for criterion-level evidence and [local-integration-handoff.md](local-integration-handoff.md) for current source/pin inventory, commands and retained reports. This is a program plan: phases,
 the work in each repository, and how to tell a phase is finished. A task-level plan for each phase is
 written when that phase is approved, not before.
 
@@ -8,7 +8,11 @@ Read [spec.md](spec.md) first. Section numbers below refer to it.
 
 ## Current qualification checkpoint
 
-The 2026-11-15 code-qualification amendment supersedes the earlier live gates in historical checkpoints below; automated production-loop conformance remains required. Deep main e541580d passes all 18 CI jobs, including four backend groups and changed Python coverage. The next release-preparation candidate must retain its own green code checks. Live results remain diagnostic. Website architecture/discovery is deployed at efd9097 with green site CI/Pages; the new product release remains pending.
+The owner’s 2026-11-15 amendment makes live device/environment demonstrations optional; deterministic code, authorization, privacy, native-code and coverage gates remain required. The current map is 55 automated plus three owner-approved criteria (58 total). Criterion 3.11 covers 32 pure shared states, 30 reachable Kernel-host cases with two documented profile skips, and real paired protected-executor/institution tests; it is not a 32-case Python loop-parity claim.
+
+**Verified 2026-11-15:** Deep D11 passes hosted CI [43716072357](https://github.com/AstralDeep/AstralDeep/actions/runs/43716072357) (19/19); Projection P18 passes primary [43716070032](https://github.com/AstralDeep/AstralProjection/actions/runs/43716070032), Android [43716069975](https://github.com/AstralDeep/AstralProjection/actions/runs/43716069975), and Apple [43716069974](https://github.com/AstralDeep/AstralProjection/actions/runs/43716069974) CI (21/21 Apple jobs). Kernel CI [43680163653](https://github.com/AstralDeep/AstralKernel/actions/runs/43680163653) and Vessel CI [43680628723](https://github.com/AstralDeep/AstralVessel/actions/runs/43680628723) are green. Strict coverage, native counts/retries, release assets and website evidence are in [qualification.md](qualification.md) and [local-integration-handoff.md](local-integration-handoff.md).
+
+The protected publisher run [43718280618](https://github.com/AstralDeep/AstralDeep/actions/runs/43718280618) succeeded and published `macos-v2.0.23-96`. Root’s independent post-publication verification confirmed the 11 public assets, signatures, stapling and source graph. The website deployment and desktop/mobile page checks are verified at [the canonical downloads page](https://astraldeep.github.io/downloads.html). No App Store submission, production APNs delivery, physical-device demonstration or live provider sign-in is claimed.
 
 ### Historical checkpoints
 

@@ -1,5 +1,31 @@
 # Spec 105 integration and qualification handoff
 
+## Current verified handoff — 2026-11-15
+
+This checkpoint supersedes the historical status language below, which is retained verbatim with its original dates and outcomes. Product source is frozen at the exact commits listed here; this update changes documentation only.
+
+| Component | Exact source | Verified state |
+|---|---|---|
+| Deep | D11 `528467d1bd602ab3219a426ac9c82eda3b5bc4d5` | Hosted CI run `43716072357` green 19/19. Strict resume 1767/1833=96.40% (base `ced61ce087ca8b1a1d1e4339e521ef2c8f59718a`, report SHA-256 `84722e6a4b0fb1bdc7eee5cfd9abf4016b192c1bd3e03611e41d1738e2419117`); full-feature 5960/6118=97.42% (base `a3eb724aa15fcdcb2c590b859c5f5104c41a4daa`, report SHA-256 `aafd3f64d72b1b957d4209eda5e04ea0d1cdf28d8f3efe80d60dbf8d6657c35a`). |
+| Projection | P18 `6dbe0a717efc0b49d89beaecf44988f657c599d2` | Primary `43716070032`, Android `43716069975`, Apple `43716069974` green; Apple 21/21 provider jobs. Native totals, declared skip identities and Watch retry are recorded in `qualification.md` and P18 summary JSON. |
+| Kernel | `ed5ad2231f445497082750103326242b24fcbcb0` | Hosted CI [43680163653](https://github.com/AstralDeep/AstralKernel/actions/runs/43680163653) green; 1,310 workspace tests, one existing multicast ignore, strict Clippy, 17 source-bound payloads. Manifest SHA-256 `7bf28406a4a02433033527627febf9b46349934017f234d34001884d9183e976`. |
+| Vessel | `7d3b6f29f688812a1cb1a88861ae487b933b38cb` | Hosted CI [43680628723](https://github.com/AstralDeep/AstralVessel/actions/runs/43680628723) green with the exact adopted Kernel source/artifact pins. |
+| Public Mac release | `macos-v2.0.23-96` | Protected publisher run `43718280618` succeeded; all 11 assets passed publisher validation; Root independently verified the public source graph after publication. DMG SHA-256 `50c89a80eb75c7b58bc9b3bfcd47593282978f546b79825520272ed662373bcc` (32,257,605 bytes); NodePack `37157527cab5d625fc3aa8c4b550b1c505ffa010fcfc58e02711e0590cbc6bb4` (146,494,149 bytes); descriptor `7c6f67ae96278525a8f413883007b6fff7850b79c74c4d257ee368a979d9c901`; manifest `a3d1932364828c36d54fda87d0160f980a250dd1e9e38393c709ebff0f119bff`. Read-only app/DMG signature and stapler checks plus Ed25519 policy/DMG signatures passed. Raw proof: `evidence-105/verify-public-macos-96.log`. These public identities differ from the local N11 diagnostic pack. |
+
+The normal local D11/P18 qualification also records 4,603 Python passes, 8 skips, 33 subtests, helper 16/16, 303 composition/release checks, 77 recipe passes with one existing skip, and 159 workflow-contract passes with 4 skips. The P18 native run records the 6 declared skips and one permitted Watch test retry; preserve the first-attempt failure rather than describing an all-first-attempt pass.
+
+The approved cleanup deleted 29 merged task-owned local/remote branch pairs and verified absence independently (Deep 16, Projection 10, Kernel 2, Vessel 1), with evidence SHA-256 `6b747be513722f0fbcf592ab60d6526d4a225b161163e6b6f2fc461829fdf751` in `evidence-105/merged-spec105-ref-cleanup-final.json`. Scoped temp cleanup recorded 103.65 GiB reclaimed while retaining source, current artifacts, models, stores, and evidence.
+
+## Current qualification commands and logs
+
+Deep’s authoritative hosted job log is run [43716072357](https://github.com/AstralDeep/AstralDeep/actions/runs/43716072357); strict coverage reports and command records are retained under `evidence-105/codex-20261114-live/institution-final/release-candidate/hosted-d11/`. Kernel workspace/Clippy results are in [43680163653](https://github.com/AstralDeep/AstralKernel/actions/runs/43680163653), Vessel results in [43680628723](https://github.com/AstralDeep/AstralVessel/actions/runs/43680628723), and Projection logs in [43716070032](https://github.com/AstralDeep/AstralProjection/actions/runs/43716070032), [43716069975](https://github.com/AstralDeep/AstralProjection/actions/runs/43716069975), and [43716069974](https://github.com/AstralDeep/AstralProjection/actions/runs/43716069974). The protected release verification log is `evidence-105/verify-public-macos-96.log`; native totals and report hashes are listed in [qualification.md](qualification.md).
+
+## Current handoff closure
+
+The website update is deployed and verified. Release-sync run `43723268187` passed sync/build/deploy at site SHA `efd9097c98ba85267eb0c29f01226eb6709947c0`. The canonical URL `https://astraldeep.github.io/downloads.html` returned 200 with release JSON version 2.0.23 (96), matching DMG and optional NodePack links, and iPhone preparation label. Root inspected desktop 1200px and mobile 390px layouts: scroll width equaled each viewport and both download controls were visible. Screenshots are retained at `evidence-105/site-mac96-desktop.png` and `evidence-105/site-mac96-mobile.png`. No App Store submission, production APNs registration/delivery, physical owner-device demonstration, or live provider sign-in is claimed. Live observations remain optional under the acceptance clarification; deterministic gates are complete and were not waived.
+
+## Historical handoff records — original text preserved verbatim from 2026-11-14 onward
+
 Updated 2026-11-14. The current work is the "Codex continuation" section at the end of this file; it supersedes earlier checkpoint claims for changed source. The fifth checkpoint remains evidence for its exact earlier revisions. Work resumed after the historical stops below. Local implementation and qualification remain in progress. The final candidate is identified by an external exact-SHA evidence inventory after the clean source freeze; no complete final same-SHA gate set exists yet, and the feature is not production-ready. The owner approved spec section 17. The owner is away with the phone disconnected. Physical checks remain pending; phone mirroring and automation are not authorized. No new product push, Kernel publication, merge, deployment or release is authorized by this handoff.
 
 ## Current source and pending adoption
