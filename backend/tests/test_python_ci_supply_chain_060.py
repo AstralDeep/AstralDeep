@@ -65,6 +65,12 @@ REVIEWED_CONTEXT_TOKEN_ACCOUNTING_FINGERPRINTS = {
     "a061349f7fcda21b417280679ce17ace99c27404:"
     "backend/orchestrator/token_assets/NOTICE:generic-api-key:14",
 }
+REVIEWED_PUBLIC_SOURCE_FINGERPRINTS = {
+    '50412b3e7d514da6a3aaad5084346da600b1c651:config/astral-composition.json:generic-api-key:68',
+    '5791a82e238268b694730743672c289d5bfb603b:backend/shared/node_identity.py:generic-api-key:122',
+    '732e3d3ecfccb54fb933b19ad6b4b3b2a5d64500:backend/shared/institution_profile.py:generic-api-key:210',
+}
+REVIEWED_PUBLIC_MESH_BASELINE_SHA256 = '3dae639f3d4261b5a0fef550bb0645bbd39bc143e6a85eb6f2e464881c8e3ea0'
 WINDOWS_CANDIDATE = REPO_ROOT / ".github" / "workflows" / "build-windows-candidate.yml"
 WINDOWS_RELEASE_BRIDGE = REPO_ROOT / ".github" / "workflows" / "release-windows.yml"
 LOCK_INSTALL = (
@@ -217,7 +223,13 @@ def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     assert comments, "a baseline entry with no recorded reason is not reviewed"
     assert all(line.lstrip("#").strip() for line in comments)
     fingerprints = [line for line in lines if not line.startswith("#")]
-    assert len(fingerprints) == 28
+    public_mesh = {fingerprint for fingerprint in fingerprints
+                   if ":specs/105-decentralized-personal-mesh/contracts/vectors/" in fingerprint}
+    public_mesh |= REVIEWED_PUBLIC_SOURCE_FINGERPRINTS
+    assert public_mesh <= set(fingerprints)
+    assert len(public_mesh) == 133
+    assert hashlib.sha256("\n".join(sorted(public_mesh)).encode()).hexdigest() == REVIEWED_PUBLIC_MESH_BASELINE_SHA256
+    assert len(fingerprints) == 28 + len(public_mesh)
     assert len(fingerprints) == len(set(fingerprints))
     assert REVIEWED_074_FINGERPRINTS <= set(fingerprints)
     assert REVIEWED_079_FINGERPRINT in fingerprints
@@ -228,7 +240,7 @@ def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     assert all(
         re.fullmatch(
             r"[0-9a-f]{40}:[^:]+:"
-            r"(?:generic-api-key|private-key|typesafe-system-one-key):[1-9][0-9]*",
+            r"(?:generic-api-key|private-key|typesafe-system-one-key|jwt):[1-9][0-9]*",
             fingerprint,
         )
         for fingerprint in fingerprints

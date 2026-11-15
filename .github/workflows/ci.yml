@@ -200,6 +200,7 @@ jobs:
           set -euo pipefail
           python -m pip install --require-hashes -r components/AstralProjection/tooling/python-ci/requirements.lock.txt
           python -m pip install --no-deps components/AstralPrimitives
+          python -m pip install --no-deps components/AstralKernel/python/rote
           python -m pip install --no-deps --no-build-isolation components/AstralProjection
       - name: Lint and test all Projection backend Python
         working-directory: components/AstralProjection
@@ -754,7 +755,7 @@ jobs:
       ASTRAL_ENV: development
       PYTHON_DOTENV_DISABLED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
-      PYTHONPATH: backend:components/AstralProjection/src:components/AstralProjection/backend:components/AstralProjection:components/AstralPlane/src:components/AstralPrimitives/src:components/LETS/src
+      PYTHONPATH: backend:components/AstralProjection/src:components/AstralProjection/backend:components/AstralProjection:components/AstralPlane/src:components/AstralPrimitives/src:components/LETS/src:components/AstralKernel/python/rote/src
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
