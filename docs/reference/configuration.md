@@ -19,11 +19,6 @@ The top level of `vessel.toml`.
 
 <!-- config: astralvessel.manifest.AgentSection -->
 
-### ModelSection
-
-`[model]`
-
-<!-- config: astralvessel.manifest.ModelSection -->
 
 ### ToolsSection
 
@@ -63,11 +58,6 @@ The top level of `deployment.toml`.
 
 <!-- config: astralvessel.deployment.DeploymentFile -->
 
-### VesselSection
-
-`[vessel]`
-
-<!-- config: astralvessel.deployment.VesselSection -->
 
 ### EgressSection
 
@@ -75,11 +65,24 @@ The top level of `deployment.toml`.
 
 <!-- config: astralvessel.deployment.EgressSection -->
 
-### SearchSection
+### NodeSection
 
-`[search]`
+`[node]`
 
-<!-- config: astralvessel.deployment.SearchSection -->
+<!-- config: astralvessel.deployment.NodeSection -->
+
+### OwnerSection
+
+`[owner]`
+
+<!-- config: astralvessel.deployment.OwnerSection -->
+
+### ExecutorSection
+
+`[executor]`
+
+<!-- config: astralvessel.deployment.ExecutorSection -->
+
 
 ### AgentEntry
 
@@ -99,20 +102,5 @@ An entry of `[agents.sandbox] mounts`.
 
 <!-- config: astralvessel.deployment.MountGrant -->
 
-### ServiceGrant
 
-`[agents.services.<name>]`
 
-<!-- config: astralvessel.deployment.ServiceGrant -->
-
-### AppEntry
-
-`[[apps]]`
-
-<!-- config: astralvessel.deployment.AppEntry -->
-
-### IssuerEntry
-
-`[[issuers]]`
-
-<!-- config: astralvessel.deployment.IssuerEntry -->

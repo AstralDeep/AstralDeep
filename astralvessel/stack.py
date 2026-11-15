@@ -1,5 +1,5 @@
 # A running deployment as the operator's commands see it: its folder, env file, Compose file and containers.
-# up, check, chat, ask and down all drive Docker through this, so they agree on paths and project names.
+# up, check and down drive Docker through this, so they agree on paths and project names.
 
 from __future__ import annotations
 
@@ -56,21 +56,6 @@ class Stack:
     def logs(self, service: str, tail: int = 40) -> str:
         done = self.compose("logs", "--no-color", "--tail", str(tail), service, check=False, capture=True)
         return (done.stdout or "") + (done.stderr or "")
-
-    def container_image(self, project: str, service: str) -> str:
-        # Found by Compose's labels, not `docker compose ps`, which needs every env: variable even though the
-        # client uses none of them (the model key may live only in the operator's shell).
-        done = subprocess.run(["docker", "ps", "-q", "--filter", f"label=com.docker.compose.project={project}",
-                               "--filter", f"label=com.docker.compose.service={service}",
-                               "--filter", "label=com.docker.compose.oneoff=False"],
-                              check=False, text=True, capture_output=True)
-        if done.returncode != 0:
-            raise SystemExit((done.stderr or "docker ps failed").strip())
-        found = done.stdout.strip()
-        if not found:
-            raise SystemExit(f"the {service} container is not running; start the deployment with astralvessel up")
-        return subprocess.run(["docker", "inspect", "-f", "{{.Config.Image}}", found.splitlines()[0]],
-                              check=True, text=True, capture_output=True).stdout.strip()
 
     def require_compose(self) -> None:
         if not self.compose_file.exists():

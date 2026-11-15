@@ -20,7 +20,7 @@ We will acknowledge the report, keep you updated, and credit you in the changelo
 - Escaping a tool call's sandbox, or reaching files, processes or the network a call should not see
 - One turn, user or agent reaching another's workspace, history or files
 - Bypassing the egress proxy's address checks, or reading the model key from outside the egress container
-- Forging or bypassing caller identity, or widening an agent's tools beyond what a caller was granted
+- Forging or bypassing a ticket, the executor's checks or the owner's identity, or widening an agent's tools beyond what a ticket grants
 - Secrets or user data leaking into logs, errors or responses
 
 Denial of service against your own deployment within its configured limits is out of scope, but reports of a limit

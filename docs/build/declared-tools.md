@@ -1,8 +1,7 @@
 # Declared tools
 
-A declared tool is a command the agent's sandbox runs when the model calls it. This page covers the tool file, how
-arguments reach the command, and what comes back. For tools your application answers over HTTP, see
-[Service tools](service-tools.md).
+A declared tool is a command the agent's sandbox runs when it is called. This page covers the tool file, how
+arguments reach the command, and what comes back.
 
 ## Write a tool
 
@@ -56,23 +55,21 @@ The command runs with the agent's `workdir` as its current directory, so `specie
 | Key | Default | Meaning |
 |---|---|---|
 | `name` | required | Lowercase letters, digits and underscores, starting with a letter, up to 63 characters. May not repeat a built-in tool or another declared tool. |
-| `description` | required | What the model sees to decide when to call it. |
+| `description` | required | What the caller gets to decide when to call it. |
 | `command` | | The argument vector to run. `{package}` is replaced with the agent folder's path in the sandbox (`/agent`). |
-| `parameters` | `{"type": "object", "properties": {}}` | A JSON Schema for the arguments, passed to the model as is. |
+| `parameters` | `{"type": "object", "properties": {}}` | A JSON Schema for the arguments, kept as the tool's input schema. |
 | `input` | `"json-stdin"` | How arguments reach the command: `json-stdin` or `args`. |
 | `timeout_seconds` | the agent's `tool_timeout_seconds` | This tool's time limit. |
 | `scope` | `"tools:read"` | Its [permission scope](vessel-toml.md#permission-scopes). |
 
-A tool sets exactly one of `command` or `service` (see [Service tools](service-tools.md)).
-
 ## How arguments arrive
 
-With `input = "json-stdin"` (the default), the command receives the model's arguments as one JSON object on
+With `input = "json-stdin"` (the default), the command receives the call's arguments as one JSON object on
 standard input.
 
 With `input = "args"`, each argument becomes a `--name=value` flag appended to the command, and standard input is
 empty. Only names declared under `parameters.properties` are accepted; a call with any other argument is refused
-before the command runs, so the model cannot add flags of its own.
+before the command runs, so a caller cannot add flags of its own.
 
 ```toml
 # tools/word_count.toml
@@ -100,16 +97,16 @@ print(len(pathlib.Path(parser.parse_args().path).read_text().split()))
 Values are passed with Python's `str()`, so a boolean arrives as `True` or `False` and a list as its Python form.
 Prefer `json-stdin` for anything beyond plain strings and numbers.
 
-The vessel refuses arguments that are not a JSON object, and the model is told to call again with valid JSON.
+The executor refuses arguments that are not a JSON object.
 
-## What the model sees
+## What the caller gets
 
 The command's standard output and standard error, combined, are the result. An exit status other than zero marks
 the call as an error. Empty output becomes `[exit code N]`.
 
-Output is cut to the agent's `tool_output_chars` for the model, with a note saying how much was dropped. A call
+Output is cut to the agent's `tool_output_chars`, with a note saying how much was dropped. A call
 that runs past `timeout_seconds` (or `tool_timeout_seconds`) has its process group killed and returns
-`[timed out after N s]`. The fixed output caps are in [Limits](../reference/limits.md#tools).
+`[timed out after N s]`. The fixed output caps are in [Limits](../reference/limits.md).
 
 ## Where it runs
 

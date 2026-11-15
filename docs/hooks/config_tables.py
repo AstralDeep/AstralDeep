@@ -20,31 +20,25 @@ BOUNDS = (("gt", ">"), ("ge", ">="), ("lt", "<"), ("le", "<="), ("min_length", "
 
 # Checks made by validators, which the field metadata cannot show.
 CHECKS = {
-    "VesselSection": ["`front_address` must be inside `front_subnet`, and `front_subnet` must be a network "
-                      "address (`172.31.247.0/24`, not `172.31.247.1/24`).",
-                      "`front_subnet` must be a /28 or larger, and `front_address` must be in its lower half; "
-                      "other containers on `front` get addresses from the upper half."],
-    "ToolsSection": ["Every `builtin` entry must be one of `read`, `grep`, `glob`, `list`, `bash`, `webfetch`, "
-                     "`websearch`."],
-    "DeclaredTool": ["Exactly one of `command` or `service`.", "A service tool needs `path`, with no `..` segment.",
+    "NodeSection": ["`front_address` must be inside `front_subnet`, and `front_subnet` must be a network address "
+                    "(`172.31.247.0/24`, not `172.31.247.1/24`).",
+                    "`front_subnet` must be a /28 or larger, and `front_address` must be in its lower half; "
+                    "other containers on `front` get addresses from the upper half.",
+                    "`public_url` must be an `http://` or `https://` origin with no path.",
+                    "`environment` names must be upper case, may not be set by the deployment itself and may not "
+                    "look like secrets."],
+    "OwnerSection": ["Every issuer must be an `http://` or `https://` URL with a host and no commas or spaces."],
+    "ToolsSection": ["Every `builtin` entry must be one of `read`, `grep`, `glob`, `list`, `bash`."],
+    "DeclaredTool": ["`command` needs at least one element.",
                      "The name may not repeat another declared tool or a built-in tool."],
-    "ServiceGrant": ["Header names may not start with `X-Vessel-`.",
-                     "A literal `url` must start with `http://` or `https://` and carry no `?` or `#`."],
-    "IssuerEntry": ["Exactly one of `jwks_url` or `jwks_file`.", "`jwks_url` must start with `https://`.",
-                    "`algorithms` must be non-empty and drawn from `RS256`, `RS384`, `RS512`, `PS256`, `ES256`, "
-                    "`ES384`, `EdDSA`."],
-    "DeploymentFile": ["At least one agent; agent ids are unique.", "At least one `[[apps]]` or `[[issuers]]`.",
-                       "App names are unique; issuer ids and issuer URLs are each unique.",
-                       "Every agent an app or issuer names must exist."],
+    "DeploymentFile": ["Agent ids are unique."],
     "SandboxProfile": ["Each mount must be read-only, and the targets must match the agent's `[sandbox] mounts` "
                        "exactly.",
                        "`turn_disk` defaults to a quarter of `scratch` and `user_disk` to half; sizes look like `64m` "
                        "or `2g`, and `0 < turn_disk <= user_disk <= scratch`."],
-    "AgentEntry": ["The `services` keys must match the services the agent's tools name, no more and no fewer.",
-                   "Each `prompt_append` file must exist inside the agent folder."],
     "SandboxSection": ["`dockerfile` must be inside the agent folder."],
-    "EgressSection": ["`upstream_url` must be an `http://` or `https://` URL with a host and no spaces, or `env:NAME` "
-                      "with a valid variable name."],
+    "EgressSection": ["`upstream_url`, when set, must be an `http://` or `https://` URL with a host and no spaces, "
+                      "or `env:NAME` with a valid variable name."],
 }
 
 

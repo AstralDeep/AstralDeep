@@ -1,11 +1,10 @@
-# The operator's commands: up writes a deployment when there is none, starts it, waits, probes and tests the model;
-# check probes, down stops it, and chat and ask reach the vessel from a short-lived container on its front network.
+# The operator's commands: up writes a deployment when there is none, starts the personal node and its executor, waits
+# and probes; check re-runs the probes and the node checks, down stops it, and pair, ask and chat talk to the node.
 
 from __future__ import annotations
 
 import argparse
 import getpass
-import hashlib
 import ipaddress
 import json
 import os
@@ -18,33 +17,26 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .deployment import AGENT_ID, Deployment, EgressSection, load_deployment
+from . import conformance, node
+from .deployment import AGENT_ID, Deployment, load_deployment
 from .manifest import load_package
 from .probes import run_probes
 from .stack import Stack
 
 ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 KEY_VARIABLE = "VESSEL_UPSTREAM_MODEL_KEY"
-OWNER = "local"
-HEALTH = r'''
-import json, os, urllib.request
-url = "http://" + os.environ["VESSEL_HOST"] + ":8700/health"
-print(urllib.request.urlopen(url, timeout=5).read().decode())
+SANDBOX_HEALTH = r'''
+import json, urllib.request
+print(urllib.request.urlopen("http://127.0.0.1:8710/health", timeout=5).read().decode())
 '''
-MODEL_CHECK = r'''
-import json, os, urllib.error, urllib.request
-for model in json.loads(MODELS):
-    body = json.dumps({"model": model, "messages": [{"role": "user", "content": "Reply with OK."}],
-                       "max_tokens": 16, "stream": False}).encode()
-    request = urllib.request.Request("http://egress:8080/v1/chat/completions", data=body, headers={
-        "Authorization": "Bearer " + os.environ["VESSEL_MODEL_KEY"], "Content-Type": "application/json"})
-    try:
-        code, detail = urllib.request.urlopen(request, timeout=60).status, ""
-    except urllib.error.HTTPError as exc:
-        code, detail = exc.code, exc.read()[:300].decode(errors="replace")
-    except OSError as exc:
-        code, detail = 0, type(exc).__name__
-    print(json.dumps({"model": model, "code": code, "detail": detail}), flush=True)
+DATA_MODES = r'''
+import json, os, stat
+root = "/node-data/node"
+out = {"directory": oct(stat.S_IMODE(os.stat(root).st_mode))}
+for name in ("plane.sqlite3", "node-ed25519.pem"):
+    path = os.path.join(root, name)
+    out[name] = oct(stat.S_IMODE(os.stat(path).st_mode)) if os.path.exists(path) else None
+print(json.dumps(out))
 '''
 
 
@@ -56,11 +48,15 @@ def example_root() -> Path:
 
 @dataclass
 class Answers:
+    issuer: str = ""
+    client_id: str = ""
+    subject: str = ""
+    image: str = ""
+    port: int = 0
+    upstream_url: str = ""
+    api_key: str = ""
     agents: list[Path] = field(default_factory=list)
     mounts: dict[tuple[int, str], str] = field(default_factory=dict)  # (agent index, target) -> host folder
-    model_url: str = ""
-    api_key: str = ""
-    model: str = ""
 
 
 def _ask(prompt: str, secret: bool = False) -> str:
@@ -70,11 +66,12 @@ def _ask(prompt: str, secret: bool = False) -> str:
         raise SystemExit("\nstopped: no answer") from None
 
 
-def _check_url(url: str) -> str | None:
+def _check_url(url: str, what: str = "URL") -> str | None:
+    from .deployment import OwnerSection
     try:
-        EgressSection(upstream_url=url)
+        OwnerSection(issuer=url, client_id="x")
     except ValueError:
-        return "give an http(s) URL with a host, such as https://api.example.com/v1"
+        return f"give an http(s) {what} with a host, such as https://keycloak.example.com/realms/astral"
     return None
 
 
@@ -95,20 +92,25 @@ def _check_agent(path: str) -> str | None:
     try:
         load_package(Path(path).expanduser())
     except FileNotFoundError:
-        return f"{path} is not an agent folder (it needs vessel.toml and prompt.md)"
+        return f"{path} is not an agent folder (it needs vessel.toml)"
     except (OSError, ValueError) as exc:
         return f"{path}: {exc}".splitlines()[0][:300]
     return None
 
 
 def gather(args: argparse.Namespace, interactive: bool) -> Answers:
-    answers = Answers(model_url=args.model_url or "", api_key=args.api_key or "", model=args.model or "")
-    if args.api_key and not args.api_key.startswith("env:"):
+    answers = Answers(issuer=(args.issuer or "").rstrip("/"), client_id=args.client_id or "",
+                      subject=args.subject or "", image=args.image or "", port=args.port or 0,
+                      upstream_url=args.upstream_url or "", api_key=args.api_key or "")
+    if answers.api_key and not answers.api_key.startswith("env:"):
         raise SystemExit("--api-key takes env:NAME, so the key never appears in a command line; "
                          "or leave it out and type it at the prompt")
-    for given, check in ((answers.model_url, _check_url), (answers.api_key, _check_key)):
+    for given, check in ((answers.issuer, _check_url), (answers.upstream_url, _check_url),
+                         (answers.api_key, _check_key)):
         if given and (problem := check(given)):
             raise SystemExit(problem)
+    if answers.api_key and not answers.upstream_url:
+        raise SystemExit("--api-key belongs to the model gateway; give --upstream-url as well")
     if args.example:
         answers.agents = [example_root() / "field-guide"]
         answers.mounts[(0, "/data")] = str(example_root() / "sample-data")
@@ -129,23 +131,22 @@ def gather(args: argparse.Namespace, interactive: bool) -> Answers:
             raise SystemExit(f"--mount {grant}: {folder} is not a folder")
         answers.mounts[(index, match[2])] = str(folder)
     if not interactive:
-        missing = [flag for flag, have in (("--agent (or --example)", answers.agents), ("--model-url",
-                   answers.model_url), ("--api-key env:NAME", answers.api_key), ("--model", answers.model)) if not have]
+        missing = [flag for flag, have in (("--issuer URL", answers.issuer), ("--client-id ID", answers.client_id))
+                   if not have]
         missing += [f"--mount {a.name}:{m.target}=FOLDER" for i, a in enumerate(answers.agents)
                     for m in load_package(a).manifest.sandbox.mounts if (i, m.target) not in answers.mounts]
         if missing:
             raise SystemExit("no deployment.toml here and no terminal to ask on; pass " + ", ".join(missing))
         return answers
     print("No deployment.toml here, so let's write one. Press Ctrl-C to stop.\n")
-    while not answers.agents:
-        for part in _ask("Agent folders (comma-separated): ").split(","):
-            if not part.strip():
-                continue
-            if problem := _check_agent(part.strip()):
-                print("  " + problem)
-                answers.agents = []
-                break
-            answers.agents.append(Path(part.strip()).expanduser().resolve())
+    while not answers.issuer:
+        url = _ask("Your identity provider (OIDC issuer URL, such as https://keycloak.example.com/realms/astral): ")
+        if problem := _check_url(url, "issuer URL"):
+            print("  " + problem)
+        else:
+            answers.issuer = url.rstrip("/")
+    while not answers.client_id:
+        answers.client_id = _ask("The client id your Astral apps sign in with: ")
     for index, agent in enumerate(answers.agents):
         for mount in load_package(agent).manifest.sandbox.mounts:
             while (index, mount.target) not in answers.mounts:
@@ -154,20 +155,6 @@ def gather(args: argparse.Namespace, interactive: bool) -> Answers:
                     answers.mounts[(index, mount.target)] = str(Path(folder).expanduser().resolve())
                 else:
                     print(f"  {folder} is not a folder")
-    while not answers.model_url:
-        url = _ask("Model endpoint (OpenAI-compatible base URL, such as https://api.example.com/v1): ")
-        if problem := _check_url(url):
-            print("  " + problem)
-        else:
-            answers.model_url = url
-    while not answers.api_key:
-        key = _ask("API key (or env:NAME to read it from the environment; input is hidden): ", secret=True)
-        if problem := _check_key(key):
-            print("  " + problem)
-        else:
-            answers.api_key = key
-    while not answers.model:
-        answers.model = _ask("Model name: ")
     return answers
 
 
@@ -191,12 +178,12 @@ def pick_project(folder: Path) -> str:
         label = f"label=com.docker.compose.project={name}"
         dirs = set(_docker("ps", "-a", "--filter", label, "--format",
                            '{{.Label "com.docker.compose.project.working_dir"}}').split())
-        # A stopped deployment keeps its volumes and networks; reusing its name would reuse its task store.
+        # A stopped deployment keeps its volumes and networks; reusing its name would reuse its node data.
         leftovers = (_docker("volume", "ls", "-q", "--filter", label) + _docker("network", "ls", "-q", "--filter",
                                                                                    label)).split()
         if (not dirs and not leftovers) or dirs == {str(folder)}:
             return name
-    raise SystemExit("could not find a free project name; set [vessel] project yourself")
+    raise SystemExit("could not find a free project name; set [node] project yourself")
 
 
 def pick_subnet() -> ipaddress.IPv4Network:
@@ -213,7 +200,7 @@ def pick_subnet() -> ipaddress.IPv4Network:
         net = ipaddress.ip_network(f"172.31.{third}.0/24")
         if not any(net.overlaps(other) for other in taken if other.version == 4):
             return net
-    raise SystemExit("no free 172.31.x.0/24 subnet; set [vessel] front_subnet yourself")
+    raise SystemExit("no free 172.31.x.0/24 subnet; set [node] front_subnet yourself")
 
 
 def _toml(value: str) -> str:
@@ -243,11 +230,19 @@ def write_deployment(folder: Path, answers: Answers, *, example: bool) -> Path:
         agents[0], mounts[(0, "/data")] = folder / "agents" / "field-guide", str(folder / "data")
     subnet = pick_subnet()
     lines = ["# Written by astralvessel up. Edit it and run astralvessel up again to apply a change.", "",
-             "[vessel]", f"project = {_toml(pick_project(folder))}", f"front_subnet = {_toml(str(subnet))}",
-             f"front_address = {_toml(str(subnet.network_address + 10))}", "",
-             "[egress]", f"upstream_url = {_toml(answers.model_url)}"]
-    key_ref = answers.api_key if answers.api_key.startswith("env:") else f"env:{KEY_VARIABLE}"
-    lines += [f"upstream_key = {_toml(key_ref)}", ""]
+             "[node]", f"project = {_toml(pick_project(folder))}"]
+    if answers.image:
+        lines.append(f"image = {_toml(answers.image)}")
+    if answers.port:
+        lines.append(f"port = {answers.port}")
+    lines += [f"front_subnet = {_toml(str(subnet))}", f"front_address = {_toml(str(subnet.network_address + 10))}", "",
+              "[owner]", f"issuer = {_toml(answers.issuer)}", f"client_id = {_toml(answers.client_id)}"]
+    if answers.subject:
+        lines.append(f"subject = {_toml(answers.subject)}")
+    lines.append("")
+    if answers.upstream_url:
+        key_ref = answers.api_key if answers.api_key.startswith("env:") else f"env:{KEY_VARIABLE}"
+        lines += ["[egress]", f"upstream_url = {_toml(answers.upstream_url)}", f"upstream_key = {_toml(key_ref)}", ""]
     ids: list[str] = []
     for index, agent in enumerate(agents):
         package = load_package(agent)
@@ -257,8 +252,7 @@ def write_deployment(folder: Path, answers: Answers, *, example: bool) -> Path:
             n += 1
             agent_id = f"{base[:58]}-{n}"
         ids.append(agent_id)
-        lines += ["[[agents]]", f"id = {_toml(agent_id)}", f"package = {_toml(_relative(agent, folder))}",
-                  f"model = {_toml(answers.model)}"]
+        lines += ["[[agents]]", f"id = {_toml(agent_id)}", f"package = {_toml(_relative(agent, folder))}"]
         grants = []
         for mount in package.manifest.sandbox.mounts:
             source = _relative(Path(mounts[(index, mount.target)]), folder)
@@ -266,12 +260,8 @@ def write_deployment(folder: Path, answers: Answers, *, example: bool) -> Path:
         if grants:
             lines += ["[agents.sandbox]", f"mounts = [{', '.join(grants)}]"]
         lines.append("")
-    lines += ["[[apps]]", 'name = "cli"', 'key_sha256 = "env:VESSEL_APP_KEY_SHA256"',
-              f"agents = [{', '.join(_toml(i) for i in ids)}]", ""]
-    app_key = secrets.token_urlsafe(32)
-    values = {"VESSEL_APP_KEY": app_key, "VESSEL_APP_KEY_SHA256": hashlib.sha256(app_key.encode()).hexdigest(),
-              "VESSEL_SANDBOX_TOKEN": secrets.token_urlsafe(32)}
-    if not answers.api_key.startswith("env:"):
+    values = {"VESSEL_SANDBOX_TOKEN": secrets.token_urlsafe(32)}
+    if answers.upstream_url and not answers.api_key.startswith("env:"):
         values[KEY_VARIABLE] = answers.api_key
     # Single quotes keep a key with $, # or spaces literal for Compose's env file and for load_env_file.
     text = "".join(f"{k}='{v}'\n" for k, v in values.items())
@@ -288,8 +278,7 @@ def write_deployment(folder: Path, answers: Answers, *, example: bool) -> Path:
         raise
     gitignore = folder / ".gitignore"
     existing = gitignore.read_text() if gitignore.exists() else ""
-    needed = [line for line in (".env", ".generated/", "compose.generated.yml", "chats/")
-              if line not in existing.splitlines()]
+    needed = [line for line in (".env", ".generated/", "compose.generated.yml") if line not in existing.splitlines()]
     if needed:
         lead = "\n" if existing and not existing.endswith("\n") else ""
         with gitignore.open("a") as handle:
@@ -301,7 +290,6 @@ def write_deployment(folder: Path, answers: Answers, *, example: bool) -> Path:
 def write_compose(stack: Stack, out: Path | None = None) -> tuple[Deployment, Path]:
     from .compose import write
     stack.load_env()
-    os.environ.pop("VESSEL_JWKS_DIR", None)  # only the vessel container sets it; deploy needs host paths
     master = os.environ.get("VESSEL_SANDBOX_TOKEN", "")
     if len(master) < 16:
         raise SystemExit("set VESSEL_SANDBOX_TOKEN (16+ characters) in the environment or the env file")
@@ -317,7 +305,8 @@ def write_compose(stack: Stack, out: Path | None = None) -> tuple[Deployment, Pa
 
 
 def _missing_env(deployment: Deployment) -> list[str]:
-    refs = [deployment.egress.upstream_url, deployment.egress.upstream_key, *(a.key_sha256 for a in deployment.apps)]
+    refs = [deployment.egress.upstream_url or "", deployment.egress.upstream_key if deployment.egress.upstream_url
+            else ""]
     return [r[4:] for r in refs if r.startswith("env:") and not os.environ.get(r[4:])]
 
 
@@ -327,17 +316,29 @@ def _require_env(stack: Stack, deployment: Deployment) -> None:
         raise SystemExit(f"set {', '.join(missing)} in the environment or {stack.env_file}")
 
 
+def require_image(deployment: Deployment) -> None:
+    if _docker("image", "inspect", "-f", "{{.Id}}", deployment.node.image).strip():
+        return
+    raise SystemExit(f"the node image {deployment.node.image} is not on this machine. Build or pull an AstralDeep "
+                     "node image and tag it with that name, or set image in the [node] section")
+
+
 def wait_ready(stack: Stack, deployment: Deployment, timeout: float) -> bool:
     deadline = time.monotonic() + timeout
     agents: dict[str, bool] = {}
-    print("waiting for every agent's sandbox to report it is confined", end="", flush=True)
+    state = ""
+    print("waiting for the node to be ready and every agent's sandbox to report it is confined", end="", flush=True)
     while time.monotonic() < deadline:
-        done = stack.python("vessel", HEALTH, timeout=20)
-        try:
-            agents = json.loads(done.stdout).get("agents", {})
-        except (json.JSONDecodeError, AttributeError):
-            agents = {}
-        if agents and all(agents.get(a) for a in deployment.agents):
+        state = node.health(deployment.node)
+        agents = {}
+        for agent_id, agent in deployment.agents.items():
+            done = stack.python(f"sandbox-{agent_id}", SANDBOX_HEALTH, timeout=20)
+            try:
+                body = json.loads(done.stdout)
+                agents[agent_id] = bool(body.get("confined")) and body.get("profile") == agent.fingerprint
+            except (json.JSONDecodeError, AttributeError):
+                agents[agent_id] = False
+        if state == "ok" and all(agents.values()):
             print(" ready")
             return True
         states = stack.compose("ps", "-a", "--format", "{{.Service}} {{.State}}", check=False, capture=True).stdout
@@ -350,36 +351,39 @@ def wait_ready(stack: Stack, deployment: Deployment, timeout: float) -> bool:
             return False
         print(".", end="", flush=True)
         time.sleep(3)
-    late = [a for a in deployment.agents if not agents.get(a)]
-    print(f"\nnot ready after {timeout:.0f}s: {', '.join(late)}")
+    late = [a for a, ok in agents.items() if not ok]
+    print(f"\nnot ready after {timeout:.0f}s: " + ", ".join(([] if state == "ok" else ["node"]) + late))
+    if state != "ok":
+        print(f"--- node ---\n{stack.logs('node')}")
     for agent_id in late:
         print(f"--- sandbox-{agent_id} ---\n{stack.logs(f'sandbox-{agent_id}')}")
-    print(f"--- vessel ---\n{stack.logs('vessel')}")
     return False
 
 
-def _scrub(text: str) -> str:
-    # Some providers echo part of the key in an error; never print anything shaped like one.
-    return re.sub(r"\b(sk|Bearer)[-_ ]?[A-Za-z0-9*._-]{6,}|[A-Za-z0-9*_-]{24,}", "[redacted]", text)
+def node_checks(stack: Stack, deployment: Deployment) -> list[str]:
+    # Prints one PASS or FAIL line per check and returns the names of the failures.
+    failed: list[str] = []
 
+    def report(name: str, ok: bool, detail: str = "") -> None:
+        print(f"{'PASS' if ok else 'FAIL'}  node: {name}" + (f" ({detail})" if detail and not ok else ""))
+        if not ok:
+            failed.append(name)
 
-def check_models(stack: Stack, deployment: Deployment) -> bool:
-    models = sorted({a.model for a in deployment.agents.values()})
-    done = stack.python("vessel", f"MODELS = {json.dumps(json.dumps(models))}\n" + MODEL_CHECK, timeout=200)
-    ok = done.returncode == 0
-    seen = 0
-    for raw in done.stdout.splitlines():
-        try:
-            line = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        seen += 1
-        if line["code"] == 200:
-            print(f"PASS  model {line['model']} answers through the egress")
-        else:
-            ok = False
-            print(f"FAIL  model {line['model']}: HTTP {line['code']} {_scrub(line['detail'])}".rstrip())
-    return ok and seen == len(models)
+    state = node.health(deployment.node)
+    report("answers /readyz", state == "ok", state)
+    problem = node.descriptor_problem(node.fetch_descriptor(deployment.node), deployment.owner)
+    report("publishes a descriptor for this owner's issuer", problem is None, problem or "")
+    done = stack.python("node", DATA_MODES, timeout=30)
+    try:
+        modes = json.loads(done.stdout)
+    except json.JSONDecodeError:
+        modes = {}
+    report("keeps its data directory private", modes.get("directory") == "0o700", str(modes.get("directory")))
+    report("keeps its database in a SQLite file readable only by the node", modes.get("plane.sqlite3") == "0o600",
+           str(modes.get("plane.sqlite3")))
+    report("keeps its signing key readable only by the node", modes.get("node-ed25519.pem") in (None, "0o600"),
+           str(modes.get("node-ed25519.pem")))
+    return failed
 
 
 def up(args: argparse.Namespace) -> None:
@@ -389,33 +393,34 @@ def up(args: argparse.Namespace) -> None:
             raise SystemExit(f"{stack.deployment} does not exist")
         answers = gather(args, interactive=sys.stdin.isatty() and sys.stdout.isatty())
         write_deployment(stack.deployment.parent, answers, example=args.example)
-    elif args.example or args.agent or args.model_url or args.api_key or args.model or args.mount:
+    elif any((args.example, args.agent, args.issuer, args.client_id, args.subject, args.image, args.port,
+              args.upstream_url, args.api_key, args.mount)):
         raise SystemExit(f"{stack.deployment} exists; edit it instead of passing setup options")
     deployment, _ = write_compose(stack)
     _require_env(stack, deployment)
+    require_image(deployment)
     stack.compose("up", "-d", "--build", "--remove-orphans")
     if not wait_ready(stack, deployment, args.timeout):
         raise SystemExit("the deployment is running but not ready; fix the problem above and run astralvessel up")
     report = run_probes(stack, deployment, os.environ["VESSEL_SANDBOX_TOKEN"])
-    models_ok = check_models(stack, deployment)
+    failed = node_checks(stack, deployment)
     print(f"{report.passed} probes passed, {len(report.failed)} failed, {report.skipped} skipped")
-    if report.failed or not models_ok:
+    if report.failed or failed:
         raise SystemExit("the deployment is running, but a check failed; it is not ready for use")
-    first = next(iter(deployment.agents))
-    print(f"\nready: {', '.join(deployment.agents)}\n  astralvessel chat {first}\n"
-          f"  astralvessel ask {first} \"your question\"")
+    print(f"\nready: node at {node.base_url(deployment.node)}\n  astralvessel pair\n"
+          "  astralvessel ask \"your question\"")
 
 
 def check(args: argparse.Namespace) -> None:
     stack = Stack.at(args.deployment or "deployment.toml")
     stack.require_compose()
     stack.load_env()
-    os.environ.pop("VESSEL_JWKS_DIR", None)
     deployment = load_deployment(stack.deployment)
     _require_env(stack, deployment)
     report = run_probes(stack, deployment, os.environ.get("VESSEL_SANDBOX_TOKEN", ""))
-    print(f"{report.passed} passed, {len(report.failed)} failed, {report.skipped} skipped")
-    if report.failed:
+    failed = [] if args.isolation_only else node_checks(stack, deployment)
+    print(f"{report.passed} probes passed, {len(report.failed)} failed, {report.skipped} skipped")
+    if report.failed or failed:
         raise SystemExit(1)
 
 
@@ -423,34 +428,90 @@ def down(args: argparse.Namespace) -> None:
     stack = Stack.at(args.deployment or "deployment.toml")
     stack.require_compose()
     stack.load_env()
-    os.environ.pop("VESSEL_JWKS_DIR", None)
     _require_env(stack, load_deployment(stack.deployment))
     stack.compose("down", *(["-v"] if args.volumes else []))
 
 
-def client(args: argparse.Namespace, mode: str) -> None:
-    # The vessel publishes no ports, so the client runs in a throwaway container on its internal front network.
+def _node_of(args: argparse.Namespace) -> Deployment:
+    stack = Stack.at(args.deployment or "deployment.toml")
+    stack.require_compose()
+    return load_deployment(stack.deployment)
+
+
+EXECUTOR_OFFER = r'''
+import json, os, urllib.error, urllib.request
+request = urllib.request.Request("http://%s:%s/pairing" % (os.environ["VESSEL_HOST"], os.environ["VESSEL_PORT"]),
+                                 headers={"Authorization": "Bearer " + os.environ["VESSEL_EXECUTOR_TOKEN"]})
+try:
+    print(json.dumps({"status": 200, **json.loads(urllib.request.urlopen(request, timeout=20).read())}))
+except urllib.error.HTTPError as exc:
+    print(json.dumps({"status": exc.code, **json.loads(exc.read() or b"{}")}))
+'''
+WAITING = {"executor.waiting_for_node": "the node has not joined the owner's mesh yet; pair the node first",
+           "executor.enrolled": "the executor is already in the owner's mesh",
+           "executor.no_kernel": "this image has no kernel binding, so the executor cannot join a mesh"}
+
+
+def pair_executor(args: argparse.Namespace) -> None:
     stack = Stack.at(args.deployment or "deployment.toml")
     stack.require_compose()
     stack.load_env()
-    os.environ.pop("VESSEL_JWKS_DIR", None)
-    if not os.environ.get("VESSEL_APP_KEY"):
-        raise SystemExit(f"set VESSEL_APP_KEY in the environment or {stack.env_file}")
-    deployment = load_deployment(stack.deployment)
-    if args.agent not in deployment.agents:
-        raise SystemExit(f"no agent {args.agent}; this deployment has {', '.join(deployment.agents)}")
-    image = stack.container_image(deployment.vessel.project, "vessel")
-    chats = stack.deployment.parent / "chats"
-    chats.mkdir(mode=0o700, exist_ok=True)
-    tty = sys.stdin.isatty() and sys.stdout.isatty()
-    command = ["docker", "run", "--rm", "-i", *(["-t"] if tty else []),
-               "--network", f"{deployment.vessel.project}_front", "--user", f"{os.getuid()}:{os.getgid()}",
-               "--read-only", "--tmpfs", "/tmp", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
-               "--pids-limit", "64", "--memory", "512m", "-e", "VESSEL_APP_KEY", "-e", "HOME=/tmp",
-               "-v", f"{chats}:/chats",
-               image, "astralvessel", "client", mode, args.agent]
-    if mode == "ask":
-        command.append(args.question)
-    else:
-        command += [*(["--resume", args.resume] if args.resume else []), *(["--list"] if args.list else [])]
-    raise SystemExit(subprocess.run(command, check=False).returncode)
+    done = stack.python("executor", EXECUTOR_OFFER, timeout=60)
+    try:
+        reply = json.loads(done.stdout)
+    except json.JSONDecodeError:
+        raise SystemExit("the executor did not answer; check that the deployment is running") from None
+    if reply.get("status") != 200:
+        raise SystemExit(WAITING.get(reply.get("code", ""), f"the executor refused: {reply.get('code', 'unknown')}"))
+    print("\n".join(["Add the executor from the AstralDeep app the same way, so it can check the owner's tickets.",
+                      "", f"  code     {reply['code']}", f"  payload  {reply['payload']}"]))
+
+
+def pair(args: argparse.Namespace) -> None:
+    if args.executor:
+        pair_executor(args)
+        return
+    deployment = _node_of(args)
+    try:
+        offer = node.request_pairing(deployment.node, node.owner_token(args.token_file), args.label)
+    except node.NodeError as exc:
+        raise SystemExit(str(exc)) from None
+    print(node.describe_offer(offer, deployment.node))
+
+
+def ask(args: argparse.Namespace) -> None:
+    deployment = _node_of(args)
+    try:
+        answer = node.ask(deployment.node, node.owner_token(args.token_file), args.question)
+    except node.NodeError as exc:
+        raise SystemExit(str(exc)) from None
+    print(answer)
+
+
+def chat(args: argparse.Namespace) -> None:
+    deployment = _node_of(args)
+    token = node.owner_token(args.token_file)
+    context = None
+    print("Chatting with your node. Press Ctrl-D to stop.")
+    while True:
+        try:
+            line = input("you> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if not line:
+            continue
+        try:
+            answer, context = node.converse(deployment.node, token, line, context)
+        except node.NodeError as exc:
+            print(f"error: {exc}")
+            continue
+        print(f"node> {answer}")
+
+
+def conformance_suite(args: argparse.Namespace) -> None:
+    deployment = _node_of(args)
+    failed = conformance.run(deployment, node.owner_token(args.token_file))
+    print(f"{len(conformance.CHECKS) - len(failed)} passed, {len(failed)} failed")
+    if failed:
+        raise SystemExit(1)

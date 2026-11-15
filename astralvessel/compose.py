@@ -1,8 +1,9 @@
-# Turns deployment.toml into a Docker Compose file: egress, the vessel, and one confined sandbox per agent.
+# Turns deployment.toml into a Docker Compose file: the personal node, the egress, and one confined sandbox per agent.
 # Nothing in the running system touches Docker; the operator runs `docker compose up` on what this writes.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -12,36 +13,15 @@ from pathlib import Path
 from typing import Any
 
 from .deployment import Deployment, egress_token, sandbox_token, size_bytes
+from .executor import agent_token, executor_token
 
-IMAGE = "astralvessel:local"
-JWKS_DIR = "/deploy-keys"
+NODE_DATA = "/node-data"
+NODE_INTERNAL_PORT = 8001
+NODE_SECRETS = ("WEB_SESSION_ENC_KEY", "CREDENTIAL_ENCRYPTION_KEY", "AUDIT_HMAC_SECRET", "AGENT_API_KEY")
 REGISTRY = "ghcr.io/astraldeep"
 SANDBOX_PORT = 8710
-SEARXNG_IMAGE = "searxng/searxng:2026.10.25-54ca1d9cf"
-# JSON answers only, no rate limiter or image proxy (one private caller), every request through the egress, and
-# more web engines than the default three, so one engine's CAPTCHA or rate limit leaves the others answering.
-SEARXNG_SETTINGS = """use_default_settings: true
-general:
-  instance_name: "astralvessel-search"
-search:
-  formats: [json]
-  suspended_times:
-    SearxEngineCaptcha: 600
-server:
-  limiter: false
-  image_proxy: false
-  public_instance: false
-outgoing:
-  request_timeout: 6.0
-  proxies:
-    all://:
-      - http://egress:3128
-engines:
-  - {name: bing, disabled: false}
-  - {name: yahoo, disabled: false}
-  - {name: mojeek, disabled: false, inactive: false}
-  - {name: startpage, disabled: false, inactive: false}
-"""
+EXECUTOR_PORT = 8700
+AGENT_TOKENS_PATH = "/run/secrets/executor-agents.json"
 HARDENED: dict[str, Any] = {
     "read_only": True,
     "cap_drop": ["ALL"],
@@ -69,84 +49,117 @@ def _source(deployment: Deployment, source: str) -> str:
     return str((deployment.path.parent / source).resolve())
 
 
-def _image(repo_root: Path | None, name: str = "astralvessel", project: str = "astralvessel") -> dict[str, Any]:
+def _image(repo_root: Path | None, name: str = "astralvessel", project: str = "astralvessel",
+           contexts: dict[str, str] | None = None) -> dict[str, Any]:
     # From a checkout, build the images locally, tagged per project; from an installed package, pull the released ones.
     if repo_root is None:
         return {"image": published(name)}
     local = project + name.removeprefix("astralvessel")
-    return {"image": f"{local}:local", "build": {"context": str(repo_root), "dockerfile": "Dockerfile"}}
+    build: dict[str, Any] = {"context": str(repo_root), "dockerfile": "Dockerfile"}
+    if contexts:
+        build["additional_contexts"] = contexts
+    return {"image": f"{local}:local", "build": build}
+
+
+def _artifacts(deployment: Deployment, repo_root: Path | None) -> dict[str, str]:
+    if repo_root is None:
+        return {}
+    folder = deployment.executor.kernel_artifacts
+    if not folder:
+        raise SystemExit("building the executor image needs the pinned kernel wheel: set [executor] kernel_artifacts "
+                         "in the deployment file to the folder that holds it")
+    path = (deployment.path.parent / folder).resolve()
+    if not any(path.glob("astral_kernel-*.whl")):
+        raise SystemExit(f"[executor] kernel_artifacts names {path}, which holds no astral_kernel wheel")
+    return {"kernel-artifacts": str(path)}
 
 
 def published(name: str) -> str:
     return f"{REGISTRY}/{name}:{version('astralvessel')}"
 
 
+def node_environment(deployment: Deployment) -> dict[str, str]:
+    owner, node = deployment.owner, deployment.node
+    public = (node.public_url or f"http://127.0.0.1:{node.port}").rstrip("/")
+    env = {
+        "ASTRAL_NODE_PROFILE": "personal",
+        "ASTRAL_NODE_DATA_DIR": f"{NODE_DATA}/node",
+        "KEYCLOAK_AUTHORITY": owner.issuer.rstrip("/"),
+        "KEYCLOAK_CLIENT_ID": owner.client_id,
+        "ATTACHMENT_UPLOAD_ROOT": f"{NODE_DATA}/node/blobs",
+        "PERSONAL_AGENT_ARTIFACT_ROOT": f"{NODE_DATA}/node/agents",
+        "ORCHESTRATOR_HOST": "0.0.0.0",
+        "ORCHESTRATOR_PORT": str(NODE_INTERNAL_PORT),
+        "PUBLIC_BASE_URL": public,
+        "BACKEND_PUBLIC_URL": public,
+        "FF_A2A_SERVER": "true",
+        "PYTHON_DOTENV_DISABLED": "1",
+    }
+    if owner.allowed_azp:
+        env["KEYCLOAK_ALLOWED_AZP"] = ",".join(owner.allowed_azp)
+    if owner.accepted_issuers:
+        env["ASTRAL_ACCEPTED_ISSUERS"] = ",".join(i.rstrip("/") for i in owner.accepted_issuers)
+    if owner.owner_id:
+        env["ASTRAL_NODE_OWNER"] = owner.owner_id
+    merged = {**node.environment, **env}
+    if merged.get("ASTRAL_NODE_OWNER") != owner.owner_id:
+        raise SystemExit("ASTRAL_NODE_OWNER in [node.environment] must equal the owner the deployment's subject names; "
+                         "set [owner] subject instead")
+    if deployment.agents:
+        merged["ASTRAL_VESSEL_EXECUTOR_URL"] = f"http://{node.front_address}:{EXECUTOR_PORT}"
+        merged["ASTRAL_VESSEL_EXECUTOR_AGENT_TOKENS_FILE"] = AGENT_TOKENS_PATH
+    return merged
+
+
 def generate(deployment: Deployment, *, repo_root: Path | None) -> dict[str, Any]:
-    project = deployment.vessel.project
-    vessel_env: dict[str, str] = {
-        "VESSEL_DEPLOYMENT": "/deploy/deployment.toml",
-        "VESSEL_PACKAGES_ROOT": "/agents",
-        "VESSEL_MODEL_URL": "http://egress:8080/v1",
-        "VESSEL_WEB_PROXY": "http://egress:3128",
-        "VESSEL_SANDBOX_URL_TEMPLATE": f"http://sandbox-{{id}}:{SANDBOX_PORT}",
-        "VESSEL_SANDBOX_TOKEN": _env_ref("env:VESSEL_SANDBOX_TOKEN"),
-        "VESSEL_TASK_DB": "/data/tasks.sqlite",
-        # Listen only on the front network, so no sandbox (each shares a tools network with the vessel) can reach it.
-        "VESSEL_HOST": deployment.vessel.front_address,
-    }
-    secrets = [app.key_sha256 for app in deployment.apps] + [
-        value for agent in deployment.agents.values() for grant in agent.services.values()
-        for value in (grant.url, *grant.headers.values())]
-    for value in secrets:
-        if value.startswith("env:"):
-            vessel_env[value[4:]] = _env_ref(value)
-    services: dict[str, Any] = {
-        "egress": {**HARDENED, **_image(repo_root and repo_root / "egress", "astralvessel-egress", project),
-                   "environment": {"LLM_BASE_URL": _env_ref(deployment.egress.upstream_url),
-                                   "LLM_API_KEY": _env_ref(deployment.egress.upstream_key)},
-                   "env_file": [".generated/egress.env"],
-                   "networks": ["egress", "outside"], "mem_limit": "512m", "pids_limit": 128},
-    }
+    project = deployment.node.project
+    gateway = deployment.egress.upstream_url is not None
     networks: dict[str, Any] = {
-        "egress": {"internal": True},
-        "front": {"internal": True, "ipam": {"config": [{"subnet": deployment.vessel.front_subnet,
-                                                         "ip_range": str(deployment.vessel.front_dynamic_range)}]}},
+        "front": {"internal": True, "ipam": {"config": [{"subnet": deployment.node.front_subnet,
+                                                         "ip_range": str(deployment.node.front_dynamic_range)}]}},
         "outside": {},
     }
-    if deployment.search.provider == "searxng":
-        # Only on the egress network: the vessel can ask it, no sandbox can, and it reaches the web through the egress.
-        vessel_env["VESSEL_SEARCH_URL"] = "http://search:8080"
-        services["search"] = {
-            **HARDENED, "image": SEARXNG_IMAGE, "user": "977:977",
-            "env_file": [".generated/search.env"],
-            "volumes": ["./.generated/searxng.yml:/etc/searxng/settings.yml:ro"],
-            "tmpfs": ["/tmp:size=32m,noexec,nosuid,nodev,mode=1777",
-                      "/etc/searxng:size=1m,noexec,nosuid,nodev,uid=977,gid=977",
-                      "/var/cache/searxng:size=32m,noexec,nosuid,nodev,uid=977,gid=977"],
-            "networks": ["egress"], "mem_limit": "512m", "pids_limit": 128, "depends_on": ["egress"],
-        }
-    vessel_volumes = [f"{deployment.path}:/deploy/deployment.toml:ro", "vessel_data:/data"]
-    keyed = [issuer for issuer in deployment.issuers if issuer.jwks_file]
-    vessel_volumes += [f"{issuer.jwks_file}:{JWKS_DIR}/{issuer.id}.json:ro" for issuer in keyed]
-    if keyed:
-        vessel_env["VESSEL_JWKS_DIR"] = JWKS_DIR
-    vessel_networks: dict[str, Any] = {"front": {"ipv4_address": deployment.vessel.front_address}, "egress": {}}
+    node_networks: dict[str, Any] = {"front": {}, "outside": {}}
+    services: dict[str, Any] = {}
+    if gateway:
+        networks["egress"] = {"internal": True}
+        node_networks["egress"] = {}
+        services["egress"] = {
+            **HARDENED, **_image(repo_root and repo_root / "egress", "astralvessel-egress", project),
+            "environment": {"LLM_BASE_URL": _env_ref(deployment.egress.upstream_url or ""),
+                            "LLM_API_KEY": _env_ref(deployment.egress.upstream_key)},
+            "env_file": [".generated/egress.env"],
+            "networks": ["egress", "outside"], "mem_limit": "512m", "pids_limit": 128}
+    services["node"] = {
+        "image": deployment.node.image,
+        "restart": HARDENED["restart"], "logging": HARDENED["logging"],
+        "cap_drop": HARDENED["cap_drop"], "security_opt": HARDENED["security_opt"],
+        "environment": node_environment(deployment),
+        "env_file": [".generated/node.env", *([".generated/node-executor.env"] if deployment.agents else [])],
+        "volumes": [f"node_data:{NODE_DATA}",
+                    *([f"./.generated/executor-agents.json:{AGENT_TOKENS_PATH}:ro"] if deployment.agents else [])],
+        "ports": [f"{deployment.node.bind}:{deployment.node.port}:{NODE_INTERNAL_PORT}"],
+        "networks": node_networks,
+        "pids_limit": 2048,
+        "healthcheck": {"test": ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen("
+                                f"'http://127.0.0.1:{NODE_INTERNAL_PORT}/readyz', timeout=4)"],
+                        "interval": "10s", "timeout": "6s", "retries": 18, "start_period": "60s"},
+        "labels": {"astralvessel.role": "node"},
+    }
     for agent_id, agent in deployment.agents.items():
         tools = f"tools-{agent_id}"
         networks[tools] = {"internal": True}
-        vessel_networks[tools] = {}
-        vessel_volumes.append(f"{agent.host_package}:/agents/{agent_id}:ro")
         mounts = [f"{agent.host_package}:/agent:ro"] + [
             f"{_source(deployment, m.source)}:{m.target}:{'ro' if m.read_only else 'rw'}" for m in agent.profile.mounts]
         dockerfile = agent.package.manifest.sandbox.dockerfile
         if dockerfile:
             # The agent's own image, built FROM the AstralVessel image (named "astralvessel" in its Dockerfile).
-            base = "service:vessel" if repo_root else f"docker-image://{published('astralvessel')}"
+            base = "service:executor" if repo_root else f"docker-image://{published('astralvessel')}"
             image = {"image": f"{project}-sandbox-{agent_id}:local",
                      "build": {"context": str(agent.host_package), "dockerfile": dockerfile,
                                "additional_contexts": {"astralvessel": base}}}
         else:
-            image = _image(repo_root, project=project)
+            image = _image(repo_root, project=project, contexts=_artifacts(deployment, repo_root))
         services[f"sandbox-{agent_id}"] = {
             **HARDENED, **image,
             "command": ["astralvessel", "sandbox"],
@@ -163,20 +176,32 @@ def generate(deployment: Deployment, *, repo_root: Path | None) -> dict[str, Any
             "mem_limit": agent.profile.memory, "cpus": agent.profile.cpus, "pids_limit": agent.profile.pids,
             "labels": {"astralvessel.agent": agent_id, "astralvessel.profile": agent.fingerprint},
         }
-    services["vessel"] = {
-        **HARDENED, **_image(repo_root, project=project),
-        "environment": vessel_env,
-        "env_file": [".generated/vessel.env"],
-        "volumes": vessel_volumes,
+    executor_networks: dict[str, Any] = {"front": {"ipv4_address": deployment.node.front_address}}
+    executor_volumes = [f"{deployment.path}:/deploy/deployment.toml:ro", "executor_data:/executor"]
+    for agent_id, agent in deployment.agents.items():
+        executor_networks[f"tools-{agent_id}"] = {}
+        executor_volumes.append(f"{agent.host_package}:/agents/{agent_id}:ro")
+    services["executor"] = {
+        **HARDENED, **_image(repo_root, project=project, contexts=_artifacts(deployment, repo_root)),
+        "command": ["astralvessel", "executor"],
+        "environment": {
+            "VESSEL_DEPLOYMENT": "/deploy/deployment.toml", "VESSEL_PACKAGES_ROOT": "/agents",
+            "VESSEL_SANDBOX_URL_TEMPLATE": f"http://sandbox-{{id}}:{SANDBOX_PORT}",
+            "VESSEL_SANDBOX_TOKEN": _env_ref("env:VESSEL_SANDBOX_TOKEN"),
+            # Listen only on the front network, so no sandbox (each shares a tools network with the executor) can
+            # reach it.
+            "VESSEL_HOST": deployment.node.front_address, "VESSEL_PORT": str(EXECUTOR_PORT),
+            "VESSEL_NODE_URL": f"http://node:{NODE_INTERNAL_PORT}", "VESSEL_EXECUTOR_DIR": "/executor"},
+        "env_file": [".generated/executor.env"],
+        "volumes": executor_volumes,
         "tmpfs": ["/tmp:size=64m,noexec,nosuid,nodev,mode=1777"],
-        "networks": vessel_networks,
-        # The vessel reads the deployment file and every package at start, so a change to either must recreate it.
+        "networks": executor_networks,
+        # The executor reads the deployment file and every package at start, so a change to either must recreate it.
         "labels": {"astralvessel.inputs": inputs_hash(deployment)},
         "mem_limit": "1g", "pids_limit": 256,
-        "depends_on": ["egress", *(["search"] if "search" in services else []),
-                       *(f"sandbox-{a}" for a in deployment.agents)],
+        "depends_on": [f"sandbox-{a}" for a in deployment.agents],
     }
-    volumes: dict[str, Any] = {"vessel_data": {}}
+    volumes: dict[str, Any] = {"node_data": {}, "executor_data": {}}
     for agent in deployment.agents.values():
         for mount in agent.profile.mounts:
             if mount.source.startswith("volume:"):
@@ -185,12 +210,17 @@ def generate(deployment: Deployment, *, repo_root: Path | None) -> dict[str, Any
 
 
 def inputs_hash(deployment: Deployment) -> str:
-    # Issuer key files count too: a single-file mount keeps the old file after a rename, so a new key needs a recreate.
     body = {"deployment": hashlib.sha256(deployment.path.read_bytes()).hexdigest(),
-            "agents": {agent_id: agent.fingerprint for agent_id, agent in deployment.agents.items()},
-            "keys": {i.id: hashlib.sha256(Path(i.jwks_file).read_bytes()).hexdigest()
-                     for i in deployment.issuers if i.jwks_file}}
+            "agents": {agent_id: agent.fingerprint for agent_id, agent in deployment.agents.items()}}
     return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def _private_file(path: Path, text: str, *, keep: bool = False, mode: int = 0o600) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_EXCL if keep else os.O_TRUNC)
+    fd = os.open(path, flags, mode)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(text)
+    path.chmod(mode)
 
 
 def write(deployment: Deployment, out: Path, *, repo_root: Path | None, master_token: str) -> list[Path]:
@@ -198,34 +228,42 @@ def write(deployment: Deployment, out: Path, *, repo_root: Path | None, master_t
     if out.exists():
         lines = out.read_text().splitlines()
         named = next((line[6:].strip().strip("\"'") for line in lines if line.startswith("name: ")), None)
-        if named and named != deployment.vessel.project:
+        if named and named != deployment.node.project:
             raise SystemExit(f"{out} belongs to project {named!r}; give each deployment its own folder, or --out")
     secrets = out.parent / ".generated"
     secrets.mkdir(mode=0o700, exist_ok=True)
+    secrets.chmod(0o700)
     (secrets / ".gitignore").write_text("*\n")
     written = [out]
-    for name, line in (("egress", "EGRESS_TOKEN"), ("vessel", "VESSEL_MODEL_KEY")):
-        path = secrets / f"{name}.env"
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as handle:
-            handle.write(f"{line}={egress_token(master_token)}\n")
+    node_env = secrets / "node.env"
+    if not node_env.exists():  # keep the node's secrets across redeploys: they encrypt what the node has stored
+        generated = {
+            "WEB_SESSION_ENC_KEY": base64.urlsafe_b64encode(os.urandom(32)).decode(),
+            "CREDENTIAL_ENCRYPTION_KEY": base64.urlsafe_b64encode(os.urandom(32)).decode(),
+            "AUDIT_HMAC_SECRET": tokens.token_hex(32),
+            "AGENT_API_KEY": tokens.token_hex(32),
+        }
+        _private_file(node_env, "".join(f"{name}={generated[name]}\n" for name in NODE_SECRETS), keep=True)
+    written.append(node_env)
+    if deployment.egress.upstream_url is not None:
+        path = secrets / "egress.env"
+        _private_file(path, f"EGRESS_TOKEN={egress_token(master_token)}\n")
         written.append(path)
+    path = secrets / "executor.env"
+    _private_file(path, f"VESSEL_EXECUTOR_TOKEN={executor_token(master_token)}\n")
+    written.append(path)
+    path = secrets / "executor-agents.json"
+    # The node's user reads this file through the bind mount, so it is world-readable inside the private folder.
+    _private_file(path, json.dumps({agent_id: agent_token(master_token, agent_id) for agent_id in deployment.agents},
+                                   indent=2) + "\n", mode=0o644)
+    written.append(path)
+    path = secrets / "node-executor.env"
+    _private_file(path, f"ASTRAL_VESSEL_EXECUTOR_TOKEN={executor_token(master_token)}\n")
+    written.append(path)
     for agent_id in deployment.agents:
         path = secrets / f"sandbox-{agent_id}.env"
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as handle:
-            handle.write(f"VESSEL_SANDBOX_TOKEN={sandbox_token(master_token, agent_id)}\n")
+        _private_file(path, f"VESSEL_SANDBOX_TOKEN={sandbox_token(master_token, agent_id)}\n")
         written.append(path)
-    if deployment.search.provider == "searxng":
-        settings = secrets / "searxng.yml"
-        settings.write_text(SEARXNG_SETTINGS)
-        settings.chmod(0o644)  # read by the search container's own user
-        env = secrets / "search.env"
-        if not env.exists():  # keep the key across redeploys so the container is not recreated for nothing
-            fd = os.open(env, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "w") as handle:
-                handle.write(f"SEARXNG_SECRET={tokens.token_hex(32)}\n")
-        written += [settings, env]
     header = ("# Generated by `astralvessel deploy` from " + str(deployment.path) + ". Do not edit; edit the\n"
               "# deployment file and run deploy again. Each sandbox is labeled with its profile fingerprint.\n")
     out.write_text(header + to_yaml(generate(deployment, repo_root=repo_root)))

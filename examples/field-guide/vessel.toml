@@ -1,18 +1,10 @@
 [agent]
 name = "field-guide"
-description = "Answers questions about the birds in a small sample field guide, with file, shell and web tools."
+description = "Answers questions about the birds in a small sample field guide, with file and shell tools."
 version = "0.1.0"
-examples = ["Which birds in the guide hunt fish?", "List every species with its length, longest first."]
-
-[model]
-endpoint = "env:VESSEL_MODEL_URL"
-api_key = "env:VESSEL_MODEL_KEY"
-model = "zai-org/GLM-5.3-Flash"
-temperature = 0.2
-max_steps = 20
 
 [tools]
-builtin = ["read", "grep", "glob", "list", "bash", "webfetch", "websearch"]
+builtin = ["read", "grep", "glob", "list", "bash"]
 declared = ["tools/species.toml"]
 
 [sandbox]
@@ -22,5 +14,4 @@ deadline_seconds = 300
 tool_timeout_seconds = 30
 
 [output]
-primitives = true
 files = ["png", "csv"]

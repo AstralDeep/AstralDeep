@@ -1,15 +1,7 @@
 [agent]
 name = "field-guide-reader"
-description = "Quotes pages from the sample field guide, with read-only file tools and no shell or web access."
+description = "Quotes pages from the sample field guide, with read-only file tools and no shell."
 version = "0.1.0"
-examples = ["What does the guide say about the kingfisher's nest?"]
-
-[model]
-endpoint = "env:VESSEL_MODEL_URL"
-api_key = "env:VESSEL_MODEL_KEY"
-model = "zai-org/GLM-5.3-Flash"
-temperature = 0.1
-max_steps = 10
 
 [tools]
 builtin = ["read", "grep", "glob", "list"]

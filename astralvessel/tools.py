@@ -1,5 +1,5 @@
-# Tool definitions shown to the model and the file and shell tools that run inside the sandbox.
-# run_tool executes one call with time and output limits and never raises for tool-level failures.
+# Tool definitions the executor publishes and the file and shell tools that run inside the sandbox.
+# run_sandbox_tool executes one call with time and output limits and never raises for tool-level failures.
 
 from __future__ import annotations
 
@@ -23,8 +23,6 @@ from . import confine as landlock
 from .files import OUTBOX
 from .manifest import DeclaredTool
 
-SANDBOX_TOOLS = ("read", "grep", "glob", "list", "bash")
-WEB_TOOLS = ("webfetch", "websearch")
 SAFE_ENV = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8",
             "HOME": "/tmp", "TMPDIR": "/tmp"}
 # Session ids of tool processes still running; the sandbox server kills every other process it finds.
@@ -95,24 +93,7 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
             "command": {"type": "string"},
         }, "required": ["command"]},
     },
-    "webfetch": {
-        "description": "Fetch a public web page and return its readable text.",
-        "parameters": {"type": "object", "properties": {
-            "url": {"type": "string", "description": "http or https URL"},
-        }, "required": ["url"]},
-    },
-    "websearch": {
-        "description": "Search the web. Returns titles, links and snippets.",
-        "parameters": {"type": "object", "properties": {
-            "query": {"type": "string"},
-            "max_results": {"type": "integer", "description": "Default 8"},
-        }, "required": ["query"]},
-    },
 }
-
-
-def tool_spec(name: str, description: str, parameters: dict[str, Any]) -> dict[str, Any]:
-    return {"type": "function", "function": {"name": name, "description": description, "parameters": parameters}}
 
 
 def clip(text: str, limit: int) -> tuple[str, bool]:

@@ -1,5 +1,5 @@
-# Runs sandbox tools either in-process (development) or in the separate sandbox container over HTTP.
-# The sandbox container holds no session store and no secrets, so a hostile command cannot reach either.
+# Runs sandbox tools in-process (the sandbox server and tests) or over HTTP from the executor to a sandbox container.
+# The sandbox container holds no session store and no secrets of the node, so a hostile command cannot reach either.
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import os
 import signal
 import time
 from dataclasses import replace
-from typing import Any, Protocol
+from typing import Any
 
 import httpx
 from starlette.applications import Starlette
@@ -37,19 +37,6 @@ from .tools import (
 
 SCRATCH_ROOT = "/tmp/vessel-calls"
 log = logging.getLogger("astralvessel")
-
-
-class ToolRunner(Protocol):
-    # workspace is the turn's random key: calls that pass the same key share one scratch directory.
-    # owner names the turn's user, so the sandbox can hold each user to a disk limit across their turns.
-    async def run(self, name: str, args: dict[str, Any], workspace: str | None = None,
-                  owner: str = "") -> tuple[str, bool]: ...
-
-    async def end_turn(self, workspace: str) -> None: ...
-
-    def take_files(self, workspace: str) -> list[outputs.ToolFile]: ...
-
-    async def close(self) -> None: ...
 
 
 def confinement_for(package: AgentPackage, scratch_root: str = SCRATCH_ROOT) -> Confinement:

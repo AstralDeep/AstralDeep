@@ -1,5 +1,9 @@
-# One image for the harness and the sandbox: the same code, run as `astralvessel serve` or `astralvessel sandbox`.
-# Agent packages are mounted at runtime; compose applies the sandbox hardening.
+# One image for the executor and the sandbox: the same code, run as `astralvessel executor` or `astralvessel sandbox`.
+# Agent packages are mounted at runtime; compose applies the sandbox hardening. Build with
+# --build-context kernel-artifacts=<folder holding the pinned kernel wheel and mailbox>: the build fails without it, because the
+# executor cannot check a ticket without the kernel.
+FROM scratch AS kernel-artifacts
+
 FROM python:3.11-slim
 LABEL org.opencontainers.image.source="https://github.com/AstralDeep/AstralVessel"
 
@@ -12,12 +16,15 @@ COPY pyproject.toml README.md ./
 COPY astralvessel ./astralvessel
 COPY examples/field-guide ./examples/field-guide
 COPY examples/sample-data ./examples/sample-data
-ARG ASTRALPRIMS_VERSION=0.12.0
-RUN pip install --no-cache-dir . "astralprims==${ASTRALPRIMS_VERSION}"
+RUN pip install --no-cache-dir .
+
+COPY config/kernel-binding.json scripts/install_kernel.py /opt/vessel-build/
+RUN --mount=type=bind,from=kernel-artifacts,target=/kernel-artifacts \
+    python /opt/vessel-build/install_kernel.py /kernel-artifacts
 
 RUN useradd --create-home --uid 1001 --shell /usr/sbin/nologin vessel \
-    && mkdir -p /data && chown vessel:vessel /data
+    && mkdir -p /data /executor && chown vessel:vessel /data /executor
 USER vessel
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 VESSEL_HOST=0.0.0.0
 EXPOSE 8700
-CMD ["astralvessel", "serve"]
+CMD ["astralvessel", "executor"]

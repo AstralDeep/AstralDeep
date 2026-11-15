@@ -1,4 +1,4 @@
-# Loads deployment.toml: which agents this vessel serves, each agent's sandbox profile, and which apps may call them.
+# Loads deployment.toml: the personal node to run, its owner's issuer, and the agents whose tools the executor runs.
 # The agent package says what it needs; this file is what the operator grants, and the only place grants come from.
 
 from __future__ import annotations
@@ -7,11 +7,9 @@ import hashlib
 import hmac
 import ipaddress
 import json
-import os
 import re
 import tomllib
 from pathlib import Path
-from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -25,16 +23,31 @@ class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class VesselSection(Strict):
-    # Two deployments on one host need different project names and front subnets.
+NODE_IMAGE = "astralvessel-node:local"
+NODE_PORT = 8001
+# Names the generated Compose file sets itself; the operator's [node.environment] may not override them.
+OWNED_ENVIRONMENT = frozenset({
+    "ASTRAL_NODE_PROFILE", "ASTRAL_NODE_DATA_DIR", "DATABASE_URL", "KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID",
+    "KEYCLOAK_ALLOWED_AZP", "ASTRAL_NODE_OWNER", "ORCHESTRATOR_PORT", "ATTACHMENT_UPLOAD_ROOT",
+    "PERSONAL_AGENT_ARTIFACT_ROOT", "ASTRAL_MAILBOX_BIN", "ASTRAL_NODE_MAILBOX_BIND", "PYTHON_DOTENV_DISABLED",
+    "FF_A2A_SERVER", "PUBLIC_BASE_URL", "BACKEND_PUBLIC_URL"})
+SECRET_SHAPED = re.compile(r"KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL", re.IGNORECASE)
+
+
+class NodeSection(Strict):
+    # Two deployments on one host need different project names, front subnets and published ports.
     project: str = Field(default="astralvessel", pattern=r"^[a-z0-9][a-z0-9_-]{0,62}$")
-    public_url: str = "http://vessel:8700"
+    # Any AstralDeep node image built with the kernel binding; the default is a tag built on this machine.
+    image: str = Field(default=NODE_IMAGE, pattern=r"^[^\s]+$")
+    bind: str = "127.0.0.1"
+    port: int = Field(default=NODE_PORT, ge=1, le=65535)
+    public_url: str | None = None
+    environment: dict[str, str] = {}
     front_subnet: str = "172.31.247.0/24"
     front_address: str = "172.31.247.10"
-    task_ttl_hours: float = Field(default=24, gt=0)
 
     @model_validator(mode="after")
-    def address_in_subnet(self) -> VesselSection:
+    def valid(self) -> NodeSection:
         subnet = ipaddress.ip_network(self.front_subnet, strict=True)
         if ipaddress.ip_address(self.front_address) not in subnet:
             raise ValueError(f"front_address {self.front_address} is not in front_subnet {self.front_subnet}")
@@ -43,23 +56,65 @@ class VesselSection(Strict):
         if ipaddress.ip_address(self.front_address) in self.front_dynamic_range:
             raise ValueError(f"front_address {self.front_address} must be in the lower half of {self.front_subnet}; "
                              f"Docker hands out the upper half ({self.front_dynamic_range}) to other containers")
+        ipaddress.ip_address(self.bind)
+        if self.public_url is not None:
+            parts = urlsplit(self.public_url)
+            if parts.scheme not in ("http", "https") or not parts.hostname or parts.path not in ("", "/"):
+                raise ValueError("public_url must be an http(s) origin such as https://node.example.com")
+        for name, value in self.environment.items():
+            if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name) or name in OWNED_ENVIRONMENT or SECRET_SHAPED.search(name):
+                raise ValueError(f"node environment {name} is set by the deployment or looks like a secret")
+            if "\n" in value or "\r" in value:
+                raise ValueError(f"node environment {name} must be one line")
         return self
 
     @property
     def front_dynamic_range(self) -> ipaddress.IPv4Network | ipaddress.IPv6Network:
-        # Containers that join front (applications, chat) get addresses only from the upper half, so none can
-        # take the vessel's fixed address while the vessel is stopped.
+        # Containers that join front get addresses only from the upper half, so none can take the executor's
+        # fixed address while it is stopped.
         return list(ipaddress.ip_network(self.front_subnet, strict=True).subnets(new_prefix=None))[-1]
 
 
+class OwnerSection(Strict):
+    # The identity provider the node trusts, and the one owner it serves. The subject binds the node to its owner
+    # now; without it the first owner whose token the node verifies binds it.
+    issuer: str
+    client_id: str = Field(min_length=1)
+    subject: str | None = Field(default=None, min_length=1)
+    allowed_azp: list[str] = []
+    accepted_issuers: list[str] = []
+
+    @model_validator(mode="after")
+    def urls(self) -> OwnerSection:
+        for url in (self.issuer, *self.accepted_issuers):
+            parts = urlsplit(url)
+            if parts.scheme not in ("http", "https") or not parts.hostname or re.search(r"[\s,]", url):
+                raise ValueError(f"issuer {url!r} must be an http(s) URL with a host and no commas")
+        return self
+
+    @property
+    def owner_id(self) -> str | None:
+        if self.subject is None:
+            return None
+        return f"oidc.{hashlib.sha256(self.issuer.rstrip('/').encode()).hexdigest()[:16]}.{self.subject}"
+
+
+class ExecutorSection(Strict):
+    # A folder holding the pinned kernel wheel, handed to the image build so the executor can verify tickets.
+    kernel_artifacts: str | None = None
+
+
 class EgressSection(Strict):
-    # The OpenAI-compatible model endpoint (an http(s) URL, or "env:NAME"); there is no default provider.
-    upstream_url: str
+    # The optional model gateway: an OpenAI-compatible endpoint the egress container reaches with a key only it holds.
+    # Without an upstream the egress still serves its filtered web proxy and refuses model calls.
+    upstream_url: str | None = None
     upstream_key: str = "env:VESSEL_UPSTREAM_MODEL_KEY"
 
     @model_validator(mode="after")
     def endpoint(self) -> EgressSection:
         url = self.upstream_url
+        if url is None:
+            return self
         if url.startswith("env:"):
             ok = re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", url[4:]) is not None
         else:
@@ -68,12 +123,6 @@ class EgressSection(Strict):
         if not ok:
             raise ValueError("egress upstream_url must be an http(s) URL with a host, or env:NAME")
         return self
-
-
-class SearchSection(Strict):
-    # Where websearch gets results: a SearXNG container this deployment runs (no account or key, its traffic leaves
-    # through the egress), or DuckDuckGo's HTML page, which answers repeated queries with a bot challenge.
-    provider: Literal["searxng", "duckduckgo"] = "searxng"
 
 
 class MountGrant(Strict):
@@ -116,101 +165,24 @@ def size_bytes(text: str) -> int:
     return int(match[1]) * 1024 ** "bkmg".index(match[2] or "b")
 
 
-class ServiceGrant(Strict):
-    # An application endpoint the vessel calls for the agent's service tools; values may be "env:NAME".
-    url: str
-    headers: dict[str, str] = {}
-
-    @model_validator(mode="after")
-    def plain(self) -> ServiceGrant:
-        if any(name.lower().startswith("x-vessel-") for name in self.headers):
-            raise ValueError("X-Vessel-* headers are set by the vessel and may not be granted")
-        if not self.url.startswith("env:"):
-            check_service_url(self.url)
-        return self
-
-
-def check_service_url(url: str) -> str:
-    # The tool's path is appended, so a query or fragment here would swallow it.
-    if not url.startswith(("http://", "https://")) or "?" in url or "#" in url:
-        raise ValueError(f"service url {url!r} must be http(s) with no query or fragment")
-    return url
-
-
 class AgentEntry(Strict):
     id: str = Field(pattern=AGENT_ID)
     package: str
     sandbox: SandboxProfile = SandboxProfile()
-    services: dict[str, ServiceGrant] = {}
-    # Extra briefing files from the package, appended after prompt.md: one package can serve as several agents.
-    prompt_append: list[str] = []
-    # Overrides the model the package names, so one deployment can set it in one place.
-    model: str | None = Field(default=None, min_length=1)
-
-
-class AppEntry(Strict):
-    name: str = Field(pattern=r"^[a-z][a-z0-9-]{0,62}$")
-    key_sha256: str
-    agents: list[str]
-
-
-ASYMMETRIC_ALGORITHMS = ("RS256", "RS384", "RS512", "PS256", "ES256", "ES384", "EdDSA")
-
-
-class IssuerEntry(Strict):
-    # A token issuer callers may authenticate with instead of an app key (for example an Astral deployment's
-    # Keycloak). Owners are "<id>|<sub>", so two issuers can never name the same owner.
-    id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,62}$")
-    issuer: str
-    audience: str
-    jwks_url: str | None = None
-    jwks_file: str | None = None
-    authorized_parties: list[str] = []
-    algorithms: list[str] = ["RS256", "ES256", "EdDSA"]
-    agents: list[str]
-
-    @model_validator(mode="after")
-    def keys(self) -> IssuerEntry:
-        if (self.jwks_url is None) == (self.jwks_file is None):
-            raise ValueError(f"issuer {self.id} needs exactly one of jwks_url or jwks_file")
-        if self.jwks_url and not self.jwks_url.startswith("https://"):
-            raise ValueError(f"issuer {self.id}: jwks_url must be https")
-        unknown = sorted(set(self.algorithms) - set(ASYMMETRIC_ALGORITHMS))
-        if unknown or not self.algorithms:
-            raise ValueError(f"issuer {self.id}: only asymmetric algorithms are accepted, not {unknown}")
-        return self
 
 
 class DeploymentFile(Strict):
-    vessel: VesselSection = VesselSection()
-    egress: EgressSection
-    search: SearchSection = SearchSection()
-    agents: list[AgentEntry]
-    apps: list[AppEntry] = []
-    issuers: list[IssuerEntry] = []
+    node: NodeSection = NodeSection()
+    owner: OwnerSection
+    egress: EgressSection = EgressSection()
+    executor: ExecutorSection = ExecutorSection()
+    agents: list[AgentEntry] = []
 
     @model_validator(mode="after")
     def consistent(self) -> DeploymentFile:
         ids = [a.id for a in self.agents]
-        if not ids or len(set(ids)) != len(ids):
-            raise ValueError("agent ids must be present and unique")
-        names = [a.name for a in self.apps]
-        if len(set(names)) != len(names):
-            raise ValueError("app names must be unique")
-        for app in self.apps:
-            unknown = sorted(set(app.agents) - set(ids))
-            if unknown:
-                raise ValueError(f"app {app.name} names unknown agents: {', '.join(unknown)}")
-        issuer_ids = [i.id for i in self.issuers]
-        issuer_names = [i.issuer for i in self.issuers]
-        if len(set(issuer_ids)) != len(issuer_ids) or len(set(issuer_names)) != len(issuer_names):
-            raise ValueError("issuer ids and issuer URLs must each be unique")
-        for issuer in self.issuers:
-            unknown = sorted(set(issuer.agents) - set(ids))
-            if unknown:
-                raise ValueError(f"issuer {issuer.id} names unknown agents: {', '.join(unknown)}")
-        if not self.apps and not self.issuers:
-            raise ValueError("a deployment needs at least one app or issuer")
+        if len(set(ids)) != len(ids):
+            raise ValueError("agent ids must be unique")
         return self
 
 
@@ -220,39 +192,31 @@ class Agent(BaseModel):
     package: AgentPackage
     host_package: Path
     profile: SandboxProfile
-    services: dict[str, ServiceGrant] = {}
-    prompt_append: tuple[str, ...] = ()
-    model_override: str | None = None
-
-    @property
-    def model(self) -> str:
-        return self.model_override or self.package.manifest.model.model
 
     @property
     def fingerprint(self) -> str:
-        # Everything that shapes the sandbox container, plus the manifest and declared tools that the vessel and
-        # the sandbox load once at start (prompt files are read every turn); a change means a redeploy.
+        # Everything that shapes the sandbox container, plus the manifest and declared tools that the executor and
+        # the sandbox load once at start; a change means a redeploy.
         sandbox = self.package.manifest.sandbox.model_dump()
         dockerfile = self.package.manifest.sandbox.dockerfile
         image = build_inputs_hash(self.package.root, dockerfile) if dockerfile else None
         body = {"id": self.id, "profile": self.profile.model_dump(), "needs": sandbox, "image": image,
-                "loaded": self.package.loaded_digest(), "schema": 2}
+                "loaded": self.package.loaded_digest(), "schema": 3}
         return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:16]
 
 
 class Deployment(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     path: Path
-    vessel: VesselSection
+    node: NodeSection
+    owner: OwnerSection
     egress: EgressSection
-    search: SearchSection = SearchSection()
+    executor: ExecutorSection
     agents: dict[str, Agent]
-    apps: list[AppEntry]
-    issuers: list[IssuerEntry] = []
 
 
 def load_deployment(path: str | Path, packages_root: str | None = None) -> Deployment:
-    # packages_root: inside the vessel container, packages are mounted at <root>/<agent id>, not their host paths.
+    # packages_root: inside the executor container, packages are mounted at <root>/<agent id>, not their host paths.
     path = Path(path).resolve()
     raw = DeploymentFile.model_validate(tomllib.loads(path.read_text()))
     agents: dict[str, Agent] = {}
@@ -260,31 +224,12 @@ def load_deployment(path: str | Path, packages_root: str | None = None) -> Deplo
         host = (path.parent / entry.package).resolve()
         package = load_package(Path(packages_root) / entry.id if packages_root else host)
         _check_grants(entry, package)
-        for name in entry.prompt_append:
-            target = (package.root / name).resolve()
-            if not target.is_file() or package.root not in target.parents:
-                raise ValueError(f"agent {entry.id}: prompt_append {name} must be a file inside the package")
-        agents[entry.id] = Agent(id=entry.id, package=package, host_package=host, profile=entry.sandbox,
-                                 services=entry.services, prompt_append=tuple(entry.prompt_append),
-                                 model_override=entry.model)
-    # Inside the vessel container each key file is mounted at <VESSEL_JWKS_DIR>/<issuer id>.json.
-    jwks_dir = os.environ.get("VESSEL_JWKS_DIR")
-    issuers = [i.model_copy(update={"jwks_file": f"{jwks_dir}/{i.id}.json" if jwks_dir
-                                    else str((path.parent / i.jwks_file).resolve())}) if i.jwks_file else i
-               for i in raw.issuers]
-    for issuer in issuers:
-        if issuer.jwks_file and not Path(issuer.jwks_file).is_file():
-            raise ValueError(f"issuer {issuer.id}: jwks_file {issuer.jwks_file} is not a file")
-    return Deployment(path=path, vessel=raw.vessel, egress=raw.egress, search=raw.search, agents=agents,
-                      apps=raw.apps, issuers=issuers)
+        agents[entry.id] = Agent(id=entry.id, package=package, host_package=host, profile=entry.sandbox)
+    return Deployment(path=path, node=raw.node, owner=raw.owner, egress=raw.egress, executor=raw.executor,
+                      agents=agents)
 
 
 def _check_grants(entry: AgentEntry, package: AgentPackage) -> None:
-    missing_services = sorted(package.services() - set(entry.services))
-    extra_services = sorted(set(entry.services) - package.services())
-    if missing_services or extra_services:
-        raise ValueError(f"agent {entry.id}: services must match its tools; missing "
-                         f"{', '.join(missing_services) or 'none'}, unused {', '.join(extra_services) or 'none'}")
     needs = {m.target: m for m in package.manifest.sandbox.mounts}
     grants = {m.target: m for m in entry.sandbox.mounts}
     missing = sorted(set(needs) - set(grants))
@@ -317,20 +262,11 @@ def build_inputs_hash(root: Path, dockerfile: str) -> str:
     return digest.hexdigest()
 
 
-def resolve(value: str) -> str:
-    if value.startswith("env:"):
-        resolved = os.environ.get(value[4:], "")
-        if not resolved:
-            raise ValueError(f"{value[4:]} is not set")
-        return resolved
-    return value
-
-
 def sandbox_token(master: str, agent_id: str) -> str:
-    # Each sandbox gets its own token, derived from one master secret the vessel holds.
+    # Each sandbox gets its own token, derived from one master secret the executor holds.
     return hmac.new(master.encode(), f"sandbox:{agent_id}".encode(), hashlib.sha256).hexdigest()
 
 
 def egress_token(master: str) -> str:
-    # The vessel's token for the egress model passthrough, so nothing else on the egress network can spend the key.
+    # The token for the egress model passthrough, so nothing else on the egress network can spend the key.
     return hmac.new(master.encode(), b"egress:model", hashlib.sha256).hexdigest()

@@ -10,13 +10,12 @@ limits on memory and processes.
 
 | Container | Limits | Can reach |
 |---|---|---|
-| sandbox | `memory`, `cpus`, `pids` and `scratch` from its profile; `/tmp` is `noexec,nosuid,nodev` | Only its `tools-<agent>` network, where only the vessel's tool client answers |
-| vessel | 1 GB, 256 processes, 64 MB `/tmp` | The egress, search and every sandbox; listens only on `front` |
+| sandbox | `memory`, `cpus`, `pids` and `scratch` from its profile. `/tmp` is `noexec,nosuid,nodev`. | Only its `tools-<agent>` network, where only the executor answers |
+| executor | 1 GB, 256 processes, 64 MB `/tmp`. Listens only on `front`. | The node and every sandbox |
+| node | 2048 processes. Capabilities dropped. Its root is not read-only because the node writes its own data. | `front` and `outside` |
 | egress | 512 MB, 128 processes | The outside network |
-| search | 512 MB, 128 processes | The egress only |
 
-Each sandbox holds its own token, derived from the master secret, never the master itself, and no model or app key.
-The vessel serves an agent only while its sandbox reports that it is confined and runs the deployed profile.
+Each sandbox holds its own token, derived from the master secret, and nothing of the node.
 
 ## Each tool call
 
@@ -30,7 +29,7 @@ The vessel serves an agent only while its sandbox reports that it is confined an
 | seccomp | No SysV IPC or POSIX message queues (shared by everything running as one user), no IPv4 or IPv6 sockets. No `setsid` or `setpgid`, so every process stays in the call's session. |
 | `no_new_privs` | Set before the rules apply. |
 | Environment | Only `PATH`, `LANG`, `HOME`, `TMPDIR` and `VESSEL_OUTBOX`. |
-| Time and output | The tool's timeout, then the whole process group is killed; output is capped (see [Limits](../reference/limits.md#tools)). |
+| Time and output | The tool's timeout, then the whole process group is killed; output is capped (see [Limits](../reference/limits.md)). |
 | Strays | Processes a call leaves behind are killed. |
 | Files and disk | At most 4,096 open files; no file larger than the turn's disk limit; [disk limits](../build/workspaces-and-files.md#disk-limits) per turn and per user. |
 
@@ -57,15 +56,14 @@ no secret appears in a process listing.
 
 | Area | Probes |
 |---|---|
-| Sandbox network | no route to the internet; cannot resolve or reach the egress; the model host is known to the probes; cannot reach the model host directly; cannot reach the vessel's API by name or by its front address; cannot reach another agent's sandbox; cannot reach search |
-| Sandbox contents | holds no task or conversation store; holds no model or app key; holds its own token, not the master; root filesystem is read-only; scratch space is `noexec`; every mount is read-only |
-| Tool calls | a background process does not outlive its call; a call cannot read another call's scratch; cannot list processes; cannot open TCP connections; cannot create a socket file; cannot use shared memory; cannot open UDP sockets; `glob` cannot climb out of the agent's data |
-| Workspaces | calls in one turn share its workspace; a call cannot read another turn's workspace; a turn's workspace is gone once it ends; the sandbox refuses a malformed workspace key; a turn over its disk limit is stopped and emptied |
-| Files | a file written to the outbox reaches the vessel (for an agent that returns no CSV: is not attached); the outbox refuses other types, big files and links; an outbox swapped for a link exposes nothing |
-| Vessel | keeps no conversation store; has no direct route to the internet; reaches the model through the egress; reaches the search service |
-| Egress proxy | refuses the cloud metadata address, private addresses and shared (Tailscale) addresses; refuses odd ports; allows a public site on 443 |
-| Search and model gate | search has no direct route to the internet; cannot reach the vessel's API; cannot use the model passthrough; the vessel passes the egress with its token |
+| Sandbox network | no route to the internet, cannot resolve or reach the egress, cannot reach the model host directly, cannot reach the node API or its mailbox, cannot reach another agent's sandbox |
+| Sandbox contents | holds no task or conversation store, holds no node secret or model key, holds its own token and not the master, root filesystem is read-only, scratch space is `noexec`, every mount is read-only |
+| Tool calls | a background process does not outlive its call, a call cannot read another call's scratch, cannot list processes, cannot open TCP connections, cannot create a socket file, cannot use shared memory, cannot open UDP sockets, `glob` cannot climb out of the agent's data |
+| Workspaces | calls in one turn share its workspace, a call cannot read another turn's workspace, a turn's workspace is gone once it ends, the sandbox refuses a malformed workspace key, a turn over its disk limit is stopped and emptied |
+| Files | a file written to the outbox reaches the executor, the outbox refuses other types, big files and links, an outbox swapped for a link exposes nothing |
+| Executor | no direct route to the internet, refuses a caller without its token, lists what its agents may run, keeps its keys private, refuses a forged ticket with a dotted code and runs nothing, refuses a tool the agent does not offer, refuses an unknown agent |
+| Egress | refuses the cloud metadata address, private addresses and shared addresses, refuses odd ports, allows a public site on 443, refuses a model call without the token |
 
-A deployment with one agent, search and one data mount runs 43 probes. Each further agent adds about 30, and adds a
-reachability probe to every other sandbox. The disk limit probe is skipped, and says so, when `turn_disk` is too
-close to `scratch` to overfill one without filling the other.
+`check` also runs five node checks: the node reports ready, its descriptor names the owner's issuer, and its data directory, database file and signing key are private.
+
+The example deployment with one agent runs 33 probes and 5 node checks. Each further agent adds about 25 probes. The disk limit probe is skipped, and says so, when `turn_disk` is too close to `scratch` to overfill one without filling the other.

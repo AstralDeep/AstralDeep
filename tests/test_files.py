@@ -1,4 +1,4 @@
-# Files from tools: outbox collection and its checks, the sandbox and vessel hops, turn limits, and the client.
+# Files from tools: outbox collection and its checks, and the sandbox hop that carries them to the executor.
 
 from __future__ import annotations
 
@@ -6,16 +6,11 @@ import base64
 import os
 
 import httpx
-import pytest
-from conftest import APP_KEY, text_reply, tool_reply
 from test_deploy import landlock
 
 from astralvessel import files as outputs
 from astralvessel import sandbox
-from astralvessel.client import VesselClient
-from astralvessel.deployment import load_deployment
 from astralvessel.manifest import load_package
-from astralvessel.server import Settings, app_keys, create_app
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 KEY = "d" * 32
@@ -23,7 +18,7 @@ KEY = "d" * 32
 
 def allow_files(package_dir, kinds='["png", "csv"]'):
     manifest = package_dir / "vessel.toml"
-    manifest.write_text(manifest.read_text().replace("[output]\n", f"[output]\nfiles = {kinds}\n"))
+    manifest.write_text(manifest.read_text() + f"\n[output]\nfiles = {kinds}\n")
 
 
 def test_the_outbox_keeps_only_allowed_valid_files_and_is_emptied(tmp_path):
@@ -92,7 +87,7 @@ async def test_a_call_that_replaces_its_outbox_does_not_break_the_next_call(pack
     await runner.end_turn(KEY)
 
 
-def test_the_vessel_checks_files_again_when_they_arrive():
+def test_the_executor_checks_files_again_when_they_arrive():
     wire = [outputs.ToolFile("chart.png", "image/png", PNG).wire(),
             {"name": "../../x.png", "data": base64.b64encode(PNG).decode()},
             {"name": "evil.png", "data": base64.b64encode(b"<script>").decode()},
@@ -138,96 +133,3 @@ async def test_the_sandbox_server_sends_collected_files(package_dir, monkeypatch
     await remote.end_turn(KEY)
     assert remote.take_files(KEY) == []
     await remote.close()
-
-
-class FileRunner(sandbox.LocalRunner):
-    def __init__(self, package, count):
-        super().__init__(package)
-        self.count = count
-
-    async def run(self, name, args, workspace=None, owner=""):
-        return "made", False
-
-    def take_files(self, workspace):
-        return [outputs.ToolFile(f"chart-{i}.png", "image/png", PNG) for i in range(self.count)]
-
-
-@pytest.fixture
-def file_vessel(package_dir, model, tmp_path):
-    allow_files(package_dir)
-    path = tmp_path / "deployment.toml"
-    path.write_text('[vessel]\npublic_url = "http://vessel.test"\n[egress]\nupstream_url = "https://models.test/v1"\n'
-                    f'[[agents]]\nid = "tester"\npackage = '
-                    f'"{package_dir}"\n[[apps]]\nname = "web"\nkey_sha256 = '
-                    f'"{__import__("hashlib").sha256(APP_KEY.encode()).hexdigest()}"\nagents = ["tester"]\n')
-    deployment = load_deployment(path)
-    settings = Settings(deployment, task_db=str(tmp_path / "tasks.sqlite"), app_keys=app_keys(deployment))
-
-    def make(count):
-        runner = FileRunner(deployment.agents["tester"].package, count)
-        app = create_app(settings, runners={"tester": runner}, model_transport=model.transport())
-        return VesselClient("http://vessel.test", APP_KEY, transport=httpx.ASGITransport(app=app))
-    return make
-
-
-async def test_files_stream_to_the_caller_within_the_turn_limit(file_vessel, model):
-    model.replies = [tool_reply("bash", {"command": "plot"}), tool_reply("bash", {"command": "plot"}, "call_2"),
-                     text_reply("Here are the charts.")]
-    client = file_vessel(5)
-    events = [e async for e in client.stream("tester", "alice", "chart it")]
-    got = [e for e in events if e["type"] == "file"]
-    assert len(got) == outputs.MAX_FILES_PER_TURN and all(e["data"] == PNG for e in got)
-    assert got[0]["media_type"] == "image/png" and got[0]["call_id"] == "call_1" and got[-1]["call_id"] == "call_2"
-    second = [e for e in events if e["type"] == "tool.finished"][1]["output"]
-    assert second.count("[attached") == 3 and second.count("all the files it may") == 2
-    finished = next(e for e in events if e["type"] == "turn.finished")
-    assert len(finished["files"]) == 8 and finished["files"][0] == {"name": "chart-0.png", "media_type": "image/png",
-                                                                    "bytes": len(PNG)}
-    card = await client.card("tester")
-    assert {"image/png", "text/csv"} <= set(card["defaultOutputModes"])
-
-
-async def test_a_caller_that_does_not_accept_a_file_type_does_not_get_it(file_vessel, model):
-    model.replies = [tool_reply("bash", {"command": "plot"}), text_reply("done")]
-    client = file_vessel(1)
-    body = {"jsonrpc": "2.0", "id": "1", "method": "SendStreamingMessage", "params": {
-        "message": {"messageId": "m1", "role": "ROLE_USER", "parts": [{"text": "chart it"}]},
-        "configuration": {"acceptedOutputModes": ["text/markdown"]}}}
-    headers = {"X-Vessel-User": "alice", "Accept": "text/event-stream", "A2A-Version": "1.0"}
-    async with client._client.stream("POST", "/agents/tester", headers=headers, json=body) as response:
-        text = (await response.aread()).decode()
-    assert "turn.finished" in text and '"name": "file"' not in text and '"name":"file"' not in text
-
-
-async def test_the_model_sees_attached_files_even_when_the_output_is_clipped(package_dir, model):
-    from astralvessel.agent import Turn
-    from astralvessel.model import ModelClient
-    allow_files(package_dir)
-    package = load_package(package_dir)
-    runner = FileRunner(package, 1)
-
-    async def flood(name, args, workspace=None, owner=""):
-        return "x" * (package.manifest.sandbox.tool_output_chars * 2), False
-
-    runner.run = flood
-    model.replies = [tool_reply("bash", {"command": "plot"}), text_reply("done")]
-    events = []
-
-    async def emit(item):
-        events.append(item)
-
-    client = ModelClient("http://model.test/v1", "k", "test-model", transport=model.transport(), retries=1)
-    await Turn(package, client, runner, emit).run([], "chart", conversation_id="c", turn_id="t")
-    tool_message = model.requests[1]["messages"][-1]["content"]
-    assert "output truncated" in tool_message and tool_message.endswith("to the answer]")
-    assert [e["name"] for e in events if e["type"] == "file.added"] == ["chart-0.png"]
-
-
-async def test_a_turn_without_files_reports_an_empty_files_list(file_vessel, model):
-    model.replies = [text_reply("No charts needed.")]
-    client = file_vessel(0)
-    events = [e async for e in client.stream("tester", "alice", "just answer")]
-    finished = next(e for e in events if e["type"] == "turn.finished")
-    assert finished["files"] == []
-    stored = await client.rpc("tester", "alice", "GetTask", {"id": finished["task_id"]})
-    assert stored["result"]["status"]["message"]["parts"][0]["data"]["files"] == []

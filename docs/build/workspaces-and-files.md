@@ -19,7 +19,7 @@ wc -l < "$TMPDIR/hits.txt"
 - The workspace is deleted when the turn ends, whether it finished, failed, hit its deadline or was cancelled. Calls
   still running for the turn are stopped first.
 - A call cannot read another turn's workspace, even one for the same user.
-- If the vessel cannot tell the sandbox a turn ended, the sandbox stops tracking the turn a minute after the agent's
+- If the executor cannot tell the sandbox a turn ended, the sandbox stops tracking the turn a minute after the agent's
   `deadline_seconds` and removes its workspace on the next call it receives.
 - A call that arrives for a turn that has already ended is refused.
 - The sandbox's `/tmp` is mounted `noexec`, so files in the workspace cannot be run directly; run scripts with their
@@ -55,7 +55,7 @@ anything but `0 < turn_disk <= user_disk <= scratch`.
 | Per user | All of one user's live turns on this agent together may hold at most `user_disk`. |
 | What counts | Allocated blocks (sparse files cannot hide), plus 1 KB for every file or folder, plus files deleted but still held open by the turn's processes. A tree too deep to measure counts as over. |
 | When it is checked | About twice a second while a call runs, and when it ends. A fast writer can briefly overshoot; `scratch` stays the hard ceiling. |
-| What happens | Every call of the turn is stopped, its workspace is emptied, and the model is told which limit it hit. The turn can go on with an empty workspace. |
+| What happens | Every call of the turn is stopped, its workspace is emptied, and the call's output names the limit. The turn can go on with an empty workspace. |
 
 The sandbox's `/tmp` also has one inode per KB of `scratch`.
 
@@ -84,16 +84,11 @@ After each call the sandbox takes every entry out of the outbox. It keeps a file
 | Size | At most 4 MB each |
 | Count | At most 4 per call |
 
-The vessel checks every file again when it arrives, and a turn returns at most 8 files and 16 MB in total. The
-model's tool result gains a note for each file, such as `[attached lengths.csv (text/csv, 32 bytes) to the answer]`,
-or the reason it was not attached.
+The executor checks every file again when it arrives.
 
 ### How files reach the caller
 
-Each kept file streams to the caller as an A2A artifact named `file`, with one part carrying the raw bytes,
-`mediaType`, `filename`, and the tool call's id under `metadata.call_id`. A caller that lists `acceptedOutputModes`
-receives only the types it lists; a caller that lists none receives all of them. The agent card lists the file
-types among its `defaultOutputModes`.
+`POST /run` on the executor returns the kept files in a `files` list. Each entry has `name`, `media_type` and base64 `data`. The executor does not keep them.
 
 | Extension | Media type |
 |---|---|
@@ -101,9 +96,6 @@ types among its `defaultOutputModes`.
 | `svg` | `image/svg+xml` |
 | `csv` | `text/csv` |
 | `pdf` | `application/pdf` |
-
-Files go out on the live stream only; the vessel does not keep them in its task store. Your application stores what
-it wants to keep. The [Python client](../reference/python.md) yields them as `file` events with the bytes decoded.
 
 !!! warning "SVG can carry script"
     Show an SVG as an `<img>` or offer it as a download. Never insert it inline into a page.

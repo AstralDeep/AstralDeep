@@ -1,13 +1,12 @@
-# An example deployment: two agents over a small sample field guide, each with its own sandbox, and one app
-# allowed to call both. Run `astralvessel deploy` here to write compose.generated.yml, then start it.
+# An example deployment: a personal node and two agents over a small sample field guide, each with its own sandbox.
+# Run `astralvessel deploy` here to write compose.generated.yml, then start it. The node image must exist locally.
 
-[vessel]
-public_url = "http://vessel:8700"
-task_ttl_hours = 24
+[node]
+image = "astralvessel-node:local"
 
-[egress]
-upstream_url = "env:VESSEL_UPSTREAM_MODEL_URL"
-upstream_key = "env:VESSEL_UPSTREAM_MODEL_KEY"
+[owner]
+issuer = "https://keycloak.example.com/realms/astral"
+client_id = "astral-app"
 
 [[agents]]
 id = "field-guide"
@@ -28,8 +27,3 @@ cpus = 1
 pids = 128
 scratch = "32m"
 mounts = [{ target = "/data", source = "../examples/sample-data" }]
-
-[[apps]]
-name = "example"
-key_sha256 = "env:VESSEL_APP_KEY_SHA256"
-agents = ["field-guide", "field-guide-reader"]

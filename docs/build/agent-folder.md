@@ -7,7 +7,6 @@ An agent is a folder. This page shows its layout and walks through writing a sma
 ```text
 my-agent/
 ├── vessel.toml          # required: the manifest
-├── prompt.md            # required: the briefing
 ├── tools/               # optional: declared tools
 │   ├── lookup.toml
 │   └── lookup.py
@@ -16,12 +15,11 @@ my-agent/
 
 | File | Required | What it does |
 |---|---|---|
-| `vessel.toml` | yes | Names the agent, picks its model, lists its tools, and says what data and limits its sandbox needs. See [vessel.toml](vessel-toml.md). |
-| `prompt.md` | yes | The agent's briefing, used as the start of its system prompt. See [Prompts](prompts.md). |
+| `vessel.toml` | yes | Names the agent, lists its tools, and says what data and limits its sandbox needs. See [vessel.toml](vessel-toml.md). |
 | Declared tool files | no | One TOML file per tool, listed in `[tools] declared`. Paths are relative to the folder and must stay inside it. See [Declared tools](declared-tools.md). |
 | A sandbox Dockerfile | no | Named by `[sandbox] dockerfile`, built `FROM astralvessel`. See [Extra software](vessel-toml.md#extra-software-in-the-sandbox). |
 
-The manifest lists everything the agent has. A tool that is not listed does not exist for the model.
+The manifest lists everything the agent has. A tool that is not listed does not exist for the executor.
 
 The sandbox mounts the folder read-only at `/agent`, and tool calls may read it, so keep secrets out of it.
 
@@ -29,14 +27,10 @@ The sandbox mounts the folder read-only at `/agent`, and tool calls may read it,
 
 This agent answers questions about a folder of Markdown notes.
 
-1. Create the folder and the briefing:
+1. Create the folder:
 
     ```bash
     mkdir -p agents/notes
-    cat > agents/notes/prompt.md <<'EOF'
-    You answer questions from the notes in /data. Search before you answer, quote the
-    lines you rely on with their file names, and say plainly when the notes say nothing.
-    EOF
     ```
 
 2. Write the manifest, `agents/notes/vessel.toml`:
@@ -45,10 +39,6 @@ This agent answers questions about a folder of Markdown notes.
     [agent]
     name = "notes"
     description = "Answers questions from a folder of notes."
-    examples = ["What did we decide about the release date?"]
-
-    [model]
-    model = "your-model-name"
 
     [tools]
     builtin = ["read", "grep", "glob", "list"]
@@ -89,29 +79,15 @@ This agent answers questions about a folder of Markdown notes.
     ```
 
     `deploy` refuses a deployment whose grants do not match what the agent declares, so a missing or extra mount
-    or service fails here, not at run time.
+    fails here, not at run time.
 
 ## One folder, several agents
 
-A deployment can list the same folder under several agent ids. Each id gets its own sandbox, card and A2A address.
-Use `prompt_append` to give each one extra briefing files from the folder:
-
-```toml
-[[agents]]
-id = "notes"
-package = "agents/notes"
-
-[[agents]]
-id = "notes-brief"
-package = "agents/notes"
-prompt_append = ["brief.md"]
-```
-
-See [Prompts](prompts.md) for how the system prompt is put together.
+A deployment can list the same folder under several agent ids. Each id gets its own sandbox.
 
 ## Check a folder before deploying
 
-`load_package` parses and validates a folder the same way the vessel does:
+`load_package` parses and validates a folder the same way the executor does:
 
 ```bash
 python -c 'from astralvessel.manifest import load_package; p = load_package("agents/notes"); print(p.tool_scopes())'

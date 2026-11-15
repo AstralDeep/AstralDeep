@@ -15,10 +15,26 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  ASTRALPRIMS: "astralprims==0.12.0"
-
 jobs:
+  kernel-binding:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Build the manifest-pinned Kernel source for Linux amd64
+        run: python scripts/build_kernel_binding.py produce --source "$RUNNER_TEMP/astral-kernel" --output "$RUNNER_TEMP/kernel-artifacts" --platform linux/amd64
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: kernel-artifacts-linux-amd64
+          path: ${{ runner.temp }}/kernel-artifacts
+          if-no-files-found: error
+          retention-days: 1
+
   lint:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -33,6 +49,7 @@ jobs:
       - run: ruff check .
 
   test:
+    needs: kernel-binding
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
@@ -46,16 +63,26 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: kernel-artifacts-linux-amd64
+          path: ${{ runner.temp }}/kernel-artifacts
       - name: Install ripgrep from its release, checksum pinned (no dependence on the Ubuntu mirrors)
         run: |
           f=ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz
           curl -fsSL --retry 3 -o "$f" "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/$f"
           echo "4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e  $f" | sha256sum -c -
           tar xzf "$f" && sudo install "${f%.tar.gz}/rg" /usr/local/bin/rg && rg --version
-      - run: pip install -e . pytest==9.2.0 pytest-asyncio==1.4.1.post1 "$ASTRALPRIMS" -r egress/requirements.txt
+      - run: pip install -e . pytest==9.2.0 pytest-asyncio==1.4.1.post1 -r egress/requirements.txt
+      - name: Install and import the verified Kernel binding
+        run: |
+          python scripts/install_kernel.py "$RUNNER_TEMP/kernel-artifacts" --binding config/kernel-binding.json --bin-dir "$RUNNER_TEMP/kernel-bin"
+          echo "$RUNNER_TEMP/kernel-bin" >> "$GITHUB_PATH"
+          python -c "import astral_kernel"
       - run: python -m pytest -q -rs
 
   isolation:
+    needs: kernel-binding
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -65,29 +92,37 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: kernel-artifacts-linux-amd64
+          path: ${{ runner.temp }}/kernel-artifacts
       - run: pip install -e .
-      - name: Start the example deployment with placeholder keys
+      - name: Prepare a deployment bound to this run's Kernel artifacts
+        run: python scripts/build_kernel_binding.py prepare-deployment --artifacts "$RUNNER_TEMP/kernel-artifacts" --output deploy/deployment.ci.toml --platform linux/amd64
+      - name: Start the executor, the sandboxes and no node
         working-directory: deploy
         run: |
           python - > .env <<'PY'
-          import hashlib, secrets
-          app = secrets.token_urlsafe(32)
-          print(f"VESSEL_UPSTREAM_MODEL_URL=https://api.openai.com/v1\nVESSEL_UPSTREAM_MODEL_KEY=ci\nVESSEL_APP_KEY={app}")
-          print(f"VESSEL_APP_KEY_SHA256={hashlib.sha256(app.encode()).hexdigest()}")
+          import secrets
           print(f"VESSEL_SANDBOX_TOKEN={secrets.token_urlsafe(32)}")
           PY
-          astralvessel deploy deployment.toml
-          docker compose -f compose.generated.yml --env-file .env up -d --build
-          for i in $(seq 60); do
-            [ "$(docker compose -f compose.generated.yml --env-file .env logs vessel | grep -c 'sandbox is ready')" -ge 2 ] && exit 0
+          astralvessel deploy deployment.ci.toml
+          docker compose -f compose.generated.yml --env-file .env up -d --build executor
+          for ((attempt = 0; attempt < 60; attempt++)); do
+            ready=$(docker compose -f compose.generated.yml --env-file .env exec -T executor python -c "import json,urllib.request,os;body=json.load(urllib.request.urlopen('http://'+os.environ['VESSEL_HOST']+':8700/health'));agents=body.get('agents');print(isinstance(agents,dict) and all(agents.get(name) is True for name in ('field-guide','field-guide-reader')))" || true)
+            [ "$ready" = True ] && exit 0
             sleep 5
           done
           docker compose -f compose.generated.yml --env-file .env logs
           exit 1
       - name: Isolation probes
         working-directory: deploy
-        run: astralvessel check
+        run: astralvessel check --isolation-only
       - name: Logs on failure
         if: failure()
         working-directory: deploy
         run: docker compose -f compose.generated.yml --env-file .env logs --tail 50
+      - name: Stop the isolation stack
+        if: always()
+        working-directory: deploy
+        run: docker compose -f compose.generated.yml --env-file .env down -v --remove-orphans || true

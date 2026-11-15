@@ -1,129 +1,96 @@
 # deployment.toml
 
-`deployment.toml` is the operator's file. It lists the agents one vessel serves, grants each one its data, services
-and sandbox limits, and says who may call which agent. It is the only place access is granted. Types, defaults and
-constraints for every key are generated from the code in [Configuration tables](../reference/configuration.md#deploymenttoml).
+`deployment.toml` says which node to run, who owns it, and which agents the executor serves. `astralvessel up` writes one when there is none. Unknown keys are refused. Types and defaults are generated in [Configuration tables](../reference/configuration.md#deploymenttoml).
 
 ## A complete example
 
 ```toml
-[vessel]
-project = "astralvessel"
-public_url = "http://vessel:8700"
+[node]
+project = "mynode"
+image = "astralvessel-node:local"
+port = 8001
+public_url = "https://node.example.com"
 front_subnet = "172.31.247.0/24"
 front_address = "172.31.247.10"
-task_ttl_hours = 24
+
+[node.environment]
+EXTERNAL_AGENT_ALLOWED_PRIVATE_HOSTS = "model.internal"
+
+[owner]
+issuer = "https://keycloak.example.com/realms/astral"
+client_id = "astral-app"
+subject = "the-owners-subject"
 
 [egress]
-upstream_url = "env:VESSEL_UPSTREAM_MODEL_URL"
+upstream_url = "https://api.example.com/v1"
 upstream_key = "env:VESSEL_UPSTREAM_MODEL_KEY"
 
-[search]
-provider = "searxng"
+[executor]
+kernel_artifacts = "kernel-artifacts"
 
 [[agents]]
 id = "field-guide"
-package = "../examples/field-guide"
+package = "agents/field-guide"
 [agents.sandbox]
+mounts = [{ target = "/data", source = "data" }]
 memory = "1g"
-cpus = 2
-pids = 256
 scratch = "64m"
-mounts = [{ target = "/data", source = "../examples/sample-data" }]
-
-[[apps]]
-name = "example"
-key_sha256 = "env:VESSEL_APP_KEY_SHA256"
-agents = ["field-guide"]
 ```
 
-Relative paths (`package`, mount sources, `jwks_file`) are relative to the deployment file. Unknown keys are refused.
-
-## [vessel]
+## [node]
 
 | Key | Meaning |
 |---|---|
-| `project` | The Compose project name. It prefixes containers, networks, volumes and locally built images. See [Several deployments on one host](several-deployments.md). |
-| `public_url` | The base URL written into agent cards and the agent list. Set it to the address your callers use. |
-| `front_subnet` | The subnet of the internal `front` network, a /28 or larger. Other containers that join it get addresses from its upper half only. |
-| `front_address` | The vessel's fixed address on `front`, in the lower half of `front_subnet`; it listens only there, on port 8700. |
-| `task_ttl_hours` | Task records not updated for this long are deleted, checked hourly. |
+| `project` | The Compose project name. Two deployments on one host need different names. |
+| `image` | The AstralDeep node image. Default `astralvessel-node:local`. |
+| `bind`, `port` | Where the node is published on the host. Default `127.0.0.1:8001`. |
+| `public_url` | The origin devices use to reach the node. Sets `PUBLIC_BASE_URL`. |
+| `environment` | Extra settings for the node, as plain `NAME = "value"` pairs. Names the deployment sets itself, and names that look like secrets, are refused. |
+| `front_subnet`, `front_address` | The internal network the node and executor share, and the executor's fixed address. |
+
+The node always runs the personal profile with SQLite in its data volume. There is no setting for PostgreSQL.
+
+## [owner]
+
+| Key | Meaning |
+|---|---|
+| `issuer` | The OIDC issuer the node trusts. |
+| `client_id` | The client id the owner's apps sign in with. |
+| `subject` | Binds the node to this subject now. Without it the first owner whose token verifies binds the node. |
+| `allowed_azp` | More client ids whose tokens the node accepts. |
+| `accepted_issuers` | More issuers. |
 
 ## [egress]
 
-| Key | Meaning |
-|---|---|
-| `upstream_url` | Your OpenAI-compatible base URL, such as `https://api.example.com/v1`, or `env:NAME`. |
-| `upstream_key` | The model key, normally as `env:NAME`. |
+Optional. See [The egress](models-and-egress.md).
 
-See [Models and egress](models-and-egress.md).
+## [executor]
 
-## [search]
-
-| Key | Meaning |
-|---|---|
-| `provider` | `searxng` runs a private SearXNG container; `duckduckgo` scrapes DuckDuckGo's HTML page. See [Search](search.md). |
+`kernel_artifacts` names a folder with the pinned kernel wheel and mailbox binary for the build architecture. It is passed to the image build, which checks both sha256 values against `config/kernel-binding.json` and fails if either artifact is missing or differs. A checkout needs it. A deployment that uses the released images does not.
 
 ## [[agents]]
 
 | Key | Meaning |
 |---|---|
-| `id` | Lowercase letters, digits and hyphens, starting with a letter. The agent's address is `/agents/<id>`. |
-| `package` | The agent folder. |
-| `prompt_append` | Extra briefing files from the folder, appended after `prompt.md`. See [Prompts](../build/prompts.md). |
-| `model` | The model this agent uses, overriding the `model` its `vessel.toml` names. `astralvessel up` writes it. |
-| `sandbox` | The sandbox profile. |
-| `services` | Service grants, one per service the agent's tools name. See [Service tools](../build/service-tools.md). |
+| `id` | Lowercase letters, digits and hyphens. Names the agent and its sandbox. |
+| `package` | The agent folder, relative to this file. |
+| `sandbox` | Limits and the data the sandbox may read. See below. |
+
+A deployment may have no agents. The node then runs alone.
 
 ### [agents.sandbox]
 
 | Key | Meaning |
 |---|---|
-| `mounts` | `{ target, source, read_only }` grants, one for each mount the agent declares. |
-| `memory` | The container's memory limit. |
-| `cpus` | CPU limit; greater than 0. |
-| `pids` | Process limit; at least 32. |
-| `scratch` | Size of the sandbox's `/tmp`, which holds every turn's workspace. |
-| `turn_disk` | Disk one turn may use; a quarter of `scratch` unless set. See [Disk limits](../build/workspaces-and-files.md#disk-limits). |
-| `user_disk` | Disk one user's live turns may use together; half of `scratch` unless set. |
-
-A mount `source` can be:
-
-| Form | Meaning |
-|---|---|
-| A relative path | Relative to the deployment file |
-| An absolute path | Used as is |
-| `env:NAME` | Filled from the environment by Compose |
-| `volume:NAME` | An existing Docker volume, for data another stack writes; declared `external` in the Compose file |
-
-Every grant must be read-only and its `target` must match a mount the agent declares, and the agent's declared
-mounts must all be granted.
-
-## [[apps]]
-
-| Key | Meaning |
-|---|---|
-| `name` | Lowercase letters, digits and hyphens, starting with a letter; unique. Appears in task owners as `<name>/<user>`. |
-| `key_sha256` | The hex SHA-256 of the app's key, or `env:NAME`. The vessel never holds the key itself. |
-| `agents` | The agent ids this app may call. |
-
-## [[issuers]]
-
-Token issuers callers may authenticate with instead of an app key. See
-[Identity, apps and issuers](identity.md#token-issuers).
-
-A deployment needs at least one app or issuer.
+| `mounts` | Data folders for the agent, read-only. They must match what `vessel.toml` declares. A source is a path, `env:NAME` or `volume:NAME`. |
+| `memory`, `cpus`, `pids` | Container limits. |
+| `scratch` | Size of the scratch filesystem. |
+| `turn_disk`, `user_disk` | Disk a turn and one user may hold inside scratch. A quarter and half of scratch by default. |
 
 ## env: values
 
-Settings marked as accepting `env:NAME` stay references in the generated Compose file (`${NAME:?...}`), so secrets
-are never copied into it. Compose fills them from the environment or from the `--env-file` you pass, and refuses to
-start if one is unset.
+A value of the form `env:NAME` stays a reference that Compose fills from the environment or `.env`. The secret is never copied into the Compose file.
 
 ## Check a file
 
-```bash
-python -c 'from astralvessel.deployment import load_deployment; d = load_deployment("deployment.toml"); print(list(d.agents))'
-```
-
-This loads every agent folder and checks every grant, as `deploy` does.
+`astralvessel deploy deployment.toml` loads the file, refuses a deployment whose grants do not match its agents, and writes the Compose file.

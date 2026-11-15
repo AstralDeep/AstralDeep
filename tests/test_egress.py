@@ -1,4 +1,4 @@
-# Tests for the egress model passthrough: only a caller holding the vessel's token may spend the model key.
+# Tests for the egress model passthrough: only a caller holding the egress token may spend the model key.
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from egress import app as egress  # noqa: E402
 
 
 @pytest.mark.parametrize("configured", ["", "vessel-token"])
-def test_model_calls_need_the_vessel_token(monkeypatch, configured):
+def test_model_calls_need_the_egress_token(monkeypatch, configured):
     monkeypatch.setattr(egress, "EGRESS_TOKEN", configured)
     monkeypatch.setattr(egress, "LLM_API_KEY", "real-key")
     monkeypatch.setattr(egress, "LLM_BASE_URL", "https://models.test/v1")

@@ -35,20 +35,18 @@ def refused(fn, codes=None):
 SANDBOX = r'''
 out("has no route to the internet", not reach("1.1.1.1", 443))
 out("cannot resolve or reach the egress", not reach("egress", 8080))
-out("the model host is known to the probes", bool(CFG["model_host"]))
 if CFG["model_host"]:
     out("cannot reach the model host directly", not reach(CFG["model_host"], CFG["model_port"]))
-out("cannot reach the vessel API", not reach("vessel", 8700))
-out("cannot reach the vessel's front address", not reach(CFG["front"], 8700))
+out("cannot reach the node API", not reach("node", 8001))
+out("cannot reach the node's mailbox", not reach("node", 7700))
 for other in CFG["others"]:
     out(f"cannot reach {other}", not reach(other, 8710))
-if CFG["search"]:
-    out("cannot reach the search service", not reach("search", 8080))
 dirs = ["/opt", "/home", "/tmp", "/agent", *CFG["mounts"]]
 stores = [p for d in dirs for e in ("sqlite", "db") for p in glob.glob(d + "/**/*." + e, recursive=True)]
 out("holds no task or conversation store", not stores)
-keys = ("VESSEL_APP_KEY", "VESSEL_APP_KEY_SHA256", "VESSEL_MODEL_KEY", "LLM_API_KEY", "VESSEL_UPSTREAM_MODEL_KEY")
-out("environment holds no model or app key", not any(k in os.environ for k in keys))
+keys = ("WEB_SESSION_ENC_KEY", "CREDENTIAL_ENCRYPTION_KEY", "AUDIT_HMAC_SECRET", "AGENT_API_KEY", "EGRESS_TOKEN",
+        "LLM_API_KEY", "VESSEL_UPSTREAM_MODEL_KEY")
+out("environment holds no node secret or model key", not any(k in os.environ for k in keys))
 token = os.environ.get("VESSEL_SANDBOX_TOKEN", "")
 out("holds its own token, not the master", bool(token) and hashlib.sha256(token.encode()).hexdigest() != CFG["master"])
 out("root filesystem is read-only", refused(lambda: open("/opt/probe-write", "w"), {errno.EROFS}))
@@ -82,11 +80,10 @@ import asyncio
 from astralvessel.deployment import sandbox_token
 from astralvessel.sandbox import RemoteRunner
 A, B, C, D, E, F = CFG["keys"]
-AGENT = CFG["agent"]
 
 async def main():
-    r = RemoteRunner(os.environ["VESSEL_SANDBOX_URL_TEMPLATE"].format(id=AGENT),
-                     sandbox_token(os.environ["VESSEL_SANDBOX_TOKEN"], AGENT), 30, CFG["types"])
+    r = RemoteRunner(os.environ["VESSEL_SANDBOX_URL_TEMPLATE"].format(id=CFG["agent"]),
+                     sandbox_token(os.environ["VESSEL_SANDBOX_TOKEN"], CFG["agent"]), 30, CFG["types"])
     async def run(name, args, key=None, owner=""):
         return await r.run(name, args, key, owner=owner)
 
@@ -135,7 +132,7 @@ async def main():
     files = r.take_files(C)
     await r.end_turn(C)
     if "csv" in CFG["types"]:
-        out("a file a call writes to its outbox reaches the vessel",
+        out("a file a call writes to its outbox reaches the caller",
             not failed and [(f.name, f.data) for f in files] == [("t.csv", b"a,b\n1,2\n")])
     else:
         out("a file type the agent does not allow is not attached", files == [] and "may not return" in got)
@@ -169,16 +166,64 @@ async def main():
 asyncio.run(main())
 '''
 
-VESSEL = r'''
-import sqlite3, urllib.error, urllib.request
-names = [row[0] for f in glob.glob("/data/*.sqlite")
-         for row in sqlite3.connect(f).execute("select name from sqlite_master where type='table'")]
-out("the vessel keeps no conversation store", bool(names) and all(n.startswith("tasks_") for n in names))
-out("the vessel has no direct route to the internet", not reach("1.1.1.1", 443))
-out("the vessel reaches the model through the egress", reach("egress", 8080))
+EXECUTOR = r'''
+import hashlib, hmac, stat, urllib.error, urllib.request
+BASE = "http://%s:%s" % (os.environ["VESSEL_HOST"], os.environ["VESSEL_PORT"])
+def call(path, body=None, token=None):
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    data = json.dumps(body).encode() if body is not None else None
+    request = urllib.request.Request(BASE + path, data=data, headers=headers, method="POST" if data else "GET")
+    try:
+        response = urllib.request.urlopen(request, timeout=10)
+        return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read() or b"{}")
+token = os.environ["VESSEL_EXECUTOR_TOKEN"]
+out("the executor has no direct route to the internet", not reach("1.1.1.1", 443))
+out("the executor refuses a caller without its token", call("/tools")[0] == 401 and call("/tools", token="x")[0] == 401)
+status, listing = call("/tools", token=token)
+out("the executor lists what its agents may run", status == 200 and set(listing["agents"]) == set(CFG["agents"]))
+keys = "/executor/keys"
+modes = [stat.S_IMODE(os.stat(os.path.join(keys, n)).st_mode) for n in os.listdir(keys)] if os.path.isdir(keys) else []
+out("the executor's keys are readable only by it", not modes or all(m == 0o600 for m in modes),
+    "no kernel binding or node mailbox yet" if not modes else "")
+if CFG["agents"]:
+    agent = CFG["agents"][0]
+    run_token = hmac.new(os.environ["VESSEL_SANDBOX_TOKEN"].encode(), ("executor:agent:" + agent).encode(),
+                         hashlib.sha256).hexdigest()
+    token = run_token
+    tool = listing["agents"][agent]["tools"][0]
+    arguments = "{}"
+    action = {"v": 1, "mesh": "m", "device": "d", "turn": "t", "agent": "kernel", "tool": tool["name"],
+              "tool_def": tool["definition"],
+              "args_digest": "sha256:" + hashlib.sha256(arguments.encode()).hexdigest(), "influence": []}
+    forged = {"agent": agent, "tool": tool["name"], "arguments_json": arguments,
+              "action_json": json.dumps(action), "ticket_json": json.dumps({"v": 1, "capability": "AAAA"})}
+    status, body = call("/run", forged, token)
+    out("the executor refuses a forged ticket with a dotted code and runs nothing",
+        status == 403 and body.get("error") is True and "." in body.get("code", "") and "files" not in body)
+    status, body = call("/run", {**forged, "tool": "bash", "arguments_json": '{"command": "id"}'}, token)
+    out("the executor refuses a tool the agent does not offer or whose arguments differ from the action",
+        status in (403, 404) and body.get("error") is True)
+    status, body = call("/run", {**forged, "agent": "no-such-agent"}, token)
+    out("the executor refuses an agent it does not serve", status in (403, 404))
+    status, body = call("/run", forged, os.environ["VESSEL_EXECUTOR_TOKEN"])
+    out("the executor's operator token cannot run a call", status == 403 and body.get("code") == "executor.token_scope")
+    if len(CFG["agents"]) > 1:
+        other = CFG["agents"][1]
+        status, body = call("/run", {**forged, "agent": other}, run_token)
+        out("the executor refuses one agent's token for another agent",
+            status == 403 and body.get("code") == "executor.token_agent_mismatch")
+'''
+
+EGRESS = r'''
+import urllib.error, urllib.request
+out("the egress has no way to the node API", not reach("node", 8001))
 def proxy(target):
     try:
-        s = socket.create_connection(("egress", 3128), 5)
+        s = socket.create_connection(("127.0.0.1", 3128), 5)
         s.sendall(("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n" % (target, target)).encode())
         line = s.recv(200).decode(errors="replace").split("\r\n")[0]
         s.close()
@@ -190,35 +235,17 @@ out("the egress proxy refuses private addresses", not proxy("10.0.0.1:443"))
 out("the egress proxy refuses Tailscale addresses", not proxy("100.100.100.100:443"))
 out("the egress proxy refuses odd ports", not proxy("example.com:22"))
 out("the egress proxy allows a public site on 443", proxy("example.com:443"))
-if CFG["search"]:
-    out("the vessel reaches the search service", reach("search", 8080))
-request = urllib.request.Request("http://egress:8080/v1/models",
-                                 headers={"Authorization": "Bearer " + os.environ["VESSEL_MODEL_KEY"]})
-try:
-    code = urllib.request.urlopen(request, timeout=10).status
-except urllib.error.HTTPError as exc:
-    code = exc.code
-except OSError:
-    code = 0
-out("the vessel passes the egress with its token", code not in (0, 403))
+def model(token):
+    request = urllib.request.Request("http://127.0.0.1:8080/v1/models", headers={"Authorization": "Bearer " + token})
+    try:
+        return urllib.request.urlopen(request, timeout=10).status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except OSError:
+        return 0
+out("the model passthrough refuses a caller without the token", model("guess") == 403)
+out("the model passthrough accepts its own token", model(os.environ["EGRESS_TOKEN"]) not in (0, 403))
 '''
-
-SEARCH = r'''
-import urllib.error, urllib.request
-out("search has no direct route to the internet", not reach("1.1.1.1", 443))
-out("search cannot reach the vessel API", not reach(CFG["front"], 8700))
-request = urllib.request.Request("http://egress:8080/v1/models", headers={"Authorization": "Bearer guess"})
-try:
-    code, body = urllib.request.urlopen(request, timeout=10).status, b""
-except urllib.error.HTTPError as exc:
-    code, body = exc.code, exc.read()
-except OSError:
-    code, body = 0, b""
-out("search cannot use the model passthrough", code == 403 and b"egress token" in body)
-'''
-
-SEARCH_PYTHON = "/usr/local/searxng/.venv/bin/python"
-
 
 @dataclass
 class Report:
@@ -267,9 +294,8 @@ def model_host(stack: Stack) -> tuple[str, int]:
 
 def run_probes(stack: Stack, deployment: Deployment, master: str) -> Report:
     report = Report()
-    search = deployment.search.provider == "searxng"
-    front = deployment.vessel.front_address
-    host, port = model_host(stack)
+    gateway = deployment.egress.upstream_url is not None
+    host, port = model_host(stack) if gateway else ("", 0)
     ids = list(deployment.agents)
     sleeps = [str(6000 + secrets.randbelow(999)), str(7000 + secrets.randbelow(999))]
     for agent_id, agent in deployment.agents.items():
@@ -277,15 +303,14 @@ def run_probes(stack: Stack, deployment: Deployment, master: str) -> Report:
         keys = [secrets.token_hex(16) for _ in range(6)]
         mounts = [m.target for m in agent.profile.mounts]
         _run(stack, report, service, service, SANDBOX, {
-            "model_host": host, "model_port": port, "front": front, "search": search, "mounts": mounts,
+            "model_host": host, "model_port": port, "mounts": mounts,
             "others": [f"sandbox-{other}" for other in ids if other != agent_id],
             "master": hashlib.sha256(master.encode()).hexdigest()})
-        _run(stack, report, f"{agent_id} calls", "vessel", CALLS, {
+        _run(stack, report, f"{agent_id} calls", "executor", CALLS, {
             "agent": agent_id, "keys": keys, "sleep": sleeps, "types": agent.package.manifest.output.files,
             "turn_bytes": agent.profile.turn_bytes, "scratch_bytes": size_bytes(agent.profile.scratch)})
         _run(stack, report, service, service, SANDBOX_AFTER, {"sleep": sleeps, "ended": keys[:2]})
-    _run(stack, report, "vessel", "vessel", VESSEL, {"search": search})
-    if search:
-        _run(stack, report, "search", "search", SEARCH, {"front": front}, SEARCH_PYTHON)
+    _run(stack, report, "executor", "executor", EXECUTOR, {"agents": ids})
+    if gateway:
+        _run(stack, report, "egress", "egress", EGRESS, {})
     return report
-

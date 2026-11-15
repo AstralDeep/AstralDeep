@@ -1,5 +1,4 @@
-# Unit tests for the manifest loader, tools, primitives validation, the app-side history store, the A2A decoder,
-# and web search.
+# Unit tests for the manifest loader, the sandbox tools and the sandbox server.
 
 from __future__ import annotations
 
@@ -8,11 +7,8 @@ import asyncio
 import httpx
 import pytest
 
-from astralvessel import sandbox, web
-from astralvessel.client import decode, integral
-from astralvessel.history import HistoryStore as Store
+from astralvessel import sandbox
 from astralvessel.manifest import load_package
-from astralvessel.primitives import validate_components
 from astralvessel.sandbox import LocalRunner
 from astralvessel.tools import clip
 
@@ -21,7 +17,7 @@ def test_example_field_guide_package_loads():
     package = load_package("examples/field-guide")
     assert package.manifest.agent.name == "field-guide"
     assert {t.name for t in package.declared} == {"species"}
-    assert package.manifest.output.primitives
+    assert package.manifest.output.files == ["png", "csv"]
 
 
 def test_unknown_builtin_is_rejected(package_dir):
@@ -84,63 +80,12 @@ def test_clip_marks_truncation():
     assert clip("short", 1000) == ("short", False)
 
 
-def test_primitives_validate_against_astralprims():
-    good = validate_components([{"type": "table", "headers": ["a"], "rows": [[1]]},
-                                {"type": "metric", "title": "People", "value": "3"}])
-    assert good[0]["type"] == "table" and good[1]["type"] == "metric"
-    with pytest.raises(ValueError, match="component 0"):
-        validate_components([{"type": "table", "headers": "not-a-list"}])
-    with pytest.raises(ValueError):
-        validate_components([{"type": "no_such_primitive"}])
-    with pytest.raises(ValueError):
-        validate_components([])
-    with pytest.raises(ValueError, match="at most"):
-        validate_components([{"type": "text", "content": "x"}] * 13)
 
 
-async def test_store_binds_every_conversation_to_its_owner(tmp_path):
-    store = Store(tmp_path / "s.sqlite")
-    assert await store.claim("alice", "c1", "First question")
-    assert not await store.claim("bob", "c1", "Hijack")
-    result = {"status": "ok", "text": "answer"}
-    await store.record_turn("alice", "c1", "t1", "q", result, [{"role": "user", "content": "q"}], [])
-    await store.record_turn("bob", "c1", "t2", "q", result, [{"role": "user", "content": "evil"}], [])
-    assert len((await store.get("alice", "c1"))["turns"]) == 1
-    assert await store.get("bob", "c1") is None
-    assert await store.history("bob", "c1") == []
-    assert [c["id"] for c in await store.list("alice")] == ["c1"] and await store.list("bob") == []
-    assert not await store.delete("bob", "c1")
-    assert await store.delete("alice", "c1")
-    assert await store.get("alice", "c1") is None
 
 
-async def test_store_history_keeps_the_transcript_and_sweeps_idle(tmp_path):
-    store = Store(tmp_path / "s.sqlite")
-    await store.claim("alice", "c1", "q")
-    await store.record_turn("alice", "c1", "t1", "q", {"status": "ok"},
-                            [{"role": "assistant", "content": "a", "reasoning_content": "thoughts"}], [])
-    assert (await store.history("alice", "c1"))[0]["reasoning_content"] == "thoughts"
-    await asyncio.sleep(0.01)
-    assert len(await store.sweep(0)) == 1
 
 
-def test_decoder_reads_vessel_events_and_answers():
-    frame = {"result": {"statusUpdate": {"taskId": "t", "contextId": "c", "status": {"state": "TASK_STATE_WORKING",
-             "message": {"parts": [{"data": {"type": "step.finished", "step": 1.0, "tokens": {"input": 3.0}}}]}}}}}
-    event = decode(frame)[0]
-    assert event["type"] == "step.finished" and event["step"] == 1 and isinstance(event["step"], int)
-    answer = decode({"result": {"artifactUpdate": {"artifact": {"parts": [
-        {"text": "hello", "mediaType": "text/markdown"},
-        {"data": {"components": [{"type": "metric", "title": "x", "value": "1"}]},
-         "mediaType": "application/vnd.astral.primitives+json", "metadata": {"schema_version": "0.4.0"}}]}}}})[0]
-    assert answer["text"] == "hello" and answer["components"][0]["type"] == "metric"
-    assert answer["schema_version"] == "0.4.0"
-    assert integral([1.0, 1.5, {"a": 2.0}]) == [1, 1.5, {"a": 2}]
-    chunk = decode({"result": {"artifactUpdate": {"lastChunk": True, "artifact": {"name": "transcript", "parts": [
-        {"data": {"version": 1.0, "messages": [{"role": "user", "content": "q"}], "turn": {"steps": 2.0}},
-         "mediaType": "application/vnd.astralvessel.transcript+json"}]}}}})[0]
-    assert chunk["type"] == "transcript" and chunk["messages"][0]["content"] == "q"
-    assert chunk["last"] and chunk["turn"]["steps"] == 2
 
 
 async def test_glob_stops_at_its_time_budget(package_dir):
@@ -230,67 +175,3 @@ async def test_ending_a_turn_stops_its_calls_still_running(package_dir):
         assert (await client.post("/end", json={"workspace": "e" * 32}, headers=auth)).status_code == 200
         response = await asyncio.wait_for(call, timeout=5)
         assert response.status_code == 410 and asyncio.get_running_loop().time() - started < 5
-
-
-REAL_CLIENT = httpx.AsyncClient
-
-
-def search_replies(monkeypatch, status, body, url=None):
-    seen = []
-
-    def handler(request):
-        seen.append(request)
-        if isinstance(body, dict):
-            return httpx.Response(status, json=body)
-        return httpx.Response(status, text=body)
-
-    monkeypatch.setattr(web.httpx, "AsyncClient", lambda **kw: REAL_CLIENT(
-        transport=httpx.MockTransport(handler), **{k: v for k, v in kw.items() if k != "proxy"}))
-    if url:
-        monkeypatch.setenv("VESSEL_SEARCH_URL", url)
-    else:
-        monkeypatch.delenv("VESSEL_SEARCH_URL", raising=False)
-    return seen
-
-
-async def test_searxng_results_reach_the_model_fenced(monkeypatch):
-    seen = search_replies(monkeypatch, 200, {"results": [
-        {"title": "Ada Lovelace", "url": "https://example.org/ada", "content": "First programmer."},
-        {"title": "No link"}, {"title": "Second", "url": "https://example.org/2", "content": None}]},
-        url="http://search:8080/")
-    text, error = await web.websearch({"query": "ada lovelace", "max_results": 1})
-    assert not error and "https://example.org/ada" in text and "example.org/2" not in text
-    assert text.startswith('<web_content source="web search: ada lovelace">')
-    assert str(seen[0].url) == "http://search:8080/search?q=ada+lovelace&format=json"
-
-
-async def test_searxng_failures_are_errors_never_no_results(monkeypatch):
-    search_replies(monkeypatch, 200, {"results": [], "unresponsive_engines": [["google", "CAPTCHA"]]},
-                   url="http://search:8080")
-    text, error = await web.websearch({"query": "x"})
-    assert error and "does not mean nothing exists" in text
-    search_replies(monkeypatch, 200, {"results": [], "unresponsive_engines": []}, url="http://search:8080")
-    assert await web.websearch({"query": "x"}) == ("no results", False)
-    search_replies(monkeypatch, 500, "boom", url="http://search:8080")
-    assert await web.websearch({"query": "x"}) == ("the search service returned HTTP 500", True)
-    search_replies(monkeypatch, 200, "<html>not json</html>", url="http://search:8080")
-    assert (await web.websearch({"query": "x"}))[1] is True
-    search_replies(monkeypatch, 200, {"results": "oops"}, url="http://search:8080")
-    assert (await web.websearch({"query": "x"}))[1] is True
-
-
-async def test_duckduckgo_challenge_is_an_error(monkeypatch):
-    search_replies(monkeypatch, 202, "<html>anomaly challenge</html>")
-    text, error = await web.websearch({"query": "x"})
-    assert error and "HTTP 202, a bot challenge" in text
-    search_replies(monkeypatch, 200, "<html>something unexpected</html>")
-    text, error = await web.websearch({"query": "x"})
-    assert error and "no readable results" in text
-    search_replies(monkeypatch, 200, '<div class="no-results">No results.</div>')
-    assert await web.websearch({"query": "x"}) == ("no results", False)
-    page = ('<div class="result results_links"><a class="result__a" href="//duckduckgo.com/l/?uddg='
-            'https%3A%2F%2Fexample.org%2Fpage">An <b>Example</b></a><a class="result__snippet" href="#">Snip</a>'
-            '</div>\n</div>')
-    search_replies(monkeypatch, 200, page)
-    text, error = await web.websearch({"query": "x"})
-    assert not error and "An Example\nhttps://example.org/page\nSnip" in text

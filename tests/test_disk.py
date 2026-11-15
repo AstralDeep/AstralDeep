@@ -37,7 +37,7 @@ def test_sizes_and_defaults_follow_scratch(package_dir, tmp_path):
             load_deployment(path)
 
 
-async def test_the_vessel_sends_a_digest_of_the_user_never_the_name():
+async def test_the_executor_sends_a_digest_of_the_user_never_the_name():
     sent = []
 
     async def handler(request):

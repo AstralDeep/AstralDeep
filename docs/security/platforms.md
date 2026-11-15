@@ -30,5 +30,5 @@ this kernel lacks Landlock ABI 6; per-call isolation is unavailable (set VESSEL_
 
 ## Python
 
-The `astralvessel` command needs Python 3.11 or newer; CI tests 3.11 and 3.12. The vessel and sandbox image uses
-Python 3.11, the egress image Python 3.12.
+The `astralvessel` command needs Python 3.11 or newer; CI tests 3.11 and 3.12. The executor and sandbox image uses
+Python 3.11, the egress image Python 3.12. The node image brings its own Python.

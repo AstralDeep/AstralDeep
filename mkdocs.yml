@@ -1,5 +1,5 @@
 site_name: AstralVessel
-site_description: A small, standalone A2A agent harness with a sandbox per agent.
+site_description: The AstralDeep base with command-line tools, a personal node and a ticket-checking sandbox executor.
 site_url: https://astraldeep.github.io/AstralVessel/
 repo_url: https://github.com/AstralDeep/AstralVessel
 repo_name: AstralDeep/AstralVessel
@@ -71,21 +71,17 @@ nav:
   - Build agents:
       - The agent folder: build/agent-folder.md
       - vessel.toml: build/vessel-toml.md
-      - Prompts: build/prompts.md
       - Declared tools: build/declared-tools.md
       - Built-in tools: build/builtin-tools.md
-      - Service tools: build/service-tools.md
       - Workspaces and files: build/workspaces-and-files.md
-      - Rich output: build/rich-output.md
   - Run it:
       - deployment.toml: run/deployment-toml.md
-      - Manual deployment: run/manual-deployment.md
-      - Models and egress: run/models-and-egress.md
-      - Search: run/search.md
-      - Identity, apps and issuers: run/identity.md
-      - Connecting an application: run/applications.md
+      - Pairing: run/pairing.md
+      - The executor: run/executor.md
+      - The egress: run/models-and-egress.md
       - Several deployments on one host: run/several-deployments.md
       - Upgrading and releases: run/upgrading.md
+      - Migration from 0.6.0: run/migration.md
   - Security:
       - Threat model: security/threat-model.md
       - Isolation and probes: security/isolation.md
@@ -93,12 +89,7 @@ nav:
       - Platform support: security/platforms.md
   - Reference:
       - CLI: reference/cli.md
-      - HTTP and A2A protocol: reference/protocol.md
-      - Events: reference/events.md
-      - Transcript format: reference/transcript.md
-      - Python client and history store: reference/python.md
       - Configuration tables: reference/configuration.md
-      - Environment variables: reference/environment.md
       - Limits: reference/limits.md
   - Troubleshooting: troubleshooting.md
   - Changelog: changelog.md

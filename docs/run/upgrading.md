@@ -1,58 +1,36 @@
 # Upgrading and releases
 
-How you upgrade depends on whether `astralvessel` came from PyPI or from a checkout, because that decides which
-images `deploy` writes into the Compose file.
+## Which images `up` uses
 
-## Which images deploy uses
-
-| Installed from | Images in the Compose file |
+| Installed from | Executor, sandbox and egress images |
 |---|---|
-| PyPI (`pip install astralvessel`) | The released `ghcr.io/astraldeep/astralvessel:<version>` and `ghcr.io/astraldeep/astralvessel-egress:<version>`, where `<version>` is the installed package's version |
-| A checkout (`pip install -e .`) | Built locally from the checkout, tagged `<project>:local` and `<project>-egress:local` |
+| PyPI | The released `ghcr.io/astraldeep/astralvessel:<version>` and `...-egress:<version>` |
+| A checkout | Built locally from the checkout, tagged `<project>:local` and `<project>-egress:local` |
 
-`deploy` uses the checkout's Dockerfile when it finds one beside the package, so an editable install always builds.
-An agent with a [sandbox Dockerfile](../build/vessel-toml.md#extra-software-in-the-sandbox) is always built locally,
-`FROM` whichever AstralVessel image the deployment uses.
+The node image is always the one named in `[node] image`. AstralVessel does not build or pull it.
 
-## Upgrade an installed copy
+## Upgrade
 
 ```bash
 pip install --upgrade astralvessel
-astralvessel deploy deployment.toml
-docker compose -f compose.generated.yml --env-file .env up -d
+astralvessel up
 ```
 
-The new Compose file names the new image tags, so `up -d` pulls and recreates the containers.
+From a checkout, run `git pull --ff-only` and then `astralvessel up`. `up` writes the Compose file again, rebuilds and recreates what changed. A sandbox whose fingerprint does not match is not served.
 
-## Upgrade a checkout
+To upgrade the node, build or pull a new node image, set `image`, and run `astralvessel up`. The node refuses to start if its SQLite schema does not match the revision the image pins.
 
-```bash
-git pull --ff-only
-astralvessel deploy deployment.toml
-docker compose -f compose.generated.yml --env-file .env up -d --build
-```
-
-Run `deploy` after every upgrade: fingerprints and generated settings can change between versions, and a sandbox
-whose fingerprint does not match is not served.
-
-## What survives an upgrade
+## What survives
 
 | Kept | Where |
 |---|---|
-| Task records | The `<project>_vessel_data` volume. Tasks that were running when the vessel stopped are marked failed on restart. |
-| Per-container secrets | Regenerated from `VESSEL_SANDBOX_TOKEN` on each `deploy`; the SearXNG secret is kept. |
-| Conversations | In your application; the vessel holds none. |
+| The node's database, signing key and mesh keys | The `<project>_node_data` volume |
+| The executor's mesh keys | The `<project>_executor_data` volume |
+| The node's encryption secrets | `.generated/node.env`. They are created once and kept. |
+| Per-container tokens | Derived again from `VESSEL_SANDBOX_TOKEN` |
+
+Back up `.generated/node.env` and the data volumes together. The secrets encrypt what the node has stored.
 
 ## How releases are made
 
-Releases come from a version tag on `main`:
-
-1. Set `version` (plain `X.Y.Z`) in `pyproject.toml`.
-2. Run the Release workflow by hand. That is a dry run: it builds both images for amd64 and arm64 and the package,
-   and pushes nothing.
-3. Push the tag `v<version>`. The workflow checks the tag matches the version, pushes both images to GHCR tagged
-   with the version and `latest`, waits for a maintainer to approve the `pypi` environment, checks the images can
-   be pulled without signing in, and publishes the package to PyPI through trusted publishing.
-
-The first release was 0.5.0. Read the [changelog](../changelog.md) before upgrading: in 0.x, a minor version
-can remove or change settings.
+Releases come from a version tag on `main`. Set `version` in `pyproject.toml`, run the Release workflow by hand for a dry run, then push the tag `v<version>`. Release builds pass the pinned kernel artifacts as the `kernel-artifacts` build context so the executor image can verify tickets.
