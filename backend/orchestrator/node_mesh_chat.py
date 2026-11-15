@@ -1,5 +1,5 @@
-"""Routes personal node text requests through the Kernel's sealed provider book and serves ticketed peer calls through the orchestrator's normal gates.
-Explicit Python runners remain available for legacy hosts and conformance; node_mesh_admission.py bounds their exact tools and credentials.
+"""Routes personal and institution node text requests through the Kernel's sealed provider book and serves ticketed peer calls through the orchestrator's normal gates.
+Explicit Python runners remain available for conformance and nonproduction integrations; node_mesh_admission.py bounds their exact tools and credentials.
 The bridge also mirrors committed thin-client turns, computes label floors and recovers requested turns without replaying unknown effects."""
 
 from __future__ import annotations
@@ -603,13 +603,7 @@ class MeshChatBridge:
             raise Refusal("ticket.unauthorized")
         admitted.floor = join_labels(admitted.floor, labels_of(verified.labels))
         await self._check_floor(admitted.floor, request)
-        from shared import node_identity
 
-        if not node_identity.is_personal():
-            try:
-                admitted.authority = await self._calls.authorize(owner, resolved)
-            except CallRefused as exc:
-                raise Refusal(exc.code) from None
         admitted.resolved, admitted.arguments, admitted.action, admitted.owner = resolved, arguments, action, owner
 
     async def _execute(self, request: Any, admitted: _Admitted) -> None:
@@ -637,20 +631,26 @@ class MeshChatBridge:
     async def _run_call(self, request: Any, admitted: _Admitted, local: str) -> List[Any]:
         call_id, tool, arguments_json, action_json, ticket_json = admitted.reference.call
         from orchestrator import node_mesh_admission
-        from shared import node_identity
 
         owner = admitted.owner
         if not owner or self._owner != owner:
             raise Refusal("node.owner_mismatch")
         ticket = vessel_executor.CallTicket(ticket_json, action_json, arguments_json)
+
+        async def check_current() -> None:
+            try:
+                await self._check_floor(admitted.floor, request)
+            except Refusal as exc:
+                raise NodeMeshError(exc.code) from exc
+
         with node_mesh_admission.binding(
             self._mesh, lambda: self._owner, owner, local, admitted.resolved, ticket, request=request,
+            check_current=check_current,
         ), vessel_executor.carrying(ticket):
-            if node_identity.is_personal():
-                try:
-                    admitted.authority = await self._calls.authorize(owner, admitted.resolved)
-                except CallRefused as exc:
-                    raise Refusal(exc.code) from None
+            try:
+                admitted.authority = await self._calls.authorize(owner, admitted.resolved)
+            except CallRefused as exc:
+                raise Refusal(exc.code) from None
             outcome = await asyncio.wait_for(
                 self._calls.run(
                     owner, local, admitted.resolved, admitted.authority,

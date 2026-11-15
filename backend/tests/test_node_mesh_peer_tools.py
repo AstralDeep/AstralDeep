@@ -25,14 +25,16 @@ API_KEY = "fixture-node-provider-key"
 
 class FakeModel(BaseHTTPRequestHandler):
     seen: list = []
+    seen_auth: list = []
     arguments = {"n": 2}
     tool = TOOL
 
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers.get("content-length", "0"))))
         FakeModel.seen.append(request)
+        FakeModel.seen_auth.append(self.headers.get("authorization"))
         usage = {"prompt_tokens": 12, "completion_tokens": 6}
-        if any(m.get("role") == "tool" for m in request.get("messages", [])):
+        if FakeModel.tool is None or any(m.get("role") == "tool" for m in request.get("messages", [])):
             deltas = [{"content": REPLY}], "stop"
         else:
             call = {"index": 0, "id": "call-dice-1", "type": "function", "function": {"name": FakeModel.tool, "arguments": json.dumps(FakeModel.arguments)}}
@@ -68,6 +70,7 @@ class Grants:
 @pytest.fixture
 def model_server():
     FakeModel.seen = []
+    FakeModel.seen_auth = []
     FakeModel.arguments = {"n": 2}
     FakeModel.tool = TOOL
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeModel)

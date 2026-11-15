@@ -4,6 +4,10 @@ It runs only where the pinned kernel wheel and the mailbox binary are installed,
 from __future__ import annotations
 
 from types import SimpleNamespace  # noqa: E402
+from unittest.mock import AsyncMock
+
+import httpx
+import pytest
 
 from orchestrator import institution_runtime, node_mesh, node_mesh_chat  # noqa: E402
 from orchestrator.institution_meshes import Owner  # noqa: E402
@@ -12,6 +16,7 @@ from shared import institution_profile as ip  # noqa: E402
 from tests.test_node_mesh_kernel_integration import (  # noqa: E402
     ISS,
     NODE_TEXT,
+    OWNER,
     History,
     ak,
     enrolled,
@@ -23,13 +28,15 @@ from tests.test_node_mesh_kernel_integration import (  # noqa: E402
     token,
     until,
 )
+from tests.test_node_mesh_peer_tools import model_server, node_host  # noqa: F401
+from tests.test_node_mesh_turn_tools import turn_host  # noqa: F401
 
 from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
 
 KEY = ec.derive_private_key(0x1D2C3B4A5968778695A4B3C2D1E0F00F, ec.SECP256R1())
 
 
-def make_runtime(tmp_path):
+def make_runtime(tmp_path, *, runner=model_turn, calls=None):
     settings = node_mesh.MeshSettings(
         label="institution node",
         relay=("none",),
@@ -44,8 +51,8 @@ def make_runtime(tmp_path):
         config=config,
         base_dir=tmp_path / "node",
         history=History(),
-        runner=model_turn,
-        calls=None,
+        runner=runner,
+        calls=calls,
         settings=settings,
         issuers=issuers_for_tests,
         phi_active=lambda owner: False,
@@ -58,7 +65,7 @@ async def join_owner(runtime, tmp_path, subject, marker):
     mailbox = runtime.meshes._mailbox.address
     laptop = open_device(tmp_path / f"{subject}-laptop", f"{subject}-laptop", marker, mailbox)
     created = laptop.begin_mesh_creation()
-    laptop.complete_mesh_creation(token(created.nonce))
+    laptop.complete_mesh_creation(token(created.nonce, subject))
     await laptop.start_network()
     offer = await node.pairing_offer()
     await laptop.approve_pairing(offer["payload"], ak.HistoryGrant.ALL)
@@ -93,6 +100,157 @@ async def test_two_owners_are_served_by_separate_peers_and_never_see_each_others
     finally:
         node_mesh_chat.install(None)
         for laptop in laptops:
+            await laptop.stop_network()
+        await runtime.stop()
+
+
+async def test_two_owners_use_separate_sealed_kernel_turns(tmp_path, monkeypatch, model_server):  # noqa: F811
+    from tests.test_node_mesh_peer_tools import FakeModel, REPLY
+
+    monkeypatch.setenv("ASTRAL_NODE_PROFILE", "institution")
+    FakeModel.tool = None
+    runtime = make_runtime(tmp_path, runner=None)
+    node_mesh_chat.install(runtime.bridges)
+    await runtime.start()
+    laptops = []
+    try:
+        for subject, marker in (("alice", 1), ("bob", 2)):
+            node, laptop, device = await join_owner(runtime, tmp_path, subject, marker)
+            laptops.append(laptop)
+            subject_key = f"fixture-provider-{subject}"
+            laptop.set_model_provider(ak.ModelProviderConfig(
+                name="fake", base_url=f"http://127.0.0.1:{model_server}/v1", models=["fake-1"],
+                api_keys=[subject_key], fallback_order=0, self_hosted=True, strict_tools=False,
+            ))
+            await until(lambda: bool(node.kernel.model_providers()), f"{subject}'s sealed provider")
+            chat = laptop.create_chat(subject)
+            laptop.send_message(chat, f"hello {subject}", None)
+            await until(lambda: bool(node.kernel.chat(chat).view.messages), f"{subject}'s chat")
+            request = laptop.send_request(chat, "answer", device, None, None)
+            await until(request_state(laptop, request, "ANSWERED"), f"{subject}'s native answer")
+            await until(lambda: any(message.text == REPLY for message in laptop.chat(chat).view.messages),
+                        f"{subject}'s native reply")
+            assert all(item.chat_id != chat for other in runtime.meshes._meshes.values() if other is not node
+                       for item in other.kernel.list_chats())
+        assert len(FakeModel.seen) >= 2
+        assert FakeModel.seen_auth == ["Bearer fixture-provider-alice", "Bearer fixture-provider-bob"]
+    finally:
+        node_mesh_chat.install(None)
+        for laptop in laptops:
+            await laptop.stop_network()
+        await runtime.stop()
+
+
+@pytest.mark.parametrize("change", [None, "unattested", "stop", "revoke", "replay", "unknown", "audit-pre", "audit-post"])
+async def test_institution_kernel_effect_uses_protected_receiver(
+    tmp_path, monkeypatch, model_server, turn_host, change,  # noqa: F811
+):
+    from orchestrator import node_mesh_admission
+    from orchestrator.node_mesh_calls import OrchestratorCalls
+    from tests.test_node_mesh_composed_gate import CASES, install_effect
+    from tests.test_node_mesh_peer_tools import API_KEY, FakeModel
+    from tests.test_node_mesh_turn_tools import grant
+
+    monkeypatch.setenv("ASTRAL_NODE_PROFILE", "institution")
+    host = turn_host
+    monkeypatch.setattr(host.orch.delegation, "exchange_token_for_agent",
+                        AsyncMock(return_value={"access_token": "scoped-institution-test-token"}))
+    case = CASES["all-clear-dispatches"]
+    granted = install_effect(host, case)
+    FakeModel.tool, FakeModel.arguments = case["call"]["tool"], case["call"]["arguments"]
+    runtime = make_runtime(tmp_path, runner=None, calls=OrchestratorCalls(host.orch))
+    node_mesh_chat.install(runtime.bridges)
+    await runtime.start()
+    laptop = None
+    try:
+        node, laptop, device = await join_owner(runtime, tmp_path, "user-1", 1)
+        if change != "unattested":
+            node.kernel.reattest(token(node.kernel.begin_attestation().nonce, "user-1"))
+        laptop.set_model_provider(ak.ModelProviderConfig(
+            name="fake", base_url=f"http://127.0.0.1:{model_server}/v1", models=["fake-1"],
+            api_keys=[API_KEY], fallback_order=0, self_hosted=True, strict_tools=False,
+        ))
+        await until(lambda: bool(node.kernel.model_providers()), "the sealed institution provider")
+        await runtime.bridges.get(Owner.verified(ISS, "user-1").partition)._publish_catalog()
+        await grant(node, laptop, granted, "outside_effect")
+        recorded = []
+        record_turn = node.record_turn
+
+        async def observed_record(*args, **kwargs):
+            recorded.extend(kwargs["steps"])
+            return await record_turn(*args, **kwargs)
+
+        monkeypatch.setattr(node, "record_turn", observed_record)
+        audit_events = []
+        original_audit = host.orch.audit_recorder.record
+
+        async def observed_audit(event):
+            if event.action_type.startswith("mesh.kernel_effect_"):
+                audit_events.append(event.action_type)
+                if (change == "audit-pre" and event.action_type == "mesh.kernel_effect_started"
+                        or change == "audit-post" and event.action_type == "mesh.kernel_effect_response_success"):
+                    return None
+            return await original_audit(event)
+
+        monkeypatch.setattr(host.orch.audit_recorder, "record", observed_audit)
+        unknown_attempts = []
+        if change == "unknown":
+            async def lost_response(*args, **kwargs):
+                unknown_attempts.append(True)
+                raise httpx.ReadTimeout("controlled executor response loss")
+
+            monkeypatch.setattr(host.orch.vessel_executor._client, "post", lost_response)
+        replayed = []
+        if change in {"stop", "revoke", "replay"}:
+            original_dispatch = node_mesh_admission.dispatch
+
+            async def observed_dispatch(*args, **kwargs):
+                if change == "stop":
+                    node.kernel.raise_stop()
+                elif change == "revoke":
+                    node.kernel.revoke_tool(granted, "outside_effect")
+                first = await original_dispatch(*args, **kwargs)
+                if change == "replay":
+                    replayed.append(await original_dispatch(*args, **kwargs))
+                return first
+
+            monkeypatch.setattr(node_mesh_admission, "dispatch", observed_dispatch)
+        chat = laptop.create_chat("institution effect")
+        laptop.send_message(chat, "send hello", None)
+        await until(lambda: bool(node.kernel.chat(chat).view.messages), "the institution chat")
+        request = laptop.send_request(chat, "send hello", device, None, None)
+        await until(request_state(laptop, request, "ANSWERED"), "the institution effect answer", seconds=90)
+        await until(lambda: any(item.call is not None for item in node.kernel.chat_requests(chat)),
+                    "the signed institution child call")
+        await runtime.bridges.get(OWNER).scan()
+        await until(lambda: not any(item.call is not None and item.state == ak.RequestState.PENDING
+                                    for item in node.kernel.chat_requests(chat)), "the institution child outcome")
+        if change == "unknown":
+            await until(lambda: bool(unknown_attempts) and "mesh.kernel_effect_uncertain" in audit_events,
+                        "the uncertain institution effect")
+            await runtime.bridges.get(OWNER).scan()
+            assert len(unknown_attempts) == 1
+        assert len(host.sent) == (1 if change in {None, "replay", "audit-post"} else 0), (
+            [(step.tool, step.status, step.code) for step in recorded],
+            [(item.state.name, item.code) for item in node.kernel.chat_requests(chat) if item.call is not None],
+        )
+        if change == "unattested":
+            child = next(item for item in node.kernel.chat_requests(chat) if item.call is not None)
+            assert child.code == "institution.attestation_stale"
+            host.orch.delegation.exchange_token_for_agent.assert_not_awaited()
+        else:
+            host.orch.delegation.exchange_token_for_agent.assert_awaited()
+        if change == "replay":
+            assert len(replayed) == 1 and replayed[0].error["code"] == "node.ticket_used"
+        if change == "audit-pre":
+            assert audit_events == ["mesh.kernel_effect_started"]
+        if change == "audit-post":
+            assert audit_events == ["mesh.kernel_effect_started", "mesh.kernel_effect_response_success"]
+        if change == "unknown":
+            assert audit_events == ["mesh.kernel_effect_started", "mesh.kernel_effect_uncertain"]
+    finally:
+        node_mesh_chat.install(None)
+        if laptop is not None:
             await laptop.stop_network()
         await runtime.stop()
 

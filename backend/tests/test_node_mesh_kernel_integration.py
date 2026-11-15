@@ -69,10 +69,10 @@ class Signer(ak.HostSigner):
         return False
 
 
-def token(nonce: str) -> str:
+def token(nonce: str, subject: str = "user-1") -> str:
     now = int(time.time())
     header = b64(json.dumps({"alg": "ES256", "kid": "k1", "typ": "JWT"}, separators=(",", ":"), sort_keys=True).encode())
-    claims = {"iss": ISS, "aud": CLIENT, "sub": "user-1", "iat": now, "exp": now + 300, "nonce": nonce}
+    claims = {"iss": ISS, "aud": CLIENT, "sub": subject, "iat": now, "exp": now + 300, "nonce": nonce}
     payload = b64(json.dumps(claims, separators=(",", ":"), sort_keys=True).encode())
     signing_input = f"{header}.{payload}"
     return f"{signing_input}.{b64(sign(ISSUER_KEY, signing_input.encode()))}"

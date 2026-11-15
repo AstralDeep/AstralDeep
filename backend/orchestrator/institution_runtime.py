@@ -18,7 +18,6 @@ from orchestrator.node_mesh_chat import (
     MeshChatBridge,
     NodePolicy,
     install,
-    orchestrator_runner,
 )
 from orchestrator.node_mesh_calls import OrchestratorCalls
 from shared import institution_profile, node_identity
@@ -128,7 +127,7 @@ async def start_for(orch: Any) -> Optional[InstitutionRuntime]:
         config=config,
         base_dir=node_identity.data_dir(),
         history=orch.history,
-        runner=orchestrator_runner(orch),
+        runner=None,
         calls=OrchestratorCalls(orch),
         wake=WakeTriggers(gateway) if (gateway := gateway_for(orch)) is not None else None,
     )

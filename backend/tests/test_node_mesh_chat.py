@@ -896,7 +896,8 @@ async def test_a_call_without_machine_authority_is_refused(tmp_path):
     kernel.add_chat("c", [])
     kernel.add_request("r1", "c", call=call_for())
     await serve(bridge, kernel, "r1")
-    assert kernel.refused == [("r1", "node.authority_missing_consent")] and not calls.ran and not kernel.claimed
+    assert kernel.refused == [("r1", "node.authority_missing_consent")] and not calls.ran
+    assert kernel.claimed == ["r1"]
     await bridge.stop()
 
 

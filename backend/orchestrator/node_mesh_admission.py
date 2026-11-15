@@ -29,6 +29,7 @@ class Admission:
     ticket: vessel_executor.CallTicket
     lease: object
     request: Optional[RequestReference] = None
+    check_current: Optional[Callable[[], Awaitable[None]]] = None
 
 
 @dataclass(frozen=True)
@@ -91,10 +92,10 @@ _RESERVED_EFFECTS: Dict[object, asyncio.Task] = {}
 
 
 @contextlib.contextmanager
-def binding(mesh, owner_of, owner, chat, resolved, ticket, *, request=None) -> Iterator[None]:
+def binding(mesh, owner_of, owner, chat, resolved, ticket, *, request=None, check_current=None) -> Iterator[None]:
     lease = object()
     reference = None if request is None else RequestReference.capture(request)
-    admission = Admission(mesh, mesh.kernel, owner_of, owner, chat, resolved, ticket, lease, reference)
+    admission = Admission(mesh, mesh.kernel, owner_of, owner, chat, resolved, ticket, lease, reference, check_current)
     _ACTIVE.add(lease)
     token = _CURRENT.set(admission)
     try:
@@ -243,7 +244,8 @@ def _binding_code(admission, ticket, owner):
 async def source_bound_capability(orch, owner, chat, agent, tool, args):
     from shared import node_identity
 
-    if (not node_identity.is_personal() or not isinstance(owner, str) or not owner
+    if (not (node_identity.is_personal() or node_identity.is_institution())
+            or not isinstance(owner, str) or not owner
             or not isinstance(chat, str) or not chat or not isinstance(agent, str) or not agent
             or not isinstance(tool, str) or not tool or not isinstance(args, dict)):
         return None
@@ -269,8 +271,11 @@ async def source_bound_capability(orch, owner, chat, agent, tool, args):
         verified = await mesh.verify_ticket(ticket.ticket_json, ticket.action_json, resolved.effect_kind)
         checked = await mesh.check_host_call(request.id, resolved.definition, resolved.effect_kind)
         context = await mesh.personal_authority_context(request, owner, mesh.kernel)
+        if admission.check_current is not None:
+            await admission.check_current()
         action = json.loads(ticket.action_json)
-        if (mesh.kernel is not admission.kernel or node_identity.bound_owner() != owner
+        if (mesh.kernel is not admission.kernel
+                or (node_identity.is_personal() and node_identity.bound_owner() != owner)
                 or RequestReference.capture(context.request) != request
                 or verified.mesh != context.mesh_id or verified.turn != action.get("turn")
                 or action.get("tool") != resolved.tool or action.get("tool_def") != resolved.definition
@@ -433,6 +438,8 @@ async def dispatch(orch, websocket, owner, chat, agent, tool, args, invoke, *, k
                     admission.request.id, admission.resolved.definition, admission.resolved.effect_kind)
                 context = await admission.mesh.personal_authority_context(
                     admission.request, owner, admission.kernel)
+                if admission.check_current is not None:
+                    await admission.check_current()
                 if (checked.action_digest != kernel_effect.action_digest
                         or checked.mesh != kernel_effect.mesh_id
                         or RequestReference.capture(context.request) != admission.request
