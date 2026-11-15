@@ -3,6 +3,7 @@ It runs only where the pinned kernel wheel and the mailbox binary are installed,
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace  # noqa: E402
 from unittest.mock import AsyncMock
 
@@ -294,6 +295,9 @@ async def test_the_chat_bridge_entry_point_runs_an_institution_node_on_the_real_
     monkeypatch.setenv("ASTRAL_NODE_PROFILE", "institution")
     monkeypatch.setenv("ASTRAL_NODE_DATA_DIR", str(tmp_path / "node"))
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", ISS)
+    configured = (await issuers_for_tests())[0]
+    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", configured["client_id"])
+    monkeypatch.setattr("shared.jwks_cache.get_jwks", AsyncMock(return_value=json.loads(configured["jwks_json"])))
     monkeypatch.setenv(ip.KEY_ENV, ip.key_text(KEY))
     monkeypatch.setenv("ASTRAL_NODE_MAILBOX", "off")
     monkeypatch.setenv("ASTRAL_NODE_MESH_LOOPBACK", "1")
@@ -301,7 +305,9 @@ async def test_the_chat_bridge_entry_point_runs_an_institution_node_on_the_real_
     try:
         runtime = institution_runtime.current()
         assert runtime is not None and runtime.descriptor_fields["profile"] == "institution"
-        node = await runtime.serve_owner(Owner.verified(ISS, "alice"))
+        owner = Owner.verified(ISS, "alice")
+        node = await runtime.serve_owner(owner)
         assert (await node.status())["state"] == "not_enrolled" and node.requests_supported
+        assert runtime.bridges.get(owner.partition)._runner is None
     finally:
         await node_mesh_chat.stop_all()
