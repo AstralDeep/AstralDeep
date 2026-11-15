@@ -543,6 +543,7 @@ def test_profile_platform_family_rejects_other_or_unanchored_platforms(profiles,
 
 COMPAT_INFO = 'apple-clients/AstralApp/Info.plist'
 COMPAT_TESTS = 'apple-clients/AstralApp/AstralAppTests/MeshConsentTests.swift'
+COMPAT_LEDGER = 'provenance/transformations.json'
 COMPAT_ANCHOR = 'final class LocalAuthenticatorTests: XCTestCase {\n'
 COMPAT_ADDITION = '''    func testAppBundleDeclaresFaceIDPurposeForBiometricConsent() throws {
         let purpose = try XCTUnwrap(
@@ -576,12 +577,23 @@ def projection_repo(tmp_path, monkeypatch):
     old_test = 'import XCTest\n' + COMPAT_ANCHOR + '    func testExistingConsentDenial() {}\n}\n'
     info.write_bytes(plistlib.dumps(old_info))
     tests.write_text(old_test)
+    ledger = repo / COMPAT_LEDGER
+    ledger.parent.mkdir(parents=True)
+    old_ledger = {'format':'astral.extraction-transformations/v1', 'sourceManifestSha256':'a' * 64,
+                  'entries':[{'path':COMPAT_INFO, 'sourceBlob':'b' * 40, 'sourceTuple':['origin', 1],
+                              'reason':'Preserve the source binding',
+                              'resultSha256':hashlib.sha256(info.read_bytes()).hexdigest()},
+                             {'path':'other-file', 'resultSha256':'c' * 64, 'active':True}]}
+    ledger.write_text(json.dumps(old_ledger, indent=2))
     compat_git(repo, 'add', '.')
     compat_git(repo, 'commit', '-qm', 'Original')
     old = compat_git(repo, 'rev-parse', 'HEAD')
     new_info = {**old_info, 'NSFaceIDUsageDescription': 'Verify protected actions.'}
     info.write_bytes(plistlib.dumps(new_info))
     tests.write_text(old_test.replace(COMPAT_ANCHOR, COMPAT_ANCHOR + COMPAT_ADDITION))
+    new_ledger = copy.deepcopy(old_ledger)
+    new_ledger['entries'][0]['resultSha256'] = hashlib.sha256(info.read_bytes()).hexdigest()
+    ledger.write_text(json.dumps(new_ledger, indent=2))
     monkeypatch.chdir(repo)
     return repo, old, old_info, old_test
 
@@ -598,10 +610,11 @@ def test_projection_purpose_compatibility_uses_real_git_tree(projection_repo):
     proof = upload.projection_compatibility(old, new)
     assert proof['mode'] == 'face-id-purpose-addition'
     assert proof['original_projection'] == old and proof['current_projection'] == new
-    assert proof['changed_paths'] == [COMPAT_TESTS, COMPAT_INFO]
+    assert proof['changed_paths'] == [COMPAT_TESTS, COMPAT_INFO, COMPAT_LEDGER]
     assert proof['ancestor'] is True
     assert proof['info_only_adds_face_id_purpose'] is True
     assert proof['tests_exact_host_bundle_regression'] is True
+    assert proof['provenance_only_updates_info_result'] is True
     assert upload.projection_compatibility(old, old)['mode'] == 'exact'
 
 
@@ -619,7 +632,7 @@ def test_projection_compatibility_denies_other_tree_or_semantic_changes(projecti
         path.write_text('unapproved')
     elif mutation == 'gitlink':
         compat_git(repo, 'config', 'diff.ignoreSubmodules', 'all')
-        compat_git(repo, 'add', COMPAT_INFO, COMPAT_TESTS)
+        compat_git(repo, 'add', COMPAT_INFO, COMPAT_TESTS, COMPAT_LEDGER)
         compat_git(repo, 'update-index', '--add', '--cacheinfo', '160000,' + old + ',unapproved-component')
     elif mutation in {'info-executable', 'test-executable'}:
         (info if mutation == 'info-executable' else tests).chmod(0o755)
@@ -692,7 +705,7 @@ def test_producer_retains_origin_and_requires_current_native_ci_for_compatibilit
     monkeypatch.setattr(upload, 'gitlink', lambda ref, component: kernel if component == 'AstralKernel' else new if ref == 'HEAD' else old)
     provider[2]['workflow_runs'][0]['head_sha'] = new
     proof = {'mode':'face-id-purpose-addition','original_projection':old,'current_projection':new,
-             'changed_paths':[COMPAT_TESTS, COMPAT_INFO]}
+             'changed_paths':[COMPAT_TESTS, COMPAT_INFO, COMPAT_LEDGER]}
     monkeypatch.setattr(upload, 'projection_compatibility', lambda a, b: proof, raising=False)
     calls = []
     monkeypatch.setattr(upload.subprocess, 'run', lambda args, **kwargs: calls.append(args))
@@ -703,3 +716,92 @@ def test_producer_retains_origin_and_requires_current_native_ci_for_compatibilit
     provider[2]['workflow_runs'][0]['head_sha'] = old
     with pytest.raises(ValueError, match='Projection'):
         upload.producer(11, 22)
+
+
+@pytest.mark.parametrize('mutation', ['hash', 'hash-type', 'source-blob', 'source-tuple', 'reason', 'source-manifest',
+    'other-entry', 'other-entry-bool-type', 'top-level', 'added-entry', 'removed-entry', 'reordered-entries',
+    'duplicate-info-entry', 'wrong-info-path', 'duplicate-json-key', 'duplicate-entry-key', 'invalid-json',
+    'non-finite-json', 'ledger-unchanged', 'ledger-executable', 'ledger-deleted', 'root-array', 'entries-dict', 'entry-array'])
+def test_projection_ledger_allows_only_exact_info_result_binding(projection_repo, mutation):
+    repo, old, _, _ = projection_repo
+    path = repo / COMPAT_LEDGER
+    ledger = json.loads(path.read_text())
+    target = ledger['entries'][0]
+    if mutation == 'hash':
+        target['resultSha256'] = '0' * 64
+    elif mutation == 'hash-type':
+        target['resultSha256'] = 123
+    elif mutation == 'source-blob':
+        target['sourceBlob'] = '0' * 40
+    elif mutation == 'source-tuple':
+        target['sourceTuple'] = ['changed', 1]
+    elif mutation == 'reason':
+        target['reason'] = 'Changed'
+    elif mutation == 'source-manifest':
+        ledger['sourceManifestSha256'] = '0' * 64
+    elif mutation == 'other-entry':
+        ledger['entries'][1]['resultSha256'] = '0' * 64
+    elif mutation == 'other-entry-bool-type':
+        ledger['entries'][1]['active'] = 1
+    elif mutation == 'top-level':
+        ledger['new-field'] = True
+    elif mutation == 'added-entry':
+        ledger['entries'].append({'path':'new-file'})
+    elif mutation == 'removed-entry':
+        ledger['entries'].pop()
+    elif mutation == 'reordered-entries':
+        ledger['entries'].reverse()
+    elif mutation == 'duplicate-info-entry':
+        ledger['entries'].append(copy.deepcopy(target))
+    elif mutation == 'wrong-info-path':
+        target['path'] = 'not-the-info-path'
+    elif mutation == 'root-array':
+        ledger = [ledger]
+    elif mutation == 'entries-dict':
+        ledger['entries'] = {}
+    elif mutation == 'entry-array':
+        ledger['entries'][1] = []
+    if mutation == 'duplicate-json-key':
+        path.write_text(json.dumps(ledger).replace('"format":', '"format":"ignored", "format":', 1))
+    elif mutation == 'duplicate-entry-key':
+        path.write_text(json.dumps(ledger).replace('"resultSha256":', '"resultSha256":"ignored", "resultSha256":', 1))
+    elif mutation == 'invalid-json':
+        path.write_text('{broken')
+    elif mutation == 'non-finite-json':
+        path.write_text(json.dumps(ledger).replace('true', 'NaN', 1))
+    elif mutation == 'ledger-unchanged':
+        path.write_text(compat_git(repo, 'show', old + ':' + COMPAT_LEDGER))
+    elif mutation == 'ledger-executable':
+        path.chmod(0o755)
+    elif mutation == 'ledger-deleted':
+        path.unlink()
+    else:
+        path.write_text(json.dumps(ledger, indent=2))
+    with pytest.raises(ValueError):
+        upload.projection_compatibility(old, compat_commit(repo))
+
+
+def test_projection_ledger_accepts_formatting_without_changing_other_values(projection_repo):
+    repo, old, _, _ = projection_repo
+    path = repo / COMPAT_LEDGER
+    path.write_text(json.dumps(json.loads(path.read_text()), sort_keys=True, separators=(',', ':')))
+    proof = upload.projection_compatibility(old, compat_commit(repo))
+    assert proof['provenance_only_updates_info_result'] is True
+
+
+def test_projection_ledger_rejects_unbound_original_info_result(projection_repo):
+    repo, old, _, _ = projection_repo
+    info = (repo / COMPAT_INFO).read_bytes()
+    tests = (repo / COMPAT_TESTS).read_bytes()
+    current_ledger = json.loads((repo / COMPAT_LEDGER).read_text())
+    compat_git(repo, 'reset', '--hard', old)
+    path = repo / COMPAT_LEDGER
+    original = json.loads(path.read_text())
+    original['entries'][0]['resultSha256'] = '0' * 64
+    path.write_text(json.dumps(original))
+    old = compat_commit(repo)
+    (repo / COMPAT_INFO).write_bytes(info)
+    (repo / COMPAT_TESTS).write_bytes(tests)
+    path.write_text(json.dumps(current_ledger))
+    with pytest.raises(ValueError, match='hash|binding|result'):
+        upload.projection_compatibility(old, compat_commit(repo))

@@ -24,6 +24,7 @@ REPO = "AstralDeep/AstralDeep"
 API = "https://api.appstoreconnect.apple.com/v1/"
 PROJECTION_INFO = "apple-clients/AstralApp/Info.plist"
 PROJECTION_CONSENT_TESTS = "apple-clients/AstralApp/AstralAppTests/MeshConsentTests.swift"
+PROJECTION_LEDGER = "provenance/transformations.json"
 FACE_ID_TEST_ANCHOR = b"final class LocalAuthenticatorTests: XCTestCase {\n"
 FACE_ID_HOST_BUNDLE_TEST = b'''    func testAppBundleDeclaresFaceIDPurposeForBiometricConsent() throws {
         let purpose = try XCTUnwrap(
@@ -60,7 +61,7 @@ class UniquePlistDictionary(dict):
             self[key] = value
 
     def __setitem__(self, key, value):
-        require(key not in self, "Projection plist contains a duplicate dictionary key")
+        require(key not in self, "Projection metadata contains a duplicate dictionary key")
         super().__setitem__(key, value)
 
 
@@ -78,6 +79,35 @@ def projection_blob(oid):
     size = int(projection_git("cat-file", "-s", oid))
     require(0 < size <= 1024**2, "Projection compatibility blob exceeds bounds")
     return projection_git("cat-file", "blob", oid)
+
+
+def reject_projection_json_constant(_value):
+    raise ValueError("Projection provenance JSON contains a non-finite number")
+
+
+def projection_ledger_compatibility(original, current, info_bytes):
+    documents = [json.loads(payload, object_pairs_hook=UniquePlistDictionary,
+                            parse_constant=reject_projection_json_constant) for payload in (original, current)]
+    hashes = {}
+    for label, document, info in zip(("original", "current"), documents, info_bytes, strict=True):
+        require(isinstance(document, dict), "Projection provenance must be a dictionary")
+        require(document.get("format") == "astral.extraction-transformations/v1"
+                and isinstance(document.get("sourceManifestSha256"), str)
+                and re.fullmatch(r"[0-9a-f]{64}", document["sourceManifestSha256"]),
+                "Projection provenance format or source manifest binding is invalid")
+        entries = document.get("entries")
+        require(isinstance(entries, list) and all(isinstance(entry, dict) for entry in entries),
+                "Projection provenance entries must be dictionaries")
+        matches = [entry for entry in entries if entry.get("path") == PROJECTION_INFO]
+        require(len(matches) == 1, "Projection provenance requires exactly one Info result binding")
+        digest = hashlib.sha256(info).hexdigest()
+        require(matches[0].get("resultSha256") == digest,
+                "Projection provenance result hash does not bind the exact Info bytes")
+        hashes[label] = digest
+        del matches[0]["resultSha256"]
+    canonical = [json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False) for document in documents]
+    require(canonical[0] == canonical[1], "Projection provenance changed beyond the single Info result hash")
+    return hashes
 
 
 def projection_compatibility(original, current):
@@ -103,13 +133,13 @@ def projection_compatibility(original, current):
         require(len(fields) == 5 and fields[0] == b":100644" and fields[1] == b"100644" and fields[4] == b"M",
                 "Projection compatibility permits only modified regular nonexecutable files")
         name = path.decode("utf-8")
-        require(name in {PROJECTION_INFO, PROJECTION_CONSENT_TESTS} and name not in changes,
+        require(name in {PROJECTION_INFO, PROJECTION_CONSENT_TESTS, PROJECTION_LEDGER} and name not in changes,
                 "Projection compatibility includes an unapproved path")
         changes[name] = (fields[2].decode("ascii"), fields[3].decode("ascii"))
-    require(set(changes) == {PROJECTION_INFO, PROJECTION_CONSENT_TESTS},
-            "Projection compatibility requires exactly the purpose string and host-bundle regression")
-    old_info, new_info = [plistlib.loads(projection_blob(oid), dict_type=UniquePlistDictionary)
-                          for oid in changes[PROJECTION_INFO]]
+    require(set(changes) == {PROJECTION_INFO, PROJECTION_CONSENT_TESTS, PROJECTION_LEDGER},
+            "Projection compatibility requires exactly the purpose string, host-bundle regression and provenance binding")
+    info_bytes = [projection_blob(oid) for oid in changes[PROJECTION_INFO]]
+    old_info, new_info = [plistlib.loads(payload, dict_type=UniquePlistDictionary) for payload in info_bytes]
     require(isinstance(old_info, dict) and isinstance(new_info, dict), "Projection Info must be a dictionary")
     purpose = new_info.get("NSFaceIDUsageDescription")
     require("NSFaceIDUsageDescription" not in old_info and isinstance(purpose, str) and purpose.strip(),
@@ -121,10 +151,13 @@ def projection_compatibility(original, current):
     require(old_tests.count(FACE_ID_TEST_ANCHOR) == 1
             and new_tests == old_tests.replace(FACE_ID_TEST_ANCHOR, FACE_ID_TEST_ANCHOR + FACE_ID_HOST_BUNDLE_TEST, 1),
             "Projection consent tests must preserve every byte except the exact host-bundle regression")
+    ledger_bytes = [projection_blob(oid) for oid in changes[PROJECTION_LEDGER]]
+    ledger_hashes = projection_ledger_compatibility(*ledger_bytes, info_bytes)
     return {**proof, "mode": "face-id-purpose-addition", "ancestor": True,
             "changed_paths": sorted(changes), "blob_changes": {
                 name: {"original": pair[0], "current": pair[1]} for name, pair in sorted(changes.items())},
-            "info_only_adds_face_id_purpose": True, "tests_exact_host_bundle_regression": True}
+            "info_only_adds_face_id_purpose": True, "tests_exact_host_bundle_regression": True,
+            "provenance_only_updates_info_result": True, "info_result_sha256": ledger_hashes}
 
 
 def producer(run_id, artifact_id):
