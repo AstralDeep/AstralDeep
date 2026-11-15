@@ -211,26 +211,24 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
     assert "--ignore" not in component_tests
 
 
-def test_apple_archives_preserve_the_qualified_project_version() -> None:
+def test_apple_archive_uses_explicit_candidate_version_and_pinned_toolchain() -> None:
     workflow = (REPOSITORY_ROOT / ".github/workflows/apple-release.yml").read_text(
         encoding="utf-8"
     )
     release = _workflow_job(workflow, "release")
     assert "runs-on: macos-26" in release
-    assert 'XCODE_VERSION: "26.6"' in workflow
-    assert 'XCODE_BUILD: "17F113"' in workflow
-    assert "Select exact Xcode" in release
-    assert "Build version ${XCODE_BUILD}" in release
+    assert "Select exact Xcode 26.6 (17F113)" in release
+    assert "components/AstralKernel/scripts/select-xcode.sh" in release
     assert "sort -V | tail -1" not in release
     archive_commands = re.findall(
         r"(?m)^          xcodebuild archive (?:[^\n]*\\\n)*[^\n]*", release
     )
-    assert len(archive_commands) == 2
+    assert len(archive_commands) == 1
     for command in archive_commands:
         arguments = command.replace("\\\n", " ")
         assert "-configuration Release" in arguments
-        assert "CURRENT_PROJECT_VERSION=" not in arguments
-        assert "MARKETING_VERSION=" not in arguments
+        assert 'MARKETING_VERSION="$VERSION"' in arguments
+        assert 'CURRENT_PROJECT_VERSION="$BUILD"' in arguments
         assert "GITHUB_RUN_NUMBER" not in arguments
 
 
@@ -262,10 +260,13 @@ def test_store_and_signing_workflows_require_explicit_release_events() -> None:
         encoding="utf-8"
     )
     apple_triggers = apple.partition("\npermissions:\n")[0]
-    assert 'tags: ["apple-v*"]' in apple_triggers
     assert "workflow_dispatch:" in apple_triggers
+    assert "push:" not in apple_triggers
     assert "branches:" not in apple_triggers
     assert "pull_request:" not in apple_triggers
+    for input_name in ("version", "build", "producer_run_id", "artifact_id"):
+        assert f"      {input_name}:" in apple_triggers
+        assert "        required: true" in apple_triggers
 
     windows = (REPOSITORY_ROOT / ".github/workflows/release-windows.yml").read_text(
         encoding="utf-8"

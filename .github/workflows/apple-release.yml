@@ -65,7 +65,7 @@ jobs:
   release:
     name: Sign, validate and upload iPhone with embedded Watch
     needs: gate
-    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && needs.gate.result == 'success' }}
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (needs.gate.result == 'success') }}
     runs-on: macos-26
     timeout-minutes: 30
     environment: release-publisher

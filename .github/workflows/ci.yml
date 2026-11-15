@@ -850,6 +850,8 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           submodules: false
+      - name: Materialize the pinned Projection upload helper for release-tooling tests
+        run: git submodule update --init --depth 1 components/AstralProjection
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
@@ -935,6 +937,7 @@ jobs:
             --env PYTHONPATH=/workspace/backend:/workspace --env ASTRAL_ENV=development \
             --env COVERAGE_FILE=/workspace/build/060/coverage/.coverage \
             --volume "$PWD:/workspace" --workdir /workspace --entrypoint /bin/bash \
+            --volume "$PWD/components/AstralProjection/apple-clients/Scripts/altool_strict.sh:/workspace/components/AstralProjection/apple-clients/Scripts/altool_strict.sh:ro" \
             "$(cat build/backend-web/image-id.txt)" -euc '
               python -m venv --system-site-packages /tmp/tooling
               /tmp/tooling/bin/python -m pip install --require-hashes -r tooling/backend-ci/requirements.lock.txt
