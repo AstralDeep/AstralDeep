@@ -1,6 +1,6 @@
 # Tasks for spec 105
 
-**Date:** 2026-11-15. **Status:** feature PRs are merged and the current default branches pass hosted CI. The owner authorized push, merge, release and the website update, and made live device/environment demonstrations optional. Deterministic code and security qualification remain required under [the acceptance clarification](clarification-code-qualification.md). Release publication is being prepared; it has not happened yet. Read [spec.md](spec.md), [plan.md](plan.md) and the current [qualification map](qualification.md) for intent and evidence.
+**Date:** 2026-11-15. **Status:** feature PRs are merged; earlier defaults pass CI and the exact final candidate is still being checked. The owner authorized push, merge, release and the website update, and made live device/environment demonstrations optional. Deterministic code and security qualification remain required under [the acceptance clarification](clarification-code-qualification.md). Release publication is being prepared; it has not happened yet. Read [spec.md](spec.md), [plan.md](plan.md) and the current [qualification map](qualification.md) for intent and evidence.
 
 ## Current completion queue
 
@@ -12,6 +12,7 @@
 - [x] Complete the institution node's Kernel-owned production route, normal owner-bound attestation API, second-issuer handling and actual two-owner allowed/denied/replay/uncertain executor tests for 3.11. Final combined gates remain in the next item.
 - [x] Integrate release tooling, freeze runtime dff3abf3, pass Root's 217 combined tests/96.55% changed coverage, fix the missing-issuer wake fixture (30 tests pass), repair strict Apple collection (199 tests pass), repin recipec181/runtimeed54 and regenerate the exact local pack; all14 tool checks, real Swift install/run and78 packaging tests pass.
 - [ ] Pass the final default-branch code checks and publish the exact authorized candidate.
+- [x] Synchronize Deep's protected Apple collector copy after the exact-byte CI regression; preserve the assertion, pass 512 adjacent tests at 99% collector coverage, and repin the pack without widening release source allowances. Final pack/CI qualification remains in the preceding item.
 - [ ] Publish the signed/notarized Mac release and its immutable NodePack through the normal release workflow, then update and verify the public website.
 - [ ] Record final source and asset identities, residual limits and publication results in the spec and curated vault.
 
