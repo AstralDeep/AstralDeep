@@ -224,8 +224,9 @@ async def test_institution_kernel_effect_uses_protected_receiver(
         await until(lambda: any(item.call is not None for item in node.kernel.chat_requests(chat)),
                     "the signed institution child call")
         await runtime.bridges.get(OWNER).scan()
-        await until(lambda: not any(item.call is not None and item.state == ak.RequestState.PENDING
-                                    for item in node.kernel.chat_requests(chat)), "the institution child outcome")
+        terminal = {ak.RequestState.ANSWERED, ak.RequestState.REFUSED, ak.RequestState.CANCELLED}
+        await until(lambda: all(item.state in terminal for item in node.kernel.chat_requests(chat)
+                                if item.call is not None), "the institution child outcome")
         if change == "unknown":
             await until(lambda: bool(unknown_attempts) and "mesh.kernel_effect_uncertain" in audit_events,
                         "the uncertain institution effect")

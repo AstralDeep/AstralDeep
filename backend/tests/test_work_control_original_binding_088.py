@@ -20,6 +20,7 @@ from tests.test_work_control_authority_088 import (
     bound as bound, fixture as fixture, runtime as runtime, service as service,
     signing_key as signing_key, selected,
 )
+from tests.helpers.database_waits import unbounded_statement_waits
 
 pytestmark = pytest.mark.asyncio
 
@@ -108,24 +109,43 @@ async def test_distinct_caller_is_unchanged_and_both_sessions_remain_required(bo
 async def test_caller_observation_expiring_during_original_session_lock_wait_refuses(bound, fixture, runtime):
     sid, guard, authority = await separate(bound, fixture, runtime)
     combined = guard.with_original(authority)
-    until = datetime.now(timezone.utc) + timedelta(seconds=.08)
+    until = datetime.now(timezone.utc) + timedelta(seconds=5)
     combined = replace(combined, caller=replace(combined.caller, valid_until=until))
     entered = threading.Event()
+    backend_pid = []
+
     def assertion():
         with runtime.transaction() as tx:
             runtime.repositories.history.sessions.bound_request_execution_waits(tx)
             assert tx.fetch_one("SHOW lock_timeout")["lock_timeout"] == "100ms"
-            tx.execute("SET LOCAL lock_timeout = '1s'")
-            entered.set()
-            combined.assert_current(tx, assignments=bound[0])
+            with unbounded_statement_waits(tx):
+                backend_pid.append(tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"])
+                entered.set()
+                combined.assert_current(tx, assignments=bound[0])
+
     try:
+        blocked_on_original = False
+        waiting_after_expiry = False
         with runtime.transaction() as blocker:
             blocker.fetch_one("SELECT sid FROM web_session WHERE sid=%s FOR UPDATE", (fixture[2],))
+            blocker_pid = blocker.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
             pending = asyncio.create_task(asyncio.to_thread(assertion))
             assert await asyncio.to_thread(entered.wait, 2)
-            await asyncio.sleep(max(0, until.timestamp() - time.time()) + .02)
-            assert not pending.done()
+            wait = None
+            wait_deadline = time.monotonic() + 30
+            while not pending.done() and time.monotonic() < wait_deadline:
+                blocker.fetch_one("SELECT pg_stat_clear_snapshot()")
+                wait = blocker.fetch_one("SELECT pg_blocking_pids(%s) AS pids", (backend_pid[0],))
+                if wait is not None and blocker_pid in wait["pids"]:
+                    blocked_on_original = True
+                    break
+                await asyncio.sleep(.01)
+            if blocked_on_original:
+                await asyncio.sleep(max(0, until.timestamp() - time.time()) + .02)
+                waiting_after_expiry = not pending.done()
         with pytest.raises(AssignmentError, match="work_authentication_required"):
             await pending
+        assert blocked_on_original
+        assert waiting_after_expiry
     finally:
         fixture[0].delete(sid)
