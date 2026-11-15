@@ -503,6 +503,33 @@ async def audit_effect_outcome(orch, call: PendingCall, *, uncertain: bool, no_e
                  "effect_uncertain" if uncertain else "effect_response_success")
 
 
+async def audit_kernel_effect(orch, capability, transition: str, *, uncertain=False, no_effect=False) -> None:
+    from audit.recorder import now_utc
+    from audit.schemas import AuditEventCreate
+
+    if transition not in {"effect_started", "effect_response_success", "effect_failed_no_effect", "effect_uncertain"}:
+        raise ValueError("invalid Kernel effect audit transition")
+    correlation = str(uuid.uuid5(uuid.NAMESPACE_URL,
+        f"astral-kernel-effect:{capability.request_id}:{capability.ticket_digest}:{transition}"))
+    receipt = await orch.audit_recorder.record(AuditEventCreate(
+        actor_user_id=capability.owner, auth_principal="machine:mesh_request",
+        event_class="agent_tool_call", action_type=f"mesh.kernel_{transition}",
+        description=f"Kernel-authorized {transition}: {capability.tool}",
+        correlation_id=correlation, conversation_id=capability.chat,
+        outcome=("interrupted" if uncertain else "failure" if no_effect else "success"),
+        inputs_meta={"approval_source": "kernel_ticket", "request_id": capability.request_id,
+                     "mesh_id": capability.mesh_id, "device_id": capability.device_id,
+                     "request_device": capability.request_device, "agent_id": capability.agent,
+                     "tool": capability.tool, "ticket_sha256": capability.ticket_digest,
+                     "action_digest": capability.action_digest,
+                     "arguments_sha256": capability.arguments_digest,
+                     "kernel_consented": capability.consented},
+        started_at=now_utc(), completed_at=now_utc(),
+    ))
+    if receipt is None:
+        raise RuntimeError("Kernel effect audit receipt unavailable")
+
+
 def _surface_confirmations(orch) -> dict[str, SurfaceConfirmation]:
     now = time.monotonic()
     current = {key: item for key, item in getattr(orch, "_hitl_surface_confirmations", {}).items()

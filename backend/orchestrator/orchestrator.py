@@ -19832,6 +19832,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if isinstance(args, dict) and "_txn_token" in args:
                     args = {k: v for k, v in args.items() if k != "_txn_token"}
 
+        kernel_effect = None
+        if user_id and agent_id and action.needs_review:
+            from orchestrator import node_mesh_admission
+
+            kernel_effect = await node_mesh_admission.source_bound_capability(
+                self, user_id, chat_id, agent_id, tool_name, args)
+
         if user_id and agent_id and action.needs_review:
             from orchestrator import hitl as _hitl, hitl_confirmation
 
@@ -19847,9 +19854,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 review_risks.extend(_hitl.assess_risk(tool_name, args, actor_principal=user_id,
                     trust=trust, agent_id=agent_id,
                     public_reader=_hitl.registered_public_reader(self, agent_id, tool_name)))
-            pending = await hitl_confirmation.evaluate(
+            pending = (None if kernel_effect is not None else await hitl_confirmation.evaluate(
                 self, websocket, user_id, chat_id, agent_id, tool_name,
-                args, tuple(set(review_risks)))
+                args, tuple(set(review_risks))))
             if pending is not None:
                 data = pending.result.get("_data", {}) if isinstance(pending.result, dict) else {}
                 return GateRefusal(response=pending, dispatch_completed=(
@@ -19918,9 +19925,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     tool_name, args, actor_principal=user_id, trust=trust,
                     agent_id=agent_id,
                     public_reader=_hitl.registered_public_reader(self, agent_id, tool_name))
-                # Deliberately or, not =: never lowers an existing requirement
+                # Kernel authority covers only the matching egress confirmation; other risks remain.
                 _typesafe_confirms = self._typesafe_turn_requires_confirmation(chat_id)
-                if _hitl.requires_confirmation(risks) or _typesafe_confirms:
+                kernel_covers_egress_review = (kernel_effect is not None and not _typesafe_confirms
+                                               and not (set(risks) - {_hitl.EGRESS}))
+                if (_hitl.requires_confirmation(risks) or _typesafe_confirms) and not kernel_covers_egress_review:
                     logger.warning("hitl.confirm user=%s tool=%s risks=%s", user_id, tool_name, risks)
                     from orchestrator import hitl_confirmation
                     approved = hitl_confirmation.current_approval(
@@ -21436,14 +21445,23 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except (AttributeError, TypeError, ValueError):
                 return MCPResponse(error={"code": "effect_declaration_unavailable",
                     "message": "Tool effect declaration is unavailable.", "retryable": False})
+            kernel_effect = None
             if action.needs_review:
                 approval = hitl_confirmation.current_approval(
                     self, user_id, conversation_id, agent_id, tool_name, args)
                 if approval is None:
-                    return MCPResponse(error={"code": "source_bound_approval_required",
-                        "message": "This action requires exact owner review.", "retryable": False})
+                    from orchestrator import node_mesh_admission
+
+                    kernel_effect = await node_mesh_admission.source_bound_capability(
+                        self, user_id, conversation_id, agent_id, tool_name, args)
+                    if kernel_effect is None:
+                        return MCPResponse(error={"code": "source_bound_approval_required",
+                            "message": "This action requires exact owner review.", "retryable": False})
                 try:
-                    await hitl_confirmation.audit_pre_effect(self, approval.call)
+                    if approval is not None:
+                        await hitl_confirmation.audit_pre_effect(self, approval.call)
+                    else:
+                        await hitl_confirmation.audit_kernel_effect(self, kernel_effect, "effect_started")
                 except Exception:
                     logger.exception("Source-bound pre-effect audit unavailable")
                     return MCPResponse(error={"code": "effect_audit_unavailable",
@@ -21466,7 +21484,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                 return await node_mesh_admission.dispatch(
                     self, websocket, user_id, conversation_id, agent_id, tool_name, args,
-                    lambda: invoke(capabilities))
+                    lambda: invoke(capabilities), kernel_effect=kernel_effect)
 
             stop = getattr(self, "emergency_stop", None)
             try:
@@ -21481,21 +21499,39 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 else:
                     result = await current_invoke()
             except (Exception, asyncio.CancelledError):
-                outcome_call = approval.call if action.needs_review else project_read
+                outcome_call = approval.call if action.needs_review and approval is not None else project_read
                 if outcome_call is not None:
                     try:
                         await hitl_confirmation.audit_effect_outcome(
                             self, outcome_call, uncertain=True)
                     except Exception:
                         logger.exception("Source-bound uncertain-outcome audit unavailable")
+                elif kernel_effect is not None:
+                    try:
+                        await hitl_confirmation.audit_kernel_effect(
+                            self, kernel_effect, "effect_uncertain", uncertain=True)
+                    except Exception:
+                        logger.exception("Kernel effect uncertain-outcome audit unavailable")
                 raise
             if action.needs_review:
                 try:
-                    await hitl_confirmation.audit_effect_outcome(
-                        self, approval.call, uncertain=(
-                            result is None or bool(result.error)), no_effect=(
-                            agent_id == "computer-use-1" and result is not None and isinstance(result.error, dict)
-                            and result.error.get("effect_state") == "not_started"))
+                    no_effect = (agent_id == "computer-use-1" and result is not None
+                                 and isinstance(result.error, dict)
+                                 and result.error.get("effect_state") == "not_started")
+                    if approval is not None:
+                        await hitl_confirmation.audit_effect_outcome(
+                            self, approval.call, uncertain=(result is None or bool(result.error)),
+                            no_effect=no_effect)
+                    else:
+                        kernel_no_effect = (result is not None and isinstance(result.error, dict)
+                                            and result.error.get("effect_state") == "not_started")
+                        kernel_uncertain = result is None or bool(result.error) and not kernel_no_effect
+                        await hitl_confirmation.audit_kernel_effect(
+                            self, kernel_effect,
+                            "effect_failed_no_effect" if kernel_no_effect else
+                            "effect_uncertain" if kernel_uncertain else
+                            "effect_response_success",
+                            uncertain=kernel_uncertain, no_effect=kernel_no_effect)
                 except Exception:
                     logger.exception("Source-bound effect outcome audit unavailable")
                     return MCPResponse(error={"code": "outcome_uncertain",

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import asyncio
 from dataclasses import dataclass, field
 import hashlib
 import json
@@ -28,6 +29,22 @@ class Admission:
     ticket: vessel_executor.CallTicket
     lease: object
     request: Optional[RequestReference] = None
+
+
+@dataclass(frozen=True)
+class KernelEffectCapability:
+    owner: str
+    chat: str
+    agent: str
+    tool: str
+    request_id: str
+    mesh_id: str
+    device_id: str
+    request_device: str
+    action_digest: str
+    ticket_digest: str
+    arguments_digest: str
+    consented: bool
 
 
 TurnMint = Callable[[str, str, Dict[str, Any], Optional[str]], Awaitable[Tuple[vessel_executor.CallTicket, Any]]]
@@ -69,6 +86,8 @@ class Turn:
 _CURRENT: contextvars.ContextVar[Optional[Admission]] = contextvars.ContextVar("node_mesh_admission", default=None)
 _TURN: contextvars.ContextVar[Optional[Turn]] = contextvars.ContextVar("node_mesh_turn", default=None)
 _ACTIVE: set[object] = set()
+_USED_EFFECTS: set[object] = set()
+_RESERVED_EFFECTS: Dict[object, asyncio.Task] = {}
 
 
 @contextlib.contextmanager
@@ -82,6 +101,8 @@ def binding(mesh, owner_of, owner, chat, resolved, ticket, *, request=None) -> I
         yield
     finally:
         _ACTIVE.discard(lease)
+        _USED_EFFECTS.discard(lease)
+        _RESERVED_EFFECTS.pop(lease, None)
         _CURRENT.reset(token)
 
 
@@ -212,9 +233,66 @@ def _binding_code(admission, ticket, owner):
     if (admission is None or admission.lease not in _ACTIVE or admission.ticket is not ticket
             or admission.mesh.kernel is not admission.kernel):
         return "node.mesh_admission_unavailable"
+    if admission.lease in _USED_EFFECTS:
+        return "node.ticket_used"
     if admission.owner_of() != admission.owner or owner != admission.owner:
         return "node.owner_mismatch"
     return None
+
+
+async def source_bound_capability(orch, owner, chat, agent, tool, args):
+    from shared import node_identity
+
+    if (not node_identity.is_personal() or not isinstance(owner, str) or not owner
+            or not isinstance(chat, str) or not chat or not isinstance(agent, str) or not agent
+            or not isinstance(tool, str) or not tool or not isinstance(args, dict)):
+        return None
+    admission = _CURRENT.get()
+    task = asyncio.current_task()
+    if admission is None or task is None:
+        return None
+    ticket = vessel_executor.current_ticket()
+    if (_binding_code(admission, ticket, owner) is not None
+            or admission.request is None or admission.request.call is None
+            or admission.request.call[2:] != (ticket.arguments_json, ticket.action_json, ticket.ticket_json)
+            or not _matches(admission, owner, chat, agent, tool, args)
+            or admission.resolved.effect_kind != "outside_effect"
+            or _current_tool(orch, admission) is not None):
+        return None
+    reserved_task = _RESERVED_EFFECTS.get(admission.lease)
+    if reserved_task is not None and reserved_task is not task:
+        return None
+    _RESERVED_EFFECTS[admission.lease] = task
+    mesh, request, resolved = admission.mesh, admission.request, admission.resolved
+    capability = None
+    try:
+        verified = await mesh.verify_ticket(ticket.ticket_json, ticket.action_json, resolved.effect_kind)
+        checked = await mesh.check_host_call(request.id, resolved.definition, resolved.effect_kind)
+        context = await mesh.personal_authority_context(request, owner, mesh.kernel)
+        action = json.loads(ticket.action_json)
+        if (mesh.kernel is not admission.kernel or node_identity.bound_owner() != owner
+                or RequestReference.capture(context.request) != request
+                or verified.mesh != context.mesh_id or verified.turn != action.get("turn")
+                or action.get("tool") != resolved.tool or action.get("tool_def") != resolved.definition
+                or verified.action_digest == "" or checked.action_digest != verified.action_digest
+                or checked.mesh != verified.mesh or _binding_code(admission, ticket, owner) is not None
+                or _RESERVED_EFFECTS.get(admission.lease) is not task
+                or not _matches(admission, owner, chat, agent, tool, args)
+                or _current_tool(orch, admission) is not None):
+            return None
+        capability = KernelEffectCapability(
+            owner, chat, agent, tool, request.id, verified.mesh, verified.device,
+            request.from_device, verified.action_digest,
+            "sha256:" + hashlib.sha256(ticket.ticket_json.encode("utf-8")).hexdigest(),
+            "sha256:" + hashlib.sha256(ticket.arguments_json.encode("utf-8")).hexdigest(),
+            bool(verified.consented),
+        )
+        return capability
+    except Exception:
+        return None
+    finally:
+        if capability is None and _RESERVED_EFFECTS.get(admission.lease) is task:
+            _RESERVED_EFFECTS.pop(admission.lease, None)
 
 
 def _in_turn(websocket) -> bool:
@@ -323,7 +401,7 @@ async def _checked_turn(orch, websocket, owner, chat, agent, tool, args, physica
     return await _refused(orch, websocket, owner, agent, tool, chat, args, code), None
 
 
-async def dispatch(orch, websocket, owner, chat, agent, tool, args, invoke):
+async def dispatch(orch, websocket, owner, chat, agent, tool, args, invoke, *, kernel_effect=None):
     if _CURRENT.get() is None and _in_turn(websocket):
         refusal, ticket = await _check_turn(orch, websocket, owner, chat, agent, tool, args, True)
         if refusal is not None:
@@ -331,7 +409,49 @@ async def dispatch(orch, websocket, owner, chat, agent, tool, args, invoke):
         with vessel_executor.carrying(ticket):
             return await invoke()
     refusal = await check(orch, websocket, owner, chat, agent, tool, args, physical=True)
-    return refusal if refusal is not None else await invoke()
+    if refusal is not None:
+        return refusal
+    admission = _CURRENT.get()
+    if admission is not None:
+        task = asyncio.current_task()
+        reserved_task = _RESERVED_EFFECTS.get(admission.lease)
+        if reserved_task is not None and reserved_task is not task:
+            return await _refused(orch, websocket, owner, chat, agent, tool, args, "node.ticket_in_use")
+        if kernel_effect is not None:
+            try:
+                if (reserved_task is not task or admission.request is None
+                        or kernel_effect.request_id != admission.request.id
+                        or kernel_effect.owner != owner or kernel_effect.chat != chat
+                        or kernel_effect.agent != agent or kernel_effect.tool != tool):
+                    raise NodeMeshError("node.mesh_admission_unavailable")
+                code = _binding_code(admission, vessel_executor.current_ticket(), owner)
+                if code is None:
+                    code = _current_tool(orch, admission)
+                if code is not None:
+                    raise NodeMeshError(code)
+                checked = await admission.mesh.check_host_call(
+                    admission.request.id, admission.resolved.definition, admission.resolved.effect_kind)
+                context = await admission.mesh.personal_authority_context(
+                    admission.request, owner, admission.kernel)
+                if (checked.action_digest != kernel_effect.action_digest
+                        or checked.mesh != kernel_effect.mesh_id
+                        or RequestReference.capture(context.request) != admission.request
+                        or _binding_code(admission, vessel_executor.current_ticket(), owner) is not None
+                        or _current_tool(orch, admission) is not None
+                        or _RESERVED_EFFECTS.get(admission.lease) is not task):
+                    raise NodeMeshError("request.call_mismatch")
+                claimed = await admission.mesh.claim_host_call(
+                    admission.request.id, admission.resolved.definition, admission.resolved.effect_kind)
+                if claimed.action_digest != kernel_effect.action_digest or claimed.mesh != kernel_effect.mesh_id:
+                    raise NodeMeshError("node.ticket_used")
+            except NodeMeshError as exc:
+                return await _refused(orch, websocket, owner, chat, agent, tool, args, exc.code)
+            except Exception:
+                return await _refused(orch, websocket, owner, chat, agent, tool, args,
+                                      "node.mesh_admission_unavailable")
+        _USED_EFFECTS.add(admission.lease)
+        _RESERVED_EFFECTS.pop(admission.lease, None)
+    return await invoke()
 
 
 async def check(orch, websocket, owner, chat, agent, tool, args, *, physical=False):

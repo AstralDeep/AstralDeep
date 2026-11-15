@@ -5,6 +5,7 @@ node_api.py serves it, node_mailbox.py supervises the node's mailbox beside it, 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import importlib
 import json
 import logging
@@ -179,6 +180,7 @@ class RequestReference:
     text: str
     continues: Optional[str]
     call: Optional[tuple]
+    turn: Optional[str] = None
 
     @classmethod
     def capture(cls, request: Any) -> "RequestReference":
@@ -195,7 +197,10 @@ class RequestReference:
             call = tuple(getattr(call, name, None) for name in ("call_id", "tool", "arguments_json", "action_json", "ticket_json"))
             if any(type(value) is not str or not value for value in call):
                 raise NodeMeshError("request.malformed")
-        return cls(*values, continues, call)
+        turn = getattr(request, "turn", None)
+        if turn is not None and (type(turn) is not str or not turn):
+            raise NodeMeshError("request.malformed")
+        return cls(*values, continues, call, turn)
 
 
 @dataclass(frozen=True)
@@ -556,6 +561,18 @@ class NodeMesh:
     async def verify_ticket(self, ticket_json: str, action_json: str, effect_kind: str) -> Any:
         return await self._request_call(self.kernel.verify_ticket, ticket_json, action_json, effect_kind)
 
+    async def check_host_call(self, request_id: str, current_definition: str, effect_kind: str) -> Any:
+        check = getattr(self.kernel, "check_host_call", None)
+        if not callable(check):
+            raise MeshUnavailable("host_call_check_unsupported")
+        return await self._request_call(check, request_id, current_definition, effect_kind)
+
+    async def claim_host_call(self, request_id: str, current_definition: str, effect_kind: str) -> Any:
+        claim = getattr(self.kernel, "claim_host_call", None)
+        if not callable(claim):
+            raise MeshUnavailable("host_call_claim_unsupported")
+        return await self._request_call(claim, request_id, current_definition, effect_kind)
+
     async def mint_ticket(
         self, request_id: str, *, call_id: str, tool: str, arguments_json: str,
         tool_def: str, effect_kind: str, labels: tuple, untrusted_arguments: bool,
@@ -643,7 +660,10 @@ class NodeMesh:
 
     async def _request_call(self, function: Callable[..., Any], *arguments: Any) -> Any:
         try:
-            return await asyncio.to_thread(function, *arguments)
+            if inspect.iscoroutinefunction(function):
+                return await function(*arguments)
+            result = await asyncio.to_thread(function, *arguments)
+            return await result if inspect.isawaitable(result) else result
         except self._binding.KernelError as exc:
             raise NodeMeshError(_code_of(exc)) from exc
 
