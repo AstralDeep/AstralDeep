@@ -279,3 +279,10 @@ Projection fb5de54f contains the native entry and duplicate-feedback fixes. Full
 ### Hosted import-order correction
 
 Candidate d1f1d813 / Projection 897bf869 passes local NodePack qualification; hosted Android passes, while its Apple strict formatter rejects the order of testable and regular imports in OfflineChartTests.swift. The one-line import-only correction is Projection 086cb44d. No production behavior, assertions, formatter configuration or source-equivalence allowlist changes. The local Xcode 27.2 compatibility diagnostic with grouped imports passes recursively; exact hosted Xcode 26.6 qualification remains required. A new exact-source pack is assembled rather than allowing a broader source delta.
+
+
+### Complete native build fixtures within existing budgets
+
+P14 Apple qualification records successful XCTest execution in every native lane, including 1,737 Mac unit tests with two declared skips and zero failures. The Mac job nevertheless reaches its unchanged 18-minute cap before coverage collection. The iOS unit lane preserves one initial current-zoom/unmount capture error and a passing permitted per-test retry; it is not a zero-attempt-failure claim. The cancelled Mac job and failed aggregate are not green qualification.
+
+Projection 743d3cd9 reuses complete source-bound build-for-testing Products for unit and UI execution on both platforms. A bounded Mac build producer follows the existing iOS transport; all full suite selectors, per-test retries, native collectors and the existing 18/20-minute job caps remain. The transport binds platform, source, workspace, toolchain, package lock and archive digest, rejects dirty tracked source and invalid extraction, and validates both complete test targets. Root passes the full local CI-shaped suite: 4,603 passed, eight declared skips, 33 passing subtests; all 16 changed helper lines are covered. Exact hosted qualification and publication remain required.
