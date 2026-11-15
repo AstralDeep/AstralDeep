@@ -274,3 +274,8 @@ The separate actual Python-local `NodeMesh` diagnostic passed two diagnostic ass
 Kernel a499055 also fixes repeated sync wakeups from already accepted vouchers and settled acknowledgements. Two deterministic real-runtime tests first failed with unchanged logs plus a pending wake; the repair passed those cases and durable/signature/failure holder checks. All 14 rebuilt artifacts match manifest `c7803a378f588af0c3cc519f00d39f9344e65db124fe635b23788362e3c7c6f9`. This does not yet establish the canonical Mac's post-update idle CPU.
 
 Projection fb5de54f contains the native entry and duplicate-feedback fixes. Full Mac qualification still has an 18-accessibility-failure attempt awaiting the activation-harness follow-up, and the audible duplicate-feedback fix awaits live recheck. Final backend groups, fresh hosted-worker coverage and both strict 90% changed-line comparisons belong to one clean candidate and are recorded externally after freeze; previous attempts are diagnostics.
+
+
+### Hosted import-order correction
+
+Candidate d1f1d813 / Projection 897bf869 passes local NodePack qualification; hosted Android passes, while its Apple strict formatter rejects the order of testable and regular imports in OfflineChartTests.swift. The one-line import-only correction is Projection 086cb44d. No production behavior, assertions, formatter configuration or source-equivalence allowlist changes. The local Xcode 27.2 compatibility diagnostic with grouped imports passes recursively; exact hosted Xcode 26.6 qualification remains required. A new exact-source pack is assembled rather than allowing a broader source delta.
