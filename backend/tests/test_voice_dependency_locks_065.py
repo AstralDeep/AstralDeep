@@ -9,7 +9,6 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WINDOWS_ROOT = REPO_ROOT / "components" / "AstralProjection" / "windows-client"
 WINDOWS_INPUT = WINDOWS_ROOT / "requirements.in"

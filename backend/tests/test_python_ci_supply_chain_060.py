@@ -14,7 +14,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if not (
     (REPO_ROOT / "tooling").is_dir() and (REPO_ROOT / ".github").is_dir()
@@ -60,10 +59,14 @@ REVIEWED_HARNESS_CANARY_FINGERPRINT = (
     "backend/orchestrator/harness/conformance.py:typesafe-system-one-key:33"
 )
 REVIEWED_CONTEXT_TOKEN_ACCOUNTING_FINGERPRINTS = {
-    "a061349f7fcda21b417280679ce17ace99c27404:"
-    "backend/orchestrator/token_assets/NOTICE:generic-api-key:13",
-    "a061349f7fcda21b417280679ce17ace99c27404:"
-    "backend/orchestrator/token_assets/NOTICE:generic-api-key:14",
+    (
+        "a061349f7fcda21b417280679ce17ace99c27404:"
+        "backend/orchestrator/token_assets/NOTICE:generic-api-key:13"
+    ),
+    (
+        "a061349f7fcda21b417280679ce17ace99c27404:"
+        "backend/orchestrator/token_assets/NOTICE:generic-api-key:14"
+    ),
 }
 REVIEWED_PUBLIC_SOURCE_FINGERPRINTS = {
     '50412b3e7d514da6a3aaad5084346da600b1c651:config/astral-composition.json:generic-api-key:68',
@@ -274,7 +277,6 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "ci_network_fixture.py",
         "ci_fence_fixture_verifier.py",
         "ci_fence_fixture_verifier_v2.py",
-        "ci_plane_lane.py",
         "apple_coverage_artifacts.py",
         "backend_web_service_materials.py",
         "backend_web_test_reporter.py",

@@ -7,13 +7,12 @@ from __future__ import annotations
 
 import ast
 import os
-from pathlib import Path
 import re
 import subprocess
 import textwrap
+from pathlib import Path
 
 import pytest
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEEP_WORKFLOWS = REPO_ROOT / ".github" / "workflows"
