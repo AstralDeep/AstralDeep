@@ -9,12 +9,14 @@ import json
 import os
 import plistlib
 import re
+import struct
 import subprocess
 import tarfile
 import time
 import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
 
 BUNDLE = "com.personalailabs.astraldeep"
@@ -167,30 +169,89 @@ def profile_identity(profile, bundle, name, team):
             "provisioning profile must be unexpired App Store distribution")
 
 
+def apple_double_metadata(name, payload):
+    path = Path(name)
+    if (path.is_absolute() or ".." in path.parts or "\\" in name
+            or not path.name.startswith("._") or len(path.name) <= 2):
+        return False
+    require(len(payload) >= 26, "truncated AppleDouble profile metadata")
+    magic, version, _filler, count = struct.unpack_from(">II16sH", payload)
+    require(magic == 0x00051607 and version == 0x00020000 and 0 < count <= 50,
+            "invalid AppleDouble profile metadata header")
+    header_end = 26 + 12 * count
+    require(header_end <= len(payload), "truncated AppleDouble profile metadata entries")
+    identifiers = set()
+    ranges = []
+    for index in range(count):
+        identifier, offset, length = struct.unpack_from(">III", payload, 26 + 12 * index)
+        require(identifier in {2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15}
+                and identifier not in identifiers and offset >= header_end
+                and offset + length <= len(payload), "invalid AppleDouble profile metadata entry")
+        identifiers.add(identifier)
+        if length:
+            ranges.append((offset, offset + length))
+    ranges.sort()
+    require(all(left[1] <= right[0] for left, right in pairwise(ranges)),
+            "overlapping AppleDouble profile metadata entries")
+    return True
+
+
 def install_profiles(blob, destination):
     import zipfile
 
     decoded = blob.read_bytes()
     payloads = []
+    summary = {"container": "raw", "entries": 1, "profile_payloads": 0,
+               "appledouble_skipped": 0, "other_entries": 0, "directories": 0}
     if zipfile.is_zipfile(blob):
         with zipfile.ZipFile(blob) as archive:
             require(len(archive.infolist()) <= 50, "too many profile archive members")
+            summary.update(container="zip", entries=len(archive.infolist()))
             for item in archive.infolist():
                 require(item.file_size <= 1024**2, "profile exceeds size limit")
-                if item.filename.endswith((".mobileprovision", ".provisionprofile")):
-                    payloads.append(archive.read(item))
+                if item.is_dir():
+                    summary["directories"] += 1
+                elif item.filename.endswith((".mobileprovision", ".provisionprofile")):
+                    payloads.append((item.filename, archive.read(item)))
+                else:
+                    summary["other_entries"] += 1
     elif tarfile.is_tarfile(blob):
         with tarfile.open(blob) as archive:
             members = archive.getmembers()
             require(len(members) <= 50, "too many profile archive members")
+            summary.update(container="tar", entries=len(members))
             for item in members:
                 require(item.size <= 1024**2, "profile exceeds size limit")
                 if item.isfile() and item.name.endswith((".mobileprovision", ".provisionprofile")):
-                    payloads.append(archive.extractfile(item).read())
+                    payloads.append((item.name, archive.extractfile(item).read()))
+                elif item.isdir():
+                    summary["directories"] += 1
+                else:
+                    summary["other_entries"] += 1
     else:
-        payloads.append(decoded)
+        require(len(decoded) <= 1024**2, "profile exceeds size limit")
+        payloads.append(("profile.mobileprovision", decoded))
+    print(json.dumps({"container": summary["container"], "entries": summary["entries"],
+                      "profile_candidates": len(payloads)}), flush=True)
+    profiles = []
+    for index, (name, payload) in enumerate(payloads):
+        try:
+            metadata = apple_double_metadata(name, payload)
+        except ValueError:
+            print(json.dumps({"entry": index, "classification": "invalid_appledouble",
+                              "bytes": len(payload)}), flush=True)
+            raise
+        classification = "appledouble_metadata" if metadata else "profile_payload"
+        print(json.dumps({"entry": index, "classification": classification,
+                          "bytes": len(payload)}), flush=True)
+        if metadata:
+            summary["appledouble_skipped"] += 1
+        else:
+            summary["profile_payloads"] += 1
+            profiles.append(payload)
+    print(json.dumps(summary), flush=True)
     matches = {}
-    for index, payload in enumerate(payloads):
+    for index, payload in enumerate(profiles):
         temporary = blob.parent / f"decoded-profile-{index}.mobileprovision"
         temporary.write_bytes(payload)
         profile = plistlib.loads(subprocess.check_output(["security", "cms", "-D", "-i", str(temporary)]))

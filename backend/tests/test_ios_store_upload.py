@@ -368,3 +368,103 @@ elif mode != 'false-green':
     else:
         assert '--upload-app' in commands
         assert (tmp_path / "evidence/upload-receipt.txt").is_file()
+
+
+def apple_double(entries=None):
+    import struct
+
+    records = [(9, b'\0' * 32)] if entries is None else entries
+    offset = 26 + 12 * len(records)
+    descriptors = []
+    payloads = []
+    for identifier, payload in records:
+        descriptors.append(struct.pack('>III', identifier, offset, len(payload)))
+        payloads.append(payload)
+        offset += len(payload)
+    return struct.pack('>II16sH', 0x00051607, 0x00020000, b'Mac OS X        ', len(records)) + b''.join(descriptors + payloads)
+
+
+def profile_container(blob, kind, entries):
+    if kind == 'tar':
+        tar(blob, [(name, body, tarfile.REGTYPE) for name, body in entries])
+    else:
+        with zipfile.ZipFile(blob, 'w') as archive:
+            for name, body in entries:
+                archive.writestr(name, body)
+
+
+@pytest.mark.parametrize('kind', ['tar', 'zip'])
+def test_install_profiles_accepts_valid_appledouble_only(profiles, tmp_path, capsys, kind):
+    blob = tmp_path / 'profiles'
+    entries = [('._phone.mobileprovision', apple_double()),
+               ('phone.mobileprovision', plistlib.dumps(profiles[0])),
+               ('__MACOSX/._watch.mobileprovision', apple_double([(9, b'\0' * 32), (2, b'')])),
+               ('watch.mobileprovision', plistlib.dumps(profiles[1]))]
+    profile_container(blob, kind, entries)
+    upload.install_profiles(blob, tmp_path / 'installed')
+    assert len(list((tmp_path / 'installed').iterdir())) == 2
+    diagnostics = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    summary = diagnostics[-1]
+    assert summary['container'] == kind and summary['entries'] == 4
+    assert summary['appledouble_skipped'] == 2 and summary['profile_payloads'] == 2
+    assert all(name not in json.dumps(diagnostics) for name, _ in entries)
+    assert 'TEAM' not in json.dumps(diagnostics)
+
+
+@pytest.mark.parametrize('kind', ['tar', 'zip'])
+@pytest.mark.parametrize('name,body', [('._phone.mobileprovision', b'not metadata'),
+    ('real.mobileprovision', b'not a real profile'),
+    ('real.mobileprovision', apple_double())])
+def test_profile_container_refuses_invalid_sidecars_and_corrupt_profiles(profiles, tmp_path, kind, name, body):
+    blob = tmp_path / 'profiles'
+    profile_container(blob, kind, [(name, body), ('phone.mobileprovision', plistlib.dumps(profiles[0])),
+                                ('watch.mobileprovision', plistlib.dumps(profiles[1]))])
+    with pytest.raises((ValueError, plistlib.InvalidFileException)):
+        upload.install_profiles(blob, tmp_path / 'installed')
+    assert not (tmp_path / 'installed').exists()
+
+
+@pytest.mark.parametrize('kind', ['tar', 'zip'])
+def test_profile_container_sidecar_does_not_hide_ambiguous_profiles(profiles, tmp_path, kind):
+    blob = tmp_path / 'profiles'
+    profile_container(blob, kind, [('._phone.mobileprovision', apple_double()),
+        ('phone.mobileprovision', plistlib.dumps(profiles[0])), ('second.mobileprovision', plistlib.dumps(profiles[0])),
+        ('watch.mobileprovision', plistlib.dumps(profiles[1]))])
+    with pytest.raises(ValueError, match='ambiguous'):
+        upload.install_profiles(blob, tmp_path / 'installed')
+
+
+@pytest.mark.parametrize('mutation', ['short', 'magic', 'version', 'zero-count', 'truncated-table',
+    'data-fork', 'duplicate-id', 'inside-header', 'past-end', 'overlap'])
+def test_appledouble_refuses_malformed_header_and_bounds(mutation):
+    import struct
+
+    payload = bytearray(apple_double([(9, b'\0' * 32), (2, b'resource')]))
+    if mutation == 'short':
+        payload = payload[:10]
+    elif mutation == 'magic':
+        struct.pack_into('>I', payload, 0, 0x00051600)
+    elif mutation == 'version':
+        struct.pack_into('>I', payload, 4, 0x00010000)
+    elif mutation == 'zero-count':
+        struct.pack_into('>H', payload, 24, 0)
+    elif mutation == 'truncated-table':
+        struct.pack_into('>H', payload, 24, 50)
+    elif mutation == 'data-fork':
+        struct.pack_into('>I', payload, 26, 1)
+    elif mutation == 'duplicate-id':
+        struct.pack_into('>I', payload, 38, 9)
+    elif mutation == 'inside-header':
+        struct.pack_into('>I', payload, 30, 26)
+    elif mutation == 'past-end':
+        struct.pack_into('>I', payload, 34, len(payload) + 1)
+    else:
+        struct.pack_into('>I', payload, 42, 50)
+    with pytest.raises(ValueError):
+        upload.apple_double_metadata('._profile.mobileprovision', bytes(payload))
+
+
+@pytest.mark.parametrize('name', ['profile.mobileprovision', '../._profile.mobileprovision',
+    '/._profile.mobileprovision', 'folder\\._profile.mobileprovision', '._'])
+def test_appledouble_requires_conventional_metadata_name(name):
+    assert not upload.apple_double_metadata(name, apple_double())
