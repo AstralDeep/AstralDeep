@@ -114,3 +114,15 @@ def test_main_reports_failed_wheel_install(artifacts, tmp_path, monkeypatch, cap
     monkeypatch.setattr(installer.subprocess, "run", fail)
     assert installer.main(str(directory), binding, tmp_path / "bin") == 1
     assert "kernel binding" in capsys.readouterr().err
+
+
+def test_cli_accepts_explicit_binding_and_bin_directory(monkeypatch):
+    calls = []
+    monkeypatch.setattr(installer, "main", lambda *args: calls.append(args) or 0)
+    assert installer.cli(["artifacts", "--binding", "binding.json", "--bin-dir", "bin"]) == 0
+    assert calls == [("artifacts", Path("binding.json"), Path("bin"))]
+
+
+def test_cli_rejects_missing_artifact_argument():
+    result = subprocess.run([installer.sys.executable, str(SCRIPT)], capture_output=True, text=True)
+    assert result.returncode == 2 and "usage:" in result.stderr

@@ -3,6 +3,7 @@ The executor image can verify tickets only when both artifacts match config/kern
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import platform
@@ -65,8 +66,14 @@ def main(directory: str, binding: Path = MANIFEST, bin_directory: Path = DEFAULT
     return 0
 
 
+def cli(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("artifacts", type=Path)
+    parser.add_argument("--binding", type=Path, default=MANIFEST)
+    parser.add_argument("--bin-dir", type=Path, default=DEFAULT_BIN_DIR)
+    args = parser.parse_args(argv)
+    return main(str(args.artifacts), args.binding, args.bin_dir)
+
+
 if __name__ == "__main__":
-    if len(sys.argv) not in (2, 4) or (len(sys.argv) == 4 and sys.argv[2] != "--bin-dir"):
-        print("usage: install_kernel.py ARTIFACTS [--bin-dir DIRECTORY]", file=sys.stderr)
-        sys.exit(2)
-    sys.exit(main(sys.argv[1], bin_directory=Path(sys.argv[3]) if len(sys.argv) == 4 else Path("/usr/local/bin")))
+    sys.exit(cli())
