@@ -109,8 +109,8 @@ jobs:
           astralvessel deploy deployment.ci.toml
           docker compose -f compose.generated.yml --env-file .env up -d --build executor
           for ((attempt = 0; attempt < 60; attempt++)); do
-            ready=$(docker compose -f compose.generated.yml --env-file .env exec -T executor python -c "import urllib.request,os;print(urllib.request.urlopen('http://'+os.environ['VESSEL_HOST']+':8700/health').read().decode())" || true)
-            echo "$ready" | grep -q '"field-guide": true' && echo "$ready" | grep -q '"field-guide-reader": true' && exit 0
+            ready=$(docker compose -f compose.generated.yml --env-file .env exec -T executor python -c "import json,urllib.request,os;body=json.load(urllib.request.urlopen('http://'+os.environ['VESSEL_HOST']+':8700/health'));agents=body.get('agents');print(isinstance(agents,dict) and all(agents.get(name) is True for name in ('field-guide','field-guide-reader')))" || true)
+            [ "$ready" = True ] && exit 0
             sleep 5
           done
           docker compose -f compose.generated.yml --env-file .env logs
