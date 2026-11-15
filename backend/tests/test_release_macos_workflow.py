@@ -93,8 +93,9 @@ def test_decide_is_cheap_unprivileged_and_guarded(flow):
 
 def test_release_job_runs_only_for_a_green_main_commit_that_is_not_released(flow):
     job = flow["jobs"]["release"]
-    assert job["runs-on"] == "macos-26" and job["timeout-minutes"] == 60
-    assert job["needs"] == ["decide"] and job["permissions"] == {"contents": "write"}
+    assert job["runs-on"] == "macos-26" and job["timeout-minutes"] == 30
+    assert job["needs"] == ["decide", "apple-artifacts", "node-pack"]
+    assert job["permissions"] == {"contents": "write"}
     assert job["environment"] == "release-macos"
     expression = condition(job)
     assert expression.startswith(f"{GUARD} && (")
@@ -104,6 +105,16 @@ def test_release_job_runs_only_for_a_green_main_commit_that_is_not_released(flow
         "needs.decide.outputs.skip != 'true'",
     ):
         assert clause in expression
+
+
+def test_node_pack_and_framework_producers_are_read_only_and_bounded(flow):
+    for name in ("apple-artifacts", "node-pack"):
+        job = flow["jobs"][name]
+        assert job["runs-on"] == "macos-26" and job["timeout-minutes"] == 30
+        assert job["permissions"] == {"contents": "read"}
+        assert condition(job).startswith(f"{GUARD} && ")
+        assert "secrets." not in yaml.safe_dump(job)
+    assert flow["jobs"]["node-pack"]["needs"] == ["decide", "apple-artifacts"]
 
 
 def test_no_job_or_step_uses_always(text):

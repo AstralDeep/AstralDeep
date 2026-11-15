@@ -80,12 +80,139 @@ jobs:
           echo "head=$head" >> "$GITHUB_OUTPUT"
           python scripts/next_macos_release.py --repo "$GITHUB_REPOSITORY" --head "$head" --pbxproj components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj/project.pbxproj --github-output "$GITHUB_OUTPUT"
 
+  apple-artifacts:
+    name: Build source-bound Apple framework
+    needs: [decide]
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (needs.decide.outputs.skip != 'true') }}
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      XCODE_VERSION: "26.6"
+      XCODE_BUILD: "17F113"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ needs.decide.outputs.head }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Select exact Xcode for source-bound artifacts
+        run: |
+          set -euo pipefail
+          selected=""
+          for candidate in /Applications/Xcode_26.6.app /Applications/Xcode_26.6*.app /Applications/Xcode.app; do
+            [[ -d "$candidate" ]] || continue
+            if [[ "$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version | sed -n '1p')" == "Xcode ${XCODE_VERSION}" ]] && \
+               [[ "$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version | sed -n '2p')" == "Build version ${XCODE_BUILD}" ]]; then
+              selected="$candidate"
+              break
+            fi
+          done
+          [[ -n "$selected" ]] || { echo "Xcode ${XCODE_VERSION} (${XCODE_BUILD}) is required" >&2; exit 1; }
+          sudo xcode-select --switch "$selected/Contents/Developer"
+      - name: Build and verify the pinned Apple Kernel framework
+        env:
+          DECIDED_HEAD: ${{ needs.decide.outputs.head }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$DECIDED_HEAD"
+          rustup toolchain install 1.99.1 --profile minimal
+          rustup target add --toolchain 1.99.1 aarch64-apple-darwin x86_64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+          components/AstralKernel/scripts/build-apple.sh
+          python3 components/AstralKernel/scripts/artifact_manifest.py verify \
+            --root components/AstralProjection/apple-clients/AstralKernel/Artifacts \
+            --kind apple --expected-source "$(git -C components/AstralKernel rev-parse HEAD)"
+          tar -czf "$RUNNER_TEMP/apple-artifacts.tar.gz" -C components/AstralProjection/apple-clients/AstralKernel Artifacts
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-apple-artifacts-${{ needs.decide.outputs.head }}
+          path: ${{ runner.temp }}/apple-artifacts.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  node-pack:
+    name: Build and qualify source-bound node pack
+    needs: [decide, apple-artifacts]
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (needs.decide.outputs.skip != 'true') }}
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      XCODE_VERSION: "26.6"
+      XCODE_BUILD: "17F113"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ needs.decide.outputs.head }}
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select exact Xcode for pack qualification
+        run: |
+          set -euo pipefail
+          selected=""
+          for candidate in /Applications/Xcode_26.6.app /Applications/Xcode_26.6*.app /Applications/Xcode.app; do
+            [[ -d "$candidate" ]] || continue
+            if [[ "$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version | sed -n '1p')" == "Xcode ${XCODE_VERSION}" ]] && \
+               [[ "$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version | sed -n '2p')" == "Build version ${XCODE_BUILD}" ]]; then
+              selected="$candidate"
+              break
+            fi
+          done
+          [[ -n "$selected" ]] || { echo "Xcode ${XCODE_VERSION} (${XCODE_BUILD}) is required" >&2; exit 1; }
+          sudo xcode-select --switch "$selected/Contents/Developer"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: macos-apple-artifacts-${{ needs.decide.outputs.head }}
+          path: ${{ runner.temp }}/apple-input
+      - name: Restore and verify the pinned Apple framework
+        run: |
+          set -euo pipefail
+          tar -xzf "$RUNNER_TEMP/apple-input/apple-artifacts.tar.gz" -C components/AstralProjection/apple-clients/AstralKernel
+          python3 components/AstralKernel/scripts/artifact_manifest.py verify \
+            --root components/AstralProjection/apple-clients/AstralKernel/Artifacts \
+            --kind apple --expected-source "$(git -C components/AstralKernel rev-parse HEAD)"
+      - name: Build, qualify and seal the pinned Mac node pack
+        env:
+          NODEPACK_WORK: ${{ runner.temp }}/nodepack-work
+          RUSTUP_TOOLCHAIN: "1.99.1"
+          DECIDED_HEAD: ${{ needs.decide.outputs.head }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$DECIDED_HEAD"
+          rustup toolchain install 1.99.1 --profile minimal
+          rustup target add --toolchain 1.99.1 aarch64-apple-darwin
+          pack_recipe=components/AstralProjection/apple-clients/NodePack
+          "$pack_recipe/build_kernel.sh" --source components/AstralKernel --out "$RUNNER_TEMP/nodepack-kernel"
+          python3 "$pack_recipe/assemble_pack.py" --kernel-dir "$RUNNER_TEMP/nodepack-kernel" \
+            --out "$RUNNER_TEMP/node-pack" --work "$NODEPACK_WORK"
+          python3 "$pack_recipe/qualify/tool_turn.py" --pack "$RUNNER_TEMP/node-pack"
+          python3 -m http.server 18650 --bind 127.0.0.1 --directory "$RUNNER_TEMP/node-pack" > "$RUNNER_TEMP/node-pack-server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..30}; do
+            if curl --silent --fail http://127.0.0.1:18650/node-pack.json --output /dev/null; then break; fi
+            sleep 1
+          done
+          curl --silent --show-error --fail http://127.0.0.1:18650/node-pack.json --output /dev/null
+          ASTRAL_NODE_PACK_URL=http://127.0.0.1:18650/node-pack.json \
+            swift test --package-path components/AstralProjection/apple-clients/AstralCore --filter NodePackRealRun
+          tar -czf "$RUNNER_TEMP/node-pack.tar.gz" -C "$RUNNER_TEMP" node-pack
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-node-pack-${{ needs.decide.outputs.head }}
+          path: ${{ runner.temp }}/node-pack.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
   release:
     name: Build, notarize and publish the Mac DMG
-    needs: [decide]
+    needs: [decide, apple-artifacts, node-pack]
     if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (needs.decide.outputs.skip != 'true' && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository))) }}
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 30
     environment: release-macos
     permissions:
       contents: write
@@ -99,6 +226,7 @@ jobs:
         with:
           ref: ${{ needs.decide.outputs.head }}
           submodules: recursive
+          fetch-depth: 0
           persist-credentials: false
       - name: Require the decided commit
         env:
@@ -107,6 +235,22 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: macos-apple-artifacts-${{ needs.decide.outputs.head }}
+          path: ${{ runner.temp }}/apple-input
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: macos-node-pack-${{ needs.decide.outputs.head }}
+          path: ${{ runner.temp }}/node-pack-input
+      - name: Restore and verify source-bound release inputs
+        run: |
+          set -euo pipefail
+          tar -xzf "$RUNNER_TEMP/apple-input/apple-artifacts.tar.gz" -C components/AstralProjection/apple-clients/AstralKernel
+          tar -xzf "$RUNNER_TEMP/node-pack-input/node-pack.tar.gz" -C "$RUNNER_TEMP"
+          python3 components/AstralKernel/scripts/artifact_manifest.py verify \
+            --root components/AstralProjection/apple-clients/AstralKernel/Artifacts \
+            --kind apple --expected-source "$(git -C components/AstralKernel rev-parse HEAD)"
       - name: Select exact Xcode
         shell: bash
         run: |
@@ -193,6 +337,7 @@ jobs:
             --ed-key-file "$RUNNER_TEMP/sparkle.key"
             --notary-key "$RUNNER_TEMP/AuthKey.p8" --notary-key-id "$ASC_KEY_ID" --notary-issuer "$ASC_ISSUER_ID"
             --staging-dir "$RUNNER_TEMP/stage" --work-dir "$RUNNER_TEMP/work"
+            --node-pack-dir "$RUNNER_TEMP/node-pack"
           )
           if [ "$DRY_RUN" != "true" ]; then
             args+=(--publish)

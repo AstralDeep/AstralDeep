@@ -55,6 +55,12 @@ PLACEHOLDER_SHA = "0" * 40
 VERSION = re.compile(r"[1-9]\d*\.\d+(?:\.\d+)?")
 RELEASE_TAG = re.compile(rf"macos-v({VERSION.pattern})-(\d+)")
 COMMIT = re.compile(r"[a-f0-9]{40}")
+NODE_PACK_METADATA_PATH = "apple-clients/NodePack/pins.json"
+NODE_PACK_RELEASE_PATHS = {
+    ".github/workflows/release-macos.yml", "backend/tests/test_release_macos.py",
+    "backend/tests/test_release_macos_workflow.py", "components/AstralProjection",
+    "config/astral-composition.json", "scripts/release_macos.py",
+}
 
 
 class ReleaseError(RuntimeError):
@@ -238,6 +244,8 @@ class Release:
             raise ReleaseError("Release notes exceed 64 KiB")
         if self.args.publish_staged and not (self.args.publish and self.args.staging_dir):
             raise ReleaseError("--publish-staged needs --publish and the --staging-dir of a finished build")
+        if self.args.node_pack_dir is None:
+            raise ReleaseError("--node-pack-dir is required for a Mac release with a node offer")
 
     def preflight(self) -> None:
         if not self.dry and platform.system() != "Darwin":
@@ -258,6 +266,7 @@ class Release:
             raise ReleaseError("Deep's Projection pin, the Projection checkout and --projection-commit must be the same commit")
         if not COMMIT.fullmatch(self.deep_sha):
             raise ReleaseError("Deep HEAD is not a commit")
+        self.node_pack = self.verify_node_pack()
         self.latest = self.latest_release()
         if self.latest and self.build <= int(self.latest["build"]):
             raise ReleaseError(
@@ -267,6 +276,96 @@ class Release:
         for path in (self.staging, self.work):
             if path.exists() and any(path.iterdir()):
                 raise ReleaseError(f"{path} is not empty; choose another directory so only the newest archive is staged")
+
+    def verify_node_pack(self) -> dict[str, object]:
+        folder = Path(self.args.node_pack_dir)
+        descriptor_path = folder / "node-pack.json"
+        manifest_path = folder / "node-pack-manifest.json"
+        if self.dry:
+            return {"archive_name": "astral-node-pack-3.11.18-dry-dry-macos-arm64.tar.gz",
+                    "descriptor_sha256": "0" * 64, "archive_sha256": "0" * 64,
+                    "manifest_sha256": "0" * 64}
+        try:
+            if not folder.is_dir() or folder.is_symlink() or any(path.is_symlink() for path in folder.iterdir()):
+                raise ReleaseError("Node pack assets must be regular files in one directory")
+            raw = descriptor_path.read_bytes()
+            descriptor = json.loads(raw)
+            archive_info = descriptor["archive"]
+            archive_name = archive_info["file"]
+            manifest = json.loads(manifest_path.read_bytes())
+            archive_path = folder / archive_name
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise ReleaseError(f"Node pack is incomplete or malformed: {error}") from error
+        if not isinstance(archive_name, str) or not re.fullmatch(r"astral-node-pack-[A-Za-z0-9.-]+-macos-arm64\.tar\.gz", archive_name):
+            raise ReleaseError("Node pack archive name is invalid")
+        if {path.name for path in folder.iterdir()} != {"node-pack.json", "node-pack-manifest.json", archive_name}:
+            raise ReleaseError("Node pack folder must hold exactly its descriptor, manifest and archive")
+        if not all(path.is_file() for path in (descriptor_path, manifest_path, archive_path)):
+            raise ReleaseError("Node pack assets must be regular files")
+        if descriptor.get("format") != "astral.nodepack-descriptor/v1" or descriptor.get("platform") != "macos-arm64":
+            raise ReleaseError("Node pack descriptor format or platform is invalid")
+        if manifest.get("format") != "astral.nodepack-manifest/v1" or manifest.get("platform") != "macos-arm64":
+            raise ReleaseError("Node pack manifest format or platform is invalid")
+        pins = json.loads((self.projection / "apple-clients/NodePack/pins.json").read_text(encoding="utf-8"))
+        if manifest.get("deep", {}).get("commit") != pins["deep"]["commit"] \
+                or manifest.get("kernel", {}).get("commit") != pins["kernel"]["commit"] \
+                or descriptor.get("version") != manifest.get("version"):
+            raise ReleaseError("Node pack source pins or version do not match Projection")
+        source_proof = self.verify_node_pack_sources(manifest, pins)
+        digest = sha256_file(archive_path)
+        manifest_digest = sha256_file(manifest_path)
+        if archive_info.get("sha256") != digest or archive_info.get("size") != archive_path.stat().st_size \
+                or descriptor.get("manifest_sha256") != manifest_digest \
+                or descriptor.get("installed_bytes") != manifest.get("installed_bytes"):
+            raise ReleaseError("Node pack descriptor, manifest and archive disagree")
+        return {"archive_name": archive_name, "descriptor_sha256": hashlib.sha256(raw).hexdigest(),
+                "archive_sha256": digest, "manifest_sha256": manifest_digest,
+                "source_equivalence": source_proof}
+
+    def verify_node_pack_sources(self, manifest: dict[str, object], pins: dict[str, object]) -> dict[str, object]:
+        packed_deep = pins["deep"]["commit"]
+        if not COMMIT.fullmatch(packed_deep):
+            raise ReleaseError("Node pack Deep pin is not a full commit")
+        ancestor = self.git(self.deep, "merge-base", "--is-ancestor", packed_deep, self.deep_sha, check=False)
+        if ancestor.returncode:
+            raise ReleaseError("Node pack Deep source is not an ancestor of the release")
+        changed = self.git(self.deep, "diff", "--name-only", packed_deep, self.deep_sha).stdout.splitlines()
+        if any(path not in NODE_PACK_RELEASE_PATHS and not path.startswith(("specs/", "docs/")) for path in changed):
+            raise ReleaseError("Release changes runtime or policy paths after the packed Deep source")
+        packed = json.loads(self.git(self.deep, "show", f"{packed_deep}:config/astral-composition.json").stdout)
+        current = json.loads((self.deep / "config/astral-composition.json").read_text(encoding="utf-8"))
+        prior_projection = packed["components"]["astral-projection"]["commit"]
+        released_projection = self.args.projection_commit
+        components = packed["components"]
+        if set(manifest.get("components", {})) != set(components):
+            raise ReleaseError("Node pack component inventory differs from packed Deep composition")
+        for name, entry in components.items():
+            expected = {"repository": entry["repository"], "commit": entry["commit"]}
+            if manifest["components"][name] != expected:
+                raise ReleaseError(f"Node pack {name} differs from packed Deep composition")
+            tree = self.git(self.deep, "ls-tree", packed_deep, entry["path"]).stdout.split()
+            if len(tree) < 3 or tree[:3] != ["160000", "commit", entry["commit"]]:
+                raise ReleaseError(f"Packed Deep {name} gitlink differs from composition")
+        normalized = json.loads(json.dumps(packed))
+        normalized["components"]["astral-projection"]["commit"] = released_projection
+        if normalized != current:
+            raise ReleaseError("Release composition changes beyond the Projection metadata pin")
+        for name, entry in current["components"].items():
+            tree = self.git(self.deep, "ls-tree", "HEAD", entry["path"]).stdout.split()
+            if len(tree) < 3 or tree[:3] != ["160000", "commit", entry["commit"]]:
+                raise ReleaseError(f"Release {name} gitlink differs from composition")
+        projection_paths = self.git(self.projection, "diff", "--name-only", prior_projection, released_projection).stdout.splitlines()
+        if projection_paths != [NODE_PACK_METADATA_PATH]:
+            raise ReleaseError("Projection changed beyond node pack pin metadata")
+        prior_pins = json.loads(self.git(self.projection, "show", f"{prior_projection}:{NODE_PACK_METADATA_PATH}").stdout)
+        prior_pins["deep"]["commit"] = packed_deep
+        if prior_pins != pins or pins["kernel"]["commit"] != components["astral-kernel"]["commit"]:
+            raise ReleaseError("Projection node pack pins changed beyond the packed Deep source")
+        return {"packedDeep": packed_deep, "releaseDeep": self.deep_sha,
+                "packedProjection": prior_projection, "releaseProjection": released_projection,
+                "kernel": pins["kernel"]["commit"], "deepChangedPaths": changed,
+                "projectionChangedPaths": projection_paths,
+                "verified": "all-component-gitlinks-and-closed-runtime-delta"}
 
     def latest_release(self) -> dict[str, object] | None:
         listed = self.runner.run(
@@ -356,6 +455,9 @@ class Release:
                 raise ReleaseError("Built app does not carry the expected Sparkle feed and public key")
             if info.get("SUVerifyUpdateBeforeExtraction") is not True or "SUAllowsAutomaticUpdates" in info:
                 raise ReleaseError("Built app has unexpected Sparkle verification settings")
+            if info.get("ASTRALNodePackURL") != f"{self.asset_base}/node-pack.json" \
+                    or info.get("ASTRALNodePackSHA256") != self.node_pack["descriptor_sha256"]:
+                raise ReleaseError("Built app has no exact immutable node pack offer")
         for helper in ("Autoupdate", "Updater.app"):
             shown = self.runner.run(
                 ["codesign", "--display", "--verbose=2", framework / helper],
@@ -392,18 +494,25 @@ class Release:
         archive = self.work / "AstralDeep.xcarchive"
         export = self.work / "export"
         options = self.work / "export-options.plist"
+        offer_plist = self.work / "node-offer-info.plist"
         if not self.dry:
             self.work.mkdir(parents=True, exist_ok=True)
             options.write_bytes(plistlib.dumps({
                 "method": "developer-id", "teamID": TEAM_ID, "signingStyle": "manual",
                 "signingCertificate": "Developer ID Application", "destination": "export",
             }))
+            source_plist = self.projection / "apple-clients/AstralApp/Info.plist"
+            info = plistlib.loads(source_plist.read_bytes())
+            info["ASTRALNodePackURL"] = f"{self.asset_base}/node-pack.json"
+            info["ASTRALNodePackSHA256"] = self.node_pack["descriptor_sha256"]
+            offer_plist.write_bytes(plistlib.dumps(info))
         self.runner.run([
             "xcodebuild", "archive", "-project", self.projection / PROJECT, "-scheme", SCHEME,
             "-configuration", CONFIGURATION, "-destination", "generic/platform=macOS",
             "-archivePath", archive, "-derivedDataPath", self.work / "dd",
             f"ASTRAL_DEVELOPMENT_TEAM={TEAM_ID}", "CODE_SIGN_STYLE=Manual", f"CODE_SIGN_IDENTITY={SIGNING_IDENTITY}",
             "ARCHS=arm64", f"MARKETING_VERSION={self.version}", f"CURRENT_PROJECT_VERSION={self.build}",
+            f"INFOPLIST_FILE={offer_plist}",
         ])
         self.runner.run([
             "xcodebuild", "-exportArchive", "-archivePath", archive, "-exportPath", export,
@@ -591,6 +700,7 @@ class Release:
             "distribution": CONFIGURATION, "channel": self.channel, "tag": self.tag,
             "source": {"deep": self.deep_sha, "projection": self.args.projection_commit},
             "archive": {"filename": self.archive_name, "bytes": archive["bytes"], "sha256": archive["sha256"]},
+            "nodePack": {"descriptorURL": f"{self.asset_base}/node-pack.json", **self.node_pack},
             "appExecutableSha256": identity["executableSHA256"],
             "apple": {
                 "teamIdentifier": TEAM_ID, "notarizationSubmission": apple["submission"],
@@ -632,10 +742,13 @@ class Release:
         self.state.update({
             "version": self.version, "build": self.build, "channel": self.channel, "tag": self.tag,
             "deep": self.deep_sha, "projection": self.args.projection_commit, "archive": archive, "policy": policy,
+            "nodePack": self.node_pack,
         })
         if self.dry:
             self.out(f"write {self.staging}/release-provenance.json, downloads.json, {STATE_FILE}")
             return
+        for name in ("node-pack.json", "node-pack-manifest.json", self.node_pack["archive_name"]):
+            shutil.copy2(Path(self.args.node_pack_dir) / name, self.staging / name)
         for name, data in (("release-provenance.json", provenance), ("downloads.json", downloads), (STATE_FILE, self.state)):
             (self.staging / name).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
@@ -655,6 +768,13 @@ class Release:
             raise ReleaseError("Staged archive changed after it was built")
         if self.state.get("deep") != self.deep_sha:
             raise ReleaseError("Deep moved since the build; rebuild instead of publishing a stale archive")
+        if self.state.get("nodePack") != self.node_pack:
+            raise ReleaseError("The node pack changed since staging")
+        for name, digest in (("node-pack.json", self.node_pack["descriptor_sha256"]),
+                             ("node-pack-manifest.json", self.node_pack["manifest_sha256"]),
+                             (self.node_pack["archive_name"], self.node_pack["archive_sha256"])):
+            if sha256_file(self.staging / name) != digest:
+                raise ReleaseError(f"Staged node pack asset {name} changed")
         live = self.work / "live" / "appcast-now.xml"
         now = sha256_file(live) if self.fetch_live(FEED_URL, live) else None
         if now != self.state.get("liveAppcastSha256"):
@@ -675,10 +795,13 @@ class Release:
         names = [
             self.archive_name, "SHA256SUMS", "release-provenance.json", f"{self.stem}.md", "downloads.json",
             "appcast.xml", "mac-update-policy.json", "mac-update-policy.json.sig",
+            "node-pack.json", "node-pack-manifest.json", self.node_pack["archive_name"],
         ]
         return [self.staging / name for name in names]
 
     def publish_release(self) -> None:
+        if not self.runner.publish:
+            raise ReleaseError("Publishing a release requires --publish")
         run = self.runner.run
         existing = run(["gh", "release", "view", self.tag, "--repo", RELEASE_REPO], check=False, preview="release not found")
         if existing.returncode == 0 and not self.dry:
@@ -768,6 +891,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--projection", type=Path)
     parser.add_argument("--sparkle-bin", type=Path)
+    parser.add_argument("--node-pack-dir", type=Path)
     return parser
 
 

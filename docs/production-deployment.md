@@ -530,6 +530,22 @@ this pipeline has published them, the live bytes must equal that release's
 assets: the stage waits up to ten minutes for the site to sync, then fails rather
 than drop items, reset the serial or lower the minimum build.
 
+The workflow also builds the pinned Apple Kernel framework and the Mac node pack
+in separate read-only, 30-minute jobs before the environment-approved release job.
+The pack job runs the bundled tool-turn check and the real Swift installer check.
+The release job verifies the framework's source receipt and the descriptor,
+manifest and archive digests, then places the immutable same-release
+`node-pack.json` URL and descriptor SHA-256 in the signed app's Info.plist.
+`node-pack.json`, `node-pack-manifest.json` and the descriptor-named archive are
+uploaded as release assets; a failed producer cannot reach signing or publication.
+The pack's Deep source may precede the release commit only across documentation,
+release-tooling and the Projection pin/metadata cycle. The publisher compares all
+five packed component sources with that Deep commit's composition and gitlinks,
+requires the release composition to differ only in Projection's commit, and
+requires the Projection commits to differ only in `NodePack/pins.json`. A backend,
+dependency, protocol, policy, or other client change after the packed source
+fails the release; rebuild and requalify the pack at the new runtime commit.
+
 **Secrets (names only — never commit or echo values).** The release job runs in
 the `release-macos` environment, whose deployments are restricted to `main`; the
 Developer ID and Sparkle secrets live there, so a workflow on another branch
@@ -564,7 +580,8 @@ notary profile `astral-notary` and the Sparkle keychain account `ed25519`:
 python scripts/release_macos.py \
   --projection-commit "$(git -C components/AstralProjection rev-parse HEAD)" \
   --version 2.0.0 --build 71 --channel stable --notes /private/path/notes.md \
-  --staging-dir /private/path/stage --work-dir /private/path/work
+  --staging-dir /private/path/stage --work-dir /private/path/work \
+  --node-pack-dir /private/path/qualified-node-pack
 ```
 
 Inspect the stage, then repeat the same arguments with `--publish
