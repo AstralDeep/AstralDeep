@@ -97,6 +97,7 @@ async def node_host(orchestrator_factory, monkeypatch, tmp_path):
     monkeypatch.setenv("ASTRAL_NODE_DATA_DIR", str(tmp_path / "node"))
     monkeypatch.delenv("ASTRAL_NODE_OWNER", raising=False)
     monkeypatch.setenv("DATABASE_URL", f"sqlite://{tmp_path / 'node' / 'plane.sqlite3'}")
+    monkeypatch.setenv("ASTRALPLANE_IDENTITY", "mesh-test-" + uuid4().hex)
     monkeypatch.setenv("ATTACHMENT_UPLOAD_ROOT", str(tmp_path / "blobs"))
     monkeypatch.setenv("PERSONAL_AGENT_ARTIFACT_ROOT", str(tmp_path / "agent-artifacts"))
     orch = await asyncio.to_thread(orchestrator_factory)

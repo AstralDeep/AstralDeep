@@ -2,7 +2,7 @@
 
 > For agentic workers:use subagent-driven implementation with independent review. Existing user authorization covers execution, local tests, pushes, merges and release of this app fix; do not reopen settled design questions.
 
-**Goal:** Create and use a new personal mesh on the connected iPhone with device keys and local approval, without identity attestations or Keycloak.
+**Goal:** Create and use a new personal mesh on the iPhone through the requested TestFlight replacement with device keys and local approval, without identity attestations or Keycloak.
 
 **Architecture:** The Kernel owns issuer-free roster v2, its verified mesh principal and recoverable local creation. Apple calls the real Kernel and retains recovery protection. Existing user stores remain preserved, and outside-service authentication is not used as core mesh identity.
 
@@ -49,7 +49,7 @@ Consumes:Task1API/records. Produces:CreateMesh→device approval→recovery→co
 - [ ] Wire the direct Kernel creation and confirmation APIs; remove attestation sign-in UI/dependencies from active mesh creation/membership.
 - [ ] Preserve original storage/keys; select v2 namespace explicitly. Remove obsolete identity labels; fail closed for unsupported Watch/push binding.
 - [ ] Exercise native Kernel model configuration/chat authority without an IdP, retaining consent/PHI/egress denials.
-- [ ] Run focused tests then affected iPhone/Mac schemes with current generated bindings. Build an in-place same-team physical-device app; the owner checks FaceID→recovery without sharing secrets.
+- [ ] Run focused tests then affected iPhone/Mac schemes with current generated bindings. The owner disconnected the phone and will check FaceID→recovery privately through the new TestFlight build; do not wait for physical installation.
 
 ## Task 3: Personal node consumers and qualification
 
@@ -63,7 +63,7 @@ Files:Deep backend/orchestrator/{node_mesh,mesh_admission,mesh_push_client}.py a
 ## Task 4: Release and closure
 
 - [ ] Integrate only reviewed task changes; qualify exact Kernel/Deep/Projection sources with normal CI and real source-bound native artifacts.
-- [ ] Verify the physical creation transition before another TestFlight upload; retain local evidence with secrets redacted.
+- [ ] Upload after current source-bound code/native qualification; the owner will verify creation using TestFlight. Retain evidence without credentials or recovery words.
 - [ ] Upload a monotonic iPhone build with embedded Watch using normal publisher approval and exact IPA/signature/profile checks.
 - [ ] Update listing/reviewer steps for accountless mesh creation, attach the actual processed build and submit; record the actual Store state.
 - [ ] Update curated vault/index/log at each major checkpoint, keep unrelated PRs/user edits intact and clean only confirmed task-owned temporary outputs after retaining evidence.

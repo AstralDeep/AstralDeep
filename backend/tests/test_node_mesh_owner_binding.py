@@ -132,11 +132,12 @@ async def test_reopened_production_receiver_retains_its_bound_mesh_namespace(rec
     assert node_identity.bound_owner() == MESH == node_mesh_chat.active()._owner
 
 
-async def test_roster_notification_binds_the_production_bridge_without_manual_scan(receiver):
+@pytest.mark.parametrize("change_name", ["RosterChanged", "KernelChange.ROSTER_CHANGED"])
+async def test_roster_notification_binds_the_production_bridge_without_manual_scan(receiver, change_name):
     host = receiver
     await host.bridge.scan()
     host.kernel.join(MESH)
-    host.mesh._listener.dispatch(type("RosterChanged", (), {})())
+    host.mesh._listener.dispatch(type(change_name, (), {})())
     await settle(lambda: host.bridge._owner == MESH)
     assert node_identity.bound_owner() == MESH
 

@@ -32,6 +32,6 @@ A new personal mesh receives one explicit policy allowance, not a fake attested 
 
 1. Contract vectors and Kernel tests cover issuer-free creation, signing domains, invalid/mixed versions, membership, owner consent denial, duplicate calls, persistence/activation failures, encrypted pending recovery and reopen/confirmation.
 2. Native tests prove creation never invokes web authentication, recovery remains mandatory, and chat/model settings reach the normal Kernel with no identity provider. There is no sign-in-to-verify label for mesh-key membership.
-3. Run the new build on the offered physical iPhone before another TestFlight upload. The owner completes Face ID and writes/confirms recovery words; no agent reads/types those words or signs into services.
+3. The owner subsequently disconnected the phone and requested a new TestFlight build for their retest. Upload after code/native qualification without waiting for a connected-device run. The owner completes Face ID and writes/confirms recovery words privately when testing; no agent reads/types those words or signs into services.
 4. Qualify current Kernel bindings/artifacts, Deep contracts/coverage and Apple tests. A changed Kernel cannot reuse the oldED5 framework; produce new source-bound artifacts through normal protected workflows.
 5. Upload the corrected iPhone build, update the reviewer instructions to the actual accountless flow and resubmit. Build98 is withdrawn after its real continuation crash; prior green/code-completion records remain historical evidence.

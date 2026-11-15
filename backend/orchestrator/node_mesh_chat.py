@@ -273,7 +273,7 @@ class MeshChatBridge:
 
     def _on_change(self, change: Any) -> None:
         loop = self._loop
-        if loop is not None and type(change).__name__ in {"CHAT_CHANGED", "ChatChanged", "ROSTER_CHANGED", "RosterChanged"}:
+        if loop is not None and type(change).__name__.rsplit(".", 1)[-1] in {"CHAT_CHANGED", "ChatChanged", "ROSTER_CHANGED", "RosterChanged"}:
             loop.call_soon_threadsafe(self._wake.set)
 
     def observe_message(self, owner_id: str, chat_id: str, role: str, content: Any) -> None:

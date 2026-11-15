@@ -71,17 +71,27 @@ async def test_a_real_ticketed_peer_call_runs_without_an_offline_grant(node_host
     host.orch.delegation.exchange_token_for_agent.assert_not_awaited()
 
 
+async def pending_for(node, laptop, device):
+    chat = laptop.create_chat("unavailable receiver identity")
+    laptop.send_message(chat, "hello node", None)
+    await until(lambda: any(item.chat_id == chat for item in node.kernel.list_chats()), "the chat to sync")
+    request = laptop.send_request(chat, "must not run", device, None, None)
+    await until(lambda: any(item.id == request for item in node.kernel.pending_requests_for_me()), "the pending request to sync")
+    return request
+
+
 async def test_an_environment_owner_without_the_real_principal_is_refused(turn_host, tmp_path, monkeypatch):  # noqa: F811
     host = turn_host
     forbid_iam(host, monkeypatch)
     async with bridge_for(host, tmp_path, monkeypatch) as (node, laptop, device, bridge):
         verify_actual_principal(node)
-        wrong = "oidc.abc.owner"
-        monkeypatch.setenv("ASTRAL_NODE_OWNER", wrong)
-        bridge._owner_of = lambda: wrong
-        result = await run_turn(host, node, laptop, device, bridge, [])
-    assert result.request.state == ak.RequestState.REFUSED and result.request.code == "node.owner_mismatch"
-    assert not any(host.dispatched.values()) and not result.minted
+        monkeypatch.setenv("ASTRAL_NODE_OWNER", "oidc.abc.owner")
+        request = await pending_for(node, laptop, device)
+        await bridge.scan()
+        assert (await node.status())["owner_binding"] == {"state": "refused", "code": "node.owner_mismatch"}
+        assert node.kernel.request(request).state == ak.RequestState.PENDING
+        assert node.personal_owner_id() is None
+    assert not any(host.dispatched.values())
     host.orch.derive_machine_authority.assert_not_awaited()
 
 
@@ -90,9 +100,12 @@ async def test_binding_without_the_principal_accessor_refuses_instead_of_using_i
     forbid_iam(host, monkeypatch)
     async with bridge_for(host, tmp_path, monkeypatch) as (node, laptop, device, bridge):
         monkeypatch.setattr(node.kernel, "mesh_principal", None, raising=False)
-        result = await run_turn(host, node, laptop, device, bridge, [])
-    assert result.request.state == ak.RequestState.REFUSED and result.request.code == "node.principal_unsupported"
-    assert not any(host.dispatched.values()) and not result.minted
+        request = await pending_for(node, laptop, device)
+        await bridge.scan()
+        assert (await node.status())["owner_binding"] == {"state": "refused", "code": "principal_unsupported"}
+        assert node.kernel.request(request).state == ak.RequestState.PENDING
+        assert node.personal_owner_id() is None
+    assert not any(host.dispatched.values())
     host.orch.derive_machine_authority.assert_not_awaited()
 
 
