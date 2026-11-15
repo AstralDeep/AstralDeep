@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import importlib
 import plistlib
 import sys
 import urllib.error
@@ -17,7 +18,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
-import ios_store_profile as signing
+signing = importlib.import_module('ios_store_profile')
 
 
 @pytest.fixture
@@ -159,13 +160,20 @@ def test_provisioning_refuses_wrong_bindings(context, monkeypatch, change):
 @pytest.mark.parametrize('change', ['name', 'team', 'certificate', 'platform', 'expiry', 'development', 'team-entitlement'])
 def test_bound_profile_denials(change):
     value = profile()
-    if change == 'name': value['Name'] = 'invalid\nname'
-    elif change == 'team': value['TeamIdentifier'] = ['OTHER']
-    elif change == 'certificate': value['DeveloperCertificates'] = [b'other']
-    elif change == 'platform': value['Platform'] = ['watchOS']
-    elif change == 'expiry': value['ExpirationDate'] = datetime(2000, 1, 1)
-    elif change == 'development': value['Entitlements']['get-task-allow'] = True
-    else: value['Entitlements']['com.apple.developer.team-identifier'] = 'OTHER'
+    if change == 'name':
+        value['Name'] = 'invalid\nname'
+    elif change == 'team':
+        value['TeamIdentifier'] = ['OTHER']
+    elif change == 'certificate':
+        value['DeveloperCertificates'] = [b'other']
+    elif change == 'platform':
+        value['Platform'] = ['watchOS']
+    elif change == 'expiry':
+        value['ExpirationDate'] = datetime(2000, 1, 1)
+    elif change == 'development':
+        value['Entitlements']['get-task-allow'] = True
+    else:
+        value['Entitlements']['com.apple.developer.team-identifier'] = 'OTHER'
     with pytest.raises(ValueError):
         signing.bound_profile(value, value['Name'], 'TEAM', b'certificate')
 
@@ -303,7 +311,8 @@ def test_cli_dispatch(context, monkeypatch, denied):
     args = SimpleNamespace(keychain=context/'keychain',profiles_dir=context,key=context/'key',receipt=context/'receipt',name_file=context/'name')
     monkeypatch.setattr(signing.argparse.ArgumentParser,'parse_args',lambda self:args)
     def prepare(*args):
-        if denied: raise signing.ProvisioningError('permission denied')
+        if denied:
+            raise signing.ProvisioningError('permission denied')
     monkeypatch.setattr(signing,'prepare',prepare)
     assert signing.main() == (1 if denied else 0)
 
