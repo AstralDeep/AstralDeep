@@ -125,7 +125,7 @@ Phase 0 checks against real systems: the Keycloak sign-in with the kernel nonce 
 | 5.3 | Goal started on the phone is handed to the Mac and finishes there | Proven by automated test | `runs_service.rs::a_hand_off_moves_the_lease_in_the_log_and_the_other_runtime_finishes_the_goal`, `a_phone_with_no_background_time_hands_the_run_to_a_reachable_peer`, FFI `runs_tests::handoff_and_takeover_work_through_two_surfaces_sharing_a_log`. Real devices not yet run. |
 | 5.4 | Proposed skill adopted only after replay passes, never widens permission, can be undone | Proven by automated test | `learning_service.rs::a_skill_is_adopted_after_replay_proves_it_fixes_the_failure_and_can_be_undone`, `::a_candidate_that_breaks_a_clean_recorded_turn_is_refused...`, `learning/tests.rs::a_learned_item_never_widens_a_permission_and_stops_applying_when_its_tool_grant_is_revoked`. |
 | 5.5 | Proposal with untrusted evidence never adopted automatically, across a fixed corpus | Proven by automated test | `astral-engine/src/learning/tests.rs::no_injection_style_proposal_is_ever_adopted_automatically` (loads `injection_corpus.json`, asserts at least 30 entries), `learning_service.rs::evidence_that_includes_untrusted_content_waits_for_the_owner_even_when_replay_passes`. |
-| 5.6 | A Mac with no node runs a bundled first-party agent | Partly covered | The regenerated `13b96dbb`/`d02e4ea` archive (146,234,210 bytes; SHA-256 `66b24ec894b1c6b8b4650458fb8f53881b7f1260fd0c9e387e19adbd269e9396`) passed 47 packaging tests and a real Swift install/start/health/stop test in 41.8 s. A normal owner-authenticated WebSocket turn offered 74 bundled tools, executed `generate_dynamic_chart` and persisted the chart/final history; absent and forged credentials returned 401. Logs: `/tmp/spec105-nodepack-13b-tests.log`, `/tmp/spec105-nodepack-13b-realrun.log`, `/tmp/spec105-mac-pack-toolturn-13b.log`. Native mesh catalog/provider custody and regeneration after the final MCP pin remain outstanding. |
+| 5.6 | A Mac with no node runs a bundled first-party agent | Proven by automated test | Exact Deep ea73c7/Kernel cf826 Mac pack (146,058,414 bytes; SHA-256 3efadf0c3021b5560d309374fc8d8f47395a0635bc17feee77d667153db1151b) passes the real Swift descriptor install/start/mesh/mailbox/health/stop test. Its installed launcher offers 100 real tools; the controlled model requests the bundled general agent's generate_dynamic_chart, and all 14 owner WebSocket/auth/tool-result/stream/history/DB checks pass with no remaining processes. Only the model/token issuer are fixtures. Packaging: 77 passed/one skipped, then 78/78 after final metadata adoption. This qualifies the single-Mac bundled agent; physical LAN peer use remains in 1.1. |
 
 ## Phase 6
 
@@ -154,8 +154,8 @@ Phase 0 checks against real systems: the Keycloak sign-in with the kernel nonce 
 
 Total 58 criteria. Status describes the evidence for the criterion, not release authorization.
 
-- Proven by automated test: 48
-- Partly covered: 6
+- Proven by automated test: 49
+- Partly covered: 5
 - Owner approved: 1
 - Live only: 3
 
