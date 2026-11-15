@@ -3,7 +3,7 @@
 # --build-context kernel-artifacts=<folder holding the pinned kernel wheel and mailbox>; the payloads are verified, installed, and retained for matching Deep node builds.
 FROM scratch AS kernel-artifacts
 
-FROM python:3.11-slim
+FROM python:3.15-slim
 LABEL org.opencontainers.image.source="https://github.com/AstralDeep/AstralVessel"
 
 RUN apt-get update \
