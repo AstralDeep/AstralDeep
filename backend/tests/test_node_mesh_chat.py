@@ -901,6 +901,37 @@ async def test_a_call_without_machine_authority_is_refused(tmp_path):
     await bridge.stop()
 
 
+async def test_institution_policy_change_after_claim_refuses_without_a_tool_effect(tmp_path):
+    from orchestrator import node_mesh_admission
+
+    class CurrentCalls(FakeCalls):
+        async def authorize(self, owner_id, resolved):
+            bound = node_mesh_admission.current_admission()
+            try:
+                await bound.check_current()
+            except node_mesh.NodeMeshError as exc:
+                raise calls_module.CallRefused(exc.code) from exc
+            return await super().authorize(owner_id, resolved)
+
+    calls = CurrentCalls()
+    mesh, kernel, history, bridge = await build(tmp_path, calls=calls)
+    checks = []
+
+    async def current_policy(request, floor):
+        checks.append((request.id, floor))
+        if len(checks) == 3:
+            raise nmc.Refusal("institution.attestation_stale")
+
+    bridge._admission = current_policy
+    kernel.add_chat("c", [])
+    kernel.add_request("r1", "c", call=call_for())
+    await serve(bridge, kernel, "r1")
+    assert len(checks) == 3
+    assert kernel.refused == [("r1", "institution.attestation_stale")]
+    assert kernel.claimed == ["r1"] and not calls.ran and not kernel.recorded
+    await bridge.stop()
+
+
 async def test_a_node_without_a_call_runner_refuses_calls(tmp_path):
     mesh, kernel, history, bridge = await build(tmp_path)
     kernel.add_chat("c", [])

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -86,6 +87,51 @@ async def test_missing_authority_is_refused_with_a_dotted_code():
     with pytest.raises(nmcalls.CallRefused) as caught:
         await nmcalls.OrchestratorCalls(orch).authorize(OWNER, nmcalls.ResolvedTool("a", "t", "tools:read", DEFINITION))
     assert caught.value.code == "node.authority_empty_scopes"
+
+
+@pytest.mark.parametrize("failure", ["unbound", "wrong_owner", "principal", "policy", "owner_changed"])
+async def test_institution_authority_requires_the_current_signed_admission(monkeypatch, failure):
+    from orchestrator import node_mesh_admission, vessel_executor
+    from orchestrator.node_mesh import NodeMeshError, RequestReference
+    from shared import node_identity
+
+    monkeypatch.setattr(node_identity, "is_personal", lambda: False)
+    monkeypatch.setattr(node_identity, "is_institution", lambda: True)
+    resolved = nmcalls.ResolvedTool("agent-1", "write_note", "tools:write", DEFINITION)
+    orch = Orch()
+    calls = nmcalls.OrchestratorCalls(orch)
+    if failure == "unbound":
+        with pytest.raises(nmcalls.CallRefused, match="node.mesh_admission_unavailable"):
+            await calls.authorize(OWNER, resolved)
+        assert not orch.events
+        return
+
+    owner = [OWNER]
+    context = AsyncMock()
+    if failure == "principal":
+        context.side_effect = NodeMeshError("node.owner_mismatch")
+    policy = AsyncMock()
+    if failure == "policy":
+        policy.side_effect = NodeMeshError("institution.attestation_stale")
+    mesh = SimpleNamespace(kernel=object(), personal_authority_context=context)
+    request = RequestReference("request", "chat", "peer", "node", "call", None,
+                               ("call", "write_note", "{}", "{}", "{}"))
+    ticket = vessel_executor.CallTicket("{}", "{}", "{}")
+    if failure == "owner_changed":
+        async def changed_authority(**kwargs):
+            owner[0] = "other-owner"
+            return "authority"
+        orch.derive_machine_authority = changed_authority
+    with node_mesh_admission.binding(mesh, lambda: owner[0], OWNER, "chat", resolved, ticket,
+                                     request=request, check_current=policy):
+        with pytest.raises(nmcalls.CallRefused) as caught:
+            await calls.authorize("other-owner" if failure == "wrong_owner" else OWNER, resolved)
+    assert caught.value.code == {
+        "wrong_owner": "node.mesh_admission_unavailable",
+        "principal": "node.owner_mismatch",
+        "policy": "institution.attestation_stale",
+        "owner_changed": "node.owner_mismatch",
+    }[failure]
 
 
 RESOLVED = nmcalls.ResolvedTool("agent-1", "lookup", "tools:read", DEFINITION)
