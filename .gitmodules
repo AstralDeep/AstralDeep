@@ -1,6 +1,9 @@
 [submodule "AstralProjection"]
 	path = components/AstralProjection
 	url = https://github.com/AstralDeep/AstralProjection.git
+[submodule "AstralKernel"]
+	path = components/AstralKernel
+	url = https://github.com/AstralDeep/AstralKernel.git
 [submodule "AstralPlane"]
 	path = components/AstralPlane
 	url = https://github.com/AstralDeep/AstralPlane.git

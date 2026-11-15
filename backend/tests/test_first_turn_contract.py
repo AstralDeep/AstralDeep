@@ -16,12 +16,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from tests.helpers.registered_human import registered_chat
+from tests.helpers.fixture_owner import fixture_owner
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from shared.feature_flags import flags  # noqa: E402
 
-USER = "first-turn-user"
+USER = fixture_owner("first-turn-user")
 
 
 @pytest.fixture

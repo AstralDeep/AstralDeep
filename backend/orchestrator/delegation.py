@@ -1,6 +1,7 @@
 """RFC 8693 token-exchange delegation service minting and verifying scoped,
 depth-bounded tokens agents use to act for a user, including recursive
-child-delegation chains; used by chain_authority.py and orchestrator.py.
+child-delegation chains; used by chain_authority.py and orchestrator.py. A personal
+node signs these tokens locally with its Ed25519 key (shared/node_identity.py).
 """
 
 import os
@@ -13,6 +14,8 @@ import logging
 from typing import Optional, Dict, List
 
 import aiohttp
+
+from shared import node_identity
 
 
 logger = logging.getLogger("DelegationService")
@@ -259,7 +262,19 @@ def recursive_delegation_enabled() -> bool:
         return False
 
 
+_NODE_HS256_INFO = "astral.delegation.hs256/v1"
+
+
+def _node_identity_or_config_error():
+    try:
+        return node_identity.load_node_identity()
+    except node_identity.NodeIdentityError as exc:
+        raise DelegationConfigError(f"node signing key unavailable: {exc}") from exc
+
+
 def _child_signing_key() -> bytes:
+    if node_identity.is_personal():
+        return _node_identity_or_config_error().derive_secret(_NODE_HS256_INFO)
     key = os.getenv("DELEGATION_CHILD_SIGNING_KEY") or os.getenv("MEMORY_HMAC_KEY")
     if key:
         return key.encode("utf-8")
@@ -272,7 +287,24 @@ def _child_signing_key() -> bytes:
     return b"mock-delegation-secret"
 
 
+def _audience_list(value) -> List[str]:
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, (list, tuple)):
+        return [item for item in value if isinstance(item, str) and item]
+    return []
+
+
 def encode_delegation_payload(payload: dict) -> str:
+    if node_identity.is_personal():
+        now = payload.get("iat") if type(payload.get("iat")) is int else int(time.time())
+        exp = payload.get("exp") if type(payload.get("exp")) is int else now + node_identity.MAX_TOKEN_SECONDS
+        return _node_identity_or_config_error().mint_token(
+            payload,
+            audience=_audience_list(payload.get("aud")),
+            lifetime=max(1, exp - now),
+            now=now,
+        )
     header = {"alg": "HS256", "typ": "JWT"}
     header_b64 = (
         base64.urlsafe_b64encode(json.dumps(header).encode()).rstrip(b"=").decode())
@@ -283,6 +315,33 @@ def encode_delegation_payload(payload: dict) -> str:
         _child_signing_key(), signing_input.encode(), hashlib.sha256).digest()
     sig_b64 = base64.urlsafe_b64encode(signature).rstrip(b"=").decode()
     return f"{signing_input}.{sig_b64}"
+
+
+def verify_signed_delegation(token: str, *, audience: Optional[str] = None,
+                             issuer: Optional[str] = None) -> dict:
+    alg = node_identity.peek_algorithm(token)
+    if alg == "EdDSA":
+        if not node_identity.is_personal():
+            raise RecursiveDelegationError("node-signed delegation is not accepted here")
+        try:
+            claims = node_identity.load_node_identity(create=False).verify_token(
+                token, audience=audience)
+        except node_identity.NodeIdentityError as exc:
+            raise RecursiveDelegationError(f"delegation signature refused: {exc}") from exc
+    elif alg == "HS256" and not node_identity.is_personal():
+        from jose import jwt as jose_jwt
+        try:
+            claims = jose_jwt.decode(
+                token, _child_signing_key(), algorithms=["HS256"], audience=audience,
+                issuer=issuer, options={"verify_aud": audience is not None,
+                                        "require_exp": True})
+        except Exception as exc:
+            raise RecursiveDelegationError("delegation signature refused") from exc
+    else:
+        raise RecursiveDelegationError("delegation signature algorithm refused")
+    if issuer is not None and claims.get("iss") != issuer:
+        raise RecursiveDelegationError("delegation issuer refused")
+    return claims
 
 
 def decode_token_payload(token: str) -> Optional[dict]:
@@ -391,8 +450,17 @@ def mint_child_delegation(parent: dict, child_agent_id: str,
 
 
 def verify_delegation_chain(token: dict, now: Optional[int] = None,
-                            expected_human_sub: Optional[str] = None):
+                            expected_human_sub: Optional[str] = None,
+                            raw_token: Optional[str] = None):
     now = int(now if now is not None else time.time())
+
+    if raw_token is not None:
+        try:
+            signed = verify_signed_delegation(raw_token)
+        except RecursiveDelegationError as exc:
+            return False, str(exc)
+        if signed != token:
+            return False, "claims do not match the signed delegation"
 
     depth = _token_depth(token)
     try:

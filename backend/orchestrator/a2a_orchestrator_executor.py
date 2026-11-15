@@ -40,6 +40,7 @@ from shared.a2a_bridge import (
 )
 from shared.a2a_publication import A2APublicationRegistry
 from shared.a2a_security import A2ASecurityValidator
+from orchestrator import a2a_publication_signing as publication_signing
 from orchestrator.a2a_publication_policy import A2APublicationPolicy
 from orchestrator.a2a_publication_wiring import attach_publication_registry, owner_lookup
 from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
@@ -429,7 +430,16 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
     authority = os.getenv("KEYCLOAK_AUTHORITY", "")
     registry = _publication_registry(orchestrator)
     policy = _publication_policy(orchestrator)
-    if policy is not None:
+    signer = None
+    try:
+        signer = publication_signing.signer_for(orchestrator)
+    except publication_signing.PublicationSigningError as error:
+        logger.error("A2A card will list no capabilities because it cannot be signed: %s", error)
+    unsignable = signer is None and publication_signing.is_personal_profile()
+    publications: tuple = ()
+    if unsignable:
+        published_ids = []
+    elif policy is not None:
         publications = policy.published_records()
         published_ids = list(dict.fromkeys(record.agent_id for record in publications))
     else:
@@ -461,7 +471,9 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
                 open_id_connect_url=f"{authority}/.well-known/openid-configuration",
             )
         )
-        if policy is not None:
+        if unsignable:
+            advertised = []
+        elif policy is not None:
             advertised = list(dict.fromkeys(scope for record in publications
                              for scope in record.audiences
                              if scope in policy._registered_scopes(record.agent_id)))
@@ -474,7 +486,7 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
                 "keycloak_oidc": StringList(list=advertised),
             }))
 
-    return A2AAgentCard(
+    card = A2AAgentCard(
         name="AstralDeep Orchestrator",
         description="Multi-agent orchestrator with LLM-powered tool routing. Routes requests to specialized agents.",
         version="1.0.0",
@@ -496,6 +508,9 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
         security_schemes=security_schemes or None,
         security_requirements=security_requirements,
     )
+    if signer is not None:
+        card = publication_signing.sign_card(card, publication_signing.publication_list(publications), signer)
+    return card
 
 
 def _unauthenticated_response():

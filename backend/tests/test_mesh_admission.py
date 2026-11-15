@@ -90,7 +90,7 @@ def test_mesh_uses_production_rfc8693_http_form_with_exact_allowed_tools(mesh):
     assert form["client_secret"] == mesh.host.delegation.client_secret
     assert form["audience"] == "astral-agent-service"
     assert form["scope"].split() == ["tools:read", "tool:read"]
-    assert jwt.get_unverified_claims(form["subject_token"])["sub"] == mesh.owner
+    assert jwt.get_unverified_claims(form["subject_token"])["sub"] == mesh.subject
     assert "tool:write" not in form["scope"].split()
 
 

@@ -173,7 +173,10 @@ async def test_real_token_path_uses_strict_issuer_and_audience(monkeypatch):
 
     monkeypatch.setattr(mcp_authz, "get_jwks", fake_jwks)
     monkeypatch.setattr(mcp_authz.jose_jwt, "decode", fake_decode)
-    assert (await mcp_authz.decode_mcp_token("opaque"))["sub"] == "u1"
+    from shared.node_identity import canonical_owner_id
+
+    assert (await mcp_authz.decode_mcp_token("opaque"))["sub"] == canonical_owner_id(
+        "https://idp.test/realm", "u1")
     assert observed["jwks"] == (
         "https://idp.test/realm/protocol/openid-connect/certs",
         "opaque",

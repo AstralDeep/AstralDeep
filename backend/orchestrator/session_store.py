@@ -79,8 +79,20 @@ _DEV_PLACEHOLDER_SECRETS = (
 
 
 def assert_production_posture() -> None:
+    from shared import node_identity
+
+    if node_identity.is_institution():
+        from shared import institution_profile
+
+        institution_profile.enforce()
     mock_on = os.getenv("USE_MOCK_AUTH", "").strip().lower() in ("1", "true", "yes")
     if is_dev_mode():
+        if node_identity.is_personal():
+            try:
+                node_identity.load_node_identity()
+            except node_identity.NodeIdentityError as exc:
+                logger.error("Personal node signing key is unusable: %s", exc)
+                raise SystemExit(78) from exc
         warn_on_typesafe_environment()
         return
     problems = []
@@ -120,14 +132,26 @@ def assert_production_posture() -> None:
             "AUDIT_HMAC_SECRET is unset or still the shipped dev placeholder — "
             "the audit hash chain would be forgeable. Set a high-entropy value."
         )
+    personal = node_identity.is_personal()
     if not mock_on:
-        for var, aliases in (
+        required = [
             ("KEYCLOAK_AUTHORITY", ("KEYCLOAK_AUTHORITY",)),
             ("KEYCLOAK_CLIENT_ID", ("KEYCLOAK_CLIENT_ID",)),
-            ("KEYCLOAK_CLIENT_SECRET", ()),
-        ):
+        ]
+        if not personal:
+            required.append(("KEYCLOAK_CLIENT_SECRET", ()))
+        for var, aliases in required:
             if not any(os.getenv(name, "").strip() for name in (var, *aliases)):
                 problems.append(f"{var} is unset — the OIDC flow cannot operate.")
+    if personal:
+        problems.extend(_personal_node_problems(node_identity))
+    try:
+        node_identity.bind_host()
+    except node_identity.NodeIdentityError as exc:
+        problems.append(str(exc))
+    from orchestrator import vessel_executor
+
+    problems.extend(vessel_executor.configuration_problems())
     agent_key = os.getenv("AGENT_API_KEY", "").strip()
     if agent_key and (agent_key in _DEV_PLACEHOLDER_SECRETS or len(agent_key) < 16):
         problems.append(
@@ -147,6 +171,30 @@ def assert_production_posture() -> None:
             "will be refused (fail closed, 028 FR-016). Configure it if this "
             "deployment is meant to run specialist agents."
         )
+
+
+def _personal_node_problems(node_identity) -> list:
+    problems = []
+    if not node_identity.accepted_issuers():
+        problems.append(
+            "No accepted issuer is configured — set KEYCLOAK_AUTHORITY or "
+            "ASTRAL_ACCEPTED_ISSUERS so the personal node knows whom to trust."
+        )
+    try:
+        node_identity.load_node_identity()
+    except node_identity.NodeIdentityError as exc:
+        problems.append(
+            f"The node signing key is unusable ({exc}). Check "
+            f"{node_identity.DATA_DIR_ENV} is writable by this process and the key "
+            f"file is mode 0600."
+        )
+    owner = os.getenv(node_identity.OWNER_ENV, "").strip()
+    if owner and not owner.startswith("oidc."):
+        problems.append(
+            f"{node_identity.OWNER_ENV} must be an owner id of the form "
+            f"oidc.<issuer hash>.<subject>."
+        )
+    return problems
 
 
 def _enc_key() -> Optional[bytes]:

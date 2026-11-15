@@ -65,6 +65,12 @@ REVIEWED_CONTEXT_TOKEN_ACCOUNTING_FINGERPRINTS = {
     "a061349f7fcda21b417280679ce17ace99c27404:"
     "backend/orchestrator/token_assets/NOTICE:generic-api-key:14",
 }
+REVIEWED_PUBLIC_SOURCE_FINGERPRINTS = {
+    '50412b3e7d514da6a3aaad5084346da600b1c651:config/astral-composition.json:generic-api-key:68',
+    '5791a82e238268b694730743672c289d5bfb603b:backend/shared/node_identity.py:generic-api-key:122',
+    '732e3d3ecfccb54fb933b19ad6b4b3b2a5d64500:backend/shared/institution_profile.py:generic-api-key:210',
+}
+REVIEWED_PUBLIC_MESH_BASELINE_SHA256 = '3dae639f3d4261b5a0fef550bb0645bbd39bc143e6a85eb6f2e464881c8e3ea0'
 WINDOWS_CANDIDATE = REPO_ROOT / ".github" / "workflows" / "build-windows-candidate.yml"
 WINDOWS_RELEASE_BRIDGE = REPO_ROOT / ".github" / "workflows" / "release-windows.yml"
 LOCK_INSTALL = (
@@ -217,7 +223,13 @@ def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     assert comments, "a baseline entry with no recorded reason is not reviewed"
     assert all(line.lstrip("#").strip() for line in comments)
     fingerprints = [line for line in lines if not line.startswith("#")]
-    assert len(fingerprints) == 28
+    public_mesh = {fingerprint for fingerprint in fingerprints
+                   if ":specs/105-decentralized-personal-mesh/contracts/vectors/" in fingerprint}
+    public_mesh |= REVIEWED_PUBLIC_SOURCE_FINGERPRINTS
+    assert public_mesh <= set(fingerprints)
+    assert len(public_mesh) == 133
+    assert hashlib.sha256("\n".join(sorted(public_mesh)).encode()).hexdigest() == REVIEWED_PUBLIC_MESH_BASELINE_SHA256
+    assert len(fingerprints) == 28 + len(public_mesh)
     assert len(fingerprints) == len(set(fingerprints))
     assert REVIEWED_074_FINGERPRINTS <= set(fingerprints)
     assert REVIEWED_079_FINGERPRINT in fingerprints
@@ -228,7 +240,7 @@ def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     assert all(
         re.fullmatch(
             r"[0-9a-f]{40}:[^:]+:"
-            r"(?:generic-api-key|private-key|typesafe-system-one-key):[1-9][0-9]*",
+            r"(?:generic-api-key|private-key|typesafe-system-one-key|jwt):[1-9][0-9]*",
             fingerprint,
         )
         for fingerprint in fingerprints
@@ -266,6 +278,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "apple_coverage_artifacts.py",
         "backend_web_service_materials.py",
         "backend_web_test_reporter.py",
+        "build_kernel_binding.py",
         "native_xccov_domain.py",
         "merge_xccov_line_coverage.py",
         "check_changed_coverage.py",
@@ -276,6 +289,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "initialize_backend_web_services.py",
         "install_doctor.py",
         "install_local_components.py",
+        "install_kernel_binding.py",
         "macos_release_notes.py",
         "merge_backend_web_coverage.py",
         "next_macos_release.py",
@@ -337,6 +351,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "backend/tests/test_release_evidence_bootstrap.py",
         "scripts/tests/test_component_build_surfaces_074.py",
         "scripts/tests/test_backend_web_auth.py",
+        "scripts/tests/test_build_kernel_binding.py",
         "scripts/tests/test_backend_web_evidence.py",
         "scripts/tests/test_backend_web_functional.py",
         "scripts/tests/test_backend_web_gate.py",
@@ -346,6 +361,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "scripts/tests/test_backend_web_state.py",
         "scripts/tests/test_merge_backend_web_coverage.py",
         "scripts/tests/test_install_local_components.py",
+        "scripts/tests/test_install_kernel_binding.py",
         "scripts/tests/test_install_doctor.py",
         "backend/tests/test_install_doctor.py",
         "scripts/tests/test_retire_restored_sessions.py",
@@ -428,11 +444,15 @@ def test_windows_candidate_build_never_installs_the_test_lock() -> None:
     )
     for job_name in ("windows-packaged-smoke", "windows-source-suite", "windows-producer"):
         job = _workflow_job(readiness, job_name)
-        runtime = job.index(
-            "python -m pip install --require-hashes -r "
-            "components/AstralProjection/windows-client/requirements-release.lock.txt"
-        )
+        runtime = job.index("uses: ./components/AstralProjection/.github/actions/presentation")
+        assert "projection-root: components/AstralProjection" in job
         assert runtime < job.index(LOCK_INSTALL) < job.index("python -m pytest")
+
+    assert workflow.count("uses: ./components/AstralProjection/.github/actions/presentation") == 2
+    for environment in ("a", "b"):
+        assert f"python: components/AstralProjection/windows-client/.venv-release-{environment}/Scripts/python.exe" in workflow
+        assert f"output: build/presentation-{environment}" in workflow
+    assert "ASTRAL_PRESENTATION_OUTPUT: build/presentation-a" in workflow
 
 
 @bridge_parked
@@ -488,14 +508,9 @@ def test_ci_only_python_manifest_cannot_enter_projection_product_artifacts() -> 
 
 def test_windows_release_installs_only_hash_locked_build_and_signing_deps() -> None:
     workflow = WINDOWS_RELEASE_BRIDGE.read_text(encoding="utf-8")
-    installs = [
-        line.strip() for line in workflow.splitlines() if "pip install" in line
-    ]
-    assert installs, "the release workflow must install its build/signing deps"
-    for line in installs:
-        assert "--require-hashes" in line, f"unhashed pip install: {line}"
-        assert (
-            "components/AstralProjection/windows-client/requirements-release.lock.txt" in line
-        ), f"install is not from the release lock: {line}"
+    assert "uses: ./components/AstralProjection/.github/actions/presentation" in workflow
+    assert "projection-root: components/AstralProjection" in workflow
+    assert "external-lock: windows-client/requirements-release.lock.txt" in workflow
+    assert "pip install" not in workflow
     assert "pip install --upgrade" not in workflow
     assert "sigstore>=" not in workflow

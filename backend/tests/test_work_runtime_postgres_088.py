@@ -29,12 +29,12 @@ from tests.test_work_research_preflight_postgres_088 import research_command
 runtime = plane
 pytestmark = [pytest.mark.asyncio,
     pytest.mark.parametrize("operation", [{"tokens": 300_000}], indirect=True)]
-FAST_RUNNER_CYCLES = RunnerConfig(tick_seconds=1, lease_seconds=5)
+FAST_RUNNER_CYCLES = RunnerConfig(tick_seconds=1)
 
 
 @pytest.fixture(autouse=True)
 def fast_runner_cycles(monkeypatch):
-    # A 15 s default tick and 15 s environment lease floor would make each wait a timeout
+    # Only the tick is shortened; a lease below production's lets a stalled worker's claim lapse
     monkeypatch.setattr(RunnerConfig, "from_environment",
                         classmethod(lambda cls: FAST_RUNNER_CYCLES))
 
@@ -148,7 +148,8 @@ async def test_completed_result_requires_current_read_identity_without_reusing_e
         content=research_command(SimpleNamespace(assignments=runner.service)))
     assert accepted.status_code == 201, accepted.text
     identity = accepted.json()["id"]
-    await finished(client, identity)
+    final = await finished(client, identity)
+    assert final["disposition"] == "completed", final
     path = "/api/work/v1/operations/" + identity + "/result"
     if change == "config_clear":
         await op.executor.orch._llm_store.clear(op.owner)

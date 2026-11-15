@@ -25,13 +25,15 @@ from orchestrator.mesh_enrollment import MeshEnrollmentStore
 from orchestrator.plane_repository_context import ApplicationPlaneSource
 from orchestrator.session_store import WebSessionStore
 from orchestrator.tool_permissions import ToolPermissionManager
+from shared.node_identity import canonical_owner_id
 
 
 class MeshRuntime:
     def __init__(self, runtime, monkeypatch):
         self.runtime = runtime
-        self.owner = "mesh-owner-" + uuid.uuid4().hex
+        self.subject = "mesh-owner-" + uuid.uuid4().hex
         self.issuer = "https://iam.mesh.invalid/realms/mesh"
+        self.owner = canonical_owner_id(self.issuer, self.subject)
         for name, value in {
             "ASTRAL_ENV": "development",
             "USE_MOCK_AUTH": "false",
@@ -232,7 +234,7 @@ class MeshRuntime:
     def token(self, **overrides):
         now = int(time.time())
         claims = {
-            "sub": self.owner,
+            "sub": self.subject,
             "iss": self.issuer,
             "azp": "astral-frontend",
             "aud": "account",

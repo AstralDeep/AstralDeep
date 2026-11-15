@@ -1,0 +1,120 @@
+{
+  "files": {
+    "attachments.json": {
+      "cases": 75,
+      "sha256": "f4ee4a5e0a91a77227dfcd1728c8677ad4e627e7fccf1606205dab2d8b46d81e",
+      "spec": "contracts/attachments.md"
+    },
+    "attestation.json": {
+      "cases": 32,
+      "sha256": "6264949e45ed2a9fc4b324fb60f3a0a4a635ce84284a044e08077c8ca3fea231",
+      "spec": "contracts/roster.md#identity-attestation"
+    },
+    "canonical-json.json": {
+      "cases": 20,
+      "sha256": "8db7914348c71fbf9fc41693cc5fa5760680996aca06a848173719d66a866651",
+      "spec": "contracts/event.md#canonical-json"
+    },
+    "credential.json": {
+      "cases": 47,
+      "sha256": "1a05ce8186f4cfe963a9ea3cb81d0f424e744a383e8de1fa7da3fee36c947f8d",
+      "spec": "contracts/keys.md#credential-items"
+    },
+    "crypto.json": {
+      "cases": 26,
+      "sha256": "1a8f0161e135974ed6e775173ecbbf4644e4af9447904bf2dc31de10b149cd67",
+      "spec": "contracts/event.md#signatures-and-ids"
+    },
+    "event.json": {
+      "cases": 39,
+      "sha256": "a4a027c35b2a8e4d77d888c7c578893303390af822f0ed3d4e2c1c7cec400508",
+      "spec": "contracts/event.md"
+    },
+    "feed.json": {
+      "cases": 15,
+      "sha256": "daa11d245026807300f6907191d9b96a6f2edb7fb54ba8fd75cd654419bef84a",
+      "spec": "contracts/event.md#feeds-and-chains"
+    },
+    "fold.json": {
+      "cases": 26,
+      "sha256": "723e0f07a2a579fbd166bf4412229ffc9d8806dcda14b791deed4016efb2b0d2",
+      "spec": "contracts/event.md#merge-rules"
+    },
+    "keys.json": {
+      "cases": 31,
+      "sha256": "a74d2fe6eeb44155ee177d68a47f329c0a1e03f87dac2bbaacb437368f275938",
+      "spec": "contracts/keys.md"
+    },
+    "labels.json": {
+      "cases": 55,
+      "sha256": "1285e1449f9418a7c3299a677dcf5b4687001df888efe7116a7beaa490d334db",
+      "spec": "contracts/labels.md"
+    },
+    "learning.json": {
+      "cases": 138,
+      "sha256": "7f902b70a896cdb6c5884f7af4a1d76a94ac881cf434a8677e405606db7f4123",
+      "spec": "contracts/learning.md"
+    },
+    "mailbox.json": {
+      "cases": 76,
+      "sha256": "588a0770067de5f1c1b63d91e71810468be234148866446c8e154c75fcd73f3d",
+      "spec": "contracts/mailbox.md"
+    },
+    "pairing.json": {
+      "cases": 14,
+      "sha256": "831107e2c587f90fd297b2c4806dac2c31b48304681a25f0218c3249a0e9c7c9",
+      "spec": "contracts/roster.md#pairing"
+    },
+    "policy.json": {
+      "cases": 25,
+      "sha256": "1d239ac6920045fc870112d3894d54aa37888915fbdcaf816db4663b4d4f76b3",
+      "spec": "contracts/policy.md"
+    },
+    "requests.json": {
+      "cases": 68,
+      "sha256": "60c0ab9ad0ac357c0a5022e3eea41533e13b6571d7a4a46cf830cf4161a0cad3",
+      "spec": "contracts/requests.md"
+    },
+    "roster.json": {
+      "cases": 82,
+      "sha256": "b57a23746b8f2c6925b702a62812ad4c593b54b5758380c102f524bec8cf3505",
+      "spec": "contracts/roster.md"
+    },
+    "runs.json": {
+      "cases": 104,
+      "sha256": "4abc984079a9fc2aaefdd4739af28ad2b2c724f9c9423f78b96493149cf5f31c",
+      "spec": "contracts/runs.md"
+    },
+    "surface.json": {
+      "cases": 71,
+      "sha256": "15765296987b33e3715fda9f520f642a5037d7bbbc84ba3614309ad22df74f58",
+      "spec": "contracts/surface.md"
+    },
+    "sync.json": {
+      "cases": 49,
+      "sha256": "ed4215fc957105d247995f8192eff184f095bc478cc1a65df98518747d097c6b",
+      "spec": "contracts/sync.md"
+    },
+    "ticket.json": {
+      "cases": 69,
+      "sha256": "247abfb1b9b9c428826b829e5e23bff4e0e4faa4a719f2de31f08acd18cb5990",
+      "spec": "contracts/ticket.md"
+    },
+    "tools.json": {
+      "cases": 25,
+      "sha256": "276e06ad49bb95ee18bddee37daec0a93d892030be75ffd583a4d39cf940bed2",
+      "spec": "contracts/tools.md"
+    },
+    "transfer.json": {
+      "cases": 8,
+      "sha256": "f9e241cbbc7d204fb8b80b4572d060d94a7c6b7ecea8314823ffce450540874e",
+      "spec": "contracts/policy.md#carrying-a-transfer"
+    },
+    "wake.json": {
+      "cases": 59,
+      "sha256": "1af89362410a04abbd3ddaaaec781e4496ec040ad69267723c4d107bf84b0eb2",
+      "spec": "contracts/wake.md"
+    }
+  },
+  "format": "astral.vectors/v1"
+}

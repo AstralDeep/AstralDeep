@@ -1,0 +1,224 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "ok": {
+          "canonical": "{\"a\":1,\"b\":2}",
+          "sha256": "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777"
+        }
+      },
+      "input": {
+        "json": "{\"b\": 2, \"a\": 1}"
+      },
+      "kind": "canonical",
+      "name": "sorted-keys-no-whitespace"
+    },
+    {
+      "expect": {
+        "ok": {
+          "canonical": "{\"a\":{\"x\":9223372036854775807,\"y\":-9223372036854775808},\"z\":[3,2,{\"a\":true,\"b\":null}]}",
+          "sha256": "e81db1924149b69b220a4b4d17f5a76c6d8af98357973a75137592a090595de2"
+        }
+      },
+      "input": {
+        "json": "{\"z\":[3,2,{\"b\":null,\"a\":true}],\"a\":{\"y\":-9223372036854775808,\"x\":9223372036854775807}}"
+      },
+      "kind": "canonical",
+      "name": "nested-and-int64-bounds"
+    },
+    {
+      "expect": {
+        "ok": {
+          "canonical": "{\"a\":1,\"é\":\"composed\",\"\":\"private\",\"😀\":\"astral\"}",
+          "sha256": "e3dee9b831af193eef803d5815be64d8ca2247a1fcee79379ea3c6a8f438e583"
+        }
+      },
+      "input": {
+        "json": "{\"\\ud83d\\ude00\": \"astral\", \"\\ue000\": \"private\", \"\\u00e9\": \"composed\", \"a\": 1}"
+      },
+      "kind": "canonical",
+      "name": "unicode-scalar-order"
+    },
+    {
+      "expect": {
+        "ok": {
+          "canonical": "{\"é\":1,\"é\":2}",
+          "sha256": "c2635d7e15e25b90abc8b3543d92f0ffcee0644372d8b662a0775f88d43278e5"
+        }
+      },
+      "input": {
+        "json": "{\"é\": 1, \"é\": 2}"
+      },
+      "kind": "canonical",
+      "name": "no-normalization"
+    },
+    {
+      "expect": {
+        "ok": {
+          "canonical": "{\"c\":\"\\u0000\\n\\t\\u001f\"}",
+          "sha256": "654f1f956ec1ca39a9a3cc441c88e05b67e2119f0ab836629892091b6a83a951"
+        }
+      },
+      "input": {
+        "json": "{\"c\": \"\\u0000\\n\\t\\u001f\"}"
+      },
+      "kind": "canonical",
+      "name": "control-characters-escaped"
+    },
+    {
+      "expect": {
+        "error": "canonical.duplicate_key"
+      },
+      "input": {
+        "json": "{\"a\":1,\"a\":2}"
+      },
+      "kind": "canonical",
+      "name": "duplicate-key"
+    },
+    {
+      "expect": {
+        "error": "canonical.duplicate_key"
+      },
+      "input": {
+        "json": "{\"n\":{\"k\":1,\"k\":2}}"
+      },
+      "kind": "canonical",
+      "name": "nested-duplicate-key"
+    },
+    {
+      "expect": {
+        "error": "canonical.float"
+      },
+      "input": {
+        "json": "{\"v\":1.5}"
+      },
+      "kind": "canonical",
+      "name": "float-refused"
+    },
+    {
+      "expect": {
+        "error": "canonical.float"
+      },
+      "input": {
+        "json": "{\"v\":1e3}"
+      },
+      "kind": "canonical",
+      "name": "exponent-refused"
+    },
+    {
+      "expect": {
+        "error": "canonical.non_finite"
+      },
+      "input": {
+        "json": "{\"v\":NaN}"
+      },
+      "kind": "canonical",
+      "name": "nan-refused"
+    },
+    {
+      "expect": {
+        "error": "canonical.range"
+      },
+      "input": {
+        "json": "{\"v\":9223372036854775808}"
+      },
+      "kind": "canonical",
+      "name": "int-over-int64"
+    },
+    {
+      "expect": {
+        "error": "canonical.range"
+      },
+      "input": {
+        "json": "{\"v\":-9223372036854775809}"
+      },
+      "kind": "canonical",
+      "name": "int-under-int64"
+    },
+    {
+      "expect": {
+        "error": "canonical.surrogate"
+      },
+      "input": {
+        "json": "{\"v\":\"\\ud800\"}"
+      },
+      "kind": "canonical",
+      "name": "lone-surrogate"
+    },
+    {
+      "expect": {
+        "error": "canonical.parse"
+      },
+      "input": {
+        "json": "{"
+      },
+      "kind": "canonical",
+      "name": "not-json"
+    },
+    {
+      "expect": {
+        "ok": {
+          "hex": "7369676e6564206279746573"
+        }
+      },
+      "input": {
+        "text": "c2lnbmVkIGJ5dGVz"
+      },
+      "kind": "b64url",
+      "name": "base64url-valid"
+    },
+    {
+      "expect": {
+        "error": "canonical.base64"
+      },
+      "input": {
+        "text": "c2lnbmVkIGJ5dGVz="
+      },
+      "kind": "b64url",
+      "name": "base64url-padding"
+    },
+    {
+      "expect": {
+        "error": "canonical.base64"
+      },
+      "input": {
+        "text": "c2lnbmVkIGJ5dGVz!"
+      },
+      "kind": "b64url",
+      "name": "base64url-bad-character"
+    },
+    {
+      "expect": {
+        "error": "canonical.base64"
+      },
+      "input": {
+        "text": "é"
+      },
+      "kind": "b64url",
+      "name": "base64url-non-ascii"
+    },
+    {
+      "expect": {
+        "error": "canonical.base64"
+      },
+      "input": {
+        "text": "A"
+      },
+      "kind": "b64url",
+      "name": "base64url-trailing-bits"
+    },
+    {
+      "expect": {
+        "error": "canonical.base64"
+      },
+      "input": {
+        "text": "QR"
+      },
+      "kind": "b64url",
+      "name": "base64url-non-canonical-tail"
+    }
+  ],
+  "format": "astral.vectors/v1",
+  "name": "canonical-json",
+  "spec": "contracts/event.md#canonical-json"
+}

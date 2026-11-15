@@ -88,7 +88,10 @@ jobs:
       # reproducible) already pins pyinstaller and the sigstore CLI, so the
       # released exe is built from exactly the dependency set CI validates.
       - name: Install locked build + signing deps
-        run: python -m pip install --require-hashes -r components/AstralProjection/windows-client/requirements-release.lock.txt
+        uses: ./components/AstralProjection/.github/actions/presentation
+        with:
+          projection-root: components/AstralProjection
+          external-lock: windows-client/requirements-release.lock.txt
 
       # Feature 075: AstralDeep.spec embeds the first-party native speech helper
       # and refuses to freeze without its deterministic publish and provenance

@@ -20,6 +20,7 @@ from clinical_diagnostic.tests.test_dispatcher import case, render_dispatcher_pr
 from orchestrator import human_request_authority as human
 from orchestrator.evidence_context import EvidenceContext
 from orchestrator.turn_guidance_authority import current_turn_guidance
+from shared.node_identity import canonical_owner_id
 
 
 class Socket:
@@ -88,8 +89,9 @@ async def test_actual_ingress_waits_for_final_readiness_before_one_human_turn(
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-web")
     monkeypatch.setenv("KEYCLOAK_ALLOWED_AZP", "astral-web")
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
-    owner = "__bench__readiness-" + uuid4().hex
-    token = jwt.encode({"sub": owner, "iss": authority, "azp": "astral-web",
+    subject = "__bench__readiness-" + uuid4().hex
+    owner = canonical_owner_id(authority, subject)
+    token = jwt.encode({"sub": subject, "iss": authority, "azp": "astral-web",
         "aud": "account", "exp": int(time.time()) + 300,
         "realm_access": {"roles": ["user"]}}, key, algorithm="RS256",
         headers={"kid": "synthetic-readiness"})

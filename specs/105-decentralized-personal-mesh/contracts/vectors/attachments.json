@@ -1,0 +1,2115 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "ok": {
+          "body": {
+            "chunks": [
+              "sha256:8267f2d763d25b671110df6246a304bbdcbed6c7f3f4e61f32e84579f51b0310"
+            ],
+            "mime": "image/png",
+            "name": "scan.png",
+            "sha256": "sha256:b10c6e79568dfdfc39fc62d2af140ed0c6900782150937d0db7124520b557a64",
+            "size": 1000
+          },
+          "lengths": [
+            1040
+          ]
+        }
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "seal-one-small-chunk",
+          "length": 1000
+        },
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "seal-one-small-chunk"
+      },
+      "kind": "attachment_seal",
+      "name": "seal-one-small-chunk"
+    },
+    {
+      "expect": {
+        "ok": {
+          "body": {
+            "chunks": [
+              "sha256:e1510950eaff9dd479c0866e7acbf60d0e65a40c23cfe1ec752a0c244609a855"
+            ],
+            "mime": "image/png",
+            "name": "scan.png",
+            "sha256": "sha256:22d67ffde23d565236029467392ae20c6b7ce172a5bf3351bb36075b583ac1ff",
+            "size": 262144
+          },
+          "lengths": [
+            262184
+          ]
+        }
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "seal-exactly-one-chunk",
+          "length": 262144
+        },
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "seal-exactly-one-chunk"
+      },
+      "kind": "attachment_seal",
+      "name": "seal-exactly-one-chunk"
+    },
+    {
+      "expect": {
+        "ok": {
+          "body": {
+            "chunks": [
+              "sha256:50fe92ed066388b5829ef9f26a0996aed79ecc959b7a1dd2ced07d8e244ab1a9",
+              "sha256:24b418f78cf176eddd90466c84f78a1e0792397b815ae61becdb2770a8a1da9f"
+            ],
+            "mime": "image/png",
+            "name": "scan.png",
+            "sha256": "sha256:63fd3309453ab53e0c8bb0977ab035170c6f29fddfddc831f2c778a1325d655d",
+            "size": 262145
+          },
+          "lengths": [
+            262184,
+            41
+          ]
+        }
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "seal-one-byte-over-a-chunk",
+          "length": 262145
+        },
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "seal-one-byte-over-a-chunk"
+      },
+      "kind": "attachment_seal",
+      "name": "seal-one-byte-over-a-chunk"
+    },
+    {
+      "expect": {
+        "ok": {
+          "body": {
+            "chunks": [
+              "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+              "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+              "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+            ],
+            "mime": "application/pdf",
+            "name": "report.pdf",
+            "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+            "size": 529288
+          },
+          "lengths": [
+            262184,
+            262184,
+            5040
+          ]
+        }
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "seal-three-chunks",
+          "length": 529288
+        },
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "mime": "application/pdf",
+        "name": "report.pdf",
+        "nonces": "seal-three-chunks"
+      },
+      "kind": "attachment_seal",
+      "name": "seal-three-chunks"
+    },
+    {
+      "expect": {
+        "ok": {
+          "body": {
+            "chunks": [
+              "sha256:9a8dfd07317054d78d15e8ae3d49dcb81ac1674508a24f0172dd1714ef8b9ddf"
+            ],
+            "mime": "text/plain",
+            "name": "note.txt",
+            "sha256": "sha256:ee6bb86b44339392bae631c8f61dd8f009243c635adab33c0b20923a2794bf22",
+            "size": 1
+          },
+          "lengths": [
+            41
+          ]
+        }
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "seal-a-single-byte",
+          "length": 1
+        },
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "mime": "text/plain",
+        "name": "note.txt",
+        "nonces": "seal-a-single-byte"
+      },
+      "kind": "attachment_seal",
+      "name": "seal-a-single-byte"
+    },
+    {
+      "expect": {
+        "error": "attachment.empty"
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "seal-empty-content",
+          "length": 0
+        },
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "seal-empty-content"
+      },
+      "kind": "attachment_seal",
+      "name": "seal-empty-content"
+    },
+    {
+      "expect": {
+        "error": "attachment.mime_not_allowed"
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "seal-refuses-a-mime-type-outside-the-list",
+          "length": 10
+        },
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "mime": "application/x-msdownload",
+        "nonces": "seal-refuses-a-mime-type-outside-the-list"
+      },
+      "kind": "attachment_seal",
+      "name": "seal-refuses-a-mime-type-outside-the-list"
+    },
+    {
+      "expect": {
+        "error": "attachment.mime_not_allowed"
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "seal-refuses-a-mime-type-with-parameters",
+          "length": 10
+        },
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "mime": "text/plain; charset=utf-8",
+        "nonces": "seal-refuses-a-mime-type-with-parameters"
+      },
+      "kind": "attachment_seal",
+      "name": "seal-refuses-a-mime-type-with-parameters"
+    },
+    {
+      "expect": {
+        "error": "attachment.bad_name"
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "seal-refuses-a-path-as-a-name",
+          "length": 10
+        },
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "name": "../etc/passwd",
+        "nonces": "seal-refuses-a-path-as-a-name"
+      },
+      "kind": "attachment_seal",
+      "name": "seal-refuses-a-path-as-a-name"
+    },
+    {
+      "expect": {
+        "error": "attachment.label"
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "seal-refuses-a-secret-label",
+          "length": 10
+        },
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "labels": {
+          "confidentiality": "secret",
+          "integrity": "owner"
+        },
+        "nonces": "seal-refuses-a-secret-label"
+      },
+      "kind": "attachment_seal",
+      "name": "seal-refuses-a-secret-label"
+    },
+    {
+      "expect": {
+        "ok": {
+          "chunks": 3,
+          "mime": "application/pdf",
+          "size": 529288
+        }
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": "application/pdf",
+          "name": "report.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "a-sealed-body-is-valid"
+    },
+    {
+      "expect": {
+        "ok": {
+          "chunks": 3,
+          "mime": "application/pdf",
+          "size": 529288
+        }
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": "application/pdf",
+          "name": "report.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "phi",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "a-phi-attachment-is-valid"
+    },
+    {
+      "expect": {
+        "ok": {
+          "chunks": 64,
+          "mime": "application/pdf",
+          "size": 16777216
+        }
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:122c597083bd438b7f6d72af75d025948899647711b806bdd2cd82fa69713db3",
+            "sha256:d0f631ca1ddba8db3bcfcb9e057cdc98d0379f1bee00e75a545147a27dadd982",
+            "sha256:9c0abe51c6e6655d81de2d044d4fb194931f058c0426c67c7285d8f5657ed64a",
+            "sha256:7c1c97df17c066924822b0af09a65251554962c61e23329aed04cd19020dc3b8",
+            "sha256:0012a3fa000c5dc26ee658c3c58e12cecd58d6455cec3d5621f0c787675b38aa",
+            "sha256:d0bf3e6ee1d668de18c9ca200a4f152062f345283ee68cadfe41204f215d75e9",
+            "sha256:6db53c9d5a2ca72a85ddf3a681c0d9567899f4c48632a2e9b0beeba0d6938485",
+            "sha256:f28d5b0d6f8be0da8446dabe79044cb9ed0ffa3150a003936155409fe778b885",
+            "sha256:7ed6a8377b92b49472195f1201af304341daf4abb3643f837eafb38066111f6d",
+            "sha256:95144b44f2a5ff5aa796af152bc61f599db54b2d1b7ecbc5c593ed4aeb47ba13",
+            "sha256:1f311134efe1f98d5a9e049b42d7c73c3f9d825abe3319e16e21cfa65fa368b7",
+            "sha256:f4baf901d1b9fcc11a9d3c714fda524455a9875aececc7a30b202a058bc696e6",
+            "sha256:ebbfb53547b778a125159d0de39c0be05b019fa447e6d358bf1aae65926aa553",
+            "sha256:74dda5282c81de22f5c8cc9e637b115f3666eaf03e57ae606ed60bcf5e5e3e1c",
+            "sha256:f1727214f4ef703f993fa3e8abd21f194acb952a083c86cb2b0de70a8b09b9ea",
+            "sha256:f37415afb05362d3c3a80c9fc4d16d9aa97c06a1d2e01689821506f1ff6ad759",
+            "sha256:3b97f0c782c961bc4db8a5839deecea57c9e97c66066fde0b252f08934f43b42",
+            "sha256:3c44f43ed3a9baa9a1780533ae5bc50412abdaa03496d52aa9ffc577171d85cb",
+            "sha256:089ae52fdf81a5ee3d7b4253ab0a6b61c585f5717f7e32d1b62fbf699ad5b6bd",
+            "sha256:63a98318c415bf5b00c9d867e4109a9d9caf8238e450fa4b810457b3f9412248",
+            "sha256:fc7fe9c12d74a4246c13f9200b5209ea8e4c96c0702c1b13a97ec9cdf467a214",
+            "sha256:a9f6815747c1b2f9466e778c2c0c95c0758f495ed7d15368fe47ff9d9eccb674",
+            "sha256:44bac339ae3a5d63babca7865ede63ce752a7f9895ecbac4f511524b179992c3",
+            "sha256:0b5000b1e9479ad1a8271295bc977bbf8362cd109ee18999c2ff8d3095438b6c",
+            "sha256:601c218b06bd8acf858fae088f77b00c4bd04c67966215229cf838a692889f5c",
+            "sha256:30994f805c4776d662660ba6840d75a1eddf4dff61ee77cb1e6e2a8f124fe73c",
+            "sha256:16b21a8857e573d0a76b9675f2b6118b5c77d6fa8ad2122fad22bddd21c8b4d3",
+            "sha256:a1a7dd9c9f098d42fdf74982460899db4125049e1b98423d5c34efd59e996a72",
+            "sha256:a23569cc57f667a1b8ea602875bf10651e964c2fc9512853da7fce2cbf27adf9",
+            "sha256:ccbc67e5618cedf55383939a12b4630078f5208b198a0931ea280166c9a1615e",
+            "sha256:e6e2d858bd59da036652564d29a5601bd7d35ab74632f1084b90c787a99efc59",
+            "sha256:f9249f91302b9214568d45eabcd8bdf116f187f0d845148a9c09f67671cc90c0",
+            "sha256:1c1e6b3284ca5938010859383096aba8743cd03a3ae800fc6f0e03ea0c9f2286",
+            "sha256:2ba8130322ae7d78c7f54f86b92087593fb1321533531541a78a05b61f7d525d",
+            "sha256:904b330673bbc2aa27ac4124a4015ffb259854668267d67ff943cf5fe3949d4b",
+            "sha256:703eabc8d6c8f2a8a3e79b5d929e61dbeb4dc5507b8e1a872ecf2935ff3b37eb",
+            "sha256:07b64c3eb325bff0127926387c94275254119eafa8963f366881ba506eb57415",
+            "sha256:e37582d37f58d2734e6656a1a9cc327ef45e20dd32a65774cb3f7337f84a8bd5",
+            "sha256:b6d0d33912c7a15116d16f219d1cfc36911e1ac98427e022a33b3ac16a695b7d",
+            "sha256:612b5cdb28942f5181b460870a1e84678bb5269642ed6e9687f9add65c28f9c0",
+            "sha256:1912e1b5d55f3cd500dbe67e0217d2114161a989fbb3a280f06e27b4f95da56d",
+            "sha256:83ab50d90842e76cd6e5ea9325cdca06133554869e44a14d1f827d76ddf3719a",
+            "sha256:438047d41c7eb3cfefe194799c57af84a900d84a3f23510056ac6052ccb03f20",
+            "sha256:1b5c1d9a158856f996ca23425ee3376ebc9e0d8b5b4331a2ecf4fa822cba9e5b",
+            "sha256:862e55a06e07c38d9dd707bbc868ceaffc2286d57fa18af0e25e882c0061e40f",
+            "sha256:bca59ba1497b9e7fb22c3e1651606cb4123ac029077311b32a65d8651e95f865",
+            "sha256:4a17d94df67e099623e29ec3926fd27a1fa63b8fd8c4fc5189ede49195c378f8",
+            "sha256:11e09b3654f3569ddfffff0cc5c7dda29a2fb046ac3c4ccb45aaa574ad1ddbc8",
+            "sha256:6cb95c3a87ff8e34b4a4a99be7d105ad6e4635c382a1803836bc5bd9fc774c4d",
+            "sha256:b3ec4de5e581a3c6d827c819f547097686ef4e49c692f8cf8091e5d5ba1ab034",
+            "sha256:e51bf8c6235d04c1a724e3f471267ad27d370bdcb509d91734be40e16f3cc101",
+            "sha256:9f1ed8902275f4bc02fd0e1ab797ef7682e407840c0edadf8843aa03af2c7578",
+            "sha256:2962871456dcd5698321bed48c5aa435330e7032c99172e7eec4a67ee03173da",
+            "sha256:fd62d74a20f5c4e8af16a48726466642a4ba415a0b168dc27b565977f21425f1",
+            "sha256:ff74add9f3b567f33cebc8cecbf968af334566cc3450838cc7e322aef4e6b3ae",
+            "sha256:c8a5a33d81c536d7e7d20efe63aa84b7592482c0f0ae53bab8154b726041695c",
+            "sha256:17099049915ae93633e804ef2a80b1d3f7582e8cce9827e7d7c32796e5ac0b02",
+            "sha256:8fec6247a6a573de22327a4948f959ca8a6f553bfac64803cd77b2f64e2e3eb2",
+            "sha256:7dd2431650f65cfee5d408f440ef4f85d1fd5a02c5be820c6998a72bf8fde684",
+            "sha256:5d100ed36bf153b3bec3bd04c1ceb996266656511fb47005530e6c78fc3b71db",
+            "sha256:6816e6b790b81f82256016990d23aa4087e07d558aaf303364d144ad4a7ba608",
+            "sha256:157aa63639a3d206839214eac15538ead64b532a8a86257f7a7fbfe7344e07c5",
+            "sha256:00d2ccf1543d094a29f31c7aa7acce2f2da5dcaedc612de1539482169a9ceb61",
+            "sha256:7efc7538de97dd3881a56559320a17d69ca2309280a1d4f69a9e0ac435ffbfda"
+          ],
+          "mime": "application/pdf",
+          "name": "report.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 16777216
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "the-largest-attachment-is-valid"
+    },
+    {
+      "expect": {
+        "error": "attachment.malformed"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": "application/pdf",
+          "name": "report.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 529288,
+          "x": 1
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "extra-field"
+    },
+    {
+      "expect": {
+        "error": "attachment.malformed"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": "application/pdf",
+          "name": "report.pdf",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "missing-field"
+    },
+    {
+      "expect": {
+        "error": "attachment.malformed"
+      },
+      "input": {
+        "body": [],
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "not-an-object"
+    },
+    {
+      "expect": {
+        "error": "attachment.malformed"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": "application/pdf",
+          "name": "report.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 1.5
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "size-is-a-float"
+    },
+    {
+      "expect": {
+        "error": "attachment.malformed"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": "application/pdf",
+          "name": "report.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": "10"
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "size-is-a-string"
+    },
+    {
+      "expect": {
+        "error": "attachment.malformed"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": "application/pdf",
+          "name": "report.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": true
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "size-is-a-boolean"
+    },
+    {
+      "expect": {
+        "error": "attachment.malformed"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": "application/pdf",
+          "name": "report.pdf",
+          "sha256": "sha256:ABC",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "sha256-is-malformed"
+    },
+    {
+      "expect": {
+        "error": "attachment.malformed"
+      },
+      "input": {
+        "body": {
+          "chunks": "x",
+          "mime": "application/pdf",
+          "name": "report.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "chunks-is-not-a-list"
+    },
+    {
+      "expect": {
+        "error": "attachment.malformed"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:zz"
+          ],
+          "mime": "application/pdf",
+          "name": "report.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "a-chunk-hash-is-malformed"
+    },
+    {
+      "expect": {
+        "error": "attachment.malformed"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f"
+          ],
+          "mime": "application/pdf",
+          "name": "report.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "a-chunk-hash-repeats"
+    },
+    {
+      "expect": {
+        "error": "attachment.chunk_count"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b"
+          ],
+          "mime": "application/pdf",
+          "name": "report.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "one-chunk-too-few"
+    },
+    {
+      "expect": {
+        "error": "attachment.chunk_count"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c",
+            "sha256:c8dee78f8c7b466c881847accc196998bad00e2b96c5ef913dfbe454d3807c96"
+          ],
+          "mime": "application/pdf",
+          "name": "report.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "one-chunk-too-many"
+    },
+    {
+      "expect": {
+        "error": "attachment.empty"
+      },
+      "input": {
+        "body": {
+          "chunks": [],
+          "mime": "application/pdf",
+          "name": "report.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 0
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "empty-size"
+    },
+    {
+      "expect": {
+        "error": "attachment.empty"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": "application/pdf",
+          "name": "report.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": -1
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "negative-size"
+    },
+    {
+      "expect": {
+        "error": "attachment.too_large"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:122c597083bd438b7f6d72af75d025948899647711b806bdd2cd82fa69713db3",
+            "sha256:d0f631ca1ddba8db3bcfcb9e057cdc98d0379f1bee00e75a545147a27dadd982",
+            "sha256:9c0abe51c6e6655d81de2d044d4fb194931f058c0426c67c7285d8f5657ed64a",
+            "sha256:7c1c97df17c066924822b0af09a65251554962c61e23329aed04cd19020dc3b8",
+            "sha256:0012a3fa000c5dc26ee658c3c58e12cecd58d6455cec3d5621f0c787675b38aa",
+            "sha256:d0bf3e6ee1d668de18c9ca200a4f152062f345283ee68cadfe41204f215d75e9",
+            "sha256:6db53c9d5a2ca72a85ddf3a681c0d9567899f4c48632a2e9b0beeba0d6938485",
+            "sha256:f28d5b0d6f8be0da8446dabe79044cb9ed0ffa3150a003936155409fe778b885",
+            "sha256:7ed6a8377b92b49472195f1201af304341daf4abb3643f837eafb38066111f6d",
+            "sha256:95144b44f2a5ff5aa796af152bc61f599db54b2d1b7ecbc5c593ed4aeb47ba13",
+            "sha256:1f311134efe1f98d5a9e049b42d7c73c3f9d825abe3319e16e21cfa65fa368b7",
+            "sha256:f4baf901d1b9fcc11a9d3c714fda524455a9875aececc7a30b202a058bc696e6",
+            "sha256:ebbfb53547b778a125159d0de39c0be05b019fa447e6d358bf1aae65926aa553",
+            "sha256:74dda5282c81de22f5c8cc9e637b115f3666eaf03e57ae606ed60bcf5e5e3e1c",
+            "sha256:f1727214f4ef703f993fa3e8abd21f194acb952a083c86cb2b0de70a8b09b9ea",
+            "sha256:f37415afb05362d3c3a80c9fc4d16d9aa97c06a1d2e01689821506f1ff6ad759",
+            "sha256:3b97f0c782c961bc4db8a5839deecea57c9e97c66066fde0b252f08934f43b42",
+            "sha256:3c44f43ed3a9baa9a1780533ae5bc50412abdaa03496d52aa9ffc577171d85cb",
+            "sha256:089ae52fdf81a5ee3d7b4253ab0a6b61c585f5717f7e32d1b62fbf699ad5b6bd",
+            "sha256:63a98318c415bf5b00c9d867e4109a9d9caf8238e450fa4b810457b3f9412248",
+            "sha256:fc7fe9c12d74a4246c13f9200b5209ea8e4c96c0702c1b13a97ec9cdf467a214",
+            "sha256:a9f6815747c1b2f9466e778c2c0c95c0758f495ed7d15368fe47ff9d9eccb674",
+            "sha256:44bac339ae3a5d63babca7865ede63ce752a7f9895ecbac4f511524b179992c3",
+            "sha256:0b5000b1e9479ad1a8271295bc977bbf8362cd109ee18999c2ff8d3095438b6c",
+            "sha256:601c218b06bd8acf858fae088f77b00c4bd04c67966215229cf838a692889f5c",
+            "sha256:30994f805c4776d662660ba6840d75a1eddf4dff61ee77cb1e6e2a8f124fe73c",
+            "sha256:16b21a8857e573d0a76b9675f2b6118b5c77d6fa8ad2122fad22bddd21c8b4d3",
+            "sha256:a1a7dd9c9f098d42fdf74982460899db4125049e1b98423d5c34efd59e996a72",
+            "sha256:a23569cc57f667a1b8ea602875bf10651e964c2fc9512853da7fce2cbf27adf9",
+            "sha256:ccbc67e5618cedf55383939a12b4630078f5208b198a0931ea280166c9a1615e",
+            "sha256:e6e2d858bd59da036652564d29a5601bd7d35ab74632f1084b90c787a99efc59",
+            "sha256:f9249f91302b9214568d45eabcd8bdf116f187f0d845148a9c09f67671cc90c0",
+            "sha256:1c1e6b3284ca5938010859383096aba8743cd03a3ae800fc6f0e03ea0c9f2286",
+            "sha256:2ba8130322ae7d78c7f54f86b92087593fb1321533531541a78a05b61f7d525d",
+            "sha256:904b330673bbc2aa27ac4124a4015ffb259854668267d67ff943cf5fe3949d4b",
+            "sha256:703eabc8d6c8f2a8a3e79b5d929e61dbeb4dc5507b8e1a872ecf2935ff3b37eb",
+            "sha256:07b64c3eb325bff0127926387c94275254119eafa8963f366881ba506eb57415",
+            "sha256:e37582d37f58d2734e6656a1a9cc327ef45e20dd32a65774cb3f7337f84a8bd5",
+            "sha256:b6d0d33912c7a15116d16f219d1cfc36911e1ac98427e022a33b3ac16a695b7d",
+            "sha256:612b5cdb28942f5181b460870a1e84678bb5269642ed6e9687f9add65c28f9c0",
+            "sha256:1912e1b5d55f3cd500dbe67e0217d2114161a989fbb3a280f06e27b4f95da56d",
+            "sha256:83ab50d90842e76cd6e5ea9325cdca06133554869e44a14d1f827d76ddf3719a",
+            "sha256:438047d41c7eb3cfefe194799c57af84a900d84a3f23510056ac6052ccb03f20",
+            "sha256:1b5c1d9a158856f996ca23425ee3376ebc9e0d8b5b4331a2ecf4fa822cba9e5b",
+            "sha256:862e55a06e07c38d9dd707bbc868ceaffc2286d57fa18af0e25e882c0061e40f",
+            "sha256:bca59ba1497b9e7fb22c3e1651606cb4123ac029077311b32a65d8651e95f865",
+            "sha256:4a17d94df67e099623e29ec3926fd27a1fa63b8fd8c4fc5189ede49195c378f8",
+            "sha256:11e09b3654f3569ddfffff0cc5c7dda29a2fb046ac3c4ccb45aaa574ad1ddbc8",
+            "sha256:6cb95c3a87ff8e34b4a4a99be7d105ad6e4635c382a1803836bc5bd9fc774c4d",
+            "sha256:b3ec4de5e581a3c6d827c819f547097686ef4e49c692f8cf8091e5d5ba1ab034",
+            "sha256:e51bf8c6235d04c1a724e3f471267ad27d370bdcb509d91734be40e16f3cc101",
+            "sha256:9f1ed8902275f4bc02fd0e1ab797ef7682e407840c0edadf8843aa03af2c7578",
+            "sha256:2962871456dcd5698321bed48c5aa435330e7032c99172e7eec4a67ee03173da",
+            "sha256:fd62d74a20f5c4e8af16a48726466642a4ba415a0b168dc27b565977f21425f1",
+            "sha256:ff74add9f3b567f33cebc8cecbf968af334566cc3450838cc7e322aef4e6b3ae",
+            "sha256:c8a5a33d81c536d7e7d20efe63aa84b7592482c0f0ae53bab8154b726041695c",
+            "sha256:17099049915ae93633e804ef2a80b1d3f7582e8cce9827e7d7c32796e5ac0b02",
+            "sha256:8fec6247a6a573de22327a4948f959ca8a6f553bfac64803cd77b2f64e2e3eb2",
+            "sha256:7dd2431650f65cfee5d408f440ef4f85d1fd5a02c5be820c6998a72bf8fde684",
+            "sha256:5d100ed36bf153b3bec3bd04c1ceb996266656511fb47005530e6c78fc3b71db",
+            "sha256:6816e6b790b81f82256016990d23aa4087e07d558aaf303364d144ad4a7ba608",
+            "sha256:157aa63639a3d206839214eac15538ead64b532a8a86257f7a7fbfe7344e07c5",
+            "sha256:00d2ccf1543d094a29f31c7aa7acce2f2da5dcaedc612de1539482169a9ceb61",
+            "sha256:7efc7538de97dd3881a56559320a17d69ca2309280a1d4f69a9e0ac435ffbfda",
+            "sha256:68a28c2215a945f52b1d87a1546fe328a67135d0b4751d5d3ea2f6ee777925ce"
+          ],
+          "mime": "application/pdf",
+          "name": "report.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 16777217
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "size-over-the-limit"
+    },
+    {
+      "expect": {
+        "error": "attachment.mime_not_allowed"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": "text/html",
+          "name": "report.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "mime-outside-the-list"
+    },
+    {
+      "expect": {
+        "error": "attachment.mime_not_allowed"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": "IMAGE/PNG",
+          "name": "report.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "mime-in-upper-case"
+    },
+    {
+      "expect": {
+        "error": "attachment.mime_not_allowed"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": 3,
+          "name": "report.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "mime-is-not-text"
+    },
+    {
+      "expect": {
+        "error": "attachment.bad_name"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": "application/pdf",
+          "name": "",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "empty-name"
+    },
+    {
+      "expect": {
+        "error": "attachment.bad_name"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": "application/pdf",
+          "name": "a/b.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "name-with-a-slash"
+    },
+    {
+      "expect": {
+        "error": "attachment.bad_name"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": "application/pdf",
+          "name": "a\\b.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "name-with-a-backslash"
+    },
+    {
+      "expect": {
+        "error": "attachment.bad_name"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": "application/pdf",
+          "name": "a\u0000b.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "name-with-a-control-character"
+    },
+    {
+      "expect": {
+        "error": "attachment.bad_name"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": "application/pdf",
+          "name": "..",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "name-is-dot-dot"
+    },
+    {
+      "expect": {
+        "error": "attachment.bad_name"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": "application/pdf",
+          "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "name-too-long"
+    },
+    {
+      "expect": {
+        "ok": {
+          "chunks": 3,
+          "mime": "application/pdf",
+          "size": 529288
+        }
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": "application/pdf",
+          "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "private",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "name-at-the-limit"
+    },
+    {
+      "expect": {
+        "error": "attachment.label"
+      },
+      "input": {
+        "body": {
+          "chunks": [
+            "sha256:93c576d8191f52b2b63a6d024ba923aebab7613bd49e3e727f42d65f77ea8f3f",
+            "sha256:ca0e4e6772190f04cbbf2196ca411fffc19215211d16ce09753ba6a73da38c7b",
+            "sha256:1a96f77b1af9761f8841c94a93297373beff4063ca7f9c13253609447bb4103c"
+          ],
+          "mime": "application/pdf",
+          "name": "report.pdf",
+          "sha256": "sha256:a7c8d8566f9abbce3bd4d9b0f7c19165ed5966ea7a04e0ef405947055adfeb4d",
+          "size": 529288
+        },
+        "labels": {
+          "confidentiality": "secret",
+          "integrity": "owner"
+        }
+      },
+      "kind": "attachment_check",
+      "name": "secret-label"
+    },
+    {
+      "expect": {
+        "ok": {
+          "attachments": 0
+        }
+      },
+      "input": {
+        "body": {
+          "base": null,
+          "text": "hi"
+        }
+      },
+      "kind": "attachment_message_check",
+      "name": "a-message-without-attachments"
+    },
+    {
+      "expect": {
+        "ok": {
+          "attachments": 2
+        }
+      },
+      "input": {
+        "body": {
+          "attachments": [
+            "sha256:a7b1d5ca0b4bfe00b01182c7a522ace02baeacaaf762d43350e95ca2d1c7ad4d",
+            "sha256:dea3953b8b4db74af4f8973dfe0229d9343b2c03615eebf27530084ae8971920"
+          ],
+          "base": null,
+          "text": "hi"
+        }
+      },
+      "kind": "attachment_message_check",
+      "name": "a-message-with-two-attachments"
+    },
+    {
+      "expect": {
+        "ok": {
+          "attachments": 8
+        }
+      },
+      "input": {
+        "body": {
+          "attachments": [
+            "sha256:a7b1d5ca0b4bfe00b01182c7a522ace02baeacaaf762d43350e95ca2d1c7ad4d",
+            "sha256:dea3953b8b4db74af4f8973dfe0229d9343b2c03615eebf27530084ae8971920",
+            "sha256:793deeb29edeb255725a884698c878e4e141205e0092530d923b1ed58e0480d0",
+            "sha256:42b208c72b2e4b22ca92aa743681cc5f20cc3668e8e3487733b0987ee8916182",
+            "sha256:51e9175e5d6d53e6f450496a55e17c4b409d5d6a4fa1ef8778549380740b10bd",
+            "sha256:76697c195b4e8bd68707075bfdac755d182a647f561cf6a4f6b0b4c3b1ae91aa",
+            "sha256:ac23463df75b1ebfe3bd9d5aa4cd7489ee4bfb282346959896dc24efba101086",
+            "sha256:dd3f117523e78ecc88cfd1999a055b1f8122a61a13f916d2ec9f320fb4afa6b1"
+          ],
+          "text": "hi"
+        }
+      },
+      "kind": "attachment_message_check",
+      "name": "a-message-with-eight-attachments"
+    },
+    {
+      "expect": {
+        "ok": {
+          "attachments": 0
+        }
+      },
+      "input": {
+        "body": {
+          "attachments": [],
+          "text": "hi"
+        }
+      },
+      "kind": "attachment_message_check",
+      "name": "an-empty-attachment-list"
+    },
+    {
+      "expect": {
+        "error": "attachment.too_many"
+      },
+      "input": {
+        "body": {
+          "attachments": [
+            "sha256:a7b1d5ca0b4bfe00b01182c7a522ace02baeacaaf762d43350e95ca2d1c7ad4d",
+            "sha256:dea3953b8b4db74af4f8973dfe0229d9343b2c03615eebf27530084ae8971920",
+            "sha256:793deeb29edeb255725a884698c878e4e141205e0092530d923b1ed58e0480d0",
+            "sha256:42b208c72b2e4b22ca92aa743681cc5f20cc3668e8e3487733b0987ee8916182",
+            "sha256:51e9175e5d6d53e6f450496a55e17c4b409d5d6a4fa1ef8778549380740b10bd",
+            "sha256:76697c195b4e8bd68707075bfdac755d182a647f561cf6a4f6b0b4c3b1ae91aa",
+            "sha256:ac23463df75b1ebfe3bd9d5aa4cd7489ee4bfb282346959896dc24efba101086",
+            "sha256:dd3f117523e78ecc88cfd1999a055b1f8122a61a13f916d2ec9f320fb4afa6b1",
+            "sha256:b9f1cfba7c73d7b252eb4705758f98124d19eedc1e3ba863003b59eaf4779f6e"
+          ],
+          "text": "hi"
+        }
+      },
+      "kind": "attachment_message_check",
+      "name": "nine-attachments"
+    },
+    {
+      "expect": {
+        "error": "attachment.malformed"
+      },
+      "input": {
+        "body": {
+          "attachments": [
+            "sha256:a7b1d5ca0b4bfe00b01182c7a522ace02baeacaaf762d43350e95ca2d1c7ad4d",
+            "sha256:a7b1d5ca0b4bfe00b01182c7a522ace02baeacaaf762d43350e95ca2d1c7ad4d"
+          ],
+          "text": "hi"
+        }
+      },
+      "kind": "attachment_message_check",
+      "name": "a-repeated-attachment"
+    },
+    {
+      "expect": {
+        "error": "attachment.malformed"
+      },
+      "input": {
+        "body": {
+          "attachments": [
+            "x"
+          ],
+          "text": "hi"
+        }
+      },
+      "kind": "attachment_message_check",
+      "name": "an-attachment-id-is-malformed"
+    },
+    {
+      "expect": {
+        "error": "attachment.malformed"
+      },
+      "input": {
+        "body": {
+          "attachments": "sha256:a7b1d5ca0b4bfe00b01182c7a522ace02baeacaaf762d43350e95ca2d1c7ad4d",
+          "text": "hi"
+        }
+      },
+      "kind": "attachment_message_check",
+      "name": "attachments-is-not-a-list"
+    },
+    {
+      "expect": {
+        "error": "attachment.malformed"
+      },
+      "input": {
+        "body": []
+      },
+      "kind": "attachment_message_check",
+      "name": "a-message-body-that-is-not-an-object"
+    },
+    {
+      "expect": {
+        "ok": {
+          "decrypted": true,
+          "length": 262144
+        }
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "receive-the-first-chunk",
+          "length": 600000
+        },
+        "index": 0,
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "receive-the-first-chunk"
+      },
+      "kind": "attachment_receive",
+      "name": "receive-the-first-chunk"
+    },
+    {
+      "expect": {
+        "ok": {
+          "decrypted": true,
+          "length": 75712
+        }
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "receive-the-short-last-chunk",
+          "length": 600000
+        },
+        "index": 2,
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "receive-the-short-last-chunk"
+      },
+      "kind": "attachment_receive",
+      "name": "receive-the-short-last-chunk"
+    },
+    {
+      "expect": {
+        "ok": {
+          "decrypted": false,
+          "length": null
+        }
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "receive-a-chunk-without-the-key",
+          "length": 600000
+        },
+        "index": 1,
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_held": false,
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "receive-a-chunk-without-the-key"
+      },
+      "kind": "attachment_receive",
+      "name": "receive-a-chunk-without-the-key"
+    },
+    {
+      "expect": {
+        "error": "attachment.chunk_hash"
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "receive-refuses-a-flipped-byte",
+          "length": 600000
+        },
+        "index": 0,
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "receive-refuses-a-flipped-byte",
+        "tamper": [
+          {
+            "chunk": 0,
+            "offset": 100,
+            "op": "flip"
+          }
+        ]
+      },
+      "kind": "attachment_receive",
+      "name": "receive-refuses-a-flipped-byte"
+    },
+    {
+      "expect": {
+        "error": "attachment.chunk_hash"
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "receive-refuses-a-truncated-chunk",
+          "length": 600000
+        },
+        "index": 1,
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "receive-refuses-a-truncated-chunk",
+        "tamper": [
+          {
+            "chunk": 1,
+            "op": "truncate",
+            "to": 5000
+          }
+        ]
+      },
+      "kind": "attachment_receive",
+      "name": "receive-refuses-a-truncated-chunk"
+    },
+    {
+      "expect": {
+        "error": "attachment.chunk_size"
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "receive-refuses-a-wrong-length-with-the-right-hash",
+          "length": 600000
+        },
+        "index": 1,
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "receive-refuses-a-wrong-length-with-the-right-hash",
+        "tamper": [
+          {
+            "chunk": 1,
+            "op": "truncate",
+            "rehash": true,
+            "to": 5000
+          }
+        ]
+      },
+      "kind": "attachment_receive",
+      "name": "receive-refuses-a-wrong-length-with-the-right-hash"
+    },
+    {
+      "expect": {
+        "error": "attachment.chunk_hash"
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "receive-refuses-a-chunk-from-another-position",
+          "length": 600000
+        },
+        "index": 0,
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "receive-refuses-a-chunk-from-another-position",
+        "tamper": [
+          {
+            "chunks": [
+              0,
+              1
+            ],
+            "op": "swap"
+          }
+        ]
+      },
+      "kind": "attachment_receive",
+      "name": "receive-refuses-a-chunk-from-another-position"
+    },
+    {
+      "expect": {
+        "error": "attachment.chunk_decrypt"
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "receive-refuses-an-edited-chunk-the-body-names",
+          "length": 600000
+        },
+        "index": 0,
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "receive-refuses-an-edited-chunk-the-body-names",
+        "tamper": [
+          {
+            "chunk": 0,
+            "offset": 100,
+            "op": "flip",
+            "rehash": true
+          }
+        ]
+      },
+      "kind": "attachment_receive",
+      "name": "receive-refuses-an-edited-chunk-the-body-names"
+    },
+    {
+      "expect": {
+        "error": "attachment.chunk_decrypt"
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "receive-refuses-the-wrong-key",
+          "length": 600000
+        },
+        "index": 0,
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "receive-refuses-the-wrong-key",
+        "wrong_key": "cc41d70677d4fe747aa59c304f24e9223b36316b8b8d8a2cc9a5de572a365f89"
+      },
+      "kind": "attachment_receive",
+      "name": "receive-refuses-the-wrong-key"
+    },
+    {
+      "expect": {
+        "error": "attachment.chunk_decrypt"
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "receive-refuses-the-wrong-chat",
+          "length": 600000
+        },
+        "index": 0,
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "receive-refuses-the-wrong-chat",
+        "open_chat": "sha256:47f9b91b7e95d9c2af6254eab716a8abfa82559125563c50992e444dffe14deb"
+      },
+      "kind": "attachment_receive",
+      "name": "receive-refuses-the-wrong-chat"
+    },
+    {
+      "expect": {
+        "error": "attachment.chunk_missing"
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "receive-refuses-a-missing-chunk",
+          "length": 600000
+        },
+        "index": 1,
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "receive-refuses-a-missing-chunk",
+        "tamper": [
+          {
+            "chunk": 1,
+            "op": "drop"
+          }
+        ]
+      },
+      "kind": "attachment_receive",
+      "name": "receive-refuses-a-missing-chunk"
+    },
+    {
+      "expect": {
+        "ok": {
+          "length": 1000,
+          "sha256": "sha256:ee3264923243874077f5bcd9386535fe747f6bd89e6e8cc1b1533bd14c8c8e7b"
+        }
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "open-one-chunk",
+          "length": 1000
+        },
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "open-one-chunk"
+      },
+      "kind": "attachment_open",
+      "name": "open-one-chunk"
+    },
+    {
+      "expect": {
+        "ok": {
+          "length": 529288,
+          "sha256": "sha256:502c7af0a320345c5d6367509acca8fede009602e9369143494dbd1a761babf7"
+        }
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "open-three-chunks",
+          "length": 529288
+        },
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "open-three-chunks"
+      },
+      "kind": "attachment_open",
+      "name": "open-three-chunks"
+    },
+    {
+      "expect": {
+        "ok": {
+          "length": 524288,
+          "sha256": "sha256:eb0f16582ea24c7aef62ce18b6c9472c265e2aed4cd438ba6b8c74b0ccb94084"
+        }
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "open-exactly-two-chunks",
+          "length": 524288
+        },
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "open-exactly-two-chunks"
+      },
+      "kind": "attachment_open",
+      "name": "open-exactly-two-chunks"
+    },
+    {
+      "expect": {
+        "error": "attachment.chunk_missing"
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "open-refuses-a-missing-chunk",
+          "length": 600000
+        },
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "open-refuses-a-missing-chunk",
+        "tamper": [
+          {
+            "chunk": 2,
+            "op": "drop"
+          }
+        ]
+      },
+      "kind": "attachment_open",
+      "name": "open-refuses-a-missing-chunk"
+    },
+    {
+      "expect": {
+        "error": "attachment.chunk_hash"
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "open-refuses-chunks-out-of-order",
+          "length": 600000
+        },
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "open-refuses-chunks-out-of-order",
+        "tamper": [
+          {
+            "chunks": [
+              0,
+              2
+            ],
+            "op": "swap"
+          }
+        ]
+      },
+      "kind": "attachment_open",
+      "name": "open-refuses-chunks-out-of-order"
+    },
+    {
+      "expect": {
+        "error": "attachment.chunk_hash"
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "open-refuses-an-edited-chunk",
+          "length": 600000
+        },
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "open-refuses-an-edited-chunk",
+        "tamper": [
+          {
+            "chunk": 1,
+            "offset": 7,
+            "op": "flip"
+          }
+        ]
+      },
+      "kind": "attachment_open",
+      "name": "open-refuses-an-edited-chunk"
+    },
+    {
+      "expect": {
+        "error": "attachment.chunk_decrypt"
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "open-refuses-a-resealed-edit",
+          "length": 600000
+        },
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "open-refuses-a-resealed-edit",
+        "tamper": [
+          {
+            "chunk": 1,
+            "offset": 7,
+            "op": "flip",
+            "rehash": true
+          }
+        ]
+      },
+      "kind": "attachment_open",
+      "name": "open-refuses-a-resealed-edit"
+    },
+    {
+      "expect": {
+        "error": "attachment.content_mismatch"
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "open-refuses-a-forged-content-hash",
+          "length": 600000
+        },
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "open-refuses-a-forged-content-hash",
+        "tamper": [
+          {
+            "op": "forge_sha256"
+          }
+        ]
+      },
+      "kind": "attachment_open",
+      "name": "open-refuses-a-forged-content-hash"
+    },
+    {
+      "expect": {
+        "error": "attachment.chunk_decrypt"
+      },
+      "input": {
+        "chat": "sha256:1b5cf17341fc5d1e75e661d0d9b6f0fae7d0559d040c699953b9805af0315e8d",
+        "content": {
+          "label": "open-refuses-the-wrong-key",
+          "length": 1000
+        },
+        "key": "ck:mrEBPSaRzT5o8T5i2ks9eg",
+        "key_hex": "08683c7b3673896b3c2f1fdf9ea007c1efe7d85a16bbc403f10ba17146f362af",
+        "nonces": "open-refuses-the-wrong-key",
+        "wrong_key": "cc41d70677d4fe747aa59c304f24e9223b36316b8b8d8a2cc9a5de572a365f89"
+      },
+      "kind": "attachment_open",
+      "name": "open-refuses-the-wrong-key"
+    },
+    {
+      "expect": {
+        "ok": {
+          "send": [
+            "sha256:169b5b823c62b64ca7e5f8456a13c8d5d06f4ece522a58bc2b8a784dcf3609b0",
+            "sha256:f64551fcd6f07823cb87971cfb91446425da18286b3ab1ef935e0cbd7a69f68a"
+          ],
+          "withheld": []
+        }
+      },
+      "input": {
+        "attachments": {
+          "sha256:42b208c72b2e4b22ca92aa743681cc5f20cc3668e8e3487733b0987ee8916182": {
+            "chunks": [
+              "sha256:9dc02223da426384268a0b489b28b008464099491967f6f0597853e939953ea0",
+              "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed"
+            ],
+            "labels": {
+              "confidentiality": "public",
+              "integrity": "untrusted"
+            }
+          },
+          "sha256:793deeb29edeb255725a884698c878e4e141205e0092530d923b1ed58e0480d0": {
+            "chunks": [
+              "sha256:ec18eac8d758b1eba52d3c10d39adc6dd9806472cb4ae069635d383d9086a513"
+            ],
+            "labels": {
+              "confidentiality": "secret",
+              "integrity": "owner"
+            }
+          },
+          "sha256:a7b1d5ca0b4bfe00b01182c7a522ace02baeacaaf762d43350e95ca2d1c7ad4d": {
+            "chunks": [
+              "sha256:169b5b823c62b64ca7e5f8456a13c8d5d06f4ece522a58bc2b8a784dcf3609b0",
+              "sha256:f64551fcd6f07823cb87971cfb91446425da18286b3ab1ef935e0cbd7a69f68a"
+            ],
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          },
+          "sha256:dea3953b8b4db74af4f8973dfe0229d9343b2c03615eebf27530084ae8971920": {
+            "chunks": [
+              "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed"
+            ],
+            "labels": {
+              "confidentiality": "phi",
+              "integrity": "owner"
+            }
+          }
+        },
+        "peer_in_phi_group": false,
+        "requested": [
+          "sha256:169b5b823c62b64ca7e5f8456a13c8d5d06f4ece522a58bc2b8a784dcf3609b0",
+          "sha256:f64551fcd6f07823cb87971cfb91446425da18286b3ab1ef935e0cbd7a69f68a"
+        ]
+      },
+      "kind": "attachment_serve",
+      "name": "a-private-chunk-goes-to-any-member"
+    },
+    {
+      "expect": {
+        "ok": {
+          "send": [],
+          "withheld": [
+            {
+              "hash": "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed",
+              "reason": "phi"
+            }
+          ]
+        }
+      },
+      "input": {
+        "attachments": {
+          "sha256:42b208c72b2e4b22ca92aa743681cc5f20cc3668e8e3487733b0987ee8916182": {
+            "chunks": [
+              "sha256:9dc02223da426384268a0b489b28b008464099491967f6f0597853e939953ea0",
+              "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed"
+            ],
+            "labels": {
+              "confidentiality": "public",
+              "integrity": "untrusted"
+            }
+          },
+          "sha256:793deeb29edeb255725a884698c878e4e141205e0092530d923b1ed58e0480d0": {
+            "chunks": [
+              "sha256:ec18eac8d758b1eba52d3c10d39adc6dd9806472cb4ae069635d383d9086a513"
+            ],
+            "labels": {
+              "confidentiality": "secret",
+              "integrity": "owner"
+            }
+          },
+          "sha256:a7b1d5ca0b4bfe00b01182c7a522ace02baeacaaf762d43350e95ca2d1c7ad4d": {
+            "chunks": [
+              "sha256:169b5b823c62b64ca7e5f8456a13c8d5d06f4ece522a58bc2b8a784dcf3609b0",
+              "sha256:f64551fcd6f07823cb87971cfb91446425da18286b3ab1ef935e0cbd7a69f68a"
+            ],
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          },
+          "sha256:dea3953b8b4db74af4f8973dfe0229d9343b2c03615eebf27530084ae8971920": {
+            "chunks": [
+              "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed"
+            ],
+            "labels": {
+              "confidentiality": "phi",
+              "integrity": "owner"
+            }
+          }
+        },
+        "peer_in_phi_group": false,
+        "requested": [
+          "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed"
+        ]
+      },
+      "kind": "attachment_serve",
+      "name": "a-phi-chunk-is-withheld-from-a-non-phi-peer"
+    },
+    {
+      "expect": {
+        "ok": {
+          "send": [
+            "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed"
+          ],
+          "withheld": []
+        }
+      },
+      "input": {
+        "attachments": {
+          "sha256:42b208c72b2e4b22ca92aa743681cc5f20cc3668e8e3487733b0987ee8916182": {
+            "chunks": [
+              "sha256:9dc02223da426384268a0b489b28b008464099491967f6f0597853e939953ea0",
+              "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed"
+            ],
+            "labels": {
+              "confidentiality": "public",
+              "integrity": "untrusted"
+            }
+          },
+          "sha256:793deeb29edeb255725a884698c878e4e141205e0092530d923b1ed58e0480d0": {
+            "chunks": [
+              "sha256:ec18eac8d758b1eba52d3c10d39adc6dd9806472cb4ae069635d383d9086a513"
+            ],
+            "labels": {
+              "confidentiality": "secret",
+              "integrity": "owner"
+            }
+          },
+          "sha256:a7b1d5ca0b4bfe00b01182c7a522ace02baeacaaf762d43350e95ca2d1c7ad4d": {
+            "chunks": [
+              "sha256:169b5b823c62b64ca7e5f8456a13c8d5d06f4ece522a58bc2b8a784dcf3609b0",
+              "sha256:f64551fcd6f07823cb87971cfb91446425da18286b3ab1ef935e0cbd7a69f68a"
+            ],
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          },
+          "sha256:dea3953b8b4db74af4f8973dfe0229d9343b2c03615eebf27530084ae8971920": {
+            "chunks": [
+              "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed"
+            ],
+            "labels": {
+              "confidentiality": "phi",
+              "integrity": "owner"
+            }
+          }
+        },
+        "peer_in_phi_group": true,
+        "requested": [
+          "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed"
+        ]
+      },
+      "kind": "attachment_serve",
+      "name": "a-phi-chunk-goes-to-a-phi-peer"
+    },
+    {
+      "expect": {
+        "ok": {
+          "send": [
+            "sha256:9dc02223da426384268a0b489b28b008464099491967f6f0597853e939953ea0"
+          ],
+          "withheld": [
+            {
+              "hash": "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed",
+              "reason": "phi"
+            }
+          ]
+        }
+      },
+      "input": {
+        "attachments": {
+          "sha256:42b208c72b2e4b22ca92aa743681cc5f20cc3668e8e3487733b0987ee8916182": {
+            "chunks": [
+              "sha256:9dc02223da426384268a0b489b28b008464099491967f6f0597853e939953ea0",
+              "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed"
+            ],
+            "labels": {
+              "confidentiality": "public",
+              "integrity": "untrusted"
+            }
+          },
+          "sha256:793deeb29edeb255725a884698c878e4e141205e0092530d923b1ed58e0480d0": {
+            "chunks": [
+              "sha256:ec18eac8d758b1eba52d3c10d39adc6dd9806472cb4ae069635d383d9086a513"
+            ],
+            "labels": {
+              "confidentiality": "secret",
+              "integrity": "owner"
+            }
+          },
+          "sha256:a7b1d5ca0b4bfe00b01182c7a522ace02baeacaaf762d43350e95ca2d1c7ad4d": {
+            "chunks": [
+              "sha256:169b5b823c62b64ca7e5f8456a13c8d5d06f4ece522a58bc2b8a784dcf3609b0",
+              "sha256:f64551fcd6f07823cb87971cfb91446425da18286b3ab1ef935e0cbd7a69f68a"
+            ],
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          },
+          "sha256:dea3953b8b4db74af4f8973dfe0229d9343b2c03615eebf27530084ae8971920": {
+            "chunks": [
+              "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed"
+            ],
+            "labels": {
+              "confidentiality": "phi",
+              "integrity": "owner"
+            }
+          }
+        },
+        "peer_in_phi_group": false,
+        "requested": [
+          "sha256:9dc02223da426384268a0b489b28b008464099491967f6f0597853e939953ea0",
+          "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed"
+        ]
+      },
+      "kind": "attachment_serve",
+      "name": "a-chunk-shared-with-a-phi-attachment-is-withheld"
+    },
+    {
+      "expect": {
+        "ok": {
+          "send": [],
+          "withheld": [
+            {
+              "hash": "sha256:ec18eac8d758b1eba52d3c10d39adc6dd9806472cb4ae069635d383d9086a513",
+              "reason": "secret"
+            }
+          ]
+        }
+      },
+      "input": {
+        "attachments": {
+          "sha256:42b208c72b2e4b22ca92aa743681cc5f20cc3668e8e3487733b0987ee8916182": {
+            "chunks": [
+              "sha256:9dc02223da426384268a0b489b28b008464099491967f6f0597853e939953ea0",
+              "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed"
+            ],
+            "labels": {
+              "confidentiality": "public",
+              "integrity": "untrusted"
+            }
+          },
+          "sha256:793deeb29edeb255725a884698c878e4e141205e0092530d923b1ed58e0480d0": {
+            "chunks": [
+              "sha256:ec18eac8d758b1eba52d3c10d39adc6dd9806472cb4ae069635d383d9086a513"
+            ],
+            "labels": {
+              "confidentiality": "secret",
+              "integrity": "owner"
+            }
+          },
+          "sha256:a7b1d5ca0b4bfe00b01182c7a522ace02baeacaaf762d43350e95ca2d1c7ad4d": {
+            "chunks": [
+              "sha256:169b5b823c62b64ca7e5f8456a13c8d5d06f4ece522a58bc2b8a784dcf3609b0",
+              "sha256:f64551fcd6f07823cb87971cfb91446425da18286b3ab1ef935e0cbd7a69f68a"
+            ],
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          },
+          "sha256:dea3953b8b4db74af4f8973dfe0229d9343b2c03615eebf27530084ae8971920": {
+            "chunks": [
+              "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed"
+            ],
+            "labels": {
+              "confidentiality": "phi",
+              "integrity": "owner"
+            }
+          }
+        },
+        "peer_in_phi_group": true,
+        "requested": [
+          "sha256:ec18eac8d758b1eba52d3c10d39adc6dd9806472cb4ae069635d383d9086a513"
+        ]
+      },
+      "kind": "attachment_serve",
+      "name": "a-secret-chunk-is-never-sent"
+    },
+    {
+      "expect": {
+        "ok": {
+          "send": [],
+          "withheld": [
+            {
+              "hash": "sha256:ca3704aa0b06f5954c79ee837faa152d84d6b2d42838f0637a15eda8337dbdce",
+              "reason": "unknown"
+            }
+          ]
+        }
+      },
+      "input": {
+        "attachments": {
+          "sha256:42b208c72b2e4b22ca92aa743681cc5f20cc3668e8e3487733b0987ee8916182": {
+            "chunks": [
+              "sha256:9dc02223da426384268a0b489b28b008464099491967f6f0597853e939953ea0",
+              "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed"
+            ],
+            "labels": {
+              "confidentiality": "public",
+              "integrity": "untrusted"
+            }
+          },
+          "sha256:793deeb29edeb255725a884698c878e4e141205e0092530d923b1ed58e0480d0": {
+            "chunks": [
+              "sha256:ec18eac8d758b1eba52d3c10d39adc6dd9806472cb4ae069635d383d9086a513"
+            ],
+            "labels": {
+              "confidentiality": "secret",
+              "integrity": "owner"
+            }
+          },
+          "sha256:a7b1d5ca0b4bfe00b01182c7a522ace02baeacaaf762d43350e95ca2d1c7ad4d": {
+            "chunks": [
+              "sha256:169b5b823c62b64ca7e5f8456a13c8d5d06f4ece522a58bc2b8a784dcf3609b0",
+              "sha256:f64551fcd6f07823cb87971cfb91446425da18286b3ab1ef935e0cbd7a69f68a"
+            ],
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          },
+          "sha256:dea3953b8b4db74af4f8973dfe0229d9343b2c03615eebf27530084ae8971920": {
+            "chunks": [
+              "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed"
+            ],
+            "labels": {
+              "confidentiality": "phi",
+              "integrity": "owner"
+            }
+          }
+        },
+        "peer_in_phi_group": true,
+        "requested": [
+          "sha256:ca3704aa0b06f5954c79ee837faa152d84d6b2d42838f0637a15eda8337dbdce"
+        ]
+      },
+      "kind": "attachment_serve",
+      "name": "an-unknown-chunk-is-withheld"
+    },
+    {
+      "expect": {
+        "ok": {
+          "send": [
+            "sha256:9dc02223da426384268a0b489b28b008464099491967f6f0597853e939953ea0",
+            "sha256:f64551fcd6f07823cb87971cfb91446425da18286b3ab1ef935e0cbd7a69f68a"
+          ],
+          "withheld": [
+            {
+              "hash": "sha256:ca3704aa0b06f5954c79ee837faa152d84d6b2d42838f0637a15eda8337dbdce",
+              "reason": "unknown"
+            },
+            {
+              "hash": "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed",
+              "reason": "phi"
+            }
+          ]
+        }
+      },
+      "input": {
+        "attachments": {
+          "sha256:42b208c72b2e4b22ca92aa743681cc5f20cc3668e8e3487733b0987ee8916182": {
+            "chunks": [
+              "sha256:9dc02223da426384268a0b489b28b008464099491967f6f0597853e939953ea0",
+              "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed"
+            ],
+            "labels": {
+              "confidentiality": "public",
+              "integrity": "untrusted"
+            }
+          },
+          "sha256:793deeb29edeb255725a884698c878e4e141205e0092530d923b1ed58e0480d0": {
+            "chunks": [
+              "sha256:ec18eac8d758b1eba52d3c10d39adc6dd9806472cb4ae069635d383d9086a513"
+            ],
+            "labels": {
+              "confidentiality": "secret",
+              "integrity": "owner"
+            }
+          },
+          "sha256:a7b1d5ca0b4bfe00b01182c7a522ace02baeacaaf762d43350e95ca2d1c7ad4d": {
+            "chunks": [
+              "sha256:169b5b823c62b64ca7e5f8456a13c8d5d06f4ece522a58bc2b8a784dcf3609b0",
+              "sha256:f64551fcd6f07823cb87971cfb91446425da18286b3ab1ef935e0cbd7a69f68a"
+            ],
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            }
+          },
+          "sha256:dea3953b8b4db74af4f8973dfe0229d9343b2c03615eebf27530084ae8971920": {
+            "chunks": [
+              "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed"
+            ],
+            "labels": {
+              "confidentiality": "phi",
+              "integrity": "owner"
+            }
+          }
+        },
+        "peer_in_phi_group": false,
+        "requested": [
+          "sha256:9dc02223da426384268a0b489b28b008464099491967f6f0597853e939953ea0",
+          "sha256:ca3704aa0b06f5954c79ee837faa152d84d6b2d42838f0637a15eda8337dbdce",
+          "sha256:f64551fcd6f07823cb87971cfb91446425da18286b3ab1ef935e0cbd7a69f68a",
+          "sha256:db87cee52504ca5732bad49ddb1d5b8551c011c1891996d58aacae47f66585ed"
+        ]
+      },
+      "kind": "attachment_serve",
+      "name": "the-answer-keeps-the-order-asked"
+    }
+  ],
+  "format": "astral.vectors/v1",
+  "name": "attachments",
+  "spec": "contracts/attachments.md"
+}

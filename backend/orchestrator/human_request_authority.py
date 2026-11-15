@@ -43,7 +43,7 @@ from persistent_agents.models import AssignmentError
 _HUMAN_CALLER = contextvars.ContextVar("current_human_metadata_caller", default=None)
 _SOCKET_READS = frozenset({"chrome_author_list", "chrome_user_skill_edit", "chrome_declarative_view",
                            "chrome_note_search", "chrome_turn_selection_set", "chrome_safety_verify"})
-_SOCKET_WRITES = frozenset({"chrome_user_skill_save", "chrome_user_skill_toggle",
+_SOCKET_WRITES = frozenset({"register_external_agent", "chrome_user_skill_save", "chrome_user_skill_toggle",
                            "chrome_work_continuity", "chrome_work_result_save",
                            "chrome_user_skill_delete", "chrome_declarative_command",
                            "chrome_connection_issue", "chrome_connection_revoke",
@@ -517,10 +517,13 @@ class _HumanSocketRequest:
                 claims = auth.jose_jwt.get_unverified_claims(self.token)
                 authority, client_id, _ = auth._get_keycloak_config()
                 from shared.auth_clients import is_azp_allowed
+                from shared.token_verify import with_owner_identity
                 if (not authority or not client_id or type(claims.get("iss")) is not str
                         or claims["iss"].rstrip("/") != authority.rstrip("/")
-                        or type(claims.get("azp")) is not str or not is_azp_allowed(claims["azp"])
-                        or _expiry(claims, self.owner_id) != self.expiry):
+                        or type(claims.get("azp")) is not str or not is_azp_allowed(claims["azp"])):
+                    return
+                claims = with_owner_identity(claims, authority)
+                if _expiry(claims, self.owner_id) != self.expiry:
                     return
                 auth._reject_non_first_party(claims)
                 await auth.verify_user(claims)

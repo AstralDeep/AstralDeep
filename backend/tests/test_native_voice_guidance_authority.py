@@ -8,6 +8,8 @@ import threading
 
 import pytest
 from astralplane.repositories import RepositoryConflictError
+from astralplane import LockContentionError
+from psycopg2.errors import LockNotAvailable
 
 from orchestrator import orchestrator as hub
 from orchestrator import turn_guidance_authority
@@ -24,6 +26,58 @@ from tests.test_turn_guidance_ingress_088 import (
 from tests.test_turn_guidance_voice_088 import accepted_voice
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.mark.parametrize("case", ["sqlite", "postgres", "forged", "after_callback", "exhausted"])
+async def test_voice_retries_only_genuine_contention_before_the_callback(
+    guidance_turn, runtime, fixture, monkeypatch, case,
+):
+    state, binding, _ = await accepted_voice(guidance_turn, runtime, fixture, "llm_factory", monkeypatch)
+    original = TurnGuidanceReader._current
+    checks, effects = [], []
+
+    class ForgedLock(Exception):
+        pgcode = "55P03"
+
+    def conflict():
+        cause = (LockNotAvailable() if case == "postgres" else
+                 ForgedLock() if case == "forged" else LockContentionError("busy"))
+        try:
+            raise cause
+        except Exception as error:
+            raise RepositoryConflictError("busy") from error
+
+    def current(reader, tx):
+        checks.append(None)
+        if case != "after_callback" and (len(checks) == 1 or case == "exhausted"):
+            conflict()
+        return original(reader, tx)
+
+    def callback(tx, repositories):
+        effects.append(None)
+        if case == "after_callback":
+            conflict()
+        return "accepted"
+
+    monkeypatch.setattr(TurnGuidanceReader, "_current", current)
+    try:
+        with use_turn_guidance(binding, expected_orchestrator=state.orch):
+            reader = TurnGuidanceReader(binding, expected_orchestrator=state.orch)
+            try:
+                if case in {"forged", "after_callback", "exhausted"}:
+                    with pytest.raises(AssignmentError, match="guidance_read_unavailable"):
+                        await reader.transaction(callback, expected_orchestrator=state.orch)
+                else:
+                    assert await reader.transaction(callback, expected_orchestrator=state.orch) == "accepted"
+            finally:
+                reader.close()
+        assert len(effects) == (0 if case in {"forged", "exhausted"} else 1)
+        if case == "exhausted":
+            assert len(checks) == 4
+        if case == "after_callback":
+            assert len(checks) == 1
+    finally:
+        binding.origin.close()
 
 
 @pytest.mark.parametrize("outcome", ["release", "revoke", "persistent", "cancel"])

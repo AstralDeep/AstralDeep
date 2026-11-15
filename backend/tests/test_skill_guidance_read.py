@@ -820,7 +820,9 @@ async def test_real_turn_injects_the_read_tool_and_serves_a_model_selection(
     monkeypatch.setitem(flags._flags, "skill_packs", True)
     monkeypatch.setitem(flags._flags, "slash_commands", False)
     orch = orchestrator_factory()
-    user = f"skill-read-turn-{uuid_module.uuid4()}"
+    from tests.helpers.fixture_owner import fixture_owner
+
+    user = fixture_owner(f"skill-read-turn-{uuid_module.uuid4()}")
     chat_id = str(uuid_module.uuid4())
     orch._llm_store.set_sync(user, provider="custom",
                              base_url="http://test.invalid/v1", model="test-model",

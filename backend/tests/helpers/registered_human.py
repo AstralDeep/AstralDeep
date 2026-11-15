@@ -7,11 +7,14 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from tempfile import TemporaryDirectory
+import os
 import uuid
 
 from jose import jwt
 
 from verification.drivers.fixture_identity import FixtureIdentity
+from tests.helpers.fixture_owner import AUTHORITY, fixture_subject
+from shared.token_verify import with_owner_identity
 
 
 @contextmanager
@@ -21,7 +24,11 @@ def registered_human_turn(orch, websocket, message, chat_id, *, user_id):
     identity = getattr(orch, "_fixture_identity", None)
     owns_identity = identity is None
     if owns_identity:
-        identity = FixtureIdentity("__verif__chat_fixture")
+        configured = os.getenv("KEYCLOAK_AUTHORITY", "").strip().rstrip("/")
+        if configured and configured != AUTHORITY:
+            raise ValueError("registered fixture cannot replace an existing host issuer")
+        fixture_subject(user_id)
+        identity = FixtureIdentity("__verif__chat_fixture", authority=AUTHORITY)
     from orchestrator.knowledge_synthesis import KnowledgeIndex
 
     knowledge = TemporaryDirectory(prefix="astral-test-guidance-")
@@ -32,7 +39,8 @@ def registered_human_turn(orch, websocket, message, chat_id, *, user_id):
     pending = None
     try:
         claims, _ = identity.claims_and_token({"sub": identity.run_id + "_owner"})
-        claims.update(sub=user_id, preferred_username=user_id,
+        subject = fixture_subject(user_id, authority=identity.authority)
+        claims.update(sub=subject, preferred_username=subject,
                       realm_access={"roles": ["user"]})
         token = jwt.encode(claims, identity.private_key, algorithm="RS256",
                            headers={"kid": identity.kid})
@@ -40,7 +48,7 @@ def registered_human_turn(orch, websocket, message, chat_id, *, user_id):
         websocket.closed = False
         websocket._closed = False
         websocket._guidance_machine_authority = None
-        orch.ui_sessions[websocket] = claims | {"_raw_token": token}
+        orch.ui_sessions[websocket] = with_owner_identity(claims, identity.authority) | {"_raw_token": token}
         context = orch._new_connection_context(websocket)
         context.registered = True
         context.connection_generation = uuid.uuid4()

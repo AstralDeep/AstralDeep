@@ -285,6 +285,7 @@ def store_for(orch):
         if not knowledge_dir:
             from orchestrator.knowledge_synthesis import DEFAULT_KNOWLEDGE_DIR
             knowledge_dir = DEFAULT_KNOWLEDGE_DIR
+        os.makedirs(knowledge_dir, mode=0o700, exist_ok=True)
         store = UserSkillFacade(orch, knowledge_dir)
         orch._user_skill_store = store
     return store

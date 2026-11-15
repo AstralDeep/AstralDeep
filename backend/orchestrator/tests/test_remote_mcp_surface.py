@@ -344,3 +344,34 @@ def test_edit_submission_cannot_recreate_connector_deleted_during_save(monkeypat
     }))
     assert "saved" not in result[2].lower()
     assert remote_mcp_connectors.list_connectors(orch, "owner") == []
+
+
+def test_surface_flags_changed_and_removed_tools_in_both_renderings(monkeypatch):
+    orch = _orch()
+    monkeypatch.setattr(remote_mcp, "_enabled", lambda: True)
+    saved = remote_mcp_connectors.save_connector(orch, "owner", {
+        "name": "Fixture", "url": "https://mcp.example/mcp", "transport": "sse", "auth_type": "none",
+        "tools_catalog": [{"name": "echo", "description": "new text", "inputSchema": {"type": "object"}}],
+        "tools": {"echo": False},
+        "tool_pins": {"echo": "sha256:" + "a" * 64, "gone": "sha256:" + "b" * 64},
+        "tool_changes": {"echo": {"status": "changed", "pinned": "sha256:" + "a" * 64, "current": "sha256:" + "c" * 64},
+                         "gone": {"status": "removed", "pinned": "sha256:" + "b" * 64, "current": ""}},
+    })
+    html = asyncio.run(remote_mcp.render(orch, "owner", [], {}))
+    components = json.dumps(asyncio.run(remote_mcp.components(orch, "owner", [], {})))
+    for rendered in (html, components):
+        assert "Definition changed since you approved it" in rendered
+        assert "removed this tool since you approved it" in rendered
+    assert saved["tool_changes"]["gone"]["status"] == "removed"
+
+
+def test_test_action_reports_tools_that_changed_since_approval(monkeypatch):
+    orch = _orch()
+    monkeypatch.setattr(remote_mcp, "_enabled", lambda: True)
+    saved = remote_mcp_connectors.save_connector(orch, "owner", {
+        "name": "Fixture", "url": "https://mcp.example/mcp", "transport": "sse", "auth_type": "none",
+        "tool_changes": {"echo": {"status": "changed", "pinned": "sha256:" + "a" * 64, "current": ""}},
+    })
+    monkeypatch.setattr(remote_mcp_connectors, "refresh_tools", lambda *args, **kwargs: [])
+    result = asyncio.run(remote_mcp._test(orch, None, "owner", [], {"connector_id": saved["id"]}))
+    assert "1 approved tools changed or were removed" in result[2]

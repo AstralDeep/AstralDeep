@@ -82,6 +82,7 @@ class ChatStepRecorder:
         self.turn_message_id = turn_message_id
         self._in_flight: Dict[str, str] = {}
         self._statuses: Dict[str, str] = {}
+        self._arguments: Dict[str, tuple] = {}
         repository, runtime = repository_from(
             "chat_steps",
             plane_runtime=plane_runtime,
@@ -125,6 +126,7 @@ class ChatStepRecorder:
 
         self._in_flight[step_id] = name
         self._statuses[step_id] = STATUS_IN_PROGRESS
+        self._arguments[step_id] = (kind, args_text)
 
         await self._emit(
             _record_to_step(record)
@@ -248,6 +250,16 @@ class ChatStepRecorder:
 
         self._in_flight.pop(step_id, None)
         self._statuses[step_id] = status
+        kind, arguments = self._arguments.pop(step_id, (None, None))
+        if kind == KIND_TOOL_CALL and status != STATUS_CANCELLED:
+            from orchestrator import node_mesh_chat
+
+            node_mesh_chat.observe_step(
+                self.user_id,
+                self.chat_id,
+                {"name": step_name, "args": arguments, "status": status,
+                 "result": result_summary, "error": error_message},
+            )
 
         payload = (
             _record_to_step(record)

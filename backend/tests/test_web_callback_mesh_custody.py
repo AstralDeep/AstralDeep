@@ -22,6 +22,7 @@ import pytest
 from audit.repository import AuditRepository
 from orchestrator import mesh_api, web_auth
 from orchestrator.plane_repository_context import ApplicationPlaneSource
+from shared.node_identity import canonical_owner_id
 from tests.helpers.session_plane_runtime import (
     get_session_record,
     isolated_plane_runtime,
@@ -56,11 +57,12 @@ def browser(runtime, monkeypatch, signing_key):
     }.items():
         monkeypatch.setenv(name, value)
     store = web_session_store(runtime)
-    owner = "browser-owner-" + uuid.uuid4().hex
+    subject = "browser-owner-" + uuid.uuid4().hex
+    owner = canonical_owner_id(ISSUER, subject)
     wire = SimpleNamespace(changes={}, body=None, hook=None, requests=[], audits=[])
 
     def token(**changes):
-        claims = {"sub": owner, "iss": ISSUER, "azp": CLIENT, "aud": "account",
+        claims = {"sub": subject, "iss": ISSUER, "azp": CLIENT, "aud": "account",
                   "exp": int(time.time()) + 300, "realm_access": {"roles": ["user"]}}
         claims.update(changes)
         return jwt.encode(claims, signing_key[0], algorithm="RS256",

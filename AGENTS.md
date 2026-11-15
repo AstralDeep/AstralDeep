@@ -12,17 +12,20 @@ This is the single repository instruction file for all coding agents, including 
 
 ## Mental model
 
-AstralDeep is a clinical-AI, multi-agent platform with one FastAPI orchestrator and PostgreSQL backend. It serves REST, WebSocket/A2A transport, the web shell, and static assets on port 8001. Bundled first-party agents run in-process by default; the kill switch restores their transport path, while external, draft, and user-authored agents retain explicit trust boundaries.
+AstralDeep is a clinical-AI, multi-agent platform whose FastAPI orchestrator is a node in an owner's personal mesh. Peers embed the shared Rust AstralKernel for signed event logs, sync, authorization, turns and adaptation; AstralPlane supplies SQLite for personal nodes and PostgreSQL for institution nodes. The orchestrator serves REST, WebSocket/A2A transport, the web shell and static assets on port 8001, and bundled first-party agents retain their runtime authorization and audit gates regardless of transport placement.
 
 The UI contract is:
 
-`AstralPrimitives defines -> AstralProjection renders and adapts -> AstralDeep orchestrates`
+`AstralPrimitives defines -> the base decides, authorizes and adapts -> AstralProjection renders`
+
+The base is AstralKernel, AstralDeep, AstralPlane, LETS and ROTE, distributed as AstralVessel. ROTE belongs to the kernel's Python package; base code must not import Projection rendering code. Models propose artifacts and deterministic code validates, bounds and renders them.
 
 The evidence control adapter depends on the orchestrator's private ephemeral archive and stays host-bound. It has no standalone transport process; disabling in-process registration preserves complete source responses and makes its inspection commands unavailable.
 
 - There is no React/Vite SPA. Do not reintroduce a parallel frontend source of truth.
 - Web UI is backend-served HTML plus vanilla JS/CSS owned under `components/AstralProjection/backend/webrender/` and exposed to Deep through the installed Projection resource accessors.
-- Windows (PySide6), Android (Kotlin/Compose), and Apple (Swift/SwiftUI) are thin native consumers of server-owned structured UI and chrome contracts.
+- Apple clients (Swift/SwiftUI) embed the kernel and render structured UI from their local signed log. Android (Kotlin/Compose) and Windows (PySide6) remain thin node clients until their kernel ports qualify; a protocol change must preserve those clients during the transition.
+- Voice runs on-device through the same turn and consent gates as typed input; no hosted-voice or system-speech fallback may silently substitute for an unavailable local model.
 - "LLM proposes, code decides" is the default design rule: models may draft layouts or artifacts, but deterministic code validates, authorizes, bounds, and renders them.
 
 ## Repository routing
@@ -39,7 +42,7 @@ The evidence control adapter depends on the orchestrator's private ephemeral arc
   borrow connections or reintroduce `backend/shared/database.py`.
 - `backend/shared/external_http.py`: approved outbound HTTP/egress path.
 - `components/AstralProjection/backend/webrender/`: authoritative primitive rendering, sanitization, accessibility, web shell, reusable chrome, and static resources.
-- `components/AstralProjection/backend/rote/`: authoritative device capabilities and semantic adaptation.
+- `components/AstralKernel/python/rote/`: ROTE (`astral-rote`, import `rote`), the base's authoritative device capabilities and semantic adaptation. Deep and Projection both depend on it, and it imports neither.
 - `backend/orchestrator/projection_surfaces/`: Deep-owned, host-authorized chrome surface adapters; reusable rendering remains in Projection.
 - `backend/agents/`: bundled first-party agents. Generated draft directories can appear here during development; treat unexpected untracked directories as user/generated data, never as files to stage blindly.
 - `backend/tests/` plus module-local `*/tests/`: backend verification. Root pytest discovery does not include every module suite.
@@ -53,7 +56,7 @@ The pinned `components/AstralPrimitives` repository owns primitive definitions a
 
 ## Non-negotiable engineering rules
 
-- Backend code is Python and must remain compatible with the production Python 3.11 image. Ruff's target is `py311`, even if a host virtualenv is newer.
+- Node backend code is Python and must remain compatible with the production Python 3.11 image; the shared kernel is Rust. Ruff's target is `py311`, even if a host virtualenv is newer.
 - Any dependency may be added; declare it in the owning repository's manifest and name it in the PR description.
 - Keep changes production-ready: no silent stubs, debug-only paths, fake success, untracked TODOs, or happy-path-only handling.
 - The code documents itself. Each source file opens with a header of at most three sentences: what it does and how it connects to other files. Add no other comments or docstrings except a one-line *why* where absolutely necessary. Never put spec/task IDs, feature numbers, history, TODOs, or narration in source. Tool directives (`# noqa`, `# type: ignore`, `# pragma: no cover`, eslint/ktlint/swift-format directives, shebangs) are not comments and stay.
@@ -76,7 +79,7 @@ The pinned `components/AstralPrimitives` repository owns primitive definitions a
 
 ## Security, identity, and data
 
-- Preserve Keycloak-only user IAM, RFC 8693 attenuated delegation, owner isolation, tool permission/policy gates, PHI gates, egress validation, confirmation gates, and hash-chained audit provenance. Do not create a convenience bypass around the normal dispatch path.
+- Preserve Keycloak as the only source of user identity, proven at mesh enrollment. Mesh delegation uses offline-verifiable, attenuated tickets with exact action, actor-chain, roster, stop, expiry, receipt and consent bindings; RFC 8693 remains at the node edge. Preserve owner isolation, tool permission/policy gates, PHI gates, egress validation, confirmation gates and signed audit provenance, and never bypass the normal dispatch path.
 - Treat in-process first-party agents as trusted only for transport placement; runtime authorization and auditing still apply. Treat external and user-authored agents as untrusted at the server boundary.
 - Backend access to user-controlled URLs must use `backend/shared/external_http.py` and its allow/deny/size/TLS controls.
 - `.env` may be inspected when relevant to diagnosis, setup, or live verification; the user has explicitly authorized this. Never echo secret values or commit the file. Treat credentials, tokens, encryption keys, agent keys, user uploads, generated user code, `backend/data`, `backend/tmp`, and synthesized `backend/knowledge` as sensitive: access them only when the task requires it, redact sensitive output, and never stage them.
@@ -128,6 +131,8 @@ Client gates:
 
 When driving a running iOS Simulator app, prefer available simulator MCP tools, inspect screenshots or accessibility trees, and use semantic labels for interaction. Keep `xcodebuild` for builds/tests; drive the macOS app directly because it is not a simulator. Apple sign-in uses real PKCE and must be completed by the user, without a development-token bypass.
 
+When replacing an Apple localtest app that holds existing mesh keys, retain its bundle identifier and stable developer signing identity, use Xcode-generated entitlements, and take a stopped data backup first. Use Projection's localtest build script and verify the installed app's actual path and signature. Ad-hoc re-signing or post-build rebranding can invalidate Keychain access across rebuilds; the user must handle any password or presence prompt themselves.
+
 Tests are necessary, not sufficient. Exercise changed UI behavior against the live backend on every affected client/form factor. Verify authorization and security changes through the real dispatch path, including denial/failure cases. If an unrelated baseline failure exists, demonstrate and document the baseline rather than hiding it or weakening a gate.
 
 Release-evidence collection, normalization, and parsing normally run locally before push and
@@ -154,7 +159,7 @@ broker for release verification or publication.
 
 ## Knowledge vault and handoffs
 
-When available, the local knowledge vault is the sibling repository at `../kos-wiki`. Use `index.md` to route, then read the relevant concept/entity pages, the tail of `log.md`, and any active `sessions/resume-*.md`. The vault is project memory, not current-state authority; verify its claims against the live repositories.
+The active knowledge vault is the sibling repository at `../kos-wiki-v2`; `../kos-wiki` is historical. Before reading or saving knowledge, follow the active vault's `AGENTS.md` for schema, provenance, tier routing, sensitivity, intake and Git operations. Use `index.md` to route, read the relevant curated pages and tail of `log.md`, and check `to-file/` and any active `sessions/resume-*.md`; consult `local/index.md` and `local/profile.md` for personal-tier work. Vault claims must be verified against the live repositories.
 
 The user has established an always-on checkpoint rule: whenever a major checkpoint occurs — a
 branch is pushed for handoff, a spec/plan/tasks phase finishes, a PR opens or merges, a feature or

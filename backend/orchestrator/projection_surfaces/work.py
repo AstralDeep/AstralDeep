@@ -504,7 +504,7 @@ async def deliver_continuity(orch, websocket, user_id, roles, payload, *,
                              request_generation=None, work_read=None):
     read = work_read
     try:
-        from astralprojection.work_continuity import validate_continuity_payload
+        from rote.work_continuity import validate_continuity_payload
         from orchestrator.work_continuity import WorkContinuityService
         from orchestrator.work_controls import WorkControlRequest
 

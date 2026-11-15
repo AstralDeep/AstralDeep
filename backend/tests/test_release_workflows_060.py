@@ -132,7 +132,6 @@ BUILD_SIGN_PUBLISH_JOBS = {
     ("android-release.yml", "release-bundle"),
     ("apple-release.yml", "release"),
     ("build-windows-candidate.yml", "windows-candidate"),
-    ("publish-image.yml", "publish"),
     ("release-macos.yml", "release"),
     ("release-windows.yml", "build-sign-release"),
     ("release-windows-publisher.yml", "publish"),
@@ -1780,7 +1779,7 @@ def test_ci_has_no_stale_composed_or_client_release_claims() -> None:
 
     job_ids = set(_job_ids(workflow))
     assert job_ids == {
-        "backend-image", "backend-boot", "backend-web", "backend-changed-coverage",
+        "kernel-binding", "backend-image", "backend-boot", "backend-web", "backend-changed-coverage",
         "projection-backend-web", "plane-postgres", "ui-v2-contracts",
         "lint",
         "sdk",
@@ -1915,7 +1914,7 @@ def test_every_workflow_job_is_bounded_by_thirty_minutes_unless_it_builds_signs_
     ("candidate.yml", {"timeout-minutes": 0}, None),
     ("candidate.yml", {"timeout-minutes": 90}, None),
     ("publish-image.yml", {"timeout-minutes": 90}, None),
-    ("publish-image.yml", {"job": "publish", "timeout-minutes": 60}, {("publish-image.yml", "publish")}),
+    ("publish-image.yml", {"job": "publish", "timeout-minutes": 60}, None),
     ("candidate.yml", {"uses": "./.github/workflows/release-trusted-builder.yml"}, set()),
     ("candidate.yml", {"uses": "./.github/workflows/release-trusted-builder.yml", "timeout-minutes": 30}, None),
     ("candidate.yml", {"uses": "./.github/workflows/absent.yml"}, None),

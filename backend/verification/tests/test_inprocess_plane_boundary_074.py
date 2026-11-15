@@ -15,6 +15,14 @@ import pytest
 import verification.drivers.in_process as in_process_module
 from verification.drivers.in_process import InProcessDriver
 from verification.isolation import Principal
+from shared.node_identity import canonical_owner_id, issuer_digest
+
+
+_AUTHORITY = "https://verification.invalid/realms/plane-boundary"
+
+
+def _fixture_identity():
+    return SimpleNamespace(authority=_AUTHORITY, closed=False, close=lambda: None)
 
 
 def _driver_with_plane(
@@ -31,6 +39,8 @@ def _driver_with_plane(
     driver._uploaded_blob_owners = set()
     driver._execution_nonce = "0123456789abcdef"
     driver._execution_principals = {}
+    driver._execution_subjects = {}
+    driver._fixture_identity = _fixture_identity()
 
     class VoiceServices:
         async def close(self) -> None:
@@ -108,6 +118,8 @@ def test_two_driver_executions_map_same_logical_principal_to_unique_owners(
     logical = Principal("__verif__local_everyday_primary")
     first = InProcessDriver(config)
     second = InProcessDriver(config)
+    first._fixture_identity = _fixture_identity()
+    second._fixture_identity = _fixture_identity()
 
     first_owner = first._execution_principal(logical)
     second_owner = second._execution_principal(logical)
@@ -115,8 +127,9 @@ def test_two_driver_executions_map_same_logical_principal_to_unique_owners(
     assert first._execution_principal(first_owner) is first_owner
     assert second._execution_principal(second_owner) is second_owner
     assert first_owner.user_id != second_owner.user_id
-    assert first_owner.user_id.startswith("__verif__local_everyday_primary_exec_")
-    assert second_owner.user_id.startswith("__verif__local_everyday_primary_exec_")
+    prefix = canonical_owner_id(_AUTHORITY, "__verif__local_everyday_primary_exec_")
+    assert first_owner.user_id.startswith(prefix)
+    assert second_owner.user_id.startswith(prefix)
     assert len(first_owner.user_id) <= 255
     assert len(second_owner.user_id) <= 255
 
@@ -134,6 +147,7 @@ def test_run_scenario_uses_one_execution_identity_at_every_boundary(
             run_id="__verif__plane-boundary",
         )
     )
+    driver._fixture_identity = _fixture_identity()
     logical = Principal("__verif__plane-boundary_everyday_primary")
     observed: list[str] = []
 
@@ -333,7 +347,7 @@ def test_fixture_upload_streams_off_loop_through_application_plane(
 
     assert result["filename"] == "cohort.csv"
     owner_id = str(calls[0]["owner_id"])
-    assert owner_id.startswith("__verif__plane-boundary_blob_owner_exec_")
+    assert owner_id.startswith(canonical_owner_id(_AUTHORITY, "__verif__plane-boundary_blob_owner_exec_"))
     assert calls[0]["payload"] == b"id,value\n1,2\n"
     assert driver._uploaded_blob_owners == {owner_id}
 
@@ -350,6 +364,7 @@ def test_fixture_upload_streams_off_loop_through_application_plane(
             "plane_runtime": runtime,
             "plane_repositories": repositories,
             "run_id": "__verif__plane-boundary",
+            "owner_issuer_hash": issuer_digest(_AUTHORITY),
         }
     ]
     assert purges.owners == [owner_id]

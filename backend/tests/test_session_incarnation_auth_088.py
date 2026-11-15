@@ -322,7 +322,7 @@ def test_user_switch_retains_prior_incarnation_across_identity_provider_wait(iss
     async def finish_remote(*args, **kwargs):
         current.append(await asyncio.to_thread(replacement, runtime, sid))
         await asyncio.to_thread(web_auth._session_by_sid, sid)
-        token = jwt.encode({"sub": "new-owner", "iss": "https://issuer.invalid", "azp": "web",
+        token = jwt.encode({"sub": "new-owner", "iss": "https://issuer.invalid", "azp": "web", "aud": "account",
                             "exp": int(time.time()) + 300, "realm_access": {"roles": ["user"]}},
                            signing_key[0], algorithm="RS256", headers={"kid": "synthetic-request-authority"})
         return {"access_token": token, "refresh_token": "new-owner-refresh"}

@@ -117,7 +117,7 @@
       "id": "C-01",
       "kind": "case_registry",
       "title": "Case registry is wellformed and bound to the contract and tests",
-      "expect": {"case_count": 13}
+      "expect": {"case_count": 14}
     },
     {
       "id": "C-02",
@@ -247,6 +247,20 @@
       "expect": {
         "failure_classes": ["F-1", "F-2", "F-3", "F-4", "F-5", "F-6", "F-7"],
         "required_fields": ["failure", "detection", "consistency", "rpo", "rto", "degraded_state", "recovery"]
+      }
+    },
+    {
+      "id": "C-14",
+      "kind": "peer_log_layer",
+      "title": "Peers above a node share a log while each node keeps one durable authority",
+      "expect": {
+        "statement": "One durable authority per node. Peers above it share a log with the merge rules in spec 105 section 5.3.",
+        "spec": "specs/105-decentralized-personal-mesh/spec.md",
+        "spec_marker": "### 5.3 Event families",
+        "event_contract": "specs/105-decentralized-personal-mesh/contracts/event.md",
+        "event_contract_marker": "## 10. Merge rules",
+        "fold_vectors": "specs/105-decentralized-personal-mesh/contracts/vectors/fold.json",
+        "forbidden_claims": ["peer layer is delivered", "peer layer is released", "peer layer is live-verified"]
       }
     }
   ]

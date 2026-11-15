@@ -146,10 +146,13 @@ async def normal_turn(host, monkeypatch, signing_key, tmp_path):
 
     monkeypatch.setattr("shared.jwks_cache.get_jwks", keys)
     orch = host.orch
-    owner, sid, chat = "__bench__clinical-" + uuid4().hex, uuid4().hex, str(uuid4())
+    from shared.node_identity import canonical_owner_id
+
+    subject, sid, chat = "__bench__clinical-" + uuid4().hex, uuid4().hex, str(uuid4())
+    owner = canonical_owner_id(authority, subject)
     token = jwt.encode(
         {
-            "sub": owner,
+            "sub": subject,
             "iss": authority,
             "azp": "astral-web",
             "aud": "account",

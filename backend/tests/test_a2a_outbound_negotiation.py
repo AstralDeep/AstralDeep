@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from a2a.utils.constants import VERSION_HEADER  # noqa: E402
 from orchestrator.orchestrator import Orchestrator  # noqa: E402
+from tests.a2a_card_signing import TestSigner  # noqa: E402
 from shared.a2a_bridge import (  # noqa: E402
     a2a_card_to_custom,
     custom_card_to_a2a,
@@ -1080,7 +1081,7 @@ async def test_a2a_fallback_rejects_reserved_remote_mcp_id(monkeypatch, local_ga
             orch.local_agents["remote-mcp-1"] = object()
             orch.agent_cards["remote-mcp-1"] = local_card
 
-        await orch.discover_a2a_agent(base_url)
+        await _discover_trusted(orch, base_url)
 
         if local_gateway_present:
             assert orch.agent_cards["remote-mcp-1"] is local_card
@@ -1094,11 +1095,21 @@ async def test_a2a_fallback_rejects_reserved_remote_mcp_id(monkeypatch, local_ga
 
 
 
+_PEER_SIGNER = TestSigner()
+
+
+async def _discover_trusted(orch, base_url: str) -> None:
+    from orchestrator.a2a_card_trust import CardTrust
+
+    orch._card_trust_registry().pin(base_url, CardTrust(public_key=_PEER_SIGNER.public_jwk))
+    await orch.discover_a2a_agent(base_url)
+
+
 async def _card_server(holder: dict, path: str = "/.well-known/agent-card.json"):
     from aiohttp import web
 
     async def card(request):
-        return web.json_response(holder["card"])
+        return web.json_response(_PEER_SIGNER.sign_payload(holder["card"]))
 
     app = web.Application()
     app.add_routes([web.get(path, card)])
@@ -1157,7 +1168,7 @@ async def test_discovery_dispatches_to_the_advertised_custom_path_and_tenant(
             sent.append(json.loads(payload))
 
         orch._safe_send = capture
-        await orch.discover_a2a_agent(base_url)
+        await _discover_trusted(orch, base_url)
 
         assert orch.a2a_clients["rpc"] == base_url
         assert orch.agent_urls["rpc"] == base_url
@@ -1263,7 +1274,7 @@ async def test_mixed_transport_discovery_preserves_distinct_permission_identitie
                 {"url": f"{base_url}/{agent_id}", "protocolBinding": "GRPC", "protocolVersion": "1.0"},
                 {"url": f"{base_url}/custom/rpc", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
             ])
-            await orch.discover_a2a_agent(base_url)
+            await _discover_trusted(orch, base_url)
             expected[agent_id] = base_url
         assert orch.a2a_clients == expected
         assert [agent_id for event, agent_id in orch.registration_events if event == "scopes"] == list(expected)
@@ -1288,7 +1299,7 @@ async def test_selected_transport_does_not_replace_a_different_local_identity(mo
         original = object()
         orch.local_agents["rpc"] = object()
         orch.agent_cards["rpc"] = original
-        await orch.discover_a2a_agent(base_url)
+        await _discover_trusted(orch, base_url)
         assert orch.agent_cards["rpc"] is original
         assert orch.a2a_clients == {"peer-alpha": base_url}
         assert orch.agent_cards["peer-alpha"].metadata["a2a_url"] == f"{base_url}/custom/rpc"
@@ -1310,7 +1321,7 @@ async def test_discovery_retains_the_real_production_registration_refusal(monkey
             {"url": f"{base_url}/peer-denied", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
         ])
         orch = _discovery_orchestrator()
-        await orch.discover_a2a_agent(base_url)
+        await _discover_trusted(orch, base_url)
         assert orch.agent_cards == {}
         assert orch.agent_capabilities == {}
         assert orch.registration_events == []
@@ -1355,9 +1366,9 @@ async def test_discovery_publishes_no_route_after_registration_refusal_or_failur
             orch.security_analyzer.analyze_agent = failed_analysis
         if failure == "cancelled":
             with pytest.raises(asyncio.CancelledError):
-                await orch.discover_a2a_agent(base_url)
+                await _discover_trusted(orch, base_url)
         else:
-            await orch.discover_a2a_agent(base_url)
+            await _discover_trusted(orch, base_url)
         assert orch.a2a_clients == {}
         assert orch.a2a_agent_cards == {}
         assert orch.agent_urls == {}
@@ -1414,7 +1425,7 @@ async def test_discovery_refuses_cards_without_a_dispatchable_interface(
     runner, base_url = await _card_server(holder)
     try:
         orch = _discovery_orchestrator()
-        await orch.discover_a2a_agent(base_url)
+        await _discover_trusted(orch, base_url)
 
         assert orch.a2a_clients == {}
         assert orch.a2a_agent_cards == {}

@@ -30,7 +30,8 @@ from orchestrator.plane_repository_context import plane_source_from_orchestrator
 from orchestrator.session_store import WebSessionStore
 from orchestrator.tool_permissions import VALID_SCOPES
 from orchestrator.work_submit_authority import _signed_selection
-from shared.auth_clients import allowed_azps
+from shared import node_identity
+from shared.auth_clients import agent_service_client_id, allowed_azps
 
 MEMBER_AUDIENCE = "astral-mesh"
 MEMBER_ISSUER = "astral-internal-delegation"
@@ -96,16 +97,31 @@ def target_uri(path):
     return base + path
 
 
+def _decode_member_token(token):
+    if node_identity.is_personal():
+        return node_identity.load_node_identity(create=False).verify_token(
+            token, audience=MEMBER_AUDIENCE
+        )
+    return jwt.decode(
+        token,
+        delegation._child_signing_key(),
+        algorithms=["HS256"],
+        issuer=MEMBER_ISSUER,
+        audience=MEMBER_AUDIENCE,
+        options={"require_exp": True, "require_iat": True},
+    )
+
+
+def _has_member_audience(claims):
+    audience = claims.get("aud")
+    return audience == MEMBER_AUDIENCE or (
+        isinstance(audience, list) and MEMBER_AUDIENCE in audience
+    )
+
+
 def verify_member_token(token):
     try:
-        claims = jwt.decode(
-            token,
-            delegation._child_signing_key(),
-            algorithms=["HS256"],
-            issuer=MEMBER_ISSUER,
-            audience=MEMBER_AUDIENCE,
-            options={"require_exp": True, "require_iat": True},
-        )
+        claims = _decode_member_token(token)
         binding = claims.get(MEMBER_CLAIM)
         if (
             type(binding) is not dict
@@ -313,7 +329,7 @@ class MeshAdmission:
 
     def current(self, transaction, claims, *, agent_id=None, required_scope=None):
         binding = claims.get(MEMBER_CLAIM)
-        if type(binding) is not dict or claims.get("aud") != MEMBER_AUDIENCE:
+        if type(binding) is not dict or not _has_member_audience(claims):
             _refuse()
         mesh, member, record = self.store._current_member(
             transaction,
@@ -469,19 +485,32 @@ class MeshAdmission:
                 owner_id=owner_id,
                 incarnation_id=custody["incarnation_id"],
             )
-            candidate = await self.sessions.refresh_for_execution(
-                reference,
-                exchange=web_auth._exchange_session_refresh,
-                bound_exchange=web_auth._exchange_bound_session_refresh,
-            )
-            claims = await auth.verify_user(
-                await auth.verify_production_token(candidate.access_token)
-            )
-            credential = candidate.credential
+            personal = node_identity.is_personal()
+            if personal:
+                credential = reference.state.credential
+                started_at = reference.state.observed_at
+                claims = {"exp": credential.hard_expires_at}
+            else:
+                candidate = await self.sessions.refresh_for_execution(
+                    reference,
+                    exchange=web_auth._exchange_session_refresh,
+                    bound_exchange=web_auth._exchange_bound_session_refresh,
+                )
+                claims = await auth.verify_user(
+                    await auth.verify_production_token(candidate.access_token)
+                )
+                credential = candidate.credential
+                started_at = candidate.started_at
             if (
-                claims.get("sub") != owner_id
-                or claims.get("iss") != custody["issuer"]
-                or claims.get("azp") != custody["client_id"]
+                (
+                    not personal
+                    and (
+                        claims.get("sub") != owner_id
+                        or claims.get("iss") != custody["issuer"]
+                        or claims.get("azp") != custody["client_id"]
+                    )
+                )
+                or credential.owner_id != owner_id
                 or credential.incarnation_id != custody["incarnation_id"]
                 or credential.issuing_issuer != custody["issuer"]
                 or credential.issuing_client_id != custody["client_id"]
@@ -506,58 +535,79 @@ class MeshAdmission:
                         owner_id, agent_id, skill.id
                     ):
                         allowed_tools.append(skill.id)
-            exchange = await self.orchestrator.delegation.exchange_token_for_agent(
-                candidate.access_token,
-                agent_id or "mesh-control",
-                allowed_tools,
-                owner_id,
-                (sorted(effective) or ["openid"])
-                + ["tool:" + tool for tool in allowed_tools],
-            )
-            if "error" in exchange or not isinstance(exchange.get("access_token"), str):
-                _refuse()
-            authority = os.getenv("KEYCLOAK_AUTHORITY", "").rstrip("/")
-            from shared.jwks_cache import get_jwks
-            from shared.auth_clients import agent_service_client_id
+            if personal:
+                now = int(time.time())
+                subject_token = delegation.encode_delegation_payload(
+                    {
+                        "sub": owner_id,
+                        "act": {"sub": "agent:" + (agent_id or "mesh-control")},
+                        "scope": " ".join(
+                            (sorted(effective) or ["openid"])
+                            + ["tool:" + tool for tool in allowed_tools]
+                        ),
+                        "aud": agent_service_client_id(),
+                        "iat": now,
+                        "exp": now + MAX_TOKEN_SECONDS,
+                        "delegation": True,
+                    }
+                )
+                exchanged = {"exp": now + MAX_TOKEN_SECONDS}
+            else:
+                exchange = await self.orchestrator.delegation.exchange_token_for_agent(
+                    candidate.access_token,
+                    agent_id or "mesh-control",
+                    allowed_tools,
+                    owner_id,
+                    (sorted(effective) or ["openid"])
+                    + ["tool:" + tool for tool in allowed_tools],
+                )
+                if "error" in exchange or not isinstance(exchange.get("access_token"), str):
+                    _refuse()
+                authority = os.getenv("KEYCLOAK_AUTHORITY", "").rstrip("/")
+                from shared.jwks_cache import get_jwks
 
-            keys = await get_jwks(
-                authority + "/protocol/openid-connect/certs",
-                token=exchange["access_token"],
-            )
-            exchanged = jwt.decode(
-                exchange["access_token"],
-                keys,
-                algorithms=["RS256"],
-                issuer=authority,
-                audience=agent_service_client_id(),
-                options={"require_exp": True},
-            )
-            exchanged_tools = {
-                scope[5:]
-                for scope in exchanged.get("scope", "").split()
-                if scope.startswith("tool:")
-            }
-            if (
-                exchanged.get("sub") != owner_id
-                or exchanged.get("aud")
-                not in (agent_service_client_id(), [agent_service_client_id()])
-                or exchanged.get("azp") != os.getenv("KEYCLOAK_CLIENT_ID", "").strip()
-                or type(exchanged.get("scope")) is not str
-                or not effective.issubset(set(exchanged["scope"].split()))
-                or (set(exchanged["scope"].split()) & set(VALID_SCOPES)) - effective
-                or exchanged_tools != set(allowed_tools)
-            ):
-                _refuse()
-            from shared.a2a_security import token_roles
+                keys = await get_jwks(
+                    authority + "/protocol/openid-connect/certs",
+                    token=exchange["access_token"],
+                )
+                exchanged = jwt.decode(
+                    exchange["access_token"],
+                    keys,
+                    algorithms=["RS256"],
+                    issuer=authority,
+                    audience=agent_service_client_id(),
+                    options={"require_exp": True},
+                )
+                exchanged_tools = {
+                    scope[5:]
+                    for scope in exchanged.get("scope", "").split()
+                    if scope.startswith("tool:")
+                }
+                if (
+                    node_identity.canonical_owner_id(
+                        exchanged.get("iss"), exchanged.get("sub")
+                    )
+                    != owner_id
+                    or exchanged.get("aud")
+                    not in (agent_service_client_id(), [agent_service_client_id()])
+                    or exchanged.get("azp") != os.getenv("KEYCLOAK_CLIENT_ID", "").strip()
+                    or type(exchanged.get("scope")) is not str
+                    or not effective.issubset(set(exchanged["scope"].split()))
+                    or (set(exchanged["scope"].split()) & set(VALID_SCOPES)) - effective
+                    or exchanged_tools != set(allowed_tools)
+                ):
+                    _refuse()
+                from shared.a2a_security import token_roles
 
-            roles = set(token_roles(exchanged))
-            allowed_roles = (
-                {"user", "offline_access", "uma_authorization"}
-                | effective
-                | {"tool:" + tool for tool in allowed_tools}
-            )
-            if "user" not in roles or roles - allowed_roles:
-                _refuse()
+                roles = set(token_roles(exchanged))
+                allowed_roles = (
+                    {"user", "offline_access", "uma_authorization"}
+                    | effective
+                    | {"tool:" + tool for tool in allowed_tools}
+                )
+                if "user" not in roles or roles - allowed_roles:
+                    _refuse()
+                subject_token = exchange["access_token"]
             expires = min(
                 int(claims["exp"]),
                 int(exchanged["exp"]),
@@ -566,9 +616,9 @@ class MeshAdmission:
             )
             observation = SessionExecutionObservation(
                 credential,
-                candidate.started_at,
+                started_at,
                 min(
-                    candidate.started_at + timedelta(seconds=15),
+                    started_at + timedelta(seconds=15),
                     datetime.fromtimestamp(expires, timezone.utc),
                 ),
             )
@@ -580,7 +630,7 @@ class MeshAdmission:
                 owner_id,
                 dict(custody),
                 observation,
-                exchange["access_token"],
+                subject_token,
                 scopes,
                 agent_id,
                 expires,
@@ -648,6 +698,7 @@ class MeshAdmission:
             token = delegation.encode_delegation_payload(payload)
         except delegation.DelegationConfigError:
             raise MeshIAMUnavailable() from None
+        payload = delegation.decode_token_payload(token)
         now = me._now_ms()
         self.store._credentials.repository.upsert_credential(
             transaction,

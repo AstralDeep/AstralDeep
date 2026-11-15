@@ -2058,6 +2058,27 @@ class ConversationCommitRepository:
                     retry_after_ms=None,
                     transaction=transaction,
                 )
+            mesh_messages = ()
+            if completion_state == "completed":
+                mesh_messages = tuple(
+                    self._history.messages.get_by_publication_position(
+                        transaction,
+                        owner_id=owner_user_id,
+                        conversation_id=staged.conversation_id,
+                        publication_id=commit_id,
+                        commit_position=message.position,
+                    )
+                    for message in summary.messages
+                )
+        from orchestrator import node_mesh_chat
+
+        for message in mesh_messages:
+            try:
+                node_mesh_chat.observe_message(
+                    owner_user_id, staged.conversation_id, message.role, _mutable_json_value(message.content),
+                )
+            except Exception:
+                logger.exception("node_mesh_committed_message_observation_failed")
         return self._commit_record(committed)
     def build_snapshot(
         self,
@@ -2539,6 +2560,9 @@ class HistoryManager:
                 expected_updated_at=chat.updated_at,
                 updated_at=max(timestamp, chat.updated_at + 1),
             )
+        from orchestrator import node_mesh_chat
+
+        node_mesh_chat.observe_message(user_id, chat_id, role, content)
 
     def get_latest_message_id(self, chat_id: str, user_id: str = 'legacy'):
         return self._history.call(

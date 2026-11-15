@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from tests.helpers.registered_human import registered_chat
+from tests.helpers.fixture_owner import fixture_owner
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -174,7 +175,7 @@ async def env(monkeypatch):
 
     orch.execute_single_tool = AsyncMock(side_effect=_tool_result)
 
-    user_id = f"coi-test-{uuid.uuid4().hex[:8]}"
+    user_id = fixture_owner(f"coi-test-{uuid.uuid4().hex[:8]}")
     sockets, chats = {}, {}
     for device in ("browser", "android"):
         ws = _fresh_socket()

@@ -157,8 +157,9 @@ def test_native_clients_disable_vendor_rtc_diagnostics_before_connect() -> None:
     assert "LiveKit.loggingLevel = LoggingLevel.OFF" in android
     assert "LiveKit.enableWebRTCLogging = false" in android
     assert android.index("LiveKit.loggingLevel") < android.index("LiveKit.create")
-    assert "LiveKitSDK.disableLogging()" in apple
-    assert apple.index("_ = Self.vendorLoggingDisabled") < apple.index("Room(")
+    assert "LiveKit" not in apple
+    assert "Room(" not in apple
+    assert "URLSession" not in apple
     assert '_LIVEKIT_VENDOR_LOGGERS = ("livekit", "livekit.rtc"' in windows
     assert windows.index("\n_disable_livekit_vendor_logging()\n") < windows.index(
         "from livekit import rtc"
@@ -188,7 +189,6 @@ def test_apple_authenticated_transports_are_ephemeral_and_no_store() -> None:
         "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/Auth/ServerSession.swift",
         "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/Auth/MeshEnrollment.swift",
         "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/Transport/WSClient.swift",
-        "components/AstralProjection/apple-clients/AstralApp/AstralApp/Voice/VoiceSessionController.swift",
     )
     for relative in paths:
         source = (REPO_ROOT / relative).read_text(encoding="utf-8")

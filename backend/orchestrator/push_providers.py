@@ -33,6 +33,8 @@ FCM_SEND_URL_TEMPLATE = (
 FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
 APNS_DEFAULT_HOST = "https://api.push.apple.com"
 APNS_TOKEN_LIFETIME_SECONDS = 1800
+APNS_WAKE_COLLAPSE_ID = "astral-wake"
+WAKE_LIFETIME_SECONDS = 3600
 FCM_TOKEN_LIFETIME_SECONDS = 3300
 MAX_PUSH_LIFETIME_SECONDS = 300
 GENERIC_PUSH_TITLE = "AstralDeep"
@@ -316,6 +318,34 @@ class ApnsPushAdapter:
             "push_provider.apns_accepted",
             extra={"notification_id": notification_id, "provider": self.provider},
         )
+
+    def send_wake(self, *, device_token: str) -> None:
+        if not self.configured:
+            raise PushProviderError(
+                transient=True,
+                code="provider_unconfigured",
+                detail="apns sender credentials are not configured",
+            )
+        now = self._clock()
+        headers = {
+            "apns-topic": self._topic,
+            "apns-push-type": "background",
+            "apns-priority": "5",
+            "apns-expiration": str(int(now) + WAKE_LIFETIME_SECONDS),
+            "apns-collapse-id": APNS_WAKE_COLLAPSE_ID,
+        }
+        try:
+            self._transport(
+                "POST",
+                f"{self._host}/3/device/{device_token}",
+                api_key=self._provider_token(),
+                json_body={"aps": {"content-available": 1}},
+                extra_headers=headers,
+                timeout=15,
+                max_response_bytes=64 * 1024,
+            )
+        except ExternalHttpError as exc:
+            raise self._send_failure(exc) from None
 
     def _send_failure(self, exc: ExternalHttpError) -> PushProviderError:
         if isinstance(exc, AuthFailedError):

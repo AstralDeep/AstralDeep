@@ -2,6 +2,8 @@
 # UI on port 8001 with no separate frontend build; installs pinned local component wheels plus
 # poppler/libmagic for the file-upload tools.
 
+FROM scratch AS kernel-artifacts
+
 FROM python:3.11-slim AS component-builder
 WORKDIR /build
 
@@ -9,7 +11,7 @@ RUN python -m pip install --no-cache-dir \
         setuptools==83.0.0 \
         wheel==0.45.1 \
         hatchling==1.27.0 \
-        uv_build==0.12.23
+        uv_build==0.13.6
 
 COPY pyproject.toml .gitmodules ./
 COPY config/astral-composition.json ./config/astral-composition.json
@@ -18,8 +20,10 @@ COPY scripts/install_local_components.py ./scripts/install_local_components.py
 COPY components/AstralProjection/pyproject.toml components/AstralProjection/README.md components/AstralProjection/LICENSE.md components/AstralProjection/NOTICE ./components/AstralProjection/
 COPY components/AstralProjection/src/astralprojection/ ./components/AstralProjection/src/astralprojection/
 COPY components/AstralProjection/backend/webrender/ ./components/AstralProjection/backend/webrender/
-COPY components/AstralProjection/backend/rote/ ./components/AstralProjection/backend/rote/
 COPY components/AstralProjection/contracts/ ./components/AstralProjection/contracts/
+
+COPY components/AstralKernel/python/rote/pyproject.toml components/AstralKernel/python/rote/README.md ./components/AstralKernel/python/rote/
+COPY components/AstralKernel/python/rote/src/rote/ ./components/AstralKernel/python/rote/src/rote/
 
 COPY components/AstralPlane/pyproject.toml components/AstralPlane/README.md components/AstralPlane/LICENSE ./components/AstralPlane/
 COPY components/AstralPlane/src/astralplane/ ./components/AstralPlane/src/astralplane/
@@ -65,6 +69,12 @@ RUN python scripts/install_local_components.py install \
         --root /app \
         --lock /opt/astral-component-wheels/astral-component-wheels.lock.json \
     && python -m pip check
+
+COPY config/astral-kernel-binding.json ./config/astral-kernel-binding.json
+COPY scripts/install_kernel_binding.py ./scripts/install_kernel_binding.py
+RUN --mount=type=bind,from=kernel-artifacts,target=/kernel-artifacts \
+    python scripts/install_kernel_binding.py install --artifacts /kernel-artifacts
+ENV PATH="/opt/astral-kernel/bin:${PATH}"
 
 RUN python -m spacy download en_core_web_lg
 

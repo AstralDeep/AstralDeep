@@ -9,23 +9,21 @@ import json
 import logging
 from typing import Optional, Dict, List, Any
 
-from jose import jwt as jose_jwt
-
+from shared import node_identity
+from shared.token_verify import TokenRefused, check_idp_audience, verify_idp_token
 from shared.auth_clients import (
     agent_service_client_id,
     allowed_azps,
-    audience_set,
     is_first_party_user_claims,
 )
 
 logger = logging.getLogger("A2ASecurity")
 
-KEYCLOAK_DEFAULT_AUDIENCE = "account"
-
 ENTRY_ROLES = frozenset({"user", "admin"})
 
 _DEFAULT_MOCK_CLAIMS = {
     "sub": "test_user",
+    "aud": "account",
     "preferred_username": "test_user",
     "email": "test_user@local",
     "realm_access": {"roles": ["admin", "user"]},
@@ -100,37 +98,40 @@ class A2ASecurityValidator:
         if not self.authority or not self.client_id:
             logger.error("Keycloak not configured for A2A token validation")
             return None
-
+        if node_identity.is_personal() and node_identity.peek_algorithm(token) == "EdDSA":
+            return self._validate_node_token(token)
         try:
-            jwks = await self._get_jwks(token)
-            # verify_aud off on purpose; audience is checked separately
-            payload = jose_jwt.decode(
+            return await verify_idp_token(
                 token,
-                jwks,
-                algorithms=["RS256"],
-                options={"verify_aud": False, "verify_at_hash": False},
+                extra_azps=self._accepted_azps(),
+                extra_issuers=[self.authority],
+                extra_audiences=() if self.require_first_party_user else [agent_service_client_id()],
+                jwks_getter=self._jwks_for,
             )
-        except Exception as e:
-            logger.error(f"A2A token validation failed: {e}")
+        except TokenRefused as exc:
+            logger.warning("A2A token rejected: %s", exc.reason)
+            return None
+        except Exception as exc:
+            logger.error(f"A2A token validation failed: {exc}")
             return None
 
-        iss = payload.get("iss")
-        if iss is not None and str(iss).rstrip("/") != self.authority.rstrip("/"):
-            logger.warning("A2A token rejected: issuer mismatch")
-            return None
-        if iss is None and self.require_first_party_user:
-            logger.warning("A2A token rejected: missing issuer")
-            return None
-
-        azp = payload.get("azp")
-        if azp:
-            if azp not in self._accepted_azps():
-                logger.warning(f"A2A token rejected: invalid azp={azp}")
-                return None
-        elif self.require_first_party_user:
-            logger.warning("A2A token rejected: missing azp")
+    def _validate_node_token(self, token: str) -> Optional[Dict[str, Any]]:
+        try:
+            payload = node_identity.load_node_identity(create=False).verify_token(
+                token, audience=agent_service_client_id()
+            )
+            node_identity.enforce_owner(str(payload.get("sub") or ""))
+        except node_identity.NodeIdentityError as exc:
+            logger.warning("A2A node token rejected: %s", exc)
             return None
         return payload
+
+    async def _jwks_for(self, url: str, token: str) -> dict:
+        if url == f"{self.authority.rstrip('/')}/protocol/openid-connect/certs":
+            return await self._get_jwks(token)
+        from shared.jwks_cache import get_jwks
+
+        return await get_jwks(url, token=token)
 
     async def _get_jwks(self, token: Optional[str] = None) -> dict:
         from shared.jwks_cache import get_jwks
@@ -144,13 +145,10 @@ class A2ASecurityValidator:
         ok, reason = is_first_party_user_claims(payload)
         if not ok:
             return reason
-        aud = audience_set(payload)
-        if aud:
-            accepted = {KEYCLOAK_DEFAULT_AUDIENCE} | set(allowed_azps())
-            if self.client_id:
-                accepted.add(self.client_id)
-            if not (aud & accepted):
-                return "audience_mismatch"
+        try:
+            check_idp_audience(payload)
+        except TokenRefused as refusal:
+            return refusal.reason
         if not ENTRY_ROLES.intersection(token_roles(payload)):
             return "missing_entry_role"
         return ""

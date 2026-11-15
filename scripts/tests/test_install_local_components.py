@@ -105,6 +105,7 @@ def test_real_contract_declarations_are_exact_without_private_checkout() -> None
     )
     assert [component.key for component in contract.components] == [
         "astral-primitives",
+        "astral-kernel",
         "astral-projection",
         "astral-plane",
         "lets",
@@ -118,6 +119,7 @@ def test_real_initialized_sources_match_the_declarations() -> None:
         (REPOSITORY_ROOT / relative / "pyproject.toml").is_file()
         for relative in (
             "components/AstralProjection",
+            "components/AstralKernel/python/rote",
             "components/AstralPlane",
             "components/AstralPrimitives",
             "components/LETS",
@@ -129,7 +131,7 @@ def test_real_initialized_sources_match_the_declarations() -> None:
         require_sources=True,
         require_gitlinks=True,
     )
-    assert len(contract.components) == 4
+    assert len(contract.components) == 5
 
 
 def test_build_and_install_use_offline_no_resolver_commands_in_order(
@@ -391,7 +393,7 @@ def _minimal_declaration(tmp_path: Path, *, installer_name: str = "pip-wheel/v1"
         "wheel-lock-format = 'astraldeep.component-wheel-lock/v1'\n"
         "install-order = ['demo']\n"
         "build-tools = ['setuptools==83.0.0', 'wheel==0.45.1', "
-        "'hatchling==1.27.0', 'uv_build==0.12.23']\n"
+        "'hatchling==1.27.0', 'uv_build==0.13.6']\n"
         "[tool.astraldeep.local-components.demo]\n"
         "distribution = 'demo-package'\n"
         "version = '1.2.3'\n"
@@ -442,6 +444,35 @@ def test_contract_mutations_fail_closed(tmp_path: Path) -> None:
 
     with pytest.raises(installer.ComponentInstallError, match="duplicate"):
         installer._string_list(["demo", "demo"], field="install-order")
+
+
+def _kernel_declaration() -> dict:
+    metadata = installer._read_toml(REPOSITORY_ROOT / "pyproject.toml")
+    return dict(metadata["tool"]["astraldeep"]["local-components"]["astral-kernel"])
+
+
+def test_package_root_places_the_wheel_source_below_the_component_path() -> None:
+    spec = installer._component_spec("astral-kernel", _kernel_declaration())
+    assert spec.package_root == "python/rote"
+    assert spec.package_path == "components/AstralKernel/python/rote"
+    assert spec.source_root(Path("/checkout")) == Path("/checkout/components/AstralKernel/python/rote")
+    plain = {key: value for key, value in _kernel_declaration().items() if key != "package-root"}
+    spec = installer._component_spec("astral-kernel", plain)
+    assert spec.package_root == ""
+    assert spec.source_root(Path("/checkout")) == Path("/checkout/components/AstralKernel")
+
+
+@pytest.mark.parametrize("value", ["../escape", "/absolute", "", "a/../../b"])
+def test_package_root_must_stay_inside_the_component(value: str) -> None:
+    declaration = {**_kernel_declaration(), "package-root": value}
+    with pytest.raises(installer.ComponentInstallError):
+        installer._component_spec("astral-kernel", declaration)
+
+
+def test_unknown_component_fields_are_still_rejected() -> None:
+    declaration = {**_kernel_declaration(), "package_root": "python/rote"}
+    with pytest.raises(installer.ComponentInstallError, match="invalid fields"):
+        installer._component_spec("astral-kernel", declaration)
 
 
 @pytest.mark.parametrize(
@@ -606,3 +637,27 @@ def test_main_routes_commands_and_reports_typed_errors(
     )
     assert installer.main(["validate", "--root", str(tmp_path)]) == 2
     assert "typed failure" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("names", [[], ["missing"], ["demo", "demo"]])
+def test_component_selection_rejects_invalid_names(tmp_path, names):
+    contract = _contract(tmp_path)
+    with pytest.raises(installer.ComponentInstallError, match="selection"):
+        installer.select_components(contract, names)
+
+
+def test_component_selection_keeps_canonical_order_and_default_contract(tmp_path):
+    contract = _contract(tmp_path)
+    selected = installer.select_components(contract, [component.key for component in reversed(contract.components)])
+    assert selected.components == contract.components
+    assert selected.manifest_path == contract.manifest_path
+    assert installer._parser().parse_args(["validate"]).components is None
+
+
+def test_component_selection_validates_only_selected_sources(tmp_path, monkeypatch):
+    contract = _contract(tmp_path)
+    observed = []
+    monkeypatch.setattr(installer, "_validate_component_sources", observed.append)
+    selected = installer.select_components(contract, [contract.components[0].key], require_sources=True)
+    assert observed == [selected]
+    assert len(contract.components) > len(selected.components)

@@ -1,6 +1,6 @@
 """Validates the composition manifest's declared AstralPlane contract and builds the
-initialized Plane runtime from it, delegating connection, migration, and repository
-mechanics to astralplane. Composed by runtime_composition.py at boot.
+initialized Plane runtime on PostgreSQL or, for the personal node profile, SQLite, delegating
+connection, migration, and repository mechanics to astralplane. Composed by runtime_composition.py at boot.
 """
 
 from __future__ import annotations
@@ -10,12 +10,13 @@ import hashlib
 import logging
 import os
 import re
+import stat
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 
 from astralplane import (
     BLOB_LAYOUT_VERSION,
@@ -28,14 +29,19 @@ from astralplane import (
     PlaneRuntime,
     READ_COMPATIBLE_FROM,
     SCHEMA_REVISION,
+    SQLITE_DATA_PLANE_REVISION,
+    SQLITE_MIGRATION_DIGEST,
     RepositoryCatalog,
     StreamingBlobStore,
     create_repository_catalog,
     create_postgres_runtime,
+    create_sqlite_runtime,
     create_attachment_materialization_coordinator,
     create_streaming_blob_store,
     inspect_compatibility,
 )
+from astralplane.database.sqlite import is_sqlite_url
+from astralplane.database.sqlite_migrations import SQLITE_SCHEMA_STRUCTURE_DIGEST
 from astralplane.repositories.agents import AgentPolicyReconciliationResult
 
 from orchestrator.agent_constitution import USER_AGENT_POLICY_REVISION
@@ -47,6 +53,13 @@ _REVISION = re.compile(r"^[0-9]{3}\.[0-9]{3}$")
 _CONTRACT = re.compile(r"^[a-z][a-z0-9._-]*/v[1-9][0-9]*$")
 _PRODUCT_RECONCILER_NAME = "astraldeep-plane-contract"
 _PRODUCT_RECONCILER_PROFILE = "astraldeep-runtime/v1"
+PROFILE_ENV = "ASTRAL_NODE_PROFILE"
+DATA_DIR_ENV = "ASTRAL_NODE_DATA_DIR"
+PERSONAL = "personal"
+POSTGRESQL = "postgresql"
+SQLITE = "sqlite"
+SQLITE_DATABASE_FILE = "plane.sqlite3"
+_SPLIT_DATABASE_VARIABLES = ("DB_HOST", "DB_NAME", "DB_USER", "DB_PASSWORD", "DB_PORT")
 logger = logging.getLogger("Orchestrator.Plane")
 
 
@@ -90,12 +103,44 @@ def _required_text(value: object, field: str, pattern: re.Pattern[str]) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class SqliteRegistryExpectation:
+    schema_revision: str
+    migration_sha256: str
+    structure_sha256: str
+
+    @classmethod
+    def from_mapping(cls, value: object) -> SqliteRegistryExpectation:
+        if not isinstance(value, Mapping):
+            raise PlaneCompositionError("composition data_plane_sqlite must be an object")
+        expected_keys = {"migration_sha256", "schema_revision", "structure_sha256"}
+        actual_keys = set(value)
+        if actual_keys != expected_keys:
+            raise PlaneCompositionError(
+                "data_plane_sqlite keys differ: "
+                f"missing={sorted(expected_keys - actual_keys)!r}, "
+                f"extra={sorted(actual_keys - expected_keys)!r}"
+            )
+        return cls(
+            schema_revision=_required_text(
+                value["schema_revision"], "sqlite.schema_revision", _REVISION
+            ),
+            migration_sha256=_required_text(
+                value["migration_sha256"], "sqlite.migration_sha256", _SHA256
+            ),
+            structure_sha256=_required_text(
+                value["structure_sha256"], "sqlite.structure_sha256", _SHA256
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class PlaneContractExpectation:
     contract_version: str
     schema_revision: str
     read_compatible_from: str
     migration_sha256: str
     blob_layout_version: str
+    sqlite: SqliteRegistryExpectation | None = None
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> PlaneContractExpectation:
@@ -153,6 +198,7 @@ class PlaneComposition:
     expectation: PlaneContractExpectation
     repositories: RepositoryCatalog
     report: PlaneCompositionReport
+    backend: str = POSTGRESQL
 
     @property
     def repository_mapping(self) -> Mapping[str, object]:
@@ -184,10 +230,44 @@ class InitializedPlaneComposition:
         self.runtime.close()
 
 
+def plane_backend(database_url: str) -> str:
+    return SQLITE if is_sqlite_url(database_url) else POSTGRESQL
+
+
+def _registry_reasons(
+    expectation: PlaneContractExpectation, backend: str
+) -> list[str]:
+    if backend == POSTGRESQL:
+        return (
+            []
+            if expectation.migration_sha256 == MIGRATION_DIGEST
+            else ["migration_digest_mismatch"]
+        )
+    pinned = expectation.sqlite
+    if pinned is None:
+        return ["sqlite_registry_unpinned"]
+    observed = (
+        SQLITE_DATA_PLANE_REVISION.schema_revision,
+        SQLITE_MIGRATION_DIGEST,
+        SQLITE_SCHEMA_STRUCTURE_DIGEST,
+    )
+    declared = (pinned.schema_revision, pinned.migration_sha256, pinned.structure_sha256)
+    names = (
+        "sqlite_schema_revision_mismatch",
+        "sqlite_migration_digest_mismatch",
+        "sqlite_structure_digest_mismatch",
+    )
+    return [name for name, left, right in zip(names, declared, observed) if left != right]
+
+
 def inspect_plane_composition(
     expectation: PlaneContractExpectation,
+    backend: str = POSTGRESQL,
 ) -> PlaneCompositionReport:
+    if backend not in (POSTGRESQL, SQLITE):
+        raise PlaneCompositionError("Plane backend is not recognized")
     reasons: list[str] = []
+    registry = _registry_reasons(expectation, backend)
     exact_fields = (
         (
             expectation.contract_version,
@@ -204,20 +284,18 @@ def inspect_plane_composition(
             READ_COMPATIBLE_FROM,
             "read_compatible_from_mismatch",
         ),
-        (
-            expectation.migration_sha256,
-            MIGRATION_DIGEST,
-            "migration_digest_mismatch",
-        ),
+        (None, None, None),
         (
             expectation.blob_layout_version,
             BLOB_LAYOUT_VERSION,
             "blob_layout_version_mismatch",
         ),
     )
-    reasons.extend(
-        reason for declared, observed, reason in exact_fields if declared != observed
-    )
+    for declared, observed, reason in exact_fields:
+        if reason is None:
+            reasons.extend(registry)
+        elif declared != observed:
+            reasons.append(reason)
     producer_report = inspect_compatibility(
         expected_contract_version=expectation.contract_version,
         observed_schema_revision=expectation.schema_revision,
@@ -237,8 +315,9 @@ def inspect_plane_composition(
 
 def compose_plane_catalog(
     expectation: PlaneContractExpectation,
+    backend: str = POSTGRESQL,
 ) -> PlaneComposition:
-    report = inspect_plane_composition(expectation)
+    report = inspect_plane_composition(expectation, backend)
     if not report.compatible:
         raise PlaneCompositionError(
             "AstralPlane composition is incompatible: " + ", ".join(report.reasons)
@@ -247,6 +326,7 @@ def compose_plane_catalog(
         expectation=expectation,
         repositories=create_repository_catalog(),
         report=report,
+        backend=backend,
     )
 
 
@@ -262,6 +342,12 @@ def _product_reconciler(
         "repositories": list(contract.report.repositories),
         "schema_revision": contract.expectation.schema_revision,
     }
+    if contract.backend == SQLITE:
+        pinned = contract.expectation.sqlite
+        assert pinned is not None
+        evidence["backend"] = SQLITE
+        evidence["sqlite_migration_sha256"] = pinned.migration_sha256
+        evidence["sqlite_structure_sha256"] = pinned.structure_sha256
     canonical = json.dumps(
         evidence,
         ensure_ascii=True,
@@ -294,7 +380,10 @@ def compose_plane_runtime(
         raise PlaneCompositionError(
             "PERSONAL_AGENT_ARTIFACT_ROOT must be an absolute path"
         )
-    contract = compose_plane_catalog(expectation)
+    backend = plane_backend(database_url)
+    contract = compose_plane_catalog(expectation, backend)
+    if backend == SQLITE:
+        _prepare_sqlite_directory(database_url)
     blobs = create_streaming_blob_store(root=blob_root, create_root=True)
     reconciler = _product_reconciler(contract)
     generated_agent_bundles: ImmutableBundleStore | None = None
@@ -307,24 +396,36 @@ def compose_plane_runtime(
             artifact_root,
             contract=GENERATED_AGENT_BUNDLE_CONTRACT,
         )
-        runtime = create_postgres_runtime(
-            database_url,
-            identity=identity,
-            reconcilers=(reconciler,),
-            reconciliation_context={
+        shared_options: dict[str, Any] = {
+            "identity": identity,
+            "reconcilers": (reconciler,),
+            "reconciliation_context": {
                 "host": "astraldeep",
                 "composition_digest": reconciler.composition_digest,
             },
-            repositories=contract.repositories,
-            expected_contract_version=expectation.contract_version,
-            observed_schema_revision=expectation.schema_revision,
-            minimum_connections=minimum_connections,
-            maximum_connections=maximum_connections,
-            acquire_timeout_seconds=acquire_timeout_seconds,
-            connect_timeout_seconds=connect_timeout_seconds,
-            application_name=f"astralplane:{identity}",
-        )
+            "repositories": contract.repositories,
+            "expected_contract_version": expectation.contract_version,
+            "observed_schema_revision": expectation.schema_revision,
+            "maximum_connections": maximum_connections,
+            "acquire_timeout_seconds": acquire_timeout_seconds,
+        }
+        if backend == SQLITE:
+            runtime = create_sqlite_runtime(
+                database_url,
+                busy_timeout_seconds=float(connect_timeout_seconds),
+                **shared_options,
+            )
+        else:
+            runtime = create_postgres_runtime(
+                database_url,
+                minimum_connections=minimum_connections,
+                connect_timeout_seconds=connect_timeout_seconds,
+                application_name=f"astralplane:{identity}",
+                **shared_options,
+            )
         runtime.initialize(expected_revision=expectation.schema_revision)
+        if backend == SQLITE:
+            _require_private_sqlite_file(database_url)
         health = runtime.health()
         if not health.ready:
             raise PlaneCompositionError("AstralPlane initialization did not become ready")
@@ -400,6 +501,26 @@ def compose_plane_runtime(
     )
 
 
+def _sqlite_path(database_url: str) -> Path | None:
+    parts = urlsplit(database_url)
+    path = unquote(parts.path)
+    if parts.netloc or not path.startswith("/") or "\x00" in path:
+        return None
+    return Path(path)
+
+
+def _prepare_sqlite_directory(database_url: str) -> None:
+    path = _sqlite_path(database_url)
+    if path is not None:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+
+def _require_private_sqlite_file(database_url: str) -> None:
+    path = _sqlite_path(database_url)
+    if path is None or stat.S_IMODE(path.stat().st_mode) & 0o077:
+        raise PlaneCompositionError("SQLite database file must be private to its owner")
+
+
 def _reconcile_agent_validation_policy(
     runtime: PlaneRuntime,
     repositories: RepositoryCatalog,
@@ -453,13 +574,35 @@ def _positive_float(
     return parsed
 
 
+def _personal_profile(values: Mapping[str, str]) -> bool:
+    return values.get(PROFILE_ENV, "").strip().lower() == PERSONAL
+
+
+def _personal_sqlite_url(values: Mapping[str, str]) -> str:
+    configured = values.get(DATA_DIR_ENV, "").strip()
+    root = (
+        Path(configured).expanduser()
+        if configured
+        else Path(__file__).resolve().parents[1] / "data" / "node"
+    )
+    return f"sqlite://{quote(str(root.resolve() / SQLITE_DATABASE_FILE), safe='/')}"
+
+
 def resolve_plane_database_url(environ: Mapping[str, str] | None = None) -> str:
     values = os.environ if environ is None else environ
     direct = values.get("DATABASE_URL")
     if direct is not None:
         if not isinstance(direct, str) or not direct.strip():
             raise PlaneCompositionError("DATABASE_URL must be non-empty")
+        if is_sqlite_url(direct) and not _personal_profile(values):
+            raise PlaneCompositionError(
+                "SQLite storage is available only to the personal node profile"
+            )
         return direct
+    if _personal_profile(values) and not any(
+        name in values for name in _SPLIT_DATABASE_VARIABLES
+    ):
+        return _personal_sqlite_url(values)
 
     host = values.get("DB_HOST", "localhost")
     name = values.get("DB_NAME", "astraldeep")
@@ -567,7 +710,13 @@ def load_plane_expectation(path: str | Path) -> PlaneContractExpectation:
     data_plane = compatibility.get("data_plane")
     if not isinstance(data_plane, dict):
         raise PlaneCompositionError("composition data_plane must be an object")
-    return PlaneContractExpectation.from_mapping(data_plane)
+    expectation = PlaneContractExpectation.from_mapping(data_plane)
+    return replace(
+        expectation,
+        sqlite=SqliteRegistryExpectation.from_mapping(
+            compatibility.get("data_plane_sqlite")
+        ),
+    )
 
 
 __all__ = (
@@ -577,11 +726,13 @@ __all__ = (
     "PlaneCompositionError",
     "PlaneCompositionReport",
     "PlaneContractExpectation",
+    "SqliteRegistryExpectation",
     "compose_plane_catalog",
     "compose_plane_from_environment",
     "compose_plane_runtime",
     "inspect_plane_composition",
     "load_plane_expectation",
+    "plane_backend",
     "resolve_plane_blob_root",
     "resolve_plane_database_url",
     "resolve_personal_agent_artifact_root",

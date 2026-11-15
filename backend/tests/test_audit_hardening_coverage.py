@@ -356,7 +356,7 @@ def test_tool_security_blocked_helper():
 
 async def test_validate_token_rejects_iss_mismatch(monkeypatch):
     import shared.jwks_cache as jwks_cache
-    from orchestrator import orchestrator as orch_mod
+    from shared import token_verify
     from orchestrator.orchestrator import Orchestrator
 
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
@@ -368,7 +368,7 @@ async def test_validate_token_rejects_iss_mismatch(monkeypatch):
 
     monkeypatch.setattr(jwks_cache, "get_jwks", _fake_get_jwks)
     monkeypatch.setattr(
-        orch_mod.jose_jwt, "decode",
+        token_verify.jose_jwt, "decode",
         lambda *a, **k: {"iss": "https://evil.example/realms/other", "azp": "astral-frontend"},
     )
 

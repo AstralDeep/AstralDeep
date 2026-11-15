@@ -56,9 +56,12 @@ def fixture(base_session, monkeypatch):
     def token(**changes):
         return original_token(**{"iss": ISSUER, **changes})
 
-    store.update_tokens(
-        sid, access_token=token(), refresh_token="synthetic-native-compat-refresh"
-    )
+    from shared.node_identity import canonical_owner_id
+
+    owner = canonical_owner_id(ISSUER, owner.split(".", 2)[2])
+    store.delete(sid)
+    store.create(sid, user_id=owner, access_token=token(),
+                 refresh_token="synthetic-native-compat-refresh", hard_max_seconds=3600)
 
     async def exchange(refresh, prior_access):
         seen.append((refresh, prior_access))

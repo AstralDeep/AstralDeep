@@ -63,7 +63,13 @@ def test_no_cookie_no_session(monkeypatch):
 def test_sub_from_jwt_best_effort():
     import base64
     import json
-    payload = base64.urlsafe_b64encode(json.dumps({"sub": "user-9"}).encode()).rstrip(b"=").decode()
+    from shared.node_identity import canonical_owner_id
+
+    issuer = "https://idp.example/realms/astral"
+    payload = base64.urlsafe_b64encode(
+        json.dumps({"sub": "user-9", "iss": issuer}).encode()).rstrip(b"=").decode()
     fake_jwt = "h." + payload + ".sig"
-    assert web_auth._sub_from_jwt(fake_jwt) == "user-9"
+    assert web_auth._sub_from_jwt(fake_jwt) == canonical_owner_id(issuer, "user-9")
+    no_issuer = base64.urlsafe_b64encode(json.dumps({"sub": "user-9"}).encode()).rstrip(b"=").decode()
+    assert web_auth._sub_from_jwt("h." + no_issuer + ".sig") == "anonymous"
     assert web_auth._sub_from_jwt("garbage") == "anonymous"

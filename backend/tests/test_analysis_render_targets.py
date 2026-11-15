@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from tests.helpers.registered_human import registered_chat
+from tests.helpers.fixture_owner import fixture_owner
 from astralplane import GENERATED_AGENT_BUNDLE_CONTRACT, ImmutableBundleStore
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -23,7 +24,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from orchestrator.runtime_composition import AstralRuntimeComposition  # noqa: E402
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
-USER = "target-user"
+USER = fixture_owner("target-user")
 
 
 class _AttachmentMaterializer:

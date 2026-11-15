@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Tuple
 
 import websockets
 import websockets.exceptions
@@ -32,7 +32,6 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from jose import jwt as jose_jwt
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -54,6 +53,7 @@ from orchestrator.credential_manager import CredentialManager
 from orchestrator.delegation import DelegationService
 from orchestrator.tool_security import ToolSecurityAnalyzer
 from orchestrator.compaction import compact_messages
+from llm_config import deadlines as llm_deadlines
 from llm_config.client_factory import create_completion
 from llm_config.tool_continuation import (
     is_gemini_continuation_profile,
@@ -63,7 +63,9 @@ from llm_config.tool_continuation import (
 from orchestrator import evidence_context
 from orchestrator import context_engineering
 from orchestrator import datamarking
-from orchestrator import model_router
+from orchestrator import vessel_executor as _vessel_executor
+from orchestrator import llm_recovery, model_router, repeat_guard
+from orchestrator.tool_arguments import ArgumentError, ArgumentResult, model_error_text, prepare_arguments
 from orchestrator import viewport
 from orchestrator.hooks import HookManager, HookEvent, HookContext
 from orchestrator.task_state import TaskManager, TaskState
@@ -189,6 +191,33 @@ class _LLMHTMLMaintenanceError(RuntimeError):
 
 class _LLMMalformedResponseError(RuntimeError):
     pass
+
+
+class _LLMStreamStalledError(TimeoutError):
+    def __init__(self, phase: str):
+        super().__init__(phase)
+        self.phase = phase
+
+
+class _LLMStreamInterrupted(RuntimeError):
+    def __init__(self, partial: str):
+        super().__init__("stream interrupted after visible text")
+        self.partial = partial
+
+
+_ARGUMENT_REPAIR_PROMPT = (
+    "You repair the arguments of one tool call. Reply with one JSON object that matches the schema. "
+    "Use only values that appear in the original arguments. If a required value is not there, reply with {}."
+)
+_MAX_REGENERATED_ARGUMENT_CHARS = 8000
+_CONTINUE_PROMPT = (
+    "Continue your previous message from exactly where it stopped. "
+    "Do not repeat any of it and do not restart."
+)
+_INCOMPLETE_NOTICE = (
+    "The model connection dropped before this answer finished. "
+    "The text above may be incomplete."
+)
 
 
 LLM_CREDENTIAL_ATTEMPT_TIMEOUT_SECONDS = 10.0
@@ -1133,6 +1162,8 @@ class Orchestrator:
         self.async_task_manager = BackgroundTaskManager()
         self.agents: Dict[str, websockets.WebSocketServerProtocol] = {}
         self.local_agents: Dict[str, Any] = {}
+        self.vessel_executor: Optional[Any] = None
+        self.vessel_definitions: Dict[Tuple[str, str], str] = {}
         self.ui_clients: List[websockets.WebSocketServerProtocol] = []
         self.ui_sessions: Dict[websockets.WebSocketServerProtocol, Dict] = {}
         self.agent_cards: Dict[str, AgentCard] = {}
@@ -1202,6 +1233,7 @@ class Orchestrator:
         self.a2a_agent_cards: Dict[str, Any] = {}
         self.agent_urls: Dict[str, str] = {}
         self._standard_a2a_agent_cards: Dict[str, Any] = {}
+        self._card_trust_registry()
 
         from llm_config import (
             build_llm_client,
@@ -1527,6 +1559,9 @@ class Orchestrator:
             metrics=self._push_delivery_metric,
             delivery_policy=self._push_notification_allowed,
         )
+
+        from orchestrator.mesh_push_gateway import publisher_for
+        self.mesh_push_publisher = publisher_for(self)
 
         from orchestrator.notification_routing import NotificationRoutingCoordinator
         self.notification_routing = NotificationRoutingCoordinator(
@@ -5672,9 +5707,18 @@ class Orchestrator:
                     logger.debug("close after invalid tool schema failed", exc_info=True)
             return
 
+        if _vessel_executor.is_sandboxed(self, card.agent_id):
+            logger.error("registration refused: %s is a sandboxed agent", card.agent_id)
+            if websocket is not None:
+                try:
+                    await websocket.close(code=1008, reason="agent id reserved")
+                except Exception:
+                    logger.debug("close after reserved agent id failed", exc_info=True)
+            return
         if websocket is not None:
             self.agents[card.agent_id] = websocket
         card.metadata = dict(getattr(card, "metadata", {}) or {})
+        _vessel_executor.strip_foreign_metadata(card)
         _dispatch_runtime = getattr(self, "_governed_dispatch_runtimes", {}).get(
             card.agent_id
         )
@@ -6003,6 +6047,79 @@ class Orchestrator:
         except Exception as e:
             logger.debug(f"Discovery attempt to {base_url} skipped: {e}")
 
+    async def _register_external_agent(self, websocket, payload: Dict[str, Any]) -> None:
+        from orchestrator.a2a_card_authority import registration_caller
+        from orchestrator.a2a_card_trust import CardRefused, CardTrust
+
+        caller = await registration_caller(self, websocket, payload)
+        agent_url = str(payload.get("url", "")).strip().rstrip("/")
+        if not agent_url:
+            await self.send_ui_render(websocket, [
+                Alert(message="Please provide an agent URL", variant="error").to_dict()
+            ])
+            return
+        try:
+            trust = CardTrust.from_mapping({
+                "jwks_url": payload.get("jwks_url"),
+                "public_key": payload.get("public_key"),
+                "card_sha256": payload.get("card_sha256"),
+            })
+            await caller.verify_delivery()
+            self._card_trust_registry().pin(agent_url, trust)
+        except CardRefused as refusal:
+            await self.send_ui_render(websocket, [Alert(message=refusal.reason, variant="error").to_dict()])
+            return
+        await self._safe_send(websocket, json.dumps({
+            "type": "chat_status",
+            "status": "thinking",
+            "message": f"Discovering agent at {agent_url}..."
+        }))
+        await self.discover_a2a_agent(agent_url)
+        if any(aid for aid, card in self.agent_cards.items()
+               if card.metadata.get("a2a_url") == agent_url):
+            await self.send_agent_list(websocket)
+            await self._safe_send(websocket, json.dumps({
+                "type": "chat_status", "status": "done",
+                "message": f"External agent registered from {agent_url}"
+            }))
+        else:
+            await self.send_ui_render(websocket, [
+                Alert(message=f"Could not discover A2A agent at {agent_url}", variant="error").to_dict()
+            ])
+            await self._safe_send(websocket, json.dumps({
+                "type": "chat_status", "status": "done",
+                "message": "Discovery failed"
+            }))
+
+    def _card_trust_registry(self):
+        registry = getattr(self, "a2a_card_trust", None)
+        if registry is None:
+            from orchestrator.a2a_card_trust import registry_from_environment
+
+            registry = self.a2a_card_trust = registry_from_environment(
+                os.getenv("A2A_EXTERNAL_AGENT_KEYS", ""))
+        return registry
+
+    async def _admit_a2a_card(self, base_url: str, card, *, owner_id: str = "system:a2a-discovery") -> bool:
+        from audit.hooks import record_generic
+        from orchestrator.a2a_card_trust import CardRefused
+
+        outcome, code, detail = "success", "admitted", ""
+        try:
+            digest = await asyncio.to_thread(self._card_trust_registry().admit, base_url, card)
+        except CardRefused as refusal:
+            digest, outcome, code, detail = "", "failure", refusal.code, refusal.reason
+            logger.warning("Refusing A2A agent at %s: %s", base_url, refusal.reason)
+        await record_generic(
+            claims={"sub": owner_id}, event_class="agent_external_call",
+            action_type="a2a.agent_card.admitted" if outcome == "success" else "a2a.agent_card.refused",
+            description="External A2A agent card verified against the owner-pinned key"
+            if outcome == "success" else "External A2A agent card refused",
+            inputs_meta={"agent_url": base_url}, outputs_meta={"result": code, "card_sha256": digest},
+            outcome=outcome, outcome_detail=detail or None,
+        )
+        return outcome == "success"
+
     async def discover_a2a_agent(self, base_url: str, notify_ui: bool = True):
         try:
             await self.discover_agent(base_url)
@@ -6032,6 +6149,9 @@ class Orchestrator:
                                          timeout=5.0) as http_client:
                 resolver = A2ACardResolver(http_client, base_url)
                 a2a_card = await resolver.get_agent_card()
+
+            if not await self._admit_a2a_card(base_url, a2a_card):
+                return
 
             try:
                 resolve_request_interface(a2a_card, base_url)
@@ -6085,6 +6205,10 @@ class Orchestrator:
                                          timeout=5.0) as http_client:
                 resolver = A2ACardResolver(http_client, a2a_url)
                 a2a_card = await resolver.get_agent_card()
+
+            if (self._card_trust_registry().trust_for(base_url) is not None
+                    and not await self._admit_a2a_card(base_url, a2a_card)):
+                return
 
             try:
                 resolve_request_interface(a2a_card, base_url)
@@ -7407,7 +7531,7 @@ class Orchestrator:
                     or frame.get("session_id") is not None or supplied_connection is None):
                 return None
             try:
-                from astralprojection.work_continuity import validate_continuity_payload
+                from rote.work_continuity import validate_continuity_payload
 
                 validate_continuity_payload(payload)
             except (ImportError, ValueError):
@@ -11271,33 +11395,7 @@ class Orchestrator:
                     await self.send_agent_list(websocket)
 
                 elif msg.action == "register_external_agent":
-                    agent_url = msg.payload.get("url", "").strip().rstrip("/")
-                    if not agent_url:
-                        await self.send_ui_render(websocket, [
-                            Alert(message="Please provide an agent URL", variant="error").to_dict()
-                        ])
-                    else:
-                        await self._safe_send(websocket, json.dumps({
-                            "type": "chat_status",
-                            "status": "thinking",
-                            "message": f"Discovering agent at {agent_url}..."
-                        }))
-                        await self.discover_a2a_agent(agent_url)
-                        if any(aid for aid, card in self.agent_cards.items()
-                               if card.metadata.get("a2a_url") == agent_url):
-                            await self.send_agent_list(websocket)
-                            await self._safe_send(websocket, json.dumps({
-                                "type": "chat_status", "status": "done",
-                                "message": f"External agent registered from {agent_url}"
-                            }))
-                        else:
-                            await self.send_ui_render(websocket, [
-                                Alert(message=f"Could not discover A2A agent at {agent_url}", variant="error").to_dict()
-                            ])
-                            await self._safe_send(websocket, json.dumps({
-                                "type": "chat_status", "status": "done",
-                                "message": "Discovery failed"
-                            }))
+                    await self._register_external_agent(websocket, msg.payload)
 
                 elif msg.action == "agent_tunnel":
                     await self._handle_agent_tunnel(websocket, msg)
@@ -15903,6 +16001,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             designed_turn_marker: Optional[str] = None
 
             denial_tracker: Dict[str, int] = {}
+            llm_recovery.reset_turn()
+            repeat_guard.start_turn()
             DENIAL_THRESHOLD = 2
 
             if (
@@ -16514,6 +16614,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         "message": f"Running: {', '.join(tool_names)}..."
                     }))
 
+                    await self._prepare_tool_calls(websocket, llm_msg.tool_calls, tool_to_agent, tool_to_unqualified)
                     history_assistant_message = _history_assistant_message(llm_msg)
                     messages.append(history_assistant_message)
 
@@ -16705,6 +16806,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                     # OpenAI tool messages can't carry images; these follow
                     self._append_tool_images(messages, llm_msg.tool_calls, tool_results)
+
+                    if self._apply_repeat_guard(llm_msg.tool_calls, tool_results, tool_to_unqualified, messages):
+                        if goal_progress is not None:
+                            from orchestrator.goal_execution import REPEATED_FAILURES_REASON
+                            goal_stop_reason = REPEATED_FAILURES_REASON
+                            break
+                        await self.send_ui_render(websocket, [
+                            Alert(message=repeat_guard.STOP_NOTICE, variant="warning").to_dict()], target="chat")
+                        await self._safe_send(websocket, json.dumps(
+                            {"type": "chat_status", "status": "done", "message": ""}))
+                        break
 
                     if goal_progress is not None and not goal_recovery_nudge_sent and tool_results:
                         from orchestrator.computer_use_policy import MAX_WRITE_BYTES
@@ -17831,6 +17943,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.debug("model_router: selection failed — using default model",
                              exc_info=True)
+        plain_call = harness_binding is None and persistent_dispatch is None and not native_call
+        chain = llm_recovery.fallback_models(resolved.model) if plain_call else []
+        pinned = llm_recovery.TURN_MODEL.get()
+        if pinned in chain:
+            chain = chain[chain.index(pinned) + 1:]
+            call_model = pinned
+
         def _probe_state(model_name: str):
             key = (getattr(resolved, "base_url", None), model_name)
             rejected = set() if native_call else getattr(self, "_llm_unsupported_params", {}).get(key, set())
@@ -17901,6 +18020,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                 response = None
                 if stream_allowed:
+                    deadlines = llm_deadlines.deadlines_for(getattr(resolved, "base_url", None))
                     try:
                         if evidence_context.enabled() or evidence_bound:
                             retry_of = previous_context_attempt
@@ -17910,12 +18030,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 context_attempt=previous_context_attempt, context_retry=retry_of, purpose=feature,
                                 context_base_url=getattr(resolved, "base_url", None),
                                 context_provider_capture=getattr(client, "_evidence_provider_capture", None),
+                                deadlines=deadlines,
                             )
                         else:
                             response = await self._call_llm_streamed(
                                 websocket, client, kwargs, stream_chat_id,
                                 context_base_url=getattr(resolved, "base_url", None),
+                                deadlines=deadlines,
                             )
+                    except _LLMStreamInterrupted as interrupted:
+                        response = await self._continue_interrupted_stream(
+                            websocket, kwargs, interrupted.partial,
+                            lambda request: tracked_provider(
+                                lambda: create_completion(client, **request), request))
+                    except _LLMStreamStalledError:
+                        raise
                     except Exception as _stream_exc:
                         if native_call:
                             raise
@@ -18086,6 +18215,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
 
                 if not error.retryable or attempt == attempt_limit:
+                    if chain and llm_recovery.fallback_eligible(error.status_code, error.upstream_error_class):
+                        failed_model, call_model = call_model, chain.pop(0)
+                        await self._record_llm_call(
+                            self.audit_recorder, actor_user_id=actor_user_id, auth_principal=auth_principal,
+                            feature=feature, credential_source=source, resolved=resolved,
+                            routed_model=failed_model, total_tokens=None, outcome="failure",
+                            upstream_error_class=error.upstream_error_class)
+                        first_switch = llm_recovery.TURN_MODEL.get() is None
+                        llm_recovery.TURN_MODEL.set(call_model)
+                        cap_key, extra_kwargs = _probe_state(call_model)
+                        attempt = 0
+                        if first_switch and websocket is not None:
+                            await self.send_ui_render(websocket, [Alert(
+                                message=llm_recovery.fallback_notice(resolved.model, call_model),
+                                variant="info").to_dict()], target="chat")
+                        continue
                     runner_failed(error.exception_class, credential_rejected=error.status_code == 401)
                     await self._record_llm_call(
                         self.audit_recorder,
@@ -18108,7 +18253,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     # None here, not raise: avoids leaking raw payloads to chat
                     return None, None
 
-                backoff = min(2 ** (attempt - 1), 8) * random.uniform(0.8, 1.2)
+                backoff = llm_recovery.retry_delay(
+                    attempt, llm_recovery.retry_after_seconds(e), random.uniform(0.8, 1.2))
                 logger.info(
                     "Transient LLM error; retrying attempt=%d/%d "
                     "backoff_seconds=%.3f",
@@ -18118,6 +18264,30 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
                 await asyncio.sleep(backoff)
         return None, None
+
+    async def _continue_interrupted_stream(self, websocket, kwargs: Dict[str, Any], partial: str, invoke) -> Any:
+        from types import SimpleNamespace
+        request = {**kwargs, "messages": [
+            *kwargs["messages"],
+            {"role": "assistant", "content": partial},
+            {"role": "user", "content": _CONTINUE_PROMPT},
+        ]}
+        try:
+            response = await invoke(request)
+            message = response.choices[0].message
+            message.content = partial + (getattr(message, "content", None) or "")
+            return response
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("LLM stream continuation failed exception_class=%s", type(exc).__name__)
+        if websocket is not None:
+            await self.send_ui_render(
+                websocket, [Alert(message=_INCOMPLETE_NOTICE, variant="warning").to_dict()], target="chat")
+        message = self._assemble_streamed_message(partial, {})
+        object.__setattr__(message, "_astral_incomplete", True)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message, finish_reason="length")], usage=None)
 
     _MOA_CANDIDATE_LABELS = "ABCDEFGH"
 
@@ -18217,7 +18387,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return os.getenv("FF_LLM_STREAMING", "true").lower() in ("true", "1", "yes")
 
     async def _call_llm_streamed(self, websocket, client, kwargs, chat_id, *, context_attempt=None, context_retry=None,
-                                  purpose="conversation", context_base_url=None, context_provider_capture=None):
+                                  purpose="conversation", context_base_url=None, context_provider_capture=None,
+                                  deadlines: Optional[llm_deadlines.LLMDeadlines] = None):
         from llm_config.native_provider import NativeMessagesClient
         native_call = isinstance(client, NativeMessagesClient)
         buffer_narrative = _GOAL_BUFFERED_RESPONSE.get()
@@ -18295,9 +18466,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         emitted = False
         sent_len = 0
         last_emit = 0.0
+        started = last_progress = loop.time()
+        progressed = False
         try:
             while True:
-                kind, payload = await queue.get()
+                if deadlines is None:
+                    kind, payload = await queue.get()
+                else:
+                    wait, phase = llm_deadlines.stream_wait(
+                        deadlines, now=loop.time(), started=started,
+                        last_progress=last_progress, progressed=progressed)
+                    try:
+                        async with asyncio.timeout(wait):
+                            kind, payload = await queue.get()
+                    except TimeoutError:
+                        raise _LLMStreamStalledError(phase) from None
                 if kind == "done":
                     break
                 if kind == "error":
@@ -18316,6 +18499,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 delta = getattr(choice, "delta", None)
                 if delta is None:
                     continue
+                if getattr(delta, "tool_calls", None) or getattr(delta, "content", None):
+                    last_progress, progressed = loop.time(), True
                 if getattr(delta, "tool_calls", None):
                     if mode is None:
                         mode = "tool"
@@ -18382,6 +18567,20 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 except Exception:
                     logger.debug("narrative stream cleanup failed", exc_info=True)
             raise
+        except _LLMStreamStalledError:
+            abandoned.set()
+            pump_task.cancel()
+            await asyncio.gather(pump_task, return_exceptions=True)
+            if emitted:
+                try:
+                    await self._emit_narrative_frame(
+                        websocket, chat_id, stream_id, seq, "", terminal=True)
+                except Exception:
+                    logger.debug("narrative stream cleanup failed", exc_info=True)
+            if emitted and not buffer_narrative:
+                _NARRATIVE_STREAMED.set(True)
+                raise _LLMStreamInterrupted("".join(content_parts)) from None
+            raise
         except Exception:
             abandoned.set()
             if native_call:
@@ -18393,6 +18592,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         websocket, chat_id, stream_id, seq, "", terminal=True)
                 except Exception:
                     logger.debug("narrative stream cleanup failed", exc_info=True)
+            if emitted and not buffer_narrative:
+                _NARRATIVE_STREAMED.set(True)
+                raise _LLMStreamInterrupted("".join(content_parts)) from None
             raise
         await pump_task
         if native_call:
@@ -19059,6 +19261,96 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         md = getattr(card, "metadata", {}) or {}
         return tool_name in (md.get("long_running_tools") or [])
 
+    def _tool_input_schema(self, agent_id: Optional[str], tool_name: str) -> Optional[dict]:
+        if not agent_id:
+            return None
+        card = self.agent_cards.get(agent_id)
+        if card is None:
+            return None
+        for skill in card.skills:
+            if tool_name in {getattr(skill, "id", None), getattr(skill, "name", None)}:
+                schema = getattr(skill, "input_schema", None)
+                return schema if isinstance(schema, dict) else None
+        return None
+
+    async def _regenerate_tool_arguments(self, websocket, tool_name: str, schema: Optional[dict],
+                                         raw: Any, error: ArgumentError) -> Optional[dict]:
+        from persistent_agents.dispatch_context import current_dispatch
+        if (not isinstance(schema, dict) or not isinstance(raw, str)
+                or len(raw) > _MAX_REGENERATED_ARGUMENT_CHARS or current_dispatch() is not None):
+            return None
+        try:
+            result = await self._call_llm_json(
+                websocket,
+                [{"role": "system", "content": _ARGUMENT_REPAIR_PROMPT},
+                 {"role": "user", "content": json.dumps(
+                     {"tool": tool_name, "problem": error.message, "original_arguments": raw})}],
+                schema=schema, schema_name="tool_arguments", temperature=0, feature="tool_argument_repair")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("tool_arg_regeneration_failed tool=%s", tool_name, exc_info=True)
+            return None
+        if not isinstance(result, dict):
+            return None
+        checked = prepare_arguments(result, schema)
+        return checked.args if checked.error is None else None
+
+    async def _prepare_tool_calls(self, websocket, tool_calls, tool_to_agent: Dict,
+                                  tool_to_unqualified: Optional[Dict[str, str]]) -> None:
+        for call in tool_calls:
+            llm_tool_name = call.function.name
+            tool_name = (tool_to_unqualified or {}).get(llm_tool_name, llm_tool_name)
+            agent_id = tool_to_agent.get(llm_tool_name)
+            if agent_id is None and tool_to_agent:
+                wanted = llm_tool_name.replace("-", "_").lower()
+                matches = [k for k in tool_to_agent if k.replace("-", "_").lower() == wanted]
+                if len(matches) == 1:
+                    llm_tool_name = matches[0]
+                    tool_name = (tool_to_unqualified or {}).get(llm_tool_name, tool_name)
+                    agent_id = tool_to_agent.get(llm_tool_name)
+            if agent_id == "computer-use-1" and tool_name == "write_file":
+                continue
+            schema = self._tool_input_schema(agent_id, tool_name)
+            raw = call.function.arguments
+            result = prepare_arguments(raw, schema)
+            kind = "repaired"
+            if result.error is not None:
+                regenerated = await self._regenerate_tool_arguments(
+                    websocket, tool_name, schema, raw, result.error)
+                if regenerated is None:
+                    object.__setattr__(call, "_astral_argument_error", result.error)
+                    continue
+                result, kind = ArgumentResult(regenerated, True, None), "regenerated"
+            if result.repaired:
+                call.function.arguments = json.dumps(result.args, ensure_ascii=False)
+                logger.info("tool_arg_repaired tool=%s kind=%s", tool_name, kind)
+
+    def _apply_repeat_guard(self, tool_calls, tool_results, tool_to_unqualified: Optional[Dict[str, str]],
+                            messages: List[Dict[str, Any]]) -> bool:
+        guard = repeat_guard.current()
+        if guard is None:
+            return False
+        stop = False
+        for index, call in enumerate(tool_calls):
+            result = tool_results[index] if index < len(tool_results) else None
+            name = (tool_to_unqualified or {}).get(call.function.name, call.function.name)
+            verdict = guard.observe(name, call.function.arguments, repeat_guard.is_failure(result))
+            if verdict == "warn":
+                messages.append({"role": "system", "content": repeat_guard.warn_text(name)})
+            elif verdict == "stop":
+                stop = True
+        return stop
+
+    def _invalid_arguments_response(self, tool_name: str, error: ArgumentError) -> MCPResponse:
+        return MCPResponse(error={
+            "code": "invalid_tool_arguments",
+            "message": model_error_text(tool_name, error),
+            "retryable": True,
+            "effect_state": "not_started",
+            "data": {"field": error.field, "reason": error.code},
+        })
+
     def _tool_accepts_context_arg(
         self, agent_id: Optional[str], tool_name: str, arg_name: str
     ) -> bool:
@@ -19247,6 +19539,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if stream_params is None:
             stream_params = dict(args)
 
+        from orchestrator import node_mesh_admission
+
+        refusal = await node_mesh_admission.check(self, websocket, user_id, chat_id, agent_id, tool_name, args)
+        if refusal is not None:
+            return GateRefusal(response=refusal)
+
         agent_flags = self.security_flags.get(agent_id, {}) if agent_id else {}
         if agent_id and tool_name in agent_flags and agent_flags[tool_name].get("blocked"):
             reason = agent_flags[tool_name].get("reason", "Security threat detected")
@@ -19310,7 +19608,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 return GateRefusal(response=MCPResponse(error={
                     "code": mesh_admission.MeshAdmissionError.code,
                     "message": "Current member authority is unavailable", "retryable": False}))
-        from orchestrator.chain_authority import machine_scope_ceiling
+        from orchestrator.chain_authority import machine_scope_ceiling, machine_tool_admitted
 
         machine_scopes = machine_scope_ceiling(_session_claims)
         if machine_scopes is not None and agent_id:
@@ -19324,6 +19622,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 _session_claims.get("sub") != user_id
                 or _session_claims.get("_machine_authority_agent") not in (None, agent_id)
                 or required_scope not in machine_scopes
+                or not machine_tool_admitted(self, _session_claims, agent_id, tool_name)
             ):
                 err_msg = (
                     f"Tool '{tool_name}' is outside this unattended task's approved "
@@ -19636,7 +19935,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             if pending.error else None,
                             render_target="chat" if pending.error else None)
 
-        if chat_id:
+        if chat_id and not _vessel_executor.is_sandboxed(self, agent_id):
             if agent_id != "terminal-shell-1" and (agent_id, tool_name) != ("fhir-1", "extract_note_fields"):
                 args = await asyncio.to_thread(
                     self._map_file_paths, chat_id, args, user_id=user_id)
@@ -19689,6 +19988,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             agent_id not in self.agents
             and agent_id not in self.a2a_clients
             and agent_id not in self.local_agents
+            and not _vessel_executor.is_sandboxed(self, agent_id)
         ):
             err_msg = f"No agent available for tool '{tool_name}'"
             return GateRefusal(
@@ -19889,7 +20189,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     ) -> Optional[MCPResponse]:
         if not isinstance(agent_id, str) or not agent_id.startswith("__"):
             return None
-        from orchestrator.chain_authority import machine_scope_ceiling
+        from orchestrator.chain_authority import machine_meta_refused, machine_scope_ceiling
 
         session = self.ui_sessions.get(websocket, {})
         scopes = machine_scope_ceiling(session)
@@ -19901,7 +20201,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             ("__skill_guidance__", "read_user_skill"),
         }
         decomposition = (agent_id, tool_name) == ("__subtasks__", "delegate_subtasks")
-        if session.get("sub") == user_id and scopes and (
+        if session.get("sub") == user_id and scopes and not machine_meta_refused(session) and (
             decomposition or (
                 read_only and "tools:read" in scopes
                 and session.get("_machine_authority_agent") is None
@@ -19937,6 +20237,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 agent_id = tool_to_agent.get(llm_tool_name)
         is_computer_write = agent_id == "computer-use-1" and tool_name == "write_file"
         raw_arguments = tool_call.function.arguments
+        argument_error = getattr(tool_call, "_astral_argument_error", None)
+        if argument_error is not None and not is_computer_write:
+            refused = self._invalid_arguments_response(tool_name, argument_error)
+            await self.send_ui_render(websocket, [Alert(message=refused.error["message"], variant="error").to_dict()])
+            return refused
+        guard = repeat_guard.current()
+        if guard is not None and guard.blocked(tool_name, raw_arguments):
+            return MCPResponse(error={
+                "code": "repeated_call_blocked", "message": repeat_guard.blocked_text(tool_name),
+                "retryable": False, "effect_state": "not_started"})
 
         def invalid_write_arguments(message, *, missing_keys=(), limit_bytes=None):
             error_data = {}
@@ -20829,8 +21139,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             else:
                 tool_name = llm_tool_name
             agent_id = tool_to_agent.get(llm_tool_name)
+            argument_error = getattr(tc, "_astral_argument_error", None)
+            if argument_error is not None:
+                async def _arg_refused(response=self._invalid_arguments_response(tool_name, argument_error)):
+                    return response
+                prepared.append((idx, tc, tool_name, agent_id, None, _arg_refused()))
+                continue
+            guard = repeat_guard.current()
+            if guard is not None and guard.blocked(tool_name, tc.function.arguments):
+                async def _repeat_refused(response=MCPResponse(error={
+                        "code": "repeated_call_blocked", "message": repeat_guard.blocked_text(tool_name),
+                        "retryable": False, "effect_state": "not_started"})):
+                    return response
+                prepared.append((idx, tc, tool_name, agent_id, None, _repeat_refused()))
+                continue
             try:
-                args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                args = json.loads(tc.function.arguments, strict=False) if tc.function.arguments else {}
             except json.JSONDecodeError as _json_err:
                 _pj_msg = (f"The arguments for '{tool_name}' were not valid "
                            f"JSON ({str(_json_err).splitlines()[0]}). Re-emit "
@@ -21137,6 +21461,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 self, websocket, user_id, conversation_id, agent_id, tool_name, args, start=True)
             if refusal is not None:
                 return refusal
+            async def current_invoke():
+                from orchestrator import node_mesh_admission
+
+                return await node_mesh_admission.dispatch(
+                    self, websocket, user_id, conversation_id, agent_id, tool_name, args,
+                    lambda: invoke(capabilities))
+
             stop = getattr(self, "emergency_stop", None)
             try:
                 if stop is not None and user_id and user_id != "legacy":
@@ -21144,11 +21475,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                     try:
                         async with stop.effect(user_id):
-                            result = await invoke(capabilities)
+                            result = await current_invoke()
                     except EmergencyStopRefused as exc:
                         result = MCPResponse(error={"message": exc.code, "retryable": False})
                 else:
-                    result = await invoke(capabilities)
+                    result = await current_invoke()
             except (Exception, asyncio.CancelledError):
                 outcome_call = approval.call if action.needs_review else project_read
                 if outcome_call is not None:
@@ -21527,6 +21858,19 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 }
             )
 
+        if _vessel_executor.is_sandboxed(self, agent_id):
+            sandbox = getattr(self, "vessel_executor", None)
+            if sandbox is None:
+                return MCPResponse(
+                    request_id=f"req_{tool_name}_{_uuid.uuid4().hex}",
+                    error={"code": _vessel_executor.UNAVAILABLE,
+                           "message": "No sandbox executor is configured, so this tool cannot run.",
+                           "retryable": False})
+            return await guarded(
+                args,
+                lambda capabilities: sandbox.invoke(
+                    agent_id, tool_name, args, owner=tool_owner, timeout=timeout),
+            )
         if agent_id not in self.agents and agent_id not in self.local_agents:
             try:
                 from orchestrator import user_agents as _ua
@@ -22294,11 +22638,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return await renewal.wait_for_token(resolver, timeout=30.0)
 
     def _delegation_required(self) -> bool:
+        from shared import node_identity
+
         override = os.getenv("DELEGATION_REQUIRED", "").strip().lower()
         if override in ("1", "true", "yes"):
             return True
         if override in ("0", "false", "no"):
-            return False
+            return node_identity.is_personal() and os.getenv(
+                "ASTRAL_ENV", "").strip().lower() != "development"
         return os.getenv("ASTRAL_ENV", "").strip().lower() != "development"
 
     async def _delegation_denied_for_permissions(
@@ -22346,6 +22693,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             "is not configured (set DELEGATION_CHILD_SIGNING_KEY); "
                             "logged once")
                     return None
+            from shared import node_identity
+            if node_identity.is_personal():
+                from orchestrator import delegation as _dg
+                if session.get("sub") != user_id:
+                    return None
+                try:
+                    return await self._mint_mcp_delegation_token(
+                        agent_id, user_id, session, node_session=True)
+                except _dg.DelegationConfigError:
+                    session["_delegation_fault"] = "signing_key_unset"
+                    logger.error("Node delegation refused: node signing key unavailable")
+                    return None
             raw_token = None
             resolver = None
             resolver_capture_reason = None
@@ -22385,7 +22744,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     )
                 return None
 
-            from orchestrator.chain_authority import machine_scope_ceiling
+            from orchestrator.chain_authority import machine_scope_ceiling, machine_tool_admitted, machine_tool_listed
 
             machine_scopes = machine_scope_ceiling(session)
             if machine_scopes is not None and (
@@ -22403,6 +22762,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         continue
                     if not self.tool_permissions.is_tool_allowed(user_id, agent_id, skill.id):
                         continue
+                    if not machine_tool_admitted(self, session, agent_id, skill.id):
+                        continue
                     if machine_scopes is not None and (
                         self.tool_permissions.get_tool_scope(agent_id, skill.id)
                         not in machine_scopes
@@ -22416,7 +22777,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
             allowed_tools, enabled_scopes = await asyncio.to_thread(_scope_reads)
 
-            if machine_scopes is not None and not enabled_scopes:
+            if machine_scopes is not None and (
+                not enabled_scopes or (machine_tool_listed(session) and not allowed_tools)
+            ):
                 return None
 
             if resolver is not None:
@@ -22513,12 +22876,27 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         agent_id: str,
         user_id: str,
         claims: Dict[str, Any],
+        *,
+        node_session: bool = False,
     ) -> Optional[str]:
         from orchestrator import delegation as _dg
+        from orchestrator.chain_authority import machine_tool_admitted
 
         card = self.agent_cards.get(agent_id)
         if not card:
             return None
+        stop = getattr(self, "emergency_stop", None)
+        if node_session and stop is not None and not stop.admission_allowed(user_id):
+            return None
+        machine_scopes = None
+        if node_session:
+            from orchestrator.chain_authority import machine_scope_ceiling
+
+            machine_scopes = machine_scope_ceiling(claims)
+            if machine_scopes is not None and claims.get(
+                "_machine_authority_agent"
+            ) not in (None, agent_id):
+                return None
         agent_flags = self.security_flags.get(agent_id, {})
 
         def _scope_reads():
@@ -22531,9 +22909,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     agent_id,
                     skill.id,
                 )
+                and machine_tool_admitted(self, claims, agent_id, skill.id)
+                and (
+                    machine_scopes is None
+                    or self.tool_permissions.get_tool_scope(agent_id, skill.id)
+                    in machine_scopes
+                )
             ]
-            scopes = self.tool_permissions.get_enabled_scope_names(user_id, agent_id)
-            return allowed, scopes
+            if node_session:
+                from orchestrator.tool_permissions import VALID_SCOPES
+
+                granted = {
+                    self.tool_permissions.get_tool_scope(agent_id, tool) for tool in allowed
+                }
+                return allowed, [scope for scope in VALID_SCOPES if scope in granted]
+            return allowed, self.tool_permissions.get_enabled_scope_names(user_id, agent_id)
 
         allowed_tools, enabled_scopes = await asyncio.to_thread(_scope_reads)
         if not enabled_scopes:
@@ -22552,7 +22942,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             "iss": "astral-internal-delegation",
             "aud": self.delegation.agent_service_client_id,
             "iat": now,
-            "exp": min(inbound_exp, now + 300),
+            "exp": now + 300 if node_session else min(inbound_exp, now + 300),
             "delegation": True,
         }
         return _dg.encode_delegation_payload(payload)
@@ -25394,7 +25784,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         self, user_id: str, draft_agent_id: Optional[str] = None
     ) -> bool:
         for agent_id, card in list(self.agent_cards.items()):
-            if agent_id not in self.agents and agent_id not in self.local_agents:
+            if (
+                agent_id not in self.agents
+                and agent_id not in self.local_agents
+                and not _vessel_executor.is_sandboxed(self, agent_id)
+            ):
                 continue
             if draft_agent_id and agent_id != draft_agent_id:
                 continue
@@ -26243,6 +26637,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator.auth import auth_router
         from orchestrator.mesh_api import mesh_router
         from orchestrator.push_api import push_router
+        from orchestrator.mesh_push_api import mesh_push_router
         from orchestrator.notification_api import notification_router
         from orchestrator.web_auth import web_auth_router
         from orchestrator.attachments.router import attachments_router
@@ -26288,9 +26683,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(share_router)
         app.include_router(auth_router)
         from orchestrator.mesh_web import mesh_web_router
+        from orchestrator.node_api import node_router
         app.include_router(mesh_router)
         app.include_router(mesh_web_router)
+        app.include_router(node_router)
         app.include_router(push_router)
+        app.include_router(mesh_push_router)
         from orchestrator.harness.selection_api import harness_router
         app.include_router(harness_router)
         app.include_router(web_auth_router)
@@ -26355,14 +26753,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 self._external_agent_discovery_task = asyncio.create_task(
                     _discover_external())
 
+        from shared import node_identity
+
+        bind_host = node_identity.bind_host()
         config = uvicorn.Config(
-            app, host="0.0.0.0", port=PORT,
+            app, host=bind_host, port=PORT,
             log_level=os.getenv("LOG_LEVEL", "info").lower(),
             proxy_headers=True,
             forwarded_allow_ips=os.getenv("FORWARDED_ALLOW_IPS", "127.0.0.1"),
         )
         server = uvicorn.Server(config)
-        logger.info(f"Consolidated server (Gateway) listening on http://0.0.0.0:{PORT}")
+        logger.info(f"Consolidated server (Gateway) listening on http://{bind_host}:{PORT}")
         logger.info(f"API docs available at http://localhost:{PORT}/docs")
         logger.info(f"A2A endpoint: http://localhost:{PORT}/a2a/")
         retention_interval = float(
@@ -26384,6 +26785,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         evidence_service = evidence_context.get_context(self)
         if evidence_service is not None:
             evidence_service.start()
+        from orchestrator import node_mesh_chat
+
+        try:
+            await _vessel_executor.start_for(self)
+        except Exception:
+            logger.exception("vessel_executor_start_failed")
+        try:
+            await node_mesh_chat.start_for(self)
+        except Exception:
+            logger.exception("node_mesh_start_failed")
         await server.serve()
 
     async def _close_started_services(self) -> None:
@@ -26409,6 +26820,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             raise
 
     async def _close_started_services_once(self) -> None:
+        from orchestrator import node_mesh_chat
+
+        try:
+            await node_mesh_chat.stop_all()
+        except Exception:
+            logger.exception("node_mesh_shutdown_failed")
+        try:
+            await _vessel_executor.stop_for(self)
+        except Exception:
+            logger.exception("vessel_executor_shutdown_failed")
         qualification_agent = getattr(self, "local_agents", {}).get("sandbox-qualification-runner")
         if qualification_agent is not None:
             from agents.sandbox_qualification.sandbox_qualification_agent import SandboxQualificationAgent
@@ -26803,35 +27224,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         try:
             authority = os.getenv("KEYCLOAK_AUTHORITY")
             expected_client = os.getenv("KEYCLOAK_CLIENT_ID")
-            
+
             if not authority or not expected_client:
                 logger.warning("Auth not configured (KEYCLOAK_AUTHORITY/CLIENT_ID missing)")
                 return None
 
-            jwks_url = f"{authority}/protocol/openid-connect/certs"
-            from shared.jwks_cache import get_jwks
-            jwks = await get_jwks(jwks_url, token=token)
-
-            # Skips aud check by design: Keycloak always sets aud=account
-            payload = jose_jwt.decode(
-                token,
-                jwks,
-                algorithms=["RS256"],
-                options={"verify_aud": False, "verify_at_hash": False}
-            )
-
-            iss = payload.get("iss")
-            if iss and authority and iss.rstrip("/") != authority.rstrip("/"):
-                logger.warning("Token 'iss' does not match the configured authority — rejecting")
-                return None
-
-            azp = payload.get("azp")
-            from shared.auth_clients import is_azp_allowed, allowed_azps
-            if azp and not is_azp_allowed(azp):
-                logger.warning(
-                    f"Token azp '{azp}' is not an accepted client "
-                    f"(allowed: {sorted(allowed_azps())})"
-                )
+            from shared.token_verify import TokenRefused, verify_idp_token
+            try:
+                payload = await verify_idp_token(token)
+            except TokenRefused as refused:
+                logger.warning("Token refused for a UI session: %s", refused.reason)
                 return None
 
             # Only the audience marks a token as agent, not user

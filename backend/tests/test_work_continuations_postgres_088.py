@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from tests.helpers.work_control_caller import OWNER_ID
 
 from audit.repository import AuditRepository
 from astralplane.repositories.assignment_models import AssignmentActionOutcome
@@ -47,7 +48,7 @@ def module():
 
 
 async def current(value):
-    return (await value.reads.store.call("get_operation", owner_id="owner",
+    return (await value.reads.store.call("get_operation", owner_id=OWNER_ID,
                                        assignment_id=value.identity)).assignment
 
 
@@ -74,14 +75,14 @@ async def test_owner_wait_holds_without_refresh_or_borrowing_a_worker(value):
     assert after.definition == before.definition and after.usage == before.usage
     replay = await service.wait(value.identity, request, caller=value.caller)
     assert replay == {**result, "applied": False} and await current(value) == after
-    events, _ = value.audit.list_for_user("owner")
+    events, _ = value.audit.list_for_user(OWNER_ID)
     assert len(events) == 1 and events[0].action_type == "assignment_wait"
-    assert value.audit.verify_chain("owner") is None
+    assert value.audit.verify_chain(OWNER_ID) is None
 
 
 async def safe_control(value, command):
     record = await current(value)
-    return await WorkControlService(value.reads.assignments).control("owner", value.caller.context.claims,
+    return await WorkControlService(value.reads.assignments).control(OWNER_ID, value.caller.context.claims,
         value.identity, command, WorkControlRequest(expected_revision=record.state_version,
             submission_id=str(uuid4())), caller=value.caller)
 
@@ -89,7 +90,7 @@ async def safe_control(value, command):
 async def uncertain(value):
     action, attempt, permit = await issued_fixture(value.reads, value.identity)
     outcome = AssignmentActionOutcome("uncertain", digest("synthetic-unknown-outcome"), {})
-    await value.reads.store.call("record_action_outcome", owner_id="owner", assignment_id=value.identity,
+    await value.reads.store.call("record_action_outcome", owner_id=OWNER_ID, assignment_id=value.identity,
         action_id=action.action_id, attempt_id=attempt, dispatch_token=permit.dispatch_token,
         expected_request_digest=action.intent.request_digest, outcome=outcome)
     return action, outcome
@@ -128,7 +129,7 @@ async def test_legacy_envelope_settles_real_liability_once_but_never_continues(v
     assert after.wake_generation == before.wake_generation and after.next_wake_at is None
     assert after.usage["spent"]["tool_calls"] == action.intent.maximum.tool_calls
     assert after.usage["outstanding"]["tool_calls"] == 0
-    settled = await value.reads.store.call("get_action", owner_id="owner", assignment_id=value.identity,
+    settled = await value.reads.store.call("get_action", owner_id=OWNER_ID, assignment_id=value.identity,
                                          action_id=action.action_id)
     assert settled.result["result_available"] is False and settled.result["result"] == {}
     replay = await service.reconcile(value.identity, action.action_id,
@@ -137,8 +138,8 @@ async def test_legacy_envelope_settles_real_liability_once_but_never_continues(v
     with pytest.raises(AssignmentError):
         await service.wait(value.identity, wait_body(value, expected_revision=after.state_version),
                            caller=value.caller)
-    assert await current(value) == after and len(value.audit.list_for_user("owner")[0]) == 1
-    assert value.audit.verify_chain("owner") is None
+    assert await current(value) == after and len(value.audit.list_for_user(OWNER_ID)[0]) == 1
+    assert value.audit.verify_chain(OWNER_ID) is None
 
 
 @pytest.mark.parametrize("paused", [False, True])
@@ -150,7 +151,7 @@ async def test_owner_wait_preserves_started_liability_and_paused_lifecycle(value
     reply = await module().WorkContinuationService(value.reads.assignments).wait(value.identity,
         wait_body(value, expected_revision=before.state_version), caller=value.caller)
     after = await current(value)
-    retained = await value.reads.store.call("get_action", owner_id="owner", assignment_id=value.identity,
+    retained = await value.reads.store.call("get_action", owner_id=OWNER_ID, assignment_id=value.identity,
                                           action_id=action.action_id)
     assert reply["applied"] is True and after.lifecycle == before.lifecycle
     assert after.next_wake_at is None and after.usage == before.usage
@@ -170,7 +171,7 @@ async def test_wait_signature_does_not_adopt_new_revision_or_event(value):
     with pytest.raises(AssignmentError, match="assignment_revision_conflict"):
         await service.wait(value.identity, wait_body(value), caller=value.caller)
     assert await current(value) == before
-    assert len(value.audit.list_for_user("owner")[0]) == 1
+    assert len(value.audit.list_for_user(OWNER_ID)[0]) == 1
 
 
 @pytest.mark.parametrize("decision", ["confirmed_applied", "confirmed_not_applied"])
@@ -190,12 +191,12 @@ async def test_reconcile_charges_maximum_once_without_output_or_continuation(val
     assert after.usage["spent"]["tool_calls"] == action.intent.maximum.tool_calls
     assert after.usage["spent"]["elapsed_ms"] == action.intent.maximum.elapsed_ms
     assert after.wake_generation == before.wake_generation
-    settled = await value.reads.store.call("get_action", owner_id="owner", assignment_id=value.identity,
+    settled = await value.reads.store.call("get_action", owner_id=OWNER_ID, assignment_id=value.identity,
                                          action_id=action.action_id)
     assert settled.result["result_available"] is False and settled.result["result"] == {}
     assert settled.result["evidence_reference"] == "work-owner-decision:v1:" + body.submission_id
     assert "prior_result_digest" not in str(result) and "synthetic" not in str(result)
-    events, _ = value.audit.list_for_user("owner")
+    events, _ = value.audit.list_for_user(OWNER_ID)
     event = next(e for e in events if e.action_type == "assignment_reconcile")
     assert event.outputs_meta == {"assignment_id": value.identity,
         "instruction_revision": before.instruction_revision, "control_epoch": before.control_epoch,
@@ -206,9 +207,9 @@ async def test_reconcile_charges_maximum_once_without_output_or_continuation(val
     replay = await service.reconcile(value.identity, action.action_id,
         body.model_copy(update={"expected_revision": before_replay.state_version + 100}), caller=value.caller)
     assert replay["applied"] is False and await current(value) == before_replay
-    events, _ = value.audit.list_for_user("owner")
+    events, _ = value.audit.list_for_user(OWNER_ID)
     assert sum(e.action_type == "assignment_reconcile" for e in events) == 1
-    assert value.audit.verify_chain("owner") is None
+    assert value.audit.verify_chain(OWNER_ID) is None
 
 
 @pytest.mark.parametrize("change", ["decision", "prior_result_digest", "submission_id"])
@@ -223,7 +224,7 @@ async def test_reconcile_exact_decision_conflict_never_charges_twice(value, chan
     with pytest.raises(AssignmentError, match="assignment_idempotency_conflict"):
         await service.reconcile(value.identity, action.action_id,
             body.model_copy(update={change: changed}), caller=value.caller)
-    assert await current(value) == before and len(value.audit.list_for_user("owner")[0]) == 1
+    assert await current(value) == before and len(value.audit.list_for_user(OWNER_ID)[0]) == 1
 
 
 @pytest.mark.parametrize("kind", ["wait", "reconcile"])
@@ -234,9 +235,9 @@ async def test_bare_bearer_safe_decision_does_not_require_original_session(value
     record = await current(value)
     with value.runtime.transaction() as tx:
         repo = value.runtime.repositories.history.sessions
-        original = repo.get_by_incarnation(tx, owner_id="owner",
+        original = repo.get_by_incarnation(tx, owner_id=OWNER_ID,
             incarnation_id=record.operation["authority"]["reference_id"])
-        repo.delete(tx, owner_id="owner", session_id=original.session_id,
+        repo.delete(tx, owner_id=OWNER_ID, session_id=original.session_id,
                     expected_incarnation_id=original.incarnation_id)
     req = request(headers=[(b"authorization", ("Bearer " + value.caller._token).encode()),
                            (b"content-type", b"application/json")])
@@ -293,7 +294,7 @@ async def test_failed_decision_rolls_back_audit_state_and_receipt(value, monkeyp
             await service.wait(value.identity, body, caller=value.caller)
         else:
             await service.reconcile(value.identity, action.action_id, body, caller=value.caller)
-    assert audit_calls and await current(value) == before and value.audit.list_for_user("owner")[0] == []
+    assert audit_calls and await current(value) == before and value.audit.list_for_user(OWNER_ID)[0] == []
 
 
 async def bare_caller(value):
@@ -322,7 +323,7 @@ async def test_real_wait_race_rechecks_receipt_during_locked_preparation(value, 
     result = await asyncio.gather(service.wait(value.identity, body, caller=left),
                                   service.wait(value.identity, body, caller=right))
     assert sorted(item["applied"] for item in result) == [False, True]
-    assert len(value.audit.list_for_user("owner")[0]) == 1
+    assert len(value.audit.list_for_user(OWNER_ID)[0]) == 1
 
 
 async def test_concurrent_exact_reconciliation_settles_once(value):
@@ -334,7 +335,7 @@ async def test_concurrent_exact_reconciliation_settles_once(value):
     assert sorted(item["applied"] for item in result) == [False, True]
     after = await current(value)
     assert after.usage["spent"]["tool_calls"] == 1
-    assert len(value.audit.list_for_user("owner")[0]) == 1
+    assert len(value.audit.list_for_user(OWNER_ID)[0]) == 1
 
 
 @pytest.mark.parametrize("kind", ["wait", "reconcile"])
@@ -358,10 +359,10 @@ async def test_lost_commit_ack_has_only_exact_replay_no_second_audit(value, monk
         with pytest.raises(AssignmentError):
             await getattr(service, kind)(*args, caller=value.caller)
     after = await current(value)
-    assert len(value.audit.list_for_user("owner")[0]) == 1
+    assert len(value.audit.list_for_user(OWNER_ID)[0]) == 1
     result = await getattr(service, kind)(*args, caller=value.caller)
     assert result["applied"] is False and await current(value) == after
-    assert len(value.audit.list_for_user("owner")[0]) == 1
+    assert len(value.audit.list_for_user(OWNER_ID)[0]) == 1
 
 
 @pytest.mark.parametrize("kind", ["wait", "reconcile"])
@@ -377,7 +378,7 @@ async def test_replaced_caller_refuses_before_any_owner_decision(value, kind):
     with pytest.raises(AssignmentError, match="work_authentication_required"):
         await getattr(module().WorkContinuationService(value.reads.assignments), kind)(
             *args, caller=value.caller)
-    assert await current(value) == before and value.audit.list_for_user("owner")[0] == []
+    assert await current(value) == before and value.audit.list_for_user(OWNER_ID)[0] == []
 
 
 @pytest.mark.parametrize("kind", ["wait", "reconcile"])
@@ -394,7 +395,7 @@ async def test_foreign_legacy_absent_and_bad_identifiers_remain_private_404(valu
             else:
                 await service.reconcile(identity, action.action_id, body, caller=value.caller)
         assert (failure.value.code, failure.value.status_code) == ("work_not_found", 404)
-    assert await current(value) == before and value.audit.list_for_user("owner")[0] == []
+    assert await current(value) == before and value.audit.list_for_user(OWNER_ID)[0] == []
 
 
 @pytest.mark.parametrize("kind", ["wait", "reconcile"])
@@ -420,7 +421,7 @@ async def test_malformed_repository_preparation_and_final_result_roll_back(value
             patch.setattr(repository, name, malformed)
             with pytest.raises(AssignmentError, match="work_control_unavailable"):
                 await getattr(service, kind)(*args, caller=value.caller)
-        assert await current(value) == before and value.audit.list_for_user("owner")[0] == []
+        assert await current(value) == before and value.audit.list_for_user(OWNER_ID)[0] == []
 
 
 @pytest.mark.parametrize("kind", ["wait", "reconcile"])
@@ -439,7 +440,7 @@ async def test_no_caller_or_invalid_private_model_never_reaches_decision(value, 
     for malformed in (body.model_dump(), body.model_copy(update={"expected_revision": True})):
         with pytest.raises(AssignmentError, match="work_control_invalid"):
             await getattr(service, kind)(*prefix, malformed, caller=value.caller)
-    assert await current(value) == before and value.audit.list_for_user("owner")[0] == []
+    assert await current(value) == before and value.audit.list_for_user(OWNER_ID)[0] == []
 
 
 @pytest.mark.parametrize("command,changes", [
@@ -459,5 +460,5 @@ async def test_audit_new_fields_are_closed_identifiers_only(value, command, chan
     service = module().WorkContinuationService(value.reads.assignments)
     with pytest.raises(AssignmentError, match="work_control_unavailable"):
         await value.reads.store.transaction(lambda tx, _: service.audit.append(tx,
-            owner_id="owner", command=command, record=record, **fields), bound_session_waits=True)
-    assert value.audit.list_for_user("owner")[0] == []
+            owner_id=OWNER_ID, command=command, record=record, **fields), bound_session_waits=True)
+    assert value.audit.list_for_user(OWNER_ID)[0] == []

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from orchestrator import hitl_confirmation as confirmation
+from orchestrator.remote_mcp_pins import definition_hash
 
 
 CONNECTOR_ID = "1" * 32
@@ -20,6 +21,7 @@ class ConnectorStore:
                 "id": CONNECTOR_ID, "name": "Synthetic connection", "url": "https://mcp.example/mcp",
                 "transport": "streamable_http", "auth_type": "none", "enabled": True,
                 "tools": {"echo": True}, "tools_catalog": [{"name": "echo"}],
+                "tool_pins": {"echo": definition_hash({"name": "echo"})},
             }),
         }
 
@@ -166,7 +168,8 @@ async def test_cached_tool_name_retains_private_value_and_secret_checks(review_w
     orch, _socket, events = review_world
     key = ("owner-a", "__remote_mcp_connections__", "remote_mcp_" + CONNECTOR_ID)
     connector = json.loads(orch.credential_manager.records[key])
-    connector.update(tools={tool_name: True}, tools_catalog=[{"name": tool_name}])
+    connector.update(tools={tool_name: True}, tools_catalog=[{"name": tool_name}],
+                     tool_pins={tool_name: definition_hash({"name": tool_name})})
     orch.credential_manager.records[key] = json.dumps(connector)
     response = await evaluate(review_world, {**call_arguments(), "tool_name": tool_name})
     assert response.error["code"] == "ACTION_REVIEW_UNAVAILABLE"
@@ -187,7 +190,8 @@ async def test_cached_tool_name_still_reaches_owner_phi_gate(review_world, monke
     orch, _socket, events = review_world
     key = ("owner-a", "__remote_mcp_connections__", "remote_mcp_" + CONNECTOR_ID)
     connector = json.loads(orch.credential_manager.records[key])
-    connector.update(tools={"private_patient": True}, tools_catalog=[{"name": "private_patient"}])
+    connector.update(tools={"private_patient": True}, tools_catalog=[{"name": "private_patient"}],
+                     tool_pins={"private_patient": definition_hash({"name": "private_patient"})})
     orch.credential_manager.records[key] = json.dumps(connector)
     inspected = []
 

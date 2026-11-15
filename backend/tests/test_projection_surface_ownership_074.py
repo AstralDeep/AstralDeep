@@ -16,6 +16,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
 PROJECTION = ROOT / "components" / "AstralProjection"
+KERNEL = ROOT / "components" / "AstralKernel"
 HOST_SURFACES = frozenset(
     {
         "admin_tools",
@@ -50,19 +51,20 @@ HOST_SURFACES = frozenset(
 )
 PROJECTION_OWNED_ROOTS = (
     "backend/webrender",
-    "backend/rote",
     "windows-client",
     "android-client",
     "apple-clients",
     "tooling/web-ci",
 )
-EXTRACTED_PURE_TESTS = (
-    ("backend/tests/test_rote_dashboard_text.py", "tests/rote/test_rote_dashboard_text.py"),
-    ("backend/tests/test_rote_lod_adapt.py", "tests/rote/test_rote_lod_adapt.py"),
+KERNEL_EXTRACTED_PURE_TESTS = (
+    ("backend/tests/test_rote_dashboard_text.py", "python/rote/tests/test_rote_dashboard_text.py"),
+    ("backend/tests/test_rote_lod_adapt.py", "python/rote/tests/test_rote_lod_adapt.py"),
     (
         "backend/tests/test_voice_rote_capabilities_065.py",
-        "tests/rote/test_voice_rote_capabilities_065.py",
+        "python/rote/tests/test_voice_rote_capabilities_065.py",
     ),
+)
+EXTRACTED_PURE_TESTS = (
     ("backend/tests/webrender/test_a11y.py", "tests/webrender/test_a11y.py"),
     ("backend/tests/webrender/test_aom.py", "tests/webrender/test_aom.py"),
     (
@@ -160,6 +162,15 @@ def test_extracted_pure_tests_exist_only_in_projection() -> None:
     for deep_relative, projection_relative in EXTRACTED_PURE_TESTS:
         assert not (ROOT / deep_relative).exists(), deep_relative
         assert (PROJECTION / projection_relative).is_file(), projection_relative
+
+
+def test_rote_is_owned_by_the_kernel_and_absent_from_projection_and_deep() -> None:
+    assert not (BACKEND / "rote").exists()
+    assert not (PROJECTION / "backend" / "rote").exists()
+    assert (KERNEL / "python" / "rote" / "src" / "rote" / "__init__.py").is_file()
+    for deep_relative, kernel_relative in KERNEL_EXTRACTED_PURE_TESTS:
+        assert not (ROOT / deep_relative).exists(), deep_relative
+        assert (KERNEL / kernel_relative).is_file(), kernel_relative
 
 
 def test_deep_host_surface_registry_owns_only_orchestrator_adapters() -> None:

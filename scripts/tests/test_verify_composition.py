@@ -34,18 +34,21 @@ spec.loader.exec_module(composition)
 
 CANONICAL_REPOSITORIES = {
     "astral-projection": "https://github.com/AstralDeep/AstralProjection.git",
+    "astral-kernel": "https://github.com/AstralDeep/AstralKernel.git",
     "astral-plane": "https://github.com/AstralDeep/AstralPlane.git",
     "astral-primitives": "https://github.com/AstralDeep/AstralPrimitives.git",
     "lets": "https://github.com/AstralDeep/LETS.git",
 }
 COMPONENT_PATHS = {
     "astral-projection": "components/AstralProjection",
+    "astral-kernel": "components/AstralKernel",
     "astral-plane": "components/AstralPlane",
     "astral-primitives": "components/AstralPrimitives",
     "lets": "components/LETS",
 }
 MODULE_NAMES = {
     "astral-projection": "AstralProjection",
+    "astral-kernel": "AstralKernel",
     "astral-plane": "AstralPlane",
     "astral-primitives": "AstralPrimitives",
     "lets": "LETS",
@@ -102,6 +105,15 @@ def _projection(root: Path) -> None:
     )
 
 
+def _kernel(root: Path) -> None:
+    component = root / COMPONENT_PATHS["astral-kernel"] / "python/rote"
+    _write(
+        component / "pyproject.toml",
+        '[project]\nname = "astral-rote"\nversion = "0.1.0"\n',
+    )
+    _write(component / "src/rote/__init__.py", "")
+
+
 def _plane(root: Path) -> None:
     component = root / COMPONENT_PATHS["astral-plane"]
     _write(
@@ -145,9 +157,9 @@ def _primitives(root: Path) -> None:
     component = root / COMPONENT_PATHS["astral-primitives"]
     _write(
         component / "pyproject.toml",
-        '[project]\nname = "astralprims"\nversion = "0.4.0"\n',
+        '[project]\nname = "astralprims"\nversion = "0.13.0"\n',
     )
-    _write(component / "src/astralprims/__init__.py", '__version__ = "0.4.0"\n')
+    _write(component / "src/astralprims/__init__.py", '__version__ = "0.13.0"\n')
     _write(component / "src/astralprims/primitives.py", "class Text: pass\n")
 
 
@@ -155,9 +167,9 @@ def _lets(root: Path) -> None:
     component = root / COMPONENT_PATHS["lets"]
     _write(
         component / "pyproject.toml",
-        '[project]\nname = "lets-agent"\nversion = "1.1.0"\n',
+        '[project]\nname = "lets-agent"\nversion = "1.1.2"\n',
     )
-    _write(component / "src/lets/__init__.py", '__version__ = "1.1.0"\n')
+    _write(component / "src/lets/__init__.py", '__version__ = "1.1.2"\n')
     _write(component / "src/lets/api.py", 'API_VERSION = "v1"\n')
     _write(component / "src/lets/client.py", "class LETSClient: pass\n")
     _write(
@@ -188,7 +200,7 @@ def _lets(root: Path) -> None:
         json.dumps(
             {
                 "openapi": "3.1.0",
-                "info": {"title": "LETS Warden API", "version": "1.1.0"},
+                "info": {"title": "LETS Warden API", "version": "1.1.2"},
                 "paths": {"/v1/info": {}},
             },
             sort_keys=True,
@@ -215,6 +227,12 @@ def _manifest(root: Path, commits: dict[str, str]) -> dict[str, Any]:
                 "commit": commits["astral-projection"],
                 "contract_version": "astralprojection.contract/v1",
             },
+            "astral-kernel": {
+                "repository": CANONICAL_REPOSITORIES["astral-kernel"],
+                "path": COMPONENT_PATHS["astral-kernel"],
+                "commit": commits["astral-kernel"],
+                "contract_version": "0.1.0",
+            },
             "astral-plane": {
                 "repository": CANONICAL_REPOSITORIES["astral-plane"],
                 "path": COMPONENT_PATHS["astral-plane"],
@@ -225,18 +243,19 @@ def _manifest(root: Path, commits: dict[str, str]) -> dict[str, Any]:
                 "repository": CANONICAL_REPOSITORIES["astral-primitives"],
                 "path": COMPONENT_PATHS["astral-primitives"],
                 "commit": commits["astral-primitives"],
-                "contract_version": "0.4.0",
+                "contract_version": "0.13.0",
             },
             "lets": {
                 "repository": CANONICAL_REPOSITORIES["lets"],
                 "path": COMPONENT_PATHS["lets"],
                 "commit": commits["lets"],
-                "ref": "v1.1.0",
-                "contract_version": "1.1.0",
+                "ref": "v1.1.2",
+                "contract_version": "1.1.2",
             },
         },
         "availability": {
             "astral-projection": "required-embedded",
+            "astral-kernel": "required-embedded",
             "astral-plane": "required-embedded",
             "astral-primitives": "required-embedded",
             "lets": "external-feature-gated",
@@ -255,14 +274,19 @@ def _manifest(root: Path, commits: dict[str, str]) -> dict[str, Any]:
                 ),
                 "blob_layout_version": "astralplane.blob-layout/v1",
             },
+            "data_plane_sqlite": {
+                "schema_revision": "067.001",
+                "migration_sha256": "0" * 64,
+                "structure_sha256": "1" * 64,
+            },
             "primitives": {
-                "package_version": "0.4.0",
+                "package_version": "0.13.0",
                 "contract_sha256": composition.compute_primitives_digest(
                     root / COMPONENT_PATHS["astral-primitives"]
                 ),
             },
             "lets": {
-                "release": "v1.1.0",
+                "release": "v1.1.2",
                 "api_version": "v1",
                 "openapi_sha256": hashlib.sha256(lets_openapi.read_bytes()).hexdigest(),
                 "receipt_wire_type": "lets.receipt/v1",
@@ -276,6 +300,7 @@ def _manifest(root: Path, commits: dict[str, str]) -> dict[str, Any]:
 def checkout(tmp_path: Path) -> Path:
     root = tmp_path / "AstralDeep"
     _projection(root)
+    _kernel(root)
     _plane(root)
     _primitives(root)
     _lets(root)
@@ -607,6 +632,26 @@ def test_structural_composition_failures_are_attributed(
         item.code == expected_code and item.component == expected_component
         for item in report.diagnostics
     )
+
+
+def test_kernel_package_version_must_match_the_declared_contract(checkout: Path) -> None:
+    pyproject = checkout / COMPONENT_PATHS["astral-kernel"] / "python/rote/pyproject.toml"
+    _write(pyproject, '[project]\nname = "astral-rote"\nversion = "0.2.0"\n')
+    _repin_component(checkout, "astral-kernel")
+
+    report = _verify(checkout)
+
+    assert "E_INCOMPATIBLE_CONTRACT" in _codes(report, "astral-kernel")
+
+
+def test_kernel_without_the_rote_package_metadata_is_incompatible(checkout: Path) -> None:
+    pyproject = checkout / COMPONENT_PATHS["astral-kernel"] / "python/rote/pyproject.toml"
+    _write(pyproject, '[project]\nname = "other"\nversion = "0.1.0"\n')
+    _repin_component(checkout, "astral-kernel")
+
+    report = _verify(checkout)
+
+    assert "E_INCOMPATIBLE_CONTRACT" in _codes(report, "astral-kernel")
 
 
 def test_malformed_component_contract_is_incompatible(checkout: Path) -> None:

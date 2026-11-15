@@ -1,6 +1,7 @@
 """The shared derivation seam (MachineTurnAuthority.derive) that scheduled jobs, parser
-replays, and draft self-tests use for consent-derived root authority, plus
+replays, draft self-tests and mesh requests use for consent-derived root authority, plus
 ChainBudget's per-turn hop/depth/wall-clock ceiling over nested delegation.
+A mesh whole-turn binding also carries the exact tools its mesh grants cover, and orchestrator.py admits only those.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from orchestrator.delegation import DEFAULT_MAX_DELEGATION_DEPTH
 
@@ -21,10 +22,13 @@ DEFAULT_CHAIN_WALL_CLOCK_S = float(os.getenv("CHAIN_WALL_CLOCK_SECONDS", "120"))
 
 MACHINE_TURN_CLASSES = (
     "scheduled_job", "parser_replay", "draft_self_test", "persistent_assignment",
+    "mesh_request",
 )
 
 _MACHINE_SCOPE_KEY = "_machine_authority_scopes"
+_MACHINE_TOOLS_KEY = "_machine_authority_tools"
 _STANDING_CONSENT_CLASSES = ("parser_replay", "draft_self_test")
+_TOOL_LISTED_CLASSES = ("mesh_request",)
 
 
 def machine_scope_ceiling(session: Dict[str, Any]) -> Optional[frozenset[str]]:
@@ -48,10 +52,39 @@ def machine_scope_ceiling(session: Dict[str, Any]) -> Optional[frozenset[str]]:
     return frozenset(scopes)
 
 
+def machine_tool_listed(session: Dict[str, Any]) -> bool:
+    return session.get("machine_class") in _TOOL_LISTED_CLASSES and session.get("_machine_authority_agent") is None
+
+
+def _valid_tools(tools: Any) -> bool:
+    return isinstance(tools, tuple) and all(
+        isinstance(entry, tuple) and len(entry) == 3
+        and all(isinstance(part, str) and part for part in entry)
+        for entry in tools
+    )
+
+
+def machine_tool_admitted(orch: Any, session: Dict[str, Any], agent_id: str, tool: str) -> bool:
+    if not machine_tool_listed(session):
+        return True
+    tools = session.get(_MACHINE_TOOLS_KEY)
+    if not _valid_tools(tools):
+        return False
+    from orchestrator.node_mesh_calls import current_definition
+
+    definition = current_definition(orch, agent_id, tool)
+    return definition is not None and (agent_id, tool, definition) in tools
+
+
+def machine_meta_refused(session: Dict[str, Any]) -> bool:
+    return session.get("machine_class") in _TOOL_LISTED_CLASSES
+
+
 def machine_session_binding(authority: MachineAuthority) -> Dict[str, Any]:
     from orchestrator.tool_permissions import VALID_SCOPES
 
     scopes = authority.allowed_scopes
+    tools = authority.allowed_tools
     if (
         authority.turn_class not in MACHINE_TURN_CLASSES
         or not authority.user_id
@@ -64,14 +97,22 @@ def machine_session_binding(authority: MachineAuthority) -> Dict[str, Any]:
         ))
         or not isinstance(scopes, (list, tuple))
         or any(not isinstance(scope, str) or scope not in VALID_SCOPES for scope in scopes)
+        or (tools is not None and (
+            authority.turn_class not in _TOOL_LISTED_CLASSES
+            or authority.agent_id is not None
+            or not _valid_tools(tools)
+        ))
     ):
         raise ValueError("invalid machine authority binding")
-    return {
+    binding = {
         **authority.machine_claims(),
         "_raw_token": authority.access_token,
         _MACHINE_SCOPE_KEY: tuple(scopes) if authority.scope_ceiling_required else None,
         "_machine_authority_agent": authority.agent_id,
     }
+    if tools is not None:
+        binding[_MACHINE_TOOLS_KEY] = tools
+    return binding
 
 
 @dataclass
@@ -136,6 +177,7 @@ class MachineAuthority:
     turn_class: str
     agent_id: Optional[str] = None
     scope_ceiling_required: bool = True
+    allowed_tools: Optional[Tuple[Tuple[str, str, str], ...]] = None
 
     def machine_claims(self) -> Dict[str, Any]:
         return {

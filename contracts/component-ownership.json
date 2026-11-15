@@ -19,11 +19,10 @@
     "astralprojection": {
       "canonicalUrl": "https://github.com/AstralDeep/AstralProjection.git",
       "compositionPath": "components/AstralProjection",
-      "role": "presentation, rendering, adaptation, and complete client products",
+      "role": "presentation, rendering, and complete client products",
       "mutableRoots": [
         "android-client/",
         "apple-clients/",
-        "backend/rote/",
         "backend/webrender/",
         "contracts/",
         "docs/",
@@ -33,6 +32,16 @@
         "tooling/web-ci/",
         "windows-client/",
         "workflows-disabled/"
+      ]
+    },
+    "astralkernel": {
+      "canonicalUrl": "https://github.com/AstralDeep/AstralKernel.git",
+      "compositionPath": "components/AstralKernel",
+      "role": "kernel library and the ROTE device adaptation package",
+      "mutableRoots": [
+        "crates/",
+        "python/",
+        "scripts/"
       ]
     },
     "astralplane": {
@@ -107,7 +116,6 @@
       "id": "presentation-and-clients",
       "owner": "astralprojection",
       "ownedPaths": [
-        "backend/rote/**",
         "backend/webrender/**",
         "contracts/**",
         "windows-client/**",
@@ -134,6 +142,38 @@
         {"repository": "astralprimitives", "paths": ["**/webrender/**", "**/rote/**"]},
         {"repository": "lets", "paths": ["**/webrender/**", "**/rote/**"]}
       ]
+    },
+    {
+      "id": "device-adaptation",
+      "owner": "astralkernel",
+      "ownedPaths": [
+        "python/rote/**"
+      ],
+      "scanExactDuplicates": true,
+      "forbiddenCopies": [
+        {
+          "repository": "astraldeep",
+          "paths": [
+            "backend/rote/**"
+          ]
+        },
+        {
+          "repository": "astralprojection",
+          "paths": [
+            "backend/rote/**"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "kernel-repository-support",
+      "owner": "astralkernel",
+      "ownedPaths": [
+        "crates/**",
+        "scripts/**"
+      ],
+      "scanExactDuplicates": false,
+      "forbiddenCopies": []
     },
     {
       "id": "astralprojection-repository-support",

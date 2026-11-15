@@ -160,7 +160,7 @@ async def test_malformed_provider_result_is_charged_before_host_rejects_it():
     assert totals["usage"]["total_tokens"] == {"known": 10, "unknown": 0}
 
 
-async def test_stream_failure_settles_its_charge_before_nonstream_fallback():
+async def test_stream_failure_settles_its_charge_before_continuing_the_visible_answer():
     def failed_stream():
         yield chunk("partial private content", usage(4))
         raise ChargedFailure(prompt=4)
@@ -168,7 +168,7 @@ async def test_stream_failure_settles_its_charge_before_nonstream_fallback():
     state = model_host(Completions([failed_stream, response("Recovered", prompt=8)]))
     message, _ = await state.host._call_llm(state.socket, [{"role": "user", "content": "hello"}],
                                           allow_stream=True, stream_chat_id="conversation")
-    assert message is not None and message.content == "Recovered"
+    assert message is not None and message.content == "partial private contentRecovered"
     totals = await total(state)
     assert totals["model_calls"] == 2 and totals["retries"] == totals["charged_failed"] == 1
     assert totals["usage"]["total_tokens"] == {"known": 16, "unknown": 0}

@@ -1,0 +1,44 @@
+{
+  "attempted": 5,
+  "format": "astral.surface-generation-diagnostic/v1",
+  "model": "zai-org/GLM-5.3-Flash",
+  "primitives_version": "0.13.0",
+  "provider_host": "api-llm-factory.ai.uky.edu",
+  "recorded_at": "2026-11-13T14:13:00.845865+00:00",
+  "samples": [
+    {
+      "outcome": "valid",
+      "prompt": 1,
+      "response_sha256": "f688197ba81f9ffeca1531c2a6a1dba361a9003ceea1b4d2982fb9b5b7243f3e",
+      "sample": 1
+    },
+    {
+      "outcome": "valid",
+      "prompt": 2,
+      "response_sha256": "75a934dfc6172e24a49b1c41071b29e116587d7288746ea57b2af99b69f9c405",
+      "sample": 2
+    },
+    {
+      "outcome": "valid",
+      "prompt": 3,
+      "response_sha256": "8b7edf6e64b4ef8a8259feae5ec16181f15f85b8a5b503ffb9e9c40b3effc848",
+      "sample": 3
+    },
+    {
+      "outcome": "valid",
+      "prompt": 4,
+      "response_sha256": "a14b02e930200f68308d79bd5bbf27b1324c1ac5a4f9ab75b86729678cc51d23",
+      "sample": 4
+    },
+    {
+      "outcome": "valid",
+      "prompt": 5,
+      "response_sha256": "c07f32bb7aff76f3de6aadaab8d433f2d1992a3af18302be2ca301b140ee27d9",
+      "sample": 5
+    }
+  ],
+  "schema_sha256": "0dbe7527bbb3ef4cc954c97c20931194ac57e599b06a2106ab976bf949e4121c",
+  "scope": "strict primitive trees, literal values, JSON-object decoding; host surfaces and on-device models unmeasured",
+  "valid": 5,
+  "valid_rate": 1.0
+}

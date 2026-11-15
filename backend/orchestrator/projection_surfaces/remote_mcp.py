@@ -128,6 +128,9 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
             'data-ui-payload="{&quot;surface&quot;:&quot;remote_mcp&quot;,&quot;params&quot;:{&quot;notice&quot;:&quot;external_mcp_security&quot;}}">Security notice</button>'
         )
         tools = []
+        notes = _change_notes(connector)
+        for name, note in notes.items():
+            tools.append(notice_block("warning", f"{esc(name)}: {esc(note)}"))
         for tool in connector.get("tools_catalog", []):
             name = tool.get("name", "")
             checked = " checked" if connector.get("tools", {}).get(name) else ""
@@ -176,6 +179,14 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
             + oauth_link + "".join(cards) + form + "</div>")
 
 
+def _change_notes(connector: dict[str, Any]) -> dict[str, str]:
+    notes = {}
+    for name, record in connector.get("tool_changes", {}).items():
+        notes[name] = ("The server removed this tool since you approved it." if record.get("status") == "removed"
+                       else "Definition changed since you approved it. Review it and enable it again.")
+    return notes
+
+
 async def components(orch: Any, user_id: str, roles: Any, params: Any):
     from webrender.chrome.surfaces import _sdui
 
@@ -213,6 +224,9 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
             buttons.insert(0, _sdui.button("Authorize", "chrome_remote_mcp_oauth_start",
                                            {"connector_id": connector["id"]}))
         tool_rows = []
+        notes = _change_notes(connector)
+        for name, note in notes.items():
+            tool_rows.append(_sdui.alert(f"{name}: {note}", "warning"))
         for tool in connector.get("tools_catalog", []):
             tool_rows.append(_sdui.container([
                 _sdui.text(f'{tool["name"]}: {tool.get("description", "")}', "caption"),
@@ -301,6 +315,8 @@ async def _test(orch, websocket, user_id, roles, payload):
         connector = await asyncio.to_thread(connectors.get_connector, orch, user_id, connector_id)
         skipped = connector.get("unsupported_tool_count", 0)
         detail = f" {skipped} tools were skipped because their names or input schemas were unsupported or exceeded safety limits." if skipped else ""
+        if changed := len(connector.get("tool_changes", {})):
+            detail += f" {changed} approved tools changed or were removed and are disabled until you review them."
         return (SURFACE_KEY, {}, notice_block("success", f"Connected. Found {len(discovered)} supported tools; new tools start disabled.{detail}"))
     except Exception as error:  # noqa: BLE001
         return (SURFACE_KEY, {}, _notice_for_error(error))

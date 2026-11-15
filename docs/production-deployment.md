@@ -718,12 +718,12 @@ provisioning profiles / ASC API key, and the on-device verification evidence.
 
 The composed backend image is published by `.github/workflows/publish-image.yml`.
 It fires only after the owner CI aggregate (`ci.yml`) completes successfully for
-a push to `main`, checks out that exact commit with all four component
+a push to `main`, checks out that exact commit with all five component
 submodules, re-runs the fail-closed composition preflight (`verify_composition`
 plus `install_local_components.py validate --require-gitlinks`), builds
 `Dockerfile`, and pushes `ghcr.io/<owner>/<repo>:sha-<commit>` (immutable) and
 `:latest` (convenience pointer). PR runs, failed runs, and other branches never
-publish. Hosted CI still validates only Deep-owned source and the four exact
+publish. Hosted CI still validates only Deep-owned source and the five exact
 composition declarations; full private composition and release activation
 remain local/owner decisions, and the voice-worker image stays behind the
 `VOICE_WORKER_CLOSURE_APPROVED` gate.

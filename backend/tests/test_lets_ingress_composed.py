@@ -229,7 +229,7 @@ class IngressIdentity:
         now = int(time.time())
         return self._encode(
             {
-                "sub": sub,
+                "sub": sub.split(".", 2)[2] if sub.startswith("oidc.") else sub,
                 "preferred_username": sub,
                 "iss": self.authority,
                 "azp": "astral-mcp-client",
@@ -245,7 +245,7 @@ class IngressIdentity:
         now = int(time.time())
         return self._encode(
             {
-                "sub": sub,
+                "sub": sub.split(".", 2)[2] if sub.startswith("oidc.") else sub,
                 "preferred_username": sub,
                 "iss": self.authority,
                 "azp": "astral-frontend",
@@ -569,13 +569,16 @@ class IngressRig:
 
 async def _build_rig(
     *,
+    identity: Any,
     ingress_plane: Any,
     orchestrator: Orchestrator,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
 ) -> IngressRig:
-    owner_id = _unique("ingress-owner")
+    from shared.node_identity import canonical_owner_id
+
+    owner_id = canonical_owner_id(identity.authority, _unique("ingress-owner"))
     agent_id = _unique("ingress-agent")
     runtime_id = _unique("ingress-runtime")
     generation = 3
@@ -697,6 +700,7 @@ async def rig_enforce(
     identity = ingress_identity
     orchestrator = await asyncio.to_thread(orchestrator_factory)
     rig = await _build_rig(
+        identity=identity,
         ingress_plane=orchestrator.runtime_composition.plane.runtime,
         orchestrator=orchestrator,
         tmp_path=tmp_path,
@@ -718,6 +722,7 @@ async def rig_off(
     identity = ingress_identity
     orchestrator = await asyncio.to_thread(orchestrator_factory)
     rig = await _build_rig(
+        identity=identity,
         ingress_plane=orchestrator.runtime_composition.plane.runtime,
         orchestrator=orchestrator,
         tmp_path=tmp_path,
@@ -1429,6 +1434,7 @@ async def test_shadow_mode_requests_receipt_but_leaves_effect_ungoverned(
     identity = ingress_identity
     orchestrator = await asyncio.to_thread(orchestrator_factory)
     rig = await _build_rig(
+        identity=identity,
         ingress_plane=orchestrator.runtime_composition.plane.runtime,
         orchestrator=orchestrator,
         tmp_path=tmp_path,
@@ -1462,7 +1468,9 @@ async def test_external_mediated_only_population_is_not_governed(
     identity = ingress_identity
     orchestrator = await asyncio.to_thread(orchestrator_factory)
     ingress_plane = orchestrator.runtime_composition.plane.runtime
-    owner_id = _unique("ingress-owner")
+    from shared.node_identity import canonical_owner_id
+
+    owner_id = canonical_owner_id(identity.authority, _unique("ingress-owner"))
     agent_id = _unique("ingress-agent")
     audience = _unique("ingress-executor")
     signer = Ed25519Signer.generate("warden-ingress")
