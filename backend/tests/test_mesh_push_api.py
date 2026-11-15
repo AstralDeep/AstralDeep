@@ -18,6 +18,7 @@ from orchestrator.mesh_push_gateway import MeshPushPublisher, PublisherWakeLimit
 from orchestrator.mesh_push_registry import MeshPushRegistry
 from orchestrator.push_providers import PushProviderError
 from shared.node_identity import canonical_owner_id
+from shared.token_verify import with_owner_identity
 from tests.test_mesh_push_registry import KEY, MESH, DEVICE, OTHER, Clock, plane  # noqa: F401
 
 ISSUER = "https://issuer.example/realms/owners"
@@ -46,7 +47,7 @@ def host(plane):  # noqa: F811
     app = FastAPI()
     app.state.orchestrator = SimpleNamespace(mesh_push_publisher=service)
     app.include_router(mesh_push_router)
-    principal = {"iss": ISSUER, "sub": uuid4().hex}
+    principal = with_owner_identity({"iss": ISSUER, "sub": uuid4().hex}, ISSUER)
     app.dependency_overrides[verify_user] = lambda: principal
     return SimpleNamespace(app=app, client=TestClient(app, raise_server_exceptions=False), principal=principal,
                            store=store, clock=clock, adapter=adapter, service=service)
@@ -92,7 +93,7 @@ def test_status_and_revoke_are_owner_scoped_and_revision_fenced(host):
     query = {"mesh_id": MESH, "device_id": DEVICE}
     current = host.client.get("/api/push/mesh/destinations", params=query)
     assert current.status_code == 200 and "capability" not in current.text and "private-phone-token" not in current.text
-    host.app.dependency_overrides[verify_user] = lambda: {"iss": ISSUER, "sub": "different-owner"}
+    host.app.dependency_overrides[verify_user] = lambda: with_owner_identity({"iss": ISSUER, "sub": "different-owner"}, ISSUER)
     assert host.client.get("/api/push/mesh/destinations", params=query).status_code == 404
     host.app.dependency_overrides[verify_user] = lambda: host.principal
     endpoint = "/api/push/mesh/destinations"
@@ -133,7 +134,7 @@ def test_provider_failure_is_unavailable_and_invalid_token_retires_only_its_gene
     host.clock.now += 300_000
     host.adapter.error = PushProviderError(transient=False, code="token_unregistered")
     assert wake(host, capability).status_code == 410
-    owner = canonical_owner_id(ISSUER, host.principal["sub"])
+    owner = canonical_owner_id(ISSUER, host.principal["astral_idp_sub"])
     assert host.store.status(owner, mesh_id=MESH, device_id=DEVICE).state == "revoked"
 
 
@@ -210,7 +211,7 @@ def test_explicit_publisher_factory_uses_only_application_plane_and_is_unavailab
 async def test_direct_gateway_missing_configuration_and_unexpected_provider_failure_are_safe(host, monkeypatch):
     from orchestrator.mesh_push_registry import MeshPushError
 
-    owner = canonical_owner_id(ISSUER, host.principal["sub"])
+    owner = canonical_owner_id(ISSUER, host.principal["astral_idp_sub"])
     created = await asyncio.to_thread(host.store.register, owner, mesh_id=MESH, device_id=DEVICE, token="private-phone-token", expected_revision=0)
     host.adapter.configured = False
     with pytest.raises(MeshPushError, match="publisher_unavailable"):
