@@ -157,11 +157,13 @@ docker run --init --name "$namespace-test" --network "container:$namespace-dev" 
   --env PYTHON_DOTENV_DISABLED=1 --env PYTHONDONTWRITEBYTECODE=1 \
   --env ATTACHMENT_UPLOAD_ROOT=/tmp/test-blobs --env PERSONAL_AGENT_ARTIFACT_ROOT=/tmp/test-agents \
   --env ASTRALDEEP_SOURCE_REPO=/workspace --env ASTRAL_GATE_GROUP="$group" \
-  --env PATH=/opt/ci-node:/usr/local/bin:/usr/bin:/bin \
+  --env PATH=/opt/astral-kernel/bin:/opt/ci-node:/usr/local/bin:/usr/bin:/bin \
   --volume "$(dirname "$(command -v node)"):/opt/ci-node:ro" \
   --volume "$policy_root:/qualification-policy:ro" \
   --volume "$root:/workspace" --workdir /workspace \
   --entrypoint /bin/bash "$image" -euc '
+    mailbox="$(command -v astral-mailbox)"
+    [[ "$mailbox" == /opt/astral-kernel/bin/astral-mailbox ]]
     python -m venv --system-site-packages /tmp/ci
     /tmp/ci/bin/python -m pip install --require-hashes -r /qualification-policy/tooling/backend-ci/requirements.lock.txt
     /tmp/ci/bin/python /qualification-policy/scripts/run_backend_web_tests.py --root /workspace --output /workspace/build/backend-web --group "$ASTRAL_GATE_GROUP"

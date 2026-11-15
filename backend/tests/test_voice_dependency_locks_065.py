@@ -85,8 +85,8 @@ CURRENT_DEPENDENCY_AUTHORITIES = {
     "tooling/backend-ci/requirements.lock.txt": "7368b4b122049b43e1930b1be178f82f3aeb13e481b1c8e7679c3a2c8b800815",
     "tooling/requirements-gaiakeep-tests.txt": "86c94aaf151b3920dbcdb1b682fbb9401d1b3ddb64adcd508444bc86acd5d21c",
     "tooling/requirements-gaiakeep-sdk-tests.txt": "a346c3a5ad503cf1b04e61655fb6e3ec667027f8d097c92ab960b4d013fb4c78",
-    "tooling/ui-ci/requirements.in": "0d95a3ca6a56ad256aefcf74f10323ebeef6f58e6f5ec2ec77c06c023d9ca052",
-    "tooling/ui-ci/requirements.lock.txt": "4a975d1c0adf7dcbd389cf4829513501780ee58af545a229a921ed8e66985570",
+    "tooling/ui-ci/requirements.in": "3b298d1b5ca1a5b849ed568d3a5bda4babfaea3a1187eca7983e1cf9aa73b659",
+    "tooling/ui-ci/requirements.lock.txt": "afb649d5dd7d9b74477e73b7f24972b273505a04ea2dfcd2d23defbbf71a84dc",
     "uv.lock": "9ac083ef3b758ad4ceb6867290b7bd7116e0a008af86fb90d91afe6613e1d92e",
 }
 DEEP_DEPENDENCY_AUTHORITY_POLICY = {

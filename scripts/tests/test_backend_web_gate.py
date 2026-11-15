@@ -496,8 +496,11 @@ def test_image_gate_passes_only_a_known_group_to_the_suite_runner(tmp_path, grou
     runner = next(call for call in calls if call[:1] == ["run"]
                   and any(argument.endswith("-test") for argument in call))
     assert "--cpus=4" in runner and "--memory=10g" in runner
+    explicit_path = "PATH=/opt/astral-kernel/bin:/opt/ci-node:/usr/local/bin:/usr/bin:/bin"
+    assert runner[runner.index(explicit_path) - 1] == "--env"
     assert runner[runner.index(f"ASTRAL_GATE_GROUP={expected}") - 1] == "--env"
     assert '--group "$ASTRAL_GATE_GROUP"' in runner[-1]
+    assert '[[ "$mailbox" == /opt/astral-kernel/bin/astral-mailbox ]]' in runner[-1]
     assert "/qualification-policy/scripts/run_backend_web_tests.py" in runner[-1]
 
 
