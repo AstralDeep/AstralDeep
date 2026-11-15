@@ -817,6 +817,13 @@ Human turn gaps are about 200 ms. An untuned on-device cascade takes 600 to 1,05
   screen or the presence key, because a voice can be replayed or cloned.
 - The voice path goes through the same gates as typed input. There is no shortcut.
 
+
+### 12.5 Qualification
+
+Owner amendment, 2026-11-14: automated code tests are sufficient to qualify every voice requirement in spec 105. Unit, integration, simulator and client tests cover interruption and playback accounting, cough/acknowledgement handling, buffering and restart, offline operation with installed assets, paired-watch routing, permission and model failures, and the prohibition on voice-only approval of risky actions. Injected clocks and controlled audio/model fixtures verify the interruption control budgets deterministically; hosted CI does not use wall-clock or acoustic latency thresholds.
+
+No live microphone/speaker session, audible-response check, physical-phone or watch voice run, real acoustic interruption measurement, or human-operated airplane-mode voice run is a spec 105 completion gate. Such runs may be retained as optional diagnostics. Offline and hosted-path isolation tests deny or record network access and assert that no hosted voice path is activated. Product behavior, authorization, model-integrity checks and failure handling remain required.
+
 ---
 
 ## 13. Generative UI

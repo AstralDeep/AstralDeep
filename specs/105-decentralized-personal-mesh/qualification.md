@@ -2,6 +2,12 @@
 
 Updated: 2026-11-14. Qualification remains in progress. This maps every exit criterion in plan.md to inspected source, executed local tests and recorded live checks. Exact suite revisions, commands, evidence paths and pending pin updates are in [local-integration-handoff.md](local-integration-handoff.md). The current evidence spans several revisions; it is not one passing final candidate. The owner is away with the phone disconnected; physical checks remain pending and physical automation is not authorized. Final artifact adoption and combined native gates remain separate from source-side checks. No protected CI, merge, deployment, release or production-readiness claim is made.
 
+## Voice qualification amendment
+
+The owner explicitly changed acceptance on 2026-11-14: automated code tests qualify all voice-related requirements. Live microphone/speaker, audible-answer, physical iPhone/watch voice and acoustic timing checks are optional diagnostics, not completion gates. Spec section 12.5 and plan Phase 4 are authoritative; older hardware-voice requirements quoted below are historical.
+
+Voice evidence includes the passing automated Mac/iOS combined gates (440/441 at Projection `271972e` with the 297 ABI), `OnDeviceBargeInTests`, `OnDeviceVoicePipelineTests`, `VoiceDuplexEngineTests`, `OnDeviceVoiceControllerTests`, `NoHostedVoiceTests`, `PairedWatchVoiceTests`, asset integrity/failure tests and scoped Kernel/voice cancellation tests. The actual installed-weight text fallback also passed as an automated Mac diagnostic; it makes no microphone, speaker or physical-phone claim. Final artifact adoption and the overall native gates remain tracked separately.
+
 ## Current local continuation
 
 These facts supersede the older checkpoint and matrix details where the implementation changed. No final same-source build/gate set exists yet.
@@ -26,7 +32,7 @@ This checkpoint is newer than the text below it. Details, numbers and evidence p
 - **1.1 is weaker than the table says.** Its automated test uses a stub runner. A probe of a real node-run turn on the current source ended in `node.no_answer`, and such turns cannot dispatch tools. See the owner findings in the handoff.
 - **7.2 cannot pass as built.** Mesh push registration uses the wrong device id and needs a sender that is not the personal node.
 
-Counts are unchanged: 45 proven by automated test, six partly covered, six live only, one owner approved.
+Historical checkpoint counts below predate the voice amendment; the current criterion table and counts apply the code-only voice rule.
 
 Revisions read:
 
@@ -103,12 +109,12 @@ Phase 0 checks against real systems: the Keycloak sign-in with the kernel nonce 
 
 | # | Criterion | Status | Evidence and gap |
 |---|---|---|---|
-| 4.1 | (live) Speaking over the assistant ducks within about 100 ms and silences within 500 ms, measured on device | Live only | Logic with an injected clock: `OnDeviceBargeInTests::{testSoundWhileSpeakingDucksImmediately,testConfirmedInterruptionIsSilentWithinHalfASecondOfOnset}`. Real audio latency unmeasured. |
+| 4.1 | Interruption duck/silence control budgets | Proven by automated test | `OnDeviceBargeInTests::{testSoundWhileSpeakingDucksImmediately,testConfirmedInterruptionIsSilentWithinHalfASecondOfOnset}` and pipeline/playback tests use injected clocks and audio. Owner-approved code-only qualification; acoustic measurements are optional diagnostics. |
 | 4.2 | Cough or short acknowledgement does not stop it | Proven by automated test | `OnDeviceBargeInTests::{testCoughEndingBeforeConfirmationRestoresVolumeAndKeepsSpeaking,testShortAcknowledgementWordsDoNotStopSpeech}`, `OnDeviceVoicePipelineTests::testCoughDoesNotStopSpeech`. |
 | 4.3 | After interruption, history holds only played words | Proven by automated test | Barge-in and pipeline tests ensure history contains only completed playback. Actual unaligned PCM conservatively records completed sentences and omits the interrupted sentence; this loses some played words but never invents a played prefix. Fake progress tests additionally cover exact known alignment; real partial-word alignment is not claimed. |
-| 4.4 | (live) Voice session works in airplane mode on hardware with an on-device model | Live only | The immutable Hugging Face revision is already published. The canonical Mac app downloaded and independently verified all 13 files (1,419,703,438 bytes) at revision `65619d48c5e4bc1552db24e07bc4a2ff2aa3cf49`. The real-weight offline package suite passed 39 tests with one optional skip and seven real-weight parity checks. A network-denied optimized diagnostic passed in 6.84 s: ASR 0.159–0.174 s for 2.924 s audio and TTS 1.27–2.03 s for 4.8 s speech (RTF 0.264–0.422). Earlier Debug runs exposed a 0.8 s final-ASR race and slow synthesis; bounded final-result waits, speech buffering, Stop Voice, Release defaults and the A15 text fallback are implemented at Projection `730d82e`; the focused source-side suite executed 115 tests with one optional skip and zero failures. Root subsequently observed owner Mac ASR and the controlled arithmetic answer, but duplicate audible feedback required b82536 and its live recheck remains pending; iPhone hardware/offline/interruption qualification remains pending; these diagnostic timings are not CI thresholds. |
+| 4.4 | Offline voice with installed on-device assets | Proven by automated test | Installed-asset integrity, `OnDeviceVoicePipelineTests`, `OnDeviceVoiceControllerTests`, `MLXVoiceRuntimeTests`, `PairedWatchVoiceTests` and transport-denial tests exercise installed/unavailable/corrupt assets, local routing and restart/cancellation. Real-weight package checks and the automated Mac text fallback add diagnostics. Physical airplane-mode voice is not required under section 12.5. |
 | 4.5 | Risky action cannot be approved by saying yes | Proven by automated test | `OnDeviceVoicePipelineTests::testSayingYesToAPendingRiskyActionIsOnlyEverATranscript` (asserts `approvalEligible == false`, nothing cancelled), `MeshVoiceLinkTests`. Kernel approval needs a presence signature (`turns_compose.rs`). |
-| 4.6 | No voice path contacts a voice server | Partly covered | `OnDeviceVoiceControllerTests::testAppMicrophoneNeverActivatesTheHostedVoiceController` (hosted start count 0). The real model diagnostic now runs with network denied, but the hosted controller code and Deep `backend/voice_agent` still exist; a full app voice session has not yet demonstrated that every active path avoids hosted contact. Keep an app transport that fails on any request and the planned hosted-path retirement in scope. |
+| 4.6 | No active voice path contacts a voice server | Proven by automated test | `NoHostedVoiceTests` records/fails HTTP and covers registration, control actions and server frames; `OnDeviceVoiceControllerTests` and `PairedWatchVoiceTests` cover the local entry points. Projection `7b7916f` removes linked LiveKit, hosted native media/REST and system-speech fallback; `1013e07` fences stale paired-watch callbacks. Automated qualification is sufficient; a live network-blocked voice session is optional. |
 
 ## Phase 5
 
@@ -148,17 +154,17 @@ Phase 0 checks against real systems: the Keycloak sign-in with the kernel nonce 
 
 Total 58 criteria. Status describes the evidence for the criterion, not release authorization.
 
-- Proven by automated test: 45
-- Partly covered: 6
+- Proven by automated test: 48
+- Partly covered: 5
 - Owner approved: 1
-- Live only: 6
+- Live only: 4
 
 ## Remaining automated gaps
 
 1. 3.2: final exact-source native MCP gates, followed by an actual internet/no-peer iPhone turn; Kernel/FFI guarded-loopback authority and denial coverage is implemented and passing.
 2. 3.11: shared full composed-gate conformance, beyond argument/repeat vectors.
 3. 2.7/6.7: final combined native gates and owner-device live sync remain; same stored imported event already passes both native renderer unit/UI checks.
-4. 4.6: enforce and verify no hosted voice contact on every active voice path.
+4. 4.6: retain automated hosted-path isolation and paired-watch/local-pipeline gates; live voice testing is not required.
 5. 5.6/1.1: native peer catalog and normal owner node-provider custody, followed by pack regeneration at the final MCP pin; the actual 13b pack/tool-turn evidence is already retained.
 6. 0.2: follow-on non-Apple Kernel bindings and hosted timing qualification.
 
@@ -177,8 +183,8 @@ The separate actual Python-local `NodeMesh` diagnostic passed two diagnostic ass
 1. 1.1: run `astralvessel up` or the Mac node pack as the node. Pair the Mac app and the iPhone to it. Block `sandbox.ai.uky.edu` and Keycloak, then chat with a granted tool. Devices: Mac, iPhone, one node host.
 2. 2.2 and 2.1: put the iPhone in airplane mode with Wi-Fi off. Read history, send a message, then reconnect and check the Mac. Then do two devices on Wi-Fi with no internet.
 3. 3.1: iPhone in airplane mode, ask a question on the on-device model, check the fallback notice and successful completion without a provider error.
-4. 4.4: use the checksum-verified installed LFM3 model on the Mac, then speak with Wi-Fi off. Repeat on the iPhone.
-5. 4.1: on the iPhone, interrupt the assistant mid-sentence and read the logged duck and silence times.
+4. Optional voice diagnostic: speak with Wi-Fi off using the verified installed model. This does not gate spec 105.
+5. Optional voice diagnostic: measure real acoustic interruption timing. Automated control-clock tests qualify 4.1.
 6. 7.2: install the push gateway with APNs credentials, background the iPhone, trigger an event from the Mac, check it wakes and syncs.
 7. 5.3: start a goal on the iPhone, hand it to the Mac, and confirm it finishes there. Kill the Mac app mid-turn and reopen.
 8. 5.6: on a Mac with no node, run a bundled agent through "Node on this Mac".
